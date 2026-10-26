@@ -1299,6 +1299,9 @@ impl GatewayVault {
             return Ok(loaded.clone());
         }
         *loaded = None;
+        if material.passphrase.expose_secret() == credentials::PASSPHRASE_KEY_MARKER {
+            return Ok(None);
+        }
         let vault = match credentials::Vault::unlock_native(
             material.identity.vault_path.clone(),
             &material.passphrase,
@@ -1322,6 +1325,45 @@ impl GatewayVault {
             identity: material.identity,
         });
         Ok(loaded.clone())
+    }
+
+    fn unlock(&self, passphrase: &credentials::Secret) -> Result<(), Error> {
+        let mut loaded = self
+            .loaded
+            .lock()
+            .map_err(|_| "credential storage unavailable")?;
+        let material = gateway_vault_material(&self.data_dir)
+            .filter(|material| {
+                material.passphrase.expose_secret() == credentials::PASSPHRASE_KEY_MARKER
+            })
+            .ok_or("passphrase storage is not selected")?;
+        let vault = credentials::Vault::unlock_existing(&material.identity.vault_path, passphrase)?;
+        self.activation
+            .activate(credentials::ActivationPhase::Candidate, &vault.metadata()?)
+            .map_err(|_| "vault credential activation unavailable")?;
+        // Do not replace a live OAuth refresh owner on a repeated unlock.
+        if loaded
+            .as_ref()
+            .is_none_or(|old| old.identity != material.identity || old.vault.reload().is_err())
+        {
+            *loaded = Some(LoadedGatewayVault {
+                oauth: oauth::OAuthRefresh::new(vault.clone()),
+                vault,
+                identity: material.identity,
+            });
+        }
+        Ok(())
+    }
+
+    fn lock(&self) -> Result<(), Error> {
+        if credentials::storage(&self.data_dir)? != Some(credentials::Storage::Passphrase) {
+            return Err("passphrase storage is not selected".into());
+        }
+        *self
+            .loaded
+            .lock()
+            .map_err(|_| "credential storage unavailable")? = None;
+        Ok(())
     }
 
     async fn load_async(&self) -> Result<Option<LoadedGatewayVault>, Error> {

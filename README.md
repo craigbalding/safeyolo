@@ -31,6 +31,14 @@ Use the terminal on a workstation or headless server; the Mac GUI is optional.
 SafeYolo is pre-v1. Use the installer below; published Python CLI packages
 belong to the earlier product.
 
+**Install preview:** Edited Ubuntu 24.04 AMD64 walkthrough with Codex and an
+existing host login.
+Install SafeYolo and get your first agent running in less than a minute.
+
+![SafeYolo installation preview: download, review access, and open Codex](docs/media/install-preview.gif)
+
+[Terminal walkthrough (.cast)](docs/media/install-preview.cast)
+
 ## Quick start
 
 Use Ubuntu 24.04 AMD64 (x86_64), an ordinary sudo-enabled account, Bash, curl,

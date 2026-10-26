@@ -4,6 +4,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     fs,
+    io::Write,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -31,8 +32,12 @@ use crate::{
 mod archive;
 #[path = "guest_acquisition/components.rs"]
 mod components;
+#[path = "guest_acquisition/download_timing.rs"]
+mod download_timing;
 #[path = "guest_acquisition/upgrade.rs"]
 mod upgrade;
+
+use download_timing::DownloadTiming;
 
 /// Select a complete installed host/guest pair without initializing state.
 pub async fn upgrade_components(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
@@ -49,7 +54,7 @@ pub(crate) fn validate_prepared_linux_assets(
     archive::validate_assets(path, consumer_platform()?, mapping)
 }
 
-pub const HELP: &str = "safeyolo [--root ROOT] guest upgrade [--index sha256:DIGEST]\nsafeyolo [--root ROOT] guest rollback\nUpgrade the installed default guest, or restore its previous selection without a registry request.\nUpgrade resolves the installed host's compatibility tag once. --index pins an explicit OCI index.\nThe selected guest applies to the next sandbox boot. Running guests keep their existing inputs.\nStop and start an agent to use the selected guest. Host binaries and persistent state stay unchanged.\nPrint the selected guest and its previous selection as JSON.\n\nsafeyolo [--root ROOT] guest acquire --package-info FILE --write-selection FILE [--store DIRECTORY] [--index sha256:DIGEST]\nPrepare a compatible guest for the verified installer.\nWithout --index, resolve the package compatibility tag. --index pins the OCI index for first acquisition.\nPrint the prepared asset directory and write its OCI selection as JSON.\nExisting installed selections are retained even with --index; use guest upgrade to change them.\nDownloads and prepared trees stay in HOME/.local/share/safeyolo/guests by default.\nKeep this directory: installations and rollback selections reference its trees. --store selects another persistent directory.\n\nsafeyolo guest download --package-info FILE [--store DIRECTORY] [--index sha256:DIGEST] [--prepare]\nDownload and verify the compatible guest archive. By default, do not extract it.\n--prepare also attempts early cache extraction without changing host settings or asking for privilege.\nLinux uses existing validated UID/GID ranges and noninteractive sudo. Missing setup or extraction privilege defers preparation to the ordinary installer after host consent.\nThe installer checks its actual host settings and guest selection before activation.\nPrint its verified index digest. The installer can then acquire that exact index and reuse the archive.\nInterrupting the download removes its partial blob and retains completed verified blobs.\nDuring early extraction, interruption waits for extraction/remapping and private staging cleanup before exit. A completed verified tree remains reusable.\nExplicit platform inputs remain available through install.sh --platform-assets DIRECTORY.";
+pub const HELP: &str = "safeyolo [--root ROOT] guest upgrade [--index sha256:DIGEST]\nsafeyolo [--root ROOT] guest rollback\nUpgrade the installed default guest, or restore its previous selection without a registry request.\nUpgrade resolves the installed host's compatibility tag once. --index pins an explicit OCI index.\nThe selected guest applies to the next sandbox boot. Running guests keep their existing inputs.\nStop and start an agent to use the selected guest. Host binaries and persistent state stay unchanged.\nPrint the selected guest and its previous selection as JSON.\n\nsafeyolo [--root ROOT] guest acquire --package-info FILE --write-selection FILE [--store DIRECTORY] [--index sha256:DIGEST]\nPrepare a compatible guest for the verified installer.\nWithout --index, resolve the package compatibility tag. --index pins the OCI index for first acquisition.\nPrint the prepared asset directory and write its OCI selection as JSON.\nExisting installed selections are retained even with --index; use guest upgrade to change them.\nDownloads and prepared trees stay in HOME/.local/share/safeyolo/guests by default.\nKeep this directory: installations and rollback selections reference its trees. --store selects another persistent directory.\n\nsafeyolo guest download --package-info FILE [--store DIRECTORY] [--index sha256:DIGEST] [--prepare]\nDownload and verify the compatible guest archive. By default, do not extract it.\n--prepare also attempts early cache extraction without changing host settings or asking for privilege.\nDuring download, --prepare decodes into a private temporary tar file. Extraction waits for archive size and digest verification. Temporary disk use includes the decoded archive.\nLinux uses existing validated UID/GID ranges and noninteractive sudo. Missing setup or extraction privilege defers preparation to the ordinary installer after host consent.\nThe installer checks its actual host settings and guest selection before activation.\nPrint its verified index digest. The installer can then acquire that exact index and reuse the archive.\nInterrupting the download removes its partial blob and retains completed verified blobs.\nDuring early extraction, interruption waits for extraction/remapping and private staging cleanup before exit. A completed verified tree remains reusable.\nExplicit platform inputs remain available through install.sh --platform-assets DIRECTORY.";
 
 #[derive(Debug)]
 struct PackageGuest {
@@ -258,11 +263,19 @@ async fn blob(
     reference: &Reference,
     descriptor: &Descriptor,
     store: &Path,
+    decoding: &mut Option<archive::DownloadDecoder>,
+    mut timing: Option<&mut DownloadTiming>,
 ) -> Result<PathBuf, Error> {
     let directory = store.join("blobs/sha256");
     fs::create_dir_all(&directory)?;
     let destination = directory.join(guest_oci::sha256_hex(&descriptor.digest)?);
     if destination.try_exists()? {
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.cache_hit = true;
+            timing.decoder_status = "cached";
+        }
+        // Reuse the verified compressed cache without decoding it again here.
+        *decoding = None;
         // A retained blob is reusable only after its bytes still verify.
         let metadata = destination.metadata()?;
         if !metadata.is_file() {
@@ -270,32 +283,107 @@ async fn blob(
         }
         descriptor.check_size(metadata.len())?;
         descriptor.verify(fs::File::open(&destination)?)?;
+        if let Some(timing) = timing {
+            timing.request_setup.finish();
+            timing.archive_verified = true;
+        }
         return Ok(destination);
     }
     let temporary = tempfile::NamedTempFile::new_in(&directory)?;
-    let mut output = tokio::fs::File::from_std(temporary.reopen()?);
-    let mut stream = client
+    // Batch network chunks instead of scheduling a blocking file write for each one.
+    let mut output = tokio::io::BufWriter::with_capacity(
+        1024 * 1024,
+        tokio::fs::File::from_std(temporary.reopen()?),
+    );
+    let stream = client
         .pull_blob_stream(reference, descriptor.digest.as_str())
-        .await?;
+        .await;
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.request_setup.finish();
+    }
+    let mut stream = stream?;
     if let Some(size) = stream.content_length {
         descriptor.check_size(size)?;
     }
     let mut size = 0_u64;
     // Reaching EOF consumes oci-client's streaming digest verification too.
-    while let Some(bytes) = stream.try_next().await? {
+    loop {
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.stream_try_next.start();
+        }
+        // This boundary includes OCI digest work and task scheduling. It does
+        // not measure time on the remote network.
+        let next = stream.try_next().await;
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.stream_try_next.finish();
+        }
+        let Some(bytes) = next? else {
+            if let Some(timing) = timing.as_deref_mut() {
+                timing.eof_at_s = Some(timing.started.elapsed().as_secs_f64());
+            }
+            break;
+        };
+        if let Some(timing) = timing.as_deref_mut() {
+            let at = timing.started.elapsed().as_secs_f64();
+            timing.first_chunk_at_s.get_or_insert(at);
+            timing.last_chunk_at_s = Some(at);
+            timing.chunks += 1;
+            timing.bytes += bytes.len() as u64;
+        }
         size = size
             .checked_add(bytes.len() as u64)
             .ok_or("guest content size overflow")?;
         if size > descriptor.size {
             return Err("guest descriptor size mismatch".into());
         }
-        output.write_all(&bytes).await?;
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.compressed_write.start();
+        }
+        let written = output.write_all(&bytes).await;
+        if let Some(timing) = timing.as_deref_mut() {
+            timing.compressed_write.finish();
+        }
+        written?;
+        if let Some(decoder) = decoding {
+            if let Some(timing) = timing.as_deref_mut() {
+                timing.decoder_enqueue.start();
+            }
+            let decoded = decoder.write(bytes).await;
+            if let Some(timing) = timing.as_deref_mut() {
+                timing.decoder_enqueue.finish();
+            }
+            if let Err(error) = decoded {
+                eprintln!("SafeYolo: guest download decoding deferred: {error}.");
+                *decoding = None;
+                if let Some(timing) = timing.as_deref_mut() {
+                    timing.decoder_status = "write_failed";
+                }
+            }
+        }
     }
     descriptor.check_size(size)?;
-    output.sync_all().await?;
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.compressed_flush.start();
+    }
+    let flushed = output.flush().await;
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.compressed_flush.finish();
+    }
+    flushed?;
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.compressed_sync.start();
+    }
+    let synced = output.get_ref().sync_all().await;
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.compressed_sync.finish();
+    }
+    synced?;
     drop(output);
     temporary.persist_noclobber(&destination)?;
     fs::File::open(&directory)?.sync_all()?;
+    if let Some(timing) = timing {
+        timing.archive_verified = true;
+    }
     Ok(destination)
 }
 
@@ -312,37 +400,86 @@ async fn resolve_guest(
         }
         None => format!("{}:{}", package.repository, package.discovery_tag).parse()?,
     };
-    let (bytes, digest) = client
-        .pull_manifest_raw(
-            &reference,
-            &RegistryAuth::Anonymous,
-            &[guest_oci::INDEX_MEDIA_TYPE],
-        )
-        .await?;
+    // Only an explicit immutable index can bypass discovery. Retained raw
+    // metadata still goes through the same digest/descriptor/compatibility
+    // validation as registry responses; its presence is not a receipt.
+    let cached_index = match index_digest {
+        Some(digest) => retained_manifest(store, digest)?.map(|bytes| (bytes, digest.to_owned())),
+        None => None,
+    };
+    let fetched_index = cached_index.is_none();
+    let (index_bytes, digest) = match cached_index {
+        Some(cached) => cached,
+        None => {
+            client
+                .pull_manifest_raw(
+                    &reference,
+                    &RegistryAuth::Anonymous,
+                    &[guest_oci::INDEX_MEDIA_TYPE],
+                )
+                .await?
+        }
+    };
     let index = GuestIndex::parse(
-        &bytes,
+        &index_bytes,
         index_digest.unwrap_or(&digest),
         &package.compatibility,
     )?;
     let manifest = index.manifest(package.platform).clone();
     let pinned: Reference = format!("{}@{}", package.repository, manifest.digest).parse()?;
-    let (bytes, _) = client
-        .pull_manifest_raw(
-            &pinned,
-            &RegistryAuth::Anonymous,
-            &[guest_oci::MANIFEST_MEDIA_TYPE],
-        )
-        .await?;
-    let child = index.validate_child(package.platform, &bytes)?;
+    let cached_child = retained_manifest(store, &manifest.digest)?;
+    let fetched_child = cached_child.is_none();
+    let child_bytes = match cached_child {
+        Some(bytes) => bytes,
+        None => {
+            client
+                .pull_manifest_raw(
+                    &pinned,
+                    &RegistryAuth::Anonymous,
+                    &[guest_oci::MANIFEST_MEDIA_TYPE],
+                )
+                .await?
+                .0
+        }
+    };
+    let child = index.validate_child(package.platform, &child_bytes)?;
     // Match publish_guest_oci.sh's exact bytes, not a canonical JSON encoding.
     // Only a full descriptor/platform match avoids the serial config request.
     let (os, architecture) = child.platform.os_architecture();
     let published_config = format!(r#"{{"os":"{os}","architecture":"{architecture}"}}"#);
     if child.validate_config(published_config.as_bytes()).is_err() {
-        let config = blob(client, &pinned, &child.config, store).await?;
+        let config = blob(client, &pinned, &child.config, store, &mut None, None).await?;
         child.validate_config(&fs::read(config)?)?;
     }
+    if fetched_index {
+        retain_manifest(store, &index.identity.digest, &index_bytes)?;
+    }
+    if fetched_child {
+        retain_manifest(store, &manifest.digest, &child_bytes)?;
+    }
     Ok((index, child))
+}
+
+fn retained_manifest(store: &Path, digest: &str) -> Result<Option<bytes::Bytes>, Error> {
+    let path = store
+        .join("blobs/sha256")
+        .join(guest_oci::sha256_hex(digest)?);
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes.into())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn retain_manifest(store: &Path, digest: &str, bytes: &[u8]) -> Result<(), Error> {
+    let directory = store.join("blobs/sha256");
+    fs::create_dir_all(&directory)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(directory.join(guest_oci::sha256_hex(digest)?))?;
+    fs::File::open(directory)?.sync_all()?;
+    Ok(())
 }
 
 async fn acquire(
@@ -368,7 +505,7 @@ async fn acquire(
     // Verify a reusable archive's descriptor too. A changed index can declare
     // a wrong size even when its tree already exists from an earlier operation.
     let input = if retained.is_none() {
-        Some(blob(client, &pinned, &child.archive, store).await?)
+        Some(blob(client, &pinned, &child.archive, store, &mut None, None).await?)
     } else {
         None
     };
@@ -379,7 +516,7 @@ async fn acquire(
         let destination = assets.clone();
         let platform = package.platform;
         tokio::task::spawn_blocking(move || {
-            archive::prepare(&input, &destination, platform, mapping, None)
+            archive::prepare(&input, None, &destination, platform, mapping, None)
         })
         .await??;
     }
@@ -414,6 +551,7 @@ fn prepared_tree(
 
 async fn prepare_downloaded_guest(
     input: PathBuf,
+    decoded: Option<fs::File>,
     store: &Path,
     descriptor: &Descriptor,
     platform: ConsumerPlatform,
@@ -448,7 +586,14 @@ async fn prepare_downloaded_guest(
     let cancelled = Arc::new(AtomicBool::new(false));
     let worker_cancelled = cancelled.clone();
     let mut preparation = tokio::task::spawn_blocking(move || {
-        archive::prepare(&input, &assets, platform, mapping, Some(&worker_cancelled))
+        archive::prepare(
+            &input,
+            decoded,
+            &assets,
+            platform,
+            mapping,
+            Some(&worker_cancelled),
+        )
     });
     tokio::select! {
         result = &mut preparation => return result?,
@@ -612,6 +757,7 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
         return Err("guest download does not extract or write an installed selection".into());
     }
     if download_only {
+        let mut timing = DownloadTiming::from_env();
         // Drop the streaming future on cancellation so its NamedTempFile is
         // removed. Only verified blobs persist; no tree or instance is created.
         let store = guest_store_directory(store)?;
@@ -622,19 +768,81 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
         let mut interrupt =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
         let client = registry_client()?;
-        let (index, child, input) = tokio::select! {
-            result = async {
-                let (index, child) = resolve_guest(&client, &package, &store, index).await?;
-                let reference = format!("{}@{}", package.repository, index.manifest(package.platform).digest).parse()?;
-                let input = blob(&client, &reference, &child.archive, &store).await?;
-                Ok::<_, Error>((index, child, input))
-            } => result,
+        let (index, child) = tokio::select! {
+            result = resolve_guest(&client, &package, &store, index) => result,
             _ = terminate.recv() => Err("guest download interrupted; verified blobs remain reusable".into()),
             _ = interrupt.recv() => Err("guest download interrupted; verified blobs remain reusable".into()),
         }?;
+        // Decompression can overlap the network transfer, but tar (including
+        // sudo tar) must not see bytes until the compressed descriptor verifies.
+        // Anonymous temporary output disappears on cancellation or verification
+        // failure. No extraction child exists during this part of the download.
+        let mut decoding = if prepare_download {
+            match tempfile::tempfile_in(&store)
+                .map_err(Error::from)
+                .and_then(archive::DownloadDecoder::new)
+            {
+                Ok(decoder) => Some(decoder),
+                Err(error) => {
+                    eprintln!("SafeYolo: guest download decoding deferred: {error}.");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(timing) = timing.as_mut() {
+            timing.decoder_status = if decoding.is_some() {
+                "streaming"
+            } else if prepare_download {
+                "unavailable"
+            } else {
+                "not_requested"
+            };
+        }
+        let reference = format!(
+            "{}@{}",
+            package.repository,
+            index.manifest(package.platform).digest
+        )
+        .parse()?;
+        let input = tokio::select! {
+            result = blob(&client, &reference, &child.archive, &store, &mut decoding, timing.as_mut()) => result,
+            _ = terminate.recv() => Err("guest download interrupted; verified blobs remain reusable".into()),
+            _ = interrupt.recv() => Err("guest download interrupted; verified blobs remain reusable".into()),
+        }?;
+        let decoded = if let Some(decoder) = decoding {
+            if let Some(timing) = timing.as_mut() {
+                timing.decoder_finish.start();
+            }
+            let finished = tokio::select! {
+                result = decoder.finish() => result,
+                _ = terminate.recv() => return Err("guest download interrupted; verified blobs remain reusable".into()),
+                _ = interrupt.recv() => return Err("guest download interrupted; verified blobs remain reusable".into()),
+            };
+            if let Some(timing) = timing.as_mut() {
+                timing.decoder_finish.finish();
+                timing.decoder_status = if finished.is_ok() {
+                    "complete"
+                } else {
+                    "finish_failed"
+                };
+            }
+            match finished {
+                Ok(output) => Some(output),
+                Err(error) => {
+                    eprintln!("SafeYolo: guest download decoding deferred: {error}.");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        drop(timing);
         if prepare_download {
             prepare_downloaded_guest(
                 input,
+                decoded,
                 &store,
                 &child.archive,
                 package.platform,

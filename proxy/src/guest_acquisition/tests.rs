@@ -1,5 +1,116 @@
 use super::*;
 
+#[tokio::test]
+async fn download_decoder_preserves_concatenated_frames_and_checks_the_last_frame() {
+    use std::io::{Read, Write};
+
+    let plain = vec![b'x'; 3 * 1024 * 1024 + 7];
+    let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1).unwrap();
+    encoder.include_checksum(true).unwrap();
+    encoder.write_all(&plain).unwrap();
+    let frame = encoder.finish().unwrap();
+    for fault in ["none", "truncated", "checksum"] {
+        let mut compressed = [frame.as_slice(), frame.as_slice()].concat();
+        if fault == "truncated" {
+            compressed.pop();
+        } else if fault == "checksum" {
+            *compressed.last_mut().unwrap() ^= 1;
+        }
+        let mut decoder = archive::DownloadDecoder::new(tempfile::tempfile().unwrap()).unwrap();
+        let mut written = Ok(());
+        for chunk in compressed.chunks(7) {
+            written = decoder.write(bytes::Bytes::copy_from_slice(chunk)).await;
+            if written.is_err() {
+                break;
+            }
+        }
+        let result = match written {
+            Ok(()) => decoder.finish().await,
+            Err(error) => Err(error),
+        };
+        if fault == "none" {
+            let mut actual = Vec::new();
+            result.unwrap().read_to_end(&mut actual).unwrap();
+            assert_eq!(actual, [plain.as_slice(), plain.as_slice()].concat());
+        } else {
+            assert!(result.is_err(), "accepted {fault} frame");
+        }
+    }
+}
+
+#[tokio::test]
+async fn download_decoder_reports_buffered_and_full_write_failures() {
+    // A read-only output accepts buffered bytes but must fail before returning
+    // a decoded file, including when the final buffer is the only output.
+    for size in [7, 2 * 1024 * 1024 + 7] {
+        let plain = vec![b'x'; size];
+        let compressed = zstd::stream::encode_all(plain.as_slice(), 1).unwrap();
+        let output = tempfile::NamedTempFile::new().unwrap();
+        let mut decoder =
+            archive::DownloadDecoder::new(fs::File::open(output.path()).unwrap()).unwrap();
+        let result = match decoder.write(compressed.into()).await {
+            Ok(()) => decoder.finish().await,
+            Err(error) => Err(error),
+        };
+        assert!(result.is_err(), "lost output failure for {size} bytes");
+    }
+}
+
+#[tokio::test]
+async fn download_decoder_overlaps_output_with_bounded_input_and_cancels_pending_finish() {
+    use std::{io::Read, os::fd::FromRawFd};
+
+    // A real pipe holds output back independently of decoding or network speed.
+    // Its capacity is smaller than one decoded output batch.
+    let mut descriptors = [-1; 2];
+    assert_eq!(unsafe { libc::pipe(descriptors.as_mut_ptr()) }, 0);
+    let mut reader = unsafe { fs::File::from_raw_fd(descriptors[0]) };
+    let output = unsafe { fs::File::from_raw_fd(descriptors[1]) };
+    let plain = vec![b'x'; 3 * 1024 * 1024];
+    let chunk = bytes::Bytes::from(zstd::stream::encode_all(plain.as_slice(), 1).unwrap());
+    let mut decoder = archive::DownloadDecoder::new(output).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), decoder.write(chunk.clone()))
+        .await
+        .expect("input waited for blocked output")
+        .unwrap();
+    // Wait for the worker to reach the blocked file write.
+    let mut reader = tokio::task::spawn_blocking(move || {
+        reader.read_exact(&mut [0]).unwrap();
+        reader
+    })
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        tokio::time::timeout(Duration::from_secs(5), decoder.write(chunk.clone()))
+            .await
+            .expect("queued input waited for blocked output")
+            .unwrap();
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), decoder.write(chunk))
+            .await
+            .is_err(),
+        "blocked decoder accepted unbounded queued input"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), decoder.finish())
+            .await
+            .is_err(),
+        "decoder finished while output was blocked"
+    );
+    // Closing the download discards queued work. Once the current write can
+    // finish, the worker must close its file without another input or EOF marker.
+    let drained = tokio::task::spawn_blocking(move || reader.read_to_end(&mut Vec::new()).unwrap());
+    let remaining = tokio::time::timeout(Duration::from_secs(5), drained)
+        .await
+        .expect("decoder retained its output after cancellation")
+        .unwrap();
+    assert!(
+        remaining + 1 < plain.len(),
+        "decoder kept decoding after cancellation"
+    );
+}
+
 #[test]
 fn package_guest_uses_the_existing_strict_fields() {
     let temp = tempfile::tempdir().unwrap();
@@ -437,6 +548,7 @@ mod linux {
             let destination = temp.path().join(format!("prepared-{fault}"));
             let result = archive::prepare(
                 &input,
+                None,
                 &destination,
                 ConsumerPlatform::DarwinArm64,
                 crate::linux_host::Mapping::for_bases(100000, 100000),

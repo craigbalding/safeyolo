@@ -34,6 +34,7 @@ use crate::policy::{expiry_has_offset, parse_expiry};
 const SALT_LENGTH: usize = 16;
 const KDF_ITERATIONS: u32 = 480_000;
 const NATIVE_KEY_PREFIX: &str = "safeyolo-native-key-v1:";
+pub const PASSPHRASE_KEY_MARKER: &str = "safeyolo-passphrase-v1";
 const NATIVE_HEADER: [u8; SALT_LENGTH] = *b"SafeYolo:key:v1\0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +47,7 @@ pub enum ErrorKind {
     Activation,
     Rollback,
     State,
+    Locked,
 }
 
 /// Identifies the side of an atomic vault publication callback. Candidate
@@ -75,6 +77,9 @@ impl fmt::Display for VaultError {
             ErrorKind::Activation => "vault activation rejected",
             ErrorKind::Rollback => "vault rollback failed",
             ErrorKind::State => "vault state unavailable",
+            ErrorKind::Locked => {
+                "credential storage is locked; explicitly unlock with its passphrase"
+            }
         })
     }
 }
@@ -263,15 +268,75 @@ fn lock_file(path: &Path) -> Result<File> {
     Ok(file)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Storage {
+    Local,
+    Passphrase,
+}
+
+/// Existing keys select their existing format. A missing key beside ciphertext
+/// is unavailable storage, never permission to create a replacement.
+pub fn storage(data_dir: &Path) -> Result<Option<Storage>> {
+    match fs::read_to_string(data_dir.join("credentials.key")) {
+        Ok(key) => {
+            let key = Zeroizing::new(key);
+            if key.trim().is_empty() {
+                return Err(error(ErrorKind::Authentication));
+            }
+            Ok(Some(if key.trim() == PASSPHRASE_KEY_MARKER {
+                Storage::Passphrase
+            } else {
+                Storage::Local
+            }))
+        }
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
+            if data_dir.join("credentials.enc").try_exists()? {
+                return Err(error(ErrorKind::Authentication));
+            }
+            Ok(None)
+        }
+        Err(failure) => Err(failure.into()),
+    }
+}
+
+/// Select passphrase protection without persisting the passphrase or derived key.
+/// This creates a new store only; existing data must be explicitly unlocked.
+pub fn create_passphrase(data_dir: &Path, passphrase: &Secret) -> Result<Vault> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::create_dir_all(data_dir)?;
+    let _key_lock = lock_file(&data_dir.join(".credentials.key.lock"))?;
+    if storage(data_dir)?.is_some() {
+        return Err(error(ErrorKind::State));
+    }
+    let key_path = data_dir.join("credentials.key");
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&key_path)?;
+    file.write_all(PASSPHRASE_KEY_MARKER.as_bytes())?;
+    file.sync_all()?;
+    Vault::unlock(data_dir.join("credentials.enc"), passphrase)
+}
+
 /// Create native storage only for an operation that will store a credential.
 /// Mark new random keys explicitly; unmarked keys keep their passphrase KDF.
 pub fn open(data_dir: &Path) -> Result<Vault> {
     use std::os::unix::fs::OpenOptionsExt;
     fs::create_dir_all(data_dir)?;
     let key_path = data_dir.join("credentials.key");
-    let key_lock = lock_file(&data_dir.join(".credentials.key.lock"))?;
+    let _key_lock = lock_file(&data_dir.join(".credentials.key.lock"))?;
     let key = match fs::read_to_string(&key_path) {
-        Ok(key) => Zeroizing::new(key),
+        Ok(key) => {
+            let key = Zeroizing::new(key);
+            if key.trim() == PASSPHRASE_KEY_MARKER {
+                return Err(error(ErrorKind::Locked));
+            }
+            if !data_dir.join("credentials.enc").try_exists()? {
+                return Err(error(ErrorKind::State));
+            }
+            key
+        }
         Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
             if data_dir.join("credentials.enc").try_exists()? {
                 return Err(error(ErrorKind::Authentication));
@@ -293,7 +358,6 @@ pub fn open(data_dir: &Path) -> Result<Vault> {
         }
         Err(failure) => return Err(failure.into()),
     };
-    drop(key_lock);
     if key.trim().is_empty() {
         return Err(error(ErrorKind::Authentication));
     }
@@ -311,6 +375,9 @@ pub fn open_existing(data_dir: &Path) -> Result<Option<Vault>> {
         return Ok(None);
     }
     let key = Zeroizing::new(fs::read_to_string(data_dir.join("credentials.key"))?);
+    if key.trim() == PASSPHRASE_KEY_MARKER {
+        return Err(error(ErrorKind::Locked));
+    }
     Vault::unlock_native(path, &Secret::new(key.trim()), false).map(Some)
 }
 
@@ -373,7 +440,16 @@ impl Vault {
         })
     }
 
+    pub fn unlock_existing(path: impl Into<PathBuf>, passphrase: &Secret) -> Result<Self> {
+        Self::unlock_with_cipher(path.into(), false, None, |salt| {
+            derive_cipher(passphrase, salt)
+        })
+    }
+
     pub(crate) fn unlock_native(path: PathBuf, key: &Secret, create: bool) -> Result<Self> {
+        if key.expose_secret() == PASSPHRASE_KEY_MARKER {
+            return Err(error(ErrorKind::Locked));
+        }
         let native = key.expose_secret().starts_with(NATIVE_KEY_PREFIX);
         Self::unlock_with_cipher(path, create, native.then_some(NATIVE_HEADER), |salt| {
             if salt == &NATIVE_HEADER {

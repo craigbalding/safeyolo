@@ -82,7 +82,7 @@ impl RefreshError {
                 VaultErrorKind::Activation | VaultErrorKind::Rollback => {
                     FailureCategory::Activation
                 }
-                VaultErrorKind::State => FailureCategory::State,
+                VaultErrorKind::State | VaultErrorKind::Locked => FailureCategory::State,
                 VaultErrorKind::Io
                 | VaultErrorKind::Authentication
                 | VaultErrorKind::Format

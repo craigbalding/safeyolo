@@ -18,19 +18,20 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
     if [ -z "${SAFEYOLO_CODEX_NATIVE_SPEC:-}" ]; then sy_default_native=1; fi
     : "${SAFEYOLO_CODEX_NATIVE_SPEC:=aqua:openai/codex@latest}"
     : "${SAFEYOLO_MIN_RELEASE_AGE:=24h}"
-    if MISE_MINIMUM_RELEASE_AGE="$SAFEYOLO_MIN_RELEASE_AGE" \
-         mise settings get minimum_release_age >/dev/null 2>&1; then
-        export MISE_MINIMUM_RELEASE_AGE="$SAFEYOLO_MIN_RELEASE_AGE"
-    else
-        echo "codex-host-setup: mise cannot apply minimum_release_age=$SAFEYOLO_MIN_RELEASE_AGE; no delayed-deployment protection on this build" >&2
-    fi
     sy_spec="$SAFEYOLO_CODEX_NATIVE_SPEC"
     sy_tool="${sy_spec%@*}"
     sy_target=""
-    sy_expected="$(mise latest --installed "$sy_spec" 2>/dev/null | tail -1)"
+    sy_expected=""
     sy_root=""
-    if [ -n "$sy_expected" ]; then
-        sy_root="$(mise where "$sy_spec" 2>/dev/null)" || sy_root=""
+    # A fresh home has no selection to query. Keep mise's normal resolution
+    # whenever its default Aqua namespace exists, the operator chose a spec,
+    # or mise has a custom installation directory to resolve.
+    if [ "$sy_default_native" = 0 ] || [ -n "${MISE_INSTALLS_DIR:-}" ] ||
+       [ -d "$MISE_DATA_DIR/installs/aqua-openai-codex" ]; then
+        sy_expected="$(mise latest --installed "$sy_spec" 2>/dev/null | tail -1)"
+        if [ -n "$sy_expected" ]; then
+            sy_root="$(mise where "$sy_spec" 2>/dev/null)" || sy_root=""
+        fi
     fi
     sy_native_ready() {
         [ -n "$sy_root" ] && [ -n "$sy_expected" ] &&
@@ -66,10 +67,13 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
         sy_spec="${sy_tool}@latest"
         # `link` records versions under the base GitHub tool name, without
         # the asset options. Check that installed namespace on reentry.
-        sy_expected="$(mise latest --installed github:openai/codex 2>/dev/null | tail -1)"
+        sy_expected=""
         sy_root=""
-        if [ -n "$sy_expected" ]; then
-            sy_root="$(mise where "${sy_tool}@${sy_expected}" 2>/dev/null)" || sy_root=""
+        if [ -n "${MISE_INSTALLS_DIR:-}" ] || [ -d "$MISE_DATA_DIR/installs/github-openai-codex" ]; then
+            sy_expected="$(mise latest --installed github:openai/codex 2>/dev/null | tail -1)"
+            if [ -n "$sy_expected" ]; then
+                sy_root="$(mise where "${sy_tool}@${sy_expected}" 2>/dev/null)" || sy_root=""
+            fi
         fi
         if sy_native_ready; then sy_ready=1; fi
     fi
@@ -82,6 +86,16 @@ if [ -z "${SAFEYOLO_CODEX_NPM_SPEC:-}${SAFEYOLO_CODEX_NPM_PACKAGE:-}" ]; then
         # Record the validated payload using mise's installed-tool state.
         # Later launches reuse it and keep the ordinary update notice.
         if sy_link_prefetched; then sy_ready=1; fi
+    fi
+    if [ "$sy_ready" = 0 ] || [ -z "$sy_target" ]; then
+        # The imported default already passed the host's 24h selection policy.
+        # Probe mise's policy support only for a repair or update lookup.
+        if MISE_MINIMUM_RELEASE_AGE="$SAFEYOLO_MIN_RELEASE_AGE" \
+             mise settings get minimum_release_age >/dev/null 2>&1; then
+            export MISE_MINIMUM_RELEASE_AGE="$SAFEYOLO_MIN_RELEASE_AGE"
+        else
+            echo "codex-host-setup: mise cannot apply minimum_release_age=$SAFEYOLO_MIN_RELEASE_AGE; no delayed-deployment protection on this build" >&2
+        fi
     fi
     if [ "$sy_ready" = 0 ]; then
         echo "SafeYolo: downloading or repairing native Codex and its companion tools." >&2

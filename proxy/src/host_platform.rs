@@ -974,40 +974,11 @@ fn scoped_runsc_create(name: &str, memory_mb: u64) -> io::Result<Command> {
 #[cfg(target_os = "linux")]
 async fn start_userns(name: &str) -> io::Result<u32> {
     let mapping = crate::linux_host::selected_mapping().map_err(io::Error::other)?;
-    let settings = crate::native_config::host_settings().map_err(io::Error::other)?;
-    let restricts =
-        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-            .is_ok_and(|value| value.trim() == "1");
-    // The recursive failed-start fixture exercises both launch commands without
-    // changing its host's AppArmor policy. Production always uses the sysctl.
-    #[cfg(test)]
-    let restricts = match std::env::var("SAFEYOLO_TEST_FAILED_START_LAUNCH").as_deref() {
-        Ok("direct") => false,
-        Ok("apparmor" | "missing-aa-exec") => true,
-        _ => restricts,
-    };
-    let mut holder = if restricts {
-        let mut command = Command::new("aa-exec");
-        command.args([
-            "-p",
-            settings
-                .linux
-                .as_ref()
-                .and_then(|s| s.apparmor_profile.as_deref())
-                .unwrap_or("safeyolo-runsc"),
-            "--",
-            "unshare",
-            "-Un",
-            "tail",
-            "-f",
-            "/dev/null",
-        ]);
-        command
-    } else {
-        let mut command = Command::new("unshare");
-        command.args(["-Un", "tail", "-f", "/dev/null"]);
-        command
-    };
+    let mut holder = Command::from(crate::linux_host::namespace_command(
+        &config_dir(),
+        "unshare",
+    )?);
+    holder.args(["-Un", "tail", "-f", "/dev/null"]);
     unsafe {
         holder.as_std_mut().pre_exec(|| {
             if libc::setsid() < 0 {
@@ -2453,7 +2424,7 @@ pub(crate) async fn start_sandbox(
 
 #[cfg(all(test, target_os = "linux"))]
 #[path = "../tests/support/owned_run.rs"]
-mod guest_command_test_run;
+pub(crate) mod guest_command_test_run;
 
 #[cfg(test)]
 mod tests {
@@ -2972,7 +2943,7 @@ mod tests {
             let share = directory.join("config-share");
             std::fs::create_dir_all(&share).unwrap();
             std::fs::create_dir(root.join("bin")).unwrap();
-            // Restricted PATH cases omit the mapper or aa-exec, but still
+            // Restricted PATH cases omit the mapper or namespace entry, but still
             // need account lookup before reaching the intended failure.
             std::os::unix::fs::symlink("/usr/bin/getent", root.join("bin/getent")).unwrap();
             std::fs::write(share.join("guest-init"), b"fixture").unwrap();
@@ -3002,18 +2973,6 @@ mod tests {
                 ),
                 ("ip", "#!/bin/sh\nexit 0\n".to_owned()),
                 ("systemctl", "#!/bin/sh\nexit 1\n".to_owned()),
-                (
-                    "aa-exec",
-                    format!(
-                        r#"#!/bin/sh
-[ "$1" = -p ] && [ "$2" = safeyolo-runsc ] && [ "$3" = -- ] && [ "$4" = unshare ] || exit 2
-printf '%s\n' "$@" > '{}/fixture-aa-exec'
-shift 3
-exec "$@"
-"#,
-                        directory.display()
-                    ),
-                ),
                 (
                     "unshare",
                     format!(
@@ -3058,9 +3017,6 @@ esac
                     ),
                 ),
             ] {
-                if name == "aa-exec" && launch == "missing-aa-exec" {
-                    continue;
-                }
                 let path = root.join("bin").join(name);
                 std::fs::write(&path, script).unwrap();
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -3101,7 +3057,7 @@ esac
                     .or_else(|_| std::fs::read(directory.join("runtime.json"))).unwrap();
                 let run: serde_json::Value = serde_json::from_slice(&record).unwrap();
                 assert_eq!(std::fs::read_to_string(directory.join("fixture-acl")).unwrap(), "prepared");
-                if launch == "missing-aa-exec" {
+                if launch == "missing-entry" {
                     assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
                     assert!(!directory.join("fixture-holder.pid").exists());
                     assert!(!directory.join("fixture-holder.json").exists());
@@ -3141,10 +3097,10 @@ esac
                         .is_ok_and(|value| value.trim() == "1"),
                     _ => panic!("unknown launch fixture: {launch}"),
                 };
-                assert_eq!(directory.join("fixture-aa-exec").exists(), apparmor);
+                assert_eq!(directory.join("fixture-namespace-entry").exists(), apparmor);
                 if apparmor {
-                    assert_eq!(std::fs::read_to_string(directory.join("fixture-aa-exec")).unwrap(),
-                        "-p\nsafeyolo-runsc\n--\nunshare\n-Un\ntail\n-f\n/dev/null\n");
+                    assert_eq!(std::fs::read_to_string(directory.join("fixture-namespace-entry")).unwrap(),
+                        "unshare\n-Un\ntail\n-f\n/dev/null\n");
                 }
                 if stop == "missing-mapper" {
                     assert!(error.contains("No such file or directory"), "{error}");
@@ -3199,17 +3155,49 @@ esac
             ("apparmor", "succeeded"),
             ("apparmor", "failed"),
             ("apparmor", "missing-mapper"),
-            ("missing-aa-exec", "succeeded"),
+            ("missing-entry", "succeeded"),
         ] {
             let root = tempfile::tempdir().unwrap();
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
+            // Prepare profiles before restricting the child's PATH to omit the
+            // mapper: loading and removing the fixture profile still need sudo.
+            let _profile = if launch != "missing-entry" {
+                std::fs::create_dir(root.path().join("host")).unwrap();
+                let entry = root.path().join("host/namespace-entry");
+                std::fs::write(&entry, format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}/fixture-namespace-entry'\nexec \"$@\"\n",
+                    root.path().join("agents/alice").display(),
+                )).unwrap();
+                std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o755)).unwrap();
+                (launch != "direct").then(|| crate::linux_host::TestNamespaceProfile::load(&entry))
+            } else {
+                None
+            };
+            // A direct launch needs an allowed parent on restricted hosts.
+            // The native and apparmor rows still enter from an unconfined parent.
+            let direct_entry = root.path().join("direct-entry");
+            let _direct_profile = if launch == "direct" {
+                std::fs::write(&direct_entry, b"#!/bin/sh\nexec \"$@\"\n").unwrap();
+                std::fs::set_permissions(&direct_entry, std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
+                Some(crate::linux_host::TestNamespaceProfile::load(&direct_entry))
+            } else {
+                None
+            };
+            let mut runner = if launch == "direct" {
+                let mut runner = std::process::Command::new(&direct_entry);
+                runner.arg(std::env::current_exe().unwrap());
+                runner
+            } else {
+                std::process::Command::new(std::env::current_exe().unwrap())
+            };
+            let output = runner
                 .args(["--exact", TEST, "--nocapture"])
                 .env("SAFEYOLO_TEST_FAILED_START_ROOT", root.path())
                 .env("SAFEYOLO_TEST_FAILED_START_STOP", stop)
                 .env("SAFEYOLO_TEST_FAILED_START_LAUNCH", launch)
                 .env(
                     "PATH",
-                    if stop == "missing-mapper" || launch == "missing-aa-exec" {
+                    if stop == "missing-mapper" || launch == "missing-entry" {
                         root.path().join("bin").display().to_string()
                     } else {
                         format!("{}:/usr/bin:/bin", root.path().join("bin").display())

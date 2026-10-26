@@ -20,11 +20,16 @@ login flow. The importer does not read an operating-system keychain.
 `/secure/codex/auth.json` and `/secure/claude/.credentials.json` below stand for
 those selected files; replace each path before running its command.
 
-Import is an explicit storage operation. It uses the existing local encrypted
-store and can create that store on this write. It does not change storage
-selection or unlock behavior. Initialization and independent proxy readiness
-do not open the store. The separate storage-choice discussion under #1050
-remains unresolved.
+Import is an explicit storage operation. It uses the selected host encrypted store.
+If storage is absent, the first valid import asks you to choose local random-key
+storage or passphrase protection. For a script, add `--storage local` or
+`--storage passphrase`. Passphrase storage uses a hidden prompt or
+`--passphrase-file FILE`; keep that host file outside guest mounts. Existing
+storage keeps its type. An import with a passphrase unlocks the running proxy.
+If the proxy starts later, run `credentials unlock` before service use. A proxy
+restart or `credentials lock` requires another explicit unlock. See
+[credential storage and unlock](credentials.md#store-a-local-credential).
+Initialization and independent proxy readiness do not open or unlock the store.
 
 An import leaves the selected file unchanged. Renewal updates the vault copy.
 If another host client keeps using the original rotating refresh token, that

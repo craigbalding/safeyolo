@@ -6,7 +6,7 @@ root=${SAFEYOLO_CONFIG_DIR:-${SAFEYOLO_HOME:-$HOME/.safeyolo}}
 release=
 bundle=
 stage=
-host_pid= guest_pid= download_pid= codex_pid=
+host_pid= copy_pid= decode_pid= unpack_pid= guest_pid= download_pid= codex_pid=
 download_guest=true
 download_only=
 install_arguments=()
@@ -127,7 +127,7 @@ if [[ -z $download_only ]] && [[ -e $root/config.toml || -L $root/config.toml ||
   install_and_launch "$root/install_native.sh" --bundle "$root"
   exit
 fi
-for tool in curl tar; do
+for tool in curl tar tee mkfifo; do
   command -v "$tool" >/dev/null || { echo "Host acquisition requires the standard $tool command; restore it and retry." >&2; exit 1; }
 done
 if command -v sha256sum >/dev/null; then
@@ -161,12 +161,15 @@ mkdir -p "$cache"
 stage=$(mktemp -d "$cache/acquire.XXXXXX")
 cleanup_acquisition() {
   local child
-  for child in "$host_pid" "$guest_pid" "$download_pid" "$codex_pid"; do
+  for child in "$host_pid" "$copy_pid" "$decode_pid" "$unpack_pid" "$guest_pid" "$download_pid" "$codex_pid"; do
     if [[ -n $child ]]; then
       kill -TERM "$child" 2>/dev/null || true
       wait "$child" 2>/dev/null || true
     fi
   done
+  # Restore directory access before descending into unchecked archive modes.
+  # Do not follow links or change regular-file (including hard-link) modes.
+  find -P "$stage" -type d -exec chmod u+rwx {} \;
   rm -rf -- "$stage"
 }
 trap cleanup_acquisition EXIT
@@ -189,9 +192,15 @@ done < "$stage/SHA256SUMS"
 }
 archive=$cache/$name.tar.gz
 if [[ ! -f $archive ]] || [[ $(archive_sha256 "$archive") != "$expected" ]]; then
-  # Own the curl PID directly so interruption cannot leave a download child.
+  # Unpack into a separate private directory while receiving the archive.
+  # Do not execute or source anything there until the release checksum passes.
+  # The early CLI has its own verified archive and extraction directory.
+  mkdir "$stage/host"
+  mkfifo "$stage/host-input"
+  echo 'SafeYolo: downloading and unpacking the host package.' >&2
+  # Own every PID: failure or interruption also reaps blocked FIFO readers.
   curl --fail --location --show-error --silent --proto '=https' --proto-redir '=https' \
-    --output "$stage/$name.tar.gz" "$base/$name.tar.gz" &
+    --output "$stage/host-input" "$base/$name.tar.gz" &
   host_pid=$!
   if $download_guest && [[ -z $download_only && $guest_count != 0 ]]; then
     [[ $guest_count == 1 && $guest_expected =~ ^[0-9a-f]{64}$ ]] || {
@@ -216,32 +225,70 @@ if [[ ! -f $archive ]] || [[ $(archive_sha256 "$archive") != "$expected" ]]; the
     start_codex_prefetch "$early/bin/safeyolo"
     echo 'SafeYolo: downloading the compatible guest while acquiring the host package.' >&2
     guest_arguments=()
-    if "$early/bin/safeyolo" guest download --help | grep -q -- '--prepare'; then
+    # Consume all help output to avoid a broken pipe; pipefail retains helper failures.
+    if "$early/bin/safeyolo" guest download --help | grep -F -- '--prepare' >/dev/null; then
       guest_arguments+=(--prepare)
     fi
     "$early/bin/safeyolo" guest download --package-info "$early/package-info" ${guest_arguments[@]+"${guest_arguments[@]}"} > "$stage/guest-index" &
     guest_pid=$!
   fi
+  native_decoder=false stream_verified=false
+  if [[ -n $guest_pid ]] && decoder_help=$("$early/bin/safeyolo" host-package --help 2>/dev/null); then
+    native_decoder=true
+    [[ $decoder_help != *'--save'* ]] || stream_verified=true
+  fi
+  decode_input=$stage/host-input
+  if ! $stream_verified; then
+    # Older helpers and paths without an early CLI keep the saved-file check.
+    mkfifo "$stage/host-output"
+    tee "$stage/$name.tar.gz" < "$stage/host-input" > "$stage/host-output" &
+    copy_pid=$!
+    decode_input=$stage/host-output
+  fi
+  host_tar_arguments=(-xf - -C "$stage/host")
+  if [[ $platform == linux-* ]]; then
+    # GNU tar's 10 KiB default causes small file writes even when the decoder
+    # supplies larger chunks. Match the guest extractor's 128 KiB records.
+    host_tar_arguments+=(-b 256)
+  fi
+  if $native_decoder; then
+    decode_arguments=(gunzip "$decode_input")
+    if $stream_verified; then
+      decode_arguments+=(--save "$stage/$name.tar.gz" --sha256 "$expected")
+    fi
+    mkfifo "$stage/host-tar"
+    "$early/bin/safeyolo" host-package "${decode_arguments[@]}" > "$stage/host-tar" &
+    decode_pid=$!
+    tar "${host_tar_arguments[@]}" < "$stage/host-tar" &
+  else
+    # Older releases and paths without an early CLI retain standard tar/gzip.
+    tar -z "${host_tar_arguments[@]}" < "$decode_input" &
+  fi
+  unpack_pid=$!
   wait "$host_pid" || { echo 'Host download failed. No package was installed; retry this command.' >&2; exit 1; }
   host_pid=
-  [[ $(archive_sha256 "$stage/$name.tar.gz") == "$expected" ]] || {
+  echo 'SafeYolo: verifying and unpacking the host package.' >&2
+  if [[ -n $copy_pid ]]; then
+    wait "$copy_pid" || { echo 'Host archive could not be saved. No package was installed; retry this command.' >&2; exit 1; }
+    copy_pid=
+  fi
+  if [[ -n $decode_pid ]]; then
+    wait "$decode_pid" || { echo 'Host archive could not be decoded. No package was installed; retry this command.' >&2; exit 1; }
+    decode_pid=
+  fi
+  wait "$unpack_pid" || { echo 'Host archive could not be unpacked. No package was installed; retry this command.' >&2; exit 1; }
+  unpack_pid=
+  $stream_verified || [[ $(archive_sha256 "$stage/$name.tar.gz") == "$expected" ]] || {
     echo 'Host archive checksum failed. No package was installed. Retry to download verified bytes.' >&2; exit 1
   }
   mv "$stage/$name.tar.gz" "$archive"
+  package=$stage/host/$name
 else
   echo 'SafeYolo: reusing the verified host archive.' >&2
-fi
-echo 'SafeYolo: verifying and unpacking the host package.' >&2
-if [[ -n $guest_pid ]] && "$early/bin/safeyolo" host-package --help >/dev/null 2>&1; then
-  # This same-release CLI was verified before its early guest download. Keep
-  # tar's existing extraction behavior, with the CLI's faster gzip decoder.
-  # pipefail also rejects a bad gzip trailer after tar reaches its end marker.
-  "$early/bin/safeyolo" host-package gunzip "$archive" | tar -xf - -C "$stage"
-else
-  # Earlier releases and paths without an early CLI retain their extractor.
+  echo 'SafeYolo: verifying and unpacking the host package.' >&2
   tar -xzf "$archive" -C "$stage"
+  package=$stage/$name
 fi
-package=$stage/$name
 [[ -f $package/package-info && -f $package/install.sh ]] || { echo 'The host archive is incomplete; no package was installed.' >&2; exit 1; }
 for field in "source_commit=${release#host-}" "profile=production" "platform=$platform"; do
   grep -qx "$field" "$package/package-info" || { echo "Host package differs from its release: $field. No package was installed." >&2; exit 1; }
@@ -255,12 +302,14 @@ if [[ -n $guest_pid ]]; then
   cmp -s "$early/package-info" "$package/package-info" && cmp -s "$early/bin/safeyolo" "$package/bin/safeyolo" || {
     echo 'Guest download inputs differ from the verified host package. No instance was activated.' >&2; exit 1
   }
-  wait "$guest_pid" || { echo 'Guest acquisition failed. No instance was activated. Retry this command; verified inputs remain reusable.' >&2; exit 1; }
+fi
+finish_guest_download() {
+  [[ -n $guest_pid ]] || return 0
+  wait "$guest_pid" || { echo 'Guest acquisition failed. No instance was activated. Completed host preparation remains as reported above. Retry this command; verified inputs remain reusable.' >&2; exit 1; }
   guest_pid=
   guest_index=$(cat "$stage/guest-index")
   [[ $guest_index =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Guest download did not return a verified index.' >&2; exit 1; }
-  install_arguments+=(--guest-index "$guest_index")
-fi
+}
 if [[ -n $download_only ]]; then
   source "$package/native_package.sh"
   verify_native_package "$package"
@@ -271,4 +320,20 @@ fi
 start_codex_prefetch "$package/bin/safeyolo"
 # The ordinary installer performs the complete file/layout/executable check.
 # Its private extraction can then become the installed files without a copy.
-install_and_launch "$package/install.sh" --move-bundle
+if [[ -n $guest_pid ]] && grep -q '^install_native() {' "$package/install_native.sh"; then
+  install_acquired_package() {
+    source "$package/install_native.sh"
+    trap 'cleanup_acquisition; cleanup_install' EXIT
+    install_native finish_guest_download --bundle "$package" "$@"
+    cleanup_install
+    trap cleanup_acquisition EXIT
+  }
+  install_and_launch install_acquired_package --move-bundle
+else
+  # Older packages retain their standalone installer and sequential join.
+  if [[ -n $guest_pid ]]; then
+    finish_guest_download
+    install_arguments+=(--guest-index "$guest_index")
+  fi
+  install_and_launch "$package/install.sh" --move-bundle
+fi

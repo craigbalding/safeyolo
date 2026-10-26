@@ -2,6 +2,18 @@
 # Install verified files and initialize once; preserve matching installed state.
 set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+temporary= staged_root= install_lock=
+cleanup_install() {
+  if [[ -n $temporary ]]; then rm -rf -- "$temporary"; fi
+  if [[ -n $staged_root ]]; then rm -rf -- "$staged_root"; fi
+  if [[ -n $install_lock ]]; then rmdir "$install_lock"; fi
+}
+
+# The bootstrap calls this in its own shell so it can join its guest child
+# after independent host preparation and before guest selection or activation.
+install_native() {
+local guest_download_completion=$1
+shift
 root=${SAFEYOLO_CONFIG_DIR:-${SAFEYOLO_HOME:-$HOME/.safeyolo}}
 bundle= platform_assets= command_dir= guest_index=
 download_guest=true
@@ -79,15 +91,6 @@ fi
 if $move_bundle && { $existing || [[ -z $bundle ]]; }; then
   echo '--move-bundle requires a temporary unpacked bundle and a fresh instance.' >&2; exit 2
 fi
-temporary= staged_root= install_lock=
-cleanup_install() {
-  if [[ -n $temporary ]]; then rm -rf -- "$temporary"; fi
-  if [[ -n $staged_root ]]; then rm -rf -- "$staged_root"; fi
-  if [[ -n $install_lock ]]; then rmdir "$install_lock"; fi
-}
-trap cleanup_install EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
 if [[ -z $bundle ]]; then
   mkdir -p "$(dirname -- "$root")"
   temporary=$(mktemp -d "$(dirname -- "$root")/native-install.XXXXXX")
@@ -178,7 +181,6 @@ if ! $existing; then
   install_lock=$lock_path
   staged_root=$(mktemp -d "$(dirname -- "$root")/safeyolo-install.XXXXXX")
   guest_host_arguments=()
-  [[ -z $guest_index ]] || guest_host_arguments+=(--index "$guest_index")
   if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]] || $runtime_override; }; then
     echo 'SafeYolo: checking and preparing the Linux host.' >&2
     "$bundle/bin/safeyolo" --root "$root" host prepare --package-root "$bundle" --installed-root "$root" \
@@ -186,6 +188,11 @@ if ! $existing; then
     require_file "$staged_root/host-settings.toml"
     guest_host_arguments+=(--host-settings "$staged_root/host-settings.toml")
   fi
+  # Host preparation uses the fully verified bundle and retains its own
+  # consent. It can finish while the separate guest child downloads/extracts.
+  # Join before consuming the child's exact index or moving package files.
+  if [[ -n $guest_download_completion ]]; then "$guest_download_completion"; fi
+  [[ -z $guest_index ]] || guest_host_arguments=(--index "$guest_index" ${guest_host_arguments[@]+"${guest_host_arguments[@]}"})
   # Only the public bootstrap transfers ownership of its disposable extraction.
   # Contributor and offline bundles remain reusable, as before.
   package_inputs=("$bundle/bin" "$bundle/libexec" "$bundle/assets")
@@ -270,3 +277,11 @@ check_command_entry
 echo "Installed SafeYolo: $root"
 echo "Command: $command_entry"
 "$command_entry" --version
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  trap cleanup_install EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  install_native '' "$@"
+fi

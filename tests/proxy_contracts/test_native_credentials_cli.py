@@ -38,6 +38,10 @@ POLICY = '''budget=12000
 "*"={egress="deny", unknown_creds="deny"}
 [agents.alice]
 [agents.bob]
+[credential.gateway-fixture]
+match=['\\Asgw_[0-9a-f]{64}\\Z']
+headers=['authorization']
+allowed_hosts=['127.0.0.1']
 [[risk]]
 account="owned"
 tactics=["impact"]
@@ -185,7 +189,7 @@ def restart(instance):
 def setup(instance, directory):
     value_file = directory / "value"
     value_file.write_text(LOCAL)
-    cli(instance, "credentials", "add", "local", "--value-file", str(value_file))
+    cli(instance, "credentials", "add", "local", "--storage", "local", "--value-file", str(value_file))
     cli(instance, "credentials", "list")
     # Loading a new definition follows the existing watcher; no second CLI loader.
     path = instance.root / "builtin-services/notes.yaml"
@@ -250,7 +254,7 @@ def test_installed_provider_order_failures_local_control_and_no_persistence(tmp_
         extra_config=f'onepassword_executable={json.dumps(str(executable))}\n',
     ) as instance:
         setup(instance, tmp_path)
-        cli(instance, "credentials", "reference", "external", "--provider", "onepassword",
+        cli(instance, "credentials", "reference", "external", "--storage", "local", "--provider", "onepassword",
             "--reference", "op://synthetic-vault/synthetic-item/credential")
         authorize(instance, "external")
         credential = token(instance)
@@ -406,7 +410,7 @@ allow = ["fixture-gateway:*"]
         setup(instance, tmp_path)
         input_file = tmp_path / "recognized-value"
         input_file.write_text(DETECTED)
-        cli(instance, "credentials", "add", "recognized", "--value-file", str(input_file))
+        cli(instance, "credentials", "add", "recognized", "--storage", "local", "--value-file", str(input_file))
         authorize(instance, "recognized")
         deliver(instance, origin, token(instance), status=428)
         pending = cli(instance, "services", "approvals")["approvals"]
@@ -537,14 +541,83 @@ def test_init_and_read_only_commands_defer_storage_until_a_valid_secret_write(tm
         (("credentials", "list"), True),
         (("credentials", "remove", "missing"), False),
         (("credentials", "invalid"), False),
-        (("credentials", "add", "invalid", "--type", "unsupported"), False),
+        (("credentials", "add", "invalid", "--storage", "local", "--type", "unsupported"), False),
         (("credentials", "import-codex", "invalid"), False),
         (("credentials", "provider", "--executable", "/bin/true"), True),
+        (("credentials", "unlock"), False),
     ]:
         command(*arguments, valid=valid)
         assert not (root / "data/credentials.key").exists()
         assert not (root / "data/credentials.enc").exists()
-    command("credentials", "add", "local", "--stdin", value=LOCAL)
+    refused = command("credentials", "add", "local", "--stdin", value=LOCAL, valid=False)
+    assert "--storage local or --storage passphrase" in refused.stderr
+    assert not (root / "data/credentials.key").exists()
+    assert not (root / "data/credentials.enc").exists()
+    command("credentials", "add", "local", "--storage", "local", "--stdin", value=LOCAL)
     assert (root / "data/credentials.key").read_text().startswith("safeyolo-native-key-v1:")
     assert json.loads(command("credentials", "list").stdout)[0]["name"] == "local"
     assert LOCAL.encode() not in (root / "data/credentials.enc").read_bytes()
+    encrypted = (root / "data/credentials.enc").read_bytes()
+    key = (root / "data/credentials.key").read_bytes()
+    command("credentials", "add", "local", "--storage", "passphrase", "--stdin", value=LOCAL, valid=False)
+    assert (root / "data/credentials.enc").read_bytes() == encrypted
+    (root / "data/credentials.enc").unlink()
+    for arguments in [("credentials", "list"), ("credentials", "add", "local", "--stdin")]:
+        command(*arguments, value=LOCAL, valid=False)
+        assert not (root / "data/credentials.enc").exists()
+        assert (root / "data/credentials.key").read_bytes() == key
+
+
+@pytest.mark.parametrize("selection", ["local", "passphrase", "cancel", "mismatch", "eof"])
+def test_first_storage_choice_and_hidden_passphrase_input(tmp_path, selection):
+    from tests.proxy_contracts.test_native_coord_operator import terminal, wait_terminal_exit
+    from tests.proxy_contracts.test_native_policy_cli import native_inputs
+
+    artifacts, _, _ = native_inputs()
+    root = tmp_path / "instance"
+    binary = (artifacts / "safeyolo").resolve()
+    subprocess.run([str(binary), "--root", str(root), "init"], check=True, capture_output=True)
+    (root / "bin").mkdir()
+    (root / "bin/safeyolo").symlink_to(binary)
+    value_file = tmp_path / "value"
+    value_file.write_text(LOCAL)
+    instance = SimpleNamespace(root=root, environment=os.environ.copy())
+    protected = "synthetic-manual-storage-passphrase"
+    with terminal(instance, ["credentials", "add", "local", "--value-file", str(value_file)]) as (process, master, until):
+        output = until(b"Choose credential storage")
+        assert not (root / "data/credentials.key").exists()
+        os.write(master, ("q" if selection == "cancel" else "local" if selection == "local" else "passphrase").encode() + b"\n")
+        if selection == "eof":
+            output += until(b"Storage passphrase:")
+            os.write(master, b"\x04")
+        if selection in ("passphrase", "mismatch"):
+            output += until(b"Storage passphrase:")
+            os.write(master, protected.encode() + b"\n")
+            output += until(b"Confirm storage passphrase:")
+            os.write(master, (protected if selection == "passphrase" else "different").encode() + b"\n")
+        output = bytearray(output)
+        code = wait_terminal_exit(process, master, output, timeout=5)
+        assert (b"Credential stored:" if selection in ("local", "passphrase") else b"cancelled" if selection in ("cancel", "eof") else b"do not match") in output
+        assert (code == 0) == (selection in ("local", "passphrase"))
+        assert protected.encode() not in output and LOCAL.encode() not in output
+    if selection in ("cancel", "mismatch", "eof"):
+        assert not (root / "data/credentials.key").exists()
+        assert not (root / "data/credentials.enc").exists()
+        return
+    key = (root / "data/credentials.key").read_text()
+    assert (key == "safeyolo-passphrase-v1") == (selection == "passphrase")
+    if selection == "local":
+        return
+    encrypted = (root / "data/credentials.enc").read_bytes()
+    for value in (None, "wrong", protected):
+        arguments = []
+        if value is not None:
+            pass_file = tmp_path / "passphrase"
+            pass_file.write_text(value)
+            arguments = ["--passphrase-file", str(pass_file)]
+        result = subprocess.run([str(binary), "--root", str(root), "credentials", "list", *arguments],
+                                capture_output=True, text=True, timeout=15)
+        assert (result.returncode == 0) == (value == protected)
+        assert protected not in result.stdout + result.stderr
+        assert (root / "data/credentials.enc").read_bytes() == encrypted
+    assert json.loads(result.stdout)[0]["name"] == "local"

@@ -1608,7 +1608,14 @@ async fn pending_gateway_credential_replacement_has_the_same_agent_and_operator_
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
         .arg("--root")
         .arg(fixture.root.path())
-        .args(["credentials", "add", "fixture", "--stdin"])
+        .args([
+            "credentials",
+            "add",
+            "fixture",
+            "--stdin",
+            "--storage",
+            "local",
+        ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

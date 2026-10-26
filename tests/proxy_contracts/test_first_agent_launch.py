@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import tempfile
 import time
@@ -20,10 +21,12 @@ from types import SimpleNamespace
 import pytest
 import tomlkit
 
+from safeyolo.runtime_identity import process_is_alive, process_start_token
+from tests.proxy_contracts import test_native_credentials_cli as credentials
 from tests.proxy_contracts.harness import request
 from tests.proxy_contracts.scenarios import origin_server
 from tests.proxy_contracts.test_native_coord_operator import terminal, wait_terminal_exit
-from tests.proxy_contracts.test_native_policy_cli import native_inputs, native_instance
+from tests.proxy_contracts.test_native_policy_cli import native_inputs, native_instance, restarted_proxy
 
 AGENTS = '''
 [agents.alice]
@@ -153,9 +156,9 @@ def codex_login_launch(tmp_path):
     (root / "bin/safeyolo").symlink_to(binary)
     scripts = root / "assets/contrib"
     scripts.mkdir(parents=True)
-    # Setup's command payload is immaterial to this boundary. No services or
-    # guest artifacts are installed, so successful selection must stop before
-    # client startup at the real missing-proxy diagnostic.
+    # Setup's command payload is immaterial to this boundary. No proxy or guest
+    # artifacts are installed, so successful selection must stop before client
+    # startup at the real missing-proxy diagnostic.
     script = scripts / "codex-host-setup.sh"
     script.write_text('#!/bin/sh\nset -eu\n'
                       'mkdir -p "$SAFEYOLO_AGENT_HOME/.codex"\n'
@@ -170,9 +173,11 @@ def codex_login_launch(tmp_path):
     }}) + "\n")
     login.chmod(0o600)
     instance = SimpleNamespace(root=root, environment={**os.environ, "TERM": "xterm-256color",
-                                                     "CODEX_HOME": str(host_codex)})
+                                                     "CODEX_HOME": str(host_codex),
+                                                     "SAFEYOLO_NATS_TEST_INSTANCE": str(root)})
     instance.arguments = ["agent", "launch", str(workspace), "--name", "first", "--harness", "codex"]
     instance.login = login
+    instance.config_path = root / "config.toml"
 
     def cli(*args):
         result = subprocess.run([str(binary), "--root", str(root), *args],
@@ -181,7 +186,26 @@ def codex_login_launch(tmp_path):
         return json.loads(result.stdout) if result.stdout.startswith(("[", "{")) else result.stdout
 
     instance.cli = cli
-    return instance
+    try:
+        if nats_binary := os.environ.get("SAFEYOLO_COORD_NATS_BINARY"):
+            # Reuse the reviewed pin without downloading it for each launch.
+            instance.cli("coord", "start", "--binary", nats_binary)
+            instance.cli("coord", "stop")
+        yield instance
+    finally:
+        # A failed proxy spawn can still complete the independently owned NATS
+        # start. Retire this fixture's Coord before pytest removes its state.
+        # Coord's root-based stop resolves config.toml. Restore the fixture's
+        # default filename after the selected-config assertions have finished.
+        if instance.config_path != root / "config.toml":
+            instance.config_path.rename(root / "config.toml")
+        saved = instance.cli("coord", "status").get("process")
+        subprocess.run([str(binary), "--root", str(root), "coord", "stop"],
+                       env=instance.environment, capture_output=True, check=True, timeout=15)
+        assert instance.cli("coord", "status") == {"state": "stopped"}
+        if saved and process_is_alive(saved["pid"]):
+            token = process_start_token(saved["pid"])
+            assert token is not None and token != saved["token"], saved
 
 
 def _codex_choice(until, master, *, new=True):
@@ -209,7 +233,10 @@ def test_codex_launch_authorizes_selected_login_for_created_identity_before_star
         agent = tomllib.loads(policy.decode())["agents"]["first"]
         choice = str(instance.login) if selection == "file" else "h"
         os.write(master, choice.encode() + b"\n")
-        output = until(b"First-agent services failed")
+        output = until(b"Choose credential storage")
+        assert not (instance.root / "data/credentials.key").exists()
+        os.write(master, b"local\n")
+        output += until(b"First-agent services failed")
         assert b"Codex login authorized for first" in output
         assert output.index(b"Codex login authorized") < output.index(b"Starting or reusing the installed services")
         assert b"synthetic-first-launch-access" not in output and b"synthetic-first-launch-refresh" not in output
@@ -256,14 +283,154 @@ def test_codex_launch_authorizes_selected_login_for_created_identity_before_star
     assert auth.read_bytes() == original[0]
 
 
+def test_codex_launch_offers_passphrase_storage_on_its_first_import(codex_login_launch):
+    instance = codex_login_launch
+    protected = b"synthetic-codex-storage-passphrase"
+    with terminal(instance, instance.arguments) as (process, master, until):
+        _codex_choice(until, master)
+        os.write(master, b"h\n")
+        output = until(b"Choose credential storage")
+        assert not (instance.root / "data/credentials.key").exists()
+        os.write(master, b"passphrase\n")
+        output += until(b"Storage passphrase:")
+        os.write(master, protected + b"\n")
+        output += until(b"Confirm storage passphrase:")
+        os.write(master, protected + b"\n")
+        output += until(b"First-agent services failed")
+        assert b"Codex login authorized for first" in output
+        assert protected not in output
+        assert b"synthetic-first-launch-access" not in output
+        assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
+    assert (instance.root / "data/credentials.key").read_text() == "safeyolo-passphrase-v1"
+    pass_file = instance.root.parent / "passphrase"
+    pass_file.write_bytes(protected)
+    imported, = instance.cli("credentials", "list", "--passphrase-file", str(pass_file))
+    assert imported["codex"]["agent"] == "first"
+
+
+def test_locked_passphrase_start_keeps_services_and_unrelated_traffic_ready(tmp_path, monkeypatch):
+    # Use the installed startup command, real NATS and synthetic storage. No
+    # guest or provider login is needed to observe this credential boundary.
+    monkeypatch.setenv("SAFEYOLO_NATS_TEST_INSTANCE", f"locked-{tmp_path.name}")
+    protected = "synthetic-locked-start-passphrase"
+    wrong = "synthetic-wrong-start-passphrase"
+    pass_file, wrong_file, value_file = (tmp_path / name for name in ("passphrase", "wrong", "value"))
+    for path, value in ((pass_file, protected), (wrong_file, wrong), (value_file, credentials.LOCAL)):
+        path.write_text(value)
+        path.chmod(0o600)
+    source = credentials.POLICY + r'''
+[credential.locked-fixture]
+match=['\Asynthetic-native-local-credential-[0-9]+\Z']
+headers=['authorization']
+[hosts."127.0.0.1"]
+allow=["gateway-fixture:*", "locked-fixture:*"]
+'''
+    with origin_server(capture_heads=True) as origin, native_instance(
+        tmp_path, source,
+        services=True, capture=True,
+        service_sources={"notes.yaml": json.dumps(credentials.SERVICE)},
+    ) as instance:
+        credentials.cli(instance, "credentials", "add", "local", "--storage", "passphrase",
+                        "--passphrase-file", str(pass_file), "--value-file", str(value_file))
+        credentials.authorize(instance)
+        credential = credentials.token(instance)
+        credentials.deliver(instance, origin, credential)
+        files = [instance.root / "data" / name for name in ("credentials.enc", "credentials.key")]
+        saved = [(path.read_bytes(), path.stat()) for path in files]
+        assert saved[1][0] == b"safeyolo-passphrase-v1"
+        # Prime the existing reviewed NATS cache, outside the locked start.
+        arguments = ["coord", "start"]
+        if binary := os.environ.get("SAFEYOLO_COORD_NATS_BINARY"):
+            arguments += ["--binary", binary]
+        # The quick CI lane may acquire NATS with host curl/tar. Restore the
+        # native-only PATH before observing locked service startup and traffic.
+        with monkeypatch.context() as preparation:
+            preparation.setitem(instance.environment, "PATH", os.environ["PATH"])
+            credentials.cli(instance, *arguments)
+        credentials.cli(instance, "coord", "stop")
+
+        def locked_controls():
+            body = credentials.deliver(instance, origin, credential, status=503)
+            assert b"VAULT_UNAVAILABLE" in body
+            target = f"http://127.0.0.1:{origin.server_address[1]}/ordinary"
+            before = origin.accepts
+            status, _, body = request(instance.paths["alice"], target)
+            assert (status, body) == (200, b"hello")
+            status, headers, body = request(instance.paths["alice"], target,
+                                            headers={"Authorization": "Bearer " + credentials.DETECTED})
+            assert status == 403 and headers["x-blocked-by"] == "credential-guard"
+            assert credentials.DETECTED.encode() not in body
+            credentials.deliver(instance, origin, credential, agent="bob", status=403)
+            status, _, _ = request(instance.paths["alice"], target.replace("127.0.0.1", "localhost"))
+            assert status == 403 and origin.accepts == before + 1
+            for path, (content, metadata) in zip(files, saved):
+                assert path.read_bytes() == content
+                current = path.stat()
+                assert (current.st_uid, current.st_gid, current.st_mode) == (
+                    metadata.st_uid, metadata.st_gid, metadata.st_mode,
+                )
+
+        with restarted_proxy(instance):
+            ready = json.loads((instance.root / "data/ready.json").read_text())
+            proxy = json.loads((instance.root / "data/proxy-process.json").read_text())
+            assert ready["ready"] and ready["pid"] == proxy["pid"]
+            instance.admin("GET", "/admin/instance")
+            assert instance.agent_api("alice", "/health")["agent_api"] == "ok"
+            coord = credentials.cli(instance, "coord", "status")
+            assert coord["state"] == "running"
+            nats = coord["process"]
+            births = {record["pid"]: process_start_token(record["pid"]) for record in (proxy, nats)}
+            assert all(births.values())
+            assert all(births[record["pid"]] == record["token"] for record in (proxy, nats))
+            ports = [ready["admin_port"], nats["client_port"], nats["monitor_port"]]
+            for port in ports:
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
+                    pass
+            credential = credentials.token(instance)
+            locked_controls()
+            # Neither a missing/wrong unlock, an explicit CLI read nor service
+            # reuse may silently unlock the running proxy.
+            for arguments in (("credentials", "list"), ("credentials", "unlock"),
+                              ("credentials", "unlock", "--passphrase-file", str(wrong_file))):
+                refused = instance.cli(*arguments)
+                assert refused.returncode != 0
+                assert all(value not in refused.stdout + refused.stderr for value in (protected, wrong, credentials.LOCAL))
+                locked_controls()
+            assert credentials.cli(instance, "credentials", "list", "--passphrase-file", str(pass_file))[0]["name"] == "local"
+            credentials.cli(instance, "start")
+            assert json.loads((instance.root / "data/ready.json").read_text())["pid"] == proxy["pid"]
+            locked_controls()
+            credentials.cli(instance, "credentials", "unlock", "--passphrase-file", str(pass_file))
+            credentials.deliver(instance, origin, credential)
+            credentials.deliver(instance, origin, credential, agent="bob", status=403)
+            credentials.cli(instance, "credentials", "lock")
+            locked_controls()
+            credentials.cli(instance, "credentials", "unlock", "--passphrase-file", str(pass_file))
+            credentials.deliver(instance, origin, credential)
+            credentials.surfaces(instance, (credentials.LOCAL, credentials.EXTERNAL, credentials.AUTH,
+                                            credentials.DETECTED, protected, wrong))
+        assert credentials.cli(instance, "coord", "status") == {"state": "stopped"}
+        assert not (instance.root / "data/ready.json").exists()
+        assert not any(Path(path).exists() for path in instance.paths.values())
+        for pid, birth in births.items():
+            assert not process_is_alive(pid) or process_start_token(pid) != birth
+        for port in ports:
+            with socket.socket() as listener:
+                listener.settimeout(1)
+                assert listener.connect_ex(("127.0.0.1", port)) != 0
+
+
 def test_codex_login_selection_uses_the_launch_config(codex_login_launch):
     instance = codex_login_launch
     config = instance.root / "selected.toml"
     (instance.root / "config.toml").rename(config)
+    instance.config_path = config
     binary = str(instance.root / "bin/safeyolo")
     with terminal(instance, command=[binary, "--config", str(config), *instance.arguments]) as (process, master, until):
         _codex_choice(until, master)
         os.write(master, b"h\n")
+        until(b"Choose credential storage")
+        os.write(master, b"local\n")
         output = until(b"First-agent services failed")
         assert b"Codex login authorized for first" in output
         assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
@@ -315,7 +482,13 @@ def test_codex_login_refusal_and_failed_selection_create_no_authority(codex_logi
     assert not (instance.root / "agents/first/home/.codex/auth.json").exists()
     assert instance.login.read_bytes() == original
     assert not (instance.root / "data/proxy-process.json").exists()
-    assert not (instance.root / "data/coord/nats/process.json").exists()
+    if choice == "skip":
+        # Skipping login reaches service startup. Coord is independent of the
+        # missing proxy; a ready owned NATS is not credential authority.
+        status = instance.cli("coord", "status")
+        assert status["state"] in ("running", "stopped"), status
+    else:
+        assert not (instance.root / "data/coord/nats/process.json").exists()
 
 
 @pytest.mark.parametrize("failure", ["malformed", "existing_login", "symlink", "directory"])

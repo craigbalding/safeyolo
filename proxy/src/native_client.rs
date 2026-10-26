@@ -69,25 +69,34 @@ impl Drop for Connection {
     }
 }
 
+struct Json(Value);
+impl Drop for Json {
+    fn drop(&mut self) {
+        crate::credentials::wipe_json(&mut self.0);
+    }
+}
+
 async fn send<IO>(
     socket: IO,
     host: &str,
     path: &str,
     token: &str,
     method: Method,
-    body: Value,
+    mut body: Value,
 ) -> Result<(Response<Incoming>, Connection), Error>
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    let bytes = if method == Method::GET && body.is_null() {
+        Ok(Vec::new())
+    } else {
+        serde_json::to_vec(&body)
+    };
+    crate::credentials::wipe_json(&mut body);
+    let bytes = Zeroizing::new(bytes?);
     let (mut client, connection) =
         hyper::client::conn::http1::handshake(TokioIo::new(socket)).await?;
     let driver = Connection(tokio::spawn(connection));
-    let bytes = if method == Method::GET && body.is_null() {
-        Vec::new()
-    } else {
-        serde_json::to_vec(&body)?
-    };
     let request = Request::builder()
         .method(method)
         .uri(path)
@@ -95,7 +104,7 @@ where
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .header("connection", "close")
-        .body(Full::new(Bytes::from(bytes)))?;
+        .body(Full::new(Bytes::from_owner(bytes)))?;
     let response = client.send_request(request).await?;
     Ok((response, driver))
 }
@@ -181,8 +190,18 @@ pub async fn admin(
     body: Value,
     timeout: Duration,
 ) -> Result<Value, Error> {
+    let mut body = Json(body);
     let (socket, host, token) = operator_socket(config_path).await?;
-    send_json(socket, &host, path, token.trim(), method, body, timeout).await
+    send_json(
+        socket,
+        &host,
+        path,
+        token.trim(),
+        method,
+        std::mem::take(&mut body.0),
+        timeout,
+    )
+    .await
 }
 
 /// Stream into a same-directory temporary file. A missing or truncated export
