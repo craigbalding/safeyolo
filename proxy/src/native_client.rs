@@ -302,29 +302,6 @@ fn retry_after(value: &str) -> Option<Duration> {
     ))
 }
 
-#[cfg(test)]
-mod rest_tests {
-    use super::*;
-
-    #[test]
-    fn retry_after_seconds_and_http_date() {
-        assert_eq!(retry_after("120"), Some(Duration::from_secs(120)));
-        assert_eq!(
-            retry_after("Wed, 21 Oct 2015 07:28:00 GMT"),
-            Some(Duration::ZERO)
-        );
-        let future = time::OffsetDateTime::now_utc() + time::Duration::seconds(120);
-        let format = time::format_description::parse_borrowed::<2>(
-            "[weekday repr:short], [day] [month repr:short] [year] [hour]:[minute]:[second] GMT",
-        )
-        .unwrap();
-        let delay = retry_after(&future.format(&format).unwrap()).unwrap();
-        assert!((Duration::from_secs(118)..=Duration::from_secs(120)).contains(&delay));
-        assert_eq!(retry_after("not a date or seconds"), None);
-        assert_eq!(retry_after("-1"), None);
-    }
-}
-
 /// Host REST requests use the configured HTTPS proxy and native TLS trust.
 /// There are no redirects or automatic retries. Callers reconcile uncertain
 /// writes. Credentials are header-only.
@@ -517,4 +494,27 @@ pub async fn helper_timeout(
         timeout,
     )
     .await
+}
+
+#[cfg(test)]
+mod rest_tests {
+    use super::*;
+
+    #[test]
+    fn retry_after_seconds_and_http_date() {
+        assert_eq!(retry_after("120"), Some(Duration::from_secs(120)));
+        assert_eq!(
+            retry_after("Wed, 21 Oct 2015 07:28:00 GMT"),
+            Some(Duration::ZERO)
+        );
+        let future = time::OffsetDateTime::now_utc() + time::Duration::seconds(120);
+        let format = time::format_description::parse_borrowed::<2>(
+            "[weekday repr:short], [day] [month repr:short] [year] [hour]:[minute]:[second] GMT",
+        )
+        .unwrap();
+        let delay = retry_after(&future.format(&format).unwrap()).unwrap();
+        assert!((Duration::from_secs(118)..=Duration::from_secs(120)).contains(&delay));
+        assert_eq!(retry_after("not a date or seconds"), None);
+        assert_eq!(retry_after("-1"), None);
+    }
 }
