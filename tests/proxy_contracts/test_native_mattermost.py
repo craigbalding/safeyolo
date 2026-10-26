@@ -881,7 +881,9 @@ def test_native_interrupted_projection_page_reconciles_without_reposting(exchang
     assert ledger(instance, "SELECT COUNT(*) FROM outbound_projection WHERE status='pending'") == 1
     remote.fail_create = None
     assert once(instance).returncode == 0
-    assert ledger(instance, "SELECT coord_cursor FROM room_state") == str(second["sequence"])
+    second_sequence = next(message["sequence"] for message in history(instance)
+                           if message["msg_id"] == second["msg_id"])
+    assert ledger(instance, "SELECT coord_cursor FROM room_state") == str(second_sequence)
     assert ledger(instance, "SELECT COUNT(*) FROM outbound_projection WHERE status='sent'") == 2
     assert [post["props"]["safeyolo_coord"]["coord_msg_id"] for post in remote.projected()] == [
         first["msg_id"], second["msg_id"]]
