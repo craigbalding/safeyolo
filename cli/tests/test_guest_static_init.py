@@ -67,9 +67,13 @@ def guest(tmp_path):
         # Trust correctness is covered by test_guest_ca_trust with the real
         # updater. Gate the CA copy here to exercise overlap and fatal cleanup.
         "install": (
-            'printf "ca-started\\n" >&"$TEST_EVENTS_FD"\n'
-            'read -r release <&"$TEST_CA_GATE"\n'
-            '[ "$TEST_CA_STATUS" = 0 ] || exit "$TEST_CA_STATUS"\n'
+            'if [ "${@: -1}" = "$TEST_ROOT/usr/local/share/ca-certificates/safeyolo.crt" ]; then\n'
+            '    printf "ca-started\\n" >&"$TEST_EVENTS_FD"\n'
+            '    read -r release <&"$TEST_CA_GATE"\n'
+            '    [ "$TEST_CA_STATUS" = 0 ] || exit "$TEST_CA_STATUS"\n'
+            'elif [ "${@: -1}" = "$TEST_ROOT/run/safeyolo/" ]; then\n'
+            '    [ "$TEST_STAGE_STATUS" = 0 ] || exit "$TEST_STAGE_STATUS"\n'
+            'fi\n'
             'exec "$TEST_INSTALL" "$@"\n'
         ),
         "update-ca-certificates": "exit 0\n",
@@ -100,7 +104,7 @@ def guest(tmp_path):
 
 
 @contextmanager
-def _boot(root, *, fail_keygen=False, ca_status=0, prebound=True, fail_mount=""):
+def _boot(root, *, fail_keygen=False, ca_status=0, prebound=True, fail_mount="", stage_status=0):
     for marker in (
         "sshd-started", "safeyolo-status/static-init-done", "per-run-started",
         "usr/local/share/ca-certificates/safeyolo.crt",
@@ -120,6 +124,7 @@ def _boot(root, *, fail_keygen=False, ca_status=0, prebound=True, fail_mount="")
             "TEST_KEYGEN_GATE": str(keygen), "TEST_CA_GATE": str(ca),
             "TEST_KEYGEN_FAIL": str(int(fail_keygen)),
             "TEST_CA_STATUS": str(ca_status),
+            "TEST_STAGE_STATUS": str(stage_status),
             "TEST_PREBOUND": str(int(prebound)), "TEST_FAIL_MOUNT": fail_mount,
         }
         process = subprocess.Popen(
@@ -246,6 +251,83 @@ def test_keygen_failure_remains_retryable(guest):
         _wait_events(events, "keygen-finished", "authorized-keys-ready", "sshd-started")
         _finish(process)
     assert (guest / "etc/ssh/.safeyolo-host-keys-generated").is_file()
+
+
+@pytest.mark.parametrize("helper_present", [False, True])
+def test_static_stages_executable_run_files_before_readiness(guest, helper_present):
+    script = guest / "safeyolo/guest-init-per-run"
+    script.chmod(0o644)
+    sources = [script]
+    if helper_present:
+        helper = guest / "safeyolo/safeyolo-guest"
+        helper.write_text("fixture native helper\n")
+        helper.chmod(0o644)
+        sources.append(helper)
+    with _boot(guest) as (process, events, keygen, ca):
+        _wait_events(events, "keygen-started", "ca-started")
+        os.write(keygen, b"continue\n")
+        os.write(ca, b"continue\n")
+        _wait_events(events, "keygen-finished", "authorized-keys-ready", "sshd-started")
+        _finish(process)
+    for source in sources:
+        staged = guest / "run/safeyolo" / source.name
+        assert staged.read_bytes() == source.read_bytes()
+        assert stat.S_IMODE(staged.stat().st_mode) == 0o755
+    assert (guest / "per-run-started").exists()
+    assert (guest / "run/safeyolo/safeyolo-guest").exists() == helper_present
+
+
+def test_failed_static_staging_does_not_publish_readiness(guest):
+    with _boot(guest, stage_status=29) as (process, events, keygen, ca):
+        _wait_events(events, "keygen-started", "ca-started")
+        os.write(keygen, b"continue\n")
+        os.write(ca, b"continue\n")
+        _wait_events(events, "keygen-finished", "authorized-keys-ready", "sshd-started")
+        _finish(process, expected_status=29)
+    assert not (guest / "safeyolo-status/static-init-done").exists()
+    assert not (guest / "per-run-started").exists()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Real Linux guest ownership checks")
+def test_host_key_permissions_skip_root_chown_and_repair_other_owners(tmp_path):
+    account = pwd.getpwuid(os.getuid())
+    sudo = shutil.which("sudo")
+    if account.pw_uid == 0 or not sudo:
+        pytest.skip("Ownership control needs an ordinary account and guest sudo")
+    if subprocess.run([sudo, "-n", "true"], capture_output=True, timeout=10).returncode:
+        pytest.skip("Ownership control needs passwordless guest sudo")
+    owners = {"retained": "0:0", "user": f"{account.pw_uid}:0", "group": f"0:{account.pw_gid or 1}"}
+    for name, owner in owners.items():
+        key = tmp_path / f"ssh_host_{name}_key"
+        key.write_text(f"fixture {name} key\n")
+        key.chmod(0o666)
+        subprocess.run(
+            [sudo, "-n", "chown", owner, str(key)],
+            check=True, capture_output=True, timeout=10,
+        )
+    # A non-file glob match must remain untouched.
+    ignored = tmp_path / "ssh_host_directory_key"
+    ignored.mkdir(mode=0o755)
+    source = (REPO_ROOT / "cli/src/safeyolo/guest-init-static.sh").read_text()
+    block = source[source.index("ssh_host_keys=()"):source.index("# Refresh guest-root support")]
+    block = block.replace("/etc/ssh/", '"$TEST_ROOT"/')
+    command = (
+        'chown() { printf "%s\\n" "${2##*/}" >> "$TEST_ROOT/chown-calls"; command chown "$@"; };\n'
+        + block
+    )
+    result = subprocess.run(
+        [sudo, "-n", "env", f"TEST_ROOT={tmp_path}", "/bin/bash", "-ec", command],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert set((tmp_path / "chown-calls").read_text().splitlines()) == {
+        "ssh_host_user_key", "ssh_host_group_key",
+    }
+    for name in owners:
+        key = tmp_path / f"ssh_host_{name}_key"
+        details = key.stat()
+        assert (details.st_uid, details.st_gid, stat.S_IMODE(details.st_mode)) == (0, 0, 0o600)
+    assert stat.S_IMODE(ignored.stat().st_mode) == 0o755
 
 
 def test_oci_prebound_shares_need_no_virtiofs_attempts(guest):
