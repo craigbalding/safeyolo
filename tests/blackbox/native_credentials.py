@@ -46,13 +46,21 @@ def store_credential(data_dir: Path, name: str, value: str, *, kind: str = "bear
                      expires_at: str | None = None, binary: Path | None = None) -> None:
     """Write one synthetic record, without placing values in argv or output."""
     binary = native_cli(binary)
+    help_result = subprocess.run([str(binary), "credentials", "--help"], capture_output=True,
+                                 text=True, timeout=10, check=False)
+    if help_result.returncode:
+        raise RuntimeError("Native credential setup cannot read credentials help; check SAFEYOLO_NATIVE_CLI")
+    # Retained packages before storage selection always use local storage and
+    # reject --storage. Check before writing: those CLIs can create a vault
+    # even when they reject an option, so a failed write must not be retried.
+    storage = ["--storage", "local"] if "--storage " in help_result.stdout else []
     data_dir.mkdir(parents=True, exist_ok=True)
     # Keep input files outside the instance. The host command chooses the single
     # native store through this temporary config; it does not need a live proxy.
     with tempfile.TemporaryDirectory(prefix="credential-input-", dir=data_dir.parent) as temporary:
         root = Path(temporary)
         (root / "config.toml").write_text(f"data_dir={json.dumps(str(data_dir.resolve()))}\n")
-        command = [str(binary), "--root", str(root), "credentials", "add", name, "--storage", "local", "--type", kind]
+        command = [str(binary), "--root", str(root), "credentials", "add", name, *storage, "--type", kind]
         for field, secret in (("value", value), ("refresh-token", refresh_token), ("client-secret", client_secret)):
             if secret is not None:
                 path = root / field
