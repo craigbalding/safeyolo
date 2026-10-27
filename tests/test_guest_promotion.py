@@ -340,3 +340,48 @@ def test_receipt_retry_looks_up_the_original_stage_attempt(monkeypatch):
     monkeypatch.setattr(release.selection, "pages", jobs)
     identity = release.producer("stage", 1)
     assert identity["run_attempt"] == 1 and identity["job_id"] == 456
+
+
+@pytest.mark.parametrize("mismatch", [None, "run_id", "run_attempt", "job_id", "repository", "workflow"])
+def test_inspection_locates_historical_subject_by_exact_job_attempt(tmp_path, monkeypatch, capsys, mismatch):
+    historical, current = candidate(digit="b"), candidate(digit="c")
+    origin = {"repository": release.selection.REPOSITORY, "workflow": release.selection.GUEST_WORKFLOW,
+              "run_id": 123, "run_attempt": 2, "job_id": 456}
+    recorded = {**origin, **({mismatch: "different"} if mismatch else {})}
+    decision = {"decision": "held", "index_digest": historical["index"]["digest"], "producer": recorded}
+    monkeypatch.setattr(release.selection, "gh", lambda endpoint: {
+        "name": "promote", "id": 456, "run_id": 123, "run_attempt": 2, "html_url": "https://example.invalid/promotion"})
+    monkeypatch.setattr(release, "command", lambda *args: json.dumps({"tags": ["compat-v1", "guest-2026-10-26.1", "guest-2026-10-15.1"]}))
+    def manifest(reference):
+        assert not reference.endswith(":compat-v1")
+        selected = historical if reference.endswith(":guest-2026-10-15.1") else current
+        return selected["index"], {"annotations": {"source": selected["source_revision"]}}
+    monkeypatch.setattr(release.selection, "manifest", manifest)
+    def records(index, kind, *, include_attachment):
+        assert include_attachment
+        if kind == release.DECISION and index == historical["index"]:
+            return [{"receipt": decision}]
+        return []
+    monkeypatch.setattr(release, "records", records)
+    monkeypatch.setattr(release, "channel", lambda *args: pytest.fail("historical inspection read the current channel"))
+    monkeypatch.setattr(release, "attach", lambda *args: pytest.fail("inspection wrote an attachment"))
+    monkeypatch.setattr(release, "verify_content", lambda *args: pytest.fail("inspection invoked the native verifier"))
+    summary = tmp_path / "summary"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr(sys, "argv", ["guest_release.py", "inspect", "--promotion-job", "456"])
+    if mismatch:
+        with pytest.raises(SystemExit) as stopped:
+            release.main()
+        assert stopped.value.code == 2
+    else:
+        release.main()
+    output = capsys.readouterr().out
+    result = json.loads(output)
+    assert result["requested_promotion"] == origin
+    assert summary.read_text() == "```json\n" + output + "```\n"
+    if mismatch:
+        assert result["matches"] == [] and "unknown" in result["reason"]
+    else:
+        assert len(result["matches"]) == 1
+        assert result["matches"][0]["index"] == historical["index"]
+        assert result["matches"][0]["promotion"] == [decision]

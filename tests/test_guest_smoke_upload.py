@@ -122,6 +122,9 @@ def test_workflow_refuses_incomplete_or_nontext_report_inputs(tmp_path, texts):
     ("pull_request", "refs/heads/master", "record-smoke", set()),
     ("workflow_dispatch", "refs/heads/master", "promote", {"promote"}),
     ("workflow_dispatch", "refs/heads/master", "build-stage", {"resolve"}),
+    ("workflow_dispatch", "refs/heads/master", "inspect", {"inspect"}),
+    ("workflow_dispatch", "refs/heads/feature", "inspect", set()),
+    ("pull_request", "refs/heads/master", "inspect", set()),
 ])
 def test_upload_activity_selects_only_the_upload_job(event, ref, activity, expected):
     github = SimpleNamespace(event_name=event, ref=ref, event=SimpleNamespace(
@@ -146,10 +149,27 @@ def test_upload_activity_selects_only_the_upload_job(event, ref, activity, expec
     assert "cargo" not in commands and "retained_inputs.py" not in commands and "--promote" not in commands
 
 
-def test_publication_step_stops_after_login_failure(tmp_path):
-    step = next(step for step in JOB["steps"] if step.get("name") == "Attach retained operator evidence")
+def test_inspection_activity_is_read_only_and_retains_its_result():
+    job = WORKFLOW["jobs"]["inspect"]
+    assert job["permissions"] == {"contents": "read", "actions": "read", "packages": "read"}
+    assert "needs" not in job
+    step = next(step for step in job["steps"] if step.get("name") == "Read the retained promotion decision")
+    assert step["env"] == {"GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}", "PROMOTION_JOB": "${{ inputs.promotion_job }}"}
+    assert step["shell"] == "bash" and "${{" not in step["run"]
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "cargo" not in commands and "--promote" not in commands and "--record-smoke" not in commands
+    retained = next(step for step in job["steps"] if step.get("with", {}).get("name") == "guest-promotion-inspection")
+    assert retained["if"] == "always()" and retained["with"]["path"] == "${{ runner.temp }}/guest-inspection.json"
+
+
+@pytest.mark.parametrize("activity,step_name,input_name", [
+    ("record-smoke", "Attach retained operator evidence", "SMOKE_GATE_URL"),
+    ("inspect", "Read the retained promotion decision", "PROMOTION_JOB"),
+])
+def test_publication_step_stops_after_login_failure(tmp_path, activity, step_name, input_name):
+    step = next(step for step in WORKFLOW["jobs"][activity]["steps"] if step.get("name") == step_name)
     assert step["shell"] == "bash"
-    assert step["env"] == {"GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}", "SMOKE_GATE_URL": "${{ inputs.smoke_gate_url }}"}
+    assert step["env"] == {"GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}", input_name: "${{ inputs." + input_name.lower() + " }}"}
     assert "${{" not in step["run"]
     for name, body in (("oras", "exit 37"), ("python3", 'touch "$RUNNER_TEMP/unexpected-upload"')):
         path = tmp_path / name

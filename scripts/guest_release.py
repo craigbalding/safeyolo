@@ -99,8 +99,8 @@ def attach(index: dict, kind: str, document: dict, files: list[Path] | None = No
             raise ValueError("uploaded receipt differs from its original bytes")
 
 
-def document(index: dict, kind: str, attachment: dict) -> dict:
-    _, value = selection.manifest(f"{selection.GUEST_REPOSITORY}@{selection.digest(attachment['digest'])}")
+def document(index: dict, kind: str, attachment: dict, *, include_attachment: bool = False) -> dict:
+    descriptor, value = selection.manifest(f"{selection.GUEST_REPOSITORY}@{selection.digest(attachment['digest'])}")
     if value["artifactType"] != kind or any(value["subject"].get(key) != index[key] for key in ("digest", "size", "mediaType")):
         raise ValueError("receipt is not bound to the selected index")
     layers = [row for row in value["layers"] if row["mediaType"] == kind]
@@ -109,6 +109,8 @@ def document(index: dict, kind: str, attachment: dict) -> dict:
     raw = selection.capture("oras", "blob", "fetch", "--output", "-",
                             f"{selection.GUEST_REPOSITORY}@{selection.digest(layers[0]['digest'])}")
     selection.verify_bytes(raw, layers[0])
+    if include_attachment:
+        return {"attachment": descriptor, "manifest": value, "receipt": json.loads(raw), "receipt_text": raw.decode("utf-8")}
     return json.loads(raw)
 
 
@@ -118,8 +120,43 @@ def referrers(index: dict, kind: str) -> list[dict]:
     return result["referrers"]
 
 
-def records(index: dict, kind: str) -> list[dict]:
-    return [document(index, kind, row) for row in referrers(index, kind)]
+def records(index: dict, kind: str, *, include_attachment: bool = False) -> list[dict]:
+    return [document(index, kind, row, include_attachment=include_attachment) for row in referrers(index, kind)]
+
+
+def inspect_index(index: dict, value: dict, *, promotion: list[dict] | None = None) -> dict:
+    attachments = {"staging": records(index, STAGING, include_attachment=True),
+                   "smoke": records(index, SMOKE, include_attachment=True),
+                   "promotion": promotion if promotion is not None else records(index, DECISION, include_attachment=True)}
+    return {"index": index, "annotations": value["annotations"], "attachments": attachments,
+            **{name: [row["receipt"] for row in rows] for name, rows in attachments.items()}}
+
+
+def inspect_promotion(job_id: int) -> dict:
+    """Find the retained subject for one Actions promotion job and its attempt."""
+    job = selection.gh(f"actions/jobs/{job_id}")
+    if job["name"] != "promote":
+        raise ValueError("inspection needs a promotion job ID")
+    origin = {"repository": selection.REPOSITORY, "workflow": selection.GUEST_WORKFLOW,
+              "run_id": job["run_id"], "run_attempt": job["run_attempt"], "job_id": job["id"]}
+    tags = json.loads(command("oras", "repo", "tags", "--format", "json", selection.GUEST_REPOSITORY))["tags"]
+    matches, seen = [], set()
+    for tag in sorted(tags):
+        if re.fullmatch(r"guest-\d{4}-\d{2}-\d{2}\.\d+", tag) is None:
+            continue
+        index, value = selection.manifest(f"{selection.GUEST_REPOSITORY}:{tag}")
+        if index["digest"] in seen:
+            continue
+        seen.add(index["digest"])
+        decisions = records(index, DECISION, include_attachment=True)
+        matching = [row for row in decisions if all(row["receipt"].get("producer", {}).get(key) == expected
+                                                   for key, expected in origin.items())]
+        if matching:
+            matches.append(inspect_index(index, value, promotion=matching))
+    result = {"requested_promotion": origin, "job_url": job["html_url"], "matches": matches}
+    if not matches:
+        result["reason"] = "no retained decision matches this promotion job and attempt; historical selection remains unknown"
+    return result
 
 
 def stage(args: argparse.Namespace) -> dict:
@@ -624,7 +661,9 @@ def main() -> None:
     smoke.add_argument("--reports", type=Path, required=True)
     smoke.add_argument("--gate-url", required=True)
     inspect = commands.add_parser("inspect")
-    inspect.add_argument("--reference", required=True)
+    inspection_subject = inspect.add_mutually_exclusive_group(required=True)
+    inspection_subject.add_argument("--reference")
+    inspection_subject.add_argument("--promotion-job", type=int)
     args = parser.parse_args()
     failed = False
     try:
@@ -634,10 +673,12 @@ def main() -> None:
             result = record_smoke(args)
         elif args.operation == "promote":
             result = promote(args)
+        elif args.promotion_job is not None:
+            result = inspect_promotion(args.promotion_job)
+            failed = not result["matches"]
         else:
             index, value = selection.manifest(args.reference)
-            result = {"index": index, "annotations": value["annotations"], "staging": records(index, STAGING),
-                      "smoke": records(index, SMOKE), "promotion": records(index, DECISION)}
+            result = inspect_index(index, value)
     except PromotionFailure as exc:
         failed = True
         result = exc.result

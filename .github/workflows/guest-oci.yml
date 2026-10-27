@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       activity:
-        description: Build and stage, consider promotion, attach retained smoke, or copy a transport fixture
+        description: Build and stage, consider promotion, inspect a retained decision, attach smoke, or copy a transport fixture
         type: choice
-        options: [build-stage, promote, record-smoke, transport-fixture]
+        options: [build-stage, promote, inspect, record-smoke, transport-fixture]
         default: build-stage
       compatibility:
         description: Guest compatibility identifier (nightly uses v1)
@@ -33,6 +33,9 @@ on:
         type: string
       smoke_gate_url:
         description: Original installed execution result link (record-smoke only)
+        type: string
+      promotion_job:
+        description: Actions promotion job ID whose retained decision is needed (inspect only)
         type: string
 
 permissions:
@@ -250,6 +253,33 @@ jobs:
           printf '%s' "$GH_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           scripts/publish_guest_oci.sh --promote --compatibility "$COMPATIBILITY" --verifier proxy/target/release/examples/verify_guest_oci \
             --work-directory "$RUNNER_TEMP"
+
+  inspect:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.activity == 'inspect' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the maintained publisher
+        run: |
+          scripts/install_oras.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Read the retained promotion decision
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROMOTION_JOB: ${{ inputs.promotion_job }}
+        run: |
+          printf '%s' "$GH_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          scripts/publish_guest_oci.sh --inspect --promotion-job "$PROMOTION_JOB" > "$RUNNER_TEMP/guest-inspection.json"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: guest-promotion-inspection
+          path: ${{ runner.temp }}/guest-inspection.json
 
   record-smoke:
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.activity == 'record-smoke' }}

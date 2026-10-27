@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import shutil
 import struct
 import subprocess
@@ -17,6 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import certifi
 import pytest
+import yaml
 
 from scripts import prepare_guest_transport_fixture
 
@@ -671,7 +673,10 @@ def test_real_oras_receipt_attachment_discovery_and_inventory_retrieval(tmp_path
     # Drive the real guard, registry content pull, native verifier and tag write.
     # Only the clock and trusted Actions/operator records are controlled here.
     promotion = SimpleNamespace(compatibility="v1", verifier=Path(publisher_tools[1]), work_directory=tmp_path)
-    monkeypatch.setattr(guest_release, "promotion_context", lambda: {"source_revision": REVISION, "publisher_version": "controlled"})
+    origin = {"repository": guest_release.selection.REPOSITORY, "workflow": guest_release.selection.GUEST_WORKFLOW,
+              "run_id": 321, "run_attempt": 3, "job_id": 654}
+    monkeypatch.setattr(guest_release, "promotion_context", lambda: {
+        "source_revision": REVISION, "publisher_version": "controlled", "producer": origin})
     monkeypatch.setattr(guest_release, "paused", lambda: False)
     monkeypatch.setattr(guest_release, "datetime", SimpleNamespace(now=lambda *args: now + timedelta(seconds=172799)))
     assert guest_release.promote(promotion)["decision"] == "held"
@@ -703,6 +708,46 @@ def test_real_oras_receipt_attachment_discovery_and_inventory_retrieval(tmp_path
     recovered = json.loads(capsys.readouterr().out)
     assert recovered["promotion"] == [held] and recovered["smoke"] == [failed_smoke]
     assert recovered["index"] == index
+    # Execute the maintained workflow consumer, shell wrapper and real reader.
+    # Only Actions metadata/login and the disposable registry address are local.
+    tools = tmp_path / "inspection-tools"
+    tools.mkdir()
+    oras_wrapper = tools / "oras"
+    oras_wrapper.write_text("#!/bin/sh\nif [ \"$1\" = login ]; then cat >/dev/null; exit 0; fi\n"
+                            f"exec {shlex.quote(shutil.which(oras) or oras)} \"$@\" --plain-http\n")
+    oras_wrapper.chmod(0o755)
+    job = {"name": "promote", "id": origin["job_id"], "run_id": origin["run_id"],
+           "run_attempt": origin["run_attempt"], "html_url": "https://example.invalid/promotion-job"}
+    launcher = tools / "inspection-python"
+    launcher.write_text(f"#!{sys.executable}\nimport sys\nsys.path.insert(0, {str(ROOT)!r})\n"
+                        "from scripts import guest_release as release\n"
+                        f"release.selection.GUEST_REPOSITORY = {repository!r}\n"
+                        f"def gh(endpoint):\n    assert endpoint == 'actions/jobs/{origin['job_id']}'\n    return {job!r}\n"
+                        "release.selection.gh = gh\nsys.argv = sys.argv[1:]\nrelease.main()\n")
+    launcher.chmod(0o755)
+    inspection = tmp_path / "inspection-run"
+    inspection.mkdir()
+    workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
+    step = next(step for step in workflow["jobs"]["inspect"]["steps"] if step.get("name") == "Read the retained promotion decision")
+    registry[4].clear()
+    inspected = run("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"], cwd=ROOT,
+                    env={**os.environ, "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+                         "SAFEYOLO_BUILD_PYTHON": str(launcher), "RUNNER_TEMP": str(inspection),
+                         "GITHUB_STEP_SUMMARY": str(inspection / "summary.md"), "GH_TOKEN": "test-only",
+                         "GITHUB_ACTOR": "controlled-operator", "PROMOTION_JOB": str(origin["job_id"])}, timeout=30)
+    assert inspected.returncode == 0, inspected.stderr
+    report_text = (inspection / "guest-inspection.json").read_text()
+    report = json.loads(report_text)
+    assert report["requested_promotion"] == origin and report["matches"] == [recovered]
+    assert (inspection / "summary.md").read_text() == "```json\n" + report_text + "```\n"
+    assert tags["compat-v1"] == old_index and all(method in {"GET", "HEAD"} for method, _ in registry[4])
+    for attachments in report["matches"][0]["attachments"].values():
+        for row in attachments:
+            assert row["manifest"] == json.loads(registry[2][row["attachment"]["digest"]])
+            assert row["manifest"]["subject"] == index
+            layer = next(layer for layer in row["manifest"]["layers"] if layer["mediaType"] == row["manifest"]["artifactType"])
+            assert row["receipt_text"].encode() == registry[1][layer["digest"]]
+            assert json.loads(row["receipt_text"]) == row["receipt"]
     for platform in guest_release.selection.PLATFORMS:
         smoke = {"schema": "safeyolo.guest-smoke/v1", "index_digest": index["digest"], "platform": platform,
                  "operator": "controlled-operator", "result": "passed", "finished_at": (now + timedelta(hours=1)).isoformat(),
