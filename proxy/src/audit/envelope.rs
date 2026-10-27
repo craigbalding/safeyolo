@@ -18,7 +18,7 @@ macro_rules! names {
         }
     }
 }
-names!(Kind { Security=>"security", Gateway=>"gateway", Traffic=>"traffic", Ops=>"ops", Admin=>"admin", Agent=>"agent", Plumb=>"plumb", Coord=>"coord" });
+names!(Kind { Security=>"security", Gateway=>"gateway", Traffic=>"traffic", Ops=>"ops", Admin=>"admin", Agent=>"agent", Plumb=>"plumb", Coord=>"coord", Network=>"network" });
 names!(Severity { Critical=>"critical", High=>"high", Medium=>"medium", Low=>"low" });
 names!(Decision { Allow=>"allow", Deny=>"deny", Warn=>"warn", RequireApproval=>"require_approval", BudgetExceeded=>"budget_exceeded", Log=>"log" });
 names!(ApprovalType { Credential=>"credential", NetworkEgress=>"network_egress", GatewayRoute=>"gateway_route", Service=>"service", ContractBinding=>"contract_binding", Plumb=>"plumb", DesktopPresent=>"desktop_present" });
@@ -134,7 +134,15 @@ impl Event {
             return Err(invalid());
         }
         let mut fields = IndexMap::new();
-        fields.insert("schema_version".into(), CircuitValue::Integer(1.into()));
+        let version = if self.kind == Kind::Network || super::nsm::is_event(&self.event) {
+            super::nsm::SCHEMA_VERSION
+        } else {
+            1
+        };
+        fields.insert(
+            "schema_version".into(),
+            CircuitValue::Integer(version.into()),
+        );
         optional(&mut fields, "event_id", self.event_id.as_deref());
         fields.insert("ts".into(), text(timestamp(now, true)));
         fields.insert("event".into(), text(&self.event));
@@ -221,7 +229,11 @@ impl Event {
             }
         }
         fields.insert("details".into(), CircuitValue::Object(details));
-        Ok(CircuitValue::Object(fields))
+        let value = CircuitValue::Object(fields);
+        if version == super::nsm::SCHEMA_VERSION {
+            super::nsm::validate(&value.json().map_err(|_| invalid())?)?;
+        }
+        Ok(value)
     }
 }
 

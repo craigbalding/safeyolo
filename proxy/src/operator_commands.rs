@@ -861,7 +861,7 @@ fn logs(_root: &Path, options: &Options) -> Result<Value, Error> {
     let mut rows = VecDeque::new();
     for line in input.lines() {
         let line = line?;
-        let row: Value = serde_json::from_str(&line)
+        let row = crate::audit::parse_record(&line)
             .map_err(|_| "local audit record is invalid; raw log remains inspectable")?;
         if options
             .agent
