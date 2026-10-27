@@ -220,10 +220,10 @@ async fn actual_source_dispatch_and_body_projection() {
             | "post_only_get" => {
                 // The retained Python-source receipt predates the supported
                 // shared approval routes. Keep that receipt and all other
-                // error bytes; account only for the two advertised routes.
+                // error bytes; account only for the current approval routes.
                 let expected = row["text"].as_str().unwrap().replace(
                     "\"/explain\", \"/trace\"",
-                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
+                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals\", \"/approvals/{approval_id}/resolve (POST)\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
                 );
                 assert_eq!(row["status"], 404, "{name}");
                 assert_eq!(outcome.response.status, 404, "{name}");
@@ -234,6 +234,19 @@ async fn actual_source_dispatch_and_body_projection() {
                 );
             }
             _ => {
+                // #1150 added this nullable column to detail, search and FTS
+                // projections. Keep the historical body and its exact order.
+                let expected = row["text"]
+                    .as_str()
+                    .unwrap()
+                    .replace(
+                        "\"reason\": null, \"request_content_type\"",
+                        "\"reason\": null, \"connection_json\": null, \"request_content_type\"",
+                    )
+                    .replace(
+                        "\"flow_state\": \"complete\", \"snippet\"",
+                        "\"flow_state\": \"complete\", \"connection_json\": null, \"snippet\"",
+                    );
                 assert_eq!(
                     u64::from(outcome.response.status),
                     row["status"].as_u64().unwrap(),
@@ -241,7 +254,7 @@ async fn actual_source_dispatch_and_body_projection() {
                 );
                 assert_eq!(
                     outcome.response.body_bytes().as_ref(),
-                    row["text"].as_str().unwrap().as_bytes(),
+                    expected.as_bytes(),
                     "{name}"
                 );
             }

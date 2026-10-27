@@ -35,7 +35,7 @@ def wait_for_path(path: Path, process: subprocess.Popen[str]) -> None:
 
 
 @pytest.fixture
-def running_coord_fixture(tmp_path: Path):
+def running_coord_fixture(tmp_path: Path, _binary_cache: Path):
     """Start the one fixture that the ordinary Rust workflow starts."""
     root = tmp_path / "coord-fixture"
     ready_path = root / "fixture.ready"
@@ -44,6 +44,7 @@ def running_coord_fixture(tmp_path: Path):
         {
             "SAFEYOLO_COORD_DATA_DIR": str(root),
             "SAFEYOLO_NATS_TEST_INSTANCE": f"proxy-rust-{secrets.token_hex(8)}",
+            "SAFEYOLO_COORD_NATS_BINARY": str(_binary_cache),
         }
     )
     process = subprocess.Popen(
@@ -85,7 +86,7 @@ def running_coord_fixture(tmp_path: Path):
         assert not (root / "nats" / "nats.pid.json").exists()
 
 
-def test_fixture_creates_the_shared_nats_and_python_state(running_coord_fixture) -> None:
+def test_fixture_creates_the_shared_nats_and_python_state(running_coord_fixture, _binary_cache: Path) -> None:
     """One fixture supplies the retained inputs for both Rust Coord targets."""
     root, environment, process = running_coord_fixture
     fixture = json.loads((root / "fixture.json").read_text(encoding="utf-8"))
@@ -95,7 +96,8 @@ def test_fixture_creates_the_shared_nats_and_python_state(running_coord_fixture)
     assert fixture["shutdown_agent_id"] == "ag-alice"
     assert fixture["room_id"].startswith("rm-")
     assert fixture["nats_version"] == "2.14.5"
-    assert len(fixture["nats_binary_sha256"]) == 64
+    assert fixture["nats_binary_sha256"] == sha256(_binary_cache.read_bytes()).hexdigest()
+    assert (root / "nats" / "bin" / fixture["nats_version"] / "nats-server").samefile(_binary_cache)
     assert (root / "nats" / "creds").is_file()
     endpoints = json.loads((root / "nats" / "test-endpoints.json").read_text(encoding="utf-8"))
     assert endpoints["test_instance"] == environment["SAFEYOLO_NATS_TEST_INSTANCE"]
@@ -268,7 +270,40 @@ def test_fixture_refuses_an_operator_home_coord_directory(tmp_path: Path) -> Non
     assert not root.exists()
 
 
-def test_fixture_rejects_a_mismatched_native_generation(tmp_path: Path) -> None:
+def test_fixture_rejects_a_tampered_shared_binary(tmp_path: Path) -> None:
+    """The shared executable must pass the runtime's pinned checksum check."""
+    root = tmp_path / "tampered-coord-fixture"
+    marker = tmp_path / "executed"
+    binary = tmp_path / "nats-server"
+    binary.write_text('#!/bin/sh\ntouch "$SAFEYOLO_TEST_BINARY_MARKER"\n', encoding="utf-8")
+    binary.chmod(0o755)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "SAFEYOLO_COORD_DATA_DIR": str(root),
+            "SAFEYOLO_NATS_TEST_INSTANCE": f"proxy-rust-{secrets.token_hex(8)}",
+            "SAFEYOLO_COORD_NATS_BINARY": str(binary),
+            "SAFEYOLO_TEST_BINARY_MARKER": str(marker),
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, str(FIXTURE)],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    assert result.returncode != 0
+    assert "SHA256" in result.stderr
+    assert not marker.exists()
+    assert not (root / "fixture.ready").exists()
+    assert (root / "fixture.stopped").is_file()
+    assert not (root / "nats" / "nats.pid.json").exists()
+
+
+def test_fixture_rejects_a_mismatched_native_generation(tmp_path: Path, _binary_cache: Path) -> None:
     """A malformed cross-version handoff fails rather than weakening the witness."""
     root = tmp_path / "mismatched-coord-fixture"
     ready_path = root / "fixture.ready"
@@ -277,6 +312,7 @@ def test_fixture_rejects_a_mismatched_native_generation(tmp_path: Path) -> None:
         {
             "SAFEYOLO_COORD_DATA_DIR": str(root),
             "SAFEYOLO_NATS_TEST_INSTANCE": f"proxy-rust-{secrets.token_hex(8)}",
+            "SAFEYOLO_COORD_NATS_BINARY": str(_binary_cache),
         }
     )
     process = subprocess.Popen(
