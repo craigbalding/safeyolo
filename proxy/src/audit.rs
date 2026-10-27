@@ -3,6 +3,8 @@
 
 mod envelope;
 mod explain;
+mod nsm;
+mod reader;
 mod writer;
 
 pub(crate) use envelope::wipe;
@@ -11,6 +13,7 @@ pub use envelope::{
     Severity,
 };
 pub use explain::{ExplainError, ExplainErrorKind};
+pub use reader::parse_record;
 pub use writer::{Settings, Submission, Writer};
 
 use std::fmt;

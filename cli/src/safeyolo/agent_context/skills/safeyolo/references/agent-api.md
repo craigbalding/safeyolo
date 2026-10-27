@@ -459,10 +459,13 @@ a linked `security.agent_identity_late_change` event records the bounded
 before/after facts for operators, and FlowStore quarantines the flow rather
 than reassigning or storing it under a new owner.
 
-Audit JSONL keeps `schema_version=1` compatibility for strict existing readers:
-the five attribution fields are nested under the existing `details.attribution`
-object on the wire. Current readers using `parse_audit_event` lift them back to
-the first-class attribution fields.
+Existing audit events retain `schema_version=1`. The five attribution fields
+remain under `details.attribution` on the wire. The native
+`audit::parse_record` reader preserves that representation. Network Security
+Monitoring (NSM) connection, flow, and indicator events use `schema_version=2`
+with the same attribution location. See the
+[NSM event contracts](https://github.com/craigbalding/safeyolo/blob/master/docs/nsm-events.md) for compatibility,
+correlation, and retention semantics.
 
 | Method | Path | Purpose |
 |---|---|---|
