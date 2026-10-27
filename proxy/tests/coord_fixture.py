@@ -86,6 +86,13 @@ def prepare_fixture(root: Path, ready_path: Path) -> None:
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     try:
+        selected_binary = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
+        if selected_binary:
+            # Reuse the pinned test input; start_server still verifies its
+            # checksum before execution. All mutable state stays under root.
+            binary_path = nats_runtime.nats_binary_path()
+            binary_path.parent.mkdir(parents=True, exist_ok=True)
+            binary_path.symlink_to(Path(selected_binary).resolve(strict=True))
         nats_pid = nats_runtime.start_server(ready_timeout=8.0)
         nats_client.reset_for_tests()
         instance_id = api.bootstrap()

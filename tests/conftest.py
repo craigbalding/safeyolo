@@ -31,16 +31,16 @@ def linux_workflow_stat():
 @pytest.fixture(scope="session")
 def _binary_cache(tmp_path_factory):
     """Cache a test NATS binary once per session for isolated Coord fixtures."""
+    selected = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
+    if selected:
+        return Path(selected).resolve()
     from safeyolo.coord import nats_runtime as nr
 
     cache_dir = tmp_path_factory.mktemp("nats-binary-cache")
     previous = os.environ.get("SAFEYOLO_COORD_DATA_DIR")
     os.environ["SAFEYOLO_COORD_DATA_DIR"] = str(cache_dir)
     try:
-        try:
-            return nr.ensure_binary()
-        except Exception as error:
-            pytest.skip(f"nats-server binary unavailable: {error!s}")
+        return nr.ensure_binary()
     finally:
         if previous is None:
             os.environ.pop("SAFEYOLO_COORD_DATA_DIR", None)
