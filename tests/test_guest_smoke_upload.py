@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 from scripts import guest_release as release
-from tests.test_guest_promotion import INDEX, report_files
+from tests.test_guest_promotion import INDEX, candidate, evidence, report_files
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
@@ -21,8 +21,48 @@ NAMES = ("selection.json", "retained-run.json", "installed-inputs.json", "guest/
 GATE = "https://github.com/craigbalding/safeyolo/issues/1105#issuecomment-123"
 
 
+def continuation_files(reports):
+    """Use the producer shape in the retained AMD64 installed-9af-d0ee observation."""
+    frozen = json.loads((reports / "selection.json").read_bytes())
+    installed = json.loads((reports / "installed-inputs.json").read_bytes())
+    frozen["platform"] = installed["platform"] = "linux-amd64"
+    frozen["host"].update(platform="linux-amd64", profile="production", archive={"sha256": "c" * 64})
+    frozen["controller_revision"] = "e" * 40
+    prepared = "/b/package/prepared"
+    original_sections = {"source_revision": frozen["host"]["source_revision"], "lane": "systrap",
+                         "preparation": {"exit": 0, "config_dir": prepared, "reused_installation": True},
+                         "sections": [{"section": section, "config_dir": f"/b/original/{section}",
+                                       "prepared_config_dir": prepared, "exit": 0, "result": "passed",
+                                       "cleanup": "stopped", "cleanup_failures": []}
+                                      for section in ("isolation", "workloads", "access", "lifecycle", "continuity")]}
+    resumed_sections = copy.deepcopy(original_sections)
+    resumed_sections["sections"] = [resumed_sections["sections"][-1]]
+    resumed_sections["sections"][0]["config_dir"] = "/b/resumed/continuity"
+    original_sections["sections"][-1].update(exit=2, result="preparation_failure", error="Missing controller interpreter")
+    observed = {"controller": {"revision": "e" * 40, "dirty": False},
+                "original_execution": {"id": 1, "command": ["python", "/b/controller/tests/blackbox/retained_inputs.py",
+                    "run", "--lane", "systrap", "--selection", "/b/inputs/selection.json"], "exit": 2,
+                    "started_at": "2026-10-17T19:00:00Z", "ended_at": "2026-10-17T19:01:00Z"},
+                "resume_execution": {"id": 2, "command": ["python", "/b/controller/tests/blackbox/installed_sections.py",
+                    "systrap", "--section", "continuity", "--prepared-config", prepared,
+                    "--install-commit", frozen["host"]["source_revision"]], "exit": 0, "controller_status": "",
+                    "started_at": "2026-10-17T19:02:00Z", "ended_at": "2026-10-17T19:03:00Z"},
+                "recorded_at": "2026-10-17T19:05:00Z",
+                "verified_operands": {"host": "installed-amd64-host", "observed_at": "2026-10-17T19:04:00Z",
+                    "installed_inputs": installed, "original_sections": original_sections, "resumed_sections": resumed_sections,
+                    "owned_live_markers": [], "live_product_processes": [], "continuity_runtime_after": [{"pid_exists": False}],
+                    "report_hashes": {name: hashlib.sha256(json.dumps(value).encode()).hexdigest() for name, value in (
+                        ("reports/installed-inputs.json", installed), ("reports/guest/installed-sections.json", original_sections),
+                        ("continuity-reports/installed-sections.json", resumed_sections))}}}
+    (reports / "selection.json").write_text(json.dumps(frozen))
+    for name in NAMES[1:]:
+        (reports / name).unlink()
+    (reports / "installed-continuation.json").write_text(json.dumps(observed))
+    return observed
+
+
 def restore(tmp_path, texts):
-    step = next(step for step in JOB["steps"] if step.get("name") == "Restore the four original report files")
+    step = next(step for step in JOB["steps"] if step.get("name") == "Restore retained report files")
     assert step["env"] == {"SMOKE_REPORTS": "${{ inputs.smoke_reports }}"}
     assert "${{" not in step["run"]
     return subprocess.run(["bash", "-e", "-c", step["run"]], cwd=ROOT,
@@ -50,8 +90,27 @@ def test_workflow_restores_original_bytes_without_executing_report_text(tmp_path
     assert not (ROOT / "injected").exists() and not (tmp_path / "injected").exists()
 
 
+def test_workflow_restores_continuation_without_rewriting_failed_execution(tmp_path):
+    reports = tmp_path / "original"
+    report_files(reports)
+    observed = continuation_files(reports)
+    texts = {name: (reports / name).read_bytes().decode() for name in release.CONTINUATION_REPORTS}
+    result = restore(tmp_path, texts)
+    assert result.returncode == 0, result.stderr
+    restored = tmp_path / "retained-reports"
+    assert {name: (restored / name).read_bytes().decode() for name in texts} == texts
+    smoke = release.smoke_result(restored, GATE)
+    assert smoke["result"] == "passed" and smoke["execution_mode"] == "same-installation-continuation"
+    assert smoke["executions"] == {"original": observed["original_execution"], "resume": observed["resume_execution"]}
+    assert smoke["executions"]["original"]["exit"] == 2
+    assert smoke["finished_at"] == observed["resume_execution"]["ended_at"]
+    assert not (restored / "retained-run.json").exists()
+
+
 @pytest.mark.parametrize("texts", [None, [], {}, {name: {} for name in NAMES},
-                                    {**dict.fromkeys(NAMES, "{}"), "../escape": "{}"}])
+                                    {**dict.fromkeys(NAMES, "{}"), "../escape": "{}"},
+                                    {**dict.fromkeys(release.CONTINUATION_REPORTS, "{}"), "../escape": "{}"},
+                                    {**dict.fromkeys(NAMES, "{}"), "installed-continuation.json": "{}"}])
 def test_workflow_refuses_incomplete_or_nontext_report_inputs(tmp_path, texts):
     assert restore(tmp_path, texts).returncode != 0
     assert not (tmp_path / "retained-reports").exists()
@@ -142,6 +201,114 @@ def test_upload_preserves_execution_and_attributes_the_operator_separately(uploa
     assert state["writes"] == [(INDEX, release.SMOKE, result, [(args.reports / name).read_bytes() for name in NAMES])]
 
 
+def test_upload_continuation_attaches_the_unchanged_operator_observation(upload):
+    args, state = upload
+    observed = continuation_files(args.reports)
+    original = (args.reports / "installed-continuation.json").read_bytes()
+    result = release.record_smoke(args)
+    assert result["operator"] == "operator" and result["upload"]["producer"]["job_id"] == 456
+    assert result["controller_revision"] == observed["controller"]["revision"]
+    assert result["controller_revision"] != result["upload"]["source_revision"]
+    assert result["executions"]["original"]["exit"] == 2 and result["executions"]["resume"]["exit"] == 0
+    assert state["writes"] == [(INDEX, release.SMOKE, result,
+                                [(args.reports / "selection.json").read_bytes(), original])]
+
+
+def test_continuation_requires_the_maintained_lane_sections():
+    from tests.blackbox.installed_sections import SECTIONS
+
+    assert release.INSTALLED_SECTIONS == {lane: set(names) for lane, names in SECTIONS.items()}
+
+
+def test_continuation_uses_normal_platform_gates_and_cannot_hide_a_newer_failure(upload, monkeypatch):
+    args, _ = upload
+    continuation_files(args.reports)
+    result = release.record_smoke(args)
+    value = candidate()
+    monkeypatch.setattr(release, "verify_operator", lambda actor: None)
+    other_platforms = [row for row in evidence(value) if row["platform"] != "linux-amd64"]
+    proof = [result, *other_platforms]
+    assert release.gates(value, proof, "master") == proof
+    failed = {**result, "result": "failed", "finished_at": "2026-10-17T19:04:00Z"}
+    with pytest.raises(ValueError, match="latest installed smoke failed: linux-amd64"):
+        release.gates(value, [*proof, failed], "master")
+    with pytest.raises(ValueError, match="missing successful installed guest smoke"):
+        release.gates(value, [result], "master")
+
+
+@pytest.mark.parametrize("path,value", [
+    (("original_execution", "exit"), 0),
+    (("original_execution", "command", 4), "kvm"),
+    (("original_execution", "id"), 2),
+    (("resume_execution", "exit"), 2),
+    (("resume_execution", "command"), ["python", "installed_sections.py", "systrap", "--prepared-config"]),
+    (("resume_execution", "controller_status"), " M tracked.py"),
+    (("resume_execution", "started_at"), "2026-10-17T18:59:00Z"),
+    (("resume_execution", "command", 2), "kvm"),
+    (("resume_execution", "command", 6), "/different/prepared"),
+    (("controller", "dirty"), True),
+    (("controller", "revision"), "f" * 40),
+    (("verified_operands", "installed_inputs", "guest", "archive", "size"), 999),
+    (("verified_operands", "installed_inputs", "host_source_revision"), "f" * 40),
+    (("verified_operands", "installed_inputs", "installed_files_sha256"), {"different-helper": "d" * 64}),
+    (("verified_operands", "installed_inputs", "platform"), "linux-arm64"),
+    (("verified_operands", "resumed_sections", "lane"), "kvm"),
+    (("verified_operands", "resumed_sections", "source_revision"), "f" * 40),
+    (("verified_operands", "resumed_sections", "preparation", "config_dir"), "/different/prepared"),
+    (("verified_operands", "resumed_sections", "sections", 0, "prepared_config_dir"), "/different/prepared"),
+    (("verified_operands", "original_sections", "sections", 4, "result"), "assertion_failure"),
+    (("verified_operands", "original_sections", "sections", 4, "error"), ""),
+    (("verified_operands", "original_sections", "sections", 0, "exit"), 1),
+    (("verified_operands", "original_sections", "sections", 0, "cleanup"), "failed"),
+    (("verified_operands", "resumed_sections", "sections", 0, "exit"), 1),
+    (("verified_operands", "resumed_sections", "sections", 0, "cleanup_failures"), ["owned process still live"]),
+    (("verified_operands", "owned_live_markers"), ["active"]),
+    (("verified_operands", "live_product_processes"), [123]),
+    (("verified_operands", "continuity_runtime_after", 0, "pid_exists"), True),
+])
+def test_upload_refuses_inconsistent_or_failed_continuation_before_write(upload, path, value):
+    args, state = upload
+    observed = continuation_files(args.reports)
+    parent = observed
+    for part in path[:-1]:
+        parent = parent[part]
+    parent[path[-1]] = value
+    (args.reports / "installed-continuation.json").write_text(json.dumps(observed))
+    with pytest.raises(ValueError):
+        release.record_smoke(args)
+    assert not state["writes"]
+
+
+@pytest.mark.parametrize("fault", ["missing-section", "duplicate-section", "replayed-section", "mixed-reports", "missing-observation"])
+def test_upload_refuses_incomplete_or_ambiguous_continuation(upload, fault):
+    args, state = upload
+    observed = continuation_files(args.reports)
+    operands = observed["verified_operands"]
+    if fault == "missing-section":
+        operands["original_sections"]["sections"].pop(0)
+    elif fault == "duplicate-section":
+        operands["resumed_sections"]["sections"] *= 2
+    elif fault == "replayed-section":
+        operands["resumed_sections"]["sections"].append(operands["original_sections"]["sections"][0])
+    elif fault == "mixed-reports":
+        (args.reports / "retained-run.json").write_text('{"exit": 0}')
+    else:
+        del operands["observed_at"]
+    (args.reports / "installed-continuation.json").write_text(json.dumps(observed))
+    with pytest.raises((ValueError, KeyError)):
+        release.record_smoke(args)
+    assert not state["writes"]
+
+
+def test_continuation_cannot_claim_an_uninterrupted_actions_producer(upload, monkeypatch):
+    args, state = upload
+    continuation_files(args.reports)
+    monkeypatch.setenv("GITHUB_JOB", "systrap")
+    with pytest.raises(ValueError, match="operator attestation"):
+        release.record_smoke(args)
+    assert not state["writes"]
+
+
 @pytest.mark.parametrize("failed", [False, True])
 def test_installed_publication_keeps_its_execution_producer_and_failed_attempts(upload, monkeypatch, failed):
     args, state = upload
@@ -212,8 +379,12 @@ def test_upload_refuses_missing_or_failed_evidence(upload, fault):
 
 
 @pytest.mark.parametrize("different", [None, "file-bytes", "gate", "failed", "subject"])
-def test_upload_skips_only_an_exact_subject_bound_success(upload, monkeypatch, different):
+@pytest.mark.parametrize("continued", [False, True])
+def test_upload_skips_only_an_exact_subject_bound_success(upload, monkeypatch, different, continued):
     args, state = upload
+    if continued:
+        continuation_files(args.reports)
+    names = release.CONTINUATION_REPORTS if continued else NAMES
     prior = {**release.smoke_result(args.reports, args.gate_url), "operator": "operator"}
     if different == "gate":
         prior["gate_url"] += "-other"
@@ -226,7 +397,7 @@ def test_upload_skips_only_an_exact_subject_bound_success(upload, monkeypatch, d
         return {"digest": digest, "size": len(raw), "mediaType": media,
                 "annotations": {"org.opencontainers.image.title": title}}
     layers = [layer(json.dumps(prior).encode(), release.SMOKE, "receipt.json")]
-    for number, name in enumerate(NAMES):
+    for number, name in enumerate(names):
         raw = (args.reports / name).read_bytes()
         if different == "file-bytes":
             raw += b"\n"
