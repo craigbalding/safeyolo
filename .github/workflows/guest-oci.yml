@@ -29,7 +29,7 @@ on:
         description: Exact retained seed index digest (transport fixture only)
         type: string
       smoke_reports:
-        description: JSON object with the four original report texts (record-smoke only)
+        description: JSON object with original runner reports or selection and installed-continuation texts (record-smoke only)
         type: string
       smoke_gate_url:
         description: Original installed execution result link (record-smoke only)
@@ -260,7 +260,7 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Restore the four original report files
+      - name: Restore retained report files
         env:
           SMOKE_REPORTS: ${{ inputs.smoke_reports }}
         run: |
@@ -269,13 +269,15 @@ jobs:
           import os
           from pathlib import Path
 
-          names = ("selection.json", "retained-run.json", "installed-inputs.json", "guest/installed-sections.json")
+          from scripts.guest_release import CONTINUATION_REPORTS, SMOKE_REPORTS
+
           texts = json.loads(os.environ["SMOKE_REPORTS"])
-          if not isinstance(texts, dict) or set(texts) != set(names) or any(not isinstance(texts[name], str) for name in names):
-              raise ValueError("smoke_reports must contain exactly the four original report texts")
+          if (not isinstance(texts, dict) or set(texts) not in (set(SMOKE_REPORTS), set(CONTINUATION_REPORTS))
+                  or any(not isinstance(value, str) for value in texts.values())):
+              raise ValueError("smoke_reports must contain original runner reports or selection and installed-continuation texts")
           reports = Path(os.environ["RUNNER_TEMP"]) / "retained-reports"
           (reports / "guest").mkdir(parents=True)
-          for name in names:
+          for name in texts:
               (reports / name).write_bytes(texts[name].encode("utf-8"))
           PY
       - name: Install the maintained publisher

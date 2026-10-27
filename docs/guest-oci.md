@@ -522,14 +522,16 @@ together. The installed isolation section must pass, including owned cleanup.
 The result records the physical host ID and the actual host/helper/guest bytes.
 
 For a completed retained run, an authorized repository operator can attach
-those four reports through the existing Actions publisher. Use a Linux
+those four reports through the existing Actions publisher. A same-installation
+continuation can instead supply `selection.json` and an operator observation
+named `installed-continuation.json`, as described below. Use a Linux
 maintainer checkout with Python 3 and authenticated `gh`. The account must have
 repository write, maintain or admin permission. The workflow uses its own
 repository token for GHCR writes; no local registry login is needed.
 
 Set `REPORTS` to the report directory and `GATE_URL` to the original execution
 result link. Run this command after the workflow change is on default branch
-`master`. It sends only the four original UTF-8 report texts. It starts a
+`master`. It sends the original UTF-8 report texts. It starts a
 serialized upload job without selecting a resolver, build, platform test or
 promotion job:
 
@@ -542,7 +544,10 @@ import os
 from pathlib import Path
 
 names = ("selection.json", "retained-run.json", "installed-inputs.json", "guest/installed-sections.json")
-texts = {name: (Path(os.environ["REPORTS"]) / name).read_bytes().decode("utf-8") for name in names}
+reports = Path(os.environ["REPORTS"])
+if (reports / "installed-continuation.json").is_file():
+    names = ("selection.json", "installed-continuation.json")
+texts = {name: (reports / name).read_bytes().decode("utf-8") for name in names}
 print(json.dumps({"activity": "record-smoke", "smoke_gate_url": os.environ["GATE_URL"],
                   "smoke_reports": json.dumps(texts)}))
 PY
@@ -553,9 +558,56 @@ run separately from the platform execution. The attached reports keep their
 original bytes, execution time, controller revision, host/package identities,
 guest descriptors and section outcomes. An exact successful attachment is
 retained without another write. Matching requires the same result fields and
-all four attached file bytes. Existing failed records remain available.
-Missing or failed reports and invalid operator or workflow origins fail the
-upload. The normal promotion age and evidence guards still apply.
+all attached file bytes. Existing failed records remain available.
+Incomplete evidence, unresolved failed sections and invalid operator or
+workflow origins fail the upload. The normal promotion age and evidence
+guards still apply.
+
+For an interrupted run whose section runner could not start, keep the failed
+execution unchanged. After correcting setup, run only the unstarted sections
+with the same prepared installation. The operator can supply an existing
+verified observation as `installed-continuation.json`. This is an explicit
+operator attestation, not a replacement `retained-run.json` or a claim that
+the original command passed. The observation must contain:
+
+- `controller.revision` and `controller.dirty`, identifying the clean controller
+  used for both commands. The revision must equal `selection.json`'s
+  `controller_revision`.
+- `original_execution` and `resume_execution`, each retaining its distinct `id`,
+  actual argv in `command`, literal `exit`, and UTC `started_at`/`ended_at`.
+  The original exit must be 2 and the resumed exit must be 0.
+  The original command is `retained_inputs.py run` for the recorded lane. The
+  resumed command is `installed_sections.py` for that lane, with explicit
+  `--section`, `--prepared-config` and `--install-commit` operands. The resume
+  also retains `controller_status`, which must be empty.
+- `verified_operands.host`, `observed_at`, `installed_inputs`,
+  `original_sections` and `resumed_sections`. Keep the installed-input and
+  section records in their existing producer formats. All required sections
+  for the lane must be present in the original collection. Each unsuccessful
+  original row must record exit 2, `preparation_failure`, and the runner error.
+  Only those rows may be resumed. The resumed collection must pass exactly
+  those sections on the original prepared installation and source revision.
+- `verified_operands.owned_live_markers` and `live_product_processes`, both
+  empty after cleanup. If present, every `continuity_runtime_after` row must
+  have `pid_exists` false. All original and resumed section rows must record
+  `cleanup: stopped` and empty `cleanup_failures`.
+- `verified_operands.report_hashes`, retaining the original SHA-256 hashes for
+  `reports/installed-inputs.json`, `reports/guest/installed-sections.json` and
+  `continuity-reports/installed-sections.json` from the observed report layout.
+  The hashes identify the underlying originals; supplying the observation
+  does not claim that the upload reconstructed or reread those files.
+- UTC `recorded_at`. The original execution, resumed execution, operand
+  observation and recording times must be in that order.
+
+The publisher derives a passed receipt with
+`execution_mode: same-installation-continuation`. It retains both execution
+records and uses the resumed command's actual end time. The observation is
+attached byte for byte, including its original failures and report hashes.
+An assertion failure, failed cleanup, missing required section, changed
+installed input, or inconsistent continuation refuses the upload. Supply the
+two continuation files together; do not mix them with the three original
+runner report files. This path does not run platform tests or publish a
+promotion decision. A newer failed smoke receipt still holds promotion.
 
 An operator with existing local publisher tools and GHCR write access can
 also attach completed physical evidence outside Actions:

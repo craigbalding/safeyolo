@@ -21,6 +21,11 @@ SMOKE = "application/vnd.safeyolo.guest.smoke.v1+json"
 DECISION = "application/vnd.safeyolo.guest.promotion.v1+json"
 JSON = "application/json"
 QUARANTINE_SECONDS = 172800
+SMOKE_REPORTS = ("selection.json", "retained-run.json", "installed-inputs.json", "guest/installed-sections.json")
+CONTINUATION_REPORTS = ("selection.json", "installed-continuation.json")
+SMOKE_LANES = {"linux-amd64": {"systrap", "kvm"}, "linux-arm64": {"systrap", "kvm"}, "darwin-arm64": {"vz"}}
+INSTALLED_SECTIONS = {"systrap": {"isolation", "workloads", "access", "lifecycle", "continuity"},
+                      "kvm": {"isolation", "ingress", "workloads"}, "vz": {"isolation", "access", "lifecycle", "continuity"}}
 
 
 def stamp() -> str:
@@ -203,15 +208,120 @@ def newest_eligible(candidates: list[tuple[dict, dict]], default_branch: str, no
     return None
 
 
+def validate_smoke_inputs(frozen: dict, installed: dict, sections: dict, lane: str) -> None:
+    """Bind section evidence to the selected host, helpers and guest bytes."""
+    guest = frozen["guest"]
+    for actual, expected in (("index", "index"), ("manifest", "child"), ("archive", "archive")):
+        if installed["guest"][actual] != {key: guest[expected][key] for key in ("digest", "size")}:
+            raise ValueError("smoke installed different guest bytes")
+    if (installed["platform"] != frozen["platform"] or sections["lane"] != lane
+            or sections["source_revision"] != frozen["host"]["source_revision"]):
+        raise ValueError("smoke section platform/source differs from the installed host")
+    if (installed["installed_files_sha256"] != frozen["host"]["executables_sha256"]
+            or installed["host_source_revision"] != frozen["host"]["source_revision"]
+            or frozen["host"]["compatibility"] != guest["compatibility"] or installed["profile"] != "production"):
+        raise ValueError("smoke host/helper identity differs from the frozen compatible host")
+
+
+def continuation_sections(original: dict, resumed: dict) -> None:
+    """Permit only unstarted sections to continue on the same prepared install."""
+    lane = original["lane"]
+    prepared = original["preparation"]["config_dir"]
+    if (not prepared or original["preparation"]["exit"] != 0 or resumed["preparation"]["exit"] != 0
+            or resumed["preparation"]["config_dir"] != prepared or not resumed["preparation"]["reused_installation"]
+            or resumed["lane"] != lane or resumed["source_revision"] != original["source_revision"]):
+        raise ValueError("continuation differs from the original prepared installation/source/lane")
+    rows = original["sections"]
+    resumed_rows = resumed["sections"]
+    if (len({row["section"] for row in rows}) != len(rows)
+            or {row["section"] for row in rows} != INSTALLED_SECTIONS[lane]
+            or len({row["section"] for row in resumed_rows}) != len(resumed_rows)):
+        raise ValueError("continuation has missing or duplicate required sections")
+    pending = set()
+    for row in rows + resumed_rows:
+        if row["prepared_config_dir"] != prepared or row["cleanup"] != "stopped" or row["cleanup_failures"]:
+            raise ValueError("continuation has different installed inputs or failed cleanup")
+    for row in rows:
+        if row["exit"] == 0 and row["result"] == "passed":
+            continue
+        if row["exit"] != 2 or row["result"] != "preparation_failure" or not row.get("error"):
+            raise ValueError("continuation cannot clear an original failed section")
+        pending.add(row["section"])
+    if not pending or {row["section"] for row in resumed_rows} != pending or any(
+        row["exit"] != 0 or row["result"] != "passed" for row in resumed_rows
+    ):
+        raise ValueError("continuation requires successful completion of exactly the unstarted sections")
+
+
+def execution_options(command: list[str], option: str) -> list[str]:
+    """Read operands from recorded argv without executing or interpreting shell text."""
+    if not isinstance(command, list) or any(not isinstance(value, str) for value in command):
+        raise ValueError("continuation command must retain its original argv")
+    positions = [i for i, value in enumerate(command) if value == option]
+    if any(i + 1 == len(command) for i in positions):
+        raise ValueError("continuation command has a missing operand")
+    return [command[i + 1] for i in positions]
+
+
+def continuation_result(frozen: dict, observed: dict, gate_url: str) -> dict:
+    """Derive a receipt from an operator observation, keeping both real executions."""
+    original, resumed = observed["original_execution"], observed["resume_execution"]
+    operands = observed["verified_operands"]
+    sections = operands["original_sections"]
+    lane, controller = sections["lane"], observed["controller"]
+    if (frozen["status"] != "selected" or lane not in SMOKE_LANES[frozen["platform"]]
+            or original["exit"] != 2 or resumed["exit"] != 0 or not gate_url or not operands["host"]
+            or controller["dirty"] or re.fullmatch(r"[0-9a-f]{40}", controller["revision"] or "") is None
+            or resumed["controller_status"] != "" or controller["revision"] != frozen["controller_revision"]):
+        raise ValueError("continuation requires attributable original and resumed executions")
+    if not (selection.utc(original["started_at"]) <= selection.utc(original["ended_at"])
+            <= selection.utc(resumed["started_at"]) <= selection.utc(resumed["ended_at"])
+            <= selection.utc(operands["observed_at"]) <= selection.utc(observed["recorded_at"])):
+        raise ValueError("continuation execution/observation times are out of order")
+    # The observation retains command operands; do not relabel either command
+    # as a successful uninterrupted retained_inputs.py execution.
+    command = resumed["command"]
+    prepared = sections["preparation"]["config_dir"]
+    if (execution_options(command, "--prepared-config") != [prepared]
+            or execution_options(command, "--install-commit") != [sections["source_revision"]]
+            or command[2:3] != [lane] or Path(command[1]).name != "installed_sections.py"
+            or execution_options(command, "--section") != [row["section"] for row in operands["resumed_sections"]["sections"]]):
+        raise ValueError("continuation command uses different prepared inputs")
+    original_command = original["command"]
+    if (execution_options(original_command, "--lane") != [lane]
+            or original["id"] == resumed["id"] or original_command[2:3] != ["run"]
+            or Path(original_command[1]).name != "retained_inputs.py"):
+        raise ValueError("continuation original execution differs from its installed lane")
+    if operands["owned_live_markers"] or operands["live_product_processes"] or any(
+        row["pid_exists"] for row in operands.get("continuity_runtime_after", [])
+    ):
+        raise ValueError("continuation observation has live owned runtime state")
+    continuation_sections(sections, operands["resumed_sections"])
+    validate_smoke_inputs(frozen, operands["installed_inputs"], sections, lane)
+    for name in ("reports/installed-inputs.json", "reports/guest/installed-sections.json",
+                 "continuity-reports/installed-sections.json"):
+        selection.digest("sha256:" + operands["report_hashes"][name])
+    return {"schema": "safeyolo.guest-smoke/v1", "index_digest": frozen["guest"]["index"]["digest"],
+            "platform": frozen["platform"], "finished_at": resumed["ended_at"], "result": "passed",
+            "host_id": operands["host"], "lane": lane, "host": frozen["host"], "guest": frozen["guest"],
+            "controller_revision": controller["revision"], "gate_url": gate_url,
+            "execution_mode": "same-installation-continuation",
+            "executions": {"original": original, "resume": resumed}}
+
+
 def smoke_result(reports: Path, gate_url: str) -> dict:
-    """Read the existing installed runner's result; no second smoke suite."""
+    """Read installed runner reports or an explicit retained operator continuation."""
     frozen = json.loads((reports / "selection.json").read_bytes())
+    continuation = reports / "installed-continuation.json"
+    if continuation.is_file():
+        if any((reports / name).exists() for name in SMOKE_REPORTS[1:]):
+            raise ValueError("smoke requires either original runner reports or a continuation observation")
+        return continuation_result(frozen, json.loads(continuation.read_bytes()), gate_url)
     run = json.loads((reports / "retained-run.json").read_bytes())
     installed = json.loads((reports / "installed-inputs.json").read_bytes())
     sections = json.loads((reports / "guest/installed-sections.json").read_bytes())
     platform = frozen["platform"]
-    lanes = {"linux-amd64": {"systrap", "kvm"}, "linux-arm64": {"systrap", "kvm"}, "darwin-arm64": {"vz"}}
-    if (frozen["status"] != "selected" or run["exit"] != 0 or run["lane"] not in lanes[platform]
+    if (frozen["status"] != "selected" or run["exit"] != 0 or run["lane"] not in SMOKE_LANES[platform]
             or run["controller_dirty"] or re.fullmatch(r"[0-9a-f]{40}", run["controller_revision"] or "") is None
             or not run["host_id"] or not gate_url):
         raise ValueError("smoke requires a successful retained installed guest run and its result link")
@@ -220,20 +330,12 @@ def smoke_result(reports: Path, gate_url: str) -> dict:
     if run["host_system"] != system or run["host_architecture"] not in architectures:
         raise ValueError("smoke host does not match the required platform")
     if not sections["sections"] or not any(row["section"] == "isolation" for row in sections["sections"]) or any(
-        row["exit"] != 0 or row["result"] != "passed" for row in sections["sections"]
+        row["exit"] != 0 or row["result"] != "passed" or row.get("cleanup", "stopped") != "stopped" or row.get("cleanup_failures")
+        for row in sections["sections"]
     ):
         raise ValueError("smoke has missing or failed installed guest/cleanup evidence")
+    validate_smoke_inputs(frozen, installed, sections, run["lane"])
     guest = frozen["guest"]
-    for actual, expected in (("index", "index"), ("manifest", "child"), ("archive", "archive")):
-        if installed["guest"][actual] != {key: guest[expected][key] for key in ("digest", "size")}:
-            raise ValueError("smoke installed different guest bytes")
-    if (installed["platform"] != platform or sections["lane"] != run["lane"]
-            or sections["source_revision"] != frozen["host"]["source_revision"]):
-        raise ValueError("smoke section platform/source differs from the installed host")
-    if (installed["installed_files_sha256"] != frozen["host"]["executables_sha256"]
-            or installed["host_source_revision"] != frozen["host"]["source_revision"]
-            or frozen["host"]["compatibility"] != guest["compatibility"] or installed["profile"] != "production"):
-        raise ValueError("smoke host/helper identity differs from the frozen compatible host")
     return {"schema": "safeyolo.guest-smoke/v1", "index_digest": guest["index"]["digest"], "platform": platform,
             "finished_at": run["finished_at"], "result": "passed", "host_id": run["host_id"], "lane": run["lane"],
             "host": frozen["host"], "guest": guest, "controller_revision": run["controller_revision"],
@@ -260,7 +362,7 @@ def smoke_upload_context(default_branch: str) -> dict:
 
 
 def matching_smoke(index: dict, result: dict, files: list[Path], default_branch: str) -> dict | None:
-    """Reuse a trusted passed receipt only when all four attached files match."""
+    """Reuse a trusted passed receipt only when all attached report bytes match."""
     for row in referrers(index, SMOKE):
         prior = document(index, SMOKE, row)
         if any(prior.get(key) != value for key, value in result.items()):
@@ -290,6 +392,8 @@ def record_smoke(args: argparse.Namespace) -> dict:
     if os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("GITHUB_JOB") == "record-smoke":
         default_branch = branch()
         upload = smoke_upload_context(default_branch)
+    if (args.reports / "installed-continuation.json").is_file() and upload is None and os.environ.get("GITHUB_ACTIONS") == "true":
+        raise ValueError("continuation requires an operator attestation through record-smoke")
     try:
         result = smoke_result(args.reports, args.gate_url)
     except (ValueError, KeyError, TypeError, OSError) as exc:
@@ -303,8 +407,7 @@ def record_smoke(args: argparse.Namespace) -> dict:
                   "controller_revision": frozen["controller_revision"], "gate_url": args.gate_url,
                   "reason": str(exc) if isinstance(exc, ValueError) else type(exc).__name__}
     index, _ = selection.manifest(f"{selection.GUEST_REPOSITORY}@{result['index_digest']}")
-    files = [args.reports / path for path in
-             ("selection.json", "retained-run.json", "installed-inputs.json", "guest/installed-sections.json")
+    files = [args.reports / path for path in (*SMOKE_REPORTS, CONTINUATION_REPORTS[1])
              if (args.reports / path).is_file()]
     if upload is not None:
         prior = matching_smoke(index, result, files, default_branch)
