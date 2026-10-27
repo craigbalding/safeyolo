@@ -14,7 +14,7 @@ from safeyolo.core.service_paths import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BUILTIN_NAMES = {"gmail", "minifuse", "slack"}
+BUILTIN_NAMES = {"claude", "codex", "gmail", "minifuse", "slack"}
 
 
 def _assert_gmail_uses_omitted_header_default(services_dir: Path) -> None:
