@@ -430,6 +430,8 @@ class TestServiceRegistry:
         reg = ServiceRegistry(tmp_path / "nope")
         reg.load()
         assert {service.name for service in reg.list_services()} == {
+            "claude",
+            "codex",
             "gmail",
             "minifuse",
             "slack",

@@ -40,6 +40,8 @@ def guest(tmp_path):
             lambda match: str(tmp_path) + match[0], source,
         ).replace("/usr/sbin/sshd", str(tmp_path / "bin/sshd"))
         source = source.replace("/proc/1/limits", str(tmp_path / "pid1-limits"))
+        # Use host descriptors on macOS too; dangling /proc links break a retry.
+        source = source.replace("/proc/self/fd", "/dev/fd")
         path = tmp_path / "safeyolo" / name
         path.write_text(source)
         path.chmod(0o755)
