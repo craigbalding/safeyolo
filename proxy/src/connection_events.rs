@@ -242,6 +242,40 @@ impl Connection {
             .unwrap_or_else(|error| error.into_inner());
         facts.details["tls_server_name"] = json!(name);
     }
+
+    pub(crate) fn client_hello(&self, hello: crate::tls_identity::ClientHello) {
+        self.update_tls(|details| {
+            details["tls_client_hello"] = json!(hello);
+        });
+    }
+
+    pub(crate) fn tls_session(&self, peer: &str, name: &str, session: &rustls::ClientConnection) {
+        let session = crate::tls_identity::TlsSession::observed(peer, name, session);
+        if let Some(name) = session.sni.as_deref() {
+            self.tls(name);
+        }
+        self.update_tls(|details| {
+            if !details["tls_sessions"].is_array() {
+                details["tls_sessions"] = json!([]);
+            }
+            details["tls_sessions"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(session));
+        });
+    }
+
+    fn update_tls(&self, update: impl FnOnce(&mut Value)) {
+        let mut facts = self
+            .0
+            .facts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        update(&mut facts.details);
+        let mut snapshot = facts.details.clone();
+        snapshot["state"] = json!("updated");
+        self.0.emit(snapshot);
+    }
 }
 
 struct ObservedStream {

@@ -6,8 +6,9 @@ They describe transport sessions, application transactions, and sensor
 indications respectively. Hypertext Transfer Protocol (HTTP) requests are not
 transport connections.
 Issue #582 defines these contracts. Issue #583 adds emission from actual
-client and upstream transport owners. Transport Layer Security (TLS) identity
-and sensor implementations remain separate work in #584 and #585.
+client and upstream transport owners. Issue #584 adds native Transport Layer
+Security (TLS) client fingerprints and upstream certificate identity. Sensor
+implementations remain separate work in #585.
 
 ## Version and reader compatibility
 
@@ -37,6 +38,10 @@ Name Indication (SNI) fields, plus `transport: stream`. A strict reader built ag
 version 2 field list must update before reading these producer records.
 The current reader still accepts earlier version 2 payloads that omit the
 new fields.
+
+Issue #584 adds optional `tls_client_hello` and `tls_sessions` fields and the
+`updated` connection state. Earlier strict version 2 readers need these additions.
+The current reader continues to accept earlier records that omit TLS metadata.
 
 All NSM payload fields below are in `details`, except `request_id`, which
 uses the existing envelope field. Existing `ts`, `event_id`, `severity`,
@@ -92,7 +97,7 @@ status when appropriate. An ingress label does not establish agent identity.
 
 Use `kind: network`. Each record describes one real connection/session, not
 one HTTP request. A connection may carry zero, one, or many transactions.
-Open and terminal records refer to the same connection key.
+Open, update and terminal records refer to the same connection key.
 
 | Field | Contract |
 | --- | --- |
@@ -101,7 +106,7 @@ Open and terminal records refer to the same connection key.
 | `transport` | `unix`, `tcp`, or `stream`. `stream` describes an owned provider session whose forwarding implementation does not expose socket endpoints. No inferred TCP, UDP or QUIC for such a session. |
 | `started_at` | Observed start time in RFC 3339 format. |
 | `ended_at` | Observed end time in RFC 3339 format; absent/null while open. Must not precede the start. |
-| `state` | `open`, `closed`, or `failed`. Terminal states require `ended_at`. |
+| `state` | `open`, `updated`, `closed`, or `failed`. Open/update records have no end time. Terminal states require `ended_at`. |
 | `local_endpoint`, `remote_endpoint` | Observed endpoints relative to the proxy; absent/null when unavailable. |
 | `error` | Optional nonempty error category; no raw content or secret-bearing diagnostics. |
 | `requested_target` | Optional requested authority, for example `example.com:443`. A hostname is not a peer IP. |
@@ -110,6 +115,8 @@ Open and terminal records refer to the same connection key.
 | `client_connection_id` | Optional owning ingress connection ID on the upstream leg, in this record's namespace. |
 | `route` | Optional upstream route: `direct`, `parent`, or `provider`. |
 | `tls_server_name` | Optional DNS name observed as Server Name Indication (SNI) in an established TLS session. Absent for IP verification names. An outer parent TLS name can be replaced by the origin TLS name when the inner handshake completes. |
+| `tls_client_hello` | Optional agent-side ClientHello fingerprints and bounded offered metadata. See TLS identity below. |
+| `tls_sessions` | Optional upstream TLS sessions, in establishment order. At most two entries distinguish `peer: parent` from `peer: origin` on a nested parent route. Physical endpoints and route ownership retain their existing meaning. |
 | `ingress` | Nonempty originating ingress provenance. |
 
 An IP endpoint is `{"type":"ip","address":"203.0.113.10:443"}` (bracketed
@@ -139,6 +146,96 @@ socket. `requested_target` retains the logical authority, while
 `resolved_origin_peer` remains absent. The native provider forwarding owner
 exposes an opaque stream rather than a peer socket; its endpoint fields remain
 absent and its transport is `stream`.
+
+### TLS identity
+
+The native CONNECT reader observes the first ClientHello before TLS termination
+or SNI route selection. Observation also applies to configured passthrough
+tunnels; it does not decrypt their upstream TLS. The reader reassembles a
+ClientHello across TLS records and read boundaries. A complete parsed hello
+emits one `state: updated` snapshot with the existing connection key. Each
+successful upstream TLS establishment emits another update on its upstream key.
+The terminal snapshot retains the observed TLS facts. HTTP requests do not
+recompute fingerprints or create new TLS identities. Readers must treat updates
+as snapshots, not new connections or counter increments.
+
+`tls_client_hello` contains `ja3`, `ja4`, `sni`, `alpn_offers`, `legacy_version`,
+`supported_versions`, `cipher_suites`, `cipher_suite_count`, `extension_types`,
+`extension_count`, and `truncated`. Versions, ciphers and extension types are
+unsigned wire values. The cipher and extension summaries retain observed order
+and GREASE values; the fingerprint algorithms exclude GREASE where specified.
+Each numeric list keeps at most 64 values. The SNI summary keeps at most 253
+UTF-8 bytes. The Application-Layer Protocol Negotiation (ALPN) summary keeps the
+first 16 offers, each at most 256 displayed bytes. Nonprinting and backslash
+bytes are displayed as `\xNN`. `truncated` identifies a shortened summary.
+Fingerprints always use the complete parsed values before summary truncation.
+
+JA3 uses the ClientHello legacy version, ordered ciphers, ordered extension
+types, supported groups and point formats. Its compatibility digest is MD5;
+MD5 is not used for certificate identity or security decisions. JA4 uses TLS
+over TCP (`t`), the highest non-GREASE supported version (or legacy version
+when that extension is absent), SNI-extension presence, saturated two-digit
+counts and the first ALPN offer. Its cipher hash sorts the non-GREASE ciphers.
+Its extension hash sorts non-GREASE extension types excluding SNI and ALPN,
+then appends signature algorithms in offered order. SHA-256 hash sections keep
+12 lowercase hex digits. Empty sorted lists produce twelve zeroes. Unknown
+versions use `00`. These values characterize client behavior; they are not
+cryptographic process or executable identities. JA3S and JA4S are out of scope.
+
+Each `tls_sessions` entry contains `peer`, `sni`, `version`, `cipher`, `alpn`,
+`handshake_kind`, and `leaf_certificate`. The native rustls session supplies negotiated values;
+absent values remain null. SNI is absent for IP verification names. DNS names
+omit the trailing root dot, as rustls encodes them. A parent session and an
+origin session remain separate entries, even though the
+compatibility `tls_server_name` field names the latest completed session.
+The leaf entry contains `cert_sha256` over the full certificate DER and
+`spki_sha256` over the DER-encoded SubjectPublicKeyInfo (SPKI). A renewed
+certificate can change the certificate hash while retaining the same SPKI hash.
+Changing the public key changes the SPKI hash.
+`handshake_kind` distinguishes `Full`, `FullWithHelloRetryRequest`, and
+`Resumed`. On resumption, rustls can return the authenticated session's cached
+certificate chain; that chain is not a fresh certificate observation on the wire.
+
+Leaf identity includes bounded `subject`, `issuer`, `serial`, `not_before`,
+`not_after`, `key_algorithm` (object identifier), `key_bits` where the parser
+can determine it, `san`, `san_count`, and `truncated`. Subject, issuer and
+serial keep at most 512 UTF-8 bytes each. Dates use RFC 3339. The Subject
+Alternative Name (SAN) summary keeps at most 16 DNS/IP names, each at most
+253 UTF-8 bytes; `san_count` counts all SAN entries. Unknown key sizes stay
+null. A parsing failure retains only the observed certificate hash. An empty
+certificate list has no leaf entry.
+
+If a handshake fails after a complete ClientHello, the client fingerprint
+update remains valid evidence and survives in the failed terminal snapshot.
+Incomplete hellos or invalid field framing produce no fingerprint. Observation is bounded
+in memory and does not change TLS admission. Failed upstream handshakes do not
+produce an established-session entry: tokio-rustls does not return that TLS
+session on failure. No negotiated values or certificates are fabricated.
+If a preceding parent TLS handshake succeeded, its evidence remains when the
+origin handshake fails. Raw ClientHello bytes, extension payloads, certificates,
+TLS secrets and HTTP content are not stored in these sparse records.
+
+The deterministic fixtures in `proxy/src/tls_identity/tests.rs` encode the two
+published [Salesforce JA3 preimages and hashes](https://github.com/salesforce/ja3/blob/502cc6395811c54743b0561419d61900a6df3ff7/README.md#how-it-works)
+and the ordered lists from the [FoxIO JA4 example](https://github.com/FoxIO-LLC/ja4/blob/c6469a7b0dbf8fe963810162429fbfd9d1acc4d5/technical_details/JA4.md#example).
+The JA4 expected value is
+`t13d1516h2_8daaf6152771_e5627efa2ab1`; synthetic extension payloads make this
+an algorithm vector, not a captured browser identity. Tests insert GREASE into
+ciphers, extensions, groups, versions and signatures, and fragment both TLS
+records and reads. The JA3 expected value for that synthetic JA4 body is
+`c000e2caf3a25423f9de6c8a4b12a975`, independently computed from the fixture's
+decimal preimage with Python's `hashlib.md5`. The local MD5 implementation also
+checks the [RFC 1321 test vectors](https://www.rfc-editor.org/rfc/rfc1321).
+No reference implementation source or fingerprint dependency is imported.
+
+The two public PEM fixtures in `proxy/tests/fixtures/tls-identity-*.pem` were
+generated with OpenSSL using the same P-256 key and serials 58401 and 58402.
+The test key was discarded. Known expected certificate hashes come from
+`openssl x509 -outform DER | sha256sum`; the expected SPKI hash comes from
+`openssl x509 -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum`.
+Those commands take the corresponding PEM file with `-in`. The tests also
+cover a changed public key, missing/invalid certificate data, and real
+connection correlation across concurrent HTTP/2 flows.
 
 ## `traffic.flow`
 

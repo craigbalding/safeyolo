@@ -1299,7 +1299,7 @@ async fn open_egress_for_flow(
                 .await;
             match tls {
                 Ok(tls) => {
-                    if let Some(network) = &network { network.tls(host); }
+                    if let Some(network) = &network { network.tls_session("parent", host, tls.get_ref().1); }
                     selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "complete", json!({"parent": parent_url, "verification_name": host, "certificate_verified": true}));
                     Box::new(tls)
                 }
@@ -1543,7 +1543,7 @@ async fn open_outbound(
             }
         };
         if let Some(network) = &connection.network {
-            network.tls(&destination.host);
+            network.tls_session("origin", &destination.host, tls.get_ref().1);
         }
         selected_ip::record(
             runtime,
@@ -2839,6 +2839,7 @@ where
                     _ = stop.changed() => return Ok(()),
                     result = upgrade => Box::new(TokioIo::new(result?)),
                 };
+                let client = crate::tls_identity::observe_client(client, descendants.ingress.get().cloned());
                 let (stream, connection_facts) = match connected {
                     Some(Connected { stream, h1_request_form, peer, observation, network }) => (Some(stream), Some((h1_request_form, peer, observation, network))),
                     None => (None, None),
