@@ -447,8 +447,11 @@ A conflicting existing name fails. Manual promotion applies the same age,
 content and platform checks as the schedule. No runner sleeps for 48 hours.
 
 For inspection, install the publisher tools on a Linux maintainer machine with
-Python 3.11+, GnuPG, curl and tar. Run from the source checkout. The following
-command reads the current channel and its digest-bound receipts; it writes no tag:
+Python 3.11+, GnuPG, curl and tar. Use registry read access; if anonymous reads
+are unavailable, reuse an authorized maintainer or Actions publisher identity.
+Run from the source checkout. Inspection needs no Rust compiler or native OCI
+verifier. The following command reads the current channel and its digest-bound
+receipts; it writes no tag:
 
 ```sh
 scripts/install_oras.sh "$HOME/.local/bin"
@@ -465,6 +468,40 @@ resolved inputs and kernel configuration. These records remain in GHCR after
 Actions logs and build artifacts expire. An inventory does not promise a
 bit-for-bit rebuild from future live APT repositories; the retained candidate
 provides the exact bytes.
+
+To recover one promotion decision, set `INDEX_REFERENCE` to the version tag or
+digest reference recorded for that candidate. Set `PROMOTION_RUN_ID` and
+`PROMOTION_JOB_ID` to the numeric Actions run and promotion job IDs. Choose a
+new output path outside the checkout for `INSPECTION_FILE`. With `jq` installed
+and the publisher tools on `PATH`, run:
+
+```sh
+scripts/publish_guest_oci.sh --inspect --reference "$INDEX_REFERENCE" > "$INSPECTION_FILE"
+jq --argjson run "$PROMOTION_RUN_ID" --argjson job "$PROMOTION_JOB_ID" \
+  '.promotion[] | select(.producer.run_id == $run and .producer.job_id == $job)' "$INSPECTION_FILE"
+```
+
+The returned decision identifies the promotion controller source, run/job,
+selected `index_digest`, `old_index`, proposed `new_index` and compatibility
+identifier. For a held decision, `new_index` is the proposed selection; it is
+not evidence of a tag write. A failed latest platform gate includes the exact
+`failed_smoke` receipt, with its original finish time, result, reason and origin
+fields. The same structured result appears in stdout and the Actions summary,
+and the failed operation still exits nonzero. A `retention_error` means that
+decision attachment or readback failed; inspect existing attachments before
+assuming that the decision is available in GHCR. `publication-uncertain` means
+a tag write was attempted without confirmed success. Inspect the live tag and
+retained decisions before considering another write.
+
+If an older summary omits the candidate identity, the current channel does not
+identify that operation's selection. List retained immutable versions with
+`oras repo tags --format json ghcr.io/craigbalding/safeyolo-guest`, inspect each
+relevant version with the command above, and match the decision's producer
+run/job. Include `producer.run_attempt` when distinguishing retries. An older
+decision may omit `failed_smoke`; current smoke receipts cannot establish which
+receipts existed during that operation. Keep missing historical evidence
+explicit. Inspection does not repeat installed qualification, build a verifier
+or request promotion.
 
 To retrieve the full inventory files, use `oras discover --artifact-type
 application/vnd.safeyolo.guest.staging.v1+json --format json --depth 1` with that

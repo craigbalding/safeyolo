@@ -1,6 +1,8 @@
 """Exercise quarantine, trusted staging and exact installed gate selection."""
 import copy
 import json
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -186,6 +188,78 @@ def test_holds_preserve_existing_channel(tmp_path, monkeypatch, failure):
             release.promote(args)
     assert not state["writes"]
     assert state["index"] == "sha256:" + "e" * 64
+
+
+@pytest.mark.parametrize("failure", ["newest-smoke", "held-retention", "qualified-retention", "tag", "readback", "uncertain-retention", "promoted-retention"])
+def test_promotion_failure_keeps_decision_in_stdout_and_actions_summary(tmp_path, monkeypatch, capsys, failure):
+    value, state, args = promotion_fixture(tmp_path, monkeypatch)
+    origin = {"source_revision": "b" * 40, "publisher_version": "controlled",
+              "producer": {"run_id": 1234, "run_attempt": 2, "job_id": 5678},
+              "job_url": "https://example.invalid/promotion-job"}
+    monkeypatch.setattr(release, "promotion_context", lambda: origin)
+    old = state["index"]
+    refused = {"schema": "safeyolo.guest-smoke/v1", "index_digest": value["index"]["digest"],
+               "platform": "linux-amd64", "result": "failed", "finished_at": NOW.isoformat(),
+               "reason": "original installed run failed", "gate_url": "https://example.invalid/failed-run",
+               "controller_revision": "d" * 40, "producer": {"run_id": 789, "run_attempt": 1, "job_id": 987}}
+    if failure in {"newest-smoke", "held-retention"}:
+        # Receipt discovery order does not determine which result is newest.
+        proof = [refused, *evidence(value), {**refused, "finished_at": (NOW - timedelta(minutes=1)).isoformat()}]
+        monkeypatch.setattr(release, "records", lambda *args: proof)
+    if failure.endswith("retention"):
+        def retain(index, kind, result):
+            refused_decision = "publication-uncertain" if failure == "uncertain-retention" else failure.removesuffix("-retention")
+            if result["decision"] == refused_decision:
+                raise ValueError("decision attachment readback failed")
+            state["receipts"].append(copy.deepcopy(result))
+        monkeypatch.setattr(release, "attach", retain)
+    if failure in {"tag", "uncertain-retention"}:
+        def tag(*arguments):
+            state["writes"].append(arguments)
+            raise subprocess.CalledProcessError(1, arguments)
+        monkeypatch.setattr(release, "command", tag)
+    if failure == "readback":
+        responses = iter([old, old, "sha256:" + "f" * 64])
+        monkeypatch.setattr(release, "channel", lambda *args: next(responses))
+    summary = tmp_path / "summary.md"
+    summary.write_text("Earlier step\n")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr(sys, "argv", ["guest_release.py", "promote", "--verifier", str(args.verifier),
+                                     "--work-directory", str(tmp_path)])
+    with pytest.raises(SystemExit) as stopped:
+        release.main()
+    assert stopped.value.code == 2
+    output = capsys.readouterr().out
+    result = json.loads(output)
+    assert summary.read_text() == "Earlier step\n```json\n" + output + "```\n"
+    assert result["index_digest"] == result["new_index"] == value["index"]["digest"]
+    assert result["old_index"] == old and result["compatibility"] == "v1"
+    assert result["source_revision"] == "b" * 40 and result["at"] == NOW.isoformat()
+    assert all(result[key] == expected for key, expected in origin.items())
+    if failure in {"newest-smoke", "held-retention"}:
+        assert result["decision"] == "held"
+        assert result["failed_smoke"] == refused
+        assert result["reason"] == "latest installed smoke failed: linux-amd64"
+        assert not state["verified"]
+    elif failure in {"tag", "readback", "uncertain-retention"}:
+        assert result["decision"] == "publication-uncertain"
+        assert result["gates"] == evidence(value)
+    elif failure == "promoted-retention":
+        assert result["decision"] == "promoted" and result["promoted_at"]
+        assert state["index"] == value["index"]["digest"]
+    else:
+        assert result["decision"] == "held"
+    if failure == "qualified-retention":
+        assert result["reason"] == "decision attachment readback failed"
+        assert state["receipts"][-1] == result
+    elif failure.endswith("retention"):
+        assert result["retention_error"] == "decision attachment readback failed"
+    else:
+        assert state["receipts"][-1] == result
+    if result["decision"] == "held":
+        assert not state["writes"] and state["index"] == old
+    else:
+        assert len(state["writes"]) == 1
 
 
 def test_workflow_has_independent_utc_activities_and_no_normal_bypass():

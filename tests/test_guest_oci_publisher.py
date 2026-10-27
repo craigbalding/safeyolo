@@ -591,7 +591,7 @@ elif name=='rsync':
     assert "Docker references with both a tag and digest" in rejected.stderr
 
 
-def test_real_oras_receipt_attachment_discovery_and_inventory_retrieval(tmp_path, artifacts, publisher_tools, registry, monkeypatch):
+def test_real_oras_receipt_attachment_discovery_and_inventory_retrieval(tmp_path, artifacts, publisher_tools, registry, monkeypatch, capsys):
     from scripts import guest_release
     repository, _, _, tags, _, _ = registry
     prior = publish(tmp_path, artifacts, publisher_tools, repository, version="guest-2026-10-11.1")
@@ -676,6 +676,33 @@ def test_real_oras_receipt_attachment_discovery_and_inventory_retrieval(tmp_path
     monkeypatch.setattr(guest_release, "datetime", SimpleNamespace(now=lambda *args: now + timedelta(seconds=172799)))
     assert guest_release.promote(promotion)["decision"] == "held"
     assert tags["compat-v1"] == old_index
+    # Exercise the failed gate through the real CLI renderer and OCI reader.
+    # The failure precedes content verification; inspection needs no verifier.
+    monkeypatch.setattr(guest_release, "datetime", SimpleNamespace(now=lambda *args: now + timedelta(seconds=172800)))
+    failed_smoke = {"schema": "safeyolo.guest-smoke/v1", "index_digest": index["digest"],
+                    "platform": "linux-amd64", "result": "failed", "finished_at": now.isoformat(),
+                    "reason": "original failed attempt", "gate_url": "https://example.invalid/failed-run",
+                    "operator": "controlled-operator"}
+    guest_release.attach(index, guest_release.SMOKE, failed_smoke)
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr(sys, "argv", ["guest_release.py", "promote", "--verifier", "/absent-verifier",
+                                     "--work-directory", str(tmp_path)])
+    with pytest.raises(SystemExit) as stopped:
+        guest_release.main()
+    assert stopped.value.code == 2
+    output = capsys.readouterr().out
+    held = json.loads(output)
+    assert held["decision"] == "held" and held["failed_smoke"] == failed_smoke
+    assert held["old_index"] == old_index and held["index_digest"] == held["new_index"] == index["digest"]
+    assert summary.read_text() == "```json\n" + output + "```\n"
+    assert tags["compat-v1"] == old_index
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY")
+    monkeypatch.setattr(sys, "argv", ["guest_release.py", "inspect", "--reference", repository + "@" + index["digest"]])
+    guest_release.main()
+    recovered = json.loads(capsys.readouterr().out)
+    assert recovered["promotion"] == [held] and recovered["smoke"] == [failed_smoke]
+    assert recovered["index"] == index
     for platform in guest_release.selection.PLATFORMS:
         smoke = {"schema": "safeyolo.guest-smoke/v1", "index_digest": index["digest"], "platform": platform,
                  "operator": "controlled-operator", "result": "passed", "finished_at": (now + timedelta(hours=1)).isoformat(),
@@ -693,7 +720,7 @@ def test_real_oras_receipt_attachment_discovery_and_inventory_retrieval(tmp_path
     assert all(registry[1][key] == value for key, value in saved_blobs.items())
     assert all(registry[2][key] == value for key, value in saved_manifests.items())
     assert tags["guest-2026-10-11.1"] == old_index
-    assert {row["decision"] for row in guest_release.records(index, guest_release.DECISION)} == {"qualified", "promoted"}
+    assert {row["decision"] for row in guest_release.records(index, guest_release.DECISION)} == {"held", "qualified", "promoted"}
 
 
 

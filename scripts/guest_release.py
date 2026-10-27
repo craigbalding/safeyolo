@@ -28,6 +28,18 @@ INSTALLED_SECTIONS = {"systrap": {"isolation", "workloads", "access", "lifecycle
                       "kvm": {"isolation", "ingress", "workloads"}, "vz": {"isolation", "access", "lifecycle", "continuity"}}
 
 
+class FailedSmoke(ValueError):
+    def __init__(self, smoke: dict) -> None:
+        super().__init__("latest installed smoke failed: " + smoke["platform"])
+        self.smoke = smoke
+
+
+class PromotionFailure(ValueError):
+    def __init__(self, result: dict) -> None:
+        super().__init__(f"{result['decision']}: {result['reason']}")
+        self.result = result
+
+
 def stamp() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -476,7 +488,7 @@ def gates(candidate: dict, evidence: list[dict], default_branch: str) -> list[di
     successful = {}
     for result in newest.values():
         if result["result"] != "passed":
-            raise ValueError("latest installed smoke failed: " + result["platform"])
+            raise FailedSmoke(result)
         platform = result["platform"]
         verify_smoke_result(candidate, result, default_branch)
         successful[platform] = result
@@ -537,6 +549,14 @@ def promotion_context() -> dict:
     return context
 
 
+def attach_promotion_decision(index: dict, result: dict) -> None:
+    try:
+        attach(index, DECISION, result)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        result["retention_error"] = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+        raise PromotionFailure(result) from exc
+
+
 def promote(args: argparse.Namespace) -> dict:
     now = datetime.now(UTC)
     default_branch = branch()
@@ -548,7 +568,8 @@ def promote(args: argparse.Namespace) -> dict:
         return {"decision": "held", "reason": "no trusted complete candidate has reached 172800 seconds", "legacy_indexes": legacy}
     old = channel(args.compatibility)
     result = {"schema": "safeyolo.guest-promotion/v1", "at": now.isoformat(), "index_digest": candidate["index"]["digest"],
-              "old_index": old, "new_index": candidate["index"]["digest"], "decision": "held", **promotion_context()}
+              "old_index": old, "new_index": candidate["index"]["digest"], "compatibility": args.compatibility,
+              "decision": "held", **promotion_context()}
     tag_attempted = False
     try:
         if old == candidate["index"]["digest"]:
@@ -579,9 +600,11 @@ def promote(args: argparse.Namespace) -> dict:
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         result.update(decision="publication-uncertain" if tag_attempted else "held",
                       reason=str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
-        attach(candidate["index"], DECISION, result)
-        raise ValueError(f"{result['decision']}: {result['reason']}") from exc
-    attach(candidate["index"], DECISION, result)
+        if isinstance(exc, FailedSmoke):
+            result["failed_smoke"] = exc.smoke
+        attach_promotion_decision(candidate["index"], result)
+        raise PromotionFailure(result) from exc
+    attach_promotion_decision(candidate["index"], result)
     return result
 
 
@@ -615,6 +638,9 @@ def main() -> None:
             index, value = selection.manifest(args.reference)
             result = {"index": index, "annotations": value["annotations"], "staging": records(index, STAGING),
                       "smoke": records(index, SMOKE), "promotion": records(index, DECISION)}
+    except PromotionFailure as exc:
+        failed = True
+        result = exc.result
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         failed = True
         result = {"decision": "failed", "reason": str(exc) if isinstance(exc, ValueError) else type(exc).__name__, "at": stamp()}
