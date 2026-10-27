@@ -83,7 +83,9 @@ fn records(directory: &Path) -> Vec<Value> {
             !matches!(
                 row["event"].as_str(),
                 Some(
-                    "traffic.request_outcome"
+                    "network.connection"
+                        | "traffic.flow"
+                        | "traffic.request_outcome"
                         | "traffic.egress"
                         | "security.network_guard.evaluated"
                         | "security.credential_guard.evaluated"

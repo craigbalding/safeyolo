@@ -16,6 +16,7 @@ pub mod codex_package;
 mod command_centre;
 mod completion_notes;
 mod config;
+mod connection_events;
 mod connection_tasks;
 pub mod contracts;
 pub mod coord_operator;
@@ -394,6 +395,7 @@ pub(crate) struct Runtime {
     flow_recorder: Arc<flow_recorder::FlowRecorder>,
     traffic_view: Arc<traffic_view::TrafficView>,
     audit: Arc<audit::Writer>,
+    connection_events: Option<Arc<connection_events::ConnectionEvents>>,
     request_logger: Arc<request_logger::RequestLogger>,
     agent_activity: Arc<agent_activity::AgentActivity>,
     metrics: Arc<metrics::Metrics>,
@@ -776,6 +778,14 @@ impl Runtime {
                 flow_recorder,
                 traffic_view,
                 audit: audit.clone(),
+                connection_events: match previous {
+                    Some(previous) => previous.connection_events.clone(),
+                    None => connection_events::ConnectionEvents::new(
+                        &config,
+                        default_via,
+                        audit.clone(),
+                    ),
+                },
                 request_logger,
                 agent_activity,
                 metrics,
@@ -1596,18 +1606,33 @@ async fn accept_agents(
                             None
                         }
                     };
+                    let connection = runtime.read().ok().and_then(|runtime| {
+                        runtime.connection_events.as_ref().map(|events| events.ingress(&identity, &socket))
+                    });
                     let connection_runtime = runtime.clone();
                     let connection_stop = stop.clone();
                     connections.spawn(async move {
                         let _memory = memory;
                         let tasks = connection_tasks::ConnectionTasks::new(connection_stop.clone());
+                        if let Some(connection) = &connection {
+                            let _ = tasks.ingress.set(connection.clone());
+                        }
                         let disconnect_monitor = monitor_agent_disconnect(&socket, &tasks);
                         let driver_tasks = tasks.clone();
-                        tasks.run(serve_connection(socket, identity, connection_runtime, connection_stop, driver_tasks)).await;
+                        let stream = connection_events::observe(Box::new(socket), connection.clone());
+                        let driver_connection = connection.clone();
+                        tasks.run(async move {
+                            let result = serve_connection(stream, identity, connection_runtime, connection_stop, driver_tasks).await;
+                            if result.is_err() && let Some(connection) = driver_connection {
+                                connection.failed("http_error");
+                            }
+                            result
+                        }).await;
                         if let Some(disconnect_monitor) = disconnect_monitor {
                             disconnect_monitor.abort();
                             let _ = disconnect_monitor.await;
                         }
+                        drop(connection);
                     });
                 }
                 Err(error) => {
@@ -1729,7 +1754,7 @@ fn monitor_agent_disconnect(
 }
 
 async fn serve_connection(
-    socket: UnixStream,
+    socket: tunnels::BoxStream,
     identity: ConnectionIdentity,
     runtime: Arc<RwLock<Arc<Runtime>>>,
     mut stop: watch::Receiver<bool>,

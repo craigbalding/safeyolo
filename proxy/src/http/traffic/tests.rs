@@ -56,7 +56,9 @@ fn records(directory: &Path) -> Vec<Value> {
             !matches!(
                 row["event"].as_str(),
                 Some(
-                    "traffic.request_outcome"
+                    "network.connection"
+                        | "traffic.flow"
+                        | "traffic.request_outcome"
                         | "traffic.egress"
                         | "traffic.tunnel"
                         | "traffic.websocket.start"
@@ -718,18 +720,23 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
             .await
             .unwrap();
         assert_eq!(stream.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+        let multiplex = Arc::new(tokio::sync::Barrier::new(3));
         hyper::server::conn::http2::Builder::new(TokioExecutor::new())
             .serve_connection(
                 TokioIo::new(stream),
-                service_fn(|request: Request<Incoming>| async move {
-                    assert_eq!(request.version(), hyper::Version::HTTP_2);
-                    assert_eq!(
-                        request.into_body().collect().await.unwrap().to_bytes(),
-                        Bytes::from_static(b"request body")
-                    );
-                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(
-                        b"response body",
-                    ))))
+                service_fn(move |request: Request<Incoming>| {
+                    let multiplex = multiplex.clone();
+                    async move {
+                        assert_eq!(request.version(), hyper::Version::HTTP_2);
+                        assert_eq!(
+                            request.into_body().collect().await.unwrap().to_bytes(),
+                            Bytes::from_static(b"request body")
+                        );
+                        multiplex.wait().await;
+                        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(
+                            b"response body",
+                        ))))
+                    }
                 }),
             )
             .await
@@ -767,21 +774,28 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
             .await
             .unwrap();
     let driver = tokio::spawn(connection);
-    let request = Request::builder()
-        .method("POST")
-        .uri(format!("https://{authority}/h2?private=query"))
-        .header("Authorization", "Bearer key-h2")
-        .body(Full::new(Bytes::from_static(b"request body")))
-        .unwrap();
-    let reply = timeout(LIMIT, sender.send_request(request))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(reply.status(), 200);
-    assert_eq!(
-        reply.into_body().collect().await.unwrap().to_bytes(),
-        Bytes::from_static(b"response body")
-    );
+    let requests = (0..3).map(|_| {
+        let mut sender = sender.clone();
+        let authority = &authority;
+        async move {
+            let request = Request::builder()
+                .method("POST")
+                .uri(format!("https://{authority}/h2?private=query"))
+                .header("Authorization", "Bearer key-h2")
+                .body(Full::new(Bytes::from_static(b"request body")))
+                .unwrap();
+            let reply = timeout(LIMIT, sender.send_request(request))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(reply.status(), 200);
+            assert_eq!(
+                reply.into_body().collect().await.unwrap().to_bytes(),
+                Bytes::from_static(b"response body")
+            );
+        }
+    });
+    futures_util::future::join_all(requests).await;
 
     // Reload the policy while the owned H2 tunnel remains alive. The next H2
     // stream is denied by credential policy before a second origin accept or
@@ -827,26 +841,94 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     timeout(LIMIT, peer).await.unwrap().unwrap();
     proxy.shutdown().await;
     cleanup(directory.path());
-    assert_eq!(stats(&runtime), expected_stats(1, 0, 1));
+    assert_eq!(stats(&runtime), expected_stats(3, 0, 3));
     let rows = records(directory.path());
     let traffic: Vec<_> = rows
         .iter()
         .filter(|row| row["event"] == "traffic.request" || row["event"] == "traffic.response")
         .collect();
-    assert_eq!(traffic.len(), 2);
-    check_event(traffic[0], "alice", &host, "/h2", false, 12, true);
-    check_event(traffic[1], "alice", &host, "/h2", true, 13, true);
-    assert_eq!(traffic[0]["request_id"], traffic[1]["request_id"]);
+    assert_eq!(traffic.len(), 6);
+    for request in traffic
+        .iter()
+        .filter(|row| row["event"] == "traffic.request")
+    {
+        check_event(request, "alice", &host, "/h2", false, 12, true);
+        let response = traffic
+            .iter()
+            .find(|row| {
+                row["event"] == "traffic.response" && row["request_id"] == request["request_id"]
+            })
+            .unwrap();
+        check_event(response, "alice", &host, "/h2", true, 13, true);
+    }
     let credentials: Vec<_> = rows
         .iter()
         .filter(|row| row["event"] == "security.credential_guard")
         .collect();
-    assert_eq!(credentials.len(), 2);
-    assert_eq!(credentials[0]["decision"], "allow");
-    assert_eq!(credentials[1]["decision"], "deny");
-    assert_eq!(credentials[0]["agent"], "alice");
-    assert_eq!(credentials[1]["agent"], "alice");
+    assert_eq!(credentials.len(), 4);
+    assert!(
+        credentials[..3]
+            .iter()
+            .all(|row| row["decision"] == "allow" && row["agent"] == "alice")
+    );
+    assert_eq!(credentials[3]["decision"], "deny");
+    assert_eq!(credentials[3]["agent"], "alice");
     owned_egress(directory.path(), &host, port, 1);
+    let rows = crate::connection_events::tests::records(&runtime, directory.path());
+    crate::connection_events::tests::assert_pairs(&rows);
+    let clients =
+        crate::connection_events::tests::connections(&rows, "client_to_proxy", "terminal");
+    let servers =
+        crate::connection_events::tests::connections(&rows, "proxy_to_upstream", "terminal");
+    assert_eq!(clients.len(), 1);
+    for connection in clients.iter().chain(servers.iter()) {
+        if connection["state"] == "failed" {
+            assert!(
+                connection["error"].is_string(),
+                "a transport error must retain its category"
+            );
+        }
+    }
+    assert_eq!(
+        servers.len(),
+        1,
+        "three H2 streams and CONNECT share the actual upstream"
+    );
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        assert!(servers[0]["tls_server_name"].is_null());
+    } else {
+        assert_eq!(servers[0]["tls_server_name"], host);
+    }
+    let flows: Vec<_> = rows
+        .iter()
+        .filter(|row| row["event"] == "traffic.flow")
+        .collect();
+    assert_eq!(
+        flows.len(),
+        5,
+        "CONNECT, three upstream streams and one local denial"
+    );
+    assert_eq!(
+        flows
+            .iter()
+            .filter(|flow| flow["details"]["server_connection_id"] == servers[0]["connection_id"])
+            .count(),
+        4
+    );
+    assert_eq!(
+        flows
+            .iter()
+            .filter(|flow| flow["details"]["server_connection_id"].is_null())
+            .count(),
+        1
+    );
+    for flow in flows {
+        assert_eq!(
+            flow["details"]["client_connection_id"],
+            clients[0]["connection_id"]
+        );
+        assert_eq!(flow["details"]["runtime_id"], clients[0]["runtime_id"]);
+    }
 }
 
 #[tokio::test]

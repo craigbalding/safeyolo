@@ -128,6 +128,12 @@ fn drained(proxy: &Proxy, directory: &Path) -> Vec<Value> {
     records(&directory.join("audit.jsonl"))
         .into_iter()
         .filter(|row| {
+            !matches!(
+                row["event"].as_str(),
+                Some("network.connection" | "traffic.flow")
+            )
+        })
+        .filter(|row| {
             assert_eq!(row["schema_version"], 1);
             !(row["addon"] == "memory-monitor" && row["event"] == "ops.memory.conn_closed")
         })
@@ -430,7 +436,8 @@ async fn explain_child(directory: &Path) {
                 "agent.api_response",
                 "traffic.request",
                 "traffic.response",
-                "traffic.request_outcome"
+                "traffic.request_outcome",
+                "traffic.flow"
             ]
         );
         assert!(events.iter().all(|event| event["agent"] == agent));
