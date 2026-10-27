@@ -1,5 +1,215 @@
 # macOS Seatbelt acceptance records
 
+## Account fixture inputs and noncreating observer, 2026-10-20
+
+The first account attempt stopped before allocation because
+`/Library/PrivilegedHelperTools` was absent. Sylab created only that missing
+parent as root:wheel with mode 0755. The second attempt used staged source
+`b48c1712f607259badda97b704dad53e9df50cd8` on Tart macOS 26.6.2/25G83, with
+administrator user ID (UID) 501 and disposable account UID 59900. Its setup,
+repeat, precedence, path, environment, startup, admin/sudo, access control list
+(ACL), hardlink, consumer, crontab and rollback controls passed. The full script
+exited 1 before fresh Secure Shell (SSH) login because no usable native SSH
+transport was selected. The retired Python
+`safeyolo` 0.1.1 on the ordinary PATH does not provide `ssh-proxy`.
+
+The cleanup then retained the account and diagnostic lab. On this OS, its
+`launchctl print user/59900` check created the domain it was meant to observe.
+Sylab independently observed domain and process absence after a successful
+scoped bootout. The direct print recreated the domain with the print command's
+process ID (PID) as its creator and started `distnoted`. A second scoped bootout restored
+absence. `launchctl print system` observed both states without creating the
+user domain.
+
+The permanent cleanup now reads the system inventory's `subdomains` section.
+It matches the complete `user/59900` entry. Failed, incomplete or unknown
+inventory retains the fixture and diagnostics. An existing domain still gets
+only the scoped bootout, followed by another system inventory. UID signals,
+exact-owned-crontab checks, temporary privilege revocation and tracked root
+daemon/session guards retain their existing scope.
+
+The account fixture now calls `configure-client --check` before allocation.
+That check reuses the actual client's executable selection, version check and
+`ssh-proxy --help` command. It does not read keys, prompt for a destination or
+write client files. `SAFEYOLO_SSH_PROXY_EXECUTABLE` takes precedence over
+`SAFEYOLO_CLI` and discovery. A missing or unsupported selection fails before
+fixture allocation; it does not silently select another transport.
+
+For this correction, Linux passed four focused tests with 40 controlled cases.
+On Tart macOS 26.6.2 with system Python 3.9.6, the same cases and the native
+system-inventory presence/absence/error test passed. The native check read
+existing domains and an absent control UID; it did not open a user domain or
+touch UID 59900. The actual retained executable also passed the root fixture's
+preallocation prefix with the recipe's filtered environment and `sudo` options.
+No account or root SSH daemon was started. The separate test inputs were removed.
+From the checkout root, the focused command is:
+
+```sh
+python3 -I -B tests/test_seatbelt_fixture_safety.py -v FixtureSafetyTests SystemDomainInventoryTests
+```
+
+Sylab selected the existing native executable
+`/Users/admin/forge769-correction-9925aada/proxy/target/debug/safeyolo` through
+`SAFEYOLO_SSH_PROXY_EXECUTABLE`. Its version reported commit
+`9925aadac447c51d52a3a24e2b56f554b921aaef`, profile `debug`. Its SHA-256 was
+`bf6408363438c1976da580c0ea08213fa112603949fce500d8e20c7cd5408636`.
+Both version and `ssh-proxy --help` exited 0. The `ssh_proxy.rs` source matched
+the b48c module, with SHA-256
+`3e969f1f6bc9de8584a87c23d36675501ebe31206a61ad6d0231a47ef91228f8`.
+This identifies the retained transport; it is not a b48c production binary.
+
+The unchanged b48c client script then passed at 23:40:44–23:40:45 UTC using the
+retained account and client key in a separate owned subdirectory. Generated
+configuration, fresh confined SSH identity, binary standard input/output, outside-canary
+denial and host-key mismatch rejection passed. The tracked root daemon was
+reaped with no session children, and its pending marker was absent.
+
+Sylab separately verified owned cleanup at 23:43:00.661760 UTC. Root daemons
+94358 and 94562 were absent; pending markers and the account crontab were absent.
+Temporary admin membership and the sudoers file were revoked. Successful
+account/UID inspection found no reserved account or UID. The noncreating system
+inventory found no user domain, and `pgrep` returned 1. The account, home, entry,
+sudoers file and lab were removed. The created parent was empty and removed.
+The original full script remains a failed run. Its passed sections, the client
+continuation and the independent cleanup are distinct observations. No new
+account run or client continuation is needed for this fixture correction.
+Lens still owns criterion acceptance. Physical Bristol VZ remains unverified
+under the separate [VZ procedure](VZ-WITNESS.md).
+
+## Existing LaunchAgents aliases, 2026-10-20
+
+Lens found that `a883eca23e1501c3c5aeee4dd2a7fca484724136` allowed a write through
+a hardlink created outside `LaunchAgents` before confinement. The protected
+file's contents changed. A focused owner probe also changed a protected input
+through a pre-existing symlink to a writable file elsewhere in the test home.
+Neither probe registered a job or demonstrated outside execution.
+
+The filesystem preflight now inspects existing files throughout `LaunchAgents`.
+It refuses writable multiply-linked files, including files whose owner can
+restore write access. It also checks external symlink targets and their parents
+with the existing account permission checks. Internal symlinks and inputs that
+the account cannot modify remain usable. The checker names unsafe or unknown
+inputs and does not remove or replace them. Privileged installation paths still
+require root ownership.
+
+On the existing Tart guest, macOS 26.6.2/25G83 and system Python 3.9.6 as UID501,
+the focused module passed nine tests: the earlier 27 fixture cases and seven
+native filesystem cases. The new cases cover writable and read-only-owner
+hardlinks, a nested hardlink, an unaliased file with an internal symlink, an
+external writable target, a protected system-file target and an unresolved link.
+Unsafe files and aliases remained present with unchanged contents. After the
+unsafe extra link was removed, preflight passed. The unaliased control passed
+preflight and denied a direct confined write while an ordinary cache write worked.
+
+The native test driver compiles and invokes the actual post-identity filesystem
+function in `check-account.c`, using `clang -Wall -Wextra -Werror -O2`. It does
+not invoke the root account/scheduler/SSH entrypoint. Linux passed the existing
+three tests with 27 cases and skipped the six Mac-only tests. Sylab later
+observed the reserved root fixture's writable-hardlink refusal,
+protected-hardlink acceptance and unaliased controls at b48c, as recorded above.
+The physical VZ witness remains unverified.
+
+## Disposable fixture safety correction, 2026-10-20
+
+The account fixture previously treated failed account/UID/process inspection as
+absence. Its cleanup could remove the account, entry, home and diagnostic lab
+while UID processes remained or could not be inspected. Lens reproduced these
+branches at both PR #1159's first head and its base; the new crontab guard did
+not introduce them.
+
+The correction requires successful local account/UID inspection and process
+status 1 before allocation. Existing targets and symlinks at the reserved home,
+entry and sudoers paths refuse allocation. Cleanup retains the account, entry,
+home and lab when UID-process absence or launchd removal cannot be established.
+The live client retains a marker until it observes no root SSH session children
+and reaps its tracked root daemon. The outer cleanup honors that marker.
+Cleanup first attempts to revoke temporary admin membership and removes the
+temporary sudoers file. The exact-owned-crontab comparison and retention of
+unknown crontabs are preserved.
+
+At `a883eca23e1501c3c5aeee4dd2a7fca484724136`, `uv run --frozen --no-sync python -m
+unittest -v tests/test_seatbelt_fixture_safety.py` ran three tests with 27 cases on Linux.
+The same source ran with system Python 3.9.6 and `/bin/sh` on the existing Tart
+macOS 26.6.2 guest. All cases passed. The controlled cases redirect deletion to
+temporary files and stub account, scheduler and process commands. They cover
+legitimate absence/removal, inspection errors, live processes, failed launchd
+removal, unknown cron state and uncertain root daemon/session teardown. Shell
+syntax and Python compilation also passed on that guest. No account was
+allocated and no real root SSH daemon was started by these controls.
+
+The later operator observations above complete the reserved account execution
+and cleanup. They do not turn the failed original script into a passing run.
+The running SSH daemon was never reloaded. On cleanup uncertainty, the fixture
+must still return nonzero and retain the printed lab path with its root SSH log
+and pending marker intact.
+
+The [physical VZ witness procedure](VZ-WITNESS.md) supplies the missing boot,
+SSH banner, manual VirtioFS mount, bidirectional share markers, host canary and
+owned teardown commands. That procedure is prepared, not an execution result.
+
+## Execution-boundary hardening, 2026-10-20
+
+Forge ran `python3 test-boundary.py` outside Seatbelt in the approved Tart guest
+on macOS 26.6.2 (25G83), arm64. The operator process used the existing `admin`
+account, UID 501. Each confined process used the supplied policy with
+`AGENT_HOME` set to a fresh owned subdirectory. This was a scoped-process test,
+not a converted dedicated account or a Bristol installation. System Python
+was 3.9.6. Command Line Tools compiled the Objective-C helper; ad-hoc signatures
+passed `codesign --verify --strict`.
+
+| Actual operation | Observation |
+| --- | --- |
+| `launchctl bootstrap` and `submit` | Refused; the outside observer found no owned service. The kernel logged `deny job-creation`. |
+| LaunchAgents directory/file creation, modification, directory rename and hardlink | EPERM. Replacing `Library` was also denied. Ordinary rc and cache writes worked. |
+| Modern SMAppService LoginItem, LaunchAgent and LaunchDaemon registration | All three refused; the outside observer found no registration. Direct lookup of `com.apple.xpc.smd` returned `BOOTSTRAP_NOT_PRIVILEGED` (1100) inside confinement and succeeded outside. |
+| Identical signed SMAppService bundles outside confinement | LoginItem and LaunchAgent reached enabled status (1). LaunchDaemon reached requiresApproval (2), despite the API returning false/EPERM. Each was explicitly unregistered and checked as status 0 before cleanup. No daemon approval was given. |
+| `open -n -a` and direct LaunchServices API | Refused with no marker; the same application launched outside confinement and read the outside canary. |
+| AppleEvent to a live owned receiver | The outside sender received a reply. The confined sender failed; lookup of `com.apple.coreservices.appleevents` returned 1100. No unrelated application was targeted. |
+| `crontab`, `at -t 209901010000` and `batch` | `sandbox-exec` refused the setuid executables with EPERM. The outside observer found no crontab and an unchanged at queue. No scheduler setting was changed. |
+| Existing unsafe launchd job, then confined `kickstart` | The helper ran with PPID 1 and read the outside canary. The job was removed through its exact owned label. `deny job-creation` alone does not confine a pre-existing consumer. |
+| Corrected existing job, then confined `kickstart` | launchd ran the system `sandbox-exec` with a profile outside the writable test home, before reaching the same helper. The helper's outside-file read failed with EPERM. |
+| Developer workload through the supplied policy | Home read/write, PTY, UDS exchange, child supervision, C/Swift compile and execute, and tmux passed. The outside-file/symlink and live TCP checks were denied. |
+
+The modern LaunchAgent/LaunchDaemon calls reported code-signing inspection
+errors inside the sandbox. The positive controls establish that these were
+usable signed fixtures. The observed broker denial is preserved as an explicit
+narrow policy rule. LoginItem's confined error was a disconnected socket.
+Neither those error strings nor a false registration return alone establishes
+absence; the outside status observations supply that check.
+
+Trusted log inspection for the owned processes recorded denied Mach lookups
+for `com.apple.xpc.smd`, `com.apple.CoreServices.coreservicesd`,
+`com.apple.coreservices.launchservicesd`, `com.apple.coreservices.quarantine-resolver`,
+`com.apple.lsd.mapdb`, `com.apple.lsd.modifydb`, and
+`com.apple.coreservices.appleevents`. These names describe this OS observation;
+they are not a new allowance list. Other incidental denial messages were not
+turned into permissions.
+
+The final grouped run returned `status: pass` and removed its fixture. Registered
+services and launchd jobs were unregistered through their owner before removing
+bundles. The owned AppleEvent receiver was terminated and reaped. The live TCP
+listener received no connections. No factory policy, SSH or account setting was
+installed or changed.
+A focused follow-up also denied creation of an absent `LaunchAgents` directory
+and modification of the corrected job's profile outside the writable test home.
+The profile bytes remained unchanged; that fixture was removed.
+
+The changed native account checker compiles with `-Wall -Wextra -Werror -O2` on
+this guest. At that scoped-process test, the new account/consumer cases and real
+SSH were unverified. The later operator observations above cover those account
+operations at b48c. Physical VZ under the changed profile remains unverified.
+Existing dated results below retain their original source and scope.
+
+The approved Bristol SSH route confirmed macOS 26.6.2/25G83 and UID 502. Its
+installed profile and grants were left unchanged. A separate candidate copy,
+formed by appending only the new denials to that installed profile, failed to
+attach inside the existing confined SSH session: `sandbox_apply: Operation not
+permitted`, exit 71, before `/usr/bin/true` ran. A trusted host process outside
+that entry must launch the scoped physical witness. This refusal is not a VZ
+result or evidence that the host has no external consumers.
+
+## Earlier accepted workloads
+
 The entry, profile and probe in this contribution were exercised through a real
 SSH daemon in the operator's disposable Tart guest on 2026-09-13. Nothing was
 installed on the physical host during those runs. The test used a dedicated non-admin `sy-seatbelt-test` account
@@ -155,10 +365,29 @@ removing the account and files. A failed cleanup makes the suite fail.
 
 **Use a disposable Mac VM with Command Line Tools and SSH host keys provisioned.
 In an administrator terminal, change to this checkout's
-`contrib/macos-seatbelt-agent` directory before running:**
+`contrib/macos-seatbelt-agent` directory. Set `native` below to the absolute path
+of an existing macOS native SafeYolo command-line interface (CLI) or Coord
+executable with `ssh-proxy`. Preserve the configured proxy and certificate
+authority (CA) environment. This is the ordinary fresh
+fixture recipe; it is not a command to repeat the completed 2026-10-20 run.**
+
+If `/Library/PrivilegedHelperTools` is absent, create only that parent. Leave
+an existing directory's ownership and mode intact:
 
 ```sh
-sudo /bin/sh ./test-configure-ssh.sh
+if [ ! -e /Library/PrivilegedHelperTools ] && [ ! -L /Library/PrivilegedHelperTools ]; then
+    sudo -n install -d -o root -g wheel -m 755 /Library/PrivilegedHelperTools
+fi
+```
+
+Pass the selected executable explicitly through `sudo`. The fixture checks it
+before allocating the account. The live client inherits the selection and CA
+variables; its isolated CONNECT relay supplies only the test's proxy URL.
+
+```sh
+native=/absolute/path/to/native/safeyolo
+sudo -n --preserve-env=HTTP_PROXY,HTTPS_PROXY,SSL_CERT_FILE,REQUESTS_CA_BUNDLE,NODE_EXTRA_CA_CERTS \
+    env SAFEYOLO_SSH_PROXY_EXECUTABLE="$native" /bin/sh ./test-configure-ssh.sh
 ```
 
 The suite redirects the system startup-file check to a fixture. Failure cases
