@@ -447,8 +447,11 @@ A conflicting existing name fails. Manual promotion applies the same age,
 content and platform checks as the schedule. No runner sleeps for 48 hours.
 
 For inspection, install the publisher tools on a Linux maintainer machine with
-Python 3.11+, GnuPG, curl and tar. Run from the source checkout. The following
-command reads the current channel and its digest-bound receipts; it writes no tag:
+Python 3.11+, GnuPG, curl and tar. Use registry read access; if anonymous reads
+are unavailable, reuse an authorized maintainer or Actions publisher identity.
+Run from the source checkout. Inspection needs no Rust compiler or native OCI
+verifier. The following command reads the current channel and its digest-bound
+receipts; it writes no tag:
 
 ```sh
 scripts/install_oras.sh "$HOME/.local/bin"
@@ -459,12 +462,74 @@ PATH="$HOME/.local/bin:$PATH" scripts/publish_guest_oci.sh --inspect \
 Replace the reference with a version tag or `ghcr.io/craigbalding/safeyolo-guest@sha256:DIGEST`
 to inspect a retained candidate. The output contains source and run links,
 resolution/build/assembly/staging times, tool identities, per-architecture
-package inventories and promotion decisions. The staging attachment also holds
+package inventories and promotion decisions. The `attachments` field preserves
+each attachment descriptor, original manifest and subject descriptor, parsed
+receipt and original UTF-8 `receipt_text`. The staging attachment also holds
 the exact signed APT metadata, APT sources, archive keyring, builder versions,
 resolved inputs and kernel configuration. These records remain in GHCR after
 Actions logs and build artifacts expire. An inventory does not promise a
 bit-for-bit rebuild from future live APT repositories; the retained candidate
 provides the exact bytes.
+
+To recover a decision when its candidate identity is missing, set
+`PROMOTION_JOB_ID` to the original Actions promotion job ID. Choose a new output
+path outside the checkout for `INSPECTION_FILE`. With authenticated `gh` and
+the publisher tools on `PATH`, run from the checkout:
+
+```sh
+scripts/publish_guest_oci.sh --inspect --promotion-job "$PROMOTION_JOB_ID" > "$INSPECTION_FILE"
+```
+
+The reader derives the run and actual attempt from that job's Actions record.
+It searches retained immutable guest versions for decisions with that exact
+repository, workflow, run, attempt and job. It does not infer the historical
+candidate from the current channel. `matches` contains each matching index,
+its original decisions and its retained staging/smoke attachments. No match
+leaves the historical selection unknown and exits 2. Current smoke attachments
+can include records added after the original promotion job.
+
+If local registry reads are unavailable, a maintainer with authenticated `gh`
+and repository Actions write access can use the integrated default-branch
+`inspect` activity. From the checkout, with `PROMOTION_JOB_ID` set as above:
+
+```sh
+gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
+  -f activity=inspect -f promotion_job="$PROMOTION_JOB_ID"
+gh run list --repo craigbalding/safeyolo --workflow guest-oci.yml --event workflow_dispatch --limit 5
+```
+
+Select that inspection dispatch's run ID as `INSPECTION_RUN_ID`, separate from
+the historical promotion run. Set `INSPECTION_DIR` to a new directory outside
+the checkout. After the inspection job finishes, retrieve its output:
+
+```sh
+gh run view "$INSPECTION_RUN_ID" --repo craigbalding/safeyolo
+gh run download "$INSPECTION_RUN_ID" --repo craigbalding/safeyolo \
+  --name guest-promotion-inspection --dir "$INSPECTION_DIR"
+```
+
+Only the inspection job runs. It uses the existing workflow identity with
+registry read permission, writes the report to its Actions summary and retains
+`guest-inspection.json` as an artifact, including a reported no-match result.
+It does not build a native verifier, repeat installed qualification, attach a
+receipt or request promotion.
+
+A returned decision identifies the promotion controller source, run/job,
+selected `index_digest`, `old_index`, proposed `new_index` and compatibility
+identifier. For a held decision, `new_index` is the proposed selection; it is
+not evidence of a tag write. A failed latest platform gate includes the exact
+`failed_smoke` receipt, with its original finish time, result, reason and origin
+fields. The same structured result appears in stdout and the Actions summary,
+and the failed operation still exits nonzero. A `retention_error` means that
+decision attachment or readback failed; inspect existing attachments before
+assuming that the decision is available in GHCR. `publication-uncertain` means
+a tag write was attempted without confirmed success. Inspect the live tag and
+retained decisions before considering another write.
+
+An older decision may omit `failed_smoke`; current smoke receipts cannot
+establish which receipts existed during that operation. Keep missing historical
+evidence explicit. The inspection report preserves the records it finds and
+does not fill absent fields from later records.
 
 To retrieve the full inventory files, use `oras discover --artifact-type
 application/vnd.safeyolo.guest.staging.v1+json --format json --depth 1` with that
