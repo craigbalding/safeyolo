@@ -41,6 +41,10 @@ struct Connection {
     error: Option<String>,
     requested_target: Option<String>,
     resolved_peer: Option<SocketAddr>,
+    resolved_origin_peer: Option<SocketAddr>,
+    client_connection_id: Option<String>,
+    route: Option<String>,
+    tls_server_name: Option<String>,
     ingress: String,
 }
 
@@ -107,10 +111,16 @@ impl Connection {
             )
             && optional(self.error.as_deref())
             && optional(self.requested_target.as_deref())
+            && optional(self.client_connection_id.as_deref())
+            && optional(self.tls_server_name.as_deref())
+            && self
+                .route
+                .as_deref()
+                .is_none_or(|route| matches!(route, "direct" | "parent" | "provider"))
             && [&self.local_endpoint, &self.remote_endpoint]
                 .into_iter()
                 .all(|endpoint| match (self.transport.as_str(), endpoint) {
-                    ("tcp", Some(Endpoint::Ip { .. })) | ("tcp" | "unix", None) => true,
+                    ("tcp", Some(Endpoint::Ip { .. })) | ("tcp" | "unix" | "stream", None) => true,
                     ("unix", Some(Endpoint::Unix { path })) => optional(path.as_deref()),
                     _ => false,
                 })
@@ -121,6 +131,11 @@ impl Connection {
                         None => true,
                         _ => false,
                     }
+            })
+            && self.resolved_origin_peer.is_none_or(|peer| {
+                self.transport == "tcp"
+                    && self.route.as_deref() != Some("parent")
+                    && self.resolved_peer == Some(peer)
             })
     }
 }

@@ -64,6 +64,7 @@ pub(super) struct Recording {
     request_id: String,
     enabled_exchange: bool,
     state: Mutex<State>,
+    connections: Mutex<Option<crate::connection_events::Flow>>,
 }
 
 /// The service future owns this guard until a connection driver takes over.
@@ -88,11 +89,20 @@ impl Recording {
             identity,
             request_id,
             enabled_exchange,
+            connections: Mutex::new(None),
             state: Mutex::new(State {
                 record: Some(Record::default()),
                 deferred: false,
             }),
         })
+    }
+
+    pub(super) fn observe_connections(&self, runtime: &crate::Runtime) {
+        *self
+            .connections
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            crate::connection_events::Flow::new(runtime, &self.identity, &self.request_id);
     }
 
     /// The HTTP owner calls this before capture for a recognized probe host.
@@ -238,6 +248,14 @@ impl Recording {
         &self,
         observation: &crate::traffic_view::UpstreamConnectionObservation,
     ) {
+        if let Some(flow) = self
+            .connections
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_mut()
+        {
+            flow.server_connection_id = Some(observation.id.to_string());
+        }
         if observation.target.is_null() {
             return;
         }

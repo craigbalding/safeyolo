@@ -733,6 +733,7 @@ struct Outbound {
     http2: bool,
     h1_request_form: H1RequestForm,
     observation: crate::traffic_view::UpstreamConnectionObservation,
+    network: Option<crate::connection_events::Connection>,
 }
 
 fn request_uri(
@@ -906,6 +907,7 @@ struct Connected {
     h1_request_form: H1RequestForm,
     peer: Option<std::net::Ipv4Addr>,
     observation: crate::traffic_view::UpstreamConnectionObservation,
+    network: Option<crate::connection_events::Connection>,
 }
 
 #[cfg(test)]
@@ -1066,6 +1068,18 @@ async fn open_egress_for_flow(
         route,
         started,
     );
+    let network = runtime.connection_events.as_ref().map(|events| {
+        events.upstream(
+            allowed.identity,
+            &observation.id,
+            &destination.authority,
+            route_name,
+            "tcp",
+        )
+    });
+    if let Some(recording) = allowed.recording {
+        recording.connection(&observation);
+    }
     if destination.selected_ip.is_some() {
         observation.target = selected_ip::facts(destination);
         observation.target["route"] = json!(route_name);
@@ -1144,6 +1158,9 @@ async fn open_egress_for_flow(
     let socket = match connecting {
         Ok(socket) => socket,
         Err(error) => {
+            if let Some(network) = &network {
+                network.failed("connect_failed");
+            }
             if destination.selected_ip.is_some() {
                 observation.target["reason"] = json!(error.to_string());
             }
@@ -1176,6 +1193,17 @@ async fn open_egress_for_flow(
             return Err(error);
         }
     };
+    if let Some(network) = &network {
+        let peer = socket.peer_addr().ok();
+        network.connected(
+            socket
+                .local_addr()
+                .ok()
+                .map(crate::connection_events::ip_endpoint),
+            peer.map(crate::connection_events::ip_endpoint),
+            if direct { peer } else { None },
+        );
+    }
     selected_ip::record(
         runtime,
         allowed.identity,
@@ -1240,6 +1268,7 @@ async fn open_egress_for_flow(
     } else {
         Box::new(socket)
     };
+    let socket = crate::connection_events::observe(socket, network.clone());
     if let Some(live) = live {
         live.upstream_connection(observation.clone());
     }
@@ -1270,6 +1299,7 @@ async fn open_egress_for_flow(
                 .await;
             match tls {
                 Ok(tls) => {
+                    if let Some(network) = &network { network.tls(host); }
                     selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "complete", json!({"parent": parent_url, "verification_name": host, "certificate_verified": true}));
                     Box::new(tls)
                 }
@@ -1331,6 +1361,9 @@ async fn open_egress_for_flow(
     let mut stream = match parent_connection {
         Ok(stream) => stream,
         Err(error) => {
+            if let Some(network) = &network {
+                network.failed("parent_connection_failed");
+            }
             if destination.selected_ip.is_some() {
                 observation.target["reason"] = json!(error.to_string());
             }
@@ -1363,6 +1396,7 @@ async fn open_egress_for_flow(
         },
         peer,
         observation,
+        network,
     })
 }
 
@@ -1395,17 +1429,47 @@ async fn open_outbound(
             return Err("provider route cannot reuse an outbound tunnel".into());
         }
         (Some(connection), None) => connection,
-        (None, Some(provider)) => Connected {
-            stream: crate::provider_stream::open(&runtime.config, provider, destination.port)
-                .await?,
-            h1_request_form: H1RequestForm::Origin,
-            peer: None,
-            observation: crate::traffic_view::UpstreamConnectionObservation::new(
+        (None, Some(provider)) => {
+            let observation = crate::traffic_view::UpstreamConnectionObservation::new(
                 format!("upstream-{}", uuid::Uuid::new_v4().simple()),
                 crate::traffic_view::UpstreamRoute::Provider,
                 Some(crate::circuit_runtime::now()),
-            ),
-        },
+            );
+            let network = runtime.connection_events.as_ref().map(|events| {
+                events.upstream(
+                    allowed.identity,
+                    &observation.id,
+                    &destination.authority,
+                    "provider",
+                    "stream",
+                )
+            });
+            if let Some(recording) = allowed.recording {
+                recording.connection(&observation);
+            }
+            let stream =
+                match crate::provider_stream::open(&runtime.config, provider, destination.port)
+                    .await
+                {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        if let Some(network) = &network {
+                            network.failed("provider_connect_failed");
+                        }
+                        return Err(error.into());
+                    }
+                };
+            if let Some(network) = &network {
+                network.connected(None, None, None);
+            }
+            Connected {
+                stream: crate::connection_events::observe(stream, network.clone()),
+                h1_request_form: H1RequestForm::Origin,
+                peer: None,
+                observation,
+                network,
+            }
+        }
         (None, None) => {
             open_egress_for_flow(
                 runtime,
@@ -1425,10 +1489,12 @@ async fn open_outbound(
     let mut stream = connection.stream;
     let mut http2 = false;
     if destination.scheme == "https" {
-        let config = runtime
-            .tls
-            .as_ref()
-            .ok_or("upstream TLS trust is not configured")?;
+        let config = runtime.tls.as_ref().ok_or_else(|| {
+            if let Some(network) = &connection.network {
+                network.failed("origin_tls_unavailable");
+            }
+            "upstream TLS trust is not configured"
+        })?;
         let mut config = (**config).clone();
         if offer_http2 {
             config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
@@ -1457,6 +1523,9 @@ async fn open_outbound(
         let tls = match tls {
             Ok(tls) => tls,
             Err(error) => {
+                if let Some(network) = &connection.network {
+                    network.failed("origin_tls_failed");
+                }
                 if destination.selected_ip.is_some() {
                     connection.observation.target["reason"] = json!(error.to_string());
                 }
@@ -1473,6 +1542,9 @@ async fn open_outbound(
                 return Err(error);
             }
         };
+        if let Some(network) = &connection.network {
+            network.tls(&destination.host);
+        }
         selected_ip::record(
             runtime,
             allowed.identity,
@@ -1501,6 +1573,7 @@ async fn open_outbound(
         http2,
         h1_request_form: connection.h1_request_form,
         observation: connection.observation,
+        network: connection.network,
     })
 }
 
@@ -2280,6 +2353,9 @@ async fn execute_refresh(
     })
     .await
     .map_err(|error| {
+        if let Some(network) = &outbound.network {
+            network.failed("http_handshake_failed");
+        }
         if is_refresh_phase_timeout(&error) {
             crate::oauth::TransportFailure::Timeout
         } else {
@@ -2287,7 +2363,11 @@ async fn execute_refresh(
         }
     })?;
     tasks.spawn(async move {
-        let _ = connection.await;
+        if connection.await.is_err()
+            && let Some(network) = outbound.network
+        {
+            network.failed("http_error");
+        }
     });
     // Hyper's readiness boundary is separate from writing the request and
     // waiting for its response. Keep it under the handshake phase budget so
@@ -2712,7 +2792,7 @@ where
                 open_egress_for_flow(
                     &runtime,
                     &AllowedRequest {
-                        recording: None,
+                        recording: Some(recording.as_ref()),
                         tasks: &upgrades,
                         destination,
                         identity,
@@ -2760,7 +2840,7 @@ where
                     result = upgrade => Box::new(TokioIo::new(result?)),
                 };
                 let (stream, connection_facts) = match connected {
-                    Some(Connected { stream, h1_request_form, peer, observation }) => (Some(stream), Some((h1_request_form, peer, observation))),
+                    Some(Connected { stream, h1_request_form, peer, observation, network }) => (Some(stream), Some((h1_request_form, peer, observation, network))),
                     None => (None, None),
                 };
                 let classification = if passthrough {
@@ -2815,17 +2895,17 @@ where
                 if *stop.borrow() {
                     return Err(tunnels::RouteWaitEnded::Cancelled.into());
                 }
-                let (mut server, h1_request_form, peer, mut observation) = match (server, connection_facts) {
-                    (Some(server), Some((form, peer, observation))) => (server, form, peer, observation),
+                let (mut server, h1_request_form, peer, mut observation, network) = match (server, connection_facts) {
+                    (Some(server), Some((form, peer, observation, network))) => (server, form, peer, observation, network),
                     (None, None) => {
                         let ignored = passthrough_matcher.matches(&destination.host, destination.port, None)
                             .then_some(crate::ignored_host_logger::SelectedDestination { host: &destination.host, port: destination.port });
                         outbound_attempted = true;
-                        let Connected { stream, h1_request_form, peer, observation } = open_egress_for_flow(
-                            &runtime, &AllowedRequest { recording: None, tasks: &descendants, destination: &destination, identity: &identity, request_id: &request_id },
+                        let Connected { stream, h1_request_form, peer, observation, network } = open_egress_for_flow(
+                            &runtime, &AllowedRequest { recording: Some(recording.as_ref()), tasks: &descendants, destination: &destination, identity: &identity, request_id: &request_id },
                             true, Some(&passthrough_matcher), ignored, None, None,
                         ).await?;
-                        (stream, h1_request_form, peer, observation)
+                        (stream, h1_request_form, peer, observation, network)
                     }
                     _ => unreachable!("CONNECT classification preserves its upstream owner"),
                 };
@@ -2900,6 +2980,11 @@ where
                     };
                     selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "complete", json!({"verification_name": destination.host}));
                     let http2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
+                    if let Some(name) = tls.get_ref().1.server_name()
+                        && let Some(connection) = descendants.ingress.get()
+                    {
+                        connection.tls(name);
+                    }
                     (Box::new(tls), http2, "https")
                 } else {
                     (client, false, "http")
@@ -2915,6 +3000,7 @@ where
                         h1_request_form,
                         peer,
                         observation,
+                        network,
                     })),
                 });
                 serve_tunnel_http(state, identity.clone(), tunnel, client, http2, stop, descendants).await
@@ -4117,7 +4203,7 @@ where
             .select(&runtime, &allowed, provider, tunnel, live.as_deref())
             .await?
     } else {
-        upstream_h2::Selected::Unshared(
+        upstream_h2::Selected::Unshared(Box::new(
             open_outbound(
                 &runtime,
                 &allowed,
@@ -4128,7 +4214,7 @@ where
                 None,
             )
             .await?,
-        )
+        ))
     };
     let outbound_http2 = outbound.http2();
     recording.connection(outbound.observation());
@@ -4237,6 +4323,7 @@ where
             (sender.send_request(request).await?, connection)
         }
         upstream_h2::Selected::Unshared(outbound) => {
+            let outbound = *outbound;
             let request = if progressive {
                 // HTTP/1 Content-Length is itself the message boundary. In
                 // particular, zero would complete at HEADERS before ingress
@@ -4253,18 +4340,34 @@ where
             let (mut sender, connection) = hyper::client::conn::http1::Builder::new()
                 .preserve_header_case(true)
                 .handshake(TokioIo::new(outbound.stream))
-                .await?;
+                .await
+                .inspect_err(|_| {
+                    if let Some(network) = &outbound.network {
+                        network.failed("http_handshake_failed");
+                    }
+                })?;
             let driver = completion.clone().drive(connection.with_upgrades());
+            let sender_network = outbound.network.clone();
             let connection = HttpTask {
                 task: upgrades.spawn(async move {
                     if let Err(error) = driver.await {
+                        if let Some(network) = outbound.network {
+                            network.failed("http_error");
+                        }
                         eprintln!("upstream HTTP connection: {error}");
                     }
                 }),
                 completion: Some(completion.clone()),
                 _session: None,
             };
-            (sender.send_request(request).await?, connection)
+            (
+                sender.send_request(request).await.inspect_err(|_| {
+                    if let Some(network) = &sender_network {
+                        network.failed("http_error");
+                    }
+                })?,
+                connection,
+            )
         }
     };
     completion.headers_received();
@@ -4737,6 +4840,7 @@ pub(crate) fn serve_request(
             request_id.clone(),
             !connect,
         );
+        recording.observe_connections(&runtime);
         let _pending_recording = recording.pending();
         let destination =
             Destination::from_request(&request, tunnel.as_ref().map(|tunnel| &tunnel.destination))

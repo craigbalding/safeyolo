@@ -266,6 +266,46 @@ fn strict_versions_kinds_payloads_and_content_boundaries() {
 }
 
 #[test]
+fn native_route_facts_keep_origin_and_physical_peer_distinct() {
+    let mut upstream = record(connection("S1", true));
+    upstream["details"]["client_connection_id"] = json!("C1");
+    upstream["details"]["route"] = json!("direct");
+    upstream["details"]["resolved_origin_peer"] = upstream["details"]["resolved_peer"].clone();
+    upstream["details"]["tls_server_name"] = json!("example.com");
+    assert!(parse_record(&upstream.to_string()).is_ok());
+    for (field, value) in [
+        ("resolved_origin_peer", json!("203.0.113.11:443")),
+        ("client_connection_id", json!("")),
+        ("route", json!("guess")),
+        ("tls_server_name", json!("")),
+    ] {
+        let mut invalid = upstream.clone();
+        invalid["details"][field] = value;
+        assert!(
+            parse_record(&invalid.to_string()).is_err(),
+            "accepted {field}"
+        );
+    }
+    upstream["details"]["route"] = json!("parent");
+    assert!(
+        parse_record(&upstream.to_string()).is_err(),
+        "parent is not a directly observed origin"
+    );
+    upstream["details"]["resolved_origin_peer"] = Value::Null;
+    assert!(parse_record(&upstream.to_string()).is_ok());
+    upstream["details"]["route"] = json!("provider");
+    upstream["details"]["transport"] = json!("stream");
+    assert!(
+        parse_record(&upstream.to_string()).is_err(),
+        "opaque stream cannot claim a TCP endpoint"
+    );
+    upstream["details"]["local_endpoint"] = Value::Null;
+    upstream["details"]["remote_endpoint"] = Value::Null;
+    upstream["details"]["resolved_peer"] = Value::Null;
+    assert!(parse_record(&upstream.to_string()).is_ok());
+}
+
+#[test]
 fn unknown_observations_external_ingress_and_terminal_states_are_representable() {
     let mut external = connection("external-C1", false);
     external.attribution = Some(Attribution {

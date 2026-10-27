@@ -32,6 +32,12 @@ Strict version 1 consumers reject version 2. Upgrade those consumers before
 using NSM data; do not reinterpret `network.connection` as a traffic event.
 The historical Python test reference is not the native product reader.
 
+The #583 producer adds optional route, origin-peer, owning-client and Server
+Name Indication (SNI) fields, plus `transport: stream`. A strict reader built against the earlier
+version 2 field list must update before reading these producer records.
+The current reader still accepts earlier version 2 payloads that omit the
+new fields.
+
 All NSM payload fields below are in `details`, except `request_id`, which
 uses the existing envelope field. Existing `ts`, `event_id`, `severity`,
 `summary`, `agent`, and `addon`/`control` fields retain their envelope roles.
@@ -49,6 +55,12 @@ response field `instance_id`. The process token changes after a restart and
 survives policy reloads. The lifecycle owner supplies these identities.
 Request headers and sensor claims cannot supply them. This contract does not
 add another identity authority.
+
+The standalone development proxy has no installed instance identity. It uses
+its process token for both namespace fields. If an installed instance identity
+is unavailable or invalid, the proxy reports that diagnostic and omits NSM
+records rather than claiming a different installed identity. Ordinary traffic
+and audit behavior continue.
 
 The connection key is `(instance_id, runtime_id, connection_id)`. Connection
 IDs must identify real transport ownership and be unique across both legs
@@ -86,7 +98,7 @@ Open and terminal records refer to the same connection key.
 | --- | --- |
 | `connection_id` | Nonempty transport-owned local ID. |
 | `leg` | `client_to_proxy` or `proxy_to_upstream`. The client may be external. |
-| `transport` | `unix` or `tcp`, matching the current native transports. No inferred UDP or QUIC. |
+| `transport` | `unix`, `tcp`, or `stream`. `stream` describes an owned provider session whose forwarding implementation does not expose socket endpoints. No inferred TCP, UDP or QUIC for such a session. |
 | `started_at` | Observed start time in RFC 3339 format. |
 | `ended_at` | Observed end time in RFC 3339 format; absent/null while open. Must not precede the start. |
 | `state` | `open`, `closed`, or `failed`. Terminal states require `ended_at`. |
@@ -94,6 +106,10 @@ Open and terminal records refer to the same connection key.
 | `error` | Optional nonempty error category; no raw content or secret-bearing diagnostics. |
 | `requested_target` | Optional requested authority, for example `example.com:443`. A hostname is not a peer IP. |
 | `resolved_peer` | Optional actual dialed IP socket address, for example `203.0.113.10:443`. If the remote IP endpoint is present, they must agree. |
+| `resolved_origin_peer` | Optional directly observed origin socket address. Present for a successful direct dial; absent for a parent or provider route. |
+| `client_connection_id` | Optional owning ingress connection ID on the upstream leg, in this record's namespace. |
+| `route` | Optional upstream route: `direct`, `parent`, or `provider`. |
+| `tls_server_name` | Optional DNS name observed as Server Name Indication (SNI) in an established TLS session. Absent for IP verification names. An outer parent TLS name can be replaced by the origin TLS name when the inner handshake completes. |
 | `ingress` | Nonempty originating ingress provenance. |
 
 An IP endpoint is `{"type":"ip","address":"203.0.113.10:443"}` (bracketed
@@ -105,6 +121,24 @@ Do not synthesize IP addresses for UDS peers. Failed dials can retain the
 requested target with unknown local/remote endpoints and resolved peer.
 When a parent proxy is used, the physical peer is that proxy, not an invented
 origin connection. Record only facts observed by the connection owner.
+
+The native producers emit one open record after transport establishment and
+one terminal record when the final transport owner releases the connection.
+`started_at` is the time the accepted transport or upstream dial owner began.
+Failed or canceled dials emit a terminal `failed` record without an open record.
+Errors are content-free categories, such as `connect_failed` or
+`origin_tls_failed`. A half-close or an HTTP/2 stream completion does not end
+the shared connection. Ingress ownership spans CONNECT upgrades and their
+descendant tasks. Graceful proxy shutdown closes those transports before
+emitting their terminal records. After an abrupt process exit, an unmatched
+open record remains incomplete; no end time is inferred. If the wall clock
+moves backward, the terminal time is bounded by the recorded start time.
+
+For parent routes, `remote_endpoint` and `resolved_peer` identify the parent
+socket. `requested_target` retains the logical authority, while
+`resolved_origin_peer` remains absent. The native provider forwarding owner
+exposes an opaque stream rather than a peer socket; its endpoint fields remain
+absent and its transport is `stream`.
 
 ## `traffic.flow`
 
@@ -127,6 +161,14 @@ many flow keys can reference the same client and server connection keys:
 (instance-b, runtime-1): C1 and F1 are different keys
 (instance-a, runtime-2): C1 and F1 are different keys after a restart
 ```
+
+The native exchange owner emits correlation when its work finishes or is
+canceled. CONNECT correlation follows any deferred route selection. A failed
+upstream attempt retains its actual attempt ID even without an upstream HTTP
+response. A local denial has no server reference. Existing HTTP/1.1 requests
+reuse their ingress connection; the current upstream HTTP/1.1 implementation
+opens an independent socket for each request. HTTP/2 streams within an admitted
+TLS tunnel can share both connection references.
 
 ## `security.indicator`
 
