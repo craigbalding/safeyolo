@@ -374,6 +374,17 @@ impl Capture {
             sink.notify.notify_one();
         }
     }
+    fn report_sink_errors(&self, reason: &'static str) {
+        for sink in self
+            .sinks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .filter_map(Weak::upgrade)
+        {
+            report(&sink.counters, sink.kind, reason);
+        }
+    }
     async fn flush(&self) {
         let Some(bus) = self.bus.upgrade() else {
             return;
@@ -524,11 +535,8 @@ impl Running {
             .await
             .is_err()
         {
-            report(
-                &self.capture.counters,
-                Sink::File,
-                "encoder_shutdown_incomplete",
-            );
+            self.capture
+                .report_sink_errors("encoder_shutdown_incomplete");
         }
         let _ = self.stop.send(true);
         self.capture.close();
@@ -538,6 +546,7 @@ impl Running {
         .await
         .is_err()
         {
+            self.capture.report_sink_errors("sink_shutdown_incomplete");
             self.tasks.abort_all();
             while self.tasks.join_next().await.is_some() {}
         }

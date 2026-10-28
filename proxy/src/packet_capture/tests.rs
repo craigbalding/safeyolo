@@ -585,26 +585,32 @@ async fn failed_file_sink_keeps_agent_traffic_and_reports_only_metadata() {
     };
     let (origin, address) = crate::test_owned_endpoint::bind().await;
     let origin = tokio::spawn(async move {
-        let (mut socket, _) = origin.accept().await.unwrap();
-        crate::connection_events::tests::head(&mut socket).await;
-        socket
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
-            .await
-            .unwrap();
+        for _ in 0..2 {
+            let (mut socket, _) = origin.accept().await.unwrap();
+            crate::connection_events::tests::head(&mut socket).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+        }
     });
     let proxy = crate::Proxy::start(config).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
     let bus = bus(&runtime);
-    let mut client = UnixStream::connect(directory.path().join("alice.sock"))
-        .await
-        .unwrap();
-    client.write_all(format!("GET http://{address}/ HTTP/1.1\r\nHost: {address}\r\nX-Canary: never_log_payload_858\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
-    let mut reply = Vec::new();
-    timeout(WAIT, client.read_to_end(&mut reply))
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(reply.starts_with(b"HTTP/1.1 200"));
+    async fn request(directory: &std::path::Path, address: SocketAddr) {
+        let mut client = UnixStream::connect(directory.join("alice.sock"))
+            .await
+            .unwrap();
+        client.write_all(format!("GET http://{address}/ HTTP/1.1\r\nHost: {address}\r\nX-Canary: never_log_payload_858\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+        let mut reply = Vec::new();
+        timeout(WAIT, client.read_to_end(&mut reply))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(reply.starts_with(b"HTTP/1.1 200"));
+        assert!(reply.ends_with(b"\r\n\r\nok"));
+    }
+    request(directory.path(), address).await;
     timeout(WAIT, async {
         while bus.counters.sink_errors[Sink::File.index()].load(Ordering::Relaxed) == 0 {
             tokio::task::yield_now().await;
@@ -612,8 +618,17 @@ async fn failed_file_sink_keeps_agent_traffic_and_reports_only_metadata() {
     })
     .await
     .unwrap();
-    origin.await.unwrap();
+    // Linux exercises an actual kernel file-write failure. Other supported
+    // platforms use the same AsyncWrite failure boundary without /dev/full.
+    #[cfg(target_os = "linux")]
+    let failed_file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .await
+        .unwrap();
+    #[cfg(not(target_os = "linux"))]
     struct FailedFile;
+    #[cfg(not(target_os = "linux"))]
     impl tokio::io::AsyncWrite for FailedFile {
         fn poll_write(
             self: std::pin::Pin<&mut Self>,
@@ -635,10 +650,14 @@ async fn failed_file_sink_keeps_agent_traffic_and_reports_only_metadata() {
             std::task::Poll::Ready(Ok(()))
         }
     }
+    #[cfg(not(target_os = "linux"))]
+    let failed_file = FailedFile;
     let receiver = bus.capture.get().unwrap().subscribe(Sink::File).unwrap();
-    timeout(WAIT, write_stream(FailedFile, receiver))
+    timeout(WAIT, write_stream(failed_file, receiver))
         .await
         .unwrap();
+    request(directory.path(), address).await;
+    origin.await.unwrap();
     let stats = bus.counters.json();
     assert_eq!(stats["sinks"]["file"]["sink_errors_total"], 2);
     assert!(!stats.to_string().contains("never_log_payload_858"));
@@ -958,4 +977,43 @@ async fn failed_tcp_bind_and_reload_do_not_shield_an_unowned_capture_port() {
             .blocks_address("127.0.0.1:46378".parse().unwrap())
     );
     proxy.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn encoder_shutdown_failure_names_the_active_sinks() {
+    let bus = ObservationBus::new(
+        "instance".into(),
+        "runtime".into(),
+        Limits::default(),
+        Arc::default(),
+    );
+    let source = bus.subscribe(ConsumerKind::Capture, Limits::default());
+    let capture = Arc::new(Capture {
+        bus: Arc::downgrade(&bus),
+        tcp_address: None,
+        session: source.session.clone(),
+        settings: Settings::default(),
+        sinks: Mutex::new(Vec::new()),
+        counters: bus.counters.clone(),
+        encoded_through: AtomicU64::new(0),
+        progress: Notify::new(),
+    });
+    let _stdout = capture.subscribe(Sink::Stdout).unwrap();
+    let _wss = capture.subscribe(Sink::Wss).unwrap();
+    bus.emit(crate::observations::tests::sample(&bus));
+    // The source queue has a real record, but its encoder is deliberately not
+    // running. A bounded shutdown must attribute the failure to its consumers.
+    let (stop, _) = watch::channel(false);
+    Running {
+        capture,
+        stop,
+        tasks: JoinSet::new(),
+    }
+    .stop()
+    .await;
+    let counters = bus.counters.json();
+    assert_eq!(counters["sinks"]["stdout"]["sink_errors_total"], 1);
+    assert_eq!(counters["sinks"]["wss"]["sink_errors_total"], 1);
+    assert_eq!(counters["sinks"]["file"]["sink_errors_total"], 0);
+    assert_eq!(counters["sinks"]["tcp"]["sink_errors_total"], 0);
 }
