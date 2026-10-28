@@ -177,6 +177,11 @@ fn refused_profiles_remote_tcp_and_secret_config_remain_explicit() {
             .to_string()
             .contains("insecure_remote")
     );
+    let mut mapped = settings.clone();
+    mapped.tcp.as_mut().unwrap().bind = "[::ffff:127.0.0.1]:46378".parse().unwrap();
+    mapped.validate(true).unwrap();
+    mapped.tcp.as_mut().unwrap().bind = "[::ffff:192.0.2.1]:46378".parse().unwrap();
+    assert!(mapped.validate(true).is_err());
     settings.tcp.as_mut().unwrap().insecure_remote = true;
     settings.validate(true).unwrap();
     settings.profile = Profile::Wire;

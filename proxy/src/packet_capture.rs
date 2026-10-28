@@ -65,7 +65,7 @@ impl Settings {
         if self
             .tcp
             .as_ref()
-            .is_some_and(|tcp| !tcp.bind.ip().is_loopback() && !tcp.insecure_remote)
+            .is_some_and(|tcp| !tcp.bind.ip().to_canonical().is_loopback() && !tcp.insecure_remote)
         {
             return Err("packet_capture.tcp non-loopback bind requires insecure_remote=true; use authenticated WSS for remote capture".into());
         }
