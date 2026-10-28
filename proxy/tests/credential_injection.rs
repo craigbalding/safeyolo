@@ -24,10 +24,12 @@ fn selection(kind: Option<&str>) -> CredentialSelection {
         auth_kind: kind.map(str::to_owned),
         auth_header: "X-Credential".into(),
         auth_scheme: "Bearer".into(),
+        basic_username: None,
         allow_http: false,
         refresh_on_401: false,
         risky_route: None,
         contract_operation: None,
+        github_git: None,
     }
 }
 fn credential() -> Credential {
@@ -143,6 +145,10 @@ fn exact_auth_kind_drives_validated_sensitive_header_replacement() {
     let (_directory, vault) = vault();
     vault.store(credential()).unwrap();
     for (kind, expected) in [
+        (
+            Some("basic"),
+            Some("Basic eC1hY2Nlc3MtdG9rZW46c3ludGhldGljLXZhbHVl"),
+        ),
         (Some("bearer"), Some("Bearer synthetic-value")),
         (Some("api_key"), Some("synthetic-value")),
         (Some("Bearer"), None),

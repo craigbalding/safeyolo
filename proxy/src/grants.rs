@@ -965,6 +965,7 @@ impl Store {
             reservation,
             state: Arc::downgrade(&self.state),
             release_on_drop: true,
+            consume_on_success: true,
         }))
     }
     pub fn finish_response(
@@ -974,7 +975,8 @@ impl Store {
         now: OffsetDateTime,
         activate: impl FnMut(&str) -> std::result::Result<(), String>,
     ) -> Result<ResponseOutcome> {
-        let consume = lease.grant.scope == GrantScope::Once
+        let consume = lease.consume_on_success
+            && lease.grant.scope == GrantScope::Once
             && status.is_some_and(|status| (200..300).contains(&status));
         // A successful origin action must never regain its once grant because
         // persistence or activation failed. Keep that reservation fail-closed.
@@ -1020,8 +1022,14 @@ pub struct GrantLease {
     reservation: String,
     state: Weak<Mutex<Snapshot>>,
     release_on_drop: bool,
+    consume_on_success: bool,
 }
 impl GrantLease {
+    /// Ref discovery authorizes a Git operation but does not execute its pack.
+    /// Retain the reservation until discovery ends, then release it for the POST.
+    pub(crate) fn retain_for_git_discovery(&mut self) {
+        self.consume_on_success = false;
+    }
     pub fn grant(&self) -> &Grant {
         &self.grant
     }

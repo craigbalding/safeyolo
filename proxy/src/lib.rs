@@ -44,6 +44,7 @@ mod flow_recorder;
 mod flow_runtime_tests;
 pub mod flow_store;
 mod flow_writer;
+pub mod github_git;
 pub mod grants;
 pub mod guest_acquisition;
 pub mod guest_commands;

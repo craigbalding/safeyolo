@@ -3538,7 +3538,12 @@ where
                     return Ok((prior_block(reply), "deny".into()));
                 }
                 if let Some(risky) = credential.risky_route.as_ref() {
-                    let risky_path = destination.path.split('?').next().unwrap_or("/");
+                    let git = credential.github_git.as_ref();
+                    let risky_path = git.map_or_else(
+                        || destination.path.split('?').next().unwrap_or("/"),
+                        |git| git.path.as_str(),
+                    );
+                    let risky_method = git.map_or(request.method().as_str(), |_| "POST");
                     let mut granted = None;
                     if let Some(store) = runtime.gateway_grants.as_ref() {
                         granted = store
@@ -3548,7 +3553,7 @@ where
                                         .request_agent()
                                         .expect("selected gateway identity"),
                                     service: &credential.service,
-                                    method: request.method().as_str(),
+                                    method: risky_method,
                                     path: risky_path,
                                 },
                                 time::OffsetDateTime::now_utc(),
@@ -3572,7 +3577,7 @@ where
                             tactics: &risky.tactics,
                             enables: &risky.enables,
                             irreversible: risky.irreversible,
-                            method: request.method().as_str(),
+                            method: risky_method,
                             path: risky_path,
                         });
                         if risk.effect != crate::policy::Effect::Allow {
@@ -3583,16 +3588,27 @@ where
                             };
                             let agent =
                                 identity.request_agent().expect("selected gateway identity");
-                            let method = request.method().as_str();
+                            let method = risky_method;
                             let mut audit = crate::audit::Event::new(
                                 "gateway.risky_route",
                                 crate::audit::Kind::Gateway,
                                 crate::audit::Severity::High,
-                                format!(
-                                    "Risky route {} {}{}",
-                                    crate::network_guard::sanitize(method),
-                                    crate::network_guard::sanitize(&credential.service),
-                                    crate::network_guard::sanitize(risky_path),
+                                git.map_or_else(
+                                    || {
+                                        format!(
+                                            "Risky route {} {}{}",
+                                            crate::network_guard::sanitize(method),
+                                            crate::network_guard::sanitize(&credential.service),
+                                            crate::network_guard::sanitize(risky_path),
+                                        )
+                                    },
+                                    |git| {
+                                        format!(
+                                            "{agent} wants to {} to {}",
+                                            git.action(),
+                                            git.repository
+                                        )
+                                    },
                                 ),
                             );
                             audit.addon = Some("service-gateway".into());
@@ -3619,7 +3635,7 @@ where
                                     scope_hint: json!({"method":method,"path":risky_path}).into(),
                                 });
                             }
-                            audit.details = json!({
+                            let mut details = json!({
                                 "service":credential.service,
                                 "capability":credential.capability,
                                 "method":method,
@@ -3632,8 +3648,12 @@ where
                                 "group":risky.group,
                                 "effect":risk.effect,
                                 "connection_id":identity.connection_id,
-                            })
-                            .into();
+                            });
+                            if let Some(git) = git {
+                                details["github_repository"] = git.repository.clone().into();
+                                details["git_operation"] = git.operation.clone().into();
+                            }
+                            audit.details = details.into();
                             let pending = if risk.effect == crate::policy::Effect::Prompt {
                                 let pending = crate::approvals::pending::bind_risky(
                                     &runtime,
@@ -3643,8 +3663,12 @@ where
                                         agent: Some(agent),
                                         host: &destination.policy_host,
                                         port: Some(destination.port),
-                                        method,
-                                        path: &destination.path,
+                                        method: risky_method,
+                                        path: if git.is_some() {
+                                            risky_path
+                                        } else {
+                                            &destination.path
+                                        },
                                     },
                                     &destination.scheme,
                                     &credential,
@@ -3671,6 +3695,11 @@ where
                             }
                             return Ok((prior_block(reply), "deny".into()));
                         }
+                    }
+                    if git.is_some_and(|git| git.discovery)
+                        && let Some(lease) = granted.as_mut()
+                    {
+                        lease.retain_for_git_discovery();
                     }
                     grant_lease = granted;
                     runtime.audit.emit(identity.request_event("gateway.evaluated", crate::audit::Kind::Gateway, request_id, "Gateway request observation", json!({

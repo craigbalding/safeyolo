@@ -102,6 +102,10 @@ fn initialize(root: &Path, config: &Path) -> Result<(), Error> {
             include_str!("../../../cli/src/safeyolo/services/slack.yaml"),
         ),
         (
+            "builtin-services/github-git.yaml",
+            include_str!("../../../cli/src/safeyolo/services/github-git.yaml"),
+        ),
+        (
             "builtin-services/minifuse.yaml",
             include_str!("../../../cli/src/safeyolo/services/minifuse.yaml"),
         ),

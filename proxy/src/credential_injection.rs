@@ -19,6 +19,7 @@ use hyper::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::Serialize;
 use serde_json::{Value, json};
 use time::OffsetDateTime;
+use zeroize::Zeroizing;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct StatsDelta {
@@ -596,6 +597,27 @@ fn finish_with_value(
     let name = HeaderName::from_bytes(auth_header.as_bytes())
         .map_err(|_| error(ErrorKind::InvalidHeaderName, refreshed))?;
     let value = match selection.auth_kind.as_deref() {
+        Some("basic") => {
+            use base64::{Engine as _, engine::general_purpose::STANDARD};
+            let password = resolved
+                .as_ref()
+                .or_else(|| {
+                    snapshot
+                        .as_ref()
+                        .map(|snapshot| &snapshot.credential().value)
+                })
+                .expect("authenticated selection has a resolved credential");
+            let pair = Zeroizing::new(format!(
+                "{}:{}",
+                selection
+                    .basic_username
+                    .as_deref()
+                    .unwrap_or("x-access-token"),
+                password.expose_secret()
+            ));
+            let encoded = Zeroizing::new(STANDARD.encode(pair.as_bytes()));
+            Some(Secret::new(format!("Basic {}", encoded.as_str())))
+        }
         Some("bearer") => Some(Secret::new(format!(
             "{} {}",
             selection.auth_scheme,

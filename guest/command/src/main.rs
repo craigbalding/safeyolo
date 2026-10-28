@@ -3,6 +3,7 @@
 mod desktop_bridge;
 mod desktop_probe;
 mod extra_mount;
+mod git_credential;
 mod lab_evidence;
 mod observation;
 mod probe;
@@ -169,13 +170,14 @@ fn run() -> Result<i32, Error> {
         std::env::var_os("SAFEYOLO_COMMAND_SUPERVISOR_STOP"),
     )?;
     match args.as_slice() {
+        [git, rest @ ..] if git == "git-credential" => git_credential::run(&paths, rest),
         [version] if version == "--version" => {
             println!("{}", self::version());
             Ok(0)
         }
         [help] if help == "--help" => {
             println!(
-                "safeyolo-guest [--context FILE] [--records DIR] [--state FILE] [--stop FILE] [--workspace DIR] observe check | observe exec -- PROGRAM [ARGS] | supervise [check] | probe ID [--ssh-port PORT] | desktop-probe | desktop-bridge --web DIRECTORY LOOPBACK:PORT VNC_LOOPBACK:PORT | lab-evidence capture --output DIR [--socket PATH] [--pane ID] [--file PATH] | lab-evidence redact [--check-text FILE | INPUT OUTPUT]\nGuest-only Linux executable. PID 1 launches supervise as the agent user. The host publishes command state in the shared home."
+                "safeyolo-guest [--context FILE] [--records DIR] [--state FILE] [--stop FILE] [--workspace DIR] git-credential get|store|erase | observe check | observe exec -- PROGRAM [ARGS] | supervise [check] | probe ID [--ssh-port PORT] | desktop-probe | desktop-bridge --web DIRECTORY LOOPBACK:PORT VNC_LOOPBACK:PORT | lab-evidence capture --output DIR [--socket PATH] [--pane ID] [--file PATH] | lab-evidence redact [--check-text FILE | INPUT OUTPUT]\nGuest-only Linux executable. PID 1 launches supervise as the agent user. The host publishes command state in the shared home."
             );
             Ok(0)
         }

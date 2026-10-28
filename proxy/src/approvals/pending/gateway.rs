@@ -137,18 +137,24 @@ pub(crate) async fn bind_risky(
         .evidence_agent_id(agent)
         .ok_or_else(|| invalid("requester identity unavailable"))?;
     let path = request.path.split('?').next().unwrap_or("/");
-    let action = json!({"kind":"gateway_route","agent":agent,"agent_id":agent_id,
+    let mut action = json!({"kind":"gateway_route","agent":agent,"agent_id":agent_id,
         "service":selection.service,"capability":selection.capability,"credential":selection.vault_token,
         "account":selection.account,"host":request.host,"method":request.method,"path":path,
         "run":run,"binding_id":selection.binding_id,
         "irreversible":selection.risky_route.as_ref().is_some_and(|route| route.irreversible)});
+    if let Some(git) = &selection.github_git {
+        action["github_repository"] = git.repository.clone().into();
+        action["git_operation"] = git.operation.clone().into();
+    }
     let ttl = runtime
         .gateway_grants
         .as_ref()
         .ok_or_else(|| invalid("gateway grant store unavailable"))?
         .approval_ttl_seconds()?;
     let mut options: Vec<_> = ["once", "session", "remembered"].into_iter().map(|id| OptionScope {
-        id:id.into(), effect:format!("Allow {agent} to use {} at the exact path {} on {} with a {id} grant. The grant expires {ttl} seconds after approval. A successful response consumes once; proxy restart also ends session.", request.method, path, selection.service),
+        id:id.into(), effect:selection.github_git.as_ref().map_or_else(
+            || format!("Allow {agent} to use {} at the exact path {} on {} with a {id} grant. The grant expires {ttl} seconds after approval. A successful response consumes once; proxy restart also ends session.", request.method, path, selection.service),
+            |git| format!("{agent} wants to {} to {}. Allow with a {id} grant, expiring {ttl} seconds after approval. Ref discovery retains once; the successful pack response consumes it. Proxy restart ends session.", git.action(), git.repository)),
         session_id:(id == "session").then(|| runtime.audit.approvals().session_id.clone()),
         parameters:json!({"lifetime":id,"ttl_seconds":ttl,"path_match":"literal"}) }).collect();
     options.push(super::run_option("Run-bound reusable access to the canonical service, capability, binding, method and exact path. Gateway expiry and all contract checks remain. This is not payload-bound approval."));
