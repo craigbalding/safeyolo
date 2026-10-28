@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import pty
 import select
 import shlex
 import socket
@@ -164,8 +165,13 @@ def git(directory, *arguments, environment=None, succeeds=True):
     result = subprocess.run(["git", "-c", "user.name=Git fixture", "-c", "user.email=git@example.invalid",
                              *arguments], cwd=directory, env=environment, capture_output=True, timeout=20)
     if (result.returncode == 0) != succeeds:
-        # Git diagnostics can include an auth header if a caller enables tracing.
-        raise AssertionError(f"Git operation exited {result.returncode}; expected success={succeeds}")
+        diagnostic = result.stderr.decode(errors="replace")
+        values = [PAT, basic(PAT), "fixture-host-op-auth-312"]
+        if opaque := environment.get("GIT_TEST_OPAQUE"):
+            values.extend([opaque, basic(opaque)])
+        for value in values:
+            diagnostic = diagnostic.replace(value, "[credential]")
+        raise AssertionError(f"Git operation exited {result.returncode}; expected success={succeeds}\n{diagnostic}")
     for marker in (PAT.encode(), b"fixture-host-op-auth-312"):
         if marker in result.stdout + result.stderr:
             raise AssertionError("host credential appeared in Git output")
@@ -190,10 +196,11 @@ def test_real_git_fetch_push_approval_retry_and_provider_failure(tmp_path, monke
     monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "fixture-host-op-auth-312")
     proxy_binary = Path(os.environ.get("SAFEYOLO_RUST_PROXY", REPO / "proxy/target/release/safeyolo-proxy"))
     binary = native_cli(Path(os.environ.get("SAFEYOLO_NATIVE_CLI", proxy_binary.with_name("safeyolo"))), proxy=proxy_binary)
+    subprocess.run([str(binary), "--root", str(directory), "init"], capture_output=True, check=True, timeout=15)
     host = tmp_path / "host"
     host.mkdir()
     data = directory / "data"
-    data.mkdir()
+    data.mkdir(exist_ok=True)
     (host / "config.toml").write_text(f"data_dir={json.dumps(str(data))}\n")
     subprocess.run([str(binary), "--root", str(host), "credentials", "reference", "git-pat", "--storage", "local",
                     "--provider", "onepassword", "--reference", "op://fixture/github/pat"],
@@ -217,6 +224,8 @@ def test_real_git_fetch_push_approval_retry_and_provider_failure(tmp_path, monke
 [hosts."github.com"]
 egress="allow"
 service="github-git"
+[hosts."127.0.0.1"]
+egress="allow"
 [hosts."*"]
 egress="deny"
 [agents.alice]
@@ -239,7 +248,8 @@ decision="require_approval"
         "rust", directory, policy, agent_api=True, native_product=True,
         agent_api_token=AGENT_TOKEN.encode(), admin_port=0, admin_api_token_file=operator_token,
         gateway_services_dir=services, gateway_builtin_services_dir=builtin,
-        onepassword_executable=provider, target_ip_mappings={"github.com": "127.0.0.1"},
+        onepassword_executable=provider,
+        target_ip_mappings=[{"host": "github.com", "ip": "127.0.0.1", "port": origin.server_address[1]}],
         flow_store_enabled=True,
     ) as proxy, git_proxy(proxy.paths["alice"]) as address:
         marker = json.loads(proxy.readiness_file.read_text())
@@ -281,7 +291,20 @@ decision="require_approval"
         canonical = api.approval(event["approval_id"])
         assert canonical["action"]["github_repository"] == "owner/allowed"
         assert canonical["action"]["path"] == "/owner/allowed.git/git-receive-pack"
-        api.resolve_approval(event["approval_id"], "approve", option="once")
+        master, slave = pty.openpty()
+        watch = subprocess.Popen([str(binary), "--root", str(directory), "watch", "--agent", "alice"],
+                                 stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            os.write(master, f"pending\napproval {event['approval_id']}\napprove {event['approval_id']}\nq\n".encode())
+            output, errors = watch.communicate(timeout=10)
+            assert watch.returncode == 0, errors.decode()
+            assert b"alice wants to push to owner/allowed" in output
+        finally:
+            if watch.poll() is None:
+                watch.kill()
+                watch.wait(timeout=5)
+            os.close(master)
+            os.close(slave)
         git(client, "-c", f"credential.helper={helper}", "push", environment=environment)
         assert git(client, "rev-parse", "HEAD", environment=environment) == git(bare, "rev-parse", "refs/heads/main")
         assert any(method == "POST" and path.endswith("git-receive-pack") for method, path in origin.authorized)
@@ -294,8 +317,10 @@ decision="require_approval"
         api.resolve_approval(event["approval_id"], "reject")
         assert calls.read_text() == before, "denial must not resolve the PAT"
         before = calls.read_text()
-        for agent, path in [("bob", "/owner/allowed.git/git-upload-pack"), ("alice", "/owner/other.git/git-upload-pack")]:
-            code, _, _ = request(proxy.paths[agent], f"http://github.com:{origin.server_address[1]}{path}",
+        for agent, target_host, path in [("bob", "github.com", "/owner/allowed.git/git-upload-pack"),
+                                         ("alice", "github.com", "/owner/other.git/git-upload-pack"),
+                                         ("alice", "127.0.0.1", "/owner/allowed.git/git-upload-pack")]:
+            code, _, _ = request(proxy.paths[agent], f"http://{target_host}:{origin.server_address[1]}{path}",
                                  method="POST", body=b"0000", headers={"Authorization": basic(opaque)})
             assert code == 403
         assert calls.read_text() == before

@@ -3696,10 +3696,10 @@ where
                             return Ok((prior_block(reply), "deny".into()));
                         }
                     }
-                    if git.is_some_and(|git| git.discovery) {
-                        if let Some(lease) = granted.as_mut() {
-                            lease.retain_for_git_discovery();
-                        }
+                    if git.is_some_and(|git| git.discovery)
+                        && let Some(lease) = granted.as_mut()
+                    {
+                        lease.retain_for_git_discovery();
                     }
                     grant_lease = granted;
                     runtime.audit.emit(identity.request_event("gateway.evaluated", crate::audit::Kind::Gateway, request_id, "Gateway request observation", json!({

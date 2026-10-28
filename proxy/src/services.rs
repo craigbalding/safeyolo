@@ -103,13 +103,13 @@ impl ServiceDefinition {
             .cloned()
             .map(serde_json::from_value)
             .transpose()?;
-        if let Some(auth) = auth.as_ref().filter(|auth| auth.kind == "basic") {
-            if auth.username.is_empty() || auth.username.contains([':', '\r', '\n']) {
-                return Err(
-                    "Basic authentication requires a nonempty username without colon or newlines"
-                        .into(),
-                );
-            }
+        if let Some(auth) = auth.as_ref().filter(|auth| auth.kind == "basic")
+            && (auth.username.is_empty() || auth.username.contains([':', '\r', '\n']))
+        {
+            return Err(
+                "Basic authentication requires a nonempty username without colon or newlines"
+                    .into(),
+            );
         }
         let mut capabilities = BTreeMap::new();
         if let Some(raw_caps) = object.get("capabilities") {
