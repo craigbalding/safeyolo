@@ -458,6 +458,14 @@ where
                     }
                     Err(e) => {
                         debug!("incoming body decode error: {}", e);
+                        #[cfg(feature = "server")]
+                        if e.get_ref()
+                            .is_some_and(|e| e.is::<super::decode::BodyParseError>())
+                        {
+                            if let Some(completion) = &self.state.on_request_complete {
+                                completion.body_parse_failed();
+                            }
+                        }
                         (Reading::Closed, Poll::Ready(Some(Err(e))))
                     }
                 }

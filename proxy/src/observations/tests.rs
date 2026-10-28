@@ -78,6 +78,56 @@ fn observations(records: &[Arc<Record>]) -> Vec<&Observation> {
         .collect()
 }
 
+fn metric_series(
+    document: &serde_json::Value,
+    point: Point,
+    direction: Direction,
+) -> &serde_json::Value {
+    document["series"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| {
+            row["point"] == serde_json::to_value(point).unwrap()
+                && row["direction"] == serde_json::to_value(direction).unwrap()
+        })
+        .unwrap()
+}
+
+fn metric_total(document: &serde_json::Value, name: &str) -> u64 {
+    document["series"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row[name].as_u64().unwrap())
+        .sum()
+}
+
+fn assert_native_metrics(records: &[Arc<Record>], bus: &ObservationBus) {
+    let mut canonical = behaviour::TransportMetrics::default();
+    for record in records {
+        canonical.record(record);
+    }
+    // These exact native timestamps and lengths must produce identical values
+    // with or without capture subscribers and synthetic PCAP control records.
+    assert_eq!(canonical.json(), bus.counters.json()["behaviour"]);
+    let rendered = canonical.prometheus();
+    for forbidden in [
+        "request_id",
+        "connection_id",
+        "content_canary",
+        "127.0.0.1",
+        "localhost",
+        "req-",
+        "conn-",
+    ] {
+        assert!(
+            !rendered.contains(forbidden),
+            "metric labels contain {forbidden}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn item_and_byte_limits_report_exact_canonical_loss_including_tail() {
     for limits in [
@@ -227,6 +277,7 @@ async fn namespaces_and_reconnect_sessions_do_not_reuse_observation_identity() {
 async fn native_exchange(
     patterns: &[bool],
     unavailable: bool,
+    capture: bool,
 ) -> (Vec<Arc<Record>>, Vec<String>, Arc<ObservationBus>) {
     let directory = tempfile::tempdir().unwrap();
     let (origin, address) = crate::test_owned_endpoint::bind().await;
@@ -247,9 +298,13 @@ async fn native_exchange(
         }
     });
     let mut config = crate::connection_events::tests::config(directory.path());
-    if unavailable {
+    if unavailable || capture {
         config.native_settings = Some(crate::native_config::Settings {
-            observations: Limits { items: 1, bytes: 1 },
+            observations: if unavailable {
+                Limits { items: 1, bytes: 1 }
+            } else {
+                Limits::default()
+            },
             ..Default::default()
         });
         config.native_config_dir = Some(directory.path().to_owned());
@@ -261,6 +316,13 @@ async fn native_exchange(
         )
         .unwrap();
     }
+    if capture {
+        config.native_settings.as_mut().unwrap().packet_capture = crate::packet_capture::Settings {
+            file: Some(directory.path().join("capture.pcap")),
+            payload_layers: vec![Layer::TransportStream],
+            ..Default::default()
+        };
+    }
     let proxy = Proxy::start(config).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
     let bus = runtime
@@ -269,6 +331,14 @@ async fn native_exchange(
         .unwrap()
         .observations
         .clone();
+    assert!(
+        runtime
+            .metrics
+            .get_prometheus(|| 0.)
+            .unwrap()
+            .contains("safeyolo_observation_chunks_total")
+    );
+    assert!(directory.path().join("ready").exists());
     let mut consumer = bus.subscribe(ConsumerKind::Metrics, Limits::default());
     let request = format!(
         "GET http://{address}/ HTTP/1.1\r\nHost: {address}\r\nX-Test: content_canary\r\nConnection: close\r\n\r\n"
@@ -280,7 +350,10 @@ async fn native_exchange(
             .await
             .unwrap();
         if *many {
-            for chunk in request.as_bytes().chunks(7) {
+            for (index, chunk) in request.as_bytes().chunks(7).enumerate() {
+                if index != 0 {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
                 client.write_all(chunk).await.unwrap();
                 loop {
                     let record = receive(&mut consumer).await;
@@ -309,6 +382,13 @@ async fn native_exchange(
     server.await.unwrap();
     proxy.shutdown().await;
     records.extend(drain(&mut consumer, &bus).await);
+    if capture {
+        let bytes = std::fs::read(directory.path().join("capture.pcap")).unwrap();
+        assert!(
+            bytes.len() > 24,
+            "real compatibility file contains projected records"
+        );
+    }
     let text = serde_json::to_string(&records.iter().map(Arc::as_ref).collect::<Vec<_>>()).unwrap();
     assert!(!text.contains("content_canary"));
     assert!(
@@ -317,17 +397,21 @@ async fn native_exchange(
             .contains("content_canary")
     );
     assert!(!directory.path().join("unused.sqlite3").exists());
-    assert!(
-        observations(&records)
-            .iter()
-            .all(|o| o.captured_length == 0)
-    );
+    if !capture {
+        assert!(
+            observations(&records)
+                .iter()
+                .all(|o| o.captured_length == 0)
+        );
+    } else {
+        assert!(observations(&records).iter().any(|o| o.captured_length > 0));
+    }
     (records, replies, bus)
 }
 
 #[tokio::test]
 async fn native_receiver_chunks_preserve_offsets_and_application_result_without_payload() {
-    let (all, replies, _) = native_exchange(&[false, true], false).await;
+    let (all, replies, bus) = native_exchange(&[false, true], false, false).await;
     let rows = observations(&all);
     let heads: Vec<_> = rows
         .iter()
@@ -388,14 +472,55 @@ async fn native_receiver_chunks_preserve_offsets_and_application_result_without_
             1
         );
     }
+    let metrics = bus.counters.json()["behaviour"].clone();
+    let ingress = metric_series(&metrics, Point::AgentUds, Direction::ToProxy);
+    assert_eq!(ingress["observation_chunks_total"], 1 + split.len());
+    assert_eq!(ingress["observation_bytes_total"], 2 * single[0].1);
+    assert_eq!(
+        ingress["observation_chunk_bytes"]["buckets"][0]["count"],
+        split.len()
+    );
+    assert_eq!(ingress["chunks_per_application_message"]["count"], 2);
+    assert_eq!(
+        ingress["chunks_per_application_message"]["sum"],
+        (1 + split.len()) as f64
+    );
+    assert_eq!(
+        ingress["chunks_per_application_message"]["buckets"][0]["count"],
+        1
+    );
+    assert_eq!(
+        ingress["observation_inter_chunk_interval_seconds"]["count"],
+        split.len() - 1
+    );
+    let timing = &ingress["observation_inter_chunk_interval_seconds"];
+    assert_eq!(
+        timing["buckets"][1]["count"], 0,
+        "acknowledged native chunks are delayed by 25ms"
+    );
+    assert!(timing["sum"].as_f64().unwrap() >= 0.025 * (split.len() - 1) as f64);
+    assert_eq!(metric_total(&metrics, "application_messages_total"), 2);
+    let lifecycle = metric_series(&metrics, Point::AgentUds, Direction::Both);
+    assert_eq!(lifecycle["connections_started_total"], 2);
+    assert_eq!(lifecycle["connection_lifetime_seconds"]["count"], 2);
+    assert_eq!(
+        metric_total(&metrics, "partial_or_aborted_streams_total"),
+        0
+    );
+    assert_eq!(metric_total(&metrics, "protocol_parse_failures_total"), 0);
+    assert_eq!(
+        metric_total(&metrics, "chunks_per_application_message_unavailable_total"),
+        0
+    );
+    assert_native_metrics(&all, &bus);
 }
 
 #[tokio::test]
 async fn native_traffic_completes_during_canonical_admission_loss() {
-    let (records, _, bus) = native_exchange(&[false], true).await;
+    let (records, _, bus) = native_exchange(&[false], true, false).await;
     assert!(observations(&records).is_empty());
     let mut next = 1;
-    for record in records {
+    for record in &records {
         let Record::Gap(gap) = record.as_ref() else {
             panic!("missing canonical loss")
         };
@@ -407,6 +532,13 @@ async fn native_traffic_completes_during_canonical_admission_loss() {
         ));
         next = gap.last_sequence + 1;
     }
+    let metrics = bus.counters.json()["behaviour"].clone();
+    assert_eq!(
+        metrics["observation_loss_total"]["canonical_admission_unavailable"],
+        next - 1
+    );
+    assert!(metrics["series"].as_array().unwrap().is_empty());
+    assert_native_metrics(&records, &bus);
     assert_eq!(next, bus.next_sequence());
     assert!(bus.counters.dropped[0].load(Ordering::Relaxed) > 0);
 }
@@ -450,6 +582,141 @@ async fn native_partial_head_retains_input_and_eof_without_a_parsed_message() {
             .iter()
             .any(|o| o.state == State::ParsedHead || o.state == State::Complete)
     );
+    let metrics = bus.counters.json()["behaviour"].clone();
+    assert_eq!(metric_total(&metrics, "application_messages_total"), 0);
+    assert_eq!(metric_total(&metrics, "protocol_parse_failures_total"), 0);
+    assert_eq!(
+        metric_total(&metrics, "partial_or_aborted_streams_total"),
+        1
+    );
+    assert_eq!(
+        metric_series(&metrics, Point::AgentUds, Direction::ToProxy)["observation_bytes_total"],
+        b"GET http://incomplete.invalid/ HTTP/1.1\r\nHost: ".len()
+    );
+    assert_native_metrics(&records, &bus);
+}
+
+#[tokio::test]
+async fn native_parser_failure_and_aborted_body_preserve_bytes_without_successful_messages() {
+    for case in ["invalid_head", "incomplete_body", "invalid_chunk"] {
+        let directory = tempfile::tempdir().unwrap();
+        let (_origin, address) = crate::test_owned_endpoint::bind().await;
+        let proxy = Proxy::start(crate::connection_events::tests::config(directory.path()))
+            .await
+            .unwrap();
+        let runtime = proxy.runtime.read().unwrap().clone();
+        let bus = runtime
+            .connection_events
+            .as_ref()
+            .unwrap()
+            .observations
+            .clone();
+        let mut consumer = bus.subscribe(ConsumerKind::Metrics, Limits::default());
+        let bytes = match case {
+            "invalid_head" => "not an HTTP request\r\n\r\n".into(),
+            "invalid_chunk" => format!(
+                "POST http://{address}/ HTTP/1.1\r\nHost: {address}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nZ\r\nabc\r\n0\r\n\r\n"
+            ),
+            _ => format!(
+                "POST http://{address}/ HTTP/1.1\r\nHost: {address}\r\nContent-Length: 20\r\nConnection: close\r\n\r\nabc"
+            ),
+        };
+        let mut client = UnixStream::connect(directory.path().join("alice.sock"))
+            .await
+            .unwrap();
+        client.write_all(bytes.as_bytes()).await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut reply = Vec::new();
+        timeout(WAIT, client.read_to_end(&mut reply))
+            .await
+            .unwrap()
+            .unwrap();
+        proxy.shutdown().await;
+        let records = drain(&mut consumer, &bus).await;
+        let metrics = bus.counters.json()["behaviour"].clone();
+        assert_eq!(metric_total(&metrics, "application_messages_total"), 0);
+        assert_eq!(
+            metric_total(&metrics, "protocol_parse_failures_total"),
+            u64::from(case != "incomplete_body"),
+            "{case}"
+        );
+        if case == "incomplete_body" {
+            assert!(metric_total(&metrics, "partial_or_aborted_streams_total") > 0);
+        }
+        let input = metric_series(&metrics, Point::AgentUds, Direction::ToProxy);
+        assert_eq!(input["observation_bytes_total"], bytes.len());
+        assert_eq!(input["chunks_per_application_message"]["count"], 0);
+        assert!(
+            observations(&records)
+                .iter()
+                .all(|o| o.captured_length == 0)
+        );
+        assert_native_metrics(&records, &bus);
+    }
+}
+
+#[tokio::test]
+async fn native_compat_capture_does_not_feed_behavioural_metrics() {
+    let (records, _, bus) = native_exchange(&[false, true], false, true).await;
+    assert!(
+        bus.counters.sink_bytes[crate::packet_capture::Sink::File.index()].load(Ordering::Relaxed)
+            > 0
+    );
+    assert_native_metrics(&records, &bus);
+    let metrics = bus.counters.json()["behaviour"].clone();
+    assert_eq!(metric_total(&metrics, "application_messages_total"), 2);
+    assert_eq!(
+        metric_total(&metrics, "partial_or_aborted_streams_total"),
+        0
+    );
+    assert_eq!(
+        metric_total(&metrics, "chunks_per_application_message_unavailable_total"),
+        0
+    );
+}
+
+#[tokio::test]
+async fn native_http2_frame_parser_failure_is_not_a_completed_message() {
+    use http_body_util::Full;
+    use hyper::{Request, Response, body::Incoming};
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+    let bus = bus(Limits::default());
+    let mut consumer = bus.subscribe(ConsumerKind::Metrics, Limits::default());
+    let (mut client, server) = tokio::io::duplex(4096);
+    let source = Source::new(
+        bus.clone(),
+        &identity(),
+        "conn-h2",
+        Point::AgentUds,
+        Layer::TransportStream,
+        Transport::Unix,
+        None,
+    );
+    let observed = observe(Box::new(server), source.clone());
+    let driver = tokio::spawn(async move {
+        let service = hyper::service::service_fn(|_: Request<Incoming>| async {
+            Ok::<_, std::convert::Infallible>(Response::new(Full::new(bytes::Bytes::new())))
+        });
+        let error = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(observed), service)
+            .await
+            .unwrap_err();
+        assert!(source.parser_error(&error));
+    });
+    // A SETTINGS frame must use stream zero. This malformed frame is rejected
+    // by the real HTTP/2 receiver before any service request is created.
+    let bytes = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x01";
+    client.write_all(bytes).await.unwrap();
+    timeout(WAIT, driver).await.unwrap().unwrap();
+    let records = drain(&mut consumer, &bus).await;
+    let metrics = bus.counters.json()["behaviour"].clone();
+    assert_eq!(metric_total(&metrics, "protocol_parse_failures_total"), 1);
+    assert_eq!(metric_total(&metrics, "application_messages_total"), 0);
+    assert_eq!(
+        metric_series(&metrics, Point::AgentUds, Direction::ToProxy)["observation_bytes_total"],
+        bytes.len()
+    );
+    assert_native_metrics(&records, &bus);
 }
 
 #[tokio::test]
@@ -476,6 +743,10 @@ async fn wall_clock_correction_does_not_reorder_monotonic_observations() {
         rows[1].timestamp.monotonic_ns - rows[0].timestamp.monotonic_ns,
         10
     );
+    let metrics = bus.counters.json()["behaviour"].clone();
+    let timing = &metric_series(&metrics, Point::AgentUds, Direction::ToProxy)["observation_inter_chunk_interval_seconds"];
+    assert_eq!(timing["count"], 1);
+    assert_eq!(timing["sum"], 10. / 1e9);
 }
 
 #[tokio::test]
@@ -558,7 +829,7 @@ async fn busy_source_prefix_cannot_claim_unobserved_parser_coverage() {
                 .get::<hyper::ext::RequestByteRange>()
                 .unwrap()
                 .clone();
-            let application = source.application("request-local", None, Some(range), true);
+            let application = source.application("request-local", None, Some(range), true, true);
             head_tx
                 .send(source.clone())
                 .unwrap_or_else(|_| panic!("head gate"));
@@ -652,18 +923,27 @@ async fn http1_parser_ranges_exclude_read_ahead_and_include_body_framing() {
             Transport::Unix,
             None,
         );
-        let source = observe(Box::new(server), source);
+        let observed = observe(Box::new(server), source.clone());
         let ranges = Arc::new(Mutex::new(Vec::new()));
         let received = ranges.clone();
         let service = hyper::service::service_fn(move |request: Request<Incoming>| {
             let received = received.clone();
+            let source = source.clone();
             async move {
                 let range = request
                     .extensions()
                     .get::<hyper::ext::RequestByteRange>()
                     .unwrap()
                     .clone();
+                let application = source.application(
+                    &format!("req-{}", range.start()),
+                    None,
+                    Some(range.clone()),
+                    true,
+                    true,
+                );
                 let content = request.into_body().collect().await.unwrap().to_bytes();
+                application.complete(Some(content.len() as u64), false);
                 received.lock().unwrap().push((
                     range.start(),
                     range.head_end(),
@@ -677,7 +957,7 @@ async fn http1_parser_ranges_exclude_read_ahead_and_include_body_framing() {
         });
         let driver = tokio::spawn(async move {
             hyper::server::conn::http1::Builder::new()
-                .serve_connection(TokioIo::new(source), service)
+                .serve_connection(TokioIo::new(observed), service)
                 .await
                 .unwrap();
         });
@@ -737,6 +1017,12 @@ async fn http1_parser_ranges_exclude_read_ahead_and_include_body_framing() {
             1,
             "fixture preserves parser read-ahead from one observed read"
         );
+        let metrics = bus.counters.json()["behaviour"].clone();
+        assert_eq!(metric_total(&metrics, "application_messages_total"), 2);
+        let chunks = &metric_series(&metrics, Point::AgentUds, Direction::ToProxy)["chunks_per_application_message"];
+        assert_eq!(chunks["count"], 2);
+        assert_eq!(chunks["sum"], 2.);
+        assert_native_metrics(&records, &bus);
     }
 }
 

@@ -910,6 +910,33 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
         assert_eq!(input.point, Point::ClientTls);
         assert!(observed.iter().any(|o| o.id == input.observed_through));
     }
+    let h2_completions = observed
+        .iter()
+        .filter(|o| o.state == State::Complete && o.protocol_stream_id.is_some())
+        .count();
+    assert!(h2_completions >= 3);
+    let behaviour = observations.counters.json()["behaviour"].clone();
+    let unavailable: u64 = behaviour["series"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            row["chunks_per_application_message_unavailable_total"]
+                .as_u64()
+                .unwrap()
+        })
+        .sum();
+    assert_eq!(unavailable, h2_completions as u64);
+    assert_eq!(
+        behaviour["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["application_messages_total"].as_u64().unwrap())
+            .sum::<u64>(),
+        (h2_completions + 1) as u64,
+        "parsed CONNECT and completed HTTP/2 requests"
+    );
     assert!(observed.iter().all(|o| o.captured_length == 0));
     let encoded = serde_json::to_string(&observed).unwrap();
     for content in ["request body", "response body", "key-h2", "private=query"] {

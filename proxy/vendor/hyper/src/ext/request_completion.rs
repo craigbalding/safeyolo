@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use std::task::{Context, Poll};
@@ -74,6 +74,7 @@ pub struct RequestByteRange {
     start: u64,
     head_end: u64,
     end: Arc<AtomicU64>,
+    body_parse_failed: Arc<AtomicBool>,
 }
 impl RequestByteRange {
     /// Offset before this message, including any parser-consumed leading lines.
@@ -88,6 +89,11 @@ impl RequestByteRange {
     pub fn end(&self) -> u64 {
         self.end.load(Ordering::Acquire)
     }
+    /// True only when HTTP/1 body framing or trailers failed validation.
+    /// Transport errors and incomplete input do not set this marker.
+    pub fn body_parse_failed(&self) -> bool {
+        self.body_parse_failed.load(Ordering::Acquire)
+    }
 }
 #[derive(Debug)]
 pub(crate) struct RequestCompletionProducer {
@@ -97,6 +103,9 @@ pub(crate) struct RequestCompletionProducer {
 impl RequestCompletionProducer {
     pub(crate) fn advance(&self, end: u64) {
         self.range.end.store(end, Ordering::Release);
+    }
+    pub(crate) fn body_parse_failed(&self) {
+        self.range.body_parse_failed.store(true, Ordering::Release);
     }
     pub(crate) fn complete(self) {
         let _ = self.sender.send(());
@@ -115,6 +124,7 @@ pub(crate) fn register_request_completion(
         start,
         head_end,
         end: Arc::new(AtomicU64::new(head_end)),
+        body_parse_failed: Arc::new(AtomicBool::new(false)),
     };
     extensions.insert(range.clone());
     RequestCompletionProducer { sender, range }

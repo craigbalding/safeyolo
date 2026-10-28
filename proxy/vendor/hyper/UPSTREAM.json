@@ -206,5 +206,30 @@
       "proxy/src/http/traffic/tests.rs"
     ],
     "license": "MIT (existing LICENSE unchanged)"
+  },
+  "transport_metrics_patch": {
+    "base_commit": "ddc2d1ccaeb1bf5420ad9987fda20c12e02e7771",
+    "scope": "Mark parser-owned HTTP/1 body framing/trailer failures in the existing content-free request range. Preserve I/O errors, incomplete input, display strings, framing, admission and completion ownership.",
+    "files": [
+      {
+        "path": "src/ext/request_completion.rs",
+        "base_sha256": "d4d7460b2d641b8d28f550df12def201b169002acffa37a618f3d3eefa210e7f",
+        "candidate_sha256": "b91a7038ce927ddc0318ebc90a4ff636163519094dfdde0274307d8037529e42"
+      },
+      {
+        "path": "src/proto/h1/conn.rs",
+        "base_sha256": "8492803ad79406b5f223251164119079b5489ba376415ea09df97257d9258200",
+        "candidate_sha256": "3d0769544b26be728e30c9bb42a23efc8c3e00dfc5a05c702b891c20cae29825"
+      },
+      {
+        "path": "src/proto/h1/decode.rs",
+        "base_sha256": "6142b77435d19da5adc3714f83633496147d775e5bc69e8798bc611e3236a92d",
+        "candidate_sha256": "c53a79c7bce670270c11dbb207ccc23ad7615299f112e35d461fc9f3e90a5b15"
+      }
+    ],
+    "validation": [
+      "proxy/src/observations/tests.rs"
+    ],
+    "license": "MIT (existing LICENSE unchanged)"
   }
 }
