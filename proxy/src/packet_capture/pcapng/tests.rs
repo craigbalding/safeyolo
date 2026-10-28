@@ -219,6 +219,96 @@ fn optional_projection_failure_preserves_the_complete_canonical_record() {
 }
 
 #[tokio::test]
+async fn token_file_whitespace_cannot_grant_secrets_to_the_capture_reader() {
+    use crate::packet_capture::{Profile, SecretOutput, Settings};
+    use tokio::{io::AsyncWriteExt, net::TcpStream, time::timeout};
+    const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+    for (read_token, secret_token, secret_bearer) in [
+        ("capture-reader", "capture-reader", None),
+        ("capture-reader\n", "capture-reader", None),
+        ("capture-reader ", "capture-reader", None),
+        ("\u{1c}\u{a0}capture-reader\r\n", "capture-reader", None),
+        ("capture-reader", " capture-reader\t", None),
+        ("capture-reader", " \r\n\t", None),
+        ("capture-reader", "secret-\u{e9}", None),
+        ("capture-reader", "capture-secret", Some("capture-secret")),
+        (
+            "\t capture-reader\r\n",
+            "\u{1c}\u{a0}capture-secret\r\n",
+            Some("capture-secret"),
+        ),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = crate::packet_capture::tests::config(directory.path());
+        let read_path = directory.path().join("read-token");
+        let secret_path = directory.path().join("secret-token");
+        std::fs::write(&read_path, read_token).unwrap();
+        std::fs::write(&secret_path, secret_token).unwrap();
+        config.admin_port = Some(0);
+        config.admin_api_token_file = Some(read_path);
+        config.native_settings.as_mut().unwrap().packet_capture = Settings {
+            profile: Profile::Pcapng,
+            test_enterprise: Some(TEST_ENTERPRISE),
+            wss: true,
+            tls_secrets: true,
+            secrets_token_file: Some(secret_path),
+            // Retain separately authorized secret output even if the WSS grant
+            // is refused, so its reader must still filter available DSB bytes.
+            file: Some(directory.path().join("capture.pcapng")),
+            secret_outputs: vec![SecretOutput::File],
+            ..Default::default()
+        };
+        let proxy = crate::Proxy::start(config).await.unwrap();
+        let runtime = proxy.runtime.read().unwrap().clone();
+        let capture = runtime
+            .connection_events
+            .as_ref()
+            .unwrap()
+            .observations
+            .capture
+            .get()
+            .unwrap();
+        assert_eq!(capture.secrets_token.is_empty(), secret_bearer.is_none());
+        assert!(capture.secrets.is_some());
+        for (bearer, authorized) in std::iter::once(("capture-reader", false))
+            .chain(secret_bearer.map(|bearer| (bearer, true)))
+        {
+            let mut stream = TcpStream::connect(runtime.admin_address.unwrap())
+                .await
+                .unwrap();
+            stream.write_all(format!("GET /admin/capture HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Bearer {bearer}\r\n\r\n").as_bytes()).await.unwrap();
+            assert!(
+                crate::connection_events::tests::head(&mut stream)
+                    .await
+                    .starts_with(b"HTTP/1.1 101")
+            );
+            let mut reader = crate::websocket::Reader::new(stream, false, None);
+            let initial = timeout(WAIT, reader.read()).await.unwrap().unwrap();
+            assert!(matches!(initial, crate::websocket::Event::Message(_)));
+            let record = Record::Observation(Box::new(observation()));
+            let public = capture.encoder.encode(&record, 65536).unwrap();
+            let mut secret =
+                super::secrets(b"CLIENT_RANDOM controlled-test-canary\n", 65536).unwrap();
+            secret.extend_from_slice(&public);
+            capture.dispatch(&record, Some(public.into()), Some(secret.into()));
+            let crate::websocket::Event::Message(message) =
+                timeout(WAIT, reader.read()).await.unwrap().unwrap()
+            else {
+                panic!("binary capture delivery required");
+            };
+            message
+                .content()
+                .with_bytes(|bytes| {
+                    assert_eq!(blocks(bytes).iter().any(|b| b.0 == 10), authorized);
+                    assert_eq!(bytes.windows(13).any(|b| b == b"CLIENT_RANDOM"), authorized);
+                })
+                .unwrap();
+        }
+        proxy.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn secret_batches_precede_packets_and_reader_authorization_never_inherits_them() {
     use crate::observations::ObservationBus;
     use crate::packet_capture::{Capture, Encoder, Limits, Settings, Sink};

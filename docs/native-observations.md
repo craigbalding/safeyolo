@@ -501,8 +501,10 @@ a separate bearer token file. Relative paths belong to the `config.toml`
 directory. The ordinary operator bearer token grants `capture.read` and receives
 no Decryption Secrets Blocks (DSB). The separate capture token grants
 `capture.read` and `capture.secrets` on `/admin/capture`; it does not grant Admin
-API access. Missing, unreadable, empty, non-ASCII or identical read/secrets tokens do not
-grant secrets access. Authentication reuses the existing constant-time check.
+API access. The capture listener removes leading and trailing whitespace from
+both token-file values before comparison and authentication. Missing, unreadable,
+empty, non-ASCII or identical read/secrets tokens do not grant secrets access.
+Authentication reuses the existing constant-time check.
 
 The native rustls connections export standard TLS key-log lines into a separate
 store bounded by the configured capture item/byte limits. Keys stay outside

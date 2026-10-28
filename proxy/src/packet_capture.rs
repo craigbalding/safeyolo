@@ -2,6 +2,7 @@
 use crate::{
     Error,
     observations::{ConsumerKind, Layer, Limits, ObservationBus, Record, Session},
+    policy::python_whitespace,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -836,13 +837,15 @@ impl Running {
         if settings.tls_secrets
             && let Some(path) = settings.secrets_token_file.as_deref()
         {
-            let token = crate::admin_listener::read_token(Some(path));
+            let token = crate::admin_listener::read_token(Some(path)).map(|token| {
+                zeroize::Zeroizing::new(token.trim_matches(python_whitespace).to_owned())
+            });
             let read_token =
                 crate::admin_listener::read_token(runtime.config.admin_api_token_file.as_deref());
             if let (Ok(token), Ok(read_token)) = (token, read_token)
                 && !token.is_empty()
                 && token.is_ascii()
-                && *token != *read_token
+                && token.as_str() != read_token.trim_matches(python_whitespace)
             {
                 secrets_token = token;
             } else {
