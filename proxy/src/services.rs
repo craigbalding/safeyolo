@@ -30,6 +30,9 @@ fn authorization() -> String {
 fn bearer() -> String {
     "Bearer".into()
 }
+fn basic_username() -> String {
+    "x-access-token".into()
+}
 #[derive(Clone, Debug, Deserialize)]
 pub struct AuthConfig {
     #[serde(rename = "type")]
@@ -38,6 +41,8 @@ pub struct AuthConfig {
     pub header: String,
     #[serde(default = "bearer")]
     pub scheme: String,
+    #[serde(default = "basic_username")]
+    pub username: String,
     #[serde(default)]
     pub refresh_on_401: bool,
     #[serde(default)]
@@ -69,6 +74,7 @@ pub struct RiskyRoute {
 pub struct ServiceDefinition {
     pub name: String,
     pub default_host: String,
+    pub github_git: bool,
     pub auth: Option<AuthConfig>,
     pub capabilities: BTreeMap<String, Capability>,
     pub risky_routes: Vec<RiskyRoute>,
@@ -89,11 +95,22 @@ impl ServiceDefinition {
         }
         let name = required_string(object, "name")?;
         let default_host = string(object, "default_host", "")?;
-        let auth = object
+        let github_git = object.get("github_git").map_or(Ok(false), |value| {
+            value.as_bool().ok_or("github_git must be a boolean")
+        })?;
+        let auth: Option<AuthConfig> = object
             .get("auth")
             .cloned()
             .map(serde_json::from_value)
             .transpose()?;
+        if let Some(auth) = auth.as_ref().filter(|auth| auth.kind == "basic") {
+            if auth.username.is_empty() || auth.username.contains([':', '\r', '\n']) {
+                return Err(
+                    "Basic authentication requires a nonempty username without colon or newlines"
+                        .into(),
+                );
+            }
+        }
         let mut capabilities = BTreeMap::new();
         if let Some(raw_caps) = object.get("capabilities") {
             for (name, raw_cap) in raw_caps
@@ -144,6 +161,7 @@ impl ServiceDefinition {
         Ok(Self {
             name,
             default_host,
+            github_git,
             auth,
             capabilities,
             risky_routes,
@@ -1422,11 +1440,15 @@ pub struct CredentialSelection {
     pub auth_kind: Option<String>,
     pub auth_header: String,
     pub auth_scheme: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub basic_username: Option<String>,
     pub allow_http: bool,
     pub refresh_on_401: bool,
     /// The caller must evaluate/consume applicable risky-route grants before use.
     pub risky_route: Option<RiskyRoute>,
     pub contract_operation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github_git: Option<crate::github_git::GitHubRequest>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
@@ -1496,6 +1518,31 @@ fn folded_header(headers: &[(String, String)], name: &str) -> String {
 const GATEWAY_TOKEN_SEPARATORS: &[u8] = b", \t\n\x0b\x0c\r\x1c\x1d\x1e\x1f\x85\xa0";
 
 pub(crate) fn has_gateway_token(raw_value: &[u8]) -> bool {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    // Selection requires exactly one Basic value. Detection also recognizes a
+    // synthetic token in a malformed combined header, so it cannot fall through.
+    if raw_value.split(|byte| *byte == b',').any(|part| {
+        let mut words = part
+            .split(u8::is_ascii_whitespace)
+            .filter(|word| !word.is_empty());
+        if !words
+            .next()
+            .is_some_and(|word| word.eq_ignore_ascii_case(b"Basic"))
+        {
+            return false;
+        }
+        words
+            .next()
+            .and_then(|value| STANDARD.decode(value).ok())
+            .map(Zeroizing::new)
+            .is_some_and(|decoded| {
+                decoded
+                    .split(|byte| *byte == b':')
+                    .any(|part| part.starts_with(b"sgw_"))
+            })
+    }) {
+        return true;
+    }
     raw_value.windows(4).enumerate().any(|(start, candidate)| {
         candidate == b"sgw_"
             && (start == 0
@@ -1511,6 +1558,30 @@ pub(crate) fn has_gateway_token(raw_value: &[u8]) -> bool {
                             })
                 }))
     })
+}
+
+fn basic_gateway_token(value: &[u8]) -> Option<Secret> {
+    let decoded = decoded_basic(value)?;
+    let decoded = std::str::from_utf8(&decoded).ok()?;
+    let (username, password) = decoded.split_once(':')?;
+    if username.is_empty() || !password.starts_with("sgw_") {
+        return None;
+    }
+    Some(Secret::new(password))
+}
+
+fn decoded_basic(value: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let mut words = std::str::from_utf8(value).ok()?.split_ascii_whitespace();
+    let scheme = words.next()?;
+    if !scheme.eq_ignore_ascii_case("Basic") {
+        return None;
+    }
+    let value = words.next()?;
+    if words.next().is_some() {
+        return None;
+    }
+    Some(Zeroizing::new(STANDARD.decode(value).ok()?))
 }
 
 fn unresolved_token(headers: &[(String, String)]) -> GatewayDecision {
@@ -1581,6 +1652,13 @@ fn extract_token(
     hosts: &HostMap,
     request: &GatewayRequest<'_>,
 ) -> Option<Secret> {
+    // Recognize Basic-wrapped synthetic passwords even at the wrong host.
+    // Binding selection then denies host/agent mismatches before resolution.
+    if let Some(token) =
+        basic_gateway_token(folded_header(request.request.headers, "Authorization").as_bytes())
+    {
+        return Some(token);
+    }
     let header_service = hosts
         .get(&request.host.to_lowercase())
         .and_then(|name| registry.services.get(name));
@@ -1591,6 +1669,12 @@ fn extract_token(
         });
     header_service.and_then(|_| {
         let value = Zeroizing::new(folded_header(request.request.headers, header));
+        if header_service
+            .and_then(|service| service.auth.as_ref())
+            .is_some_and(|auth| auth.kind == "basic")
+        {
+            return basic_gateway_token(value.as_bytes());
+        }
         let value = if bearer {
             value
                 .split_once(' ')
@@ -1645,6 +1729,20 @@ fn select_binding(
     else {
         return denied(403, "CAPABILITY_NOT_FOUND");
     };
+    let auth_header = service
+        .auth
+        .as_ref()
+        .map_or("Authorization", |auth| auth.header.as_str());
+    let basic = basic_gateway_token(folded_header(request.request.headers, auth_header).as_bytes())
+        .is_some();
+    if basic
+        != service
+            .auth
+            .as_ref()
+            .is_some_and(|auth| auth.kind == "basic")
+    {
+        return denied(403, "INVALID_TOKEN");
+    }
     if hosts.get(&request.host.to_lowercase()).map(String::as_str) != binding.service.as_str() {
         return denied(403, "HOST_MISMATCH");
     }
@@ -1654,6 +1752,21 @@ fn select_binding(
     if crate::contracts::reject_path_tricks(path) || normalize_path(path) != path {
         return denied(403, "TRANSPORT_PATH_TRICK");
     }
+    let git = if service.github_git {
+        if !request.host.eq_ignore_ascii_case("github.com") {
+            return denied(403, "HOST_MISMATCH");
+        }
+        let Some(git) =
+            crate::github_git::GitHubRequest::parse(request.request.method, request.request.target)
+        else {
+            return denied(403, "GITHUB_GIT_REQUEST_INVALID");
+        };
+        Some(git)
+    } else {
+        None
+    };
+    let method = git.as_ref().map_or(request.request.method, |_| "POST");
+    let path = git.as_ref().map_or(path, |git| git.path.as_str());
     let permitted = match request.route_mode {
         RouteMode::CompiledPolicy(policy) => {
             policy
@@ -1661,15 +1774,14 @@ fn select_binding(
                     service: &service.name,
                     capability: &capability.name,
                     agent,
-                    method: request.request.method,
+                    method,
                     path,
                 })
                 .effect
                 == Effect::Allow
         }
         RouteMode::LocalFallback => capability.routes.iter().any(|route| {
-            method_matches(request.request.method, &route.methods)
-                && resource_matches(path, &route.path)
+            method_matches(method, &route.methods) && resource_matches(path, &route.path)
         }),
     };
     if !permitted {
@@ -1753,17 +1865,20 @@ fn select_binding(
                 .filter(|auth| auth.kind == "bearer")
                 .map_or("", |auth| auth.scheme.as_str())
                 .into(),
+            basic_username: auth
+                .filter(|auth| auth.kind == "basic")
+                .map(|auth| auth.username.clone()),
             allow_http: auth.is_some_and(|auth| auth.allow_http),
             refresh_on_401: auth.is_some_and(|auth| auth.refresh_on_401),
             risky_route: service
                 .risky_routes
                 .iter()
                 .find(|route| {
-                    method_matches(request.request.method, &route.methods)
-                        && resource_matches(path, &route.path)
+                    method_matches(method, &route.methods) && resource_matches(path, &route.path)
                 })
                 .cloned(),
             contract_operation: operation,
+            github_git: git,
         }),
     }
 }

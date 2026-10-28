@@ -3446,6 +3446,26 @@ fn help_uses_native_lifecycle_and_has_no_old_aliases() {
 }
 
 #[test]
+fn watch_opens_the_existing_native_operator_session() {
+    let root = tempfile::tempdir().unwrap();
+    initialize(root.path());
+    let output = cli(root.path(), &["watch", "--help"]);
+    assert!(output.status.success());
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("watch opens the same native operator session as inspect")
+    );
+    let output = cli(root.path(), &["watch", "--agent", "alice"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("inspect requires a terminal")
+    );
+}
+
+#[test]
 fn fresh_proxy_uses_the_explicit_toml_and_keeps_the_other_instance_unchanged() {
     let temp = tempfile::tempdir().unwrap();
     let a = temp.path().join("a");

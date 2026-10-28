@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use crate::{Error, host_platform, native_client, native_config, network_guard};
 
 pub const HELP: &str = "safeyolo [--root ROOT] inspect [--factory NAME] [--agent NAME]
+safeyolo [--root ROOT] watch [--factory NAME] [--agent NAME]
 safeyolo [--root ROOT] traffic list [--agent NAME] [--filter EXPRESSION] [--json]
 safeyolo [--root ROOT] traffic show ID|body ID request|response|websocket ID|message ID NUMBER [--offset BYTES] [--agent NAME] [--json]
 safeyolo [--root ROOT] traffic export ID FORMAT FILE [--agent NAME]
@@ -28,6 +29,7 @@ safeyolo [--root ROOT] diagnose [--agent NAME] [--json]
 safeyolo helper show ID|diagnostic ID|prepare ID --reason TEXT [--socket PATH] [--token-file FILE]
 safeyolo helper list\nsafeyolo helper approve|reject|defer ID --delegation NAME --option ID\nsafeyolo helper context|respond ID [--reason TEXT] [--socket PATH] [--token-file FILE]
 
+watch opens the same native operator session as inspect.
 inspect keeps selection only in this session; it never changes a script's target.
 Factory roles come from the existing selected snapshot; live state supplies readiness.
 Exports: raw, raw_request, raw_response, curl, httpie, har, zhar.
@@ -46,7 +48,7 @@ pub fn handles(args: &[String]) -> bool {
     args.first().is_some_and(|arg| {
         matches!(
             arg.as_str(),
-            "inspect" | "traffic" | "approvals" | "helper" | "logs" | "diagnose"
+            "inspect" | "watch" | "traffic" | "approvals" | "helper" | "logs" | "diagnose"
         )
     })
 }
@@ -1216,7 +1218,7 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
     }
     let options = Options::parse(&args[1..])?;
     let value = match args[0].as_str() {
-        "inspect" => return inspect(root, &options).await,
+        "inspect" | "watch" => return inspect(root, &options).await,
         "traffic" => traffic(root, &options).await?,
         "logs" => logs(root, &options)?,
         "diagnose" => diagnose(root, &options).await?,

@@ -1,0 +1,31 @@
+schema_version: 1
+name: github-git
+description: GitHub Git HTTPS access with host-held credentials
+default_host: github.com
+github_git: true
+
+auth:
+  type: basic
+  username: x-access-token
+
+# Discovery and pack requests use the canonical POST path for policy and grants.
+# Operators can override these routes with exact owner/repository paths.
+capabilities:
+  fetch:
+    description: Clone and fetch GitHub repositories
+    routes:
+      - methods: [POST]
+        path: "/*/*.git/git-upload-pack"
+  push:
+    description: Clone, fetch, and push GitHub repositories
+    routes:
+      - methods: [POST]
+        path: "/*/*.git/git-upload-pack"
+      - methods: [POST]
+        path: "/*/*.git/git-receive-pack"
+
+risky_routes:
+  - path: "/*/*.git/git-receive-pack"
+    methods: [POST]
+    tactics: [impact]
+    description: Push commits and update remote refs

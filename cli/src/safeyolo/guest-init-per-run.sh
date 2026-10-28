@@ -190,6 +190,20 @@ fi
 # --------------------------------------------------------------------------
 # 3. Run user init hook (legacy; host script can write here too)
 # --------------------------------------------------------------------------
+# Git asks this helper for the current opaque GitHub gateway credential.
+# Keep operator-installed helpers and never write a credential to Git config.
+if command -v git >/dev/null 2>&1; then
+    _safeyolo_git_helper='!/safeyolo/safeyolo-guest git-credential'
+    if [ -x /run/safeyolo/safeyolo-guest ]; then
+        _safeyolo_git_helper='!/run/safeyolo/safeyolo-guest git-credential'
+    fi
+    if ! git config --system --get-all credential.https://github.com.helper |
+        grep -Fxq "$_safeyolo_git_helper"; then
+        git config --system --add credential.https://github.com.helper "$_safeyolo_git_helper"
+    fi
+    unset _safeyolo_git_helper
+fi
+
 if [ -f /home/agent/.safeyolo-hooks/agent-init.sh ]; then
     su agent -c "bash /home/agent/.safeyolo-hooks/agent-init.sh" || true
 fi

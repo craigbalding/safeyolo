@@ -314,6 +314,90 @@ no request. There is no substitution with a local credential. Repair host
 authentication, the executable or the reference, then retry. Local credentials
 continue to work independently.
 
+## GitHub Git HTTPS access
+
+On the host, configure and authenticate `op` as described in
+[Use a 1Password reference](#use-a-1password-reference). Select the field that
+contains a fine-grained GitHub personal access token (PAT). The PAT needs access
+to the intended repositories and GitHub permissions for the intended operations.
+Replace `op://VAULT/ITEM/FIELD` below with that field's reference. Alice must
+already be a configured agent.
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials reference github-pat --provider onepassword --reference op://VAULT/ITEM/FIELD
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services authorize alice github-git --capability push --credential github-pat --allow-host-network
+```
+
+The first credential write selects storage as described earlier. An existing
+local credential can replace `github-pat` without changing the Git workflow.
+The built-in `fetch` capability permits clone and fetch. The `push` capability
+also permits push; existing risk policy determines whether push requires
+approval. Neither capability grants GitHub permissions absent from the PAT.
+
+The built-in routes cover all repositories available to the selected PAT.
+To permit fewer repositories, override the `github-git` service in the host's
+configured `gateway_services_dir`. A standard native installation uses
+`$HOME/.safeyolo/data/services`. Copy the built-in definition from
+`$HOME/.safeyolo/assets/services/github-git.yaml` if no override exists.
+In the override, replace each `/*/*.git/` prefix in capability and risk routes
+with the intended lowercase owner and repository, such as
+`/craigbalding/safeyolo.git/`. Keep `github_git: true`, Basic authentication and
+the push risk route. The normal catalogue watcher activates a valid override;
+`services show github-git` shows the accepted definition. A broader PAT does
+not bypass these routes.
+
+When the updated guest starts, SafeYolo configures a Git credential helper for
+`https://github.com`. Existing guests need a stop/start to stage the helper.
+The helper reads Alice's current minted gateway token from the Agent API. It
+returns that opaque token as the Basic-auth password and does not save Git's
+`store` or `erase` inputs. The helper receives no PAT or `op` authentication.
+Existing Git helpers remain configured.
+
+In Alice's guest, use a normal GitHub HTTPS remote:
+
+```sh
+git clone https://github.com/craigbalding/safeyolo.git
+cd safeyolo
+# After preparing the intended commit:
+git push
+```
+
+For each authenticated smart-HTTP request, the gateway derives the repository
+and operation from the request path and query. Both ref discovery and the pack
+request use the canonical POST path for policy and grants:
+
+| Git operation | Canonical policy and grant path |
+| --- | --- |
+| Clone or fetch | `/craigbalding/safeyolo.git/git-upload-pack` |
+| Push | `/craigbalding/safeyolo.git/git-receive-pack` |
+
+Repository names are canonicalized to lowercase with a `.git` suffix. Remote
+URLs without that suffix work too. Duplicate or ambiguous service queries and
+noncanonical encoded paths fail closed. This integration covers Git smart HTTP;
+Git Large File Storage uses separate endpoints and needs its own service policy.
+
+If risk policy requires approval, `safeyolo watch` identifies Alice and the
+repository, for example `alice wants to push to craigbalding/safeyolo`.
+The `watch` command opens the native operator session used by `inspect`.
+Select Alice, then use `pending` and `approval ID` to inspect the request.
+Use `approve ID` or `reject ID` for the existing decision path. The direct
+`approvals approve ID --option session` and `--option remembered` commands
+select the other offered lifetimes. A blocked Git command
+must be retried after approval. For the equivalent explicit host command:
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services approve alice github-git POST /craigbalding/safeyolo.git/git-receive-pack --lifetime once
+```
+
+Ref discovery retains a once grant. A successful HTTP pack response consumes
+it; Git can still report an application-level ref rejection. Session and
+remembered grants retain their existing lifetimes. Denial does not read the
+provider or inject a PAT. After authorization, the host resolves the configured
+reference and replaces the opaque Basic password with the PAT. The upstream
+username defaults to `x-access-token`; a Basic service can set `auth.username`.
+Provider errors return the existing nonsecret diagnostics. All other network,
+credential, capability, route and grant checks still apply.
+
 ## Authorization, binding and risk approval
 
 Authorization selects an agent, capability, account and credential. A capability
