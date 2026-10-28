@@ -469,6 +469,7 @@ enum WebMITMOpenError: LocalizedError {
 enum ClientError: LocalizedError {
     case invalidURL(String)
     case invalidResponse
+    case connectionUnavailable
     case requestFailed(Int, String)
     case invalidApproval(String)
     case instanceMismatch(expected: String, actual: String)
@@ -479,6 +480,8 @@ enum ClientError: LocalizedError {
             return "Invalid URL: \(value)"
         case .invalidResponse:
             return "SafeYolo returned an invalid response"
+        case .connectionUnavailable:
+            return "The selected SafeYolo instance could not be verified. Reconnect that instance and retry."
         case .requestFailed(let status, let message):
             return "SafeYolo returned HTTP \(status): \(message)"
         case .invalidApproval(let message):

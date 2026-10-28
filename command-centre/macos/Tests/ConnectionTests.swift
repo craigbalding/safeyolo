@@ -297,7 +297,7 @@ extension ModelTests {
                 expectedInstanceID: "sy-connection-test", session: stubSession(), makeEventSocket: { _ in socket })
             let presenter = ApprovalWindowPresenter()
             client.onNewApproval = { presenter.show($0, client: client) }
-            defer { presenter.close(id); client.stop(); StubURLProtocol.responsesByPath = [:] }
+            defer { presenter.close(id, instanceID: client.expectedInstanceID); client.stop(); StubURLProtocol.responsesByPath = [:] }
             client.start()
             try await until { socket.receiving && client.approvalOutcomes[id] != nil }
             let window = NSApp.windows.first { $0.identifier?.rawValue == id }!
@@ -403,7 +403,7 @@ extension ModelTests {
         var presentations = 0
         client.onNewApproval = { event in presentations += 1; presenter.show(event, client: client) }
         defer {
-            for id in ["req-selected", "req-newer", "req-helper"] { presenter.close("apr-\(id.dropFirst(4))") }
+            for id in ["req-selected", "req-newer", "req-helper"] { presenter.close("apr-\(id.dropFirst(4))", instanceID: client.expectedInstanceID) }
             client.stop()
         }
         client.start()

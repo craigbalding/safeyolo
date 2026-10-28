@@ -14,7 +14,7 @@ struct SafeYoloCommandCentreApp: App {
         // SwiftUI views. Compose the mark and its indicator as one image.
         let mark = NSImage(named: "MenuBarTemplate")!
         let indicator = controller.hasSecurityEvents || controller.hasPendingApprovals
-            ? "!" : controller.client == nil ? "×" : ""
+            ? "!" : !controller.hasConnectedInstance ? "×" : ""
         let image = NSImage(size: NSSize(width: 25, height: 18), flipped: false) { bounds in
             mark.draw(in: NSRect(x: 0, y: 0, width: 18, height: 18))
             (indicator as NSString).draw(at: NSPoint(x: 19, y: 2), withAttributes: [
@@ -46,7 +46,7 @@ struct SafeYoloCommandCentreApp: App {
         _controller = StateObject(wrappedValue: controller)
         DispatchQueue.main.async {
             controller.start()
-            if controller.client == nil {
+            if !controller.hasConnectedInstance {
                 settingsPresenter.show(controller: controller)
             }
         }
@@ -63,16 +63,21 @@ struct SafeYoloCommandCentreApp: App {
             )
             .onAppear {
                 Task {
-                    guard let client = controller.client else { return }
-                    await client.refreshInstance()
-                    await client.refreshAgents()
+                    await withTaskGroup(of: Void.self) { group in
+                        for connection in controller.connections {
+                            guard let client = connection.client else { continue }
+                            group.addTask { @MainActor in
+                                if await client.refreshInstance() { await client.refreshAgents() }
+                            }
+                        }
+                    }
                 }
             }
         } label: {
             Image(nsImage: statusImage)
             .accessibilityLabel(controller.hasSecurityEvents ? "SafeYolo, security events"
                                 : controller.hasPendingApprovals ? "SafeYolo, approvals waiting"
-                                : controller.client == nil ? "SafeYolo, not configured" : "SafeYolo")
+                                : !controller.hasConnectedInstance ? "SafeYolo, not configured" : "SafeYolo")
         }
         .menuBarExtraStyle(.menu)
     }
