@@ -183,3 +183,40 @@ fn basic_tokens_cannot_fall_through_at_wrong_hosts_or_with_wrong_credentials() {
         ));
     }
 }
+
+#[test]
+fn basic_padding_aliases_keep_credential_binding_checks() {
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let target = "/owner/allowed.git/git-upload-pack";
+    for username in ["0", "000"] {
+        let encoded = STANDARD.encode(format!("{username}:{TOKEN}"));
+        let padding = encoded.len() - encoded.trim_end_matches('=').len();
+        assert!(matches!(padding, 1 | 2));
+        let last = encoded.len() - padding - 1;
+        let canonical = alphabet
+            .iter()
+            .position(|byte| *byte == encoded.as_bytes()[last])
+            .unwrap();
+        for bits in 1..(1 << (padding * 2)) {
+            let mut alias = encoded.as_bytes().to_vec();
+            alias[last] = alphabet[canonical | bits];
+            let auth = format!("Basic {}", String::from_utf8(alias).unwrap());
+            assert!(matches!(
+                select("fetch", "alice", "github.com", "POST", target, &auth),
+                GatewayDecision::Selected { .. }
+            ));
+            for (agent, host) in [("bob", "github.com"), ("alice", "127.0.0.1")] {
+                assert!(matches!(
+                    select("fetch", agent, host, "POST", target, &auth),
+                    GatewayDecision::Deny { status: 403, .. }
+                ));
+            }
+            for malformed in [format!("{auth}, Basic eDp5"), format!("{auth} extra")] {
+                assert!(matches!(
+                    select("fetch", "alice", "github.com", "POST", target, &malformed),
+                    GatewayDecision::Deny { .. }
+                ));
+            }
+        }
+    }
+}

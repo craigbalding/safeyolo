@@ -1518,7 +1518,6 @@ fn folded_header(headers: &[(String, String)], name: &str) -> String {
 const GATEWAY_TOKEN_SEPARATORS: &[u8] = b", \t\n\x0b\x0c\r\x1c\x1d\x1e\x1f\x85\xa0";
 
 pub(crate) fn has_gateway_token(raw_value: &[u8]) -> bool {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
     // Selection requires exactly one Basic value. Detection also recognizes a
     // synthetic token in a malformed combined header, so it cannot fall through.
     if raw_value.split(|byte| *byte == b',').any(|part| {
@@ -1533,8 +1532,7 @@ pub(crate) fn has_gateway_token(raw_value: &[u8]) -> bool {
         }
         words
             .next()
-            .and_then(|value| STANDARD.decode(value).ok())
-            .map(Zeroizing::new)
+            .and_then(crate::credential_guard::decode_basic_credentials)
             .is_some_and(|decoded| {
                 decoded
                     .split(|byte| *byte == b':')
@@ -1571,7 +1569,6 @@ fn basic_gateway_token(value: &[u8]) -> Option<Secret> {
 }
 
 fn decoded_basic(value: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
     let mut words = std::str::from_utf8(value).ok()?.split_ascii_whitespace();
     let scheme = words.next()?;
     if !scheme.eq_ignore_ascii_case("Basic") {
@@ -1581,7 +1578,7 @@ fn decoded_basic(value: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
     if words.next().is_some() {
         return None;
     }
-    Some(Zeroizing::new(STANDARD.decode(value).ok()?))
+    crate::credential_guard::decode_basic_credentials(value.as_bytes())
 }
 
 fn unresolved_token(headers: &[(String, String)]) -> GatewayDecision {

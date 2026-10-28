@@ -27,8 +27,20 @@ from tests.proxy_contracts.test_native_network_policy import policy_proxy
 PAT = "fixture-github-pat-312"
 
 
-def basic(password):
-    return "Basic " + base64.b64encode(f"x-access-token:{password}".encode()).decode()
+def basic(password, username="x-access-token"):
+    return "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode()
+
+
+def padding_alias(authorization):
+    encoded = authorization.removeprefix("Basic ")
+    unpadded = encoded.rstrip("=")
+    assert len(encoded) - len(unpadded) in (1, 2)
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    last = alphabet[alphabet.index(unpadded[-1]) | 1]
+    alias = unpadded[:-1] + last + encoded[len(unpadded):]
+    if alias == encoded or base64.b64decode(alias, validate=True) != base64.b64decode(encoded, validate=True):
+        raise AssertionError("padding alias must preserve the decoded credentials")
+    return "Basic " + alias
 
 
 def test_basic_git_password_is_substituted_by_the_native_gateway(tmp_path):
@@ -87,6 +99,7 @@ class GitRequest(BaseHTTPRequestHandler):
         self.git()
 
     def git(self):
+        self.server.requests.append((self.command, self.path))
         if self.headers.get("Authorization") != basic(PAT):
             self.send_response(401)
             self.send_header("WWW-Authenticate", 'Basic realm="owned-git-fixture"')
@@ -118,7 +131,7 @@ class GitRequest(BaseHTTPRequestHandler):
 @contextmanager
 def git_origin(repositories):
     server = ThreadingHTTPServer(("127.0.0.1", 0), GitRequest)
-    server.repositories, server.authorized = repositories, []
+    server.repositories, server.requests, server.authorized = repositories, [], []
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -317,13 +330,20 @@ decision="require_approval"
         api.resolve_approval(event["approval_id"], "reject")
         assert calls.read_text() == before, "denial must not resolve the PAT"
         before = calls.read_text()
-        for agent, target_host, path in [("bob", "github.com", "/owner/allowed.git/git-upload-pack"),
-                                         ("alice", "github.com", "/owner/other.git/git-upload-pack"),
-                                         ("alice", "127.0.0.1", "/owner/allowed.git/git-upload-pack")]:
-            code, _, _ = request(proxy.paths[agent], f"http://{target_host}:{origin.server_address[1]}{path}",
-                                 method="POST", body=b"0000", headers={"Authorization": basic(opaque)})
-            assert code == 403
+        upstream_before = len(origin.requests)
+        for authorization in [basic(opaque), *(padding_alias(basic(opaque, username)) for username in ("0", "00"))]:
+            for agent, target_host, path in [("bob", "github.com", "/owner/allowed.git/git-upload-pack"),
+                                             ("alice", "github.com", "/owner/other.git/git-upload-pack"),
+                                             ("alice", "127.0.0.1", "/owner/allowed.git/git-upload-pack")]:
+                code, _, _ = request(proxy.paths[agent], f"http://{target_host}:{origin.server_address[1]}{path}",
+                                     method="POST", body=b"0000", headers={"Authorization": authorization})
+                assert code == 403
+                assert len(origin.requests) == upstream_before, "rejected opaque passwords must not reach the origin"
         assert calls.read_text() == before
+        for username in ("0", "00"):
+            code, _, _ = request(proxy.paths["alice"], remote + "/info/refs?service=git-upload-pack",
+                                 headers={"Authorization": padding_alias(basic(opaque, username))})
+            assert code == 200, "accepted padding aliases must substitute the host credential"
         provider.write_text(f"#!/bin/sh\nprintf '%s' '{PAT}' >&2\nexit 17\n")
         code, _, body = request(proxy.paths["alice"], remote + "/info/refs?service=git-upload-pack", headers={"Authorization": basic(opaque)})
         assert code == 503 and b"PROVIDER_REJECTED" in body

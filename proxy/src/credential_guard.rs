@@ -1019,11 +1019,24 @@ fn extract(value: &str) -> Option<Zeroizing<String>> {
     {
         return None;
     }
+    let value = value[6..].trim_matches(python_whitespace);
+    let decoded = decode_basic_credentials(value.as_bytes())?;
+    let decoded = std::str::from_utf8(&decoded).ok()?;
+    decoded
+        .split_once(':')
+        .map(|(_, password)| Zeroizing::new(password.into()))
+}
+
+/// Share the guard's accepted Basic encoding with gateway token detection and
+/// selection, so a padding alias cannot escape credential binding checks.
+pub(crate) fn decode_basic_credentials(value: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
     // The pinned Python validate=True accepts non-canonical pad bits, but
     // rejects missing/redundant padding and padding before subsequent data.
-    let value = value[6..].trim_matches(python_whitespace);
-    let first_pad = value.find('=').unwrap_or(value.len());
-    if value[first_pad..].bytes().any(|byte| byte != b'=') {
+    let first_pad = value
+        .iter()
+        .position(|byte| *byte == b'=')
+        .unwrap_or(value.len());
+    if value[first_pad..].iter().any(|byte| *byte != b'=') {
         return None;
     }
     let tail = first_pad % 4;
@@ -1034,15 +1047,11 @@ fn extract(value: &str) -> Option<Zeroizing<String>> {
     let config = GeneralPurposeConfig::new()
         .with_decode_allow_trailing_bits(true)
         .with_decode_padding_mode(DecodePaddingMode::Indifferent);
-    let decoded = Zeroizing::new(
+    Some(Zeroizing::new(
         GeneralPurpose::new(&alphabet::STANDARD, config)
             .decode(&value[..if tail == 0 { first_pad } else { value.len() }])
             .ok()?,
-    );
-    let decoded = std::str::from_utf8(&decoded).ok()?;
-    decoded
-        .split_once(':')
-        .map(|(_, password)| Zeroizing::new(password.into()))
+    ))
 }
 fn looks_secret(config: &Snapshot, value: &str) -> Result<bool> {
     let length = value.chars().count();
