@@ -17,7 +17,7 @@ use std::{
 };
 #[cfg(target_os = "linux")]
 use std::{
-    os::fd::AsRawFd,
+    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     process::{ExitStatus, Stdio},
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -356,15 +356,29 @@ async fn rootfs(name: &str, guest: &Path) -> Result<Value, Error> {
 }
 
 #[cfg(target_os = "linux")]
-fn spawn(name: &str, directory: &Path) -> Result<tokio::process::Child, Error> {
+async fn spawn(name: &str, directory: &Path) -> Result<tokio::process::Child, Error> {
     use std::os::unix::process::CommandExt;
     let log = fs::OpenOptions::new()
         .create_new(true)
         .write(true)
+        .mode(0o600)
         .open(directory.join("exec.jsonl"))?;
+    let uid = crate::linux_host::selected_mapping()?.uid_base;
+    let access = tokio::process::Command::new("setfacl")
+        .args(["-m", &format!("u:{uid}:rw")])
+        .arg(directory.join("exec.jsonl"))
+        .output()
+        .await?;
+    if !access.status.success() {
+        return Err(format!(
+            "could not prepare private job wait log: {}",
+            String::from_utf8_lossy(&access.stderr).trim()
+        )
+        .into());
+    }
     let mut command = host_platform::runsc_command(name)?;
     command
-        .arg(format!("--debug-log-fd={}", log.as_raw_fd()))
+        .arg(format!("--debug-log=/proc/self/fd/{}", log.as_raw_fd()))
         .arg("--debug-log-format=json")
         .arg("exec")
         .arg("--process")
@@ -374,9 +388,11 @@ fn spawn(name: &str, directory: &Path) -> Result<tokio::process::Child, Error> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    // The mapped runtime receives a host-opened log descriptor. It cannot
-    // otherwise create the log in the caller-owned runtime directory.
-    // runsc donates only stdio to the guest, so this descriptor stays private.
+    // The public flag reopens this inherited descriptor after nsenter changes
+    // the writer to uid_base. Its explicit ACL grants that writer access while
+    // keeping the file private from other host users. /proc/self/fd also avoids
+    // runsc's log-filename substitutions in an arbitrary installation path.
+    // Only stdio is donated to the guest; this descriptor is never mounted.
     unsafe {
         command.as_std_mut().pre_exec(move || {
             if libc::fcntl(log.as_raw_fd(), libc::F_SETFD, 0) < 0 {
@@ -444,7 +460,7 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
             let work = async {
                 host_platform::start_job_sandbox(&name, spec.memory_mb).await?;
                 let rootfs = rootfs(&name, &guest).await?;
-                let mut command = spawn(&name, &directory)?;
+                let mut command = spawn(&name, &directory).await?;
                 let output = command.stdout.take().ok_or("job stdout pipe is missing")?;
                 let errors = command.stderr.take().ok_or("job stderr pipe is missing")?;
                 stdout = Some(tokio::spawn(collect(output, spec.retain_bytes)));
