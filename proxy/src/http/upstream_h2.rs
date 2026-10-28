@@ -214,7 +214,7 @@ impl Sessions {
             tokio::select! {
                 result = connection => {
                     if let Err(error) = result {
-                        if let Some(network) = &outbound.network { network.failed("http_error"); }
+                        if let Some(network) = &outbound.network { network.http_error(&error); }
                         eprintln!("upstream HTTP/2 connection: {error}");
                     }
                 },

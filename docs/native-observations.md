@@ -26,8 +26,9 @@ bytes = 4194304
 These are the defaults. `items` limits queued records. `bytes` limits their
 accounted memory: inline storage, owned identity strings and conservative
 allocation/provenance charges. Queue allocation overhead is also bounded by
-`items`. Session and active-connection metadata are separate, constant-size
-state per owner. If the operator enables payload capture, the queue charge also includes each
+`items`. Session and source metadata are separate, constant-size
+state per owner. Transport metrics have separate fixed accounting bounds, described below.
+If the operator enables payload capture, the queue charge also includes each
 retained payload byte. An oversized source snapshot retains metadata with zero
 captured length instead of allocating beyond the canonical byte bound.
 Zero admits no observations and still reports sequence loss. A policy reload
@@ -56,8 +57,68 @@ admission. `sink_bytes_total`, `sink_errors_total`,
 `file`, `stdout`, `tcp` and `wss` labels for actual output adapters. Bytes count
 complete batches written by the adapter. A failed partial write can therefore
 leave fewer bytes counted than the operating system accepted. Encoded output bytes must not be inferred
-from the metadata memory counter. Behavioral distributions remain separate work
-under [#863](https://github.com/craigbalding/safeyolo/issues/863).
+from the metadata memory counter.
+
+## Transport-behaviour metrics
+
+The same operator stats report includes `observations.behaviour`. The existing
+Prometheus renderer exposes these measurements with the `safeyolo_` prefix.
+The canonical fan-out worker measures metadata once, before consumer admission
+and capture encoding. Payload capture and FlowStore are not prerequisites.
+Enabling `pcap:compat` does not add synthetic packets or control records to the
+measurements.
+
+| Metric | Measurement |
+| --- | --- |
+| `observation_chunks_total` | Canonical receiver-observed chunks |
+| `observation_bytes_total` | Observed lengths of those chunks |
+| `observation_chunk_bytes` | Histogram of observed chunk lengths |
+| `observation_inter_chunk_interval_seconds` | Histogram of consecutive chunk intervals within one connection, point, layer, transport and direction |
+| `application_messages_total` | Native request-completion records, including parsed CONNECT heads |
+| `chunks_per_application_message` | Histogram of source chunks overlapping the completed message's exact parser-consumed byte range |
+| `connections_started_total` | Canonical connected records for accepted or established connections |
+| `connection_lifetime_seconds` | Histogram from a connected record to its closed or failed record |
+| `partial_or_aborted_streams_total` | Incomplete parser input, unfinished application-body owner drops and stream read/write errors |
+| `protocol_parse_failures_total` | Native parser errors, excluding generic HTTP failures and incomplete input |
+| `observation_loss_total` | Canonical gap counts and records whose live accounting exceeds the fixed metrics capacity, separated by `reason` |
+
+Series labels are the fixed enums `point`, `layer`, `transport` and `direction`.
+No new metric uses agent names, request/connection IDs, destinations or content
+as labels. Timing uses canonical monotonic nanoseconds converted to seconds;
+wall-clock adjustments do not affect durations. Histograms expose cumulative
+finite buckets, `+Inf`, count and sum through Prometheus. JSON reports finite
+buckets, count and sum. Measurements do not assign anomaly thresholds or
+security verdicts.
+
+Application counts use completion rather than parsed-head admission. Incomplete
+or failed input still contributes its observed chunks and bytes. Ordinary stream
+owner drops after completed requests do not imply aborted messages. Partial
+measurements describe the named layer: an application-body abort and a transport
+error can each produce a measurement at their respective points.
+
+Recoverable HTTP/2 parser rejections are counted at the native receiver,
+including heads rejected before request admission. Distinct rejected streams
+on one connection each contribute a failure. A peer reset is not a parser failure.
+
+Chunks-per-message series use the source point/layer/direction from an exact
+HTTP/1 `input_span`. A read-ahead chunk can overlap two messages and contribute
+once to each. Framing and trailers are included; unrelated read-ahead bytes are
+excluded. Prefix ancestry from HTTP/2, TLS or plain HTTP inside CONNECT cannot
+establish an exact message relation. Missing lineage, missing source chunks or
+accounting overflow omit that distribution sample and increment
+`chunks_per_application_message_unavailable_total` at the application point.
+The application-message count remains available.
+
+Live accounting retains at most 4096 connections and 16384 inbound chunk ranges
+across those connections. Completion retires consumed ranges; connection close
+or failure retires the connection's state. These bounds limit measurement state
+and do not limit traffic or parser admission. At capacity, raw chunk/byte and
+message counts continue while `observation_loss_total{reason="metrics_accounting_capacity"}`
+reports lost accounting input. A canonical gap adds its missing-record count
+under `canonical_admission_unavailable` and clears uncertain live accounting
+in that runtime. Neither timing adjacency nor complete message coverage is
+inferred across the gap. Existing attempted-observation and per-consumer loss
+counters retain their separate meanings.
 
 ## Identity, time and delivery
 

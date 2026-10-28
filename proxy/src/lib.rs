@@ -1646,8 +1646,8 @@ async fn accept_agents(
                         let driver_connection = connection.clone();
                         tasks.run(async move {
                             let result = serve_connection(stream, identity, connection_runtime, connection_stop, driver_tasks).await;
-                            if result.is_err() && let Some(connection) = driver_connection {
-                                connection.failed("http_error");
+                            if let Err(error) = &result && let Some(connection) = driver_connection {
+                                connection.http_error(error.as_ref());
                             }
                             result
                         }).await;

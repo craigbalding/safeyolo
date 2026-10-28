@@ -391,6 +391,24 @@ async fn tcp_reconnect_headers_and_two_clients_preserve_shared_bytes_without_rep
 
 #[tokio::test]
 async fn native_file_capture_preserves_one_many_and_partial_observed_bytes() {
+    async fn drain_file(capture: &Capture) {
+        capture.flush().await;
+        let file = capture
+            .sinks
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|sink| matches!(sink.kind, Sink::File))
+            .unwrap();
+        timeout(WAIT, async {
+            while file.pending.lock().unwrap().items != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(directory.path());
     let path = directory.path().join("capture.pcap");
@@ -444,6 +462,10 @@ async fn native_file_capture_preserves_one_many_and_partial_observed_bytes() {
                 let observed = matches!(record.as_ref(),Record::Observation(o) if o.point==crate::observations::Point::AgentUds && o.state==State::Chunk && o.direction==crate::observations::Direction::ToProxy);
                 records.push(record);
                 if observed {
+                    // The file is this fixture's healthy consumer. Let its
+                    // actual writer drain between injections; the unread TCP
+                    // consumer keeps its bounded backlog and loss assertion.
+                    drain_file(bus.capture.get().unwrap()).await;
                     break;
                 }
             }

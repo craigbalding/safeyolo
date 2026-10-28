@@ -15,6 +15,31 @@ use crate::hpack::BytesStr;
 
 use bytes::Bytes;
 use std::fmt;
+use std::sync::Arc;
+
+/// Content-free observation of locally detected stream parser failures.
+///
+/// The callback runs at the receiver's rejection transition, including before
+/// request admission. It must not block or call back into this connection.
+#[derive(Clone)]
+pub struct StreamParseErrorObserver(Arc<dyn Fn(u32) + Send + Sync>);
+
+impl StreamParseErrorObserver {
+    /// Observe the rejected protocol stream ID without retaining frame content.
+    pub fn new(callback: impl Fn(u32) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(callback))
+    }
+
+    pub(crate) fn rejected(&self, stream_id: u32) {
+        (self.0)(stream_id);
+    }
+}
+
+impl fmt::Debug for StreamParseErrorObserver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("StreamParseErrorObserver")
+    }
+}
 
 /// Represents the `:protocol` pseudo-header used by
 /// the [Extended CONNECT Protocol].

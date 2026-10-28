@@ -2371,10 +2371,10 @@ async fn execute_refresh(
         }
     })?;
     tasks.spawn(async move {
-        if connection.await.is_err()
+        if let Err(error) = connection.await
             && let Some(network) = outbound.network
         {
-            network.failed("http_error");
+            network.http_error(&error);
         }
     });
     // Hyper's readiness boundary is separate from writing the request and
@@ -4376,7 +4376,7 @@ where
                 task: upgrades.spawn(async move {
                     if let Err(error) = driver.await {
                         if let Some(network) = outbound.network {
-                            network.failed("http_error");
+                            network.http_error(&error);
                         }
                         eprintln!("upstream HTTP connection: {error}");
                     }
@@ -4385,9 +4385,9 @@ where
                 _session: None,
             };
             (
-                sender.send_request(request).await.inspect_err(|_| {
+                sender.send_request(request).await.inspect_err(|error| {
                     if let Some(network) = &sender_network {
-                        network.failed("http_error");
+                        network.http_error(error);
                     }
                 })?,
                 connection,
@@ -4795,18 +4795,24 @@ async fn serve_tunnel_http(
             !http2,
         )
     });
-    if http2 {
-        let connection = hyper::server::conn::http2::Builder::new(Executor(upgrades.clone()))
-            .serve_connection(TokioIo::new(client), service);
+    let result = if http2 {
+        let mut builder = hyper::server::conn::http2::Builder::new(Executor(upgrades.clone()));
+        if let Some(connection) = upgrades.ingress.get() {
+            let source = connection.source();
+            builder.on_stream_parse_error(h2::ext::StreamParseErrorObserver::new(move |id| {
+                source.http2_stream_parse_error(id);
+            }));
+        }
+        let connection = builder.serve_connection(TokioIo::new(client), service);
         tokio::pin!(connection);
         if *stop.borrow() {
             connection.as_mut().graceful_shutdown();
         }
         tokio::select! {
-            result = &mut connection => result?,
+            result = &mut connection => result,
             _ = stop.changed() => {
                 connection.as_mut().graceful_shutdown();
-                connection.await?;
+                connection.await
             }
         }
     } else {
@@ -4819,13 +4825,19 @@ async fn serve_tunnel_http(
             connection.as_mut().graceful_shutdown();
         }
         tokio::select! {
-            result = &mut connection => result?,
+            result = &mut connection => result,
             _ = stop.changed() => {
                 connection.as_mut().graceful_shutdown();
-                connection.await?;
+                connection.await
             }
         }
+    };
+    if let Err(error) = &result
+        && let Some(connection) = upgrades.ingress.get()
+    {
+        connection.http_error(error);
     }
+    result?;
     // The accepted connection is the sole drainer, including nested upgrades.
     Ok(())
 }
@@ -4864,20 +4876,18 @@ pub(crate) fn serve_request(
             let source = connection.source();
             // Plain CONNECT replays a prefix from the outer HTTP connection;
             // its new parser offsets cannot identify that older stream range.
-            let byte_range =
-                if tunnel.is_some() && source.point == crate::observations::Point::AgentUds {
-                    None
-                } else {
-                    request
-                        .extensions()
-                        .get::<hyper::ext::RequestByteRange>()
-                        .cloned()
-                };
+            let parser_offsets_match_source =
+                !(tunnel.is_some() && source.point == crate::observations::Point::AgentUds);
+            let byte_range = request
+                .extensions()
+                .get::<hyper::ext::RequestByteRange>()
+                .cloned();
             let application = source.application(
                 &request_id,
                 stream_id,
                 byte_range,
                 request.method() != Method::CONNECT,
+                parser_offsets_match_source,
             );
             request.extensions_mut().insert(application);
         }

@@ -56,6 +56,7 @@ pub(crate) struct Config {
     pub(crate) header_table_size: Option<u32>,
     pub(crate) max_header_list_size: u32,
     pub(crate) date_header: bool,
+    pub(crate) stream_parse_errors: Option<h2::ext::StreamParseErrorObserver>,
 }
 
 impl Default for Config {
@@ -75,6 +76,7 @@ impl Default for Config {
             max_send_buffer_size: DEFAULT_MAX_SEND_BUF_SIZE,
             max_header_list_size: DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE,
             date_header: true,
+            stream_parse_errors: None,
         }
     }
 }
@@ -103,6 +105,7 @@ where
     Handshaking {
         ping_config: ping::Config,
         hs: Handshake<Compat<T>, SendBuf<B::Data>>,
+        stream_parse_errors: Option<h2::ext::StreamParseErrorObserver>,
     },
     Serving(Serving<T, B>),
 }
@@ -175,6 +178,7 @@ where
             state: State::Handshaking {
                 ping_config,
                 hs: handshake,
+                stream_parse_errors: config.stream_parse_errors.clone(),
             },
             service,
             date_header: config.date_header,
@@ -211,8 +215,15 @@ where
         let me = &mut *self;
         loop {
             let next = match &mut me.state {
-                State::Handshaking { hs, ping_config } => {
+                State::Handshaking {
+                    hs,
+                    ping_config,
+                    stream_parse_errors,
+                } => {
                     let mut conn = ready!(Pin::new(hs).poll(cx).map_err(crate::Error::new_h2))?;
+                    if let Some(observer) = stream_parse_errors.take() {
+                        conn.set_stream_parse_error_observer(observer);
+                    }
                     let ping = if ping_config.is_enabled() {
                         let pp = conn.ping_pong().expect("conn.ping_pong");
                         Some(ping::channel(pp, ping_config.clone(), me.timer.clone()))

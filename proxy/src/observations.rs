@@ -27,7 +27,7 @@ impl Default for Limits {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Layer {
     TransportStream,
@@ -48,7 +48,7 @@ impl Layer {
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Point {
     AgentUds,
@@ -59,14 +59,14 @@ pub enum Point {
     RequestParser,
     RequestContent,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     ToProxy,
     FromProxy,
     Both,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Transport {
     Unix,
@@ -237,6 +237,7 @@ impl ConsumerKind {
 }
 #[derive(Default)]
 pub struct Counters {
+    behaviour: Mutex<behaviour::TransportMetrics>,
     total: [AtomicU64; 4],
     metadata: [AtomicU64; 4],
     payload: [AtomicU64; 4],
@@ -301,7 +302,8 @@ impl Counters {
                 }),
             );
         }
-        json!({"layers": by_layer, "observation_gap_ranges_total": self.gaps.load(Ordering::Relaxed), "observation_sequence_exhausted_total": self.exhausted.load(Ordering::Relaxed), "sinks": sinks})
+        json!({"layers": by_layer, "observation_gap_ranges_total": self.gaps.load(Ordering::Relaxed), "observation_sequence_exhausted_total": self.exhausted.load(Ordering::Relaxed), "sinks": sinks,
+            "behaviour": self.behaviour.lock().unwrap_or_else(|e| e.into_inner()).json()})
     }
     pub fn prometheus(&self) -> String {
         let mut out = String::new();
@@ -339,6 +341,11 @@ impl Counters {
                 out += &format!("safeyolo_{name}{{sink=\"{sink}\"}} {value}\n");
             }
         }
+        out += &self
+            .behaviour
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .prometheus();
         out
     }
 }
@@ -642,6 +649,12 @@ impl ObservationBus {
         Some(id)
     }
     fn dispatch(&self, record: Arc<Record>) {
+        // Measure canonical records once, before consumer loss or capture projection.
+        self.counters
+            .behaviour
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .record(&record);
         let mut consumers = self.consumers.lock().unwrap_or_else(|e| e.into_inner());
         consumers.retain(|consumer| {
             let Some(consumer) = consumer.upgrade() else {
@@ -737,6 +750,7 @@ fn resolution(clock: libc::clockid_t) -> Option<u64> {
     })
 }
 
+mod behaviour;
 mod stream;
 pub(crate) use stream::{Application, Source, observe};
 

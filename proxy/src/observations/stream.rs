@@ -16,6 +16,7 @@ pub(crate) struct Source {
     parent: Option<Arc<Source>>,
     prefixes: Mutex<[Option<InputSpan>; 2]>,
     prefixes_current: [AtomicBool; 2],
+    parser_error_reported: AtomicBool,
 }
 impl Source {
     pub(crate) fn new(
@@ -37,6 +38,7 @@ impl Source {
             parent,
             prefixes: Mutex::new([None, None]),
             prefixes_current: [const { AtomicBool::new(false) }; 2],
+            parser_error_reported: AtomicBool::new(false),
         })
     }
     pub(crate) fn tls(self: &Arc<Self>, point: Point) -> Arc<Self> {
@@ -151,10 +153,49 @@ impl Source {
         root.bus
             .emit(root.record(Direction::Both, None, Some(0), state));
     }
-    pub(crate) fn parse_error(&self) {
+    pub(crate) fn parser_error(&self, error: &hyper::Error) -> bool {
+        use std::error::Error;
+        let mut cause = error.source();
+        let mut h2_parse_error = false;
+        while let Some(error) = cause {
+            if let Some(error) = error.downcast_ref::<h2::Error>() {
+                h2_parse_error = error.is_library()
+                    && matches!(
+                        error.reason(),
+                        Some(
+                            h2::Reason::PROTOCOL_ERROR
+                                | h2::Reason::FRAME_SIZE_ERROR
+                                | h2::Reason::COMPRESSION_ERROR
+                        )
+                    );
+                break;
+            }
+            cause = error.source();
+        }
+        let state = if error.is_parse() || h2_parse_error {
+            State::ParseError
+        } else if error.is_incomplete_message() {
+            State::Dropped
+        } else {
+            return false;
+        };
+        if self.parser_error_reported.swap(true, Ordering::AcqRel) {
+            return true;
+        }
+        let mut record = self.record(Direction::ToProxy, None, None, state);
+        record.layer = Layer::ProtocolMessage;
+        record.point = Point::RequestParser;
+        record.input_span = self.prefix(Direction::ToProxy);
+        self.bus.emit(record);
+        true
+    }
+    pub(crate) fn http2_stream_parse_error(&self, stream_id: u32) {
+        // Each receiver rejection is independent of the connection's terminal
+        // parser error latch. No live stream IDs or payloads are retained here.
         let mut record = self.record(Direction::ToProxy, None, None, State::ParseError);
         record.layer = Layer::ProtocolMessage;
         record.point = Point::RequestParser;
+        record.protocol_stream_id = Some(stream_id);
         record.input_span = self.prefix(Direction::ToProxy);
         self.bus.emit(record);
     }
@@ -164,6 +205,7 @@ impl Source {
         protocol_stream_id: Option<u32>,
         byte_range: Option<hyper::ext::RequestByteRange>,
         content_expected: bool,
+        parser_offsets_match_source: bool,
     ) -> Arc<Application> {
         let mut head = self.record(Direction::ToProxy, None, None, State::ParsedHead);
         head.point = Point::RequestParser;
@@ -171,6 +213,7 @@ impl Source {
         head.input_span = self.request_input_span(
             byte_range
                 .as_ref()
+                .filter(|_| parser_offsets_match_source)
                 .map(|range| (range.start(), range.head_end())),
         );
         head.observed_length = byte_range
@@ -179,14 +222,19 @@ impl Source {
         head.request_id = Some(request_id.into());
         head.protocol_stream_id = protocol_stream_id;
         let parent = self.bus.emit(head);
-        Arc::new(Application {
+        let application = Arc::new(Application {
             source: self.clone(),
             request_id: request_id.into(),
             protocol_stream_id,
             parent,
-            completed: AtomicBool::new(!content_expected),
+            completed: AtomicBool::new(false),
             byte_range,
-        })
+            parser_offsets_match_source,
+        });
+        if !content_expected {
+            application.complete(None, false);
+        }
+        application
     }
 }
 
@@ -197,6 +245,7 @@ pub(crate) struct Application {
     parent: Option<ObservationId>,
     completed: AtomicBool,
     byte_range: Option<hyper::ext::RequestByteRange>,
+    parser_offsets_match_source: bool,
 }
 impl Application {
     pub(crate) fn complete(&self, length: Option<u64>, transformed: bool) {
@@ -215,6 +264,7 @@ impl Application {
         record.input_span = self.source.request_input_span(
             self.byte_range
                 .as_ref()
+                .filter(|_| self.parser_offsets_match_source)
                 .map(|range| (range.start(), range.end())),
         );
         record.transformed = transformed;
@@ -224,7 +274,19 @@ impl Application {
 impl Drop for Application {
     fn drop(&mut self) {
         if !self.completed.load(Ordering::Acquire) {
-            self.emit(None, false, State::Dropped);
+            self.emit(
+                None,
+                false,
+                if self
+                    .byte_range
+                    .as_ref()
+                    .is_some_and(|range| range.body_parse_failed())
+                {
+                    State::ParseError
+                } else {
+                    State::Dropped
+                },
+            );
         }
     }
 }

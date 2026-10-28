@@ -93,6 +93,8 @@ struct Actions {
 
     /// If the connection errors, a copy is kept for any StreamRefs.
     conn_error: Option<proto::Error>,
+
+    stream_parse_errors: Option<crate::ext::StreamParseErrorObserver>,
 }
 
 /// Contains the buffer of frames to be written to the wire.
@@ -125,6 +127,13 @@ where
         me.actions
             .recv
             .set_target_connection_window(size, &mut me.actions.task)
+    }
+
+    pub(crate) fn set_stream_parse_error_observer(
+        &mut self,
+        observer: crate::ext::StreamParseErrorObserver,
+    ) {
+        self.inner.lock().unwrap().actions.stream_parse_errors = Some(observer);
     }
 
     pub fn next_incoming(&mut self) -> Option<StreamRef<B>> {
@@ -382,6 +391,13 @@ where
 }
 
 impl<B> DynStreams<'_, B> {
+    pub(crate) fn report_stream_parse_error(&self, error: &Error) {
+        self.inner
+            .lock()
+            .unwrap()
+            .actions
+            .report_stream_parse_error(error);
+    }
     pub fn is_buffer_empty(&self) -> bool {
         self.send_buffer.is_empty()
     }
@@ -461,6 +477,7 @@ impl Inner {
                 send: Send::new(&config),
                 task: None,
                 conn_error: None,
+                stream_parse_errors: None,
             },
             store: Store::new(),
             refs: 1,
@@ -1728,6 +1745,19 @@ impl<B> SendBuffer<B> {
 // ===== impl Actions =====
 
 impl Actions {
+    fn report_stream_parse_error(&self, error: &Error) {
+        if let Error::Reset(id, reason, Initiator::Library) = error {
+            if matches!(
+                *reason,
+                Reason::PROTOCOL_ERROR | Reason::FRAME_SIZE_ERROR | Reason::COMPRESSION_ERROR
+            ) {
+                if let Some(observer) = &self.stream_parse_errors {
+                    observer.rejected((*id).into());
+                }
+            }
+        }
+    }
+
     fn send_reset<B>(
         &mut self,
         stream: store::Ptr,
@@ -1775,6 +1805,11 @@ impl Actions {
         counts: &mut Counts,
         res: Result<(), Error>,
     ) -> Result<(), Error> {
+        // This path consumes recoverable parser errors instead of returning
+        // them to the connection future or application service.
+        if let Err(error) = &res {
+            self.report_stream_parse_error(error);
+        }
         if let Err(Error::Reset(stream_id, reason, initiator)) = res {
             debug_assert_eq!(stream_id, stream.id);
 

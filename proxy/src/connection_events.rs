@@ -296,15 +296,25 @@ impl Connection {
     }
 
     pub(crate) fn failed(&self, category: &'static str) {
-        if category == "http_error" {
-            self.source().parse_error();
-        }
         self.0
             .facts
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .error
             .get_or_insert(category);
+    }
+
+    pub(crate) fn http_error(&self, error: &(dyn std::error::Error + 'static)) {
+        let mut cause = Some(error);
+        while let Some(error) = cause {
+            if let Some(error) = error.downcast_ref::<hyper::Error>()
+                && self.source().parser_error(error)
+            {
+                break;
+            }
+            cause = error.source();
+        }
+        self.failed("http_error");
     }
 
     pub(crate) fn tls(&self, name: &str) {
