@@ -271,9 +271,9 @@ second TLS listener or a new credential system.
 The existing operator token grants capture read access when `wss` is explicitly
 enabled. An unauthenticated client receives no capture bytes and creates no
 capture session. Each binary WebSocket message contains part of the capture
-stream. Concatenating binary payloads produces the exact PCAP byte stream.
-WebSocket control frames are outside those bytes. These classic streams expose
-no TLS-secret setting or secret grant. Observed plaintext in a compatibility
+stream. Concatenating binary payloads produces the selected capture byte stream.
+WebSocket control frames are outside those bytes. Classic streams contain no
+TLS secrets. Observed plaintext in a compatibility
 stream is not wire decryption.
 
 No adapter is enabled by default. Network bind, file-open, permission, write and
@@ -336,7 +336,11 @@ The canonical and capture-consumer queues account retained metadata and payload
 against their separate item/byte limits. The capture worker holds at most one
 source record while encoding. Its output buffer is bounded by
 `packet_capture.queue.bytes`; conversion into a shared byte array can briefly
-hold a second buffer of that size. Metadata and packet/checksum scratch buffers
+hold a second buffer of that size. PCAPNG compatibility conversion and secrets
+authorization can also retain a bounded projection or an authorized output batch
+alongside the canonical output. Each buffer respects the configured byte bound.
+The separate TLS-secret store uses the same aggregate item/byte limits; one
+bounded snapshot can coexist with the store. Metadata and packet/checksum scratch buffers
 are bounded separately by the metadata/segment limits above.
 
 Each configured sink or connected client has another queue with the same
@@ -429,13 +433,88 @@ error and loss counters. The proxy cannot encode a gap as a genuine packet.
 Other consumers and agent traffic continue. If acquisition is still active, a new
 live consumer can subscribe after a session gap.
 
-## Remaining capture work
+## PCAP Next Generation (PCAPNG)
 
-This increment of [#858](https://github.com/craigbalding/safeyolo/issues/858)
-adds genuine wire capture to the existing classic compatibility capture and four
-adapters. Portable PCAP Next Generation (PCAPNG) still requires the actual
-Internet Assigned Numbers Authority (IANA) Private Enterprise Number owned by
-[#862](https://github.com/craigbalding/safeyolo/issues/862), its encoder and
-portable-extension proof. The cross-format packet-subset comparison, TLS-secret
-export/authorization and DSB/decryption remain unimplemented. Selecting PCAPNG
-reports unavailable; no placeholder format is emitted.
+Release output remains unavailable until
+[#862](https://github.com/craigbalding/safeyolo/issues/862) confirms the owning
+organization's Internet Assigned Numbers Authority (IANA) Private Enterprise
+Number (PEN). The assignment and registry name have one authoritative location:
+`ENTERPRISE` in [the shared encoder](../proxy/src/packet_capture/pcapng.rs).
+The implementation does not substitute a local-use number or another
+organization's assignment. Test builds can use an isolated identifier; those
+files do not establish portable release acceptance.
+
+Once the confirmed assignment is installed, select `profile = "pcapng"` in the
+existing `[packet_capture]` table. The same file, stdout/pipe, raw TCP and
+authenticated WebSocket adapters carry this format. Each new session begins
+with a Section Header Block, interface descriptions and section/session metadata
+before dependent records. A section identifies its canonical namespace, starting
+sequence, sink session, schema and profile.
+
+Non-packet observations use standard PEN-scoped Custom Blocks. Each copyable
+block (`0x00000BAD`) contains the PEN, ASCII `SYOB`, a little-endian 32-bit JSON
+length, a little-endian 32-bit payload length, bounded UTF-8 JSON, the captured
+payload and zero alignment padding. Its namespace, sequence, times, resolution,
+lineage and lengths come from the canonical record. Payload is separate from
+the JSON metadata. Gap records retain their canonical or sink-specific meaning.
+
+Section metadata refers to section-local interface IDs. It uses the
+non-copyable Custom Block (`0x40000BAD`) and non-copyable UTF-8 Custom Option
+(`19372`). Self-contained observation correlation on genuine packets uses the
+copyable UTF-8 Custom Option (`2988`). Rewriters can copy that correlation even
+when they renumber interfaces. Generic readers can skip the vendor extensions.
+The block and option layouts follow the
+[PCAPNG draft](https://datatracker.ietf.org/doc/draft-ietf-opsawg-pcapng/).
+
+Genuine packets use Enhanced Packet Blocks with the native link type and
+`if_tsresol`: microsecond units for an actual microsecond source, nanosecond
+units for an actual nanosecond source. Packet bytes, original lengths and times
+match `pcap:wire`. Optional `compatibility_packets = true` adds a separately
+named synthetic Ethernet interface using the existing `pcap:compat` projection.
+Canonical blocks remain present. Its nanosecond timestamp units preserve the
+observation value; each canonical record separately reports its clock resolution.
+If the optional projection cannot represent the timestamp or fit the remaining
+budget, the canonical block and payload remain present. Its
+`compatibility_requested` and `compatibility_included` fields expose that limit.
+
+Successful native statistics samples produce standard Interface Statistics
+Blocks. BPF receive totals use `isb_ifrecv`; Linux filter-accepted totals use
+`isb_filteraccept`. Kernel-buffer drops use `isb_osdrop`. Nonzero interface
+drops use `isb_ifdrop`; zero is omitted because libpcap can also use zero for an
+unsupported counter. These are source-interface/filter totals, including traffic
+subsequently excluded by ownership. Statistics describe the sampling time, not
+necessarily the final packet. Bus and sink loss remain explicit custom records.
+If native acquisition fails, PCAPNG retains canonical observation delivery and
+reports the wire limitation. Classic `pcap:wire` retains its refusal behavior.
+
+## Separately authorized TLS secrets
+
+The Transport Layer Security (TLS) option `tls_secrets = true` is off by default
+and requires PCAPNG. Enabling payload capture or capture read access does not
+enable this option or grant secrets access. Local outputs also require explicit
+`secret_outputs` entries: `"file"`, `"stdout"` or `"tcp"`. A TCP grant applies
+to every client on that configured raw listener, including an intentionally
+enabled insecure remote listener.
+
+For a secrets-authorized WebSocket consumer, configure `secrets_token_file` with
+a separate bearer token file. Relative paths belong to the `config.toml`
+directory. The ordinary operator bearer token grants `capture.read` and receives
+no Decryption Secrets Blocks (DSB). The separate capture token grants
+`capture.read` and `capture.secrets` on `/admin/capture`; it does not grant Admin
+API access. Missing, unreadable, empty, non-ASCII or identical read/secrets tokens do not
+grant secrets access. Authentication reuses the existing constant-time check.
+
+The native rustls connections export standard TLS key-log lines into a separate
+store bounded by the configured capture item/byte limits. Keys stay outside
+canonical metadata, metrics and operational logs. Connection ownership retains
+the keys through buffered packet delivery. Disabled export installs no capture
+key logger and retains no capture session secrets.
+
+The capture worker waits at most 100 milliseconds for an in-progress handshake.
+It emits standard TLS-key-log DSB material before the associated genuine packet
+block for authorized consumers. Repeating the bounded material with dependent
+packets supports reconnects without replaying historical payloads. If secret
+storage, handshake ordering or export capacity is unavailable, the stream keeps
+the packet and emits an explicit decryption limitation. The agent traffic path
+does not wait for capture delivery. Captured content and key-log lines never
+enter ordinary errors. Classic PCAP streams contain no DSB material.

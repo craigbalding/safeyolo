@@ -220,7 +220,7 @@ impl Drop for Running {
     }
 }
 
-fn read_token(path: Option<&Path>) -> Result<Zeroizing<String>, Error> {
+pub(crate) fn read_token(path: Option<&Path>) -> Result<Zeroizing<String>, Error> {
     let Some(path) = path.filter(|path| !path.as_os_str().is_empty()) else {
         return Ok(Zeroizing::new(String::new()));
     };
@@ -790,23 +790,27 @@ async fn serve_capture(
     tasks: EventTasks,
 ) -> Result<hyper::Response<crate::admin_api::AdminBody>, admin_api::Error> {
     // DOC: docs/native-observations.md
-    if !admin_api::authenticate(request.headers(), token)
-        .map_err(|_| admin_api::Error::AuthenticationEncoding)?
-    {
-        return Ok(admin_api::unauthorized()
-            .submit_audit(&runtime.audit, &client_ip, &target)?
-            .into_response());
-    }
+    let read = admin_api::authenticate(request.headers(), token)?;
     let capture = runtime
         .connection_events
         .as_ref()
         .and_then(|events| events.observations.capture.get())
         .filter(|capture| capture.settings.wss);
+    let secrets = match capture {
+        Some(capture) => capture.authorize_secrets(request.headers())?,
+        None => false,
+    };
+    if !read && !secrets {
+        return Ok(admin_api::unauthorized()
+            .submit_audit(&runtime.audit, &client_ip, &target)?
+            .into_response());
+    }
     let Some(capture) = capture else {
         return Ok(admin_api::event_not_found().into_response());
     };
     let handshake = Handshake::request(&mut request).map_err(|_| admin_api::Error::BodyFraming)?;
-    let Ok(receiver) = capture.subscribe(crate::packet_capture::Sink::Wss) else {
+    let Ok(receiver) = capture.subscribe_authorized(crate::packet_capture::Sink::Wss, secrets)
+    else {
         return Ok(hyper::Response::builder()
             .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
             .body(
