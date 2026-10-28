@@ -930,9 +930,21 @@ async fn a_gap_crossing_a_new_sink_starts_at_that_sessions_first_sequence() {
 fn capture_endpoint_shield_covers_mapped_addresses_without_claiming_other_hosts() {
     let mut shield = crate::admin_shield::AdminShield::new(9090, "").unwrap();
     shield.protect_capture_endpoint("127.0.0.2:46378".parse().unwrap());
+    assert!(shield.protects_port(46378));
     assert!(shield.blocks_request_destination("127.0.0.2", 46378));
     assert!(shield.blocks_request_destination("::ffff:127.0.0.2", 46378));
     assert!(shield.blocks_address("[::ffff:127.0.0.2]:46378".parse().unwrap()));
+    assert!(!shield.blocks_request_destination("127.0.0.1", 46378));
+    assert!(!shield.blocks_request_destination("localhost", 46378));
+    assert!(!shield.blocks_address("127.0.0.1:46378".parse().unwrap()));
+    assert!(!shield.blocks_address("[::1]:46378".parse().unwrap()));
+    assert!(!shield.blocks_address("192.0.2.22:46378".parse().unwrap()));
+    shield.protect_capture_endpoint("127.0.0.1:46378".parse().unwrap());
+    assert!(shield.blocks_request_destination("127.1", 46378));
+    assert!(shield.blocks_request_destination("0.0.0.0", 46378));
+    shield.protect_capture_endpoint("0.0.0.0:46378".parse().unwrap());
+    assert!(shield.blocks_address("127.0.0.2:46378".parse().unwrap()));
+    assert!(!shield.blocks_address("[::1]:46378".parse().unwrap()));
     assert!(!shield.blocks_address("192.0.2.22:46378".parse().unwrap()));
 }
 

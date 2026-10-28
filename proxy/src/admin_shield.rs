@@ -100,7 +100,7 @@ impl AdminShield {
     /// Hosts here have the source request/server-address spelling. No resolver
     /// or broader loopback-range rule is hidden inside this check.
     pub fn blocks_host(&self, host: &str, port: u16) -> bool {
-        self.protects_port(port) && is_local(host)
+        self.ports.contains(&port) && is_local(host)
     }
 
     /// Claim numeric spellings of the protected local endpoints during request
@@ -119,6 +119,9 @@ impl AdminShield {
     /// when startup port zero or later option changes differ from this set.
     pub fn protects_port(&self, port: u16) -> bool {
         self.ports.contains(&port)
+            || self
+                .capture_endpoint
+                .is_some_and(|bound| bound.port() == port)
     }
 
     /// Add the process-local operator listener after an ephemeral bind.
@@ -129,7 +132,6 @@ impl AdminShield {
     }
 
     pub(crate) fn protect_capture_endpoint(&mut self, bound: SocketAddr) {
-        self.protect_bound_port(bound);
         self.capture_endpoint = Some(bound);
     }
 
@@ -139,9 +141,14 @@ impl AdminShield {
     /// remote addresses on these ports as local.
     pub fn blocks_address(&self, address: SocketAddr) -> bool {
         self.capture_endpoint.is_some_and(|bound| {
-            bound.port() == address.port()
-                && normalize_mapped(bound.ip()) == normalize_mapped(address.ip())
-        }) || self.protects_port(address.port()) && is_protected_local_address(address.ip())
+            let bound_ip = normalize_mapped(bound.ip());
+            let selected_ip = normalize_mapped(address.ip());
+            targets_listener(address, bound)
+                || bound.port() == address.port()
+                    && bound_ip.is_unspecified()
+                    && bound_ip.is_ipv4() == selected_ip.is_ipv4()
+                    && selected_ip.is_loopback()
+        }) || self.ports.contains(&address.port()) && is_protected_local_address(address.ip())
     }
 }
 
