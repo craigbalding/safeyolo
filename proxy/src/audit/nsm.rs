@@ -71,6 +71,10 @@ struct Indicator {
     connection_id: Option<String>,
     direction: Option<String>,
     evidence_hash: Option<String>,
+    content_type: Option<String>,
+    inspected_bytes: Option<u64>,
+    prefix_truncated: Option<bool>,
+    source: Option<crate::security_indicators::SourceEvidence>,
 }
 
 fn invalid() -> Error {
@@ -218,21 +222,35 @@ pub(super) fn validate(record: &Value) -> Result<()> {
             ]) && indicator.confidence.is_finite()
                 && (0.0..=1.0).contains(&indicator.confidence)
                 && optional(indicator.connection_id.as_deref())
+                && indicator.source.as_ref().is_none_or(|source| {
+                    required(&[&source.request_id, &source.connection_id, &source.host])
+                        && source.matched_fingerprints > 0
+                        && source.matched_fingerprints <= source.source_fingerprints
+                        && evidence_hash(&source.evidence_hash)
+                })
+                && indicator
+                    .content_type
+                    .as_deref()
+                    .is_none_or(|value| !value.trim().is_empty() && value.len() <= 128)
+                && (indicator.inspected_bytes.is_none() && indicator.prefix_truncated.is_none()
+                    || indicator.evidence_hash.is_some())
                 && optional(record.get("request_id").and_then(Value::as_str))
                 && indicator.direction.as_deref().is_none_or(|direction| {
                     matches!(direction, "client_to_server" | "server_to_client")
                 })
-                && indicator.evidence_hash.as_deref().is_none_or(|hash| {
-                    hash.strip_prefix("sha256:").is_some_and(|digest| {
-                        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    })
-                })
+                && indicator.evidence_hash.as_deref().is_none_or(evidence_hash)
                 && record.get("decision").is_none()
                 && record.get("approval").is_none()
         }
         _ => false,
     };
     if valid { Ok(()) } else { Err(invalid()) }
+}
+
+fn evidence_hash(hash: &str) -> bool {
+    hash.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
 }
 
 #[cfg(test)]

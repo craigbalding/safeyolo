@@ -298,6 +298,7 @@ struct Head {
     encoding: Zeroizing<Vec<u8>>,
     content_type: Zeroizing<Vec<u8>>,
     end_stream_at_head: bool,
+    prompt_content: crate::prompt_injection::Content,
 }
 
 pub(super) fn combined(
@@ -472,6 +473,7 @@ impl ResponseCapture {
                 encoding,
                 content_type,
                 end_stream_at_head,
+                prompt_content: crate::prompt_injection::Content::from_headers(headers),
             })
         })();
         match result {
@@ -552,7 +554,7 @@ impl ResponseCapture {
 
     /// Called once after successful upstream completion or local construction,
     /// before CircuitBreaker. Preserve this same buffer for later consumers.
-    pub(super) fn memory_response(&self) {
+    pub(super) fn completed_content(&self) {
         let Some(traffic) = &self.traffic else {
             return;
         };
@@ -564,6 +566,15 @@ impl ResponseCapture {
         let Some(capture) = capture else {
             return;
         };
+        if !capture.failed
+            && let Some(head) = &capture.head
+        {
+            traffic.prompt_content(
+                crate::security_indicators::Direction::Response,
+                head.prompt_content,
+                capture.body.content(),
+            );
+        }
         if !capture.failed
             && !capture.memory_streamed
             && !capture.body.is_streamed()

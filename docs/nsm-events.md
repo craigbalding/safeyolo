@@ -7,8 +7,9 @@ indications respectively. Hypertext Transfer Protocol (HTTP) requests are not
 transport connections.
 Issue #582 defines these contracts. Issue #583 adds emission from actual
 client and upstream transport owners. Issue #584 adds native Transport Layer
-Security (TLS) client fingerprints and upstream certificate identity. Sensor
-implementations remain separate work in #585.
+Security (TLS) client fingerprints and upstream certificate identity. Issue
+#585 adds the first reusable indicator producer and a bounded prompt-injection
+sensor.
 
 ## Version and reader compatibility
 
@@ -287,6 +288,137 @@ Indicators are indications/warnings for investigation. They are neither policy
 decisions nor proof of compromise. Indicator records cannot carry `decision`
 or `approval`. Emit any actual enforcement decision through its existing
 separate event and correlate it by namespace/request/connection as applicable.
+
+Issue #585 adds optional `content_type`, `inspected_bytes`, and
+`prefix_truncated` metadata. `content_type` is a nonempty media type of at most
+128 bytes. `inspected_bytes` is an unsigned byte count. `prefix_truncated` is a
+Boolean that reports whether inspection omitted a suffix. The byte count and
+truncation flag require `evidence_hash`. Earlier strict version 2 readers need
+these optional fields and the optional `source` link below before reading the
+new sensor records. The current
+reader still accepts earlier records that omit them.
+
+### Initial prompt-injection sensor
+
+The native HTTP completion owners run `prompt-injection.v1` on request and
+response content that they already hold transiently. The sensor uses the
+shared `security_indicators::emit` producer. That producer reuses the existing
+connection namespace, trusted attribution and audit writer. It does not select
+policy, create connection IDs or enable recording.
+
+The sensor recognizes four media types: `text/plain`, `text/html`,
+`text/markdown`, and `application/json`. It accepts UTF-8 and US-ASCII charset
+declarations, or no charset declaration. It skips missing, ambiguous, oversized
+or unsupported content declarations, compression and non-chunked transfer
+codings. Content-Type declarations are limited to 256 bytes; each content or
+transfer coding declaration is limited to 64 bytes. The sensor performs no
+decompression or encoded-instruction decoding.
+
+The sensor inspects at most the first 65,536 bytes of each completed,
+source-buffered body. Existing streaming selection and parser completion
+barriers remain in force. Streamed, incomplete, upgraded and opaque tunnel
+content is outside this sensor's coverage. The sensor performs no additional
+body reads. Its normalized scratch buffer is bounded by that prefix and is
+wiped on release. Exposure matching retains only the bounded hashes described
+below; it retains no source or model body.
+
+| Stable rule | Observable condition | Confidence |
+| --- | --- | --- |
+| `prompt.ignore_instructions.v1` | A word-bounded phrase asks to ignore or disregard previous instructions, optionally with `all`. | 0.5 |
+| `prompt.system_role_delimiter.v1` | A ChatML, Llama header or `[INST] <<SYS>>` system-role delimiter appears in content. | 0.7 |
+| `prompt.reveal_system_prompt.v1` | A word-bounded phrase asks to reveal, print or show `your system prompt`. | 0.5 |
+
+Comparison folds ASCII case and collapses ASCII whitespace. Each content rule
+emits at most once per body, so a body produces at most three lexical indicators.
+A marked model request may also produce one exposure indicator. The fixed
+substring checks have no regular-expression backtracking. The evidence hash is
+SHA-256 of the entire normalized inspected prefix, with leading and trailing
+ASCII whitespace removed. `inspected_bytes` counts source bytes before that
+normalization. A prefix ends before an incomplete UTF-8 character.
+
+All three rules use low severity. Confidence describes the lexical evidence,
+independently of severity. Ordinary vocabulary such as “previous instructions”
+does not match alone. Quoted examples, security documentation and test fixtures
+can match the full phrases or delimiters. Those matches remain weak evidence;
+the sensor does not determine author intent, content trust or successful model
+control. It does not parse HTML visibility or distinguish quotation from an
+instruction. Paraphrases, escaped text and instructions after the inspected
+prefix can evade detection.
+
+Indicators carry the trusted agent, request ID, actual ingress connection ID,
+source host, direction, canonical media type and hash metadata. The request
+key joins to `traffic.flow`, which supplies the real upstream connection when
+available. The same request key can pivot to FlowStore evidence when existing
+policy recorded that flow. The sensor does not copy matched text into an
+event, summary or diagnostic. Quiet-host and quiet-path traffic settings do
+not suppress indicators.
+
+Unsupported or binary content is skipped. Invalid UTF-8 and caught classifier
+failures produce a content-free `ops.sensor_error` through the ordinary audit
+writer, with the same namespace and trusted attribution. The diagnostic has
+`sensor`, `error`, `connection_id`, and `direction` details. Sensor and audit
+submission failures do not change traffic, credentials, refusal controls or
+policy decisions.
+
+### Initial network-to-model exposure signal
+
+The current service catalog identifies a narrow model operation reliably.
+The shipped `claude` service defines the `inference` capability and separate
+routes for `POST /v1/messages` and `POST /v1/messages/count_tokens` at
+`api.anthropic.com`. The native gateway selects credentials under the trusted
+request identity. After successful credential preparation and header application,
+the HTTP owner carries a model-request marker to its existing content owner.
+The marker requires the selected `claude`/`inference` binding, the same trusted
+agent, HTTPS, the exact destination host, and the messages method/path.
+A query string is permitted. Token counting, unrelated operations, unselected
+requests and host-only matches do not receive that marker. No request header
+can supply the marker. Existing route, credential and refusal controls still
+run normally.
+
+After a completed response produces a content indicator, the sensor may retain
+hashed text shingles for that source. It compares them only with a later marked
+model request from the same trusted agent. The cache belongs to the proxy
+runtime, survives policy reloads and resets on restart. Each cached source
+retains its actual request/connection IDs, host and normalized evidence hash.
+Those references use the same instance/runtime namespace as the later indicator.
+
+The first implementation uses these fixed bounds and false-positive controls:
+
+- At most 64 source entries and 256 distinct SHA-256 fingerprints per source.
+  Insertion evicts the oldest entry when necessary.
+- Source matching expires after 300 seconds, measured with a monotonic clock.
+  Source insertion and model matching purge expired entries. Idle entries remain
+  bounded in memory until the next cache operation; there is no background cache
+  task. Expired entries cannot match.
+- Fingerprints use five consecutive ASCII alphanumeric words from the bounded
+  normalized prefix. Words have 2–64 bytes. At most 260 words and 256 windows
+  are considered. A window needs at least four distinct words and 24 word bytes.
+- A source needs at least 160 normalized bytes, 16 distinct words and eight
+  distinct fingerprints. Short or repetitive common text is not retained.
+- A match needs at least four distinct fingerprints and at least half of the
+  source fingerprints. Each model request emits at most one exposure indicator,
+  using the source with the most matching fingerprints. A tie uses the newest
+  source.
+
+A match emits `indicator_type: prompt_injection_exposure` with stable rule
+`prompt.source_text_overlap.v1`, confidence 0.85 and low severity. The optional
+`details.source` link contains `request_id`, `connection_id`, `host`,
+`evidence_hash`, `matched_fingerprints`, and `source_fingerprints`. Source IDs
+and host are nonempty; the source hash uses the same SHA-256 representation.
+Counts are positive, and the matched count cannot exceed the source count.
+The envelope request ID identifies the model request. Its ordinary evidence
+hash describes the normalized inspected model-request prefix. The source link
+pivots to the earlier indicator, `traffic.flow`, and any policy-recorded
+FlowStore evidence. It does not duplicate that content.
+
+Exposure is stronger evidence of text reuse than a raw phrase match. It does
+not prove that a model received the request, treated the matched text as an
+instruction, or changed behavior. The request may still encounter a later
+transport failure. Other model services, direct requests without a selected
+binding, paraphrases, substantial transformations and content beyond the
+bounded prefix are outside this first exposure signal. The sensor compares
+request content without claiming universal model-field semantics. Full payload
+capture and issue #858 are not prerequisites.
 
 ## Retention and quieting
 

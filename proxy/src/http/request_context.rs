@@ -725,6 +725,7 @@ impl RequestContext {
             live.request_body(content);
         }
         if let Some(traffic) = &self.traffic {
+            traffic.prompt_request(content);
             // Memory failures retain partial accounting but must not abandon
             // existing security hooks, as source container exceptions can.
             traffic.memory_request(content);

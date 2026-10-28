@@ -49,14 +49,19 @@ impl ConnectionEvents {
         }))
     }
 
-    fn emit(&self, identity: &ConnectionIdentity, mut event: audit::Event, mut details: Value) {
+    pub(crate) fn emit(
+        &self,
+        identity: &ConnectionIdentity,
+        mut event: audit::Event,
+        mut details: Value,
+    ) {
         details["instance_id"] = json!(self.instance_id);
         details["runtime_id"] = json!(self.runtime_id);
         event.agent = identity.request_agent().map(str::to_owned);
         event.attribution = Some(identity.audit_attribution());
         event.details = details.into();
         if let Err(error) = self.writer.emit(event) {
-            eprintln!("Connection audit submission failed: {error}");
+            eprintln!("NSM audit submission failed: {error}");
         }
     }
 

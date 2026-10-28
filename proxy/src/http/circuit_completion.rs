@@ -199,7 +199,7 @@ impl Completion {
             && let Some(capture) = &self.capture
         {
             capture.apply_head();
-            capture.memory_response();
+            capture.completed_content();
         }
         if let Some(capture) = &self.capture {
             let error = observation.live_error.take();
