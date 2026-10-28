@@ -9,12 +9,14 @@ async fn download_decoder_preserves_concatenated_frames_and_checks_the_last_fram
     encoder.include_checksum(true).unwrap();
     encoder.write_all(&plain).unwrap();
     let frame = encoder.finish().unwrap();
-    for fault in ["none", "truncated", "checksum"] {
+    for fault in ["none", "truncated", "checksum", "invalid-header"] {
         let mut compressed = [frame.as_slice(), frame.as_slice()].concat();
         if fault == "truncated" {
             compressed.pop();
         } else if fault == "checksum" {
             *compressed.last_mut().unwrap() ^= 1;
+        } else if fault == "invalid-header" {
+            compressed[0] ^= 1;
         }
         let mut decoder = archive::DownloadDecoder::new(tempfile::tempfile().unwrap()).unwrap();
         let mut written = Ok(());

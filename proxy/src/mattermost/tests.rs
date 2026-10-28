@@ -422,6 +422,23 @@ fn semantic_actions_require_exact_schema_and_canonical_provenance() {
 }
 
 #[test]
+fn wikilinks_and_incomplete_links_remain_literal_in_commonmark_rendering() {
+    for body in [
+        "[[page|alias]]",
+        "[[outer|[[inner|label]]]]",
+        "[incomplete](https://example.com/",
+    ] {
+        let rendered = render::markdown(body, 8192);
+        let events: Vec<_> = pulldown_cmark::Parser::new(&rendered).collect();
+        assert_eq!(render::visible(&events).trim_end(), body);
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link { .. })
+        )));
+    }
+}
+
+#[test]
 fn hostile_commonmark_has_one_visible_canonical_footer_and_no_active_images() {
     let provenance = regex::Regex::new(r"(?i)canonical\s+provenance").unwrap();
     for body in [
