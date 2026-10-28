@@ -754,30 +754,65 @@ async fn h2_stream_parser_failures_preserve_a_healthy_tunnel() {
     let (tls, connector, _, _) = owned_h2_tls(directory.path(), &host, &mut configuration);
     let origin_completions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let completed = origin_completions.clone();
+    let (stop_origin, mut origin_stopped) = tokio::sync::oneshot::channel();
     let peer = tokio::spawn(async move {
-        let (stream, _) = timeout(LIMIT, origin.accept()).await.unwrap().unwrap();
-        let stream = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
-            .accept(stream)
-            .await
-            .unwrap();
-        hyper::server::conn::http2::Builder::new(TokioExecutor::new())
-            .serve_connection(
-                TokioIo::new(stream),
-                service_fn(move |request: Request<Incoming>| {
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
+        let mut connections = tokio::task::JoinSet::new();
+        let mut accepted = 0;
+        // Reset streams can cancel upstream initialization during TLS. Keep
+        // the listener owned until the independent healthy exchange finishes.
+        loop {
+            tokio::select! {
+                _ = &mut origin_stopped => break,
+                result = origin.accept() => {
+                    let (stream, _) = result.unwrap();
+                    accepted += 1;
+                    let connection = accepted;
+                    let acceptor = acceptor.clone();
                     let completed = completed.clone();
-                    async move {
-                        assert_eq!(request.method(), "GET");
-                        // Forwarded uploads can be reset before their origin
-                        // body completes. Propagate that error to Hyper.
-                        let body = request.into_body().collect().await?.to_bytes();
-                        assert!(body.is_empty());
-                        completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        Ok::<_, hyper::Error>(Response::new(Full::new(Bytes::from_static(b"ok"))))
-                    }
-                }),
-            )
-            .await
-            .unwrap();
+                    connections.spawn(async move {
+                        let stream = match acceptor.accept(stream).await {
+                            Ok(stream) => stream,
+                            Err(error) => {
+                                println!("origin connection {connection}: TLS error {error:?}");
+                                assert!(matches!(error.kind(),
+                                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::UnexpectedEof
+                                ), "unexpected origin TLS error: {error:?}");
+                                return;
+                            }
+                        };
+                        println!("origin connection {connection}: TLS complete");
+                        hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                            .serve_connection(
+                                TokioIo::new(stream),
+                                service_fn(move |request: Request<Incoming>| {
+                                    let completed = completed.clone();
+                                    async move {
+                                        assert_eq!(request.method(), "GET");
+                                        // Reset uploads must not count as completed requests.
+                                        let body = request.into_body().collect().await?.to_bytes();
+                                        assert!(body.is_empty());
+                                        completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        Ok::<_, hyper::Error>(Response::new(Full::new(Bytes::from_static(b"ok"))))
+                                    }
+                                }),
+                            )
+                            .await
+                            .unwrap();
+                        println!("origin connection {connection}: HTTP/2 owner joined");
+                    });
+                }
+                result = connections.join_next(), if !connections.is_empty() => {
+                    result.unwrap().unwrap();
+                }
+            }
+        }
+        while let Some(result) = connections.join_next().await {
+            result.unwrap();
+        }
+        println!(
+            "origin listener retained through healthy exchange; joined {accepted} connections"
+        );
     });
     let proxy = Proxy::start(configuration).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
@@ -878,6 +913,7 @@ async fn h2_stream_parser_failures_preserve_a_healthy_tunnel() {
     assert_eq!(body, b"ok");
     client.shutdown().await.unwrap();
     drop(client);
+    stop_origin.send(()).unwrap();
     timeout(LIMIT, peer).await.unwrap().unwrap();
     assert_eq!(
         origin_completions.load(std::sync::atomic::Ordering::Relaxed),
