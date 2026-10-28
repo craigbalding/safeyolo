@@ -281,7 +281,7 @@ async fn real_http_preserves_bytes_quieting_and_trusted_correlation_on_signals_a
     let rows = records(&runtime, directory.path());
     let indicators: Vec<_> = rows
         .iter()
-        .filter(|row| row["event"] == "security.indicator")
+        .filter(|row| row["event"] == "security.indicator" && row["details"]["sensor"] == SENSOR)
         .collect();
     assert_eq!(indicators.len(), 2, "one request and one response signal");
     assert_eq!(
@@ -375,6 +375,7 @@ async fn reusable_producer_does_not_require_a_prompt_sensor_or_request() {
             evidence_hash: Some(&evidence_hash),
             content: None,
             source: None,
+            novelty: None,
         },
     );
     proxy.shutdown().await;

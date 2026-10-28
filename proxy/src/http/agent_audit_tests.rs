@@ -127,6 +127,11 @@ fn drained(proxy: &Proxy, directory: &Path) -> Vec<Value> {
     // lifecycle boundary instead of globally hiding the event.
     records(&directory.join("audit.jsonl"))
         .into_iter()
+        // Native connection history has its own scoped producer tests.
+        .filter(|row| {
+            !(row["event"] == "security.indicator"
+                && row["details"]["sensor"] == "connection-history.v1")
+        })
         .filter(|row| {
             !matches!(
                 row["event"].as_str(),

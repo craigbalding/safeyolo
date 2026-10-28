@@ -14,10 +14,13 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::{ConnectionIdentity, Runtime, audit, tunnels::BoxStream};
 
+pub(crate) mod novelty;
+
 pub(crate) struct ConnectionEvents {
     writer: Arc<audit::Writer>,
     instance_id: String,
     runtime_id: String,
+    novelty: Mutex<novelty::History>,
     pub(crate) observations: Arc<crate::observations::ObservationBus>,
 }
 
@@ -68,6 +71,7 @@ impl ConnectionEvents {
             writer,
             instance_id,
             runtime_id: runtime_id.to_owned(),
+            novelty: Mutex::new(novelty::History::default()),
         }))
     }
 
@@ -99,6 +103,7 @@ impl ConnectionEvents {
             "unix",
             None,
             None,
+            None,
         );
         connection.connected(
             socket
@@ -119,6 +124,7 @@ impl ConnectionEvents {
         identity: &ConnectionIdentity,
         id: &str,
         target: &str,
+        destination_host_and_port: (&str, u16),
         route: &'static str,
         transport: &'static str,
     ) -> Connection {
@@ -129,9 +135,15 @@ impl ConnectionEvents {
             transport,
             Some(target),
             Some(route),
+            Some(novelty::Destination::new(
+                destination_host_and_port.0,
+                destination_host_and_port.1,
+                route,
+            )),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn connection(
         self: &Arc<Self>,
         identity: &ConnectionIdentity,
@@ -140,6 +152,7 @@ impl ConnectionEvents {
         transport: &'static str,
         target: Option<&str>,
         route: Option<&str>,
+        destination: Option<novelty::Destination>,
     ) -> Connection {
         let started = OffsetDateTime::now_utc();
         let mut details = json!({
@@ -173,6 +186,7 @@ impl ConnectionEvents {
             wire: Mutex::new(None),
             events: self.clone(),
             identity: identity.clone(),
+            destination,
             source: Mutex::new(source),
             facts: Mutex::new(Facts {
                 details,
@@ -206,22 +220,55 @@ struct Facts {
 struct ConnectionEnd {
     events: Arc<ConnectionEvents>,
     identity: ConnectionIdentity,
+    destination: Option<novelty::Destination>,
     facts: Mutex<Facts>,
     source: Mutex<Arc<crate::observations::Source>>,
     wire: Mutex<Option<crate::packet_capture::wire::Ownership>>,
 }
 
 impl ConnectionEnd {
-    fn emit(&self, details: Value) {
-        self.events.emit(
+    fn emit(&self, details: Value) -> novelty::Observation {
+        let event_id = uuid::Uuid::new_v4().to_string();
+        let observation = novelty::Observation::new(
+            details["connection_id"]
+                .as_str()
+                .expect("transport-owned connection ID"),
+            event_id.clone(),
+        );
+        let mut event = audit::Event::new(
+            "network.connection",
+            audit::Kind::Network,
+            audit::Severity::Low,
+            "Connection lifecycle",
+        );
+        event.event_id = Some(event_id);
+        self.events.emit(&self.identity, event, details);
+        observation
+    }
+
+    fn emit_observation(
+        &self,
+        details: Value,
+        tls: Option<(&str, &crate::tls_identity::TlsSession)>,
+    ) {
+        if self.destination.is_none() || self.identity.request_agent().is_none() {
+            self.emit(details);
+            return;
+        }
+        // Serialize the supporting record, comparison and indication together.
+        // Concurrent handshakes must not reverse the baseline's audit order.
+        let mut history = self
+            .events
+            .novelty
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let observation = self.emit(details);
+        self.events.observe_destination(
+            &mut history,
             &self.identity,
-            audit::Event::new(
-                "network.connection",
-                audit::Kind::Network,
-                audit::Severity::Low,
-                "Connection lifecycle",
-            ),
-            details,
+            self.destination.as_ref(),
+            observation,
+            tls,
         );
     }
 }
@@ -244,7 +291,11 @@ impl Drop for ConnectionEnd {
             } else {
                 crate::observations::State::Closed
             });
-        self.emit(facts.details.clone());
+        if !facts.connected {
+            self.emit_observation(facts.details.clone(), None);
+        } else {
+            self.emit(facts.details.clone());
+        }
     }
 }
 
@@ -283,7 +334,7 @@ impl Connection {
             .cloned()
             .unwrap_or(Value::Null);
         facts.details["resolved_origin_peer"] = json!(origin);
-        self.0.emit(facts.details.clone());
+        self.0.emit_observation(facts.details.clone(), None);
     }
 
     pub(crate) fn source(&self) -> Arc<crate::observations::Source> {
@@ -340,7 +391,7 @@ impl Connection {
     }
 
     pub(crate) fn client_hello(&self, hello: crate::tls_identity::ClientHello) {
-        self.update_tls(|details| {
+        self.update_tls(None, |details| {
             details["tls_client_hello"] = json!(hello);
         });
     }
@@ -350,7 +401,7 @@ impl Connection {
         if let Some(name) = session.sni.as_deref() {
             self.tls(name);
         }
-        self.update_tls(|details| {
+        self.update_tls(Some((name, &session)), |details| {
             if !details["tls_sessions"].is_array() {
                 details["tls_sessions"] = json!([]);
             }
@@ -361,7 +412,11 @@ impl Connection {
         });
     }
 
-    fn update_tls(&self, update: impl FnOnce(&mut Value)) {
+    fn update_tls(
+        &self,
+        tls: Option<(&str, &crate::tls_identity::TlsSession)>,
+        update: impl FnOnce(&mut Value),
+    ) {
         let mut facts = self
             .0
             .facts
@@ -370,7 +425,11 @@ impl Connection {
         update(&mut facts.details);
         let mut snapshot = facts.details.clone();
         snapshot["state"] = json!("updated");
-        self.0.emit(snapshot);
+        if tls.is_some() {
+            self.0.emit_observation(snapshot, tls);
+        } else {
+            self.0.emit(snapshot);
+        }
     }
 }
 
