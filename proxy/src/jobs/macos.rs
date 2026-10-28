@@ -77,41 +77,14 @@ async fn stage(
             "MaxSessions 1\nForceCommand exec /safeyolo/job-exec\n",
         ),
     )?;
-    fs::write(
-        share.join("guest-init"),
-        concat!(
-            "#!/bin/bash\nset -euo pipefail\n",
-            "mkdir -p /input /work /home/agent /run/sshd\n",
-            "mount -t virtiofs -o ro workspace /input\n",
-            "mount -t tmpfs -o nosuid,nodev,mode=700,uid=1000,gid=1000 tmpfs /home/agent\n",
-            "chown 1000:1000 /work\n",
-            "cp /safeyolo/job-host-key /run/job-host-key\n",
-            "cp /safeyolo/authorized_keys /run/job-authorized-keys\n",
-            "chown 0:0 /run/job-host-key /run/job-authorized-keys\n",
-            "chmod 600 /run/job-host-key /run/job-authorized-keys\n",
-            "usermod -p '*' root\n",
-            "/usr/sbin/sshd -D -e -f /safeyolo/sshd_config >/run/job-sshd.log 2>&1 &\n",
-            "socat VSOCK-LISTEN:2220,reuseaddr,fork TCP:127.0.0.1:22 >/run/job-bridge.log 2>&1 &\n",
-            "wait -n\n",
-        ),
-    )?;
+    fs::write(share.join("guest-init"), include_str!("vz-guest-init.sh"))?;
     // Exec at each step preserves the command's own wait status in sshd.
     // Neither an agent request nor SSH command text selects what is executed.
     fs::write(
         share.join("job-exec"),
         concat!("#!/bin/sh\nexec /usr/bin/python3 /safeyolo/job-exec.py\n",),
     )?;
-    fs::write(
-        share.join("job-exec.py"),
-        concat!(
-            "import json, os\n",
-            "with open('/safeyolo/job.json') as source:\n    spec = json.load(source)\n",
-            "os.chdir('/work')\n",
-            "argv = ['/usr/bin/setpriv', '--reuid=1000', '--regid=1000', '--clear-groups', '--bounding-set=-all', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', '--', *spec['argv']]\n",
-            "if spec['privilege'] == 'guest-root':\n    argv = spec['argv']\n",
-            "os.execve(argv[0], argv, {'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'HOME':'/home/agent', 'USER':'agent', 'LOGNAME':'agent', 'LANG':'C.UTF-8'})\n",
-        ),
-    )?;
+    fs::write(share.join("job-exec.py"), include_str!("vz-exec.py"))?;
     for name in ["guest-init", "job-exec"] {
         fs::set_permissions(share.join(name), fs::Permissions::from_mode(0o755))?;
     }
@@ -291,9 +264,6 @@ pub(super) async fn run(
     terminate: &mut Signal,
     cleanup_failed: &mut bool,
 ) -> Result<(Value, Outcome, Output, Output), Error> {
-    // Guest-root can currently tamper with in-guest sshd. This source checkpoint
-    // is not a trusted guest-root result implementation or review candidate;
-    // the bounded observer investigation must resolve that contract first.
     let public = stage(root, directory, host, guest, spec, generation).await?;
     host_runs::save(
         name,

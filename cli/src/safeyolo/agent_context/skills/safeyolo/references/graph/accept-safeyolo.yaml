@@ -258,7 +258,7 @@ nodes:
         - path: proxy/src/jobs/input.rs
           sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
         - path: tests/blackbox/host/job_sandbox.py
-          sha256: 996ebd708f3f3d1efdeac55d474db738b675c9482701bce59d5a338522f0b678
+          sha256: 74c1f4d8d86161420358e2382830c29fea4c1cff86b9519985f64dfbdfc90b11
         - path: proxy/Cargo.toml
           sha256: b3780ef7ad5e2952f75c1c5f36e72df6c3f8ff73861d34825667b41c2028fea8
         - path: proxy/Cargo.lock
@@ -307,9 +307,9 @@ nodes:
         - path: proxy/src/jobs/input.rs
           sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
         - path: proxy/src/jobs/macos.rs
-          sha256: 8b2a90276555c536c302c5a899a3a52b3bce73de114d8b808d01ba308145e7f2
+          sha256: 16769d4570750828fbc0b90dd838d12f9768675ecf95786a9bb312d150ebac4c
         - path: tests/blackbox/host/job_sandbox.py
-          sha256: 996ebd708f3f3d1efdeac55d474db738b675c9482701bce59d5a338522f0b678
+          sha256: 74c1f4d8d86161420358e2382830c29fea4c1cff86b9519985f64dfbdfc90b11
         - path: proxy/Cargo.toml
           sha256: b3780ef7ad5e2952f75c1c5f36e72df6c3f8ff73861d34825667b41c2028fea8
         - path: proxy/Cargo.lock
@@ -318,6 +318,10 @@ nodes:
           sha256: 103479bb3398c3b0123e68f0fc550d5714d82532f92cb351f4227e2298ecdae9
         - path: proxy/src/bin/safeyolo.rs
           sha256: 651712fb3af84055f6ea8870651e46531ee534f1ea2a33f6d28c407892cc52a8
+        - path: proxy/src/jobs/vz-guest-init.sh
+          sha256: 5ee415a0b222dace53716ab45b2adbdb6f3d634b6d82fe8c1e93653dfa8f30e9
+        - path: proxy/src/jobs/vz-exec.py
+          sha256: f28097bfee7d94decf476f226cf125204f6185a04f023f9929438d96a69c7dae
       setup: "Use the approved physical Apple Silicon host; make -C vm install; prepare a disposable BYOA agent for snapshot smoke."
       verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
       run:

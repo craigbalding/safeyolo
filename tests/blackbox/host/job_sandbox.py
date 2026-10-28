@@ -12,6 +12,7 @@ import base64
 import hashlib
 import json
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -99,16 +100,46 @@ print(json.dumps({'uid': os.getuid(), 'gid': os.getgid(), 'NoNewPrivs': status['
     assert default["outcome"] == {"kind": "exit", "code": 0}, default
     print("PASS default identity, capability clearing, sudo/setuid refusal, read-only inputs, no agent authority")
 
-    _, root_result = job(
-        """
+    root_program = """
 import os, pathlib
 assert os.getuid() == 0
 assert not pathlib.Path('/home/agent/job-marker').exists()
 assert not pathlib.Path('/work/job-marker').exists()
 pathlib.Path('/etc/job-root-marker').write_text('transient')
-""",
-        privilege="guest-root",
-    )
+"""
+    if sys.platform == "darwin":
+        root_program += """
+import ctypes, errno, subprocess
+mapping = pathlib.Path('/proc/self/uid_map').read_text().split()
+assert mapping == ['0', '65536', '65536'], mapping
+marker = pathlib.Path('/etc/job-root-marker')
+os.chown(marker, 1234, 1234)
+assert marker.stat().st_uid == marker.stat().st_gid == 1234
+mountpoint = pathlib.Path('/work/root-mount')
+mountpoint.mkdir()
+subprocess.run(['mount', '-t', 'tmpfs', 'tmpfs', str(mountpoint)], check=True)
+(mountpoint / 'file').write_text('root mount works')
+subprocess.run(['umount', str(mountpoint)], check=True)
+parent = os.getppid()
+try:
+    os.kill(parent, 0)
+except PermissionError:
+    pass
+else:
+    raise AssertionError('job root has signal authority over its observer')
+libc = ctypes.CDLL(None, use_errno=True)
+assert libc.ptrace(16, parent, 0, 0) == -1
+assert ctypes.get_errno() == errno.EPERM
+try:
+    pathlib.Path(f'/proc/{parent}/root/run/job-host-key').read_bytes()
+except PermissionError:
+    pass
+else:
+    raise AssertionError('job root can read the observer host key')
+assert not pathlib.Path('/.observer-root').exists()
+print('job-relative root, chown, private mount, observer signal/ptrace/key refusal')
+"""
+    _, root_result = job(root_program, privilege="guest-root")
     assert root_result["outcome"] == {"kind": "exit", "code": 0}, root_result
     _, fresh = job("import pathlib; assert not pathlib.Path('/etc/job-root-marker').exists()")
     assert fresh["outcome"] == {"kind": "exit", "code": 0}, fresh
