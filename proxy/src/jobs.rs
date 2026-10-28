@@ -11,14 +11,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     fs, io,
-    os::unix::fs::{PermissionsExt, symlink},
+    os::unix::fs::symlink,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 #[cfg(target_os = "linux")]
 use std::{
-    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{OpenOptionsExt, PermissionsExt},
+    },
     process::{ExitStatus, Stdio},
+    time::Duration,
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 
