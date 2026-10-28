@@ -388,7 +388,10 @@ Acquisition is disabled unless `pcap:wire`, `wire_interface` and the explicit
 `wire_packet` payload layer are selected together with an adapter. Other payload
 layers do not retain stream content under the wire profile. A missing library,
 unsupported link type, denied interface or acquisition failure reports a fixed
-unavailable reason. Agent traffic, stream metadata and behavioural metrics
+unavailable reason. If acquisition fails after startup, existing wire sessions
+end. Later TCP collectors receive no capture stream, and authenticated WebSocket
+capture requests receive HTTP 503 until the proxy restarts.
+Agent traffic, stream metadata and behavioural metrics
 continue. Selecting `pcap:compat` continues to work without packet privileges.
 
 The source uses libpcap without promiscuous mode. Its kernel filter selects TCP
@@ -423,7 +426,8 @@ and drop counts describe the acquisition interface/filter, including traffic
 later excluded by ownership. They are separate from observation-bus and sink
 loss. A wire session with an observation or sink gap ends with a content-free
 error and loss counters. The proxy cannot encode a gap as a genuine packet.
-Other consumers and agent traffic continue; a new live consumer can subscribe.
+Other consumers and agent traffic continue. If acquisition is still active, a new
+live consumer can subscribe after a session gap.
 
 ## Remaining capture work
 

@@ -89,6 +89,9 @@ impl Drop for Ownership {
     }
 }
 impl Connections {
+    pub(super) fn is_active(&self) -> bool {
+        self.active.load(Ordering::Acquire)
+    }
     pub(crate) fn register(
         self: &Arc<Self>,
         local: SocketAddr,
@@ -103,20 +106,19 @@ impl Connections {
         // unrelated connection that used this tuple before the native socket.
         let start_ns = wall_ns();
         let tuple = (canonical(local), canonical(remote));
-        if let Ok(mut owned) = self.owned.try_lock() {
-            if owned.len() < self.capacity
-                && owned
-                    .get(&tuple)
-                    .is_none_or(|entry| entry.closed_ns.load(Ordering::Acquire) != 0)
-            {
-                let entry = Arc::new(Owned {
-                    source,
-                    start_ns,
-                    closed_ns: AtomicU64::new(0),
-                });
-                owned.insert(tuple, entry.clone());
-                return Some(Ownership(entry));
-            }
+        if let Ok(mut owned) = self.owned.try_lock()
+            && owned.len() < self.capacity
+            && owned
+                .get(&tuple)
+                .is_none_or(|entry| entry.closed_ns.load(Ordering::Acquire) != 0)
+        {
+            let entry = Arc::new(Owned {
+                source,
+                start_ns,
+                closed_ns: AtomicU64::new(0),
+            });
+            owned.insert(tuple, entry.clone());
+            return Some(Ownership(entry));
         }
         self.counters
             .wire_correlation_missed
@@ -457,7 +459,7 @@ impl Source {
                     closed == 0 || closed > cutoff
                 });
             n = n.wrapping_add(1);
-            if n % 500 == 0 {
+            if n.is_multiple_of(500) {
                 self.statistics();
             }
         }
@@ -571,6 +573,11 @@ fn tcp_tuple(link: u32, bytes: &[u8]) -> Option<Tuple> {
         SocketAddr::new(src, u16::from_be_bytes([ports[0], ports[1]])),
         SocketAddr::new(dst, u16::from_be_bytes([ports[2], ports[3]])),
     ))
+}
+
+#[cfg(test)]
+pub(super) fn tcp_tuple_for_test(link: u32, bytes: &[u8]) -> Option<Tuple> {
+    tcp_tuple(link, bytes)
 }
 
 #[cfg(test)]
@@ -746,9 +753,4 @@ mod tests {
             "[::1]:32768".parse().unwrap()
         );
     }
-}
-
-#[cfg(test)]
-pub(super) fn tcp_tuple_for_test(link: u32, bytes: &[u8]) -> Option<Tuple> {
-    tcp_tuple(link, bytes)
 }

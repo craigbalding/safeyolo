@@ -1345,6 +1345,173 @@ async fn encoder_shutdown_failure_names_the_active_sinks() {
     assert_eq!(counters["sinks"]["tcp"]["sink_errors_total"], 0);
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn wire_source_failure_refuses_later_collectors_but_sink_gaps_allow_reconnect() {
+    const CHILD: &str = "SAFEYOLO_WIRE_SOURCE_FAULT";
+    let Some(trigger) = std::env::var_os(CHILD) else {
+        // Keep the controlled libpcap and its environment in a separate process.
+        // The actual source task, adapters and proxy still run unchanged.
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("wire_source_fault.c");
+        std::fs::write(
+            &source,
+            include_str!("../../tests/fixtures/wire_source_fault.c"),
+        )
+        .unwrap();
+        let compiled = tokio::process::Command::new("cc")
+            .args(["-shared", "-fPIC", "-Wall", "-Wextra", "-Werror"])
+            .arg(source)
+            .arg("-o")
+            .arg(directory.path().join("libpcap.so.1"))
+            .kill_on_drop(true)
+            .output();
+        let compiled = timeout(WAIT, compiled).await.unwrap().unwrap();
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let mut paths = vec![directory.path().to_owned()];
+        if let Some(existing) = std::env::var_os("LD_LIBRARY_PATH") {
+            paths.extend(std::env::split_paths(&existing));
+        }
+        let child = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "packet_capture::tests::wire_source_failure_refuses_later_collectors_but_sink_gaps_allow_reconnect", "--nocapture"])
+            .env("LD_LIBRARY_PATH", std::env::join_paths(paths).unwrap())
+            .env(CHILD, directory.path().join("fail"))
+            .kill_on_drop(true)
+            .output();
+        let child = timeout(Duration::from_secs(30), child)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        return;
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(directory.path());
+    let token = directory.path().join("token");
+    std::fs::write(&token, "wire-failure-test").unwrap();
+    config.admin_port = Some(0);
+    config.admin_api_token_file = Some(token);
+    config.native_settings.as_mut().unwrap().packet_capture = Settings {
+        profile: Profile::Wire,
+        wire_interface: Some("controlled-source".into()),
+        payload_layers: vec![Layer::WirePacket],
+        tcp: Some(Tcp {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            ..Default::default()
+        }),
+        wss: true,
+        ..Default::default()
+    };
+    let proxy = crate::Proxy::start(config).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let bus = bus(&runtime);
+    let capture = bus.capture.get().expect("controlled source must open");
+    let address = capture.tcp_endpoint.unwrap().address;
+    async fn collector(address: SocketAddr, expected: &[u8]) -> TcpStream {
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        let mut header = [0; 24];
+        timeout(WAIT, stream.read_exact(&mut header))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(header.as_slice(), expected);
+        stream
+    }
+    async fn eof(stream: &mut TcpStream) {
+        let mut bytes = Vec::new();
+        timeout(WAIT, stream.read_to_end(&mut bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            bytes.is_empty(),
+            "no successful stream after source failure"
+        );
+    }
+    let header = capture.wire_format.unwrap().header();
+    let mut initial = collector(address, &header).await;
+    // A real canonical admission gap ends this sink without failing acquisition.
+    let mut oversized = crate::observations::tests::sample(&bus);
+    oversized.connection_id = "x".repeat(Limits::default().bytes + 1);
+    bus.emit(oversized);
+    eof(&mut initial).await;
+    assert_eq!(bus.counters.wire_source_errors.load(Ordering::Relaxed), 0);
+    let mut active = collector(address, &header).await;
+    // Trigger pcap_next_ex=-1 after a successful reconnect. This exercises the
+    // source task's error reporting, Source::drop and existing-sink closure.
+    std::fs::write(trigger, []).unwrap();
+    eof(&mut active).await;
+    assert_eq!(bus.counters.wire_source_errors.load(Ordering::Relaxed), 1);
+    eof(&mut TcpStream::connect(address).await.unwrap()).await;
+    let mut websocket = TcpStream::connect(runtime.admin_address.unwrap())
+        .await
+        .unwrap();
+    websocket.write_all(b"GET /admin/capture HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Bearer wire-failure-test\r\n\r\n").await.unwrap();
+    assert!(
+        crate::connection_events::tests::head(&mut websocket)
+            .await
+            .starts_with(b"HTTP/1.1 503")
+    );
+    drop(websocket);
+
+    let mut metadata = bus.subscribe(ConsumerKind::Metrics, Limits::default());
+    let (origin, address) = crate::test_owned_endpoint::bind().await;
+    let origin = tokio::spawn(async move {
+        let (mut peer, _) = origin.accept().await.unwrap();
+        let head = crate::connection_events::tests::head(&mut peer).await;
+        assert!(head.starts_with(b"GET /after-failure "));
+        peer.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await
+            .unwrap();
+    });
+    let mut agent = UnixStream::connect(directory.path().join("alice.sock"))
+        .await
+        .unwrap();
+    agent.write_all(format!("GET http://{address}/after-failure HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    let mut reply = Vec::new();
+    timeout(WAIT, agent.read_to_end(&mut reply))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(reply.starts_with(b"HTTP/1.1 200"));
+    assert!(reply.ends_with(b"\r\n\r\nok"));
+    timeout(WAIT, origin).await.unwrap().unwrap();
+    timeout(WAIT, async {
+        loop {
+            let record = metadata.recv().await.unwrap();
+            if let Record::Observation(o) = record.as_ref() {
+                assert!(o.payload.is_none());
+                assert_eq!(o.captured_length, 0);
+                // The same canonical record remains usable by the compat encoder.
+                let mut bytes = compat::session(&encode_session(), "file", 64 * 1024).unwrap();
+                bytes.extend(compat::encode(&record, 64 * 1024).unwrap());
+                assert!(!packets(&bytes).is_empty());
+                if o.state == State::Complete {
+                    break;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        bus.counters.json()["layers"]["transport_stream"]["observations_total"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    proxy.shutdown().await;
+}
+
 // Run explicitly on an owned host with libpcap access. This exercises product
 // acquisition and socket ownership, rather than supplying packet fixtures.
 #[tokio::test]
@@ -1499,13 +1666,12 @@ async fn native_wire_acquisition_excludes_unrelated_and_live_export_transports()
     timeout(WAIT,async {
         loop {
             let record=metadata.recv().await.unwrap();
-            if let Record::Observation(o)=record.as_ref() {
-                if o.layer==Layer::WirePacket {
-                    assert_eq!(o.agent.as_deref(),Some("alice"));
-                    assert!(o.connection_id.starts_with("upstream-"));
-                    acquired.push(record);
-                    if acquired.iter().any(|r| matches!(r.as_ref(), Record::Observation(o) if o.payload.as_ref().is_some_and(|p| p.windows(14).any(|w|w==b"wire-reply-858")))) {break;}
-                }
+            if let Record::Observation(o)=record.as_ref()
+                && o.layer==Layer::WirePacket {
+                assert_eq!(o.agent.as_deref(),Some("alice"));
+                assert!(o.connection_id.starts_with("upstream-"));
+                acquired.push(record);
+                if acquired.iter().any(|r| matches!(r.as_ref(), Record::Observation(o) if o.payload.as_ref().is_some_and(|p| p.windows(14).any(|w|w==b"wire-reply-858")))) {break;}
             }
         }
     }).await.unwrap();

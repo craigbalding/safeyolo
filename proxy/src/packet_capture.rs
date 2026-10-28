@@ -266,6 +266,10 @@ impl Capture {
         // Serialize registration against dispatch; never replay historical batches.
         let mut sinks = self.sinks.lock().unwrap_or_else(|e| e.into_inner());
         let bus = self.bus.upgrade().ok_or(())?;
+        if self.wire_format.is_some() && !bus.wire.get().is_some_and(|source| source.is_active()) {
+            report(&self.counters, kind, "pcap_acquisition_unavailable");
+            return Err(());
+        }
         let first = bus.next_sequence();
         let session = Session {
             sink_session_id: uuid::Uuid::new_v4().to_string(),
