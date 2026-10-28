@@ -1,4 +1,4 @@
-//! Canonical metadata before any capture encoding. No payload or secret storage.
+//! Canonical observations before capture encoding. Payload retention is explicit.
 
 use std::{
     collections::VecDeque,
@@ -27,7 +27,7 @@ impl Default for Limits {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Layer {
     TransportStream,
@@ -146,6 +146,9 @@ pub struct Observation {
     /// None when no byte length is exposed (for example an HTTP/2 head).
     pub observed_length: Option<u64>,
     pub captured_length: u64,
+    /// Private capture bytes never enter metadata serialization or diagnostics.
+    #[serde(skip)]
+    pub payload: Option<Arc<[u8]>>,
     pub state: State,
 }
 impl Observation {
@@ -196,7 +199,7 @@ impl Record {
     }
     fn bytes(&self) -> usize {
         match self {
-            Self::Observation(o) => o.metadata_bytes(),
+            Self::Observation(o) => o.metadata_bytes() + o.payload.as_ref().map_or(0, |p| p.len()),
             Self::Gap(g) => {
                 std::mem::size_of::<Record>() + 64 + g.instance_id.len() + g.runtime_id.len()
             }
@@ -236,9 +239,14 @@ impl ConsumerKind {
 pub struct Counters {
     total: [AtomicU64; 4],
     metadata: [AtomicU64; 4],
+    payload: [AtomicU64; 4],
     dropped: [AtomicU64; 4],
     gaps: AtomicU64,
     exhausted: AtomicU64,
+    pub(crate) sink_bytes: [AtomicU64; 4],
+    pub(crate) sink_dropped: [AtomicU64; 4],
+    pub(crate) sink_errors: [AtomicU64; 4],
+    pub(crate) sink_disconnects: [AtomicU64; 4],
     consumer_bytes: [AtomicU64; 2],
     consumer_dropped: [AtomicU64; 2],
     consumer_disconnects: [AtomicU64; 2],
@@ -260,7 +268,7 @@ impl Counters {
                 json!({
                     "observations_total": self.total[i].load(Ordering::Relaxed),
                     "observation_metadata_bytes_total": self.metadata[i].load(Ordering::Relaxed),
-                    "observation_payload_bytes_total": 0,
+                    "observation_payload_bytes_total": self.payload[i].load(Ordering::Relaxed),
                     "observation_bus_dropped_total": self.dropped[i].load(Ordering::Relaxed),
                 }),
             );
@@ -275,6 +283,23 @@ impl Counters {
             "sink_disconnects_total": self.consumer_disconnects[i].load(Ordering::Relaxed),
             "sink_errors_total": 0,
         }));
+        }
+        for kind in [
+            crate::packet_capture::Sink::File,
+            crate::packet_capture::Sink::Stdout,
+            crate::packet_capture::Sink::Tcp,
+            crate::packet_capture::Sink::Wss,
+        ] {
+            let i = kind.index();
+            sinks.insert(
+                kind.name().into(),
+                json!({
+                    "sink_bytes_total":self.sink_bytes[i].load(Ordering::Relaxed),
+                    "sink_dropped_observations_total":self.sink_dropped[i].load(Ordering::Relaxed),
+                    "sink_errors_total":self.sink_errors[i].load(Ordering::Relaxed),
+                    "sink_disconnects_total":self.sink_disconnects[i].load(Ordering::Relaxed),
+                }),
+            );
         }
         json!({"layers": by_layer, "observation_gap_ranges_total": self.gaps.load(Ordering::Relaxed), "observation_sequence_exhausted_total": self.exhausted.load(Ordering::Relaxed), "sinks": sinks})
     }
@@ -362,8 +387,13 @@ pub struct Consumer {
 }
 impl Consumer {
     fn delivered(&self, record: Arc<Record>) -> Option<Arc<Record>> {
-        self.counters.consumer_bytes[self.inner.kind.index()]
-            .fetch_add(record.bytes() as u64, Ordering::Relaxed);
+        self.counters.consumer_bytes[self.inner.kind.index()].fetch_add(
+            match record.as_ref() {
+                Record::Observation(o) => o.metadata_bytes(),
+                Record::Gap(_) => record.bytes(),
+            } as u64,
+            Ordering::Relaxed,
+        );
         Some(record)
     }
     pub async fn recv(&mut self) -> Option<Arc<Record>> {
@@ -427,6 +457,8 @@ fn gap(session: &Session, first: u64, last: u64, reason: LossReason) -> Gap {
 
 pub struct ObservationBus {
     session: Session,
+    payload_layers: Vec<Layer>,
+    pub(crate) capture: std::sync::OnceLock<Arc<crate::packet_capture::Capture>>,
     sequence: AtomicU64,
     queue: Mutex<Queue>,
     limits: Limits,
@@ -444,7 +476,18 @@ impl ObservationBus {
         limits: Limits,
         counters: Arc<Counters>,
     ) -> Arc<Self> {
+        Self::with_payload(instance_id, runtime_id, limits, counters, Vec::new())
+    }
+    pub(crate) fn with_payload(
+        instance_id: String,
+        runtime_id: String,
+        limits: Limits,
+        counters: Arc<Counters>,
+        payload_layers: Vec<Layer>,
+    ) -> Arc<Self> {
         let bus = Arc::new(Self {
+            payload_layers,
+            capture: std::sync::OnceLock::new(),
             session: Session {
                 instance_id,
                 runtime_id,
@@ -532,6 +575,25 @@ impl ObservationBus {
         }
     }
     pub(crate) fn emit(self: &Arc<Self>, observation: Observation) -> Option<ObservationId> {
+        self.emit_payload(observation, &[])
+    }
+    pub(crate) fn emit_payload(
+        self: &Arc<Self>,
+        mut observation: Observation,
+        bytes: &[u8],
+    ) -> Option<ObservationId> {
+        // Refuse oversized snapshots before allocating or copying. Queue accounting
+        // charges retained bytes in both the canonical and consumer stages.
+        if self.payload_layers.contains(&observation.layer)
+            && bytes.len()
+                <= self
+                    .limits
+                    .bytes
+                    .saturating_sub(observation.metadata_bytes())
+        {
+            observation.payload = (!bytes.is_empty()).then(|| Arc::from(bytes));
+            observation.captured_length = bytes.len() as u64;
+        }
         self.emit_with_clock(observation, || Timestamp {
             wall_unix_ns: SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(
                 |e| -(e.duration().as_nanos() as i128),
@@ -564,6 +626,7 @@ impl ObservationBus {
         let id = observation.id.clone();
         let layer = observation.layer.index();
         self.counters.total[layer].fetch_add(1, Ordering::Relaxed);
+        self.counters.payload[layer].fetch_add(observation.captured_length, Ordering::Relaxed);
         self.counters.metadata[layer]
             .fetch_add(observation.metadata_bytes() as u64, Ordering::Relaxed);
         let admitted = queue.is_some_and(|mut queue| {
@@ -712,4 +775,4 @@ fn try_queue(queue: &Mutex<Queue>) -> Option<std::sync::MutexGuard<'_, Queue>> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

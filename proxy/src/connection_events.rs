@@ -48,7 +48,7 @@ impl ConnectionEvents {
             .observations
             .get_or_init(|| Arc::new(crate::observations::Counters::default()))
             .clone();
-        let observations = crate::observations::ObservationBus::new(
+        let observations = crate::observations::ObservationBus::with_payload(
             instance_id.clone(),
             runtime_id.to_owned(),
             config
@@ -56,6 +56,12 @@ impl ConnectionEvents {
                 .as_ref()
                 .map_or_else(Default::default, |settings| settings.observations),
             counters,
+            config
+                .native_settings
+                .as_ref()
+                .map_or_else(Vec::new, |settings| {
+                    settings.packet_capture.payload_layers()
+                }),
         );
         Some(Arc::new(Self {
             observations,

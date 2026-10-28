@@ -123,6 +123,11 @@ Policy apply updates policy controls without restarting. Existing capture
 limits, queue modes and trace/storage retention are unchanged; use the exact
 values and zero/negative handling in [settings](settings.md).
 
+For explicit classic PCAP file, pipe, TCP or authenticated WSS output, see
+[native observations and capture](native-observations.md). Payload capture is
+disabled by default. Metadata monitoring and FlowStore retention remain
+independent of that capture setting.
+
 ### Select a target IP
 
 On the host, edit the active instance's `config.toml` and restart SafeYolo.

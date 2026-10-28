@@ -23,7 +23,7 @@ fn bus(limits: Limits) -> Arc<ObservationBus> {
         Arc::new(Counters::default()),
     )
 }
-fn sample(bus: &Arc<ObservationBus>) -> Observation {
+pub(crate) fn sample(bus: &Arc<ObservationBus>) -> Observation {
     let identity = identity();
     Observation {
         id: bus.id(0),
@@ -47,6 +47,7 @@ fn sample(bus: &Arc<ObservationBus>) -> Observation {
         stream_offset: Some(0),
         observed_length: Some(1),
         captured_length: 0,
+        payload: None,
         state: State::Chunk,
     }
 }

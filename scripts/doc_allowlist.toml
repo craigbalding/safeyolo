@@ -38,6 +38,7 @@ user_facing_docs = [
     "docs/demo.md",
     "docs/ADDONS.md",
     "docs/CONFIGURATION.md",
+    "docs/native-observations.md",
     "docs/installation.md",
     "docs/guest-oci.md",
     "docs/credentials.md",
