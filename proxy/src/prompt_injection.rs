@@ -285,6 +285,7 @@ pub(crate) fn observe(
                         evidence_hash: Some(&findings.evidence_hash),
                         content: Some(&findings.content),
                         source: None,
+                        novelty: None,
                     },
                 );
             }
@@ -336,6 +337,7 @@ pub(crate) fn observe(
                     evidence_hash: Some(&evidence_hash),
                     content: Some(&metadata),
                     source: Some(&source),
+                    novelty: None,
                 },
             );
         }

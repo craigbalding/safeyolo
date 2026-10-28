@@ -75,6 +75,7 @@ struct Indicator {
     inspected_bytes: Option<u64>,
     prefix_truncated: Option<bool>,
     source: Option<crate::security_indicators::SourceEvidence>,
+    novelty: Option<crate::connection_events::novelty::Evidence>,
 }
 
 fn invalid() -> Error {
@@ -222,6 +223,10 @@ pub(super) fn validate(record: &Value) -> Result<()> {
             ]) && indicator.confidence.is_finite()
                 && (0.0..=1.0).contains(&indicator.confidence)
                 && optional(indicator.connection_id.as_deref())
+                && indicator
+                    .novelty
+                    .as_ref()
+                    .is_none_or(|novelty| novelty.valid(indicator.connection_id.as_deref()))
                 && indicator.source.as_ref().is_none_or(|source| {
                     required(&[&source.request_id, &source.connection_id, &source.host])
                         && source.matched_fingerprints > 0

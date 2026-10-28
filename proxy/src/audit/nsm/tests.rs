@@ -305,6 +305,53 @@ fn indicator_content_metadata_is_typed_and_requires_hashed_evidence() {
 }
 
 #[test]
+fn novelty_links_are_typed_scoped_metadata_and_require_comparable_changes() {
+    let mut row = record(indicator());
+    row["details"]["novelty"] = json!({
+        "history_scope":"runtime_fifo", "history_capacity":4096,
+        "destination":"origin.invalid:443", "route":"direct", "verification_name":null,
+        "current":{"connection_id":"S1","event_id":"observation-1", "cert_sha256":null,"spki_sha256":null},
+        "previous":null,
+    });
+    assert!(parse_record(&row.to_string()).is_ok());
+    for (pointer, value) in [
+        ("/history_scope", json!("all_time")),
+        ("/history_capacity", json!(0)),
+        ("/history_capacity", json!(4097)),
+        ("/destination", json!("")),
+        ("/route", json!("unknown")),
+        ("/current/connection_id", json!("unrelated")),
+        ("/current/event_id", json!("")),
+        ("/current/cert_sha256", json!("raw certificate")),
+    ] {
+        let mut invalid = row.clone();
+        *invalid["details"]["novelty"].pointer_mut(pointer).unwrap() = value;
+        assert!(parse_record(&invalid.to_string()).is_err(), "{pointer}");
+    }
+    row["details"]["novelty"]["verification_name"] = json!("origin.invalid");
+    row["details"]["novelty"]["previous"] = json!({
+        "connection_id":"S0","event_id":"observation-0", "cert_sha256":"a".repeat(64),"spki_sha256":"b".repeat(64),
+    });
+    row["details"]["novelty"]["current"]["cert_sha256"] = json!("c".repeat(64));
+    assert!(
+        parse_record(&row.to_string()).is_ok(),
+        "a certificate change can have unknown SPKI"
+    );
+    for (pointer, value) in [
+        ("/previous/cert_sha256", Value::Null),
+        ("/current/cert_sha256", json!("a".repeat(64))),
+        ("/previous/event_id", json!("observation-1")),
+        ("/verification_name", Value::Null),
+    ] {
+        let mut invalid = row.clone();
+        *invalid["details"]["novelty"].pointer_mut(pointer).unwrap() = value;
+        assert!(parse_record(&invalid.to_string()).is_err(), "{pointer}");
+    }
+    row["details"]["novelty"]["current"]["body"] = json!("private payload");
+    assert!(parse_record(&row.to_string()).is_err());
+}
+
+#[test]
 fn native_route_facts_keep_origin_and_physical_peer_distinct() {
     let mut upstream = record(connection("S1", true));
     upstream["details"]["client_connection_id"] = json!("C1");
