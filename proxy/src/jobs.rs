@@ -420,14 +420,27 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
     // consume the caller's /tmp memory. No durable job or agent record is added.
     #[cfg(not(target_os = "macos"))]
     let parent = installation.join("data");
-    // VZ control/shell UDS paths have a 104-byte limit. Keep the disposable
-    // root on disk at a short OS-owned path, independent of instance length.
+    // Use the caller's authorized temporary directory on macOS. Restricted
+    // accounts need not have access to the system-wide /private/var/tmp.
+    // The helper still enforces its existing control/shell socket path bound.
     #[cfg(target_os = "macos")]
-    let parent = PathBuf::from("/private/var/tmp");
-    fs::create_dir_all(&parent)?;
+    let parent = std::env::temp_dir();
+    #[cfg(not(target_os = "macos"))]
+    fs::create_dir_all(&parent).map_err(|error| {
+        format!(
+            "could not create job runtime parent {}: {error}",
+            parent.display()
+        )
+    })?;
     let temporary = tempfile::Builder::new()
         .prefix("job-")
-        .tempdir_in(&parent)?;
+        .tempdir_in(&parent)
+        .map_err(|error| {
+            format!(
+                "could not create fresh job runtime in {}: {error}",
+                parent.display()
+            )
+        })?;
     let root = temporary.path().to_owned();
     #[cfg(target_os = "linux")]
     fs::set_permissions(&root, fs::Permissions::from_mode(0o755))?;
@@ -553,7 +566,7 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
 mod tests {
     use super::*;
 
-    fn spec() -> JobSpec {
+    pub(super) fn spec() -> JobSpec {
         serde_json::from_value(
             json!({"gate_id":"test", "argv":["/bin/true"], "timeout_seconds":5,
             "max_input_bytes":1024,"max_input_entries":100,"retain_bytes":16}),

@@ -40,6 +40,27 @@ async fn key(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+fn launcher(spec: &JobSpec) -> String {
+    let mut script = include_str!("vz-exec.sh").to_owned();
+    // Keep env's executable fixed, so an argv[0] containing '=' cannot become
+    // another environment assignment. Every step execs without a wait wrapper.
+    script.push_str("\nexec /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/home/agent USER=agent LOGNAME=agent LANG=C.UTF-8 ");
+    if spec.privilege == super::Privilege::Unprivileged {
+        script.push_str("/usr/bin/setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs -- ");
+    } else {
+        script.push_str("/bin/bash -c 'exec -- \"$@\"' job ");
+    }
+    // Each JSON string is one literal shell argument, including empty strings,
+    // newlines and shell syntax. No guest JSON parser or Python is required.
+    for argument in &spec.argv {
+        script.push('\'');
+        script.push_str(&argument.replace('\'', "'\\''"));
+        script.push_str("' ");
+    }
+    script.push('\n');
+    script
+}
+
 async fn stage(
     root: &Path,
     directory: &Path,
@@ -48,6 +69,22 @@ async fn stage(
     spec: &JobSpec,
     generation: &str,
 ) -> Result<PublicKey, Error> {
+    // Include the terminating NUL in the existing Darwin sockaddr_un bound.
+    // Check before boot, so an authorized but long TMPDIR has a useful error.
+    use std::os::unix::ffi::OsStrExt;
+    for folder in ["shell-sockets", "vm-control"] {
+        let socket = root
+            .join("data")
+            .join(folder)
+            .join(format!("job-{generation}.sock"));
+        if socket.as_os_str().as_bytes().len() + 1 > 104 {
+            return Err(format!(
+                "job socket path exceeds the 104-byte platform limit: {}; use a shorter TMPDIR",
+                socket.display()
+            )
+            .into());
+        }
+    }
     let share = directory.join("config-share");
     fs::create_dir(&share)?;
     fs::create_dir_all(root.join("data"))?;
@@ -89,11 +126,7 @@ async fn stage(
     )?;
     // Exec at each step preserves the command's own wait status in sshd.
     // Neither an agent request nor SSH command text selects what is executed.
-    fs::write(
-        share.join("job-exec"),
-        concat!("#!/bin/sh\nexec /usr/bin/python3 /safeyolo/job-exec.py\n",),
-    )?;
-    fs::write(share.join("job-exec.py"), include_str!("vz-exec.py"))?;
+    fs::write(share.join("job-exec"), launcher(spec))?;
     for name in ["guest-init", "job-exec", "job-ssh-command"] {
         fs::set_permissions(share.join(name), fs::Permissions::from_mode(0o755))?;
     }
@@ -484,6 +517,56 @@ pub(super) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_argv_survives_shell_syntax_empty_arguments_and_newlines() {
+        let arguments = [
+            "",
+            "two words",
+            "'quoted'",
+            "$(exit 71)`exit 72`",
+            "a\nb",
+            "\\",
+        ];
+        let mut spec = super::super::tests::spec();
+        spec.privilege = super::super::Privilege::GuestRoot;
+        spec.argv = ["/bin/bash", "-c", "printf '%s\\0' \"$@\"", "probe"]
+            .into_iter()
+            .chain(arguments)
+            .map(str::to_owned)
+            .collect();
+        let script = launcher(&spec);
+        // Exercise the exact generated exec, without performing guest mounts
+        // on the host. The runtime driver covers the full namespace launcher.
+        let command = script.rsplit_once("\nexec ").unwrap().1;
+        let output = std::process::Command::new("/bin/bash")
+            .args(["-c", &format!("exec {command}")])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let expected: Vec<u8> = arguments
+            .iter()
+            .flat_map(|arg| arg.bytes().chain(std::iter::once(0)))
+            .collect();
+        assert_eq!(output.stdout, expected);
+        assert!(output.stderr.is_empty());
+
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("command=literal");
+        std::os::unix::fs::symlink("/bin/echo", &executable).unwrap();
+        spec.argv = vec![
+            executable.to_str().unwrap().to_owned(),
+            "literal command".into(),
+        ];
+        let script = launcher(&spec);
+        let command = script.rsplit_once("\nexec ").unwrap().1;
+        let output = std::process::Command::new("/bin/bash")
+            .args(["-c", &format!("exec {command}")])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, b"literal command\n");
+    }
 
     #[test]
     fn ssh_status_is_explicit_and_signal_numbers_belong_to_the_linux_guest() {

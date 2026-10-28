@@ -3,6 +3,8 @@
 On the selected host, supply the candidate CLI and a disposable installed root:
 python3 tests/blackbox/host/job_sandbox.py --cli /path/to/safeyolo --root /path/to/instance --scratch /disk/backed/directory
 The root must already select the shared Trixie guest and native launcher.
+For macOS, also supply --observer-probe /path/to/arm64-linux-static-probe.
+Build that small test executable on Linux as documented in tests/fixtures/job-observer-probe.c.
 This runs fixed local checks without starting a coding agent or contacting services.
 Successful output names each observed boundary. Failure retains the scratch path.
 """
@@ -12,6 +14,7 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -22,7 +25,7 @@ from pathlib import Path
 
 def job_directories(root: Path):
     """Select this instance's transient roots, including macOS short UDS paths."""
-    parent = Path("/private/var/tmp") if sys.platform == "darwin" else root / "data"
+    parent = Path(os.environ.get("TMPDIR", "/tmp")) if sys.platform == "darwin" else root / "data"
     config = (root / "config.toml").resolve(strict=True)
     result = set()
     for directory in parent.glob("job-*"):
@@ -80,7 +83,7 @@ def interrupt_request(command, root: Path, signal_number: int):
         return subprocess.CompletedProcess(command, child.returncode, stdout, stderr), records
 
 
-def run(cli: Path, root: Path, scratch: Path, signals_only: bool = False) -> None:
+def run(cli: Path, root: Path, scratch: Path, signals_only: bool = False, observer_probe: Path | None = None) -> None:
     """Keep normal installed state unchanged while exercising real job runs."""
     protected = [root / "config.toml", root / "policy.toml"]
     original = {path: path.read_bytes() for path in protected if path.is_file()}
@@ -88,6 +91,10 @@ def run(cli: Path, root: Path, scratch: Path, signals_only: bool = False) -> Non
     input_dir = scratch / "input"
     input_dir.mkdir()
     (input_dir / "candidate").write_text("read-only candidate\n")
+    if observer_probe is not None:
+        shutil.copyfile(observer_probe, input_dir / "observer-probe")
+        (input_dir / "observer-probe").chmod(0o755)
+    input_bytes = sum(path.stat().st_size for path in input_dir.iterdir())
     job_number = 0
 
     def job(program: str, *, privilege: str = "unprivileged", timeout: int = 30, interrupt_signal=None):
@@ -99,9 +106,9 @@ def run(cli: Path, root: Path, scratch: Path, signals_only: bool = False) -> Non
             json.dumps(
                 {
                     "gate_id": "job-boundary-probe",
-                    "argv": ["/usr/bin/python3", "-c", program],
+                    "argv": ["/bin/bash", "-euo", "pipefail", "-c", program],
                     "timeout_seconds": timeout,
-                    "max_input_bytes": 1024,
+                    "max_input_bytes": input_bytes,
                     "max_input_entries": 32,
                     "retain_bytes": 8192,
                     "memory_mb": 512,
@@ -146,7 +153,7 @@ def run(cli: Path, root: Path, scratch: Path, signals_only: bool = False) -> Non
 
     def caller_signals():
         for number, privilege in ((signal.SIGINT, "unprivileged"), (signal.SIGTERM, "guest-root")):
-            code, interrupted = job("import time; time.sleep(300)", privilege=privilege, interrupt_signal=number)
+            code, interrupted = job("exec sleep 300", privilege=privilege, interrupt_signal=number)
             assert code == 1 and interrupted["outcome"] == {"kind": "interrupted", "signal": number}, interrupted
         print("PASS caller SIGINT/SIGTERM after runtime publication and owned teardown")
 
@@ -154,92 +161,75 @@ def run(cli: Path, root: Path, scratch: Path, signals_only: bool = False) -> Non
         caller_signals()
         return
 
-    _, default = job("""
-import json, os, pathlib, subprocess
-status = dict(line.split(':', 1) for line in pathlib.Path('/proc/self/status').read_text().splitlines() if ':' in line)
-assert os.getuid() == os.getgid() == 1000
-assert status['NoNewPrivs'].strip() == '1'
-for field in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'):
-    assert int(status[field], 16) == 0, (field, status[field])
-for argv in (['sudo', '-n', 'id', '-u'], ['/usr/bin/sudo', '-n', 'id', '-u'], ['setpriv', '--reuid=0', '--regid=0', '--clear-groups', 'id', '-u']):
-    result = subprocess.run(argv, capture_output=True, check=False)
-    assert result.returncode != 0, (argv, result.stdout)
-try:
-    pathlib.Path('/input/candidate').write_text('mutated')
-except OSError:
-    pass
-else:
-    raise AssertionError('input was writable')
-for path in ('/app/agent_token', '/safeyolo/agent_token', '/safeyolo/skills', '/home/agent/.safeyolo-command'):
-    assert not pathlib.Path(path).exists(), path
-assert not any(key.endswith('PROXY') or key.startswith('SAFEYOLO_') for key in os.environ)
-assert pathlib.Path('/input/candidate').read_text() == 'read-only candidate\\n'
-pathlib.Path('/home/agent/job-marker').write_text('transient')
-pathlib.Path('/work/job-marker').write_text('transient')
-print(json.dumps({'uid': os.getuid(), 'gid': os.getgid(), 'NoNewPrivs': status['NoNewPrivs'].strip()}))
+    _, default = job(r"""
+test "$(id -u):$(id -g)" = 1000:1000
+declare -A status
+while read -r field value rest; do
+    status[$field]=$value
+done < /proc/self/status
+test "${status[NoNewPrivs:]}" = 1
+for field in CapInh: CapPrm: CapEff: CapBnd: CapAmb:; do
+    test "${status[$field]}" = 0000000000000000
+done
+if sudo -n id -u; then exit 1; fi
+if /usr/bin/sudo -n id -u; then exit 1; fi
+if setpriv --reuid=0 --regid=0 --clear-groups id -u; then exit 1; fi
+if (printf mutated > /input/candidate); then exit 1; fi
+for path in /app/agent_token /safeyolo/agent_token /safeyolo/skills /home/agent/.safeyolo-command; do
+    test ! -e "$path"
+done
+while IFS= read -r variable; do
+    case "$variable" in *PROXY|SAFEYOLO_*) exit 1 ;; esac
+done < <(compgen -e)
+test "$(cat /input/candidate)" = 'read-only candidate'
+printf transient > /home/agent/job-marker
+printf transient > /work/job-marker
+printf 'uid=1000 gid=1000 NoNewPrivs=1\n'
 """)
     assert default["outcome"] == {"kind": "exit", "code": 0}, default
     print("PASS default identity, capability clearing, sudo/setuid refusal, read-only inputs, no agent authority")
 
     root_program = """
-import os, pathlib
-assert os.getuid() == 0
-assert not pathlib.Path('/home/agent/job-marker').exists()
-assert not pathlib.Path('/work/job-marker').exists()
-pathlib.Path('/etc/job-root-marker').write_text('transient')
+test "$(id -u)" = 0
+test ! -e /home/agent/job-marker
+test ! -e /work/job-marker
+printf transient > /etc/job-root-marker
 """
     if sys.platform == "darwin":
+        if observer_probe is None:
+            raise ValueError("macOS proof needs --observer-probe built for the Linux guest architecture")
         root_program += """
-import ctypes, errno, subprocess
-mapping = pathlib.Path('/proc/self/uid_map').read_text().split()
-assert mapping == ['0', '65536', '65536'], mapping
-marker = pathlib.Path('/etc/job-root-marker')
-os.chown(marker, 1234, 1234)
-assert marker.stat().st_uid == marker.stat().st_gid == 1234
-mountpoint = pathlib.Path('/work/root-mount')
-mountpoint.mkdir()
-subprocess.run(['mount', '-t', 'tmpfs', 'tmpfs', str(mountpoint)], check=True)
-(mountpoint / 'file').write_text('root mount works')
-subprocess.run(['umount', str(mountpoint)], check=True)
-parent = os.getppid()
-try:
-    os.kill(parent, 0)
-except PermissionError:
-    pass
-else:
-    raise AssertionError('job root has signal authority over its observer')
-libc = ctypes.CDLL(None, use_errno=True)
-assert libc.ptrace(16, parent, 0, 0) == -1
-assert ctypes.get_errno() == errno.EPERM
-try:
-    pathlib.Path(f'/proc/{parent}/root/run/job-host-key').read_bytes()
-except PermissionError:
-    pass
-else:
-    raise AssertionError('job root can read the observer host key')
-assert not pathlib.Path('/.observer-root').exists()
-print('job-relative root, chown, private mount, observer signal/ptrace/key refusal')
+read -r inside outside count < /proc/self/uid_map
+test "$inside:$outside:$count" = 0:65536:65536
+chown 1234:1234 /etc/job-root-marker
+test "$(stat -c '%u:%g' /etc/job-root-marker)" = 1234:1234
+mkdir /work/root-mount
+mount -t tmpfs tmpfs /work/root-mount
+printf 'root mount works' > /work/root-mount/file
+umount /work/root-mount
+test ! -e /.observer-root
+exec /input/observer-probe
 """
     _, root_result = job(root_program, privilege="guest-root")
     assert root_result["outcome"] == {"kind": "exit", "code": 0}, root_result
-    _, fresh = job("import pathlib; assert not pathlib.Path('/etc/job-root-marker').exists()")
+    _, fresh = job("test ! -e /etc/job-root-marker")
     assert fresh["outcome"] == {"kind": "exit", "code": 0}, fresh
     print("PASS explicit guest root and discarded root/home/work state")
 
-    _, high_exit = job("raise SystemExit(139)")
-    _, signalled = job("import os, signal; os.kill(os.getpid(), signal.SIGSEGV)")
+    _, high_exit = job("exit 139")
+    _, signalled = job("kill -s SEGV $$")
     assert high_exit["outcome"] == {"kind": "exit", "code": 139}, high_exit
     assert signalled["outcome"] == {"kind": "signal", "number": 11}, signalled
-    code, printed = job("print('PASS'); raise SystemExit(17)")
+    code, printed = job("printf 'PASS\\n'; exit 17")
     assert code != 0 and printed["outcome"] == {"kind": "exit", "code": 17}, printed
     if sys.platform == "darwin":
         for signal_number in (7, 64):
-            _, generic = job(f"import os; os.kill(os.getpid(), {signal_number})")
+            _, generic = job(f"kill -s {signal_number} $$")
             assert generic["outcome"] == {"kind": "signal", "number": signal_number}, generic
     print("PASS real exit139 versus SIGSEGV and printed PASS has no acceptance authority")
 
     code, timed_out = job(
-        "import os,time; os.write(1,b'A'*100000); os.write(2,b'B'*100000); time.sleep(300)", timeout=2
+        "head -c 100000 /dev/zero | tr '\\0' A; head -c 100000 /dev/zero | tr '\\0' B >&2; exec sleep 300", timeout=2
     )
     assert code == 124 and timed_out["outcome"] == {"kind": "timeout"}, timed_out
     for stream, byte in (("stdout", b"A"), ("stderr", b"B")):
@@ -258,10 +248,14 @@ def main() -> None:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--scratch", type=Path, required=True)
     parser.add_argument("--signals-only", action="store_true", help="Run caller SIGINT/SIGTERM checks without repeating other rows.")
+    parser.add_argument("--observer-probe", type=Path, help="Static Linux probe for the macOS guest, built from tests/fixtures/job-observer-probe.c.")
     args = parser.parse_args()
     scratch = Path(tempfile.mkdtemp(prefix="job-probe-", dir=args.scratch))
     print(f"scratch={scratch}", flush=True)
-    run(args.cli.resolve(strict=True), args.root.resolve(strict=True), scratch, args.signals_only)
+    if sys.platform == "darwin" and not args.signals_only and args.observer_probe is None:
+        parser.error("macOS proof requires --observer-probe")
+    observer_probe = args.observer_probe.resolve(strict=True) if args.observer_probe else None
+    run(args.cli.resolve(strict=True), args.root.resolve(strict=True), scratch, args.signals_only, observer_probe)
 
 
 if __name__ == "__main__":

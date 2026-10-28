@@ -3040,10 +3040,13 @@ mod tests {
                         directory.display()
                     ),
                 ),
-                ("ip", format!(
-                    "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}/fixture-ip'\nif [ \"$*\" = 'addr add 127.0.0.1/32 dev lo' ]; then exit 17; fi\n",
-                    directory.display(),
-                )),
+                (
+                    "ip",
+                    format!(
+                        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}/fixture-ip'\nif [ \"$*\" = 'addr add 127.0.0.1/32 dev lo' ]; then exit 17; fi\n",
+                        directory.display(),
+                    ),
+                ),
                 ("systemctl", "#!/bin/sh\nexit 1\n".to_owned()),
                 (
                     "unshare",

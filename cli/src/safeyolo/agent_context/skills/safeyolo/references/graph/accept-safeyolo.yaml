@@ -248,17 +248,17 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: 3c81622bac685555b9befb4c7709cf6716aa86050c77baaff1a0acf77e51436b
         - path: proxy/src/host_platform.rs
-          sha256: e0e1d42e7138633ca344c47eb3dee89b9e29d23f0fc2ca90d5e1e89d0ab79e60
+          sha256: b80f495fbb6aa33bbd68ddbdb5659c7ea7a43997bc2ee82aef6dfbb4fa433afe
         - path: proxy/src/host_boot.rs
           sha256: 464f3ea0c35efe8f969c0b22d161068a64246ff0bfa2efb793d793d77d79492a
         - path: guest/build-rootfs.sh
           sha256: 4a30c9ece1b79e9e53bbb1dd301596ff94552d99be25386ac395f1f9490d05ed
         - path: proxy/src/jobs.rs
-          sha256: ada7c0e82cb38fded201253449b1a48f9971f11d01cf899eb82da8c6aec64d05
+          sha256: 03f7b7c22c827ee80112115e403ff9fda61f365153a6b19de0dcb8ba5607aab7
         - path: proxy/src/jobs/input.rs
           sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
         - path: tests/blackbox/host/job_sandbox.py
-          sha256: 8653ddca44fd264c95c42d4a090dce9351106ac948d8977d3664a6f30f7c4d5b
+          sha256: 947f7bb7c50539979173679df71d290ae2fe6417972c244c26d3c1ac0b3a60b6
         - path: proxy/Cargo.toml
           sha256: b3780ef7ad5e2952f75c1c5f36e72df6c3f8ff73861d34825667b41c2028fea8
         - path: proxy/Cargo.lock
@@ -301,15 +301,15 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: proxy/src/host_platform.rs
-          sha256: e0e1d42e7138633ca344c47eb3dee89b9e29d23f0fc2ca90d5e1e89d0ab79e60
+          sha256: b80f495fbb6aa33bbd68ddbdb5659c7ea7a43997bc2ee82aef6dfbb4fa433afe
         - path: proxy/src/jobs.rs
-          sha256: ada7c0e82cb38fded201253449b1a48f9971f11d01cf899eb82da8c6aec64d05
+          sha256: 03f7b7c22c827ee80112115e403ff9fda61f365153a6b19de0dcb8ba5607aab7
         - path: proxy/src/jobs/input.rs
           sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
         - path: proxy/src/jobs/macos.rs
-          sha256: c959a70de077f97bbe644690c3f18ed8ee7347976da68f3753609079c4aabc5a
+          sha256: 32388f537dda99f45f6644d36ca93abd37b2a4348db52d2b63e038940133e95a
         - path: tests/blackbox/host/job_sandbox.py
-          sha256: 8653ddca44fd264c95c42d4a090dce9351106ac948d8977d3664a6f30f7c4d5b
+          sha256: 947f7bb7c50539979173679df71d290ae2fe6417972c244c26d3c1ac0b3a60b6
         - path: proxy/Cargo.toml
           sha256: b3780ef7ad5e2952f75c1c5f36e72df6c3f8ff73861d34825667b41c2028fea8
         - path: proxy/Cargo.lock
@@ -320,14 +320,16 @@ nodes:
           sha256: 651712fb3af84055f6ea8870651e46531ee534f1ea2a33f6d28c407892cc52a8
         - path: proxy/src/jobs/vz-guest-init.sh
           sha256: 5ee415a0b222dace53716ab45b2adbdb6f3d634b6d82fe8c1e93653dfa8f30e9
-        - path: proxy/src/jobs/vz-exec.py
-          sha256: bdb821544fb51bcd883e36de248d391ff50d3bf47c116b1f588247e896e7e8aa
+        - path: proxy/src/jobs/vz-exec.sh
+          sha256: 283cf2263d7be08e688f123c89f4176eb21e07ecc061bbec13ec5afc2ddf4f5a
+        - path: tests/fixtures/job-observer-probe.c
+          sha256: 0207c5417386d7022d0ffefeb9a6b4b9d162e5017a8684a5225c62533beb0e8b
       setup: "Use the approved physical Apple Silicon host; make -C vm install; prepare a disposable BYOA agent for snapshot smoke."
       verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
       run:
         full_vz: "./tests/blackbox/run-lane.sh vz --verbose"
         snapshot_restore: "bash vm/test/snapshot-smoke.sh <disposable-agent>"
-        disposable_jobs: "python3 tests/blackbox/host/job_sandbox.py --cli <candidate-cli> --root <prepared-disposable-instance> --scratch <disk-backed-directory>"
+        disposable_jobs: "python3 tests/blackbox/host/job_sandbox.py --cli <candidate-cli> --root <prepared-disposable-instance> --scratch <disk-backed-directory> --observer-probe <static-linux-arm64-probe>"
       capture: [trusted base, safeyolo-vm version, physical host identity, VZ assertion, snapshot fingerprint result, exit status]
 
   - id: ev.accept_coord_lane
