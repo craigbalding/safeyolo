@@ -252,6 +252,8 @@ Stage 1 does not garbage-collect durable edges, delivered hint-outbox rows or
 edges whose canonical message has expired. Cleanup must first define
 caller-owned cursor truncation and disclosure semantics; that lifecycle design
 is tracked separately in [#394](https://github.com/craigbalding/safeyolo/issues/394).
+The [retention proposal](coord-attention-retention-design.md) describes its
+contract and executable challenge.
 
 The legacy per-room `wait_for_message()` remains available. It is
 target-aware for messages carrying Stage-1 intent, while pre-Stage-1 messages
