@@ -120,7 +120,13 @@ exclusive byte ownership by a message or an exact ciphertext-to-cleartext map.
 Plain HTTP inside CONNECT also uses prefix ancestry because the inner parser
 starts a new offset space over replayed outer input. Outbound TLS cleartext is
 observed before encryption; it does not claim already-written ciphertext as its
-parent. Missing lineage remains absent instead of being reconstructed.
+parent. If a source-prefix update cannot acquire its metadata lock, lineage
+from that prefix stays absent until a successful update restores accurate bounds.
+An exact parser range is attached only when the source observations enclose it.
+If the first source-prefix update was missed, later lineage starts at the first
+known source observation's offset. Missing lineage remains absent instead of
+being reconstructed. Source chunk records and their queue loss accounting are
+independent of prefix availability.
 
 Count source transport bytes at the transport layer. Adding TLS or parsed
 representation lengths would count the same logical bytes again. No synthetic

@@ -525,6 +525,115 @@ async fn consumer_byte_limit_and_sequence_exhaustion_remain_bounded() {
 }
 
 #[tokio::test]
+async fn busy_source_prefix_cannot_claim_unobserved_parser_coverage() {
+    use http_body_util::{BodyExt, Full};
+    use hyper::{Request, Response, body::Incoming};
+    use hyper_util::rt::TokioIo;
+    use tokio::sync::oneshot;
+
+    let (mut client, server) = UnixStream::pair().unwrap();
+    let bus = bus(Limits::default());
+    let mut consumer = bus.subscribe(ConsumerKind::Metrics, Limits::default());
+    let source = Source::new(
+        bus.clone(),
+        &identity(),
+        "conn-local",
+        Point::AgentUds,
+        Layer::TransportStream,
+        Transport::Unix,
+        None,
+    );
+    let observed = observe(Box::new(server), source.clone());
+    let (head_tx, head_rx) = oneshot::channel();
+    let (body_tx, body_rx) = oneshot::channel();
+    let (finish_tx, finish_rx) = oneshot::channel();
+    let gates = Mutex::new(Some((head_tx, body_tx, finish_rx)));
+    let service = hyper::service::service_fn(move |request: Request<Incoming>| {
+        let (head_tx, body_tx, finish_rx) = gates.lock().unwrap().take().unwrap();
+        let source = source.clone();
+        async move {
+            let range = request
+                .extensions()
+                .get::<hyper::ext::RequestByteRange>()
+                .unwrap()
+                .clone();
+            let application = source.application("request-local", None, Some(range), true);
+            head_tx
+                .send(source.clone())
+                .unwrap_or_else(|_| panic!("head gate"));
+            let body = request.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body.as_ref(), b"abc");
+            body_tx.send(()).unwrap();
+            finish_rx.await.unwrap();
+            application.complete(Some(body.len() as u64), false);
+            Ok::<_, std::convert::Infallible>(Response::new(Full::new(bytes::Bytes::from_static(
+                b"ok",
+            ))))
+        }
+    });
+    let driver = tokio::spawn(async move {
+        hyper::server::conn::http1::Builder::new()
+            .serve_connection(TokioIo::new(observed), service)
+            .await
+            .unwrap();
+    });
+    let head = b"POST / HTTP/1.1\r\nHost: example.invalid\r\nContent-Length: 3\r\nConnection: close\r\n\r\n";
+    client.write_all(head).await.unwrap();
+    let source = timeout(WAIT, head_rx).await.unwrap().unwrap();
+    let (locked_tx, locked_rx) = oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        // A concurrent metadata reader holds the lock while Hyper reads the body.
+        let _prefixes = source.prefix_lock_for_test();
+        locked_tx.send(()).unwrap();
+        release_rx.recv_timeout(WAIT).unwrap();
+    });
+    timeout(WAIT, locked_rx).await.unwrap().unwrap();
+    client.write_all(b"abc").await.unwrap();
+    timeout(WAIT, body_rx).await.unwrap().unwrap();
+    release_tx.send(()).unwrap();
+    reader.join().unwrap();
+    finish_tx.send(()).unwrap();
+    let mut response = Vec::new();
+    timeout(WAIT, client.read_to_end(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    timeout(WAIT, driver).await.unwrap().unwrap();
+    assert!(response.ends_with(b"\r\n\r\nok"));
+    let records = drain(&mut consumer, &bus).await;
+    assert!(
+        records
+            .iter()
+            .all(|r| matches!(r.as_ref(), Record::Observation(_)))
+    );
+    let rows = observations(&records);
+    let chunks: Vec<_> = rows
+        .iter()
+        .filter(|o| {
+            o.point == Point::AgentUds
+                && o.direction == Direction::ToProxy
+                && o.state == State::Chunk
+        })
+        .collect();
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0].stream_offset, Some(0));
+    assert_eq!(chunks[0].observed_length, Some(head.len() as u64));
+    assert_eq!(chunks[1].stream_offset, Some(head.len() as u64));
+    assert_eq!(chunks[1].observed_length, Some(3));
+    let parsed = rows.iter().find(|o| o.state == State::ParsedHead).unwrap();
+    let completed = rows.iter().find(|o| o.state == State::Complete).unwrap();
+    assert!(parsed.input_span.as_ref().unwrap().parser_consumed);
+    assert_eq!(completed.parent_observation.as_ref(), Some(&parsed.id));
+    assert_eq!(completed.observed_length, Some(3));
+    assert!(
+        completed.input_span.is_none(),
+        "busy source update must invalidate stale lineage"
+    );
+    assert!(rows.iter().all(|o| o.captured_length == 0));
+}
+
+#[tokio::test]
 async fn http1_parser_ranges_exclude_read_ahead_and_include_body_framing() {
     use http_body_util::{BodyExt, Full};
     use hyper::{Request, Response, body::Incoming};
