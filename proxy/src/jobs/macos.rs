@@ -50,6 +50,7 @@ async fn stage(
 ) -> Result<PublicKey, Error> {
     let share = directory.join("config-share");
     fs::create_dir(&share)?;
+    fs::create_dir_all(root.join("data"))?;
     key(&root.join("data/job-client-key")).await?;
     key(&share.join("job-host-key")).await?;
     fs::copy(
@@ -229,6 +230,9 @@ impl Evidence {
     }
 
     fn event(&mut self, message: ChannelMsg) -> Result<(), Error> {
+        if self.closed {
+            return Err("job SSH data arrived after channel close".into());
+        }
         let status = match message {
             ChannelMsg::Data { data } => {
                 self.stdout.write(&data)?;
@@ -239,9 +243,14 @@ impl Evidence {
                 None
             }
             ChannelMsg::ExtendedData { .. } => return Err("unknown job SSH output stream".into()),
-            ChannelMsg::ExitStatus { exit_status } => Some(Outcome::Exit {
-                code: i32::try_from(exit_status)?,
-            }),
+            ChannelMsg::ExitStatus { exit_status } => {
+                if exit_status > 255 {
+                    return Err("job SSH exit status is outside the Linux process range".into());
+                }
+                Some(Outcome::Exit {
+                    code: exit_status as i32,
+                })
+            }
             ChannelMsg::ExitSignal { signal_name, .. } => Some(Outcome::Signal {
                 number: signal_number(signal_name)?,
             }),
@@ -361,11 +370,15 @@ mod tests {
         let mut evidence = Evidence::new(16);
         evidence.event(ChannelMsg::Close).unwrap();
         assert!(evidence.outcome().is_err());
+        let mut evidence = Evidence::new(16);
         evidence
             .event(ChannelMsg::ExitStatus { exit_status: 139 })
             .unwrap();
+        assert!(evidence.outcome().is_err());
+        evidence.event(ChannelMsg::Close).unwrap();
         assert_eq!(evidence.outcome().unwrap(), Outcome::Exit { code: 139 });
-        evidence
+        let mut signalled = Evidence::new(16);
+        signalled
             .event(ChannelMsg::ExitSignal {
                 signal_name: Sig::SEGV,
                 core_dumped: false,
@@ -373,7 +386,21 @@ mod tests {
                 lang_tag: String::new(),
             })
             .unwrap();
-        assert!(evidence.outcome().is_err());
+        signalled.event(ChannelMsg::Close).unwrap();
+        assert_eq!(signalled.outcome().unwrap(), Outcome::Signal { number: 11 });
+        let mut duplicate = Evidence::new(16);
+        for _ in 0..2 {
+            duplicate
+                .event(ChannelMsg::ExitStatus { exit_status: 0 })
+                .unwrap();
+        }
+        duplicate.event(ChannelMsg::Close).unwrap();
+        assert!(duplicate.outcome().is_err());
+        assert!(
+            Evidence::new(16)
+                .event(ChannelMsg::ExitStatus { exit_status: 256 })
+                .is_err()
+        );
         assert_eq!(signal_number(Sig::USR1).unwrap(), 10);
         assert!(signal_number(Sig::Custom("fake".into())).is_err());
     }

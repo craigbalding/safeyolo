@@ -370,12 +370,18 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
     let (host, guest) = crate::guest_acquisition::selected_boot_inputs(installation)?;
     // Runtime state is transient, but disk-backed so large input copies do not
     // consume the caller's /tmp memory. No durable job or agent record is added.
+    #[cfg(not(target_os = "macos"))]
     let parent = installation.join("data");
+    // VZ control/shell UDS paths have a 104-byte limit. Keep the disposable
+    // root on disk at a short OS-owned path, independent of instance length.
+    #[cfg(target_os = "macos")]
+    let parent = PathBuf::from("/private/var/tmp");
     fs::create_dir_all(&parent)?;
     let temporary = tempfile::Builder::new()
         .prefix("job-")
         .tempdir_in(&parent)?;
     let root = temporary.path().to_owned();
+    #[cfg(target_os = "linux")]
     fs::set_permissions(&root, fs::Permissions::from_mode(0o755))?;
     for (source, destination) in [
         (host.join("bin"), "bin"),
