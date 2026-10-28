@@ -24,6 +24,7 @@ mod compat;
 mod stdout;
 #[cfg(test)]
 mod tests;
+pub(crate) mod wire;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -35,6 +36,13 @@ pub struct Settings {
     pub wss: bool,
     pub queue: Limits,
     pub profile: Profile,
+    pub wire_interface: Option<String>,
+}
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct Packet {
+    pub link_type: u32,
+    pub original_length: u32,
+    pub precision_ns: u64,
 }
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 pub enum Profile {
@@ -78,13 +86,23 @@ impl Settings {
     pub(crate) fn unavailable(&self) -> Option<&'static str> {
         match self.profile {
             Profile::Compat => None,
-            Profile::Wire => Some("pcap_wire_unavailable"),
+            Profile::Wire
+                if self.wire_interface.is_none()
+                    || !self.payload_layers.contains(&Layer::WirePacket) =>
+            {
+                Some("pcap_wire_disabled")
+            }
+            Profile::Wire => None,
             Profile::Pcapng => Some("pcapng_portable_encoder_unavailable"),
         }
     }
     pub(crate) fn payload_layers(&self) -> Vec<Layer> {
         if self.active() && self.unavailable().is_none() {
-            self.payload_layers.clone()
+            if matches!(self.profile, Profile::Wire) {
+                vec![Layer::WirePacket]
+            } else {
+                self.payload_layers.clone()
+            }
         } else {
             Vec::new()
         }
@@ -138,6 +156,7 @@ struct SinkQueue {
     session: Session,
     kind: Sink,
     counters: Arc<crate::observations::Counters>,
+    wire: bool,
 }
 pub(crate) struct Receiver {
     inner: Arc<SinkQueue>,
@@ -175,6 +194,16 @@ impl Receiver {
                     .front()
                     .map_or(pending.through, |b| b.first.saturating_sub(1));
                 if !self.initial && missing_through >= self.next {
+                    if self.inner.wire {
+                        // Classic wire PCAP has no loss-record representation.
+                        // End this session rather than insert invented packets.
+                        report(
+                            &self.inner.counters,
+                            self.inner.kind,
+                            "wire_evidence_gap_session_ended",
+                        );
+                        return None;
+                    }
                     // Data admissions reserve one item and CONTROL_BYTES for this
                     // bounded, self-contained loss record. It precedes later bytes.
                     let bytes = compat::loss(
@@ -230,6 +259,7 @@ pub(crate) struct Capture {
     counters: Arc<crate::observations::Counters>,
     encoded_through: AtomicU64,
     progress: Notify,
+    wire_format: Option<wire::Format>,
 }
 impl Capture {
     pub(crate) fn subscribe(&self, kind: Sink) -> Result<Receiver, ()> {
@@ -242,14 +272,17 @@ impl Capture {
             first_sequence: first,
             ..self.session.clone()
         };
-        let bytes = compat::session(
+        let bytes = if let Some(format) = self.wire_format {
+            eprintln!("Packet capture session profile=pcap:wire sink={} session={} link_type={} precision_ns={}",kind.name(), serde_json::to_string(&session).map_err(|_| ())?,format.link_type,format.precision_ns);
+            Ok(format.header())
+        } else { compat::session(
             &session,
             kind.name(),
             self.settings
                 .queue
                 .bytes
                 .saturating_sub(compat::CONTROL_BYTES),
-        )
+        ) }
         .map_err(|()| {
             report(&self.counters, kind, "session_budget_unavailable");
         })?;
@@ -283,6 +316,7 @@ impl Capture {
             session,
             kind,
             counters: self.counters.clone(),
+            wire: self.wire_format.is_some(),
         });
         sinks.retain(|sink| sink.strong_count() != 0);
         sinks.push(Arc::downgrade(&inner));
@@ -308,6 +342,7 @@ impl Capture {
             let mut pending = sink.pending.lock().unwrap_or_else(|e| e.into_inner());
             let clipped;
             let encoded = if let Record::Gap(gap) = record
+                && self.wire_format.is_none()
                 && gap.first_sequence < sink.session.first_sequence
             {
                 let mut gap = gap.clone();
@@ -325,6 +360,9 @@ impl Capture {
             } else {
                 &encoded
             };
+            if pending.closed {
+                return true;
+            }
             let admitted = encoded.as_ref().is_some_and(|bytes| {
                 let batch = Batch {
                     bytes: bytes.clone(),
@@ -481,7 +519,27 @@ impl Running {
             return None;
         }
         let bus = &runtime.connection_events.as_ref()?.observations;
-        if let Some(reason) = settings.unavailable() {
+        let native =
+            if matches!(settings.profile, Profile::Wire) && settings.unavailable().is_none() {
+                Some(wire::Source::open(
+                    settings.wire_interface.as_deref().unwrap(),
+                    settings.queue,
+                    bus.counters.clone(),
+                ))
+            } else {
+                None
+            };
+        let unavailable = settings.unavailable().or_else(|| {
+            native
+                .as_ref()
+                .and_then(|result| result.as_ref().err().copied())
+        });
+        if let Some(reason) = unavailable {
+            if matches!(settings.profile, Profile::Wire) {
+                bus.counters
+                    .wire_source_errors
+                    .fetch_add(1, Ordering::Relaxed);
+            }
             for (kind, enabled) in [
                 (Sink::File, settings.file.is_some()),
                 (Sink::Stdout, settings.stdout),
@@ -501,16 +559,47 @@ impl Running {
                 .as_ref()
                 .and_then(|listener| listener.as_ref().ok())
                 .map(|listener| listener.endpoint),
-            session: source.session.clone(),
+            session: Session {
+                timestamp_resolution: crate::observations::Resolution {
+                    wall_ns: native
+                        .as_ref()
+                        .and_then(|s| s.as_ref().ok())
+                        .map_or(source.session.timestamp_resolution.wall_ns, |s| {
+                            Some(s.format.precision_ns)
+                        }),
+                    ..source.session.timestamp_resolution
+                },
+                ..source.session.clone()
+            },
             settings,
             sinks: Mutex::new(Vec::new()),
             counters: bus.counters.clone(),
             encoded_through: AtomicU64::new(source.session.first_sequence - 1),
             progress: Notify::new(),
+            wire_format: native
+                .as_ref()
+                .and_then(|source| source.as_ref().ok())
+                .map(|source| source.format),
         });
         let _ = bus.capture.set(capture.clone());
         let (stop, mut stopped) = watch::channel(false);
         let mut tasks = JoinSet::new();
+        if let Some(Ok(source)) = native {
+            let connections = source.connections.clone();
+            let _ = bus.wire.set(connections);
+            let capture = capture.clone();
+            let stopped = stop.subscribe();
+            tasks.spawn(async move {
+                if let Err(reason) = source.run(stopped).await {
+                    capture
+                        .counters
+                        .wire_source_errors
+                        .fetch_add(1, Ordering::Relaxed);
+                    capture.report_sink_errors(reason);
+                    capture.close();
+                }
+            });
+        }
         if let Some(path) = &capture.settings.file
             && let Ok(receiver) = capture.subscribe(Sink::File)
         {
@@ -561,7 +650,11 @@ impl Running {
                 let record = tokio::select! { biased; _=stopped.changed()=>break, record=source.recv()=>record };
                 let Some(record) = record else {break;};
                 let Some(capture) = weak.upgrade() else {return;};
-                let encoded = compat::encode(&record, capture.settings.queue.bytes.saturating_sub(compat::CONTROL_BYTES+128)).ok().map(Arc::from);
+                let limit = capture.settings.queue.bytes.saturating_sub(compat::CONTROL_BYTES+128);
+                let encoded = match capture.wire_format {
+                    Some(format) => format.encode(&record, limit),
+                    None => compat::encode(&record, limit),
+                }.ok().map(Arc::from);
                 capture.dispatch(&record,encoded);
             }
             if let Some(capture)=weak.upgrade(){capture.close();}
