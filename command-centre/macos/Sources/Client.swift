@@ -108,7 +108,7 @@ final class SafeYoloClient: ObservableObject {
     private let adminURL: URL
     private let eventsURL: URL
     private let token: String
-    private let expectedInstanceID: String
+    let expectedInstanceID: String
     private let session: URLSession
     private let isLocalConnection: Bool
     private let makeEventSocket: (URLRequest) -> any EventSocket
@@ -242,7 +242,7 @@ final class SafeYoloClient: ObservableObject {
             } catch {
                 // The host may have committed before the connection failed.
                 // Read once, and report its actual decision without replay.
-                if let path = approvalPath,
+                if adminConnected, !stopping, let path = approvalPath,
                    let outcome = try? await readApprovalOutcome(path),
                    outcome.id == event.outcomeID, outcome.requestID == event.requestID, outcome.terminal {
                     approvalOutcomes[outcome.id] = outcome
@@ -569,6 +569,9 @@ final class SafeYoloClient: ObservableObject {
         method: String = "GET",
         json: [String: Any]? = nil
     ) async throws -> Data {
+        if method == "POST" {
+            guard !stopping, await refreshInstance(), !stopping else { throw ClientError.connectionUnavailable }
+        }
         guard let url = URL(string: path, relativeTo: adminURL)?.absoluteURL else {
             throw ClientError.invalidURL(path)
         }

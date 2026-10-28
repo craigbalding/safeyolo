@@ -58,6 +58,7 @@ struct ConnectionDiagnostics {
             switch error {
             case .requestFailed(let status, _): return "HTTP \(status) (response body omitted)"
             case .instanceMismatch: return "SafeYolo instance identity mismatch"
+            case .connectionUnavailable: return "SafeYolo instance could not be verified"
             case .invalidURL: return "Invalid endpoint URL"
             case .invalidResponse: return "Invalid server response"
             case .invalidApproval: return "Invalid approval response"

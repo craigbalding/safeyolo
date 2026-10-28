@@ -50,6 +50,7 @@ pub(crate) struct Indicator<'a> {
     pub(crate) evidence_hash: Option<&'a str>,
     pub(crate) content: Option<&'a ContentMetadata>,
     pub(crate) source: Option<&'a SourceEvidence>,
+    pub(crate) novelty: Option<&'a crate::connection_events::novelty::Evidence>,
 }
 
 pub(crate) fn emit(
@@ -87,6 +88,9 @@ pub(crate) fn emit(
     }
     if let Some(source) = indicator.source {
         details["source"] = json!(source);
+    }
+    if let Some(novelty) = indicator.novelty {
+        details["novelty"] = json!(novelty);
     }
     events.emit(identity, event, details);
 }

@@ -9,7 +9,8 @@ Issue #582 defines these contracts. Issue #583 adds emission from actual
 client and upstream transport owners. Issue #584 adds native Transport Layer
 Security (TLS) client fingerprints and upstream certificate identity. Issue
 #585 adds the first reusable indicator producer and a bounded prompt-injection
-sensor.
+sensor. The destination/TLS history sensor adds first-observation and upstream
+certificate-change clues under issue #581.
 
 ## Version and reader compatibility
 
@@ -43,6 +44,10 @@ new fields.
 Issue #584 adds optional `tls_client_hello` and `tls_sessions` fields and the
 `updated` connection state. Earlier strict version 2 readers need these additions.
 The current reader continues to accept earlier records that omit TLS metadata.
+
+The destination/TLS history sensor adds optional `novelty` evidence to indicators.
+Earlier strict version 2 readers need this field before reading the new records.
+The current reader continues to accept indicators that omit it.
 
 All NSM payload fields below are in `details`, except `request_id`, which
 uses the existing envelope field. Existing `ts`, `event_id`, `severity`,
@@ -297,6 +302,86 @@ truncation flag require `evidence_hash`. Earlier strict version 2 readers need
 these optional fields and the optional `source` link below before reading the
 new sensor records. The current
 reader still accepts earlier records that omit them.
+
+### Destination and upstream TLS history
+
+The native connection owners run `connection-history.v1`. The sensor emits two
+low-severity rules through the shared indicator producer:
+
+| Stable rule | Observable condition |
+| --- | --- |
+| `destination.first_observation.v1` | The first native upstream record for an agent/destination/route absent from the bounded runtime cache. |
+| `tls.origin_identity_changed.v1` | A later full origin TLS handshake has a different certificate hash, or two available SPKI hashes differ. |
+
+These rules have confidence 1.0 in the stated metadata comparison. They do not
+estimate the probability of compromise. Certificate renewal, key rotation,
+load balancing, and operator configuration changes can explain a TLS change.
+
+On the operator host, with the native CLI installed, replace `AGENT` with an
+existing configured agent name. This command reads recent audit records:
+
+```sh
+safeyolo logs --agent AGENT --lines 100 --json
+```
+
+Find `security.indicator` records whose `details.sensor` is
+`connection-history.v1`. Each record's optional `novelty` object contains:
+
+| Field | Meaning |
+| --- | --- |
+| `history_scope` | `runtime_fifo`: process-local history with first-in, first-out eviction. |
+| `history_capacity` | At most 4096 distinct agent/destination/route entries across the runtime. |
+| `destination` | Logical requested host and explicit port, including the effective default port. DNS names use ASCII lowercase without the root dot. Parsed IP addresses use canonical spelling; IPv6 addresses have brackets. |
+| `route` | `direct`, `parent`, or `provider`. Each route has separate comparison state. |
+| `verification_name` | The normalized origin TLS verification name for a TLS change; null for a first destination observation. |
+| `current` | Supporting `connection_id`, `event_id`, and optional `cert_sha256`/`spki_sha256` hashes. |
+| `previous` | The previous comparable full origin certificate observation, with the same fields as `current`; null for a first destination observation. |
+
+Join each observation to its exact `network.connection` event by `event_id`
+and connection key in the indicator's instance/runtime namespace. The outer
+`details.connection_id` also identifies the current connection. TLS hashes
+are lowercase SHA-256 hexadecimal values, as in `tls_sessions`. First destination
+observations have null certificate hashes. The indicator does not invent an
+application request or duplicate content evidence.
+
+The destination key uses the accepted UDS agent identity, normalized requested
+host and port, and route. Request headers cannot select the agent. A physical
+parent/provider peer is not the logical destination. A first destination
+observation refers to an upstream attempt: its first record follows transport
+connection, or final failure if the attempt never connected. It does not prove
+that a parent reached the destination, that an application exchange succeeded,
+or that an agent initiated the traffic. Existing initiator attribution remains
+explicit, including `unknown`. Unattributed connections retain their native
+records and do not enter this agent comparison cache. External ingress is not
+an input to this UDS-owned producer.
+
+TLS comparison uses only `peer: origin` sessions from full native rustls
+handshakes. Parent TLS, resumed sessions with potentially cached certificates,
+failed handshakes, and missing certificates do not advance the certificate
+baseline. Opaque passthrough tunnels supply no origin certificate observation.
+SPKI comparison requires a hash in both observations; absence or newly available
+metadata is not a measured change. Certificate changes can still be reported
+when an SPKI hash is unavailable. A different verification name resets that
+entry's single certificate baseline without comparing names. This matters when
+a numeric CONNECT endpoint later acquires a logical SNI name.
+
+Cache operations serialize concurrent observations. Identical full observations
+advance the supporting baseline without another indicator. Closing an older
+connection does not replay its TLS snapshot into the comparison. Reconnects
+compare while their entry remains cached. Repetition does not refresh FIFO age.
+Eviction discards both destination and certificate state; a later attempt can
+produce a new first observation. If eviction occurs before an in-flight TLS
+handshake completes, that handshake supplies no comparison. Policy reloads
+preserve the cache; process restart clears it, even when JSONL files remain.
+First observation therefore means first in this bounded runtime history, never
+first over the agent's lifetime.
+
+The audit writer retains sparse metadata, but it has no destination/TLS history
+query or complete-history guarantee. The sensor does not scan rotated files or
+enable FlowStore to reconstruct a baseline. Links identify submitted supporting
+records; audit queue loss, sink failure, or rotation can make them unavailable.
+This feature adds no payload retention, traffic restriction, approval, or change
+to ordinary TLS trust and refusal.
 
 ### Initial prompt-injection sensor
 

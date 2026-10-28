@@ -52,6 +52,11 @@ fn records(directory: &Path) -> Vec<Value> {
         .unwrap_or_default()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
+        // Keep the legacy hook projection separate from connection history.
+        .filter(|row: &Value| {
+            !(row["event"] == "security.indicator"
+                && row["details"]["sensor"] == "connection-history.v1")
+        })
         .filter(|row: &Value| {
             !matches!(
                 row["event"].as_str(),

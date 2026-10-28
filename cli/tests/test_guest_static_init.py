@@ -19,6 +19,34 @@ KEYGEN = shutil.which("ssh-keygen")
 INSTALL = shutil.which("install")
 
 
+@pytest.mark.parametrize("loopback_status", [0, 37])
+def test_job_loopback_is_required_before_ssh_startup(loopback_status):
+    source = (REPO_ROOT / "proxy/src/jobs/vz-guest-init.sh").read_text()
+    startup, _ = source.split("/usr/sbin/sshd", 1)
+    # Run the complete foreground startup with real Bash. Keep mounts and
+    # account changes controlled, as in the normal guest-init tests below.
+    commands = """
+mkdir() { :; }
+mount() { :; }
+stat() { printf '65536:65536\\n'; }
+chown() { :; }
+chmod() { :; }
+cp() { :; }
+usermod() { :; }
+ip() { printf 'ip:%s\\n' "$*"; return "$TEST_LOOPBACK_STATUS"; }
+"""
+    result = subprocess.run(
+        ["/bin/bash", "-c", commands + startup + "printf 'ssh-startup\\n'"],
+        env=os.environ | {"TEST_LOOPBACK_STATUS": str(loopback_status)},
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == loopback_status, result.stdout + result.stderr
+    expected = ["ip:link set lo up"]
+    if loopback_status == 0:
+        expected.append("ssh-startup")
+    assert result.stdout.splitlines() == expected
+
+
 @pytest.fixture
 def guest(tmp_path):
     assert KEYGEN and INSTALL, "Static-init controls require ssh-keygen and install"

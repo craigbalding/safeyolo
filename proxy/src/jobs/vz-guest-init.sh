@@ -2,6 +2,8 @@
 # The SSH observer remains in the VM's initial credential and mount domain.
 set -euo pipefail
 
+ip link set lo up
+
 mkdir -p /input /run/sshd /run/job-base /run/job-lower /run/job-private
 mount -t virtiofs -o ro workspace /input
 

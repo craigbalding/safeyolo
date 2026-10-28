@@ -1073,6 +1073,7 @@ async fn open_egress_for_flow(
             allowed.identity,
             &observation.id,
             &destination.authority,
+            (&destination.host, destination.port),
             route_name,
             "tcp",
         )
@@ -1450,6 +1451,7 @@ async fn open_outbound(
                     allowed.identity,
                     &observation.id,
                     &destination.authority,
+                    (&destination.host, destination.port),
                     "provider",
                     "stream",
                 )
