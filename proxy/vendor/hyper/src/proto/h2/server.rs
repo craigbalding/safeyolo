@@ -275,6 +275,8 @@ where
 
                         let is_connect = req.method() == Method::CONNECT;
                         let (mut parts, stream) = req.into_parts();
+                        // Preserve the native protocol ID before Incoming owns the stream.
+                        parts.extensions.insert(stream.stream_id());
                         let (mut req, connect_parts) = if !is_connect {
                             (
                                 Request::from_parts(

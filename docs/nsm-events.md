@@ -422,6 +422,10 @@ capture and issue #858 are not prerequisites.
 
 ## Retention and quieting
 
+[Native observation metadata](native-observations.md) preserves pre-reassembly
+boundaries and explicit queue loss separately from these sparse audit events.
+It does not enable payload retention.
+
 Sparse NSM metadata may be emitted by default. Rich request/response content
 continues to require FlowStore opt-in policy. A sensor may inspect transient
 content already visible to the proxy; inspection does not authorize retention.

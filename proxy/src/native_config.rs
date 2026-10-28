@@ -15,6 +15,7 @@ pub struct Settings {
     pub protected_host_directories: Vec<PathBuf>,
     pub capture: Capture,
     pub trace: Trace,
+    pub observations: crate::observations::Limits,
     pub audit: Audit,
     pub agent_launcher: AgentLauncher,
     pub desktop: Desktop,
@@ -236,6 +237,7 @@ pub(crate) fn from_source(path: &Path, source: &str) -> Result<Config, Error> {
     for key in [
         "capture",
         "trace",
+        "observations",
         "audit",
         "agent_launcher",
         "desktop",
@@ -573,6 +575,9 @@ max_response_body_bytes=3
 preview_text_chars=4
 compress_bodies=false
 queue_max=6
+[observations]
+items=17
+bytes=32768
 [trace]
 ttl_s=10
 global_max=11
@@ -690,6 +695,8 @@ tailnet_port=8443
             crate::circuits::CircuitValue::Bool(false)
         );
         assert_eq!(settings.capture.queue_max, 6);
+        assert_eq!(settings.observations.items, 17);
+        assert_eq!(settings.observations.bytes, 32768);
         let trace = settings.trace.store_settings();
         assert_eq!(trace.ttl_s, 10);
         assert_eq!(trace.global_max, 11.into());

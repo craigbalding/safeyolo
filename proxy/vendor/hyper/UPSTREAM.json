@@ -170,5 +170,41 @@
         "vendored_sha256": "9a0132e0648dff0fec9ee353b56c51f752ba723e50bcf932756782cf035c348f"
       }
     ]
+  },
+  "observation_metadata_patch": {
+    "base_commit": "d38d2ae9eda8b7ae004f0636fb74f775e695a4c9",
+    "scope": "Expose HTTP/1 parser-consumed byte ranges and native HTTP/2 stream IDs as content-free request metadata. Preserve framing, completion, admission and body ownership.",
+    "files": [
+      {
+        "path": "src/ext/mod.rs",
+        "base_sha256": "9a0132e0648dff0fec9ee353b56c51f752ba723e50bcf932756782cf035c348f",
+        "candidate_sha256": "7dc65a4d192e689911d5d91f72114103478d1af3e98e4d559eb6d797fdebaffb"
+      },
+      {
+        "path": "src/ext/request_completion.rs",
+        "base_sha256": "fa4742407f4dbf1b94d7834782a13f90a445024f31ddccfdc5cc4d2343e1e144",
+        "candidate_sha256": "d4d7460b2d641b8d28f550df12def201b169002acffa37a618f3d3eefa210e7f"
+      },
+      {
+        "path": "src/proto/h1/conn.rs",
+        "base_sha256": "c3ef26fa745a0628ca593b14ecf5c0882ad7543f6f4c0ebabf1b9e6571131d1e",
+        "candidate_sha256": "8492803ad79406b5f223251164119079b5489ba376415ea09df97257d9258200"
+      },
+      {
+        "path": "src/proto/h1/io.rs",
+        "base_sha256": "cac4d3cb97e48fa1ba3ee9ca5901a7ff9eaa178693af3df6f2e8dc991ca7f344",
+        "candidate_sha256": "0e202f9023a6330ad86be1c4e141ac635760c5b1099929d4a7431282a56210aa"
+      },
+      {
+        "path": "src/proto/h2/server.rs",
+        "base_sha256": "f5b436bf0cf73c5334cac1002c02f147edd352d8e3c71ed354e93921bfc045dc",
+        "candidate_sha256": "55467701531bc8177a688f5dc739378c967db4e575e6696dfe7500ec705a10bf"
+      }
+    ],
+    "validation": [
+      "proxy/src/observations/tests.rs",
+      "proxy/src/http/traffic/tests.rs"
+    ],
+    "license": "MIT (existing LICENSE unchanged)"
   }
 }

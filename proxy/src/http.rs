@@ -1301,7 +1301,10 @@ async fn open_egress_for_flow(
                 Ok(tls) => {
                     if let Some(network) = &network { network.tls_session("parent", host, tls.get_ref().1); }
                     selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "complete", json!({"parent": parent_url, "verification_name": host, "certificate_verified": true}));
-                    Box::new(tls)
+                    match &network {
+                        Some(network) => network.observe_tls(Box::new(tls), crate::observations::Point::ParentTls),
+                        None => Box::new(tls),
+                    }
                 }
                 Err(error) => {
                     selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "failed", json!({"parent": parent_url, "verification_name": host, "reason": error.to_string()}));
@@ -1555,7 +1558,12 @@ async fn open_outbound(
             json!({"verification_name": destination.host, "certificate_verified": true}),
         );
         http2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
-        stream = Box::new(tls);
+        stream = match &connection.network {
+            Some(network) => {
+                network.observe_tls(Box::new(tls), crate::observations::Point::OriginTls)
+            }
+            None => Box::new(tls),
+        };
         let completed = crate::circuit_runtime::now();
         connection.observation.tls_setup = Some(completed);
         if destination.selected_ip.is_some() {
@@ -2986,7 +2994,11 @@ where
                     {
                         connection.tls(name);
                     }
-                    (Box::new(tls), http2, "https")
+                    let stream: BoxStream = match descendants.ingress.get() {
+                        Some(network) => network.observe_tls(Box::new(tls), crate::observations::Point::ClientTls),
+                        None => Box::new(tls),
+                    };
+                    (stream, http2, "https")
                 } else {
                     (client, false, "http")
                 };
@@ -4821,7 +4833,7 @@ async fn serve_tunnel_http(
 pub(crate) fn serve_request(
     state: RuntimeState,
     identity: ConnectionIdentity,
-    request: Request<Incoming>,
+    mut request: Request<Incoming>,
     tunnel: Option<Arc<Tunnel>>,
     upgrades: UpgradeTasks,
     allow_upgrades: bool,
@@ -4843,6 +4855,31 @@ pub(crate) fn serve_request(
             if runtime.audit.emit(event).is_err() {
                 return Ok(response(StatusCode::BAD_GATEWAY, "Proxy request failed"));
             }
+        }
+        if let Some(connection) = upgrades.ingress.get() {
+            let stream_id = request
+                .extensions()
+                .get::<h2::StreamId>()
+                .map(h2::StreamId::as_u32);
+            let source = connection.source();
+            // Plain CONNECT replays a prefix from the outer HTTP connection;
+            // its new parser offsets cannot identify that older stream range.
+            let byte_range =
+                if tunnel.is_some() && source.point == crate::observations::Point::AgentUds {
+                    None
+                } else {
+                    request
+                        .extensions()
+                        .get::<hyper::ext::RequestByteRange>()
+                        .cloned()
+                };
+            let application = source.application(
+                &request_id,
+                stream_id,
+                byte_range,
+                request.method() != Method::CONNECT,
+            );
+            request.extensions_mut().insert(application);
         }
         let connect = request.method() == Method::CONNECT;
         let head = request.method() == Method::HEAD;

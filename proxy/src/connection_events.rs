@@ -18,6 +18,7 @@ pub(crate) struct ConnectionEvents {
     writer: Arc<audit::Writer>,
     instance_id: String,
     runtime_id: String,
+    pub(crate) observations: Arc<crate::observations::ObservationBus>,
 }
 
 impl ConnectionEvents {
@@ -25,6 +26,7 @@ impl ConnectionEvents {
         config: &crate::Config,
         runtime_id: &str,
         writer: Arc<audit::Writer>,
+        metrics: &crate::metrics::Metrics,
     ) -> Option<Arc<Self>> {
         let instance_id = match crate::command_centre::Host::from_config(config) {
             Ok(Some(host)) => match host.instance_id() {
@@ -42,7 +44,21 @@ impl ConnectionEvents {
                 return None;
             }
         };
+        let counters = metrics
+            .observations
+            .get_or_init(|| Arc::new(crate::observations::Counters::default()))
+            .clone();
+        let observations = crate::observations::ObservationBus::new(
+            instance_id.clone(),
+            runtime_id.to_owned(),
+            config
+                .native_settings
+                .as_ref()
+                .map_or_else(Default::default, |settings| settings.observations),
+            counters,
+        );
         Some(Arc::new(Self {
+            observations,
             writer,
             instance_id,
             runtime_id: runtime_id.to_owned(),
@@ -130,9 +146,27 @@ impl ConnectionEvents {
         if leg == "proxy_to_upstream" {
             details["client_connection_id"] = json!(identity.connection_id);
         }
+        let source = crate::observations::Source::new(
+            self.observations.clone(),
+            identity,
+            id,
+            if leg == "client_to_proxy" {
+                crate::observations::Point::AgentUds
+            } else {
+                crate::observations::Point::Upstream
+            },
+            crate::observations::Layer::TransportStream,
+            match transport {
+                "unix" => crate::observations::Transport::Unix,
+                "tcp" => crate::observations::Transport::Tcp,
+                _ => crate::observations::Transport::Provider,
+            },
+            None,
+        );
         Connection(Arc::new(ConnectionEnd {
             events: self.clone(),
             identity: identity.clone(),
+            source: Mutex::new(source),
             facts: Mutex::new(Facts {
                 details,
                 started,
@@ -166,6 +200,7 @@ struct ConnectionEnd {
     events: Arc<ConnectionEvents>,
     identity: ConnectionIdentity,
     facts: Mutex<Facts>,
+    source: Mutex<Arc<crate::observations::Source>>,
 }
 
 impl ConnectionEnd {
@@ -193,6 +228,14 @@ impl Drop for ConnectionEnd {
         // A wall-clock adjustment cannot make the serialized end precede start.
         facts.details["ended_at"] = json!(timestamp(OffsetDateTime::now_utc().max(facts.started)));
         facts.details["error"] = json!(error);
+        self.source
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .connection_state(if error.is_some() {
+                crate::observations::State::Failed
+            } else {
+                crate::observations::State::Closed
+            });
         self.emit(facts.details.clone());
     }
 }
@@ -216,6 +259,8 @@ impl Connection {
             return;
         }
         facts.connected = true;
+        self.source()
+            .connection_state(crate::observations::State::Connected);
         facts.details["local_endpoint"] = json!(local);
         facts.details["remote_endpoint"] = json!(remote);
         facts.details["resolved_peer"] = facts.details["remote_endpoint"]
@@ -226,7 +271,28 @@ impl Connection {
         self.0.emit(facts.details.clone());
     }
 
+    pub(crate) fn source(&self) -> Arc<crate::observations::Source> {
+        self.0
+            .source
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn observe_tls(
+        &self,
+        stream: BoxStream,
+        point: crate::observations::Point,
+    ) -> BoxStream {
+        let mut source = self.0.source.lock().unwrap_or_else(|e| e.into_inner());
+        *source = source.tls(point);
+        crate::observations::observe(stream, source.clone())
+    }
+
     pub(crate) fn failed(&self, category: &'static str) {
+        if category == "http_error" {
+            self.source().parse_error();
+        }
         self.0
             .facts
             .lock()
@@ -291,7 +357,7 @@ struct ObservedStream {
 pub(crate) fn observe(stream: BoxStream, connection: Option<Connection>) -> BoxStream {
     match connection {
         Some(connection) => Box::new(ObservedStream {
-            stream: Some(stream),
+            stream: Some(crate::observations::observe(stream, connection.source())),
             connection,
         }),
         None => stream,

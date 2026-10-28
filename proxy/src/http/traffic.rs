@@ -39,6 +39,7 @@ pub(super) struct Traffic {
     identity: ConnectionIdentity,
     prompt_content: crate::prompt_injection::Content,
     model_request: AtomicBool,
+    observation: Option<Arc<crate::observations::Application>>,
 }
 
 impl Traffic {
@@ -79,6 +80,10 @@ impl Traffic {
             identity: identity.clone(),
             prompt_content: crate::prompt_injection::Content::from_headers(request.headers()),
             model_request: AtomicBool::new(false),
+            observation: request
+                .extensions()
+                .get::<Arc<crate::observations::Application>>()
+                .cloned(),
         })
     }
 
@@ -119,7 +124,7 @@ impl Traffic {
     /// The existing request-completion owner calls this once at its reached
     /// hook. Absent source content is zero bytes without decoding the header.
     pub(super) fn memory_request(&self, content: Option<&[u8]>) {
-        self.memory_request_size(|| {
+        self.memory_request_measured(content.is_some(), || {
             memory_decoded_size(
                 content,
                 self.memory_encoding
@@ -134,6 +139,14 @@ impl Traffic {
         &self,
         decoded_size: impl FnOnce() -> Result<u64, ContentError>,
     ) {
+        self.memory_request_measured(true, decoded_size);
+    }
+
+    fn memory_request_measured(
+        &self,
+        measured: bool,
+        decoded_size: impl FnOnce() -> Result<u64, ContentError>,
+    ) {
         let runtime = match self.state.read() {
             Ok(runtime) => runtime.clone(),
             Err(_) => {
@@ -141,14 +154,26 @@ impl Traffic {
                 return;
             }
         };
+        let mut observed_size = None;
         crate::memory_runtime::observe(runtime.memory_monitor.request(
             &self.connection_id,
             &self.host,
             &runtime.audit,
-            decoded_size,
+            || {
+                let result = decoded_size();
+                observed_size = result.ok();
+                result
+            },
             crate::circuit_runtime::now,
             crate::memory_runtime::sample,
         ));
+        if let Some(observation) = &self.observation {
+            let transformed = observed_size.is_some()
+                && self.memory_encoding.as_deref().is_ok_and(|encoding| {
+                    !encoding.is_empty() && !encoding.eq_ignore_ascii_case(b"identity")
+                });
+            observation.complete(if measured { observed_size } else { None }, transformed);
+        }
     }
 
     /// Call only for a reached, present, non-streamed response. The existing

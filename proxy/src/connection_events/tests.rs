@@ -349,6 +349,19 @@ async fn installed_namespace_survives_reload_and_changes_runtime_on_restart() {
     for _ in 0..2 {
         let mut proxy = Proxy::start(configuration.clone()).await.unwrap();
         let runtime = proxy.runtime.read().unwrap().clone();
+        let bus = runtime
+            .connection_events
+            .as_ref()
+            .unwrap()
+            .observations
+            .clone();
+        let mut consumer = bus.subscribe(
+            crate::observations::ConsumerKind::Metrics,
+            crate::observations::Limits::default(),
+        );
+        assert_eq!(consumer.session.instance_id, instance_id);
+        assert_eq!(consumer.session.runtime_id, runtime.instance_id);
+        assert_eq!(consumer.session.first_sequence, 1);
         assert!(runtimes.insert(runtime.instance_id.clone()));
         for _ in 0..2 {
             let mut client = UnixStream::connect(directory.path().join("alice.sock"))
@@ -370,6 +383,18 @@ async fn installed_namespace_survives_reload_and_changes_runtime_on_restart() {
             ));
         }
         proxy.shutdown().await;
+        let through = bus.next_sequence() - 1;
+        let mut last = 0;
+        while last < through {
+            let record = timeout(LIMIT, consumer.recv()).await.unwrap().unwrap();
+            let crate::observations::Record::Observation(observation) = record.as_ref() else {
+                panic!("unexpected namespace fixture loss")
+            };
+            assert_eq!(observation.id.instance_id, instance_id);
+            assert_eq!(observation.id.runtime_id, runtime.instance_id);
+            assert!(observation.id.sequence > last);
+            last = observation.id.sequence;
+        }
         let rows = records(&runtime, directory.path());
         let current: Vec<_> = rows
             .into_iter()
