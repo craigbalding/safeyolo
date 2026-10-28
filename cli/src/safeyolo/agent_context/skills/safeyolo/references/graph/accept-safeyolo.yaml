@@ -248,17 +248,17 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: 3c81622bac685555b9befb4c7709cf6716aa86050c77baaff1a0acf77e51436b
         - path: proxy/src/host_platform.rs
-          sha256: c3840e82f730f5b8302fbc19aef6978686b17e5f06bc1a9794981f7de2e24407
+          sha256: 52abcaa678458e3092b808f04aa8ac3ddd3413ec04d6e3779f724ffea0d9bb20
         - path: proxy/src/host_boot.rs
           sha256: 464f3ea0c35efe8f969c0b22d161068a64246ff0bfa2efb793d793d77d79492a
         - path: guest/build-rootfs.sh
           sha256: 4a30c9ece1b79e9e53bbb1dd301596ff94552d99be25386ac395f1f9490d05ed
         - path: proxy/src/jobs.rs
-          sha256: c43781f11b95f8d21441af40621946fce9627ef4e1af5be116ce93866fb2d5b5
+          sha256: 0e66fc43207af5b95c90cd662b230287068f61372543290eb20933a45c189737
         - path: proxy/src/jobs/input.rs
           sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
         - path: tests/blackbox/host/job_sandbox.py
-          sha256: 9762d7eddbe523516f0889c67ea78074f527dec4edaa982a71e8b38d6fe5a26e
+          sha256: 996ebd708f3f3d1efdeac55d474db738b675c9482701bce59d5a338522f0b678
       setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
       verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh proxy/src/host_platform.rs proxy/src/host_boot.rs guest/build-rootfs.sh && safeyolo doctor"
       run:
@@ -292,11 +292,22 @@ nodes:
           sha256: d31fc5882ef185a66a86c634df38077eb1629df324bf03ae2e2068d5d9e7df6e
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
+        - path: proxy/src/host_platform.rs
+          sha256: 52abcaa678458e3092b808f04aa8ac3ddd3413ec04d6e3779f724ffea0d9bb20
+        - path: proxy/src/jobs.rs
+          sha256: 0e66fc43207af5b95c90cd662b230287068f61372543290eb20933a45c189737
+        - path: proxy/src/jobs/input.rs
+          sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
+        - path: proxy/src/jobs/macos.rs
+          sha256: f1ec32e75b57cbbf05f245a1b43c7a92dcc383f9c76fa93bec16c2bc896149fd
+        - path: tests/blackbox/host/job_sandbox.py
+          sha256: 996ebd708f3f3d1efdeac55d474db738b675c9482701bce59d5a338522f0b678
       setup: "Use the approved physical Apple Silicon host; make -C vm install; prepare a disposable BYOA agent for snapshot smoke."
       verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
       run:
         full_vz: "./tests/blackbox/run-lane.sh vz --verbose"
         snapshot_restore: "bash vm/test/snapshot-smoke.sh <disposable-agent>"
+        disposable_jobs: "python3 tests/blackbox/host/job_sandbox.py --cli <candidate-cli> --root <prepared-disposable-instance> --scratch <disk-backed-directory>"
       capture: [trusted base, safeyolo-vm version, physical host identity, VZ assertion, snapshot fingerprint result, exit status]
 
   - id: ev.accept_coord_lane

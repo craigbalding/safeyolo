@@ -2135,6 +2135,16 @@ pub(crate) fn spawn_vz_helper(
     memory_mb: u64,
     ephemeral: bool,
 ) -> io::Result<tokio::process::Child> {
+    spawn_vz(name, memory_mb, ephemeral, false)
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_vz(
+    name: &str,
+    memory_mb: u64,
+    ephemeral: bool,
+    job: bool,
+) -> io::Result<tokio::process::Child> {
     if !valid_agent_name(name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2162,8 +2172,10 @@ pub(crate) fn spawn_vz_helper(
             ));
         }
     }
-    std::fs::create_dir_all(&status_dir)?;
-    std::fs::create_dir_all(directory.join("home"))?;
+    if !job {
+        std::fs::create_dir_all(&status_dir)?;
+        std::fs::create_dir_all(directory.join("home"))?;
+    }
     let shell = config
         .join("data/shell-sockets")
         .join(format!("{name}.sock"));
@@ -2180,10 +2192,12 @@ pub(crate) fn spawn_vz_helper(
             Err(error) => return Err(error),
         }
     }
-    for marker in ["static-init-done", "per-run-started", "vm-status"] {
-        let _ = std::fs::remove_file(status_dir.join(marker));
+    if !job {
+        for marker in ["static-init-done", "per-run-started", "vm-status"] {
+            let _ = std::fs::remove_file(status_dir.join(marker));
+        }
+        std::fs::write(share.join("per-run-go"), b"")?;
     }
-    std::fs::write(share.join("per-run-go"), b"")?;
     let proxy = agent_proxy_dir(name).join("proxy.sock");
     let runner = std::env::var_os("SAFEYOLO_VZ_TEST_RUNNER");
     let runner_timeout = std::env::var_os("SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS");
@@ -2213,25 +2227,28 @@ pub(crate) fn spawn_vz_helper(
         "--memory",
         &memory_mb.to_string(),
         "--share",
-        &format!("{workspace}:workspace:rw"),
+        &format!("{workspace}:workspace:{}", if job { "ro" } else { "rw" }),
         "--share",
         &format!("{}:config:ro", share.display()),
-        "--share",
-        &format!("{}:status:rw", status_dir.display()),
-        "--share",
-        &format!("{}:home:rw", directory.join("home").display()),
         "--serial-log",
         &directory.join("console.log").display().to_string(),
         "--cmdline",
         &cmdline,
-        "--proxy-socket",
-        proxy.to_str().unwrap_or_default(),
         "--shell-socket",
         shell.to_str().unwrap_or_default(),
         "--control-socket",
         control.to_str().unwrap_or_default(),
         "--no-terminal",
     ]);
+    if !job {
+        command
+            .arg("--proxy-socket")
+            .arg(proxy)
+            .arg("--share")
+            .arg(format!("{}:status:rw", status_dir.display()))
+            .arg("--share")
+            .arg(format!("{}:home:rw", directory.join("home").display()));
+    }
     if let Some(shares) = launch_context
         .get("extra_shares")
         .and_then(serde_json::Value::as_array)
@@ -2282,6 +2299,23 @@ pub(crate) fn spawn_vz_helper(
 
 #[cfg(target_os = "macos")]
 pub(crate) async fn wait_vz_start(name: &str, mut child: tokio::process::Child) -> io::Result<()> {
+    wait_vz(name, &mut child, true).await
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn start_job_sandbox(name: &str, memory_mb: u64) -> io::Result<()> {
+    let mut child = spawn_vz(name, memory_mb, true, true)?;
+    // Identity comes from the private VM control socket. Job readiness is
+    // subsequently established by authenticated SSH, without a writable share.
+    wait_vz(name, &mut child, false).await
+}
+
+#[cfg(target_os = "macos")]
+async fn wait_vz(
+    name: &str,
+    child: &mut tokio::process::Child,
+    require_guest_marker: bool,
+) -> io::Result<()> {
     let config = config_dir();
     let directory = config.join("agents").join(name);
     let status_dir = directory.join("status");
@@ -2316,7 +2350,9 @@ pub(crate) async fn wait_vz_start(name: &str, mut child: tokio::process::Child) 
                     identity = Some(observed);
                 }
             }
-            if identity.is_some() && status_dir.join("per-run-started").is_file() {
+            if identity.is_some()
+                && (!require_guest_marker || status_dir.join("per-run-started").is_file())
+            {
                 return Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -2328,7 +2364,7 @@ pub(crate) async fn wait_vz_start(name: &str, mut child: tokio::process::Child) 
         // Stop the independently verified helper when available. Also stop
         // the owned launch process if identity persistence itself failed.
         let sandbox_stop = stop_sandbox(name).await;
-        return Err(cleanup_failed_vz_start(error, sandbox_stop, &mut child).await);
+        return Err(cleanup_failed_vz_start(error, sandbox_stop, child).await);
     }
     started
 }

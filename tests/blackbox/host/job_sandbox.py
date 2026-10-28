@@ -11,7 +11,6 @@ import argparse
 import base64
 import hashlib
 import json
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -25,9 +24,13 @@ def run(cli: Path, root: Path, scratch: Path) -> None:
     input_dir = scratch / "input"
     input_dir.mkdir()
     (input_dir / "candidate").write_text("read-only candidate\n")
-    spec_path = scratch / "spec.json"
+    job_number = 0
 
     def job(program: str, *, privilege: str = "unprivileged", timeout: int = 30):
+        nonlocal job_number
+        job_number += 1
+        prefix = scratch / f"job-{job_number:02d}"
+        spec_path = prefix.with_suffix(".spec.json")
         spec_path.write_text(
             json.dumps(
                 {
@@ -42,14 +45,21 @@ def run(cli: Path, root: Path, scratch: Path) -> None:
                 }
             )
         )
-        completed = subprocess.run(
-            [str(cli), "--root", str(root), "job", "run", str(spec_path), "--input", str(input_dir)],
-            capture_output=True,
-            timeout=180,
-            check=False,
-        )
-        (scratch / "last-stdout").write_bytes(completed.stdout)
-        (scratch / "last-stderr").write_bytes(completed.stderr)
+        try:
+            completed = subprocess.run(
+                [str(cli), "--root", str(root), "job", "run", str(spec_path), "--input", str(input_dir)],
+                capture_output=True,
+                timeout=180,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            prefix.with_suffix(".stdout").write_bytes(error.stdout or b"")
+            prefix.with_suffix(".stderr").write_bytes(error.stderr or b"")
+            prefix.with_suffix(".cli-result.json").write_text(json.dumps({"timeout": True}))
+            raise
+        prefix.with_suffix(".stdout").write_bytes(completed.stdout)
+        prefix.with_suffix(".stderr").write_bytes(completed.stderr)
+        prefix.with_suffix(".cli-result.json").write_text(json.dumps({"returncode": completed.returncode}))
         result = json.loads(completed.stdout)
         assert result["gate_principal"] == "gate:job-boundary-probe", result
         assert result["authorization_principal"] is None, result
@@ -133,7 +143,6 @@ def main() -> None:
     scratch = Path(tempfile.mkdtemp(prefix="job-probe-", dir=args.scratch))
     print(f"scratch={scratch}", flush=True)
     run(args.cli.resolve(strict=True), args.root.resolve(strict=True), scratch)
-    shutil.rmtree(scratch)
 
 
 if __name__ == "__main__":

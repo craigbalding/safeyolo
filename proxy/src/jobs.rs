@@ -1,6 +1,8 @@
 //! Host-only disposable execution. JobSpec never contains a host mount path.
 
 mod input;
+#[cfg(target_os = "macos")]
+mod macos;
 
 use crate::{Error, host_platform, host_runs};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -9,11 +11,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     fs, io,
-    os::fd::AsRawFd,
     os::unix::fs::{PermissionsExt, symlink},
     path::{Path, PathBuf},
-    process::{ExitStatus, Stdio},
     time::{Duration, SystemTime, UNIX_EPOCH},
+};
+#[cfg(target_os = "linux")]
+use std::{
+    os::fd::AsRawFd,
+    process::{ExitStatus, Stdio},
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -109,28 +114,56 @@ fn now() -> Result<u128, Error> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())
 }
 
+struct OutputCapture {
+    hash: Context,
+    retained: Vec<u8>,
+    limit: usize,
+    bytes: u64,
+}
+
+impl OutputCapture {
+    fn new(limit: usize) -> Self {
+        Self {
+            hash: Context::new(&SHA256),
+            retained: Vec::new(),
+            limit,
+            bytes: 0,
+        }
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.bytes = self
+            .bytes
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| io::Error::other("job output byte count overflow"))?;
+        self.hash.update(bytes);
+        let keep = bytes
+            .len()
+            .min(self.limit.saturating_sub(self.retained.len()));
+        self.retained.extend_from_slice(&bytes[..keep]);
+        Ok(())
+    }
+
+    fn finish(self) -> Output {
+        Output {
+            bytes: self.bytes,
+            sha256: hex(self.hash.finish().as_ref()),
+            retained_base64: STANDARD.encode(self.retained),
+        }
+    }
+}
+
 async fn collect(mut input: impl AsyncRead + Unpin, retained_limit: usize) -> io::Result<Output> {
-    let mut hash = Context::new(&SHA256);
-    let mut retained = Vec::new();
-    let mut bytes = 0u64;
+    let mut capture = OutputCapture::new(retained_limit);
     let mut buffer = [0; 16 * 1024];
     loop {
         let count = input.read(&mut buffer).await?;
         if count == 0 {
             break;
         }
-        bytes = bytes
-            .checked_add(count as u64)
-            .ok_or_else(|| io::Error::other("job output byte count overflow"))?;
-        hash.update(&buffer[..count]);
-        let keep = count.min(retained_limit.saturating_sub(retained.len()));
-        retained.extend_from_slice(&buffer[..keep]);
+        capture.write(&buffer[..count])?;
     }
-    Ok(Output {
-        bytes,
-        sha256: hex(hash.finish().as_ref()),
-        retained_base64: STANDARD.encode(retained),
-    })
+    Ok(capture.finish())
 }
 
 #[cfg(target_os = "linux")]
@@ -409,8 +442,13 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
             let stderr = tokio::time::timeout(Duration::from_secs(5), stderr.ok_or("missing job stderr collector")?).await???;
             Ok((rootfs, outcome, stdout, stderr))
         }
-        #[cfg(not(target_os = "linux"))]
-        { let _ = (host, guest); Err::<(Value, Outcome, Output, Output), Error>("job platform implementation is pending".into()) }
+        #[cfg(target_os = "macos")]
+        {
+            macos::run(&name, &root, &directory, &host, &guest, spec, &generation,
+                &mut interrupt, &mut terminate, &mut cleanup_failed).await
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        { let _ = (host, guest); Err::<(Value, Outcome, Output, Output), Error>("jobs require Linux or macOS".into()) }
     }).await;
     // Never erase the only remaining verified handles after a cleanup failure.
     let (rootfs, outcome, stdout, stderr) = match result {
