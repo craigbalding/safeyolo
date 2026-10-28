@@ -220,6 +220,9 @@ impl TransportMetrics {
         }
     }
     fn observation(&mut self, o: &Observation) {
+        if o.layer == Layer::WirePacket {
+            return; // Transport metrics use stream boundaries, never packet segmentation.
+        }
         let labels = Labels::of(o);
         let values = self.series.entry(labels).or_default();
         match o.state {

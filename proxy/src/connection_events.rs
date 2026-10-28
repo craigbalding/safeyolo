@@ -170,6 +170,7 @@ impl ConnectionEvents {
             None,
         );
         Connection(Arc::new(ConnectionEnd {
+            wire: Mutex::new(None),
             events: self.clone(),
             identity: identity.clone(),
             source: Mutex::new(source),
@@ -207,6 +208,7 @@ struct ConnectionEnd {
     identity: ConnectionIdentity,
     facts: Mutex<Facts>,
     source: Mutex<Arc<crate::observations::Source>>,
+    wire: Mutex<Option<crate::packet_capture::wire::Ownership>>,
 }
 
 impl ConnectionEnd {
@@ -250,6 +252,13 @@ impl Drop for ConnectionEnd {
 pub(crate) struct Connection(Arc<ConnectionEnd>);
 
 impl Connection {
+    pub(crate) fn wire_connected(&self, local: SocketAddr, remote: SocketAddr) {
+        let source = self.source();
+        if let Some(wire) = source.wire() {
+            *self.0.wire.lock().unwrap_or_else(|e| e.into_inner()) =
+                wire.register(local, remote, source.clone());
+        }
+    }
     pub(crate) fn connected(
         &self,
         local: Option<Value>,

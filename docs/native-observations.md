@@ -356,14 +356,86 @@ waits for a writer or queue capacity. A stalled write times out and disconnects
 that sink. Errors contain fixed sink/reason labels, never captured content,
 destinations or secrets.
 
+## Genuine `pcap:wire` acquisition
+
+On the operator host, select a native capture interface and explicitly enable
+packet payloads in `config.toml`. The host needs libpcap and permission to open
+that interface. SafeYolo does not elevate the proxy or change host permissions.
+Use the interface that carries the selected upstream connection. For example,
+`lo0` captures loopback traffic on macOS; `en0` commonly carries external traffic.
+Linux libpcap also supports `any` for the host's interfaces.
+
+```toml
+[packet_capture]
+profile = "pcap:wire"
+wire_interface = "lo0"
+payload_layers = ["wire_packet"]
+file = "logs/upstream-wire.pcap"
+```
+
+The existing file, stdout/pipe, TCP and authenticated WSS adapters consume the
+same wire encoder. A wire file contains only genuine acquired packets under
+one declared link type. It contains no synthetic session, gap or compatibility
+packets. Packet bytes, original length, acquired length and source wall timestamp
+pass through unchanged. The encoder selects nanosecond PCAP only when libpcap
+reports nanosecond source precision; otherwise it uses microsecond PCAP.
+The proxy reports each adapter's instance/runtime/session identity, starting
+canonical sequence, link type and actual source precision on stderr. These
+session records contain no packet content. Classic wire PCAP cannot carry that
+rich metadata inside its packet-only byte stream.
+
+Acquisition is disabled unless `pcap:wire`, `wire_interface` and the explicit
+`wire_packet` payload layer are selected together with an adapter. Other payload
+layers do not retain stream content under the wire profile. A missing library,
+unsupported link type, denied interface or acquisition failure reports a fixed
+unavailable reason. If acquisition fails after startup, existing wire sessions
+end. Later TCP collectors receive no capture stream, and authenticated WebSocket
+capture requests receive HTTP 503 until the proxy restarts.
+Agent traffic, stream metadata and behavioural metrics
+continue. Selecting `pcap:compat` continues to work without packet privileges.
+
+The source uses libpcap without promiscuous mode. Its kernel filter selects TCP
+on the configured interface. Before copying a packet into an observation, the
+proxy requires an exact local/remote socket tuple from a native upstream owner.
+Unrelated host connections and both legs of TCP/WSS export never register.
+They cannot become packet observations or feed the export stream. Packet
+observations carry the native connection ID and trusted source attribution.
+They have no inferred stream offset or application lineage. Stream behavioural
+metrics ignore packet records and continue to measure canonical stream reads
+and writes. Packet monotonic time describes ingestion into SafeYolo; packet wall
+time and its resolution come from libpcap.
+
+The connection table is bounded by the capture queue's item limit and one entry
+per 4096 bytes of its byte limit. Registration does not wait for table admission.
+Closed entries remain for at most one second to correlate packets already
+buffered by libpcap. Their source timestamp bounds exclude later tuple reuse.
+The source polls at most 64 packets per acquisition turn. Kernel buffering is
+bounded separately by libpcap; SafeYolo requests the configured capture byte
+budget, with a minimum 64 KiB kernel buffer. The source supports Ethernet
+(including two VLAN tags), native loopback, raw IP and Linux cooked link types.
+It follows at most eight IPv6 extension headers. Packets without a readable TCP
+tuple, including noninitial IP fragments, cannot be correlated and are omitted.
+Connection registration follows successful connect. Packets timestamped before
+registration or already drained before registration are unavailable. Capture does not claim a complete TCP
+handshake or retransmission history.
+
+The observation counters expose `wire_packets_received_total`,
+`wire_kernel_dropped_total`, `wire_interface_dropped_total`,
+`wire_correlation_missed_total` and `wire_source_errors_total`. Kernel receive
+and drop counts describe the acquisition interface/filter, including traffic
+later excluded by ownership. They are separate from observation-bus and sink
+loss. A wire session with an observation or sink gap ends with a content-free
+error and loss counters. The proxy cannot encode a gap as a genuine packet.
+Other consumers and agent traffic continue. If acquisition is still active, a new
+live consumer can subscribe after a session gap.
+
 ## Remaining capture work
 
 This increment of [#858](https://github.com/craigbalding/safeyolo/issues/858)
-adds classic compatibility capture and the four adapters. Portable PCAP Next
-Generation (PCAPNG) still requires the actual Internet Assigned Numbers
-Authority (IANA) Private Enterprise Number owned by
+adds genuine wire capture to the existing classic compatibility capture and four
+adapters. Portable PCAP Next Generation (PCAPNG) still requires the actual
+Internet Assigned Numbers Authority (IANA) Private Enterprise Number owned by
 [#862](https://github.com/craigbalding/safeyolo/issues/862), its encoder and
-portable-extension proof. Genuine packet capture, `pcap:wire`, exporter
-exclusion, TLS-secret export/authorization and DSB/decryption remain separate
-unimplemented outcomes. Selecting an unavailable profile reports unavailable;
-there is no placeholder PCAPNG format or reconstructed wire profile.
+portable-extension proof. The cross-format packet-subset comparison, TLS-secret
+export/authorization and DSB/decryption remain unimplemented. Selecting PCAPNG
+reports unavailable; no placeholder format is emitted.

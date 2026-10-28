@@ -1195,6 +1195,9 @@ async fn open_egress_for_flow(
     };
     if let Some(network) = &network {
         let peer = socket.peer_addr().ok();
+        if let (Ok(local), Some(remote)) = (socket.local_addr(), peer) {
+            network.wire_connected(local, remote);
+        }
         network.connected(
             socket
                 .local_addr()

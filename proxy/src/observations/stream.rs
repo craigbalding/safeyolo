@@ -112,7 +112,32 @@ impl Source {
             captured_length: 0,
             payload: None,
             state,
+            packet: None,
         }
+    }
+    pub(crate) fn packet(
+        &self,
+        packet: crate::packet_capture::Packet,
+        wall_ns: i128,
+        direction: Direction,
+        bytes: &[u8],
+    ) {
+        let mut record = self.record(
+            direction,
+            None,
+            Some(packet.original_length as u64),
+            State::Chunk,
+        );
+        record.point = Point::HostPacket;
+        record.layer = Layer::WirePacket;
+        record.input_span = None;
+        record.timestamp.wall_unix_ns = wall_ns;
+        record.timestamp_resolution.wall_ns = Some(packet.precision_ns);
+        record.packet = Some(packet);
+        self.bus.emit_payload(record, bytes);
+    }
+    pub(crate) fn wire(&self) -> Option<&Arc<crate::packet_capture::wire::Connections>> {
+        self.bus.wire.get()
     }
     fn chunk(&self, direction: Direction, offset: u64, bytes: &[u8]) {
         // A skipped update must not leave the previous IDs available to a later parser.

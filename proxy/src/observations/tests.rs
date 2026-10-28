@@ -26,6 +26,7 @@ fn bus(limits: Limits) -> Arc<ObservationBus> {
 pub(crate) fn sample(bus: &Arc<ObservationBus>) -> Observation {
     let identity = identity();
     Observation {
+        packet: None,
         id: bus.id(0),
         timestamp: Timestamp {
             wall_unix_ns: 0,

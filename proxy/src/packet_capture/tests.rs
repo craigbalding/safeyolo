@@ -185,7 +185,7 @@ fn refused_profiles_remote_tcp_and_secret_config_remain_explicit() {
     settings.tcp.as_mut().unwrap().insecure_remote = true;
     settings.validate(true).unwrap();
     settings.profile = Profile::Wire;
-    assert_eq!(settings.unavailable(), Some("pcap_wire_unavailable"));
+    assert_eq!(settings.unavailable(), Some("pcap_wire_disabled"));
     settings.profile = Profile::Pcapng;
     assert_eq!(
         settings.unavailable(),
@@ -854,13 +854,21 @@ async fn wss_authorization_binary_frames_and_session_start_cross_real_tls() {
 
 #[tokio::test]
 async fn unavailable_profiles_leave_metadata_and_traffic_running_without_capture() {
-    for profile in [Profile::Wire, Profile::Pcapng] {
+    for (profile, wire_interface) in [
+        (Profile::Wire, None),
+        (
+            Profile::Wire,
+            Some("safeyolo-interface-that-does-not-exist".into()),
+        ),
+        (Profile::Pcapng, None),
+    ] {
         let directory = tempfile::tempdir().unwrap();
         let mut config = config(directory.path());
         let path = directory.path().join("unavailable.pcap");
         config.native_settings.as_mut().unwrap().packet_capture = Settings {
             profile,
-            payload_layers: vec![Layer::TransportStream],
+            wire_interface,
+            payload_layers: vec![Layer::TransportStream, Layer::WirePacket],
             file: Some(path.clone()),
             tcp: Some(Tcp {
                 bind: "127.0.0.1:0".parse().unwrap(),
@@ -915,6 +923,7 @@ async fn a_gap_crossing_a_new_sink_starts_at_that_sessions_first_sequence() {
     }
     let source = bus.subscribe(ConsumerKind::Capture, Limits::default());
     let capture = Capture {
+        wire_format: None,
         bus: Arc::downgrade(&bus),
         tcp_endpoint: None,
         session: source.session.clone(),
@@ -1220,10 +1229,12 @@ fn stdout_pipe_shutdown_is_bounded_with_a_stopped_or_draining_collector() {
             "{collector}: {}",
             std::fs::read_to_string(directory.path().join("stderr")).unwrap()
         );
-        assert_eq!(
-            unsafe { libc::fcntl(held_writer.as_raw_fd(), libc::F_GETFL) },
-            flags
-        );
+        let after = unsafe { libc::fcntl(held_writer.as_raw_fd(), libc::F_GETFL) };
+        assert!(flags >= 0 && after >= 0);
+        // F_GETFL can include kernel bookkeeping that changes on an ordinary
+        // write (observed on macOS). Compare the mutable pipe status flags.
+        let mutable = libc::O_NONBLOCK | libc::O_APPEND | libc::O_ASYNC;
+        assert_eq!(after & mutable, flags & mutable);
         drop(held_writer);
         if let Some(draining) = draining {
             let bytes = draining.join().unwrap();
@@ -1304,6 +1315,7 @@ async fn encoder_shutdown_failure_names_the_active_sinks() {
     );
     let source = bus.subscribe(ConsumerKind::Capture, Limits::default());
     let capture = Arc::new(Capture {
+        wire_format: None,
         bus: Arc::downgrade(&bus),
         tcp_endpoint: None,
         session: source.session.clone(),
@@ -1331,4 +1343,427 @@ async fn encoder_shutdown_failure_names_the_active_sinks() {
     assert_eq!(counters["sinks"]["wss"]["sink_errors_total"], 1);
     assert_eq!(counters["sinks"]["file"]["sink_errors_total"], 0);
     assert_eq!(counters["sinks"]["tcp"]["sink_errors_total"], 0);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn wire_source_failure_refuses_later_collectors_but_sink_gaps_allow_reconnect() {
+    const CHILD: &str = "SAFEYOLO_WIRE_SOURCE_FAULT";
+    let Some(trigger) = std::env::var_os(CHILD) else {
+        // Keep the controlled libpcap and its environment in a separate process.
+        // The actual source task, adapters and proxy still run unchanged.
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("wire_source_fault.c");
+        std::fs::write(
+            &source,
+            include_str!("../../tests/fixtures/wire_source_fault.c"),
+        )
+        .unwrap();
+        let compiled = tokio::process::Command::new("cc")
+            .args(["-shared", "-fPIC", "-Wall", "-Wextra", "-Werror"])
+            .arg(source)
+            .arg("-o")
+            .arg(directory.path().join("libpcap.so.1"))
+            .kill_on_drop(true)
+            .output();
+        let compiled = timeout(WAIT, compiled).await.unwrap().unwrap();
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let mut paths = vec![directory.path().to_owned()];
+        if let Some(existing) = std::env::var_os("LD_LIBRARY_PATH") {
+            paths.extend(std::env::split_paths(&existing));
+        }
+        let child = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "packet_capture::tests::wire_source_failure_refuses_later_collectors_but_sink_gaps_allow_reconnect", "--nocapture"])
+            .env("LD_LIBRARY_PATH", std::env::join_paths(paths).unwrap())
+            .env(CHILD, directory.path().join("fail"))
+            .kill_on_drop(true)
+            .output();
+        let child = timeout(Duration::from_secs(30), child)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        return;
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(directory.path());
+    let token = directory.path().join("token");
+    std::fs::write(&token, "wire-failure-test").unwrap();
+    config.admin_port = Some(0);
+    config.admin_api_token_file = Some(token);
+    config.native_settings.as_mut().unwrap().packet_capture = Settings {
+        profile: Profile::Wire,
+        wire_interface: Some("controlled-source".into()),
+        payload_layers: vec![Layer::WirePacket],
+        tcp: Some(Tcp {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            ..Default::default()
+        }),
+        wss: true,
+        ..Default::default()
+    };
+    let proxy = crate::Proxy::start(config).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let bus = bus(&runtime);
+    let capture = bus.capture.get().expect("controlled source must open");
+    let address = capture.tcp_endpoint.unwrap().address;
+    async fn collector(address: SocketAddr, expected: &[u8]) -> TcpStream {
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        let mut header = [0; 24];
+        timeout(WAIT, stream.read_exact(&mut header))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(header.as_slice(), expected);
+        stream
+    }
+    async fn eof(stream: &mut TcpStream) {
+        let mut bytes = Vec::new();
+        timeout(WAIT, stream.read_to_end(&mut bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            bytes.is_empty(),
+            "no successful stream after source failure"
+        );
+    }
+    let header = capture.wire_format.unwrap().header();
+    let mut initial = collector(address, &header).await;
+    // A real canonical admission gap ends this sink without failing acquisition.
+    let mut oversized = crate::observations::tests::sample(&bus);
+    oversized.connection_id = "x".repeat(Limits::default().bytes + 1);
+    bus.emit(oversized);
+    eof(&mut initial).await;
+    assert_eq!(bus.counters.wire_source_errors.load(Ordering::Relaxed), 0);
+    let mut active = collector(address, &header).await;
+    // Trigger pcap_next_ex=-1 after a successful reconnect. This exercises the
+    // source task's error reporting, Source::drop and existing-sink closure.
+    std::fs::write(trigger, []).unwrap();
+    eof(&mut active).await;
+    assert_eq!(bus.counters.wire_source_errors.load(Ordering::Relaxed), 1);
+    eof(&mut TcpStream::connect(address).await.unwrap()).await;
+    let mut websocket = TcpStream::connect(runtime.admin_address.unwrap())
+        .await
+        .unwrap();
+    websocket.write_all(b"GET /admin/capture HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Bearer wire-failure-test\r\n\r\n").await.unwrap();
+    assert!(
+        crate::connection_events::tests::head(&mut websocket)
+            .await
+            .starts_with(b"HTTP/1.1 503")
+    );
+    drop(websocket);
+
+    let mut metadata = bus.subscribe(ConsumerKind::Metrics, Limits::default());
+    let (origin, address) = crate::test_owned_endpoint::bind().await;
+    let origin = tokio::spawn(async move {
+        let (mut peer, _) = origin.accept().await.unwrap();
+        let head = crate::connection_events::tests::head(&mut peer).await;
+        assert!(head.starts_with(b"GET /after-failure "));
+        peer.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await
+            .unwrap();
+    });
+    let mut agent = UnixStream::connect(directory.path().join("alice.sock"))
+        .await
+        .unwrap();
+    agent.write_all(format!("GET http://{address}/after-failure HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    let mut reply = Vec::new();
+    timeout(WAIT, agent.read_to_end(&mut reply))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(reply.starts_with(b"HTTP/1.1 200"));
+    assert!(reply.ends_with(b"\r\n\r\nok"));
+    timeout(WAIT, origin).await.unwrap().unwrap();
+    timeout(WAIT, async {
+        loop {
+            let record = metadata.recv().await.unwrap();
+            if let Record::Observation(o) = record.as_ref() {
+                assert!(o.payload.is_none());
+                assert_eq!(o.captured_length, 0);
+                // The same canonical record remains usable by the compat encoder.
+                let mut bytes = compat::session(&encode_session(), "file", 64 * 1024).unwrap();
+                bytes.extend(compat::encode(&record, 64 * 1024).unwrap());
+                assert!(!packets(&bytes).is_empty());
+                if o.state == State::Complete {
+                    break;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        bus.counters.json()["layers"]["transport_stream"]["observations_total"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    proxy.shutdown().await;
+}
+
+// Run explicitly on an owned host with libpcap access. This exercises product
+// acquisition and socket ownership, rather than supplying packet fixtures.
+#[tokio::test]
+#[ignore = "requires native packet access and SAFEYOLO_WIRE_INTERFACE/SAFEYOLO_WIRE_PROOF_DIR"]
+async fn native_wire_acquisition_excludes_unrelated_and_live_export_transports() {
+    let directory = tempfile::Builder::new()
+        .prefix("wire-")
+        .tempdir_in(std::env::var_os("SAFEYOLO_WIRE_PROOF_DIR").expect("proof directory"))
+        .unwrap();
+    let root = directory.keep();
+    let mut config = config(&root);
+    config.admin_port = Some(0);
+    let token = root.join("token");
+    std::fs::write(&token, "wire-858-test").unwrap();
+    config.admin_api_token_file = Some(token);
+    config.native_settings.as_mut().unwrap().packet_capture = Settings {
+        profile: Profile::Wire,
+        wire_interface: Some(std::env::var("SAFEYOLO_WIRE_INTERFACE").expect("interface")),
+        payload_layers: vec![Layer::WirePacket],
+        file: Some(root.join("wire.pcap")),
+        tcp: Some(Tcp {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            ..Default::default()
+        }),
+        wss: true,
+        ..Default::default()
+    };
+    let proxy = crate::Proxy::start(config).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let bus = bus(&runtime);
+    let capture = bus
+        .capture
+        .get()
+        .expect("native acquisition must be available")
+        .clone();
+    let tcp = capture.tcp_endpoint.unwrap().address;
+    let mut tcp_reader = TcpStream::connect(tcp).await.unwrap();
+    let tcp_copy = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        tcp_reader.read_to_end(&mut bytes).await.unwrap();
+        bytes
+    });
+    // Reuse the product's authenticated WebSocket boundary behind owned TLS,
+    // as the existing WSS adapter test does. Both bridge legs are unowned TCP.
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let tls = rustls::ServerConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.der().clone()],
+            rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+        )
+        .unwrap();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert.der().clone()).unwrap();
+    let client = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let admin = runtime.admin_address.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let wss_address = listener.local_addr().unwrap();
+    let bridge = tokio::spawn(async move {
+        let mut clients = JoinSet::new();
+        for _ in 0..2 {
+            let (socket, _) = listener.accept().await.unwrap();
+            let tls = tls.clone();
+            clients.spawn(async move {
+                let mut tls = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
+                    .accept(socket)
+                    .await
+                    .unwrap();
+                let mut backend = TcpStream::connect(admin).await.unwrap();
+                let _ = tokio::io::copy_bidirectional(&mut tls, &mut backend).await;
+            });
+        }
+        while clients.join_next().await.is_some() {}
+    });
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(client));
+    let mut tls = connector
+        .connect(
+            rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+            TcpStream::connect(wss_address).await.unwrap(),
+        )
+        .await
+        .unwrap();
+    tls.write_all(b"GET /admin/capture HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Bearer wire-858-test\r\n\r\n").await.unwrap();
+    assert!(
+        crate::connection_events::tests::head(&mut tls)
+            .await
+            .starts_with(b"HTTP/1.1 101")
+    );
+    let wss_copy = tokio::spawn(async move {
+        let mut reader = crate::websocket::Reader::new(tls, false, None);
+        let mut bytes = Vec::new();
+        while let Ok(event) = reader.read().await {
+            match event {
+                crate::websocket::Event::Message(message) => message
+                    .content()
+                    .with_bytes(|part| bytes.extend_from_slice(part))
+                    .unwrap(),
+                crate::websocket::Event::Close(_) => break,
+                _ => {}
+            }
+        }
+        bytes
+    });
+    let origin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = origin.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = origin.accept().await.unwrap();
+        let request = crate::connection_events::tests::head(&mut socket).await;
+        assert!(
+            request
+                .windows(b"owned-wire-858".len())
+                .any(|w| w == b"owned-wire-858")
+        );
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\nwire-reply-858",
+            )
+            .await
+            .unwrap();
+    });
+    let unrelated = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unrelated_address = unrelated.local_addr().unwrap();
+    let other = tokio::spawn(async move {
+        let mut client = TcpStream::connect(unrelated_address).await.unwrap();
+        let (mut peer, _) = unrelated.accept().await.unwrap();
+        client.write_all(b"unrelated-wire-858").await.unwrap();
+        let mut bytes = [0; 18];
+        peer.read_exact(&mut bytes).await.unwrap();
+    });
+    let mut metadata = bus.subscribe(ConsumerKind::Metrics, Limits::default());
+    let mut agent = UnixStream::connect(root.join("alice.sock")).await.unwrap();
+    agent.write_all(format!("GET http://{address}/owned-wire-858 HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    timeout(WAIT, agent.read_to_end(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(response.ends_with(b"wire-reply-858"));
+    server.await.unwrap();
+    other.await.unwrap();
+    // A bound observer wait lets the acquisition source drain buffered native
+    // packets after this deliberately short HTTP exchange has already closed.
+    let mut acquired = Vec::new();
+    timeout(WAIT,async {
+        loop {
+            let record=metadata.recv().await.unwrap();
+            if let Record::Observation(o)=record.as_ref()
+                && o.layer==Layer::WirePacket {
+                assert_eq!(o.agent.as_deref(),Some("alice"));
+                assert!(o.connection_id.starts_with("upstream-"));
+                acquired.push(record);
+                if acquired.iter().any(|r| matches!(r.as_ref(), Record::Observation(o) if o.payload.as_ref().is_some_and(|p| p.windows(14).any(|w|w==b"wire-reply-858")))) {break;}
+            }
+        }
+    }).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let through = bus.next_sequence();
+    let mut reconnect = TcpStream::connect(tcp).await.unwrap();
+    let mut header = [0; 24];
+    timeout(WAIT, reconnect.read_exact(&mut header))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(header.as_slice(), capture.wire_format.unwrap().header());
+    drop(reconnect);
+    let mut reconnect = connector
+        .connect(
+            rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+            TcpStream::connect(wss_address).await.unwrap(),
+        )
+        .await
+        .unwrap();
+    reconnect.write_all(b"GET /admin/capture HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Bearer wire-858-test\r\n\r\n").await.unwrap();
+    assert!(
+        crate::connection_events::tests::head(&mut reconnect)
+            .await
+            .starts_with(b"HTTP/1.1 101")
+    );
+    drop(reconnect);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        bus.next_sequence(),
+        through,
+        "export traffic must not create observations"
+    );
+    capture.flush().await;
+    proxy.shutdown().await;
+    let tcp_bytes = timeout(WAIT, tcp_copy).await.unwrap().unwrap();
+    let wss_bytes = timeout(WAIT, wss_copy).await.unwrap().unwrap();
+    timeout(WAIT, bridge).await.unwrap().unwrap();
+    let bytes = std::fs::read(root.join("wire.pcap")).unwrap();
+    assert_eq!(bytes, tcp_bytes);
+    assert_eq!(bytes, wss_bytes);
+    assert!(!bytes.windows(18).any(|w| w == b"unrelated-wire-858"));
+    assert!(bytes.windows(14).any(|w| w == b"owned-wire-858"));
+    let mut at = 24;
+    let mut packet_count = 0;
+    while at < bytes.len() {
+        let length = u32::from_le_bytes(bytes[at + 8..at + 12].try_into().unwrap()) as usize;
+        let frame = &bytes[at + 16..at + 16 + length];
+        let tuple =
+            wire::tcp_tuple_for_test(capture.wire_format.unwrap().link_type, frame).unwrap();
+        assert!(
+            tuple.0 == address || tuple.1 == address,
+            "only the owned upstream can appear"
+        );
+        assert!(
+            ![
+                tcp.port(),
+                admin.port(),
+                wss_address.port(),
+                unrelated_address.port()
+            ]
+            .contains(&tuple.0.port())
+        );
+        assert!(
+            ![
+                tcp.port(),
+                admin.port(),
+                wss_address.port(),
+                unrelated_address.port()
+            ]
+            .contains(&tuple.1.port())
+        );
+        at += 16 + length;
+        packet_count += 1;
+    }
+    assert!(packet_count > 0);
+    assert_eq!(at, bytes.len());
+    let format = capture.wire_format.unwrap();
+    for record in acquired {
+        let encoded = format.encode(&record, 64 * 1024).unwrap();
+        assert!(
+            bytes.windows(encoded.len()).any(|w| w == encoded),
+            "source packet bytes and timestamp must survive exactly"
+        );
+    }
+    assert_eq!(bus.counters.wire_source_errors.load(Ordering::Relaxed), 0);
+    assert_eq!(bus.counters.wire_kernel_dropped.load(Ordering::Relaxed), 0);
+    std::fs::write(root.join("metrics.json"), bus.counters.json().to_string()).unwrap();
+    eprintln!(
+        "Native wire proof packets={packet_count} link_type={} precision_ns={} output={}",
+        format.link_type,
+        format.precision_ns,
+        root.display()
+    );
 }

@@ -34,6 +34,7 @@ pub enum Layer {
     TlsCleartext,
     ProtocolMessage,
     ApplicationContent,
+    WirePacket,
 }
 impl Layer {
     fn index(self) -> usize {
@@ -45,6 +46,7 @@ impl Layer {
             Self::TlsCleartext => "tls_cleartext",
             Self::ProtocolMessage => "protocol_message",
             Self::ApplicationContent => "application_content",
+            Self::WirePacket => "wire_packet",
         }
     }
 }
@@ -58,6 +60,7 @@ pub enum Point {
     OriginTls,
     RequestParser,
     RequestContent,
+    HostPacket,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -150,6 +153,8 @@ pub struct Observation {
     #[serde(skip)]
     pub payload: Option<Arc<[u8]>>,
     pub state: State,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub packet: Option<crate::packet_capture::Packet>,
 }
 impl Observation {
     // Conservatively charge inline storage, owned strings and optional lineage.
@@ -238,16 +243,21 @@ impl ConsumerKind {
 #[derive(Default)]
 pub struct Counters {
     behaviour: Mutex<behaviour::TransportMetrics>,
-    total: [AtomicU64; 4],
-    metadata: [AtomicU64; 4],
-    payload: [AtomicU64; 4],
-    dropped: [AtomicU64; 4],
+    total: [AtomicU64; 5],
+    metadata: [AtomicU64; 5],
+    payload: [AtomicU64; 5],
+    dropped: [AtomicU64; 5],
     gaps: AtomicU64,
     exhausted: AtomicU64,
     pub(crate) sink_bytes: [AtomicU64; 4],
     pub(crate) sink_dropped: [AtomicU64; 4],
     pub(crate) sink_errors: [AtomicU64; 4],
     pub(crate) sink_disconnects: [AtomicU64; 4],
+    pub(crate) wire_received: AtomicU64,
+    pub(crate) wire_kernel_dropped: AtomicU64,
+    pub(crate) wire_interface_dropped: AtomicU64,
+    pub(crate) wire_correlation_missed: AtomicU64,
+    pub(crate) wire_source_errors: AtomicU64,
     consumer_bytes: [AtomicU64; 2],
     consumer_dropped: [AtomicU64; 2],
     consumer_disconnects: [AtomicU64; 2],
@@ -260,6 +270,7 @@ impl Counters {
             Layer::TlsCleartext,
             Layer::ProtocolMessage,
             Layer::ApplicationContent,
+            Layer::WirePacket,
         ];
         let mut by_layer = serde_json::Map::new();
         for layer in layers {
@@ -303,6 +314,13 @@ impl Counters {
             );
         }
         json!({"layers": by_layer, "observation_gap_ranges_total": self.gaps.load(Ordering::Relaxed), "observation_sequence_exhausted_total": self.exhausted.load(Ordering::Relaxed), "sinks": sinks,
+            "wire_source": {
+                "wire_packets_received_total": self.wire_received.load(Ordering::Relaxed),
+                "wire_kernel_dropped_total": self.wire_kernel_dropped.load(Ordering::Relaxed),
+                "wire_interface_dropped_total": self.wire_interface_dropped.load(Ordering::Relaxed),
+                "wire_correlation_missed_total": self.wire_correlation_missed.load(Ordering::Relaxed),
+                "wire_source_errors_total": self.wire_source_errors.load(Ordering::Relaxed),
+            },
             "behaviour": self.behaviour.lock().unwrap_or_else(|e| e.into_inner()).json()})
     }
     pub fn prometheus(&self) -> String {
@@ -340,6 +358,9 @@ impl Counters {
             for (name, value) in values.as_object().unwrap() {
                 out += &format!("safeyolo_{name}{{sink=\"{sink}\"}} {value}\n");
             }
+        }
+        for (name, value) in document["wire_source"].as_object().unwrap() {
+            out += &format!("# TYPE safeyolo_{name} counter\nsafeyolo_{name} {value}\n");
         }
         out += &self
             .behaviour
@@ -466,6 +487,7 @@ pub struct ObservationBus {
     session: Session,
     payload_layers: Vec<Layer>,
     pub(crate) capture: std::sync::OnceLock<Arc<crate::packet_capture::Capture>>,
+    pub(crate) wire: std::sync::OnceLock<Arc<crate::packet_capture::wire::Connections>>,
     sequence: AtomicU64,
     queue: Mutex<Queue>,
     limits: Limits,
@@ -495,6 +517,7 @@ impl ObservationBus {
         let bus = Arc::new(Self {
             payload_layers,
             capture: std::sync::OnceLock::new(),
+            wire: std::sync::OnceLock::new(),
             session: Session {
                 instance_id,
                 runtime_id,
@@ -628,8 +651,15 @@ impl ObservationBus {
             return None;
         };
         observation.id = self.id(sequence);
-        observation.timestamp = clock();
-        observation.timestamp_resolution = self.session.timestamp_resolution;
+        let timestamp = clock();
+        if observation.layer == Layer::WirePacket {
+            // Packet wall time and precision come from the acquisition source.
+            // Monotonic time describes ingestion, not a kernel packet clock.
+            observation.timestamp.monotonic_ns = timestamp.monotonic_ns;
+        } else {
+            observation.timestamp = timestamp;
+            observation.timestamp_resolution = self.session.timestamp_resolution;
+        }
         let id = observation.id.clone();
         let layer = observation.layer.index();
         self.counters.total[layer].fetch_add(1, Ordering::Relaxed);
