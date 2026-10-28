@@ -36,7 +36,7 @@ proxy to change these limits.
 
 The existing authenticated operator stats report includes `observations`.
 The runtime's existing Prometheus renderer includes the same operational
-counters. No new HTTP endpoint is added. Layer labels identify transport
+counters. Metadata statistics use the existing HTTP endpoints. Layer labels identify transport
 streams, TLS cleartext, protocol messages and application content. Consumer
 labels are the fixed internal kinds `metrics` and `capture`; they contain no
 request IDs, connection IDs, destinations or content.
