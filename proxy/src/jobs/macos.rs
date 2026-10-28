@@ -417,7 +417,7 @@ pub(super) async fn run(
     let work = async {
         let artifacts = rootfs(guest).await?;
         host_platform::start_job_sandbox(name, spec.memory_mb).await?;
-        let mut connection = connect(root, name, &public).await?;
+        let connection = connect(root, name, &public).await?;
         let mut channel = connection.channel_open_session().await?;
         channel.exec(true, "run-job").await?;
         channel.eof().await?;
@@ -521,7 +521,7 @@ mod tests {
                 .event(ChannelMsg::ExitStatus { exit_status: 256 })
                 .is_err()
         );
-        assert_eq!(signal_number(Sig::USR1).unwrap(), 10);
+        assert_eq!(signal_number(Sig::USR1).unwrap(), Some(10));
         assert!(signal_number(Sig::Custom("fake".into())).is_err());
     }
 
