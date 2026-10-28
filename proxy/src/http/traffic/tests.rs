@@ -652,6 +652,304 @@ async fn canceled_response_and_real_dial_error_never_fabricate_response_events()
     owned_egress(directory.path(), &host, port, 2);
 }
 
+fn owned_h2_tls(
+    directory: &Path,
+    host: &str,
+    configuration: &mut Config,
+) -> (
+    rustls::ServerConfig,
+    tokio_rustls::TlsConnector,
+    String,
+    String,
+) {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::default();
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+    let ca = params.self_signed(&key).unwrap();
+    let ca_path = directory.join("interception-ca.pem");
+    std::fs::write(&ca_path, format!("{}{}", key.serialize_pem(), ca.pem())).unwrap();
+    configuration.tls_ca_file = Some(ca_path);
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec![host.to_owned()]).unwrap();
+    let upstream_path = directory.join("upstream-ca.pem");
+    std::fs::write(&upstream_path, cert.pem()).unwrap();
+    configuration.upstream_ca_file = Some(upstream_path);
+    let hash = |bytes: &[u8]| {
+        ring::digest::digest(&ring::digest::SHA256, bytes)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let expected_cert_hash = hash(cert.der());
+    let expected_spki_hash = hash(&rcgen::PublicKeyData::subject_public_key_info(&signing_key));
+    let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert.der().clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    tls.alpn_protocols = vec![b"h2".to_vec()];
+    let server = tls;
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ca.der().clone()).unwrap();
+    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    tls.alpn_protocols = vec![b"h2".to_vec()];
+    (
+        server,
+        tokio_rustls::TlsConnector::from(Arc::new(tls)),
+        expected_cert_hash,
+        expected_spki_hash,
+    )
+}
+
+#[tokio::test]
+async fn h2_stream_parser_failures_preserve_a_healthy_tunnel() {
+    use crate::observations::{ConsumerKind, Direction, Layer, Limits, Point, Record, State};
+
+    fn frame(kind: u8, flags: u8, id: u32, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = (payload.len() as u32).to_be_bytes()[1..].to_vec();
+        bytes.extend([kind, flags]);
+        bytes.extend(id.to_be_bytes());
+        bytes.extend(payload);
+        bytes
+    }
+    async fn read_frame<S: AsyncRead + Unpin>(client: &mut S) -> (u8, u8, u32, Vec<u8>) {
+        let mut head = [0; 9];
+        timeout(LIMIT, client.read_exact(&mut head))
+            .await
+            .unwrap()
+            .unwrap();
+        let length = u32::from_be_bytes([0, head[0], head[1], head[2]]) as usize;
+        let id = u32::from_be_bytes(head[5..9].try_into().unwrap()) & 0x7fff_ffff;
+        let mut payload = vec![0; length];
+        timeout(LIMIT, client.read_exact(&mut payload))
+            .await
+            .unwrap()
+            .unwrap();
+        (head[3], head[4], id, payload)
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let (origin, address) = listener().await;
+    let host = if address.is_ipv4() {
+        address.ip().to_string()
+    } else {
+        "localhost".into()
+    };
+    let authority = format!("{host}:{}", address.port());
+    let mut configuration = config(directory.path(), false);
+    let (tls, connector, _, _) = owned_h2_tls(directory.path(), &host, &mut configuration);
+    let origin_completions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let completed = origin_completions.clone();
+    let peer = tokio::spawn(async move {
+        let (stream, _) = timeout(LIMIT, origin.accept()).await.unwrap().unwrap();
+        let stream = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
+            .accept(stream)
+            .await
+            .unwrap();
+        hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+            .serve_connection(
+                TokioIo::new(stream),
+                service_fn(move |request: Request<Incoming>| {
+                    let completed = completed.clone();
+                    async move {
+                        assert_eq!(request.method(), "GET");
+                        // Forwarded uploads can be reset before their origin
+                        // body completes. Propagate that error to Hyper.
+                        let body = request.into_body().collect().await?.to_bytes();
+                        assert!(body.is_empty());
+                        completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        Ok::<_, hyper::Error>(Response::new(Full::new(Bytes::from_static(b"ok"))))
+                    }
+                }),
+            )
+            .await
+            .unwrap();
+    });
+    let proxy = Proxy::start(configuration).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let observations = &runtime.connection_events.as_ref().unwrap().observations;
+    let mut consumer = observations.subscribe(ConsumerKind::Metrics, Limits::default());
+    let mut client = UnixStream::connect(directory.path().join("alice.sock"))
+        .await
+        .unwrap();
+    client
+        .write_all(format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    assert!(read_head(&mut client).await.starts_with(b"HTTP/1.1 200"));
+    let mut client = connector
+        .connect(
+            rustls::pki_types::ServerName::try_from(host).unwrap(),
+            client,
+        )
+        .await
+        .unwrap();
+    assert_eq!(client.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+    client
+        .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+        .await
+        .unwrap();
+    client.write_all(&frame(4, 0, 0, &[])).await.unwrap();
+    assert!(authority.len() < 127);
+    let mut head = vec![0x82, 0x87, 0x84, 0x01, authority.len() as u8];
+    head.extend(authority.as_bytes());
+    let mut observed = Vec::new();
+
+    // Two heads fail before service admission. A third request is admitted,
+    // then fails the native DATA content-length check. None may complete.
+    for (id, length, end_at_head) in [(1, b'1', true), (3, b'x', true), (5, b'1', false)] {
+        let mut malformed = head.clone();
+        malformed.extend([0x0f, 0x0d, 0x01, length]);
+        client
+            .write_all(&frame(1, if end_at_head { 5 } else { 4 }, id, &malformed))
+            .await
+            .unwrap();
+        if !end_at_head {
+            loop {
+                let record = timeout(LIMIT, consumer.recv()).await.unwrap().unwrap();
+                let Record::Observation(record) = record.as_ref() else {
+                    panic!("canonical loss")
+                };
+                observed.push(record.clone());
+                if record.state == State::ParsedHead && record.protocol_stream_id == Some(id) {
+                    break;
+                }
+            }
+            client.write_all(&frame(0, 1, id, b"xx")).await.unwrap();
+        }
+        loop {
+            let (kind, flags, stream, payload) = read_frame(&mut client).await;
+            assert_ne!(kind, 7, "unexpected GOAWAY");
+            if kind == 4 && flags == 0 {
+                client.write_all(&frame(4, 1, 0, &[])).await.unwrap();
+            }
+            if kind == 3 && stream == id {
+                assert_eq!(payload, 1u32.to_be_bytes());
+                break;
+            }
+        }
+    }
+
+    // The same PROTOCOL_ERROR reason from the peer is an abort, not a local
+    // parser rejection. Wait for admission before resetting this upload.
+    let mut pending = head.clone();
+    pending.extend([0x0f, 0x0d, 0x01, b'1']);
+    client.write_all(&frame(1, 4, 7, &pending)).await.unwrap();
+    loop {
+        let record = timeout(LIMIT, consumer.recv()).await.unwrap().unwrap();
+        let Record::Observation(record) = record.as_ref() else {
+            panic!("canonical loss")
+        };
+        observed.push(record.clone());
+        if record.state == State::ParsedHead && record.protocol_stream_id == Some(7) {
+            break;
+        }
+    }
+    client
+        .write_all(&frame(3, 0, 7, &1u32.to_be_bytes()))
+        .await
+        .unwrap();
+    client.write_all(&frame(1, 5, 9, &head)).await.unwrap();
+    let mut body = Vec::new();
+    loop {
+        let (kind, flags, id, payload) = read_frame(&mut client).await;
+        assert_ne!(kind, 7, "unexpected GOAWAY");
+        if kind == 0 && id == 9 {
+            body.extend(payload);
+        }
+        if id == 9 && flags & 1 != 0 {
+            break;
+        }
+    }
+    assert_eq!(body, b"ok");
+    client.shutdown().await.unwrap();
+    drop(client);
+    timeout(LIMIT, peer).await.unwrap().unwrap();
+    assert_eq!(
+        origin_completions.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    proxy.shutdown().await;
+    let through = observations.next_sequence() - 1;
+    while observed.last().is_none_or(|o| o.id.sequence < through) {
+        let record = timeout(LIMIT, consumer.recv()).await.unwrap().unwrap();
+        let Record::Observation(record) = record.as_ref() else {
+            panic!("canonical loss")
+        };
+        observed.push(record.clone());
+    }
+    assert!(
+        observed
+            .iter()
+            .all(|o| o.payload.is_none() && o.captured_length == 0)
+    );
+    let failures: Vec<_> = observed
+        .iter()
+        .filter(|o| o.state == State::ParseError)
+        .collect();
+    assert_eq!(
+        failures
+            .iter()
+            .map(|o| o.protocol_stream_id)
+            .collect::<Vec<_>>(),
+        vec![Some(1), Some(3), Some(5)]
+    );
+    assert!(failures.iter().all(|o| o.point == Point::RequestParser
+        && o.layer == Layer::ProtocolMessage
+        && o.direction == Direction::ToProxy));
+    assert!(
+        !observed
+            .iter()
+            .any(|o| matches!(o.protocol_stream_id, Some(1 | 3)) && o.state == State::ParsedHead)
+    );
+    assert_eq!(
+        observed
+            .iter()
+            .filter(|o| o.state == State::Complete && o.layer == Layer::ApplicationContent)
+            .map(|o| o.protocol_stream_id)
+            .collect::<Vec<_>>(),
+        vec![None, Some(9)]
+    );
+    assert!(
+        observed
+            .iter()
+            .any(|o| o.protocol_stream_id == Some(7) && o.state == State::Dropped)
+    );
+    let metrics = observations.counters.json()["behaviour"].clone();
+    let total = |name: &str| {
+        metrics["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s[name].as_u64().unwrap())
+            .sum::<u64>()
+    };
+    assert_eq!(total("protocol_parse_failures_total"), 3);
+    assert_eq!(total("application_messages_total"), 2);
+    assert!(
+        metrics["observation_loss_total"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v == 0)
+    );
+    cleanup(directory.path());
+}
+
 #[tokio::test]
 async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     let directory = tempfile::tempdir().unwrap();
@@ -688,40 +986,8 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
         .to_string(),
     )
     .unwrap();
-    let key = rcgen::KeyPair::generate().unwrap();
-    let mut params = rcgen::CertificateParams::default();
-    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
-    let ca = params.self_signed(&key).unwrap();
-    let ca_path = directory.path().join("interception-ca.pem");
-    std::fs::write(&ca_path, format!("{}{}", key.serialize_pem(), ca.pem())).unwrap();
-    configuration.tls_ca_file = Some(ca_path);
-    let rcgen::CertifiedKey { cert, signing_key } =
-        rcgen::generate_simple_self_signed(vec![host.clone()]).unwrap();
-    let upstream_path = directory.path().join("upstream-ca.pem");
-    std::fs::write(&upstream_path, cert.pem()).unwrap();
-    configuration.upstream_ca_file = Some(upstream_path);
-    let hash = |bytes: &[u8]| {
-        ring::digest::digest(&ring::digest::SHA256, bytes)
-            .as_ref()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
-    };
-    let expected_cert_hash = hash(cert.der());
-    let expected_spki_hash = hash(&rcgen::PublicKeyData::subject_public_key_info(&signing_key));
-    let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_no_client_auth()
-    .with_single_cert(
-        vec![cert.der().clone()],
-        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
-    )
-    .unwrap();
-    tls.alpn_protocols = vec![b"h2".to_vec()];
+    let (tls, connector, expected_cert_hash, expected_spki_hash) =
+        owned_h2_tls(directory.path(), &host, &mut configuration);
     let peer = tokio::spawn(async move {
         let (stream, _) = origin.accept().await.unwrap();
         let stream = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
@@ -771,17 +1037,7 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
         .await
         .unwrap();
     assert!(read_head(&mut client).await.starts_with(b"HTTP/1.1 200"));
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(ca.der().clone()).unwrap();
-    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_root_certificates(roots)
-    .with_no_client_auth();
-    tls.alpn_protocols = vec![b"h2".to_vec()];
-    let client = tokio_rustls::TlsConnector::from(Arc::new(tls))
+    let client = connector
         .connect(
             rustls::pki_types::ServerName::try_from(host.clone()).unwrap(),
             client,

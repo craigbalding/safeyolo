@@ -96,6 +96,10 @@ owner drops after completed requests do not imply aborted messages. Partial
 measurements describe the named layer: an application-body abort and a transport
 error can each produce a measurement at their respective points.
 
+Recoverable HTTP/2 parser rejections are counted at the native receiver,
+including heads rejected before request admission. Distinct rejected streams
+on one connection each contribute a failure. A peer reset is not a parser failure.
+
 Chunks-per-message series use the source point/layer/direction from an exact
 HTTP/1 `input_span`. A read-ahead chunk can overlap two messages and contribute
 once to each. Framing and trailers are included; unrelated read-ahead bytes are

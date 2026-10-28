@@ -189,6 +189,16 @@ impl Source {
         self.bus.emit(record);
         true
     }
+    pub(crate) fn http2_stream_parse_error(&self, stream_id: u32) {
+        // Each receiver rejection is independent of the connection's terminal
+        // parser error latch. No live stream IDs or payloads are retained here.
+        let mut record = self.record(Direction::ToProxy, None, None, State::ParseError);
+        record.layer = Layer::ProtocolMessage;
+        record.point = Point::RequestParser;
+        record.protocol_stream_id = Some(stream_id);
+        record.input_span = self.prefix(Direction::ToProxy);
+        self.bus.emit(record);
+    }
     pub(crate) fn application(
         self: &Arc<Self>,
         request_id: &str,

@@ -231,5 +231,25 @@
       "proxy/src/observations/tests.rs"
     ],
     "license": "MIT (existing LICENSE unchanged)"
+  },
+  "stream_parse_error_patch": {
+    "base_commit": "c80677a78bfd92f1424b4b623e7b6137954902e4",
+    "scope": "Optional content-free observation at native recoverable stream-parser rejection owners, including heads rejected before service admission. One callback per connection; no frame retention, stream history, new dependency, admission, reset, abort or flow-control changes.",
+    "files": [
+      {
+        "path": "src/proto/h2/server.rs",
+        "base_sha256": "55467701531bc8177a688f5dc739378c967db4e575e6696dfe7500ec705a10bf",
+        "candidate_sha256": "5c2b0e7bf1fb23a270ff1e0dc81eb4b07da3580c9835a3a8e2d33b7d4b1b1439"
+      },
+      {
+        "path": "src/server/conn/http2.rs",
+        "base_sha256": "625bc621eab3dd7110574a8e5e0bc9bfe931556d062cfea8cef104c708802ea5",
+        "candidate_sha256": "5695461350ea53d939b678ae96e9d1c5b2fb36e83b09f8703c761c9ef001f315"
+      }
+    ],
+    "validation": [
+      "proxy/src/http/traffic/tests.rs::h2_stream_parser_failures_preserve_a_healthy_tunnel"
+    ],
+    "license": "MIT (existing LICENSE unchanged)"
   }
 }

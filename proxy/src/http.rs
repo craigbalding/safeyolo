@@ -4796,8 +4796,14 @@ async fn serve_tunnel_http(
         )
     });
     let result = if http2 {
-        let connection = hyper::server::conn::http2::Builder::new(Executor(upgrades.clone()))
-            .serve_connection(TokioIo::new(client), service);
+        let mut builder = hyper::server::conn::http2::Builder::new(Executor(upgrades.clone()));
+        if let Some(connection) = upgrades.ingress.get() {
+            let source = connection.source();
+            builder.on_stream_parse_error(h2::ext::StreamParseErrorObserver::new(move |id| {
+                source.http2_stream_parse_error(id);
+            }));
+        }
+        let connection = builder.serve_connection(TokioIo::new(client), service);
         tokio::pin!(connection);
         if *stop.borrow() {
             connection.as_mut().graceful_shutdown();
