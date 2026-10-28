@@ -462,10 +462,24 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
         Err(error) => {
             if cleanup_failed {
                 let _ = temporary.keep();
+            } else if let Err(cleanup) = temporary.close() {
+                return Err(format!(
+                    "{error}; job runtime removal failed: {cleanup}; inspect {}",
+                    root.display()
+                )
+                .into());
             }
             return Err(error);
         }
     };
+    // TempDir's Drop ignores removal errors. A successful job result must not
+    // claim disposal when an owned runtime directory remains on disk.
+    temporary.close().map_err(|error| {
+        format!(
+            "job runtime removal failed: {error}; inspect {}",
+            root.display()
+        )
+    })?;
     Ok(JobResult {
         run_id: name,
         gate_id: spec.gate_id.clone(),

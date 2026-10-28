@@ -254,7 +254,7 @@ nodes:
         - path: guest/build-rootfs.sh
           sha256: 4a30c9ece1b79e9e53bbb1dd301596ff94552d99be25386ac395f1f9490d05ed
         - path: proxy/src/jobs.rs
-          sha256: 604e577b22c0158951fc34d599eb74824d8c1bde6773135f03ba1dbf1fb4b0c1
+          sha256: 2a38d09464ae8f33a393442ad30e1fd3542f6380cded18ad9d496b4863937e0b
         - path: proxy/src/jobs/input.rs
           sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
         - path: tests/blackbox/host/job_sandbox.py
@@ -303,7 +303,7 @@ nodes:
         - path: proxy/src/host_platform.rs
           sha256: 52abcaa678458e3092b808f04aa8ac3ddd3413ec04d6e3779f724ffea0d9bb20
         - path: proxy/src/jobs.rs
-          sha256: 604e577b22c0158951fc34d599eb74824d8c1bde6773135f03ba1dbf1fb4b0c1
+          sha256: 2a38d09464ae8f33a393442ad30e1fd3542f6380cded18ad9d496b4863937e0b
         - path: proxy/src/jobs/input.rs
           sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
         - path: proxy/src/jobs/macos.rs
