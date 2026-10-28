@@ -389,7 +389,10 @@ impl Source {
         }
         Ok(source)
     }
-    pub(super) async fn run(self, mut stopped: watch::Receiver<bool>) -> Result<(), &'static str> {
+    pub(super) async fn run(
+        mut self,
+        mut stopped: watch::Receiver<bool>,
+    ) -> Result<(), &'static str> {
         let mut tick = tokio::time::interval(Duration::from_millis(2));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut n = 0u32;
