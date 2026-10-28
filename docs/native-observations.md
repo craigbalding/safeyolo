@@ -412,8 +412,8 @@ budget, with a minimum 64 KiB kernel buffer. The source supports Ethernet
 (including two VLAN tags), native loopback, raw IP and Linux cooked link types.
 It follows at most eight IPv6 extension headers. Packets without a readable TCP
 tuple, including noninitial IP fragments, cannot be correlated and are omitted.
-Connection registration follows successful connect; packets already drained
-before registration are unavailable. Capture does not claim a complete TCP
+Connection registration follows successful connect. Packets timestamped before
+registration or already drained before registration are unavailable. Capture does not claim a complete TCP
 handshake or retransmission history.
 
 The observation counters expose `wire_packets_received_total`,

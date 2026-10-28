@@ -1229,10 +1229,12 @@ fn stdout_pipe_shutdown_is_bounded_with_a_stopped_or_draining_collector() {
             "{collector}: {}",
             std::fs::read_to_string(directory.path().join("stderr")).unwrap()
         );
-        assert_eq!(
-            unsafe { libc::fcntl(held_writer.as_raw_fd(), libc::F_GETFL) },
-            flags
-        );
+        let after = unsafe { libc::fcntl(held_writer.as_raw_fd(), libc::F_GETFL) };
+        assert!(flags >= 0 && after >= 0);
+        // F_GETFL can include kernel bookkeeping that changes on an ordinary
+        // write (observed on macOS). Compare the mutable pipe status flags.
+        let mutable = libc::O_NONBLOCK | libc::O_APPEND | libc::O_ASYNC;
+        assert_eq!(after & mutable, flags & mutable);
         drop(held_writer);
         if let Some(draining) = draining {
             let bytes = draining.join().unwrap();
@@ -1352,7 +1354,7 @@ async fn native_wire_acquisition_excludes_unrelated_and_live_export_transports()
         .prefix("wire-")
         .tempdir_in(std::env::var_os("SAFEYOLO_WIRE_PROOF_DIR").expect("proof directory"))
         .unwrap();
-    let root = directory.path().to_owned();
+    let root = directory.keep();
     let mut config = config(&root);
     config.admin_port = Some(0);
     let token = root.join("token");
@@ -1598,5 +1600,4 @@ async fn native_wire_acquisition_excludes_unrelated_and_live_export_transports()
         format.precision_ns,
         root.display()
     );
-    let _ = directory.keep();
 }

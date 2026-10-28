@@ -94,11 +94,14 @@ impl Connections {
         local: SocketAddr,
         remote: SocketAddr,
         source: Arc<ObservationSource>,
-        start_ns: u64,
     ) -> Option<Ownership> {
         if !self.active.load(Ordering::Acquire) {
             return None;
         }
+        // Start at the owned socket's successful-connect registration. An
+        // earlier DNS/attempt time could admit buffered packets from an older
+        // unrelated connection that used this tuple before the native socket.
+        let start_ns = wall_ns();
         let tuple = (canonical(local), canonical(remote));
         if let Ok(mut owned) = self.owned.try_lock() {
             if owned.len() < self.capacity
@@ -609,26 +612,25 @@ mod tests {
         let connections = connections(1);
         let local = "127.0.0.1:32000".parse().unwrap();
         let remote = "127.0.0.1:443".parse().unwrap();
-        let ownership = connections
-            .register(local, remote, source(&bus), 100)
-            .unwrap();
-        assert!(connections.lookup((local, remote), 99).is_none());
+        let ownership = connections.register(local, remote, source(&bus)).unwrap();
+        let start = connections.owned.lock().unwrap()[&(local, remote)].start_ns as i128;
+        assert!(connections.lookup((local, remote), start - 1).is_none());
         assert_eq!(
-            connections.lookup((local, remote), 101).unwrap().1,
+            connections.lookup((local, remote), start).unwrap().1,
             Direction::FromProxy
         );
         assert_eq!(
-            connections.lookup((remote, local), 101).unwrap().1,
+            connections.lookup((remote, local), start).unwrap().1,
             Direction::ToProxy
         );
         assert!(
             connections
-                .lookup(("127.0.0.1:32001".parse().unwrap(), remote), 101)
+                .lookup(("127.0.0.1:32001".parse().unwrap(), remote), start)
                 .is_none()
         );
         assert!(
             connections
-                .register(local, "127.0.0.1:444".parse().unwrap(), source(&bus), 100)
+                .register(local, "127.0.0.1:444".parse().unwrap(), source(&bus))
                 .is_none()
         );
         assert_eq!(
@@ -647,7 +649,7 @@ mod tests {
                 .lookup((local, remote), end as i128 + 1)
                 .is_none()
         );
-        assert!(connections.lookup((local, remote), 101).is_some());
+        assert!(connections.lookup((local, remote), start).is_some());
     }
     #[tokio::test]
     async fn wire_precision_and_bytes_survive_canonical_and_classic_encoding_without_transport_metrics()

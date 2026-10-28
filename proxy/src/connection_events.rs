@@ -255,16 +255,8 @@ impl Connection {
     pub(crate) fn wire_connected(&self, local: SocketAddr, remote: SocketAddr) {
         let source = self.source();
         if let Some(wire) = source.wire() {
-            let start_ns = self
-                .0
-                .facts
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .started
-                .unix_timestamp_nanos()
-                .clamp(0, u64::MAX as i128) as u64;
             *self.0.wire.lock().unwrap_or_else(|e| e.into_inner()) =
-                wire.register(local, remote, source.clone(), start_ns);
+                wire.register(local, remote, source.clone());
         }
     }
     pub(crate) fn connected(
