@@ -99,6 +99,12 @@ fn document_with_memory(
         Err(error) => failure("RuntimeError", &error.to_string()),
     };
     report.insert("metrics".into(), metrics);
+    if let Some(observations) = runtime.metrics.observations.get() {
+        report.insert(
+            "observations".into(),
+            CircuitValue::Other(observations.json()),
+        );
+    }
     if runtime.config.native_product {
         report = report
             .into_iter()
@@ -237,7 +243,8 @@ mod tests {
                 "test-context",
                 "flow-recorder",
                 "request-logger",
-                "metrics"
+                "metrics",
+                "observations"
             ]
         );
         assert!(!directory.path().join("audit.jsonl").exists());

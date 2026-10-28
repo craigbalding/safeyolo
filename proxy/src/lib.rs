@@ -62,6 +62,7 @@ pub mod linux_host;
 #[cfg(target_os = "macos")]
 mod macos_mounts;
 pub mod mattermost;
+pub mod observations;
 
 /// Run the bounded PID-1/shared-home diagnostic without guest SSH.
 pub fn recover_guest_probe(
@@ -788,6 +789,7 @@ impl Runtime {
                         &config,
                         default_via,
                         audit.clone(),
+                        &metrics,
                     ),
                 },
                 prompt_exposure: previous.map_or_else(

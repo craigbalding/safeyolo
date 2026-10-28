@@ -35,6 +35,7 @@ pub(crate) struct Buffered<T, B> {
     partial_len: Option<usize>,
     read_blocked: bool,
     read_buf: BytesMut,
+    read_bytes: u64,
     read_buf_strategy: ReadStrategy,
     write_buf: WriteBuf<B>,
 }
@@ -69,6 +70,7 @@ where
             partial_len: None,
             read_blocked: false,
             read_buf: BytesMut::with_capacity(0),
+            read_bytes: 0,
             read_buf_strategy: ReadStrategy::default(),
             write_buf,
         }
@@ -109,6 +111,10 @@ where
         // so this assert is here to catch myself
         debug_assert_eq!(self.write_buf.queue.bufs_cnt(), 0);
         self.write_buf.set_strategy(WriteStrategy::Queue);
+    }
+
+    pub(crate) fn read_position(&self) -> u64 {
+        self.read_bytes.saturating_sub(self.read_buf.len() as u64)
     }
 
     pub(crate) fn read_buf(&self) -> &[u8] {
@@ -242,6 +248,7 @@ where
         match Pin::new(&mut self.io).poll_read(cx, buf.unfilled()) {
             Poll::Ready(Ok(_)) => {
                 let n = buf.filled().len();
+                self.read_bytes = self.read_bytes.saturating_add(n as u64);
                 trace!("received {} bytes", n);
                 // Safety: we just read that many bytes into the
                 // uninitialized part of the buffer, so this is okay.

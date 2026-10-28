@@ -753,6 +753,16 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     });
     let mut proxy = Proxy::start(configuration.clone()).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
+    let observations = runtime
+        .connection_events
+        .as_ref()
+        .unwrap()
+        .observations
+        .clone();
+    let mut consumer = observations.subscribe(
+        crate::observations::ConsumerKind::Metrics,
+        crate::observations::Limits::default(),
+    );
     let mut client = UnixStream::connect(directory.path().join("alice.sock"))
         .await
         .unwrap();
@@ -849,6 +859,62 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     timeout(LIMIT, driver).await.unwrap().unwrap().unwrap();
     timeout(LIMIT, peer).await.unwrap().unwrap();
     proxy.shutdown().await;
+    let through = observations.next_sequence() - 1;
+    let mut observed = Vec::new();
+    loop {
+        let record = timeout(LIMIT, consumer.recv()).await.unwrap().unwrap();
+        match record.as_ref() {
+            crate::observations::Record::Observation(record) => {
+                let sequence = record.id.sequence;
+                observed.push(record.clone());
+                if sequence == through {
+                    break;
+                }
+            }
+            crate::observations::Record::Gap(_) => panic!("unexpected loss in bounded TLS fixture"),
+        }
+    }
+    use crate::observations::{Direction, Layer, Point, State};
+    let clear: Vec<_> = observed
+        .iter()
+        .filter(|o| {
+            o.point == Point::ClientTls
+                && o.state == State::Chunk
+                && o.direction == Direction::ToProxy
+        })
+        .collect();
+    assert!(!clear.is_empty());
+    for chunk in clear {
+        let parent = chunk.input_span.as_ref().unwrap();
+        assert_eq!(parent.layer, Layer::TransportStream);
+        assert!(!parent.parser_consumed);
+        assert!(
+            observed
+                .iter()
+                .any(|o| o.id == parent.observed_through && o.point == Point::AgentUds)
+        );
+    }
+    let heads: Vec<_> = observed
+        .iter()
+        .filter(|o| o.state == State::ParsedHead && o.protocol_stream_id.is_some())
+        .collect();
+    assert_eq!(heads.len(), 4);
+    let stream_ids: std::collections::HashSet<_> = heads
+        .iter()
+        .map(|o| o.protocol_stream_id.unwrap())
+        .collect();
+    assert_eq!(stream_ids.len(), 4);
+    for head in heads {
+        let input = head.input_span.as_ref().unwrap();
+        assert_eq!(input.layer, Layer::TlsCleartext);
+        assert_eq!(input.point, Point::ClientTls);
+        assert!(observed.iter().any(|o| o.id == input.observed_through));
+    }
+    assert!(observed.iter().all(|o| o.captured_length == 0));
+    let encoded = serde_json::to_string(&observed).unwrap();
+    for content in ["request body", "response body", "key-h2", "private=query"] {
+        assert!(!encoded.contains(content));
+    }
     cleanup(directory.path());
     assert_eq!(stats(&runtime), expected_stats(3, 0, 3));
     let rows = records(directory.path());
