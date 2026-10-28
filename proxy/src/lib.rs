@@ -91,6 +91,7 @@ pub mod operator_commands;
 mod operator_stats;
 pub mod policy;
 mod policy_runtime;
+mod prompt_injection;
 mod provider_stream;
 mod python_json;
 mod python_text;
@@ -98,6 +99,7 @@ pub mod repo_map;
 mod request_headers;
 mod request_logger;
 mod request_trace;
+mod security_indicators;
 #[cfg(test)]
 mod service_catalog_tests;
 pub mod services;
@@ -397,6 +399,7 @@ pub(crate) struct Runtime {
     traffic_view: Arc<traffic_view::TrafficView>,
     audit: Arc<audit::Writer>,
     connection_events: Option<Arc<connection_events::ConnectionEvents>>,
+    prompt_exposure: Arc<prompt_injection::Exposure>,
     request_logger: Arc<request_logger::RequestLogger>,
     agent_activity: Arc<agent_activity::AgentActivity>,
     metrics: Arc<metrics::Metrics>,
@@ -787,6 +790,10 @@ impl Runtime {
                         audit.clone(),
                     ),
                 },
+                prompt_exposure: previous.map_or_else(
+                    || Arc::new(prompt_injection::Exposure::default()),
+                    |previous| previous.prompt_exposure.clone(),
+                ),
                 request_logger,
                 agent_activity,
                 metrics,

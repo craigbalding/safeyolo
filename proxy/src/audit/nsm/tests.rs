@@ -266,6 +266,45 @@ fn strict_versions_kinds_payloads_and_content_boundaries() {
 }
 
 #[test]
+fn indicator_content_metadata_is_typed_and_requires_hashed_evidence() {
+    let mut row = record(indicator());
+    row["details"]["content_type"] = json!("text/plain");
+    row["details"]["inspected_bytes"] = json!(65536);
+    row["details"]["prefix_truncated"] = json!(true);
+    row["details"]["source"] = json!({
+        "request_id":"source-flow", "connection_id":"source-connection", "host":"source.invalid",
+        "evidence_hash":format!("sha256:{}", "b".repeat(64)),
+        "matched_fingerprints":8, "source_fingerprints":12,
+    });
+    assert!(parse_record(&row.to_string()).is_ok());
+    for (field, value) in [
+        ("content_type", json!("x".repeat(129))),
+        ("content_type", json!("")),
+        ("inspected_bytes", json!(-1)),
+        ("prefix_truncated", json!("true")),
+        ("evidence_hash", Value::Null),
+    ] {
+        let mut invalid = row.clone();
+        invalid["details"][field] = value;
+        assert!(parse_record(&invalid.to_string()).is_err(), "{field}");
+    }
+    for (field, value) in [
+        ("request_id", json!("")),
+        ("evidence_hash", json!("raw content")),
+        ("matched_fingerprints", json!(0)),
+        ("matched_fingerprints", json!(13)),
+        ("body", json!("private source content")),
+    ] {
+        let mut invalid = row.clone();
+        invalid["details"]["source"][field] = value;
+        assert!(
+            parse_record(&invalid.to_string()).is_err(),
+            "source {field}"
+        );
+    }
+}
+
+#[test]
 fn native_route_facts_keep_origin_and_physical_peer_distinct() {
     let mut upstream = record(connection("S1", true));
     upstream["details"]["client_connection_id"] = json!("C1");

@@ -3671,6 +3671,14 @@ where
                 if let Some(vault) = vault {
                     let _ = vault.reload_if_changed();
                 }
+                let selected_model_request = crate::prompt_injection::is_claude_messages(
+                    &credential,
+                    identity.request_agent(),
+                    &destination.scheme,
+                    &destination.policy_host,
+                    request.method().as_str(),
+                    &destination.path,
+                );
                 let start = crate::credential_injection::prepare(
                     *credential,
                     vault,
@@ -3765,6 +3773,9 @@ where
                             gateway_injected_header = None;
                         }
                         gateway_evidence = Some(evidence);
+                        if let Some(traffic) = &traffic {
+                            traffic.selected_model_request(selected_model_request);
+                        }
                         if let Some(hook) = &gateway_trace {
                             hook.evaluated("injected", None);
                         }
@@ -5045,7 +5056,7 @@ pub(crate) fn serve_request(
         }
         let completed_probe = reply.extensions_mut().remove::<probe::Completed>();
         let circuit = if let Some(probe) = &completed_probe {
-            probe.capture.memory_response();
+            probe.capture.completed_content();
             crate::circuit_runtime::completed_response(
                 &state,
                 &identity,
