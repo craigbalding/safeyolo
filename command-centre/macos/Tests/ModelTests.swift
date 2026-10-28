@@ -219,6 +219,7 @@ struct ModelTests: App {
             )
             let initial = end == "immediate" ? ready : starting
             StubURLProtocol.responsesByPath = [
+                "/admin/instance": (200, Data(#"{"schema_version":1,"safeyolo_instance_id":"sy-fixture"}"#.utf8)),
                 "/admin/agents/ag-probe/start": (end == "request-error" ? 503 : 200, initial),
                 "/admin/agents": (200, inventory(initial)),
             ]
