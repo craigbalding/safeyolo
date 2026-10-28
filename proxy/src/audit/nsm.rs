@@ -45,6 +45,8 @@ struct Connection {
     client_connection_id: Option<String>,
     route: Option<String>,
     tls_server_name: Option<String>,
+    tls_client_hello: Option<crate::tls_identity::ClientHello>,
+    tls_sessions: Option<Vec<crate::tls_identity::TlsSession>>,
     ingress: String,
 }
 
@@ -107,12 +109,21 @@ impl Connection {
         ]) && matches!(self.leg.as_str(), "client_to_proxy" | "proxy_to_upstream")
             && matches!(
                 (self.state.as_str(), end),
-                ("open", None) | ("closed" | "failed", Some(_))
+                ("open" | "updated", None) | ("closed" | "failed", Some(_))
             )
             && optional(self.error.as_deref())
             && optional(self.requested_target.as_deref())
             && optional(self.client_connection_id.as_deref())
             && optional(self.tls_server_name.as_deref())
+            && self
+                .tls_client_hello
+                .as_ref()
+                .is_none_or(|hello| self.leg == "client_to_proxy" && hello.valid())
+            && self.tls_sessions.as_ref().is_none_or(|sessions| {
+                self.leg == "proxy_to_upstream"
+                    && sessions.len() <= 2
+                    && sessions.iter().all(crate::tls_identity::TlsSession::valid)
+            })
             && self
                 .route
                 .as_deref()

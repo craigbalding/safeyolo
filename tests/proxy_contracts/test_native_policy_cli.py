@@ -451,8 +451,8 @@ def test_installed_credential_approval_keeps_destination_scope(tmp_path):
         assert logs.returncode == 0, logs.stderr
         log_view = json.loads(logs.stdout)
         assert Path(log_view["file"]) == instance.root / "logs/audit.jsonl"
-        assert any(row["request_id"] == event["request_id"]
-                   and row["event"] == "security.credential_guard" for row in log_view["events"])
+        assert any(row["event"] == "security.credential_guard"
+                   and row["request_id"] == event["request_id"] for row in log_view["events"])
         assert CUSTOM_TOKEN not in logs.stdout
         pending = instance.admin("GET", "/admin/approvals")
         fingerprint = event["details"]["fingerprint"]

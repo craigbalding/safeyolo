@@ -306,6 +306,38 @@ fn native_route_facts_keep_origin_and_physical_peer_distinct() {
 }
 
 #[test]
+fn tls_updates_keep_the_connection_key_and_reject_raw_or_unbounded_content() {
+    let mut client = record(connection("C1", false));
+    client["details"]["state"] = json!("updated");
+    client["details"]["tls_client_hello"] = json!({
+        "ja3":"ada70206e40642a3e4461f35503241d5",
+        "ja4":"t13d1516h2_8daaf6152771_e5627efa2ab1",
+        "sni":"example.com","alpn_offers":["h2"],"legacy_version":771,
+        "supported_versions":[772,771],"cipher_suites":[4865],"cipher_suite_count":1,
+        "extension_types":[0,16],"extension_count":2,"truncated":false
+    });
+    assert!(parse_record(&client.to_string()).is_ok());
+    for (field, value) in [
+        ("raw_client_hello", json!("not permitted")),
+        ("sni", json!("a".repeat(254))),
+        ("alpn_offers", json!(vec!["h2"; 17])),
+    ] {
+        let mut invalid = client.clone();
+        invalid["details"]["tls_client_hello"][field] = value;
+        assert!(parse_record(&invalid.to_string()).is_err(), "{field}");
+    }
+    let mut invalid = client.clone();
+    invalid["details"]["ended_at"] = json!("2026-10-27T12:00:01Z");
+    assert!(parse_record(&invalid.to_string()).is_err());
+    let mut upstream = record(connection("S1", true));
+    upstream["details"]["tls_sessions"] = json!([{"peer":"origin","sni":"example.com",
+        "version":"TLSv1_3","cipher":null,"alpn":null,"handshake_kind":"Full","leaf_certificate":null}]);
+    assert!(parse_record(&upstream.to_string()).is_ok());
+    upstream["details"]["tls_sessions"][0]["certificate_der"] = json!("not permitted");
+    assert!(parse_record(&upstream.to_string()).is_err());
+}
+
+#[test]
 fn unknown_observations_external_ingress_and_terminal_states_are_representable() {
     let mut external = connection("external-C1", false);
     external.attribution = Some(Attribution {

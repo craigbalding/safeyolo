@@ -701,6 +701,15 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     let upstream_path = directory.path().join("upstream-ca.pem");
     std::fs::write(&upstream_path, cert.pem()).unwrap();
     configuration.upstream_ca_file = Some(upstream_path);
+    let hash = |bytes: &[u8]| {
+        ring::digest::digest(&ring::digest::SHA256, bytes)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let expected_cert_hash = hash(cert.der());
+    let expected_spki_hash = hash(&rcgen::PublicKeyData::subject_public_key_info(&signing_key));
     let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
@@ -893,6 +902,35 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
         servers.len(),
         1,
         "three H2 streams and CONNECT share the actual upstream"
+    );
+    let hello = &clients[0]["tls_client_hello"];
+    assert_eq!(hello["alpn_offers"], json!(["h2"]));
+    assert_eq!(hello["ja3"].as_str().unwrap().len(), 32);
+    assert!(hello["ja4"].as_str().unwrap().starts_with("t13"));
+    assert_eq!(servers[0]["tls_sessions"].as_array().unwrap().len(), 1);
+    let session = &servers[0]["tls_sessions"][0];
+    assert_eq!(session["peer"], "origin");
+    assert_eq!(session["version"], "TLSv1_3");
+    assert!(session["cipher"].as_str().unwrap().starts_with("TLS13_"));
+    assert_eq!(session["alpn"], "h2");
+    assert_eq!(session["handshake_kind"], "Full");
+    assert_eq!(
+        session["leaf_certificate"]["cert_sha256"],
+        expected_cert_hash
+    );
+    assert_eq!(
+        session["leaf_certificate"]["spki_sha256"],
+        expected_spki_hash
+    );
+    // One ClientHello and one upstream TLS establishment, independent of the
+    // number of application streams. Terminal records retain the same facts.
+    assert_eq!(
+        rows.iter()
+            .filter(
+                |row| row["event"] == "network.connection" && row["details"]["state"] == "updated"
+            )
+            .count(),
+        2
     );
     if host.parse::<std::net::IpAddr>().is_ok() {
         assert!(servers[0]["tls_server_name"].is_null());

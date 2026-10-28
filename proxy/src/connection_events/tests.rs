@@ -9,7 +9,7 @@ use tokio::{
 
 const LIMIT: Duration = Duration::from_secs(5);
 
-fn config(directory: &Path) -> Config {
+pub(crate) fn config(directory: &Path) -> Config {
     let policy = directory.join("policy.json");
     std::fs::write(
         &policy,
@@ -38,7 +38,7 @@ pub(crate) fn records(runtime: &Runtime, directory: &Path) -> Vec<Value> {
         .collect()
 }
 
-async fn head(stream: &mut (impl AsyncRead + Unpin)) -> Vec<u8> {
+pub(crate) async fn head(stream: &mut (impl AsyncRead + Unpin)) -> Vec<u8> {
     timeout(LIMIT, async {
         let mut bytes = Vec::new();
         while !bytes.ends_with(b"\r\n\r\n") {
@@ -80,7 +80,7 @@ pub(crate) fn assert_pairs(rows: &[Value]) {
             .filter(|row| {
                 row["event"] == "network.connection"
                     && row["details"]["connection_id"] == details["connection_id"]
-                    && row["details"]["state"] != "open"
+                    && matches!(row["details"]["state"].as_str(), Some("closed" | "failed"))
             })
             .collect();
         assert_eq!(ended.len(), 1, "one terminal record per real connection");
@@ -514,6 +514,7 @@ async fn failed_protocol_keeps_the_established_tcp_connection_and_flow_id() {
             }
         );
         assert!(servers[0]["tls_server_name"].is_null());
+        assert!(servers[0]["tls_sessions"].is_null());
         let flows: Vec<_> = rows
             .iter()
             .filter(|row| row["event"] == "traffic.flow")

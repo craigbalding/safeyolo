@@ -110,6 +110,7 @@ pub mod test_context;
 #[cfg(test)]
 pub(crate) mod test_owned_endpoint;
 pub mod tls;
+mod tls_identity;
 pub mod trace;
 pub(crate) mod traffic_view;
 #[cfg(test)]
