@@ -74,10 +74,19 @@ async fn stage(
             "StrictModes yes\nPermitRootLogin prohibit-password\nAllowUsers root\n",
             "PasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\n",
             "AllowTcpForwarding no\nAllowAgentForwarding no\nX11Forwarding no\nPermitTunnel no\nPermitTTY no\n",
-            "MaxSessions 1\nForceCommand exec /safeyolo/job-exec\n",
+            "MaxSessions 1\nLogLevel DEBUG1\nForceCommand exec /safeyolo/job-ssh-command\n",
         ),
     )?;
     fs::write(share.join("guest-init"), include_str!("vz-guest-init.sh"))?;
+    fs::write(
+        share.join("job-ssh-command"),
+        concat!(
+            "#!/bin/sh\nset -eu\ncase ${SSH_ORIGINAL_COMMAND-} in\n",
+            "run-job) umask 077; set -C; printf '%s\\n' \"$$\" > /run/job-command.pid; exec /safeyolo/job-exec ;;\n",
+            "read-job-wait) exec /bin/cat /run/job-command.pid /run/job-sshd.log ;;\n",
+            "*) exit 1 ;;\nesac\n",
+        ),
+    )?;
     // Exec at each step preserves the command's own wait status in sshd.
     // Neither an agent request nor SSH command text selects what is executed.
     fs::write(
@@ -85,7 +94,7 @@ async fn stage(
         concat!("#!/bin/sh\nexec /usr/bin/python3 /safeyolo/job-exec.py\n",),
     )?;
     fs::write(share.join("job-exec.py"), include_str!("vz-exec.py"))?;
-    for name in ["guest-init", "job-exec"] {
+    for name in ["guest-init", "job-exec", "job-ssh-command"] {
         fs::set_permissions(share.join(name), fs::Permissions::from_mode(0o755))?;
     }
     Ok(public)
@@ -142,10 +151,10 @@ async fn connect(
     }
 }
 
-fn signal_number(signal: Sig) -> Result<i32, Error> {
+fn signal_number(signal: Sig) -> Result<Option<i32>, Error> {
     // The guest is Linux even though this observer runs on macOS. In
     // particular, libc::SIGUSR1 on the host is not Linux SIGUSR1.
-    Ok(match signal {
+    Ok(Some(match signal {
         Sig::HUP => 1,
         Sig::INT => 2,
         Sig::QUIT => 3,
@@ -159,6 +168,7 @@ fn signal_number(signal: Sig) -> Result<i32, Error> {
         Sig::ALRM => 14,
         Sig::TERM => 15,
         Sig::Custom(name) => match name.as_str() {
+            "SIG@openssh.com" => return Ok(None),
             "TRAP" => 5,
             "BUS" => 7,
             "USR2" => 12,
@@ -180,11 +190,17 @@ fn signal_number(signal: Sig) -> Result<i32, Error> {
             "SYS" => 31,
             _ => return Err(format!("unrecognized guest SSH exit signal: {name}").into()),
         },
-    })
+    }))
+}
+
+#[derive(Clone)]
+enum SshExit {
+    Exit(i32),
+    Signal(Option<i32>),
 }
 
 struct Evidence {
-    status: Option<Outcome>,
+    status: Option<SshExit>,
     invalid_status: bool,
     closed: bool,
     stdout: OutputCapture,
@@ -220,13 +236,11 @@ impl Evidence {
                 if exit_status > 255 {
                     return Err("job SSH exit status is outside the Linux process range".into());
                 }
-                Some(Outcome::Exit {
-                    code: exit_status as i32,
-                })
+                Some(SshExit::Exit(exit_status as i32))
             }
-            ChannelMsg::ExitSignal { signal_name, .. } => Some(Outcome::Signal {
-                number: signal_number(signal_name)?,
-            }),
+            ChannelMsg::ExitSignal { signal_name, .. } => {
+                Some(SshExit::Signal(signal_number(signal_name)?))
+            }
             ChannelMsg::Failure => return Err("job SSH command request failed".into()),
             ChannelMsg::Close => {
                 self.closed = true;
@@ -245,10 +259,137 @@ impl Evidence {
         if self.invalid_status || !self.closed {
             return Err("job SSH did not supply one complete observed wait result".into());
         }
-        self.status
-            .clone()
-            .ok_or_else(|| "job SSH channel closed without exit-status or exit-signal".into())
+        match self.status {
+            Some(SshExit::Exit(code)) => Ok(Outcome::Exit { code }),
+            Some(SshExit::Signal(Some(number))) => Ok(Outcome::Signal { number }),
+            _ => Err("job SSH channel lacks an exact observed wait result".into()),
+        }
     }
+
+    fn verify(&self, observed: Outcome) -> Result<Outcome, Error> {
+        if self.invalid_status || !self.closed {
+            return Err("job SSH result is incomplete or duplicate".into());
+        }
+        let matches = match (&self.status, &observed) {
+            (Some(SshExit::Exit(wire)), Outcome::Exit { code }) => wire == code,
+            (Some(SshExit::Signal(Some(wire))), Outcome::Signal { number }) => wire == number,
+            (Some(SshExit::Signal(None)), Outcome::Signal { .. }) => true,
+            _ => false,
+        };
+        if !matches {
+            return Err("protected SSH observer record differs from channel result".into());
+        }
+        Ok(observed)
+    }
+
+    fn resolve(&self, protected: Result<Outcome, Error>) -> (Option<Outcome>, Option<String>) {
+        match protected.and_then(|outcome| self.verify(outcome)) {
+            Ok(outcome) => (Some(outcome), None),
+            // A failed metadata read must not erase a known channel result or
+            // captured streams. The error prevents the broker from accepting it.
+            Err(error) => (self.outcome().ok(), Some(error.to_string())),
+        }
+    }
+}
+
+#[derive(Default)]
+struct ObserverLog {
+    line: Vec<u8>,
+    long_line: bool,
+    command_pid: Option<u32>,
+    result: Option<Outcome>,
+}
+
+impl ObserverLog {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        for &byte in bytes {
+            if byte == b'\n' {
+                self.line()?;
+                self.line.clear();
+                self.long_line = false;
+            } else if self.line.len() < 512 {
+                self.line.push(byte);
+            } else {
+                self.long_line = true;
+            }
+        }
+        Ok(())
+    }
+
+    fn line(&mut self) -> Result<(), Error> {
+        if self.command_pid.is_none() {
+            let pid: u32 = std::str::from_utf8(&self.line)?
+                .trim_end_matches('\r')
+                .parse()?;
+            if self.long_line || pid == 0 {
+                return Err("protected SSH observer omitted its command PID".into());
+            }
+            self.command_pid = Some(pid);
+            return Ok(());
+        }
+        if self.long_line {
+            return Ok(());
+        }
+        static RECORD: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let pattern = RECORD.get_or_init(|| regex::Regex::new(r"^debug1: session_exit_message: session [0-9]+ channel [0-9]+ pid ([1-9][0-9]*) (?:exit ([0-9]+)|signal ([0-9]+)(?: core dumped)?)(?: \[postauth\])?\r?$").unwrap());
+        let Ok(line) = std::str::from_utf8(&self.line) else {
+            return Ok(());
+        };
+        let Some(record) = pattern.captures(line) else {
+            return Ok(());
+        };
+        if record[1].parse::<u32>()? != self.command_pid.unwrap() {
+            return Ok(());
+        }
+        if self.result.is_some() {
+            return Err("duplicate protected SSH wait record".into());
+        }
+        let result = if let Some(code) = record.get(2) {
+            let code: i32 = code.as_str().parse()?;
+            if !(0..=255).contains(&code) {
+                return Err("invalid protected SSH exit status".into());
+            }
+            Outcome::Exit { code }
+        } else {
+            let number: i32 = record.get(3).unwrap().as_str().parse()?;
+            if !(1..=64).contains(&number) {
+                return Err("invalid protected Linux signal number".into());
+            }
+            Outcome::Signal { number }
+        };
+        self.result = Some(result);
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<Outcome, Error> {
+        if !self.line.is_empty() {
+            self.line()?;
+        }
+        self.result.ok_or_else(|| {
+            "protected SSH observer omitted its command's numeric wait record".into()
+        })
+    }
+}
+
+async fn observed_wait(session: &mut client::Handle<PinnedServer>) -> Result<Outcome, Error> {
+    let mut channel = session.channel_open_session().await?;
+    channel.exec(true, "read-job-wait").await?;
+    channel.eof().await?;
+    let mut log = ObserverLog::default();
+    let mut evidence = Evidence::new(0);
+    while let Some(message) = channel.wait().await {
+        if let ChannelMsg::Data { data } = &message {
+            log.write(data)?;
+        }
+        evidence.event(message)?;
+        if evidence.closed {
+            break;
+        }
+    }
+    if evidence.outcome()? != (Outcome::Exit { code: 0 }) {
+        return Err("could not read protected SSH wait record".into());
+    }
+    log.finish()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -263,64 +404,72 @@ pub(super) async fn run(
     interrupt: &mut Signal,
     terminate: &mut Signal,
     cleanup_failed: &mut bool,
-) -> Result<(Value, Outcome, Output, Output), Error> {
+) -> Result<(Value, Option<Outcome>, Output, Output, Option<String>), Error> {
     let public = stage(root, directory, host, guest, spec, generation).await?;
     host_runs::save(
         name,
         &json!({"name":name,"agent_id":name,"run_id":generation,"state":"starting"}),
     )?;
     let mut observer = None;
+    // Retain the connection through VM teardown so the collector can drain
+    // output on timeout or interruption before its transport is dropped.
+    let mut session = None;
     let work = async {
         let artifacts = rootfs(guest).await?;
         host_platform::start_job_sandbox(name, spec.memory_mb).await?;
-        let mut session = connect(root, name, &public).await?;
-        let mut channel = session.channel_open_session().await?;
-        channel.exec(true, "exec /safeyolo/job-exec").await?;
+        let mut connection = connect(root, name, &public).await?;
+        let mut channel = connection.channel_open_session().await?;
+        channel.exec(true, "run-job").await?;
         channel.eof().await?;
+        session = Some(connection);
         let limit = spec.retain_bytes;
         observer = Some(tokio::spawn(async move {
             let mut evidence = Evidence::new(limit);
+            let mut stream_error = None;
             while let Some(message) = channel.wait().await {
-                evidence.event(message)?;
+                if let Err(error) = evidence.event(message) {
+                    stream_error.get_or_insert_with(|| error.to_string());
+                }
                 if evidence.closed {
                     break;
                 }
             }
-            let _ = session
-                .disconnect(russh::Disconnect::ByApplication, "job finished", "")
-                .await;
-            Ok::<_, Error>(evidence)
+            (evidence, stream_error)
         }));
         let outcome = tokio::select! {
             evidence = observer.as_mut().unwrap() => {
-                let evidence = evidence??;
-                let outcome = evidence.outcome()?;
-                return Ok::<_, Error>((artifacts, outcome, Some(evidence)));
+                let (evidence, stream_error) = evidence?;
+                // This read has its own short bound. Losing metadata must not
+                // reclassify an already completed command as a job timeout.
+                let connection = session.as_mut().unwrap();
+                let protected = match tokio::time::timeout(Duration::from_secs(5), observed_wait(connection)).await {
+                    Ok(result) => result,
+                    Err(_) => Err("protected SSH wait-record read timed out".into()),
+                };
+                let (outcome, observation_error) = evidence.resolve(protected);
+                let _ = connection.disconnect(russh::Disconnect::ByApplication, "job finished", "").await;
+                return Ok::<_, Error>((artifacts, outcome, Some(evidence), stream_error.or(observation_error)));
             },
             _ = tokio::time::sleep(Duration::from_secs(spec.timeout_seconds)) => Outcome::Timeout,
             _ = interrupt.recv() => Outcome::Interrupted { signal:libc::SIGINT },
             _ = terminate.recv() => Outcome::Interrupted { signal:libc::SIGTERM },
         };
-        Ok((artifacts, outcome, None))
+        Ok((artifacts, Some(outcome), None, None))
     }
     .await;
     if let Err(error) = host_platform::stop_sandbox(name).await {
         *cleanup_failed = true;
-        return Err(format!(
-            "job cleanup failed: {error}; runtime preserved at {}",
-            root.display()
-        )
-        .into());
+        return Err(super::cleanup_error(&work, error, root));
     }
-    let (artifacts, outcome, evidence) = work?;
-    let evidence = match evidence {
-        Some(evidence) => evidence,
+    let (artifacts, outcome, evidence, observation_error) = work?;
+    let (evidence, observation_error) = match evidence {
+        Some(evidence) => (evidence, observation_error),
         None => {
             tokio::time::timeout(
                 Duration::from_secs(5),
                 observer.ok_or("job SSH observer is missing")?,
             )
-            .await???
+            .await??
         }
     };
     Ok((
@@ -328,6 +477,7 @@ pub(super) async fn run(
         outcome,
         evidence.stdout.finish(),
         evidence.stderr.finish(),
+        observation_error,
     ))
 }
 
@@ -373,5 +523,83 @@ mod tests {
         );
         assert_eq!(signal_number(Sig::USR1).unwrap(), 10);
         assert!(signal_number(Sig::Custom("fake".into())).is_err());
+    }
+
+    #[test]
+    fn numeric_wait_record_belongs_to_the_fixed_command_pid() {
+        fn parse(bytes: &[u8]) -> Result<Outcome, Error> {
+            let mut log = ObserverLog::default();
+            // SSH need not preserve log line or UTF-8 chunk boundaries.
+            for chunk in bytes.chunks(7) {
+                log.write(chunk)?;
+            }
+            log.finish()
+        }
+        let exit = b"321\ndebug1: session_exit_message: session 0 channel 0 pid 999 exit 0\ndebug1: session_exit_message: session 0 channel 0 pid 321 exit 139\r\n";
+        assert_eq!(parse(exit).unwrap(), Outcome::Exit { code: 139 });
+        for number in [5, 7, 24, 64] {
+            let signal = format!(
+                "321\ndebug1: session_exit_message: session 0 channel 0 pid 321 signal {number} core dumped [postauth]\n"
+            );
+            assert_eq!(
+                parse(signal.as_bytes()).unwrap(),
+                Outcome::Signal { number }
+            );
+        }
+        for invalid in [
+            "321\ndebug1: session_exit_message: session 0 channel 0 pid 999 exit 0\n",
+            "321\ndebug1: session_exit_message: session 0 channel 0 pid 321 exit 0\ndebug1: session_exit_message: session 1 channel 1 pid 321 exit 0\n",
+            "321\ndebug1: session_exit_message: session 0 channel 0 pid 321 exit 256\n",
+            "321\ndebug1: session_exit_message: session 0 channel 0 pid 321 signal 0\n",
+            "321\ndebug1: session_exit_message: session 0 channel 0 pid 321 signal 65\n",
+            "0\ndebug1: session_exit_message: session 0 channel 0 pid 321 exit 0\n",
+            "debug1: session_exit_message: session 0 channel 0 pid 321 exit 0\n",
+            "321\n",
+            "",
+        ] {
+            assert!(parse(invalid.as_bytes()).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn protected_wait_cross_check_handles_generic_signals_and_preserves_failed_read_evidence() {
+        let mut evidence = Evidence::new(4);
+        evidence.stdout.write(b"PASS\n").unwrap();
+        evidence
+            .event(ChannelMsg::ExitSignal {
+                signal_name: Sig::Custom("SIG@openssh.com".into()),
+                core_dumped: false,
+                error_message: String::new(),
+                lang_tag: String::new(),
+            })
+            .unwrap();
+        evidence.event(ChannelMsg::Close).unwrap();
+        assert!(evidence.outcome().is_err());
+        let (outcome, error) = evidence.resolve(Ok(Outcome::Signal { number: 7 }));
+        assert_eq!(outcome, Some(Outcome::Signal { number: 7 }));
+        assert!(error.is_none());
+        let (outcome, error) = evidence.resolve(Err("metadata channel failed".into()));
+        assert!(outcome.is_none());
+        assert_eq!(error.as_deref(), Some("metadata channel failed"));
+        assert!(evidence.resolve(Ok(Outcome::Exit { code: 0 })).1.is_some());
+        let stdout = evidence.stdout.finish();
+        assert_eq!(stdout.bytes, 5);
+        assert_eq!(stdout.sha256, super::super::digest(b"PASS\n"));
+
+        let mut evidence = Evidence::new(4);
+        evidence
+            .event(ChannelMsg::ExitStatus { exit_status: 17 })
+            .unwrap();
+        evidence.event(ChannelMsg::Close).unwrap();
+        let (outcome, error) = evidence.resolve(Err("metadata channel failed".into()));
+        assert_eq!(outcome, Some(Outcome::Exit { code: 17 }));
+        assert!(error.is_some());
+        assert!(evidence.resolve(Ok(Outcome::Exit { code: 0 })).1.is_some());
+        assert!(
+            evidence
+                .resolve(Ok(Outcome::Signal { number: 17 }))
+                .1
+                .is_some()
+        );
     }
 }

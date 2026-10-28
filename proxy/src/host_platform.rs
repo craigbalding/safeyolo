@@ -1160,14 +1160,16 @@ async fn start_linux_sandbox(
         if !set_loopback.success() {
             return Err(io::Error::other("could not activate sandbox loopback"));
         }
-        let address = userns_command(name, "ip")?
-            .args(["addr", "add", &format!("{ip}/32"), "dev", "lo"])
-            .status()
-            .await?;
-        if !address.success() {
-            return Err(io::Error::other(
-                "could not assign sandbox attribution address",
-            ));
+        if !job {
+            let address = userns_command(name, "ip")?
+                .args(["addr", "add", &format!("{ip}/32"), "dev", "lo"])
+                .status()
+                .await?;
+            if !address.success() {
+                return Err(io::Error::other(
+                    "could not assign sandbox attribution address",
+                ));
+            }
         }
         let id = crate::host_runs::id(name).map_err(io::Error::other)?;
         let _ = runsc_command(name)?
@@ -3038,7 +3040,10 @@ mod tests {
                         directory.display()
                     ),
                 ),
-                ("ip", "#!/bin/sh\nexit 0\n".to_owned()),
+                ("ip", format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}/fixture-ip'\nif [ \"$*\" = 'addr add 127.0.0.1/32 dev lo' ]; then exit 17; fi\n",
+                    directory.display(),
+                )),
                 ("systemctl", "#!/bin/sh\nexit 1\n".to_owned()),
                 (
                     "unshare",
@@ -3089,7 +3094,8 @@ esac
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
             in_instance(root.clone(), async {
-                let starting = start_sandbox("alice", "10.200.0.1", 4096, true);
+                let job = stop == "job-loopback";
+                let starting = start_linux_sandbox("alice", if job { "127.0.0.1" } else { "10.200.0.1" }, 4096, true, job);
                 let inspect = async {
                     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
                     while !directory.join("fixture-running").exists() {
@@ -3182,6 +3188,13 @@ esac
                     "runsc create failed: fixture boot failure"
                 };
                 assert!(error.contains(expected), "{error}");
+                let ip = std::fs::read_to_string(directory.join("fixture-ip")).unwrap();
+                assert!(ip.contains("link set lo up\n"), "{ip}");
+                if job {
+                    assert!(!ip.contains("addr add"), "{ip}");
+                } else {
+                    assert!(ip.contains("addr add 10.200.0.1/32 dev lo\n"), "{ip}");
+                }
                 if let Some((observed, exec, ready, legacy)) = observation {
                     assert_eq!(observed["backend"]["status"], "running", "{observed}");
                     assert_eq!(observed["runtime_state"], "starting", "{observed}");
@@ -3212,6 +3225,7 @@ esac
             return;
         }
         for (launch, stop) in [
+            ("direct", "job-loopback"),
             ("direct", "after-running"),
             ("native", "succeeded"),
             ("native", "failed"),

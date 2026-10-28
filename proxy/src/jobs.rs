@@ -22,7 +22,7 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-pub const HELP: &str = "safeyolo [--root ROOT] job run SPEC.json [--input DIRECTORY]\nRun fixed argv from a trusted host-supplied JSON spec in a disposable sandbox.\nOnly the host caller selects DIRECTORY. Inputs are copied without following symlinks and mounted read-only at /input.\n/work and /home/agent are transient. Jobs have no Agent API, Coord, harness or host-script authority.\nSpec fields: gate_id, argv, timeout_seconds, max_input_bytes, max_input_entries, retain_bytes.\nOptional: memory_mb (default 4096), privilege (unprivileged or guest-root; default unprivileged).\nThis profile has no network or credential delegation. gate_principal is provenance; authorization_principal is null.\nPrint observed execution evidence as JSON. A PASS string from a job is ordinary output.\nThe command returns 0 only for an observed exit 0, 124 for timeout, and 1 for other job outcomes.\nRuntime and evidence-collection errors return an error; they do not produce a successful job result.";
+pub const HELP: &str = "safeyolo [--root ROOT] job run SPEC.json [--input DIRECTORY]\nRun fixed argv from a trusted host-supplied JSON spec in a disposable sandbox.\nOnly the host caller selects DIRECTORY. Inputs are copied without following symlinks and mounted read-only at /input.\n/work and /home/agent are transient. Jobs have no Agent API, Coord, harness or host-script authority.\nSpec fields: gate_id, argv, timeout_seconds, max_input_bytes, max_input_entries, retain_bytes.\nOptional: memory_mb (default 4096), privilege (unprivileged or guest-root; default unprivileged).\nThis profile has no network or credential delegation. gate_principal is provenance; authorization_principal is null.\nPrint observed execution evidence as JSON. A PASS string from a job is ordinary output.\nThe command returns 0 only for an observed exit 0 with complete evidence, 124 for timeout, and 1 for other job outcomes.\nIf observation fails, observation_error explains the failure. Captured streams and any exact outcome remain in the JSON; outcome is null when no exact result is available. The command returns 1.\nStartup or cleanup failures return an error without a successful job result.";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -99,7 +99,10 @@ pub struct JobResult {
     pub input_sha256: String,
     pub started_unix_ms: u128,
     pub ended_unix_ms: u128,
-    pub outcome: Outcome,
+    pub outcome: Option<Outcome>,
+    /// An incomplete or inconsistent observer result must never become success.
+    /// Keep any exact channel result and captured streams for diagnosis.
+    pub observation_error: Option<String>,
     pub stdout: Output,
     pub stderr: Output,
 }
@@ -112,6 +115,31 @@ fn digest(bytes: &[u8]) -> String {
 }
 fn now() -> Result<u128, Error> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())
+}
+
+fn cleanup_error<T>(
+    work: &Result<T, Error>,
+    cleanup: impl std::fmt::Display,
+    root: &Path,
+) -> Error {
+    let primary = work
+        .as_ref()
+        .err()
+        .map(|error| format!("{error}; "))
+        .unwrap_or_default();
+    format!(
+        "{primary}job cleanup failed: {cleanup}; runtime preserved at {}",
+        root.display()
+    )
+    .into()
+}
+
+fn command_status(outcome: Option<Outcome>, observation_error: Option<String>) -> i32 {
+    match (outcome, observation_error) {
+        (Some(Outcome::Exit { code: 0 }), None) => 0,
+        (Some(Outcome::Timeout), None) => 124,
+        _ => 1,
+    }
 }
 
 struct OutputCapture {
@@ -405,7 +433,7 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
     fs::create_dir_all(&directory)?;
     let started_unix_ms = now()?;
     let mut cleanup_failed = false;
-    let result: Result<(Value, Outcome, Output, Output), Error> = host_platform::in_config(root.join("config.toml"), async {
+    let result: Result<(Value, Option<Outcome>, Output, Output, Option<String>), Error> = host_platform::in_config(root.join("config.toml"), async {
         #[cfg(target_os = "linux")]
         {
             stage(&root, &directory, &guest, spec, &generation)?;
@@ -424,10 +452,10 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
                 child = Some(command);
                 let status = child.as_mut().unwrap();
                 let outcome = tokio::select! {
-                    status = status.wait() => raw_status(&directory.join("exec.jsonl"), status?)?,
-                    _ = tokio::time::sleep(Duration::from_secs(spec.timeout_seconds)) => Outcome::Timeout,
-                    _ = interrupt.recv() => Outcome::Interrupted { signal:libc::SIGINT },
-                    _ = terminate.recv() => Outcome::Interrupted { signal:libc::SIGTERM },
+                    status = status.wait() => raw_status(&directory.join("exec.jsonl"), status?),
+                    _ = tokio::time::sleep(Duration::from_secs(spec.timeout_seconds)) => Ok(Outcome::Timeout),
+                    _ = interrupt.recv() => Ok(Outcome::Interrupted { signal:libc::SIGINT }),
+                    _ = terminate.recv() => Ok(Outcome::Interrupted { signal:libc::SIGTERM }),
                 };
                 Ok::<_, Error>((rootfs, outcome))
             };
@@ -435,7 +463,7 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
             let cleanup = host_platform::stop_sandbox(&name).await;
             if let Err(error) = cleanup {
                 cleanup_failed = true;
-                return Err(format!("job cleanup failed: {error}; runtime preserved at {}", root.display()).into());
+                return Err(cleanup_error(&result, error, &root));
             }
             // Teardown also closes pipes inherited by background descendants.
             // Only then can EOF establish a complete byte count and digest.
@@ -446,7 +474,11 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
             let (rootfs, outcome) = result?;
             let stdout = tokio::time::timeout(Duration::from_secs(5), stdout.ok_or("missing job stdout collector")?).await???;
             let stderr = tokio::time::timeout(Duration::from_secs(5), stderr.ok_or("missing job stderr collector")?).await???;
-            Ok((rootfs, outcome, stdout, stderr))
+            let (outcome, observation_error) = match outcome {
+                Ok(outcome) => (Some(outcome), None),
+                Err(error) => (None, Some(error.to_string())),
+            };
+            Ok((rootfs, outcome, stdout, stderr, observation_error))
         }
         #[cfg(target_os = "macos")]
         {
@@ -454,10 +486,10 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
                 &mut interrupt, &mut terminate, &mut cleanup_failed).await
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        { let _ = (host, guest); Err::<(Value, Outcome, Output, Output), Error>("jobs require Linux or macOS".into()) }
+        { let _ = (host, guest); Err::<(Value, Option<Outcome>, Output, Output, Option<String>), Error>("jobs require Linux or macOS".into()) }
     }).await;
     // Never erase the only remaining verified handles after a cleanup failure.
-    let (rootfs, outcome, stdout, stderr) = match result {
+    let (rootfs, outcome, stdout, stderr, observation_error) = match result {
         Ok(result) => result,
         Err(error) => {
             if cleanup_failed {
@@ -491,6 +523,7 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
         started_unix_ms,
         ended_unix_ms: now()?,
         outcome,
+        observation_error,
         stdout,
         stderr,
     })
@@ -537,6 +570,52 @@ mod tests {
             assert!(serde_json::from_value::<JobSpec>(value).is_err(), "{field}");
         }
         assert_eq!(spec().privilege, Privilege::Unprivileged);
+    }
+
+    #[test]
+    fn cleanup_failure_keeps_the_startup_cause_and_retained_runtime_path() {
+        let work: Result<(), Error> = Err("installation namespace entry is missing".into());
+        let message = cleanup_error(
+            &work,
+            "backend identity is unverified",
+            Path::new("/owned/job-proof"),
+        )
+        .to_string();
+        assert!(
+            message.starts_with("installation namespace entry is missing; "),
+            "{message}"
+        );
+        assert!(
+            message.contains("backend identity is unverified"),
+            "{message}"
+        );
+        assert!(
+            message.ends_with("runtime preserved at /owned/job-proof"),
+            "{message}"
+        );
+        let succeeded: Result<(), Error> = Ok(());
+        assert!(
+            cleanup_error(&succeeded, "stop failed", Path::new("/owned/job-proof"))
+                .to_string()
+                .starts_with("job cleanup failed: stop failed")
+        );
+    }
+
+    #[test]
+    fn failed_observation_never_returns_success_or_a_false_job_timeout() {
+        assert_eq!(command_status(Some(Outcome::Exit { code: 0 }), None), 0);
+        assert_eq!(command_status(Some(Outcome::Timeout), None), 124);
+        for outcome in [
+            Some(Outcome::Exit { code: 0 }),
+            Some(Outcome::Timeout),
+            None,
+        ] {
+            assert_eq!(
+                command_status(outcome, Some("wait metadata unavailable".into())),
+                1
+            );
+        }
+        assert_eq!(command_status(None, None), 1);
     }
 
     #[cfg(target_os = "linux")]
@@ -663,9 +742,5 @@ pub async fn command(config: &Path, args: &[String]) -> Result<i32, Error> {
     let spec: JobSpec = serde_json::from_slice(&fs::read(spec)?)?;
     let result = run(config, &spec, input).await?;
     println!("{}", serde_json::to_string(&result)?);
-    Ok(match result.outcome {
-        Outcome::Exit { code: 0 } => 0,
-        Outcome::Timeout => 124,
-        _ => 1,
-    })
+    Ok(command_status(result.outcome, result.observation_error))
 }

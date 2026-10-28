@@ -64,6 +64,7 @@ def run(cli: Path, root: Path, scratch: Path) -> None:
         result = json.loads(completed.stdout)
         assert result["gate_principal"] == "gate:job-boundary-probe", result
         assert result["authorization_principal"] is None, result
+        assert result["observation_error"] is None, result
         assert len(result["rootfs"]["sha256"]) == 64, result
         assert len(result["input_sha256"]) == 64, result
         assert len(result["gate_definition_sha256"]) == 64, result
@@ -151,6 +152,10 @@ print('job-relative root, chown, private mount, observer signal/ptrace/key refus
     assert signalled["outcome"] == {"kind": "signal", "number": 11}, signalled
     code, printed = job("print('PASS'); raise SystemExit(17)")
     assert code != 0 and printed["outcome"] == {"kind": "exit", "code": 17}, printed
+    if sys.platform == "darwin":
+        for signal_number in (7, 64):
+            _, generic = job(f"import os; os.kill(os.getpid(), {signal_number})")
+            assert generic["outcome"] == {"kind": "signal", "number": signal_number}, generic
     print("PASS real exit139 versus SIGSEGV and printed PASS has no acceptance authority")
 
     code, timed_out = job(
