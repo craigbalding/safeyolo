@@ -277,3 +277,84 @@ fn stage(package: &Path, home: &Path) -> Result<(), Error> {
     version.write_all(fs::read(package.join("version"))?.as_slice())?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_preserves_complete_package_and_rejects_damaged_archives() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        for name in ["bin", "codex-path", "codex-resources"] {
+            fs::create_dir_all(source.join(name)).unwrap();
+        }
+        let mut executable = [0_u8; 20];
+        executable[..6].copy_from_slice(b"\x7fELF\x02\x01");
+        executable[18] = if target().unwrap().starts_with("x86_64") {
+            62
+        } else {
+            183
+        };
+        for name in ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg"] {
+            let path = source.join(name);
+            fs::write(&path, executable).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fs::write(source.join("codex-resources/fixture"), "adjacent resource").unwrap();
+        let tar = Command::new("tar")
+            .arg("-C")
+            .arg(&source)
+            .args(["-cf", "-", "bin", "codex-path", "codex-resources"])
+            .output()
+            .unwrap();
+        assert!(tar.status.success());
+        for fault in [
+            "none",
+            "truncated",
+            "checksum",
+            "invalid-zstd",
+            "invalid-tar",
+        ] {
+            let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1).unwrap();
+            encoder.include_checksum(true).unwrap();
+            encoder
+                .write_all(if fault == "invalid-tar" {
+                    b"not a tar archive"
+                } else {
+                    &tar.stdout
+                })
+                .unwrap();
+            let mut compressed = encoder.finish().unwrap();
+            match fault {
+                "truncated" => {
+                    // All tar bytes are present, but the frame checksum is incomplete.
+                    compressed.pop();
+                }
+                "checksum" => *compressed.last_mut().unwrap() ^= 1,
+                "invalid-zstd" => compressed[0] ^= 1,
+                _ => {}
+            }
+            let archive = directory.path().join(format!("{fault}.tar.zst"));
+            fs::write(&archive, compressed).unwrap();
+            let payload = directory.path().join(fault);
+            let result = extract(&archive, &payload);
+            if fault == "none" {
+                result.unwrap();
+                for name in ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg"] {
+                    assert_eq!(fs::read(payload.join(name)).unwrap(), executable);
+                    assert_ne!(
+                        payload.join(name).metadata().unwrap().permissions().mode() & 0o111,
+                        0
+                    );
+                }
+                assert_eq!(
+                    fs::read_to_string(payload.join("codex-resources/fixture")).unwrap(),
+                    "adjacent resource"
+                );
+            } else {
+                assert!(result.is_err(), "accepted {fault} archive");
+            }
+        }
+    }
+}

@@ -18,8 +18,11 @@ from pathlib import Path
 
 import certifi
 import jwt
+import msgpack
 import requests
 import urllib3
+from cachecontrol import CacheControl
+from cachecontrol.caches import FileCache
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
@@ -283,6 +286,50 @@ get_logger_provider().shutdown()
             run = subprocess.run([sys.executable, "-I", "-c", probe, url], capture_output=True, text=True, timeout=10)
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertTrue({"/input", "/v1/traces", "/v1/logs"} <= set(paths), paths)
+
+
+class CacheDependencies(unittest.TestCase):
+    def test_strict_map_key_failure_releases_decoded_value(self):
+        self.assertEqual(msgpack.unpackb.__module__, "msgpack._cmsgpack")
+        value = object()
+        payload = msgpack.packb({42: {"nested": "value"}}, use_bin_type=True)
+        references = sys.getrefcount(value)
+        for _ in range(100):
+            with self.assertRaises(ValueError):
+                msgpack.unpackb(payload, raw=False, object_hook=lambda _mapping: value)
+        # The rejected outer key must release the already decoded nested value.
+        self.assertEqual(sys.getrefcount(value), references)
+
+    def test_file_cache_round_trip_and_malformed_entries_refetch(self):
+        body = msgpack.packb({42: b"network body"}, use_bin_type=True)
+        responses = {"/": (200, {"Cache-Control": "public, max-age=3600"}, body)}
+        with tempfile.TemporaryDirectory() as temporary, http_responses(responses) as (url, paths):
+            cache = FileCache(temporary)
+            with CacheControl(requests.Session(), cache=cache) as session:
+                session.trust_env = False
+                url += "/"
+                for expected_cached in (False, True):
+                    with session.get(url, timeout=5) as response:
+                        self.assertEqual(response.content, body)
+                        self.assertEqual(response.from_cache, expected_cached)
+                self.assertEqual(paths, ["/"])
+                saved = cache.get(url)
+                self.assertTrue(saved.startswith(b"cc=4,"))
+                self.assertEqual(msgpack.loads(saved[5:], raw=False)["response"]["body"], body)
+                for damaged in (
+                    b"cc=4," + body,  # The same map is invalid as a serialized cache entry.
+                    saved[:-1],
+                    b"cc=4,\xc1",
+                    saved + b"\0",
+                ):
+                    with self.subTest(damaged=damaged[:24]):
+                        cache.set(url, damaged)
+                        with session.get(url, timeout=5) as response:
+                            self.assertEqual(response.content, body)
+                            self.assertFalse(response.from_cache)
+                        refreshed = msgpack.loads(cache.get(url)[5:], raw=False)
+                        self.assertEqual(refreshed["response"]["body"], body)
+                self.assertEqual(paths, ["/"] * 5)
 
 
 class NetworkDependencies(unittest.TestCase):
