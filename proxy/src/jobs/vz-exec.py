@@ -125,7 +125,7 @@ def main() -> None:
     # No old-root, namespace or observer descriptor is donated to the command.
     limit = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
     os.closerange(3, limit)
-    os.execve(
+    os.execvpe(
         argv[0],
         argv,
         {
