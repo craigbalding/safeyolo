@@ -1,13 +1,15 @@
-# Native observation metadata
+# Native observations and classic capture
 
 The native proxy records receiver-observed transport boundaries before Hypertext Transfer Protocol
 (HTTP) reassembly. A canonical asynchronous queue supplies bounded consumer queues.
-This foundation supplies metadata for later capture encoders and transport
-metrics. It does not install an output adapter or retain payloads.
+Metadata remains available without payload capture. Explicit capture settings
+can retain source bytes and export a reconstructed classic PCAP stream through
+file, stdout/pipe, TCP and secure WebSocket (WSS) adapters.
 
 Metadata observation does not enable FlowStore. Default operation creates no
-capture file or listener. The records contain no request headers, URLs, bodies,
-Transport Layer Security (TLS) secrets or packet bytes. Existing sparse network security monitoring (NSM)
+capture file or listener. With capture disabled, records retain no request headers, URLs, bodies,
+Transport Layer Security (TLS) secrets or packet bytes. Metadata serialization
+always excludes attached capture bytes. Existing sparse network security monitoring (NSM)
 events and FlowStore eligibility keep their existing behavior.
 
 ## Configuration and operational state
@@ -25,7 +27,9 @@ These are the defaults. `items` limits queued records. `bytes` limits their
 accounted memory: inline storage, owned identity strings and conservative
 allocation/provenance charges. Queue allocation overhead is also bounded by
 `items`. Session and active-connection metadata are separate, constant-size
-state per owner. No payload allocation is included because no payload is stored.
+state per owner. If the operator enables payload capture, the queue charge also includes each
+retained payload byte. An oversized source snapshot retains metadata with zero
+captured length instead of allocating beyond the canonical byte bound.
 Zero admits no observations and still reports sequence loss. A policy reload
 preserves the process-owned queue, namespace and effective limits. Restart the
 proxy to change these limits.
@@ -46,9 +50,12 @@ sequence allocation stops instead of wrapping, while traffic continues.
 
 Consumer loss and disconnection counters describe the bounded consumer queues.
 `observation_consumer_metadata_bytes_total` measures delivered metadata with the
-same memory accounting. `sink_bytes_total`, `sink_errors_total` and
-`observation_payload_bytes_total` remain zero: this foundation has no encoders,
-output adapters or captured payload. Encoded output bytes must not be inferred
+same memory accounting. `observation_payload_bytes_total` counts attached source bytes by layer before
+admission. `sink_bytes_total`, `sink_errors_total`,
+`sink_dropped_observations_total` and `sink_disconnects_total` include fixed
+`file`, `stdout`, `tcp` and `wss` labels for actual output adapters. Bytes count
+complete batches written by the adapter. A failed partial write can therefore
+leave fewer bytes counted than the operating system accepted. Encoded output bytes must not be inferred
 from the metadata memory counter. Behavioral distributions remain separate work
 under [#863](https://github.com/craigbalding/safeyolo/issues/863).
 
@@ -80,8 +87,10 @@ An internal consumer session identifies the instance, runtime, schema version,
 new `sink_session_id`, timestamp resolutions and first eligible canonical
 sequence. Subscriptions have no historical replay. A canonical gap that crosses
 the subscription point is clipped to that session's starting sequence.
-These are source/session contracts for later sinks, not a released capture
-format or remote subscription API.
+Classic capture places the actual adapter session in its first UDP metadata
+record after the PCAP global header. The session sequence is the first eligible
+canonical sequence, even if that observation is later lost. Sink losses carry
+the same session ID. A reconnect creates a new session and starting sequence.
 
 Records carry Unix wall time and monotonic time since the bus started. Ordering
 and durations within one runtime use the sequence and monotonic clock. Wall
@@ -129,17 +138,165 @@ being reconstructed. Source chunk records and their queue loss accounting are
 independent of prefix availability.
 
 Count source transport bytes at the transport layer. Adding TLS or parsed
-representation lengths would count the same logical bytes again. No synthetic
-packet, TLS record, protocol frame or sender syscall boundary is manufactured.
+representation lengths would count the same logical bytes again. Canonical observations contain no synthetic packet fields, TLS records,
+protocol frames or inferred sender syscall boundaries. The separate classic
+encoder projects source observations without publishing new observations or
+updating source measurements.
+
+## Enable explicit payload capture
+
+On the operator host, edit the installation's `config.toml`. Keep the existing
+listeners, policy and paths. Add only the desired capture settings, then restart
+the native proxy. Capture settings and limits belong to the process. Policy
+reloads preserve the effective capture configuration.
+
+This example retains observed transport and TLS-cleartext chunks in a file.
+A relative file path belongs to the `config.toml` directory. The parent directory
+must exist. Starting a new file session truncates an existing file at that path.
+
+```toml
+[packet_capture]
+profile = "pcap:compat"
+payload_layers = ["transport_stream", "tls_cleartext"]
+file = "logs/observations.pcap"
+
+[packet_capture.queue]
+items = 4096
+bytes = 4194304
+```
+
+If `payload_layers` is absent or empty, capture exports metadata without retaining
+source content. Current byte owners supply transport and TLS-cleartext chunks.
+Protocol/application completion metadata remains available; the encoder does
+not reconstruct missing application bytes or lineage. Capture does not change
+FlowStore eligibility or force an application decode.
+
+For stdout/pipe output, set `stdout = true` in `[packet_capture]`. The foreground
+native proxy writes the capture bytes to stdout. Redirect stdout to a file or
+pipe it to a reader that accepts classic PCAP. Operational errors use stderr.
+When using the installed background service, stdout follows that service's
+existing output destination; use the file or network adapter when appropriate.
+
+For a raw TCP listener, add the following table. Its presence explicitly enables
+the listener. The default bind is `127.0.0.1:46378` if `bind` is omitted.
+
+```toml
+[packet_capture.tcp]
+bind = "127.0.0.1:46378"
+```
+
+A consumer receives a normal PCAP byte stream from each connection. There is no
+HTTP preamble. If `bind` uses port zero, the existing readiness marker reports
+the selected endpoint in `capture_tcp_address`. If the operator selects a non-loopback bind, the table must also
+set `insecure_remote = true`. Changing the bind alone refuses configuration.
+Raw TCP has no authentication or transport encryption. Use authenticated WSS
+for remote consumers. The existing operator-port shield protects the actual
+capture endpoint against agent requests through the proxy.
+
+For WSS, set `wss = true` in `[packet_capture]` and configure the existing
+Admin listener and operator token. Connect to `/admin/capture` with a WebSocket
+upgrade and `Authorization: Bearer <operator-token>`. The existing Command Centre
+Tailscale TLS publication exposes the same native operator listener remotely;
+use its WSS endpoint with the `/admin/capture` path. The loopback backend uses
+plain WebSocket, as the existing event stream does. Capture does not create a
+second TLS listener or a new credential system.
+
+The existing operator token grants capture read access when `wss` is explicitly
+enabled. An unauthenticated client receives no capture bytes and creates no
+capture session. Each binary WebSocket message contains part of the capture
+stream. Concatenating binary payloads produces the exact PCAP byte stream.
+WebSocket control frames are outside those bytes. These classic streams expose
+no TLS-secret setting or secret grant. Observed plaintext in a compatibility
+stream is not wire decryption.
+
+No adapter is enabled by default. Network bind, file-open, permission, write and
+bounded-session failures report content-free sink errors and counters. Sink
+failures do not change the controlled agent traffic result. Files use mode
+`0600` on supported Unix platforms before capture bytes are written.
+
+## Classic `pcap:compat` representation
+
+The savefile uses nanosecond timestamp units, PCAP version 2.4 and
+`LINKTYPE_ETHERNET`. Source resolution is separately declared in session and
+observation metadata; the timestamp unit does not claim a finer clock. Source
+wall times outside classic PCAP's unsigned 32-bit seconds range cannot be
+encoded and produce an explicit loss range. Canonical monotonic order remains
+authoritative when wall time moves backwards.
+
+All Ethernet/IP/TCP/UDP fields are reconstructed representation fields. The
+locally administered synthetic MAC namespace is `02:53:59:xx:xx:xx`. Source IPv4
+addresses use `192.0.2.0/24`, and destination addresses use `198.51.100.0/24`,
+which are RFC 5737 TEST-NET ranges. The encoder derives endpoint suffixes and
+ports deterministically from the flow context. A packet tool's synthetic
+five-tuple is not a unique source identity; use `compat_flow_id` and metadata.
+
+A flow ID is the lowercase SHA-256 digest of the bounded UTF-8 context record,
+including the metadata magic prefix. The context identifies source instance,
+runtime, connection, observation point, layer, original transport and direction.
+Different source layers or directions produce separate compatibility flows.
+
+Before each observation's data, a UDP record contains ASCII
+`SAFEYOLO-PCAP-COMPAT/1`, a newline and at most 8192 bytes total of UTF-8 JSON
+including that prefix. Observation records contain `compat_flow_id`, the
+source context, canonical observation metadata and `payload_truncated`.
+Session records contain profile/schema identity and the actual source session.
+Gap records distinguish canonical/consumer loss from encoder/sink admission
+loss. None of these metadata records contains captured payload or TLS secrets.
+
+Context is repeated with each observation so a newly joined or recovering
+consumer can interpret each accepted batch. This avoids an unbounded table of
+previously seen flows and does not replay historical payloads. The source
+observation retains its original state, offsets, IDs, monotonic time and
+lineage, including absent lineage.
+
+An observed chunk of at most 1200 captured bytes produces one synthetic TCP
+payload segment. Larger observations split into consecutive segments of at most
+1200 bytes. All segments carry the source observation's wall timestamp and
+remain in source sequence order. TCP sequence numbers are the low 32 bits of
+the source stream offset plus the segment offset. Only the final segment sets
+synthetic PSH, which marks the captured source boundary. Metadata declares the
+original and captured lengths so a reader can distinguish truncation from a
+complete chunk. EOF/half-close may project FIN; read/write failure or owner drop
+may project RST. These control fields are representation only.
+
+Classic PCAP contains no PCAPNG Decryption Secrets Block (DSB). A reader can
+inspect observed UDS or TLS plaintext through the synthetic TCP view, but must
+not label these reconstructed frames as genuine wire packets.
+
+## Delivery budgets and failures
+
+The canonical and capture-consumer queues account retained metadata and payload
+against their separate item/byte limits. The capture worker holds at most one
+source record while encoding. Its output buffer is bounded by
+`packet_capture.queue.bytes`; conversion into a shared byte array can briefly
+hold a second buffer of that size. Metadata and packet/checksum scratch buffers
+are bounded separately by the metadata/segment limits above.
+
+Each configured sink or connected client has another queue with the same
+`packet_capture.queue` limits. Shared encoded batches are conservatively charged
+in full to every receiving queue. The charge remains held while an adapter
+writes the batch, including a slow in-flight write. One item and 32 KiB are
+reserved for a bounded loss record and output staging. File/stdout writes use
+at most 16 KiB per staging copy and flush each batch. WebSocket framing uses
+the existing bounded writer buffer. If the remaining budget cannot initialize a
+session, that sink reports a session-budget error and emits no dependent bytes.
+
+Each admitted batch contains complete metadata and data for one source record.
+If a record cannot be encoded or a sink queue cannot admit it, the affected sink
+emits a session-scoped sequence gap before subsequent bytes, including a final
+loss tail. Healthy sinks preserve their own byte order. No capture producer
+waits for a writer or queue capacity. A stalled write times out and disconnects
+that sink. Errors contain fixed sink/reason labels, never captured content,
+destinations or secrets.
 
 ## Remaining capture work
 
-This is the canonical metadata and loss increment of
-[#858](https://github.com/craigbalding/safeyolo/issues/858). Portable PCAP Next Generation
-(PCAPNG) remains blocked on the operator-confirmed Internet Assigned Numbers
-Authority (IANA) Private Enterprise Number in
-[#862](https://github.com/craigbalding/safeyolo/issues/862). PCAPNG and classic PCAP
-encoders, genuine packet capture, TLS-secret export, file, pipe, TCP and secure WebSocket (WSS) adapters
-and their access controls remain unimplemented. All corresponding acceptance
-criteria remain open. No placeholder enterprise number or substitute adapter is
-provided by this foundation.
+This increment of [#858](https://github.com/craigbalding/safeyolo/issues/858)
+adds classic compatibility capture and the four adapters. Portable PCAP Next
+Generation (PCAPNG) still requires the actual Internet Assigned Numbers
+Authority (IANA) Private Enterprise Number owned by
+[#862](https://github.com/craigbalding/safeyolo/issues/862), its encoder and
+portable-extension proof. Genuine packet capture, `pcap:wire`, exporter
+exclusion, TLS-secret export/authorization and DSB/decryption remain separate
+unimplemented outcomes. Selecting an unavailable profile reports unavailable;
+there is no placeholder PCAPNG format or reconstructed wire profile.

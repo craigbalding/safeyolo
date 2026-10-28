@@ -108,14 +108,16 @@ impl Source {
             stream_offset: offset,
             observed_length: length,
             captured_length: 0,
+            payload: None,
             state,
         }
     }
-    fn chunk(&self, direction: Direction, offset: u64, length: usize) {
+    fn chunk(&self, direction: Direction, offset: u64, bytes: &[u8]) {
         // A skipped update must not leave the previous IDs available to a later parser.
         self.prefixes_current[direction as usize].store(false, Ordering::Release);
+        let length = bytes.len();
         let record = self.record(direction, Some(offset), Some(length as u64), State::Chunk);
-        let Some(id) = self.bus.emit(record) else {
+        let Some(id) = self.bus.emit_payload(record, bytes) else {
             return;
         };
         if let Ok(mut prefixes) = self.prefixes.try_lock() {
@@ -257,8 +259,11 @@ impl AsyncRead for Observed {
         if let Poll::Ready(result) = &result {
             let length = buffer.filled().len() - before;
             if length != 0 {
-                self.source
-                    .chunk(Direction::ToProxy, self.read_offset, length);
+                self.source.chunk(
+                    Direction::ToProxy,
+                    self.read_offset,
+                    &buffer.filled()[before..],
+                );
                 self.read_offset += length as u64;
             }
             if !self.read_end && (result.is_err() || (capacity != 0 && length == 0)) {
@@ -287,7 +292,7 @@ impl AsyncWrite for Observed {
         match result {
             Poll::Ready(Ok(length)) if length != 0 => {
                 self.source
-                    .chunk(Direction::FromProxy, self.write_offset, length);
+                    .chunk(Direction::FromProxy, self.write_offset, &bytes[..length]);
                 self.write_offset += length as u64;
             }
             Poll::Ready(Err(_)) if !self.write_end => {
@@ -370,14 +375,14 @@ mod tests {
     fn missed_prefix_updates_recover_enclosing_ids_in_each_direction() {
         let source = source();
         for direction in [Direction::ToProxy, Direction::FromProxy] {
-            source.chunk(direction, 0, 2);
+            source.chunk(direction, 0, b"ab");
             let first = source.prefix(direction).unwrap();
             {
                 let _reader = source.prefixes.lock().unwrap();
-                source.chunk(direction, 2, 3);
+                source.chunk(direction, 2, b"cde");
             }
             assert!(source.prefix(direction).is_none());
-            source.chunk(direction, 5, 1);
+            source.chunk(direction, 5, b"f");
             let recovered = source.prefix(direction).unwrap();
             assert_eq!(recovered.observed_from, first.observed_from);
             assert_eq!(
@@ -393,9 +398,9 @@ mod tests {
         let source = source();
         {
             let _reader = source.prefixes.lock().unwrap();
-            source.chunk(Direction::ToProxy, 0, 5);
+            source.chunk(Direction::ToProxy, 0, b"abcde");
         }
-        source.chunk(Direction::ToProxy, 5, 3);
+        source.chunk(Direction::ToProxy, 5, b"fgh");
         let prefix = source.prefix(Direction::ToProxy).unwrap();
         assert_eq!((prefix.start_offset, prefix.end_offset), (5, 8));
         assert_eq!(prefix.observed_from, source.bus.id(2));
@@ -407,5 +412,91 @@ mod tests {
         let consumed = source.request_input_span(Some((5, 8))).unwrap();
         assert!(consumed.parser_consumed);
         assert_eq!((consumed.start_offset, consumed.end_offset), (5, 8));
+    }
+    #[tokio::test]
+    async fn snapshots_exclude_prefilled_reads_and_unconsumed_write_capacity() {
+        struct Partial;
+        impl AsyncRead for Partial {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                buf.put_slice(b"rd");
+                Poll::Ready(Ok(()))
+            }
+        }
+        impl AsyncWrite for Partial {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+                _: &[u8],
+            ) -> Poll<std::io::Result<usize>> {
+                Poll::Ready(Ok(3))
+            }
+            fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+            fn poll_shutdown(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+        let bus = ObservationBus::with_payload(
+            "instance".into(),
+            "runtime".into(),
+            Limits::default(),
+            Arc::default(),
+            vec![Layer::TransportStream],
+        );
+        let mut consumer = bus.subscribe(ConsumerKind::Capture, Limits::default());
+        let identity = ConnectionIdentity {
+            agent_id: "alice".into(),
+            run: None,
+            connection_id: "conn".into(),
+            source_id: None,
+        };
+        let source = Source::new(
+            bus.clone(),
+            &identity,
+            "conn",
+            Point::AgentUds,
+            Layer::TransportStream,
+            Transport::Unix,
+            None,
+        );
+        let mut stream = observe(Box::new(Partial), source);
+        let mut buffer = [0; 32];
+        let mut read = ReadBuf::new(&mut buffer);
+        read.put_slice(b"old");
+        std::future::poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, &mut read))
+            .await
+            .unwrap();
+        assert_eq!(read.filled(), b"oldrd");
+        let written = std::future::poll_fn(|cx| {
+            Pin::new(&mut stream).poll_write(cx, b"write_unconsumed_tail")
+        })
+        .await
+        .unwrap();
+        assert_eq!(written, 3);
+        for (expected, direction) in [
+            (b"rd".as_slice(), Direction::ToProxy),
+            (b"wri".as_slice(), Direction::FromProxy),
+        ] {
+            let record = tokio::time::timeout(std::time::Duration::from_secs(5), consumer.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let Record::Observation(o) = record.as_ref() else {
+                panic!("unexpected gap");
+            };
+            assert_eq!(o.payload.as_deref(), Some(expected));
+            assert_eq!(o.observed_length, Some(expected.len() as u64));
+            assert_eq!(o.captured_length, expected.len() as u64);
+            assert_eq!(o.direction, direction);
+            assert_eq!(o.stream_offset, Some(0));
+        }
     }
 }

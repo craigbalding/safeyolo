@@ -58,6 +58,7 @@ impl std::error::Error for ConfigError {}
 #[derive(Clone, Debug)]
 pub struct AdminShield {
     ports: BTreeSet<u16>,
+    capture_endpoint: Option<SocketAddr>,
 }
 
 impl AdminShield {
@@ -89,7 +90,10 @@ impl AdminShield {
                 ports.insert(port);
             }
         }
-        Ok(Self { ports })
+        Ok(Self {
+            ports,
+            capture_endpoint: None,
+        })
     }
 
     /// Run at request/CONNECT admission and for the immediate egress route.
@@ -106,8 +110,8 @@ impl AdminShield {
     /// bound-port shield for an equivalent local authority.
     pub fn blocks_request_destination(&self, host: &str, port: u16) -> bool {
         self.blocks_host(host, port)
-            || self.protects_port(port)
-                && numeric_address(host).is_some_and(is_protected_local_address)
+            || numeric_address(host)
+                .is_some_and(|ip| self.blocks_address(SocketAddr::new(ip, port)))
     }
 
     /// Whether this route's port needs the configured local-endpoint check.
@@ -124,12 +128,20 @@ impl AdminShield {
         self.ports.insert(bound.port());
     }
 
+    pub(crate) fn protect_capture_endpoint(&mut self, bound: SocketAddr) {
+        self.protect_bound_port(bound);
+        self.capture_endpoint = Some(bound);
+    }
+
     /// Apply the source's exact local IP set to each resolved immediate-route
     /// candidate. Extra ports protect existing local control endpoints too.
     /// This closes their alias hole without classifying all loopback IPs or
     /// remote addresses on these ports as local.
     pub fn blocks_address(&self, address: SocketAddr) -> bool {
-        self.protects_port(address.port()) && is_protected_local_address(address.ip())
+        self.capture_endpoint.is_some_and(|bound| {
+            bound.port() == address.port()
+                && normalize_mapped(bound.ip()) == normalize_mapped(address.ip())
+        }) || self.protects_port(address.port()) && is_protected_local_address(address.ip())
     }
 }
 

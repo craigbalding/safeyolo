@@ -309,6 +309,11 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), Error> {
+        if let Some(settings) = &self.native_settings {
+            settings
+                .packet_capture
+                .validate(self.admin_port.is_some())?;
+        }
         if self.flow_pruner_max == 0 || self.flow_pruner_max_body_bytes == 0 {
             return Err("flow_pruner_max and flow_pruner_max_body_bytes must be positive".into());
         }

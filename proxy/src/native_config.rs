@@ -16,6 +16,7 @@ pub struct Settings {
     pub capture: Capture,
     pub trace: Trace,
     pub observations: crate::observations::Limits,
+    pub packet_capture: crate::packet_capture::Settings,
     pub audit: Audit,
     pub agent_launcher: AgentLauncher,
     pub desktop: Desktop,
@@ -238,6 +239,7 @@ pub(crate) fn from_source(path: &Path, source: &str) -> Result<Config, Error> {
         "capture",
         "trace",
         "observations",
+        "packet_capture",
         "audit",
         "agent_launcher",
         "desktop",
@@ -253,6 +255,11 @@ pub(crate) fn from_source(path: &Path, source: &str) -> Result<Config, Error> {
     }
     let mut settings: Settings = serde_json::from_value(Value::Object(settings))
         .map_err(|error| format!("config.toml settings: {error}"))?;
+    if let Some(path) = &mut settings.packet_capture.file
+        && !path.is_absolute()
+    {
+        *path = root.join(&*path);
+    }
     if let Some(linux) = &settings.linux {
         linux.validate()?;
     }

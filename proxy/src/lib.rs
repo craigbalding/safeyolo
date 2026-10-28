@@ -63,6 +63,7 @@ pub mod linux_host;
 mod macos_mounts;
 pub mod mattermost;
 pub mod observations;
+mod packet_capture;
 
 /// Run the bounded PID-1/shared-home diagnostic without guest SSH.
 pub fn recover_guest_probe(
@@ -428,6 +429,7 @@ impl Runtime {
             previous,
             admin_address,
             None,
+            None,
             &mut None,
         )
     }
@@ -438,6 +440,7 @@ impl Runtime {
         previous: Option<&Runtime>,
         admin_address: Option<std::net::SocketAddr>,
         event_address: Option<std::net::SocketAddr>,
+        capture_address: Option<std::net::SocketAddr>,
         service_files: &mut Option<services::CatalogMetadata>,
     ) -> Result<Self, Error> {
         let mut startup = previous
@@ -453,6 +456,16 @@ impl Runtime {
         }
         if let Some(bound) = event_address {
             admin_shield.protect_bound_port(bound);
+        }
+        let capture_address = previous.map_or(capture_address, |runtime| {
+            runtime
+                .connection_events
+                .as_ref()
+                .and_then(|events| events.observations.capture.get())
+                .and_then(|capture| capture.tcp_address)
+        });
+        if let Some(bound) = capture_address {
+            admin_shield.protect_capture_endpoint(bound);
         }
         let tasks = previous
             .map(|runtime| runtime.tasks.clone())
@@ -1809,6 +1822,7 @@ pub struct Proxy {
     runtime: Arc<RwLock<Arc<Runtime>>>,
     listeners: HashMap<PathBuf, RunningListener>,
     admin: Option<admin_listener::Running>,
+    capture: Option<packet_capture::Running>,
     command_centre_share: Option<command_centre::Publication>,
     draining: Vec<JoinHandle<()>>,
     default_via: String,
@@ -1820,9 +1834,14 @@ pub struct Proxy {
 }
 
 impl Proxy {
-    pub async fn start(config: Config) -> Result<Self, Error> {
+    pub async fn start(mut config: Config) -> Result<Self, Error> {
         let mut startup = startup_timings::StartupTimings::new("proxy");
         config.validate()?;
+        let capture_tcp = packet_capture::bind_tcp(&mut config).await;
+        let capture_address = capture_tcp
+            .as_ref()
+            .and_then(|listener| listener.as_ref().ok())
+            .and_then(|listener| listener.local_addr().ok());
         let prepared_admin = admin_listener::Prepared::bind(&config).await?;
         startup.record("validation_admin_bind");
         let admin_address = prepared_admin
@@ -1846,6 +1865,7 @@ impl Proxy {
                     None,
                     admin_address,
                     event_address,
+                    capture_address,
                     &mut service_files,
                 )?;
                 policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
@@ -1859,6 +1879,7 @@ impl Proxy {
             runtime: Arc::new(RwLock::new(runtime)),
             listeners: HashMap::new(),
             admin: None,
+            capture: None,
             command_centre_share: None,
             draining: Vec::new(),
             default_via,
@@ -1888,6 +1909,14 @@ impl Proxy {
                 runtime.config.plumb.default_ttl_seconds,
             );
         }
+        proxy.capture = packet_capture::Running::start(
+            &proxy
+                .runtime
+                .read()
+                .map_err(|_| "runtime read lock poisoned")?
+                .clone(),
+            capture_tcp,
+        );
         proxy.admin = prepared_admin.map(|listener| listener.start(proxy.runtime.clone()));
         if let (Some(host), Some(admin), Some(events)) =
             (command_centre.as_ref(), admin_address, event_address)
@@ -1920,6 +1949,13 @@ impl Proxy {
             .reload_id
         {
             marker["reload_id"] = Value::from(reload_id.clone());
+        }
+        if let Some(address) = self
+            .capture
+            .as_ref()
+            .and_then(|running| running.capture.tcp_address)
+        {
+            marker["capture_tcp_address"] = json!(address);
         }
         if let Some(listener) = &self.admin {
             marker["admin_port"] = Value::from(listener.address().port());
@@ -2160,6 +2196,7 @@ impl Proxy {
             self.admin
                 .as_ref()
                 .and_then(admin_listener::Running::event_address),
+            None,
             &mut service_files,
         )?);
         let additions = self.prepare_listeners(&config)?;
@@ -2266,6 +2303,9 @@ impl Proxy {
             if let Err(error) = task.await {
                 eprintln!("listener shutdown failed: {error}");
             }
+        }
+        if let Some(capture) = self.capture.take() {
+            capture.stop().await;
         }
         service_mutations.drain().await;
         plumb.drain().await;
