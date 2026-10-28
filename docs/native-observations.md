@@ -174,6 +174,8 @@ FlowStore eligibility or force an application decode.
 For stdout/pipe output, set `stdout = true` in `[packet_capture]`. The foreground
 native proxy writes the capture bytes to stdout. Redirect stdout to a file or
 pipe it to a reader that accepts classic PCAP. Operational errors use stderr.
+Pipe writes are nonblocking. If the reader stops, the sink times out without
+leaving a blocked stdout worker that prevents process exit.
 When using the installed background service, stdout follows that service's
 existing output destination; use the file or network adapter when appropriate.
 
@@ -192,6 +194,10 @@ set `insecure_remote = true`. Changing the bind alone refuses configuration.
 Raw TCP has no authentication or transport encryption. Use authenticated WSS
 for remote consumers. The existing operator-port shield protects the actual
 capture endpoint against agent requests through the proxy.
+For an Internet Protocol version 6 (IPv6) wildcard listener, the shield retains
+the socket's effective IPv6-only setting. If the socket also accepts Internet
+Protocol version 4 (IPv4), the shield protects its IPv4 loopback and unspecified
+local aliases.
 
 For WSS, set `wss = true` in `[packet_capture]` and configure the existing
 Admin listener and operator token. Connect to `/admin/capture` with a WebSocket

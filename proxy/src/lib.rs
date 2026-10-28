@@ -440,7 +440,7 @@ impl Runtime {
         previous: Option<&Runtime>,
         admin_address: Option<std::net::SocketAddr>,
         event_address: Option<std::net::SocketAddr>,
-        capture_address: Option<std::net::SocketAddr>,
+        capture_address: Option<admin_shield::CaptureEndpoint>,
         service_files: &mut Option<services::CatalogMetadata>,
     ) -> Result<Self, Error> {
         let mut startup = previous
@@ -462,7 +462,7 @@ impl Runtime {
                 .connection_events
                 .as_ref()
                 .and_then(|events| events.observations.capture.get())
-                .and_then(|capture| capture.tcp_address)
+                .and_then(|capture| capture.tcp_endpoint)
         });
         if let Some(bound) = capture_address {
             admin_shield.protect_capture_endpoint(bound);
@@ -1841,7 +1841,7 @@ impl Proxy {
         let capture_address = capture_tcp
             .as_ref()
             .and_then(|listener| listener.as_ref().ok())
-            .and_then(|listener| listener.local_addr().ok());
+            .map(|listener| listener.endpoint);
         let prepared_admin = admin_listener::Prepared::bind(&config).await?;
         startup.record("validation_admin_bind");
         let admin_address = prepared_admin
@@ -1953,9 +1953,9 @@ impl Proxy {
         if let Some(address) = self
             .capture
             .as_ref()
-            .and_then(|running| running.capture.tcp_address)
+            .and_then(|running| running.capture.tcp_endpoint)
         {
-            marker["capture_tcp_address"] = json!(address);
+            marker["capture_tcp_address"] = json!(address.address);
         }
         if let Some(listener) = &self.admin {
             marker["admin_port"] = Value::from(listener.address().port());

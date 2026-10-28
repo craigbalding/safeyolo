@@ -21,6 +21,7 @@ use tokio::{
 };
 
 mod compat;
+mod stdout;
 #[cfg(test)]
 mod tests;
 
@@ -222,7 +223,7 @@ impl Drop for Receiver {
 
 pub(crate) struct Capture {
     bus: Weak<ObservationBus>,
-    pub(crate) tcp_address: Option<SocketAddr>,
+    pub(crate) tcp_endpoint: Option<crate::admin_shield::CaptureEndpoint>,
     session: Session,
     pub(crate) settings: Settings,
     sinks: Mutex<Vec<Weak<SinkQueue>>>,
@@ -407,17 +408,53 @@ fn report(counters: &crate::observations::Counters, kind: Sink, reason: &'static
     );
 }
 
-pub(crate) async fn bind_tcp(
-    config: &mut crate::Config,
-) -> Option<Result<tokio::net::TcpListener, ()>> {
+pub(crate) struct BoundTcp {
+    listener: tokio::net::TcpListener,
+    pub(crate) endpoint: crate::admin_shield::CaptureEndpoint,
+}
+impl BoundTcp {
+    fn new(listener: tokio::net::TcpListener) -> std::io::Result<Self> {
+        use std::os::fd::AsRawFd;
+        let address = listener.local_addr()?;
+        let mut ipv6_only: libc::c_int = 0;
+        if address.is_ipv6() {
+            let mut length = std::mem::size_of_val(&ipv6_only) as libc::socklen_t;
+            // SAFETY: the socket and the writable option buffer remain valid
+            // for the call. Retain the OS setting, not an assumed platform default.
+            if unsafe {
+                libc::getsockopt(
+                    listener.as_raw_fd(),
+                    libc::IPPROTO_IPV6,
+                    libc::IPV6_V6ONLY,
+                    (&mut ipv6_only as *mut libc::c_int).cast(),
+                    &mut length,
+                )
+            } != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(Self {
+            listener,
+            endpoint: crate::admin_shield::CaptureEndpoint {
+                address,
+                ipv6_only: ipv6_only != 0,
+            },
+        })
+    }
+}
+pub(crate) async fn bind_tcp(config: &mut crate::Config) -> Option<Result<BoundTcp, ()>> {
     let settings = &mut config.native_settings.as_mut()?.packet_capture;
     if settings.unavailable().is_some() {
         return None;
     }
     let tcp = settings.tcp.as_mut()?;
-    match tokio::net::TcpListener::bind(tcp.bind).await {
+    match tokio::net::TcpListener::bind(tcp.bind)
+        .await
+        .and_then(BoundTcp::new)
+    {
         Ok(listener) => {
-            tcp.bind = listener.local_addr().ok()?;
+            tcp.bind = listener.endpoint.address;
             Some(Ok(listener))
         }
         Err(_) => Some(Err(())),
@@ -432,7 +469,7 @@ pub(crate) struct Running {
 impl Running {
     pub(crate) fn start(
         runtime: &Arc<crate::Runtime>,
-        tcp_listener: Option<Result<tokio::net::TcpListener, ()>>,
+        tcp_listener: Option<Result<BoundTcp, ()>>,
     ) -> Option<Self> {
         let settings = runtime
             .config
@@ -460,10 +497,10 @@ impl Running {
         let mut source = bus.subscribe(ConsumerKind::Capture, settings.queue);
         let capture = Arc::new(Capture {
             bus: Arc::downgrade(bus),
-            tcp_address: tcp_listener
+            tcp_endpoint: tcp_listener
                 .as_ref()
                 .and_then(|listener| listener.as_ref().ok())
-                .and_then(|listener| listener.local_addr().ok()),
+                .map(|listener| listener.endpoint),
             session: source.session.clone(),
             settings,
             sinks: Mutex::new(Vec::new()),
@@ -488,14 +525,19 @@ impl Running {
         if capture.settings.stdout
             && let Ok(receiver) = capture.subscribe(Sink::Stdout)
         {
-            tasks.spawn(write_stream(tokio::io::stdout(), receiver));
+            tasks.spawn(async move {
+                match stdout::open() {
+                    Ok(writer) => write_stream(writer, receiver).await,
+                    Err(_) => receiver.error("stdout_open_or_nonblocking_failed"),
+                }
+            });
         }
         if let Some(listener) = tcp_listener {
             let capture = capture.clone();
             let mut stop = stop.subscribe();
             tasks.spawn(async move {
                 let listener = match listener {
-                    Ok(listener)=>listener,
+                    Ok(bound)=>bound.listener,
                     Err(_)=>{report(&capture.counters,Sink::Tcp,"tcp_bind_failed");return;}
                 };
                 let mut clients = JoinSet::new();

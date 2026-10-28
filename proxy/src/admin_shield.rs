@@ -58,7 +58,14 @@ impl std::error::Error for ConfigError {}
 #[derive(Clone, Debug)]
 pub struct AdminShield {
     ports: BTreeSet<u16>,
-    capture_endpoint: Option<SocketAddr>,
+    capture_endpoint: Option<CaptureEndpoint>,
+}
+
+/// The bound capture address and the socket's effective address-family scope.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CaptureEndpoint {
+    pub(crate) address: SocketAddr,
+    pub(crate) ipv6_only: bool,
 }
 
 impl AdminShield {
@@ -121,7 +128,7 @@ impl AdminShield {
         self.ports.contains(&port)
             || self
                 .capture_endpoint
-                .is_some_and(|bound| bound.port() == port)
+                .is_some_and(|bound| bound.address.port() == port)
     }
 
     /// Add the process-local operator listener after an ephemeral bind.
@@ -131,7 +138,7 @@ impl AdminShield {
         self.ports.insert(bound.port());
     }
 
-    pub(crate) fn protect_capture_endpoint(&mut self, bound: SocketAddr) {
+    pub(crate) fn protect_capture_endpoint(&mut self, bound: CaptureEndpoint) {
         self.capture_endpoint = Some(bound);
     }
 
@@ -141,13 +148,14 @@ impl AdminShield {
     /// remote addresses on these ports as local.
     pub fn blocks_address(&self, address: SocketAddr) -> bool {
         self.capture_endpoint.is_some_and(|bound| {
-            let bound_ip = normalize_mapped(bound.ip());
+            let bound_ip = normalize_mapped(bound.address.ip());
             let selected_ip = normalize_mapped(address.ip());
-            targets_listener(address, bound)
-                || bound.port() == address.port()
+            targets_listener(address, bound.address)
+                || bound.address.port() == address.port()
                     && bound_ip.is_unspecified()
-                    && bound_ip.is_ipv4() == selected_ip.is_ipv4()
-                    && selected_ip.is_loopback()
+                    && (bound_ip.is_ipv4() == selected_ip.is_ipv4()
+                        || bound_ip.is_ipv6() && !bound.ipv6_only)
+                    && (selected_ip.is_loopback() || selected_ip.is_unspecified())
         }) || self.ports.contains(&address.port()) && is_protected_local_address(address.ip())
     }
 }

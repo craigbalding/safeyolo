@@ -894,7 +894,7 @@ async fn a_gap_crossing_a_new_sink_starts_at_that_sessions_first_sequence() {
     let source = bus.subscribe(ConsumerKind::Capture, Limits::default());
     let capture = Capture {
         bus: Arc::downgrade(&bus),
-        tcp_address: None,
+        tcp_endpoint: None,
         session: source.session.clone(),
         settings: Settings::default(),
         sinks: Mutex::new(Vec::new()),
@@ -929,7 +929,11 @@ async fn a_gap_crossing_a_new_sink_starts_at_that_sessions_first_sequence() {
 #[test]
 fn capture_endpoint_shield_covers_mapped_addresses_without_claiming_other_hosts() {
     let mut shield = crate::admin_shield::AdminShield::new(9090, "").unwrap();
-    shield.protect_capture_endpoint("127.0.0.2:46378".parse().unwrap());
+    let endpoint = |address: &str| crate::admin_shield::CaptureEndpoint {
+        address: address.parse().unwrap(),
+        ipv6_only: false,
+    };
+    shield.protect_capture_endpoint(endpoint("127.0.0.2:46378"));
     assert!(shield.protects_port(46378));
     assert!(shield.blocks_request_destination("127.0.0.2", 46378));
     assert!(shield.blocks_request_destination("::ffff:127.0.0.2", 46378));
@@ -939,13 +943,290 @@ fn capture_endpoint_shield_covers_mapped_addresses_without_claiming_other_hosts(
     assert!(!shield.blocks_address("127.0.0.1:46378".parse().unwrap()));
     assert!(!shield.blocks_address("[::1]:46378".parse().unwrap()));
     assert!(!shield.blocks_address("192.0.2.22:46378".parse().unwrap()));
-    shield.protect_capture_endpoint("127.0.0.1:46378".parse().unwrap());
+    shield.protect_capture_endpoint(endpoint("127.0.0.1:46378"));
     assert!(shield.blocks_request_destination("127.1", 46378));
     assert!(shield.blocks_request_destination("0.0.0.0", 46378));
-    shield.protect_capture_endpoint("0.0.0.0:46378".parse().unwrap());
+    shield.protect_capture_endpoint(endpoint("0.0.0.0:46378"));
     assert!(shield.blocks_address("127.0.0.2:46378".parse().unwrap()));
     assert!(!shield.blocks_address("[::1]:46378".parse().unwrap()));
     assert!(!shield.blocks_address("192.0.2.22:46378".parse().unwrap()));
+    shield.protect_capture_endpoint(endpoint("[::ffff:0.0.0.0]:46378"));
+    assert!(shield.blocks_address("127.0.0.2:46378".parse().unwrap()));
+    assert!(!shield.blocks_address("[::1]:46378".parse().unwrap()));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn dual_stack_capture_refuses_native_agent_connect_without_capture_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(directory.path());
+    config.native_settings.as_mut().unwrap().packet_capture = Settings {
+        payload_layers: vec![Layer::TransportStream],
+        tcp: Some(Tcp {
+            bind: "[::]:0".parse().unwrap(),
+            insecure_remote: true,
+        }),
+        ..Default::default()
+    };
+    let mut proxy = crate::Proxy::start(config.clone()).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let bus = bus(&runtime);
+    let capture = bus.capture.get().unwrap();
+    let endpoint = capture.tcp_endpoint.unwrap();
+    assert!(!endpoint.ipv6_only);
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, endpoint.address.port()));
+    // The listener really accepts IPv4 and sends the initialized stream.
+    let mut operator = TcpStream::connect(address).await.unwrap();
+    let prefix = timeout(WAIT, read_prefix(&mut operator)).await.unwrap();
+    assert_eq!(session(&prefix)["first_sequence"], 1);
+    proxy.reload(config).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    for host in [
+        "127.0.0.1",
+        "127.0.0.2",
+        "0.0.0.0",
+        "[::ffff:127.0.0.1]",
+        "localhost",
+    ] {
+        assert!(runtime.admin_shield.blocks_address(address));
+        if host != "localhost" {
+            assert!(
+                runtime
+                    .admin_shield
+                    .blocks_request_destination(host, address.port())
+            );
+        }
+        let authority = format!("{host}:{}", address.port());
+        let mut agent = UnixStream::connect(directory.path().join("alice.sock"))
+            .await
+            .unwrap();
+        agent
+            .write_all(
+                format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes(),
+            )
+            .await
+            .unwrap();
+        let response = crate::connection_events::tests::head(&mut agent).await;
+        assert!(response.starts_with(b"HTTP/1.1 403"));
+        assert!(
+            String::from_utf8_lossy(&response)
+                .to_lowercase()
+                .contains("x-blocked-by: admin-shield")
+        );
+        assert!(
+            !response
+                .windows(4)
+                .any(|bytes| bytes == 0xa1b23c4du32.to_le_bytes())
+        );
+        let mut body = vec![0; crate::admin_shield::REJECTION.body.len()];
+        timeout(WAIT, agent.read_exact(&mut body))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(body, crate::admin_shield::REJECTION.body);
+    }
+    assert_eq!(
+        capture
+            .sinks
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|sink| sink.strong_count() > 0)
+            .count(),
+        1
+    );
+    assert!(
+        !runtime
+            .admin_shield
+            .blocks_address(SocketAddr::from(([192, 0, 2, 22], address.port())))
+    );
+    drop(operator);
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn ipv6_only_capture_leaves_an_unrelated_ipv4_listener_accessible() {
+    use std::os::fd::AsRawFd;
+    let socket = tokio::net::TcpSocket::new_v6().unwrap();
+    let only: libc::c_int = 1;
+    // SAFETY: the live socket and option buffer remain valid for this call.
+    assert_eq!(
+        unsafe {
+            libc::setsockopt(
+                socket.as_raw_fd(),
+                libc::IPPROTO_IPV6,
+                libc::IPV6_V6ONLY,
+                (&only as *const libc::c_int).cast(),
+                std::mem::size_of_val(&only) as libc::socklen_t,
+            )
+        },
+        0
+    );
+    socket.bind("[::]:0".parse().unwrap()).unwrap();
+    let bound = BoundTcp::new(socket.listen(8).unwrap()).unwrap();
+    assert!(bound.endpoint.ipv6_only);
+    let port = bound.endpoint.address.port();
+    let mut shield = crate::admin_shield::AdminShield::new(9090, "").unwrap();
+    shield.protect_capture_endpoint(bound.endpoint);
+    assert!(shield.blocks_address(SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port))));
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    assert!(!shield.blocks_address(address));
+    assert!(!shield.blocks_request_destination("127.0.0.1", port));
+    let unrelated = tokio::net::TcpListener::bind(address).await.unwrap();
+    let mut client = TcpStream::connect(address).await.unwrap();
+    let (mut peer, _) = unrelated.accept().await.unwrap();
+    peer.write_all(b"unrelated").await.unwrap();
+    let mut bytes = [0; 9];
+    timeout(WAIT, client.read_exact(&mut bytes))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&bytes, b"unrelated");
+}
+
+#[test]
+fn stdout_pipe_shutdown_is_bounded_with_a_stopped_or_draining_collector() {
+    use std::{
+        io::Read,
+        os::fd::{AsFd, AsRawFd},
+        process::{Command, Stdio},
+        time::Instant,
+    };
+    const CHILD: &str = "SAFEYOLO_CAPTURE_STDOUT_TEST_DIRECTORY";
+    const COLLECTOR: &str = "SAFEYOLO_CAPTURE_STDOUT_COLLECTOR";
+    if let Some(directory) = std::env::var_os(CHILD) {
+        let directory = std::path::Path::new(&directory);
+        let saved = std::io::stdout().as_fd().try_clone_to_owned().unwrap();
+        // The parent supplies an actual writable pipe as stdin. Keep libtest's
+        // own stdout separate from the capture stream before and after this test.
+        assert_eq!(
+            unsafe { libc::dup2(libc::STDIN_FILENO, libc::STDOUT_FILENO) },
+            libc::STDOUT_FILENO
+        );
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        executor.block_on(async {
+            let mut config = config(directory);
+            config.native_settings.as_mut().unwrap().packet_capture = Settings {
+                payload_layers: vec![Layer::TransportStream],
+                file: Some(directory.join("healthy.pcap")),
+                stdout: true,
+                ..Default::default()
+            };
+            let proxy = crate::Proxy::start(config).await.unwrap();
+            let runtime = proxy.runtime.read().unwrap().clone();
+            let bus = bus(&runtime);
+            timeout(WAIT, async {
+                while [Sink::Stdout, Sink::File]
+                    .iter()
+                    .any(|sink| bus.counters.sink_bytes[sink.index()].load(Ordering::Relaxed) == 0)
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let payload = vec![0xa5; 512 * 1024];
+            let mut observation = crate::observations::tests::sample(&bus);
+            observation.observed_length = Some(payload.len() as u64);
+            let mut canonical = bus.subscribe(ConsumerKind::Metrics, Limits::default());
+            bus.emit_payload(observation, &payload);
+            let record = timeout(WAIT, canonical.recv()).await.unwrap().unwrap();
+            proxy.shutdown().await;
+            let file = std::fs::read(directory.join("healthy.pcap")).unwrap();
+            let prefix = 40 + u32::from_le_bytes(file[32..36].try_into().unwrap()) as usize;
+            assert_eq!(
+                &file[prefix..],
+                compat::encode(&record, Limits::default().bytes).unwrap()
+            );
+            let stopped = std::env::var(COLLECTOR).unwrap() == "stopped";
+            assert_eq!(
+                bus.counters.sink_errors[Sink::Stdout.index()].load(Ordering::Relaxed),
+                u64::from(stopped)
+            );
+            assert_eq!(
+                bus.counters.sink_errors[Sink::File.index()].load(Ordering::Relaxed),
+                0
+            );
+        });
+        assert_eq!(
+            unsafe { libc::dup2(saved.as_raw_fd(), libc::STDOUT_FILENO) },
+            libc::STDOUT_FILENO
+        );
+        // Dropping the real runtime must finish with the reader still stopped.
+        drop(executor);
+        return;
+    }
+    for collector in ["stopped", "draining"] {
+        let directory = tempfile::tempdir().unwrap();
+        let (reader, writer) = std::io::pipe().unwrap();
+        let mut reader = Some(reader);
+        let flags = unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_GETFL) };
+        let held_writer = writer.try_clone().unwrap();
+        let errors = std::fs::File::create(directory.path().join("stderr")).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "packet_capture::tests::stdout_pipe_shutdown_is_bounded_with_a_stopped_or_draining_collector", "--nocapture"])
+            .env(CHILD, directory.path()).env(COLLECTOR, collector)
+            .stdin(Stdio::from(writer)).stdout(Stdio::null()).stderr(errors).spawn().unwrap();
+        let draining = (collector == "draining").then(|| {
+            let mut reader = reader.take().unwrap();
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                reader.read_to_end(&mut bytes).unwrap();
+                bytes
+            })
+        });
+        let start = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if start.elapsed() > Duration::from_secs(8) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!(
+                    "{collector} stdout collector prevented process exit: {}",
+                    std::fs::read_to_string(directory.path().join("stderr")).unwrap()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            status.success(),
+            "{collector}: {}",
+            std::fs::read_to_string(directory.path().join("stderr")).unwrap()
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(held_writer.as_raw_fd(), libc::F_GETFL) },
+            flags
+        );
+        drop(held_writer);
+        if let Some(draining) = draining {
+            let bytes = draining.join().unwrap();
+            let file = std::fs::read(directory.path().join("healthy.pcap")).unwrap();
+            let prefix = 40 + u32::from_le_bytes(bytes[32..36].try_into().unwrap()) as usize;
+            let file_prefix = 40 + u32::from_le_bytes(file[32..36].try_into().unwrap()) as usize;
+            packets(&bytes);
+            assert_eq!(&bytes[prefix..], &file[file_prefix..]);
+            assert_ne!(
+                session(&bytes)["sink_session_id"],
+                session(&file)["sink_session_id"]
+            );
+        } else {
+            let mut bytes = Vec::new();
+            reader.unwrap().read_to_end(&mut bytes).unwrap();
+            let prefix = 40 + u32::from_le_bytes(bytes[32..36].try_into().unwrap()) as usize;
+            assert_eq!(session(&bytes[..prefix])["first_sequence"], 1);
+            assert!(
+                bytes.len()
+                    < std::fs::metadata(directory.path().join("healthy.pcap"))
+                        .unwrap()
+                        .len() as usize
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -969,7 +1250,7 @@ async fn failed_tcp_bind_and_reload_do_not_shield_an_unowned_capture_port() {
     .await
     .unwrap();
     assert!(!runtime.admin_shield.blocks_address(address));
-    assert!(bus.capture.get().unwrap().tcp_address.is_none());
+    assert!(bus.capture.get().unwrap().tcp_endpoint.is_none());
     config
         .native_settings
         .as_mut()
@@ -1002,7 +1283,7 @@ async fn encoder_shutdown_failure_names_the_active_sinks() {
     let source = bus.subscribe(ConsumerKind::Capture, Limits::default());
     let capture = Arc::new(Capture {
         bus: Arc::downgrade(&bus),
-        tcp_address: None,
+        tcp_endpoint: None,
         session: source.session.clone(),
         settings: Settings::default(),
         sinks: Mutex::new(Vec::new()),
