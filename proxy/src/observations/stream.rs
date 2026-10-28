@@ -17,6 +17,7 @@ pub(crate) struct Source {
     prefixes: Mutex<[Option<InputSpan>; 2]>,
     prefixes_current: [AtomicBool; 2],
     parser_error_reported: AtomicBool,
+    tls_secrets: std::sync::OnceLock<Option<Arc<crate::packet_capture::secrets::Secrets>>>,
 }
 impl Source {
     pub(crate) fn new(
@@ -39,6 +40,7 @@ impl Source {
             prefixes: Mutex::new([None, None]),
             prefixes_current: [const { AtomicBool::new(false) }; 2],
             parser_error_reported: AtomicBool::new(false),
+            tls_secrets: std::sync::OnceLock::new(),
         })
     }
     pub(crate) fn tls(self: &Arc<Self>, point: Point) -> Arc<Self> {
@@ -138,6 +140,16 @@ impl Source {
     }
     pub(crate) fn wire(&self) -> Option<&Arc<crate::packet_capture::wire::Connections>> {
         self.bus.wire.get()
+    }
+    pub(crate) fn key_log(&self) -> Option<crate::packet_capture::secrets::Handshake> {
+        if let Some(parent) = &self.parent {
+            return parent.key_log();
+        }
+        let capture = self.bus.capture.get()?;
+        self.tls_secrets
+            .get_or_init(|| capture.register_secrets(&self.connection_id))
+            .as_ref()
+            .map(|secrets| secrets.begin())
     }
     fn chunk(&self, direction: Direction, offset: u64, bytes: &[u8]) {
         // A skipped update must not leave the previous IDs available to a later parser.

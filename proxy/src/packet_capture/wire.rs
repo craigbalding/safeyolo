@@ -397,6 +397,7 @@ impl Source {
     pub(super) async fn run(
         mut self,
         mut stopped: watch::Receiver<bool>,
+        capture: &super::Capture,
     ) -> Result<(), &'static str> {
         let mut tick = tokio::time::interval(Duration::from_millis(2));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -459,14 +460,14 @@ impl Source {
                     closed == 0 || closed > cutoff
                 });
             n = n.wrapping_add(1);
-            if n.is_multiple_of(500) {
-                self.statistics();
+            if n.is_multiple_of(500) && self.statistics() {
+                capture.wire_statistics();
             }
         }
         self.statistics();
         Ok(())
     }
-    fn statistics(&mut self) {
+    fn statistics(&mut self) -> bool {
         let mut stats = [0u32; 16];
         let status = unsafe { (self.api.stats)(self.handle, stats.as_mut_ptr()) };
         if status == 0 {
@@ -494,6 +495,7 @@ impl Source {
                 "Packet capture source error layer=wire_packet reason=pcap_statistics_unavailable"
             );
         }
+        status == 0
     }
 }
 

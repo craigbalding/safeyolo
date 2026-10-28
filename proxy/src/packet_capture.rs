@@ -1,7 +1,8 @@
-//! Explicit classic capture, shared encoding and bounded asynchronous delivery.
+//! Explicit capture, shared encoding and bounded asynchronous delivery.
 use crate::{
     Error,
     observations::{ConsumerKind, Layer, Limits, ObservationBus, Record, Session},
+    policy::python_whitespace,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -21,6 +22,8 @@ use tokio::{
 };
 
 mod compat;
+mod pcapng;
+pub(crate) mod secrets;
 mod stdout;
 #[cfg(test)]
 mod tests;
@@ -37,6 +40,28 @@ pub struct Settings {
     pub queue: Limits,
     pub profile: Profile,
     pub wire_interface: Option<String>,
+    pub compatibility_packets: bool,
+    pub tls_secrets: bool,
+    pub secret_outputs: Vec<SecretOutput>,
+    pub secrets_token_file: Option<PathBuf>,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(super) test_enterprise: Option<pcapng::Enterprise>,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretOutput {
+    File,
+    Stdout,
+    Tcp,
+}
+impl SecretOutput {
+    fn permits(self, sink: Sink) -> bool {
+        matches!(
+            (self, sink),
+            (Self::File, Sink::File) | (Self::Stdout, Sink::Stdout) | (Self::Tcp, Sink::Tcp)
+        )
+    }
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Packet {
@@ -81,7 +106,17 @@ impl Settings {
         if self.wss && !admin {
             return Err("packet_capture.wss requires the authenticated Admin listener".into());
         }
+        if self.tls_secrets && !matches!(self.profile, Profile::Pcapng) {
+            return Err("packet_capture.tls_secrets requires profile=pcapng".into());
+        }
         Ok(())
+    }
+    fn enterprise(&self) -> Option<pcapng::Enterprise> {
+        #[cfg(test)]
+        if let Some(enterprise) = self.test_enterprise {
+            return Some(enterprise);
+        }
+        pcapng::ENTERPRISE
     }
     pub(crate) fn unavailable(&self) -> Option<&'static str> {
         match self.profile {
@@ -93,7 +128,10 @@ impl Settings {
                 Some("pcap_wire_disabled")
             }
             Profile::Wire => None,
-            Profile::Pcapng => Some("pcapng_portable_encoder_unavailable"),
+            Profile::Pcapng if self.enterprise().is_none() => {
+                Some("pcapng_portable_encoder_unavailable")
+            }
+            Profile::Pcapng => None,
         }
     }
     pub(crate) fn payload_layers(&self) -> Vec<Layer> {
@@ -109,6 +147,43 @@ impl Settings {
     }
     fn active(&self) -> bool {
         self.file.is_some() || self.stdout || self.tcp.is_some() || self.wss
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Encoder {
+    Compat,
+    Wire(wire::Format),
+    Pcapng(pcapng::Format),
+}
+impl Encoder {
+    fn session(self, session: &Session, sink: &str, limit: usize) -> Result<Vec<u8>, ()> {
+        match self {
+            Self::Compat => compat::session(session, sink, limit),
+            Self::Wire(format) => Ok(format.header()),
+            Self::Pcapng(format) => format.session(session, sink, limit),
+        }
+    }
+    fn encode(self, record: &Record, limit: usize) -> Result<Vec<u8>, ()> {
+        match self {
+            Self::Compat => compat::encode(record, limit),
+            Self::Wire(f) => f.encode(record, limit),
+            Self::Pcapng(f) => f.encode(record, limit),
+        }
+    }
+    fn loss(
+        self,
+        session: &Session,
+        sink: &str,
+        first: u64,
+        last: u64,
+        reason: &str,
+    ) -> Result<Vec<u8>, ()> {
+        match self {
+            Self::Compat => compat::loss(session, sink, first, last, reason),
+            Self::Wire(_) => Err(()),
+            Self::Pcapng(f) => f.loss(session, sink, first, last, reason),
+        }
     }
 }
 
@@ -156,7 +231,8 @@ struct SinkQueue {
     session: Session,
     kind: Sink,
     counters: Arc<crate::observations::Counters>,
-    wire: bool,
+    encoder: Encoder,
+    secrets: bool,
 }
 pub(crate) struct Receiver {
     inner: Arc<SinkQueue>,
@@ -194,7 +270,7 @@ impl Receiver {
                     .front()
                     .map_or(pending.through, |b| b.first.saturating_sub(1));
                 if !self.initial && missing_through >= self.next {
-                    if self.inner.wire {
+                    if matches!(self.inner.encoder, Encoder::Wire(_)) {
                         // Classic wire PCAP has no loss-record representation.
                         // End this session rather than insert invented packets.
                         report(
@@ -206,14 +282,17 @@ impl Receiver {
                     }
                     // Data admissions reserve one item and CONTROL_BYTES for this
                     // bounded, self-contained loss record. It precedes later bytes.
-                    let bytes = compat::loss(
-                        &self.inner.session,
-                        self.inner.kind.name(),
-                        self.next,
-                        missing_through,
-                        "encoder_or_sink_admission_unavailable",
-                    )
-                    .ok()?;
+                    let bytes = self
+                        .inner
+                        .encoder
+                        .loss(
+                            &self.inner.session,
+                            self.inner.kind.name(),
+                            self.next,
+                            missing_through,
+                            "encoder_or_sink_admission_unavailable",
+                        )
+                        .ok()?;
                     self.next = missing_through + 1;
                     pending.bytes += bytes.len() + 128;
                     pending.items += 1;
@@ -228,7 +307,7 @@ impl Receiver {
                     if self.initial {
                         self.initial = false;
                     } else {
-                        self.next = batch.last + 1;
+                        self.next = self.next.max(batch.last + 1);
                     }
                     return Some(Delivery {
                         bytes: batch.bytes,
@@ -259,37 +338,83 @@ pub(crate) struct Capture {
     counters: Arc<crate::observations::Counters>,
     encoded_through: AtomicU64,
     progress: Notify,
-    wire_format: Option<wire::Format>,
+    encoder: Encoder,
+    secrets: Option<Arc<secrets::Store>>,
+    secrets_token: zeroize::Zeroizing<String>,
 }
 impl Capture {
+    pub(crate) fn register_secrets(&self, connection: &str) -> Option<Arc<secrets::Secrets>> {
+        self.secrets.as_ref()?.register(connection)
+    }
+    #[cfg(test)]
+    fn wire_format(&self) -> Option<wire::Format> {
+        match self.encoder {
+            Encoder::Wire(format) => Some(format),
+            Encoder::Pcapng(format) => format.wire,
+            _ => None,
+        }
+    }
     pub(crate) fn subscribe(&self, kind: Sink) -> Result<Receiver, ()> {
+        let secrets = self
+            .settings
+            .secret_outputs
+            .iter()
+            .any(|output| output.permits(kind));
+        self.subscribe_authorized(kind, secrets)
+    }
+    pub(crate) fn authorize_secrets(
+        &self,
+        headers: &hyper::HeaderMap,
+    ) -> Result<bool, crate::admin_api::Error> {
+        crate::admin_api::authenticate(headers, &self.secrets_token)
+    }
+    pub(crate) fn subscribe_authorized(&self, kind: Sink, secrets: bool) -> Result<Receiver, ()> {
         // Serialize registration against dispatch; never replay historical batches.
         let mut sinks = self.sinks.lock().unwrap_or_else(|e| e.into_inner());
         let bus = self.bus.upgrade().ok_or(())?;
-        if self.wire_format.is_some() && !bus.wire.get().is_some_and(|source| source.is_active()) {
+        if matches!(self.encoder, Encoder::Wire(_))
+            && !bus.wire.get().is_some_and(|source| source.is_active())
+        {
             report(&self.counters, kind, "pcap_acquisition_unavailable");
             return Err(());
         }
+        let encoder = match self.encoder {
+            Encoder::Pcapng(mut format)
+                if format.wire.is_some()
+                    && !bus.wire.get().is_some_and(|source| source.is_active()) =>
+            {
+                format.wire_unavailable = Some("pcap_acquisition_unavailable");
+                Encoder::Pcapng(format)
+            }
+            encoder => encoder,
+        };
         let first = bus.next_sequence();
         let session = Session {
             sink_session_id: uuid::Uuid::new_v4().to_string(),
             first_sequence: first,
             ..self.session.clone()
         };
-        let bytes = if let Some(format) = self.wire_format {
-            eprintln!("Packet capture session profile=pcap:wire sink={} session={} link_type={} precision_ns={}",kind.name(), serde_json::to_string(&session).map_err(|_| ())?,format.link_type,format.precision_ns);
-            Ok(format.header())
-        } else { compat::session(
-            &session,
-            kind.name(),
-            self.settings
-                .queue
-                .bytes
-                .saturating_sub(compat::CONTROL_BYTES),
-        ) }
-        .map_err(|()| {
-            report(&self.counters, kind, "session_budget_unavailable");
-        })?;
+        if let Encoder::Wire(format) = self.encoder {
+            eprintln!(
+                "Packet capture session profile=pcap:wire sink={} session={} link_type={} precision_ns={}",
+                kind.name(),
+                serde_json::to_string(&session).map_err(|_| ())?,
+                format.link_type,
+                format.precision_ns
+            );
+        }
+        let bytes = encoder
+            .session(
+                &session,
+                kind.name(),
+                self.settings
+                    .queue
+                    .bytes
+                    .saturating_sub(compat::CONTROL_BYTES),
+            )
+            .map_err(|()| {
+                report(&self.counters, kind, "session_budget_unavailable");
+            })?;
         let batch = Batch {
             bytes: bytes.into(),
             first,
@@ -320,7 +445,8 @@ impl Capture {
             session,
             kind,
             counters: self.counters.clone(),
-            wire: self.wire_format.is_some(),
+            encoder,
+            secrets: secrets && self.secrets.is_some(),
         });
         sinks.retain(|sink| sink.strong_count() != 0);
         sinks.push(Arc::downgrade(&inner));
@@ -330,7 +456,12 @@ impl Capture {
             initial: true,
         })
     }
-    fn dispatch(&self, record: &Record, encoded: Option<Arc<[u8]>>) {
+    fn dispatch(
+        &self,
+        record: &Record,
+        encoded: Option<Arc<[u8]>>,
+        secret_encoded: Option<Arc<[u8]>>,
+    ) {
         let (first, last) = match record {
             Record::Observation(o) => (o.id.sequence, o.id.sequence),
             Record::Gap(g) => (g.first_sequence, g.last_sequence),
@@ -344,29 +475,66 @@ impl Capture {
                 return true;
             }
             let mut pending = sink.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let public = &encoded;
             let clipped;
             let encoded = if let Record::Gap(gap) = record
-                && self.wire_format.is_none()
+                && !matches!(self.encoder, Encoder::Wire(_))
                 && gap.first_sequence < sink.session.first_sequence
             {
                 let mut gap = gap.clone();
                 gap.first_sequence = sink.session.first_sequence;
                 gap.count = gap.last_sequence - gap.first_sequence + 1;
-                clipped = compat::encode(
-                    &Record::Gap(gap),
-                    sink.limits
-                        .bytes
-                        .saturating_sub(compat::CONTROL_BYTES + 128),
-                )
-                .ok()
-                .map(Arc::from);
+                clipped = self
+                    .encoder
+                    .encode(
+                        &Record::Gap(gap),
+                        sink.limits
+                            .bytes
+                            .saturating_sub(compat::CONTROL_BYTES + 128),
+                    )
+                    .ok()
+                    .map(Arc::from);
                 &clipped
             } else {
-                &encoded
+                if sink.secrets {
+                    secret_encoded
+                        .as_ref()
+                        .map_or(&encoded, |_| &secret_encoded)
+                } else {
+                    &encoded
+                }
             };
             if pending.closed {
                 return true;
             }
+            let mut fallback: Option<Arc<[u8]>> = None;
+            let encoded = if sink.secrets
+                && secret_encoded.as_ref().is_some_and(|bytes| {
+                    bytes.len() + 128
+                        > sink
+                            .limits
+                            .bytes
+                            .saturating_sub(compat::CONTROL_BYTES + pending.bytes)
+                })
+                && let Encoder::Pcapng(format) = self.encoder
+                && let Some(public) = public
+                && let Ok(mut bytes) = format.limitation(
+                    record,
+                    "tls_secret_sink_budget_unavailable",
+                    compat::CONTROL_BYTES / 2 - 128,
+                )
+                && bytes.len() + public.len() + 128
+                    <= sink
+                        .limits
+                        .bytes
+                        .saturating_sub(compat::CONTROL_BYTES / 2 + pending.bytes)
+            {
+                bytes.extend_from_slice(public);
+                fallback = Some(Arc::from(bytes));
+                &fallback
+            } else {
+                encoded
+            };
             let admitted = encoded.as_ref().is_some_and(|bytes| {
                 let batch = Batch {
                     bytes: bytes.clone(),
@@ -379,7 +547,11 @@ impl Capture {
                         > sink
                             .limits
                             .bytes
-                            .saturating_sub(compat::CONTROL_BYTES)
+                            .saturating_sub(if sink.secrets && fallback.is_some() {
+                                compat::CONTROL_BYTES / 2
+                            } else {
+                                compat::CONTROL_BYTES
+                            })
                             .saturating_sub(pending.bytes)
                 {
                     return false;
@@ -401,6 +573,94 @@ impl Capture {
         });
         self.encoded_through.store(last, Ordering::Release);
         self.progress.notify_waiters();
+    }
+    fn control(&self, bytes: Arc<[u8]>) {
+        let mut sinks = self.sinks.lock().unwrap_or_else(|e| e.into_inner());
+        sinks.retain(|sink| {
+            let Some(sink) = sink.upgrade() else {
+                return false;
+            };
+            let mut pending = sink.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let batch = Batch {
+                bytes: bytes.clone(),
+                first: pending.through + 1,
+                last: pending.through,
+            };
+            if !pending.closed
+                && pending.items < sink.limits.items.saturating_sub(1)
+                && batch.charge()
+                    <= sink
+                        .limits
+                        .bytes
+                        .saturating_sub(compat::CONTROL_BYTES + pending.bytes)
+            {
+                pending.bytes += batch.charge();
+                pending.items += 1;
+                pending.batches.push_back(batch);
+                sink.notify.notify_one();
+            } else {
+                report(
+                    &self.counters,
+                    sink.kind,
+                    "capture_control_budget_unavailable",
+                );
+            }
+            true
+        });
+    }
+    fn wire_statistics(&self) {
+        if let Encoder::Pcapng(format) = self.encoder {
+            let ns = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |t| t.as_nanos() as i128);
+            if let Ok(bytes) = format.statistics(
+                ns,
+                self.counters.wire_received.load(Ordering::Relaxed),
+                self.counters.wire_kernel_dropped.load(Ordering::Relaxed),
+                self.counters.wire_interface_dropped.load(Ordering::Relaxed),
+                compat::CONTROL_BYTES,
+            ) {
+                self.control(bytes.into());
+            }
+        }
+    }
+    async fn encode_secrets(
+        &self,
+        record: &Record,
+        encoded: &Option<Arc<[u8]>>,
+        limit: usize,
+    ) -> Option<Arc<[u8]>> {
+        let store = self.secrets.as_ref()?;
+        let Encoder::Pcapng(format) = self.encoder else {
+            return None;
+        };
+        let Record::Observation(o) = record else {
+            return None;
+        };
+        o.packet?;
+        let base = encoded.as_ref()?;
+        let (lines, reason) = store.snapshot(&o.connection_id).await;
+        let remaining = limit.saturating_sub(base.len());
+        let mut prefix = pcapng::secrets(lines.as_bytes(), remaining).ok();
+        let reason = if prefix.is_none() {
+            Some("tls_secret_export_budget_unavailable")
+        } else {
+            reason
+        };
+        if let Some(reason) = reason {
+            let limitation = format.limitation(record, reason, remaining).ok()?;
+            if prefix
+                .as_ref()
+                .is_some_and(|p| p.len() + limitation.len() <= remaining)
+            {
+                prefix.as_mut().unwrap().extend(limitation);
+            } else {
+                prefix = Some(limitation);
+            }
+        }
+        let mut bytes = prefix?;
+        bytes.extend_from_slice(base);
+        Some(bytes.into())
     }
     fn close(&self) {
         for sink in self
@@ -523,23 +783,24 @@ impl Running {
             return None;
         }
         let bus = &runtime.connection_events.as_ref()?.observations;
-        let native =
-            if matches!(settings.profile, Profile::Wire) && settings.unavailable().is_none() {
-                Some(wire::Source::open(
-                    settings.wire_interface.as_deref().unwrap(),
-                    settings.queue,
-                    bus.counters.clone(),
-                ))
-            } else {
-                None
-            };
-        let unavailable = settings.unavailable().or_else(|| {
-            native
-                .as_ref()
-                .and_then(|result| result.as_ref().err().copied())
-        });
+        let wire_requested = matches!(settings.profile, Profile::Wire | Profile::Pcapng)
+            && settings.wire_interface.is_some()
+            && settings.payload_layers.contains(&Layer::WirePacket);
+        let native = if wire_requested && settings.unavailable().is_none() {
+            Some(wire::Source::open(
+                settings.wire_interface.as_deref().unwrap(),
+                settings.queue,
+                bus.counters.clone(),
+            ))
+        } else {
+            None
+        };
+        let wire_unavailable = native
+            .as_ref()
+            .and_then(|result| result.as_ref().err().copied());
+        let unavailable = settings.unavailable().or(wire_unavailable);
         if let Some(reason) = unavailable {
-            if matches!(settings.profile, Profile::Wire) {
+            if wire_requested {
                 bus.counters
                     .wire_source_errors
                     .fetch_add(1, Ordering::Relaxed);
@@ -554,8 +815,54 @@ impl Running {
                     report(&bus.counters, kind, reason);
                 }
             }
-            return None;
+            if settings.unavailable().is_some() || matches!(settings.profile, Profile::Wire) {
+                return None;
+            }
         }
+        let wire_format = native
+            .as_ref()
+            .and_then(|s| s.as_ref().ok())
+            .map(|s| s.format);
+        let encoder = match settings.profile {
+            Profile::Compat => Encoder::Compat,
+            Profile::Wire => Encoder::Wire(wire_format?),
+            Profile::Pcapng => Encoder::Pcapng(pcapng::Format {
+                enterprise: settings.enterprise()?,
+                wire: wire_format,
+                compatibility: settings.compatibility_packets,
+                wire_unavailable,
+            }),
+        };
+        let mut secrets_token = zeroize::Zeroizing::new(String::new());
+        if settings.tls_secrets
+            && let Some(path) = settings.secrets_token_file.as_deref()
+        {
+            let token = crate::admin_listener::read_token(Some(path)).map(|token| {
+                zeroize::Zeroizing::new(token.trim_matches(python_whitespace).to_owned())
+            });
+            let read_token =
+                crate::admin_listener::read_token(runtime.config.admin_api_token_file.as_deref());
+            if let (Ok(token), Ok(read_token)) = (token, read_token)
+                && !token.is_empty()
+                && token.is_ascii()
+                && token.as_str() != read_token.trim_matches(python_whitespace)
+            {
+                secrets_token = token;
+            } else {
+                report(
+                    &bus.counters,
+                    Sink::Wss,
+                    "capture_secrets_authorization_unavailable",
+                );
+            }
+        }
+        let secrets = (settings.tls_secrets
+            && (settings.secret_outputs.iter().any(|output| match output {
+                SecretOutput::File => settings.file.is_some(),
+                SecretOutput::Stdout => settings.stdout,
+                SecretOutput::Tcp => settings.tcp.is_some(),
+            }) || settings.wss && !secrets_token.is_empty()))
+        .then(|| Arc::new(secrets::Store::new(settings.queue)));
         let mut source = bus.subscribe(ConsumerKind::Capture, settings.queue);
         let capture = Arc::new(Capture {
             bus: Arc::downgrade(bus),
@@ -565,12 +872,11 @@ impl Running {
                 .map(|listener| listener.endpoint),
             session: Session {
                 timestamp_resolution: crate::observations::Resolution {
-                    wall_ns: native
-                        .as_ref()
-                        .and_then(|s| s.as_ref().ok())
-                        .map_or(source.session.timestamp_resolution.wall_ns, |s| {
-                            Some(s.format.precision_ns)
-                        }),
+                    wall_ns: if matches!(settings.profile, Profile::Wire) {
+                        wire_format.map(|f| f.precision_ns)
+                    } else {
+                        source.session.timestamp_resolution.wall_ns
+                    },
                     ..source.session.timestamp_resolution
                 },
                 ..source.session.clone()
@@ -580,10 +886,9 @@ impl Running {
             counters: bus.counters.clone(),
             encoded_through: AtomicU64::new(source.session.first_sequence - 1),
             progress: Notify::new(),
-            wire_format: native
-                .as_ref()
-                .and_then(|source| source.as_ref().ok())
-                .map(|source| source.format),
+            encoder,
+            secrets,
+            secrets_token,
         });
         let _ = bus.capture.set(capture.clone());
         let (stop, mut stopped) = watch::channel(false);
@@ -594,13 +899,19 @@ impl Running {
             let capture = capture.clone();
             let stopped = stop.subscribe();
             tasks.spawn(async move {
-                if let Err(reason) = source.run(stopped).await {
+                if let Err(reason) = source.run(stopped, &capture).await {
                     capture
                         .counters
                         .wire_source_errors
                         .fetch_add(1, Ordering::Relaxed);
                     capture.report_sink_errors(reason);
-                    capture.close();
+                    if let Encoder::Pcapng(format) = capture.encoder {
+                        if let Ok(bytes) = format.source_limitation(&capture.session, reason) {
+                            capture.control(bytes.into());
+                        }
+                    } else {
+                        capture.close();
+                    }
                 }
             });
         }
@@ -655,11 +966,10 @@ impl Running {
                 let Some(record) = record else {break;};
                 let Some(capture) = weak.upgrade() else {return;};
                 let limit = capture.settings.queue.bytes.saturating_sub(compat::CONTROL_BYTES+128);
-                let encoded = match capture.wire_format {
-                    Some(format) => format.encode(&record, limit),
-                    None => compat::encode(&record, limit),
-                }.ok().map(Arc::from);
-                capture.dispatch(&record,encoded);
+                let base_limit=limit.saturating_sub(if capture.secrets.is_some() && matches!(record.as_ref(),Record::Observation(o) if o.packet.is_some()){compat::CONTROL_BYTES/2}else{0});
+                let encoded=capture.encoder.encode(&record,base_limit).ok().map(Arc::from);
+                let secret_encoded=capture.encode_secrets(&record,&encoded,limit).await;
+                capture.dispatch(&record,encoded,secret_encoded);
             }
             if let Some(capture)=weak.upgrade(){capture.close();}
         });

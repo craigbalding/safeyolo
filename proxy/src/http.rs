@@ -1292,14 +1292,18 @@ async fn open_egress_for_flow(
                 .tls
                 .clone()
                 .ok_or("HTTPS parent TLS was not configured")?;
+            let handshake=network.as_ref().and_then(|network|network.source().key_log());
+            let mut tls=(*tls).clone();
+            if let Some(handshake)=&handshake {tls.key_log=handshake.logger();}
             selected_ip::record(runtime, allowed.identity, allowed.request_id, destination, "parent_tls", "pending", json!({"parent": parent_url, "verification_name": host}));
             let tls = refresh_parent_tls_phase(phase_timeout, async {
-                    TlsConnector::from(tls)
+                    TlsConnector::from(Arc::new(tls))
                         .connect(name, socket)
                         .await
                         .map_err(Into::into)
                 })
                 .await;
+            drop(handshake);
             match tls {
                 Ok(tls) => {
                     if let Some(network) = &network { network.tls_session("parent", host, tls.get_ref().1); }
@@ -1502,6 +1506,13 @@ async fn open_outbound(
             "upstream TLS trust is not configured"
         })?;
         let mut config = (**config).clone();
+        let handshake = connection
+            .network
+            .as_ref()
+            .and_then(|network| network.source().key_log());
+        if let Some(handshake) = &handshake {
+            config.key_log = handshake.logger();
+        }
         if offer_http2 {
             config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         }
@@ -1526,6 +1537,7 @@ async fn open_outbound(
                 .map_err(Into::into)
         })
         .await;
+        drop(handshake);
         let tls = match tls {
             Ok(tls) => tls,
             Err(error) => {
@@ -2978,11 +2990,15 @@ where
                         .as_ref()
                         .ok_or("TLS CA is not configured")?
                         .server_config(&destination.host, time::OffsetDateTime::now_utc())?;
+                    let handshake=descendants.ingress.get().and_then(|network|network.source().key_log());
+                    let mut config=(*config).clone();
+                    if let Some(handshake)=&handshake {config.key_log=handshake.logger();}
                     selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "pending", json!({"verification_name": destination.host}));
                     let tls = tokio::select! {
                         _ = stop.changed() => Err("client TLS cancelled".into()),
-                        result = TlsAcceptor::from(config).accept(client) => result.map_err(|error| -> Error { error.into() }),
+                        result = TlsAcceptor::from(Arc::new(config)).accept(client) => result.map_err(|error| -> Error { error.into() }),
                     };
+                    drop(handshake);
                     let tls = match tls {
                         Ok(tls) => tls,
                         Err(error) => {

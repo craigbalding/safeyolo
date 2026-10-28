@@ -16,7 +16,7 @@ const METADATA_BYTES: usize = 8192;
 struct Bounded(Vec<u8>);
 impl Write for Bounded {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > METADATA_BYTES.saturating_sub(self.0.len()) {
+        if bytes.len() > METADATA_BYTES.saturating_sub(MAGIC.len() + self.0.len()) {
             return Err(std::io::ErrorKind::FileTooLarge.into());
         }
         self.0.reserve_exact(bytes.len());
@@ -28,7 +28,12 @@ impl Write for Bounded {
     }
 }
 fn metadata(value: &impl Serialize) -> Result<Vec<u8>, ()> {
-    let mut bytes = Bounded(MAGIC.to_vec());
+    let mut bytes = MAGIC.to_vec();
+    bytes.extend(json_bytes(value)?);
+    Ok(bytes)
+}
+pub(super) fn json_bytes(value: &impl Serialize) -> Result<Vec<u8>, ()> {
+    let mut bytes = Bounded(Vec::new());
     serde_json::to_writer(&mut bytes, value).map_err(|_| ())?;
     Ok(bytes.0)
 }

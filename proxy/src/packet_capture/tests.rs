@@ -8,7 +8,7 @@ use tokio::{
 };
 const WAIT: Duration = Duration::from_secs(5);
 
-fn config(directory: &std::path::Path) -> crate::Config {
+pub(super) fn config(directory: &std::path::Path) -> crate::Config {
     let mut config = crate::connection_events::tests::config(directory);
     config.native_settings = Some(crate::native_config::Settings::default());
     config.native_config_dir = Some(directory.to_owned());
@@ -64,7 +64,7 @@ fn metadata(frame: &[u8]) -> Value {
 fn session(bytes: &[u8]) -> Value {
     metadata(packets(bytes)[0].1)["session"].clone()
 }
-fn encode_session() -> crate::observations::Session {
+pub(super) fn encode_session() -> crate::observations::Session {
     crate::observations::Session {
         instance_id: "instance".into(),
         runtime_id: "runtime".into(),
@@ -77,7 +77,7 @@ fn encode_session() -> crate::observations::Session {
         first_sequence: 1,
     }
 }
-fn observation() -> Observation {
+pub(super) fn observation() -> Observation {
     let bus = ObservationBus::new(
         "instance".into(),
         "runtime".into(),
@@ -923,7 +923,9 @@ async fn a_gap_crossing_a_new_sink_starts_at_that_sessions_first_sequence() {
     }
     let source = bus.subscribe(ConsumerKind::Capture, Limits::default());
     let capture = Capture {
-        wire_format: None,
+        encoder: Encoder::Compat,
+        secrets: None,
+        secrets_token: zeroize::Zeroizing::new(String::new()),
         bus: Arc::downgrade(&bus),
         tcp_endpoint: None,
         session: source.session.clone(),
@@ -947,6 +949,7 @@ async fn a_gap_crossing_a_new_sink_starts_at_that_sessions_first_sequence() {
     capture.dispatch(
         &record,
         Some(compat::encode(&record, 64 * 1024).unwrap().into()),
+        None,
     );
     bytes.extend_from_slice(&receive(&mut receiver).await.bytes);
     let rows = packets(&bytes);
@@ -1315,7 +1318,9 @@ async fn encoder_shutdown_failure_names_the_active_sinks() {
     );
     let source = bus.subscribe(ConsumerKind::Capture, Limits::default());
     let capture = Arc::new(Capture {
-        wire_format: None,
+        encoder: Encoder::Compat,
+        secrets: None,
+        secrets_token: zeroize::Zeroizing::new(String::new()),
         bus: Arc::downgrade(&bus),
         tcp_endpoint: None,
         session: source.session.clone(),
@@ -1346,8 +1351,7 @@ async fn encoder_shutdown_failure_names_the_active_sinks() {
 }
 
 #[cfg(target_os = "linux")]
-#[tokio::test]
-async fn wire_source_failure_refuses_later_collectors_but_sink_gaps_allow_reconnect() {
+async fn source_fault_child(test: &str) -> Option<std::ffi::OsString> {
     const CHILD: &str = "SAFEYOLO_WIRE_SOURCE_FAULT";
     let Some(trigger) = std::env::var_os(CHILD) else {
         // Keep the controlled libpcap and its environment in a separate process.
@@ -1377,7 +1381,7 @@ async fn wire_source_failure_refuses_later_collectors_but_sink_gaps_allow_reconn
             paths.extend(std::env::split_paths(&existing));
         }
         let child = tokio::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "packet_capture::tests::wire_source_failure_refuses_later_collectors_but_sink_gaps_allow_reconnect", "--nocapture"])
+            .args(["--exact", test, "--nocapture"])
             .env("LD_LIBRARY_PATH", std::env::join_paths(paths).unwrap())
             .env(CHILD, directory.path().join("fail"))
             .kill_on_drop(true)
@@ -1392,8 +1396,15 @@ async fn wire_source_failure_refuses_later_collectors_but_sink_gaps_allow_reconn
             String::from_utf8_lossy(&child.stdout),
             String::from_utf8_lossy(&child.stderr)
         );
-        return;
+        return None;
     };
+    Some(trigger)
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn wire_source_failure_refuses_later_collectors_but_sink_gaps_allow_reconnect() {
+    let Some(trigger)=source_fault_child("packet_capture::tests::wire_source_failure_refuses_later_collectors_but_sink_gaps_allow_reconnect").await else {return};
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(directory.path());
     let token = directory.path().join("token");
@@ -1437,7 +1448,7 @@ async fn wire_source_failure_refuses_later_collectors_but_sink_gaps_allow_reconn
             "no successful stream after source failure"
         );
     }
-    let header = capture.wire_format.unwrap().header();
+    let header = capture.wire_format().unwrap().header();
     let mut initial = collector(address, &header).await;
     // A real canonical admission gap ends this sink without failing acquisition.
     let mut oversized = crate::observations::tests::sample(&bus);
@@ -1509,6 +1520,105 @@ async fn wire_source_failure_refuses_later_collectors_but_sink_gaps_allow_reconn
             .unwrap()
             > 0
     );
+    proxy.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn pcapng_source_failure_is_explicit_for_existing_and_later_collectors() {
+    let Some(trigger)=source_fault_child("packet_capture::tests::pcapng_source_failure_is_explicit_for_existing_and_later_collectors").await else {return};
+    async fn block(stream: &mut TcpStream) -> Vec<u8> {
+        let mut header = [0; 8];
+        timeout(WAIT, stream.read_exact(&mut header))
+            .await
+            .unwrap()
+            .unwrap();
+        let length = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+        assert!((12..=65536).contains(&length));
+        let mut bytes = header.to_vec();
+        bytes.resize(length, 0);
+        timeout(WAIT, stream.read_exact(&mut bytes[8..]))
+            .await
+            .unwrap()
+            .unwrap();
+        bytes
+    }
+    let root = tempfile::tempdir().unwrap();
+    let mut config = config(root.path());
+    config.admin_port = Some(0);
+    let token = root.path().join("token");
+    std::fs::write(&token, "pcapng-failure-test").unwrap();
+    config.admin_api_token_file = Some(token);
+    config.native_settings.as_mut().unwrap().packet_capture = Settings {
+        profile: Profile::Pcapng,
+        test_enterprise: Some(pcapng::TEST_ENTERPRISE),
+        wire_interface: Some("controlled-source".into()),
+        payload_layers: vec![Layer::WirePacket],
+        tcp: Some(Tcp {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            ..Default::default()
+        }),
+        wss: true,
+        ..Default::default()
+    };
+    let proxy = crate::Proxy::start(config).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let bus = bus(&runtime);
+    let capture = bus.capture.get().unwrap();
+    let address = capture.tcp_endpoint.unwrap().address;
+    let mut existing = TcpStream::connect(address).await.unwrap();
+    for _ in 0..3 {
+        block(&mut existing).await;
+    }
+    std::fs::write(trigger, []).unwrap();
+    timeout(WAIT, async {
+        while bus.counters.wire_source_errors.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await
+        }
+    })
+    .await
+    .unwrap();
+    let limitation = block(&mut existing).await;
+    assert!(
+        limitation
+            .windows(b"pcap_read_failed".len())
+            .any(|b| b == b"pcap_read_failed")
+    );
+    let mut later = TcpStream::connect(address).await.unwrap();
+    let header = block(&mut later).await;
+    assert_eq!(&header[..4], &0x0a0d0d0au32.to_le_bytes());
+    assert!(
+        header
+            .windows(b"pcap_acquisition_unavailable".len())
+            .any(|b| b == b"pcap_acquisition_unavailable")
+    );
+    block(&mut later).await;
+    block(&mut later).await;
+    let id = bus.emit(crate::observations::tests::sample(&bus)).unwrap();
+    capture.flush().await;
+    for mut stream in [existing, later] {
+        let canonical = block(&mut stream).await;
+        assert!(
+            canonical
+                .windows(b"canonical".len())
+                .any(|b| b == b"canonical")
+        );
+        assert!(
+            canonical
+                .windows(id.runtime_id.len())
+                .any(|b| b == id.runtime_id.as_bytes())
+        );
+    }
+    let mut ws = TcpStream::connect(runtime.admin_address.unwrap())
+        .await
+        .unwrap();
+    ws.write_all(b"GET /admin/capture HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Bearer pcapng-failure-test\r\n\r\n").await.unwrap();
+    assert!(
+        crate::connection_events::tests::head(&mut ws)
+            .await
+            .starts_with(b"HTTP/1.1 101")
+    );
+    drop(ws);
     proxy.shutdown().await;
 }
 
@@ -1683,7 +1793,7 @@ async fn native_wire_acquisition_excludes_unrelated_and_live_export_transports()
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(header.as_slice(), capture.wire_format.unwrap().header());
+    assert_eq!(header.as_slice(), capture.wire_format().unwrap().header());
     drop(reconnect);
     let mut reconnect = connector
         .connect(
@@ -1721,7 +1831,7 @@ async fn native_wire_acquisition_excludes_unrelated_and_live_export_transports()
         let length = u32::from_le_bytes(bytes[at + 8..at + 12].try_into().unwrap()) as usize;
         let frame = &bytes[at + 16..at + 16 + length];
         let tuple =
-            wire::tcp_tuple_for_test(capture.wire_format.unwrap().link_type, frame).unwrap();
+            wire::tcp_tuple_for_test(capture.wire_format().unwrap().link_type, frame).unwrap();
         assert!(
             tuple.0 == address || tuple.1 == address,
             "only the owned upstream can appear"
@@ -1749,7 +1859,7 @@ async fn native_wire_acquisition_excludes_unrelated_and_live_export_transports()
     }
     assert!(packet_count > 0);
     assert_eq!(at, bytes.len());
-    let format = capture.wire_format.unwrap();
+    let format = capture.wire_format().unwrap();
     for record in acquired {
         let encoded = format.encode(&record, 64 * 1024).unwrap();
         assert!(

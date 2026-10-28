@@ -255,10 +255,16 @@ pub(crate) fn from_source(path: &Path, source: &str) -> Result<Config, Error> {
     }
     let mut settings: Settings = serde_json::from_value(Value::Object(settings))
         .map_err(|error| format!("config.toml settings: {error}"))?;
-    if let Some(path) = &mut settings.packet_capture.file
-        && !path.is_absolute()
+    for path in [
+        &mut settings.packet_capture.file,
+        &mut settings.packet_capture.secrets_token_file,
+    ]
+    .into_iter()
+    .flatten()
     {
-        *path = root.join(&*path);
+        if !path.is_absolute() {
+            *path = root.join(&*path);
+        }
     }
     if let Some(linux) = &settings.linux {
         linux.validate()?;
