@@ -430,7 +430,7 @@ async fn idle_ingress_has_lifecycle_without_a_request_or_synthetic_peer() {
     let directory = tempfile::tempdir().unwrap();
     let proxy = Proxy::start(config(directory.path())).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
-    let client = UnixStream::connect(directory.path().join("alice.sock"))
+    let mut client = UnixStream::connect(directory.path().join("alice.sock"))
         .await
         .unwrap();
     timeout(LIMIT, async {
@@ -444,12 +444,29 @@ async fn idle_ingress_has_lifecycle_without_a_request_or_synthetic_peer() {
     })
     .await
     .unwrap();
+    // Retain the read half until the server finishes shutdown. On macOS a
+    // full peer close can make the server's shutdown fail with ENOTCONN.
+    client.shutdown().await.unwrap();
+    let terminal = timeout(LIMIT, async {
+        loop {
+            let rows = records(&runtime, directory.path());
+            let terminal = connections(&rows, "client_to_proxy", "terminal");
+            if !terminal.is_empty() {
+                break terminal;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    println!("idle ingress terminal: {terminal:?}");
     drop(client);
     proxy.shutdown().await;
     let rows = records(&runtime, directory.path());
     assert_pairs(&rows);
     let clients = connections(&rows, "client_to_proxy", "closed");
-    assert_eq!(clients.len(), 1);
+    assert_eq!(clients.len(), 1, "idle ingress terminal: {terminal:?}");
+    assert!(clients[0]["error"].is_null());
     assert_eq!(
         clients[0]["remote_endpoint"],
         json!({"type":"unix","path":null})
