@@ -11,23 +11,86 @@ import argparse
 import base64
 import hashlib
 import json
+import os
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
-def run(cli: Path, root: Path, scratch: Path) -> None:
+def job_directories(root: Path):
+    """Select this instance's transient roots, including macOS short UDS paths."""
+    parent = Path("/private/var/tmp") if sys.platform == "darwin" else root / "data"
+    config = (root / "config.toml").resolve(strict=True)
+    result = set()
+    for directory in parent.glob("job-*"):
+        try:
+            if directory.stat().st_uid != os.geteuid():
+                continue
+            link = directory / "config.toml"
+            if link.is_symlink() and link.resolve(strict=True) == config:
+                result.add(directory)
+        except (FileNotFoundError, NotADirectoryError):
+            # A concurrent job can finish between enumeration and symlink lookup.
+            continue
+    return result
+
+
+def interrupt_request(command, root: Path, signal_number: int):
+    """Signal the owned caller after its host runtime record is published."""
+    before = job_directories(root)
+    records = []
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as child:
+        deadline = time.monotonic() + 180
+        try:
+            while child.poll() is None:
+                records = [
+                    path
+                    for directory in job_directories(root) - before
+                    for path in directory.glob("agents/job-*/runtime.json")
+                    if path.is_file()
+                ]
+                if records:
+                    child.send_signal(signal_number)
+                    break
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(command, 180)
+                time.sleep(0.05)
+            stdout, stderr = child.communicate(timeout=max(0.1, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired as error:
+            child.terminate()
+            try:
+                stdout, stderr = child.communicate(timeout=180)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                stdout, stderr = child.communicate()
+            raise subprocess.TimeoutExpired(command, error.timeout, output=stdout, stderr=stderr) from error
+        finally:
+            # Reap the owned caller if the fixture's filesystem observer fails.
+            # Give native teardown its normal bound before the last-resort kill.
+            if child.poll() is None:
+                child.terminate()
+                try:
+                    child.communicate(timeout=180)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.communicate()
+        return subprocess.CompletedProcess(command, child.returncode, stdout, stderr), records
+
+
+def run(cli: Path, root: Path, scratch: Path, signals_only: bool = False) -> None:
     """Keep normal installed state unchanged while exercising real job runs."""
     protected = [root / "config.toml", root / "policy.toml"]
     original = {path: path.read_bytes() for path in protected if path.is_file()}
-    jobs_before = set((root / "data").glob("job-*"))
+    jobs_before = job_directories(root)
     input_dir = scratch / "input"
     input_dir.mkdir()
     (input_dir / "candidate").write_text("read-only candidate\n")
     job_number = 0
 
-    def job(program: str, *, privilege: str = "unprivileged", timeout: int = 30):
+    def job(program: str, *, privilege: str = "unprivileged", timeout: int = 30, interrupt_signal=None):
         nonlocal job_number
         job_number += 1
         prefix = scratch / f"job-{job_number:02d}"
@@ -46,13 +109,13 @@ def run(cli: Path, root: Path, scratch: Path) -> None:
                 }
             )
         )
+        command = [str(cli), "--root", str(root), "job", "run", str(spec_path), "--input", str(input_dir)]
+        records = []
         try:
-            completed = subprocess.run(
-                [str(cli), "--root", str(root), "job", "run", str(spec_path), "--input", str(input_dir)],
-                capture_output=True,
-                timeout=180,
-                check=False,
-            )
+            if interrupt_signal is None:
+                completed = subprocess.run(command, capture_output=True, timeout=180, check=False)
+            else:
+                completed, records = interrupt_request(command, root, interrupt_signal)
         except subprocess.TimeoutExpired as error:
             prefix.with_suffix(".stdout").write_bytes(error.stdout or b"")
             prefix.with_suffix(".stderr").write_bytes(error.stderr or b"")
@@ -60,19 +123,36 @@ def run(cli: Path, root: Path, scratch: Path) -> None:
             raise
         prefix.with_suffix(".stdout").write_bytes(completed.stdout)
         prefix.with_suffix(".stderr").write_bytes(completed.stderr)
-        prefix.with_suffix(".cli-result.json").write_text(json.dumps({"returncode": completed.returncode}))
+        prefix.with_suffix(".cli-result.json").write_text(json.dumps({
+            "returncode": completed.returncode,
+            "interrupt_signal": interrupt_signal,
+            "observed_runtime_records": [str(path) for path in records],
+        }))
         result = json.loads(completed.stdout)
+        if interrupt_signal is not None:
+            assert len(records) == 1, records
+            assert result["run_id"] == records[0].parent.name, result
         assert result["gate_principal"] == "gate:job-boundary-probe", result
         assert result["authorization_principal"] is None, result
         assert result["observation_error"] is None, result
         assert len(result["rootfs"]["sha256"]) == 64, result
         assert len(result["input_sha256"]) == 64, result
         assert len(result["gate_definition_sha256"]) == 64, result
-        assert set((root / "data").glob("job-*")) == jobs_before
+        assert job_directories(root) == jobs_before
         for path, content in original.items():
             assert path.read_bytes() == content, path
         assert (input_dir / "candidate").read_text() == "read-only candidate\n"
         return completed.returncode, result
+
+    def caller_signals():
+        for number, privilege in ((signal.SIGINT, "unprivileged"), (signal.SIGTERM, "guest-root")):
+            code, interrupted = job("import time; time.sleep(300)", privilege=privilege, interrupt_signal=number)
+            assert code == 1 and interrupted["outcome"] == {"kind": "interrupted", "signal": number}, interrupted
+        print("PASS caller SIGINT/SIGTERM after runtime publication and owned teardown")
+
+    if signals_only:
+        caller_signals()
+        return
 
     _, default = job("""
 import json, os, pathlib, subprocess
@@ -169,16 +249,19 @@ print('job-relative root, chown, private mount, observer signal/ptrace/key refus
         assert base64.b64decode(output["retained_base64"]) == byte * 8192, output
     print("PASS timeout, bounded retained output, complete stream hashes and owned teardown")
 
+    caller_signals()
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cli", type=Path, required=True)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--scratch", type=Path, required=True)
+    parser.add_argument("--signals-only", action="store_true", help="Run caller SIGINT/SIGTERM checks without repeating other rows.")
     args = parser.parse_args()
     scratch = Path(tempfile.mkdtemp(prefix="job-probe-", dir=args.scratch))
     print(f"scratch={scratch}", flush=True)
-    run(args.cli.resolve(strict=True), args.root.resolve(strict=True), scratch)
+    run(args.cli.resolve(strict=True), args.root.resolve(strict=True), scratch, args.signals_only)
 
 
 if __name__ == "__main__":
