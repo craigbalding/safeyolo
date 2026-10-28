@@ -833,7 +833,7 @@ pub(crate) fn runsc_root() -> PathBuf {
 }
 
 #[cfg(target_os = "linux")]
-fn userns_command(name: &str, program: &str) -> io::Result<Command> {
+pub(crate) fn userns_command(name: &str, program: &str) -> io::Result<Command> {
     let mut command = Command::new("nsenter");
     if let Some(pid) = userns_pid(name) {
         command.args(["--user", "--net", "--target", &pid.to_string(), "--"]);
@@ -1066,6 +1066,24 @@ pub(crate) async fn start_sandbox(
     memory_mb: u64,
     ephemeral: bool,
 ) -> io::Result<()> {
+    start_linux_sandbox(name, ip, memory_mb, ephemeral, false).await
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) async fn start_job_sandbox(name: &str, memory_mb: u64) -> io::Result<()> {
+    // Job result interpretation uses the tested runtime's raw wait-status log.
+    crate::linux_host::verify_selected_runtime().map_err(io::Error::other)?;
+    start_linux_sandbox(name, "127.0.0.1", memory_mb, true, true).await
+}
+
+#[cfg(target_os = "linux")]
+async fn start_linux_sandbox(
+    name: &str,
+    ip: &str,
+    memory_mb: u64,
+    ephemeral: bool,
+    job: bool,
+) -> io::Result<()> {
     if !valid_agent_name(name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1237,15 +1255,28 @@ pub(crate) async fn start_sandbox(
                 .unwrap_or(0)
                 .to_string(),
         )?;
-        crate::linux_host::shares::attach_startup(name)
-            .await
-            .map_err(io::Error::other)?;
+        if !job {
+            crate::linux_host::shares::attach_startup(name)
+                .await
+                .map_err(io::Error::other)?;
+        }
         // Linux extras must be mounted before guest-init performs static
         // setup or launches any workload. The OCI entry shell waits here.
         std::fs::write(share.join("per-run-go"), b"")?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
         while tokio::time::Instant::now() < deadline && backend_pid(name).is_some() {
-            if status_dir.join("per-run-started").is_file() {
+            let ready = if job {
+                runsc_command(name)?
+                    .args(["exec", &id, "/usr/bin/test", "-f", "/run/job-ready"])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .kill_on_drop(true)
+                    .status().await?.success()
+            } else {
+                status_dir.join("per-run-started").is_file()
+            };
+            if ready {
                 let mut run = crate::host_runs::read(name).map_err(io::Error::other)?
                     .ok_or_else(|| io::Error::other("sandbox record disappeared before readiness"))?;
                 if run["run_id"].as_str().map(|generation| format!("safeyolo-{generation}")) != Some(id.clone()) {

@@ -80,6 +80,7 @@ mod http;
 pub mod http_content;
 pub mod ignored_host_logger;
 pub mod inspection;
+pub mod jobs;
 pub mod memory_monitor;
 mod memory_runtime;
 pub mod metrics;
