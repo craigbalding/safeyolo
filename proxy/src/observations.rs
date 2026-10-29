@@ -499,6 +499,22 @@ pub struct ObservationBus {
     pub counters: Arc<Counters>,
 }
 impl ObservationBus {
+    /// Read identity and effective settings from the same process owner as the
+    /// counters. Reloaded configuration and readiness files are not this source.
+    pub(crate) fn operator_source(&self) -> serde_json::Value {
+        serde_json::json!({
+            "instance_id": self.session.instance_id,
+            "runtime_id": self.session.runtime_id,
+            "queue_limits": self.limits,
+            "payload_layers": self.payload_layers,
+            "capture": self.capture.get().map_or_else(
+                || serde_json::json!({"state":"not_running"}),
+                |capture| capture.operator_status(),
+            ),
+            "wire_source_active": self.wire.get().is_some_and(|source| source.is_active()),
+        })
+    }
+
     pub fn new(
         instance_id: String,
         runtime_id: String,

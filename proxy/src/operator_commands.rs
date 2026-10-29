@@ -13,6 +13,8 @@ use serde_json::{Value, json};
 
 use crate::{Error, host_platform, native_client, native_config, network_guard};
 
+mod observations;
+
 pub const HELP: &str = "safeyolo [--root ROOT] inspect [--factory NAME] [--agent NAME]
 safeyolo [--root ROOT] traffic list [--agent NAME] [--filter EXPRESSION] [--json]
 safeyolo [--root ROOT] traffic show ID|body ID request|response|websocket ID|message ID NUMBER [--offset BYTES] [--agent NAME] [--json]
@@ -26,6 +28,7 @@ safeyolo [--root ROOT] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [-
 safeyolo [--root ROOT] logs list [--instance ID] [--runtime ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] logs connection ID --instance ID --runtime ID [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] logs request ID --instance ID --runtime ID [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] observations [--instance ID] [--runtime ID] [--json]
 safeyolo [--root ROOT] diagnose [--agent NAME] [--json]
 safeyolo helper show ID|diagnostic ID|prepare ID --reason TEXT [--socket PATH] [--token-file FILE]
 safeyolo helper list\nsafeyolo helper approve|reject|defer ID --delegation NAME --option ID\nsafeyolo helper context|respond ID [--reason TEXT] [--socket PATH] [--token-file FILE]
@@ -43,13 +46,14 @@ Gateway route approval defaults to once; --option selects an offered lifetime. S
 Reject records a refusal without adding a policy deny rule. Terminal decisions cannot grant again.
 Helper uses its Agent API token (default /app/agent_token) and the existing guest proxy route.
 If evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable.
+Observations reads current runtime aggregates. --instance and --runtime check a retained namespace; they do not retrieve historical or per-agent measurements. Reload preserves counters; restart changes the runtime. Reading observations does not enable payload capture or content storage.
 Logs use the configured local audit file unless --file PATH is supplied. Repeat --file for explicitly selected offline inputs; no installed config or API is needed. Each file is validated to EOF and retains the last --lines selected-agent rows (default 100 per file), so total retention is at most input count times --lines. Selected-file pivots identify every input/physical line and duplicate copy, and refuse conflicting event copies or transport owners as join evidence. Input order is not chronological order. Selection and schema validation do not authenticate the producer. Use logs list to discover retained namespaces, agent context, and connection/request/indicator references; --instance and --runtime optionally narrow that listing. It is not live inventory. Unknown attribution and conflicting copies stay distinct from recorded resolved agent context. Pivots require instance and runtime; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Prompt exposure correlations explain exact source and source/model transport novelty support, including partial or unavailable evidence. These are connection-wide relationships, not proof of malicious intent or model receipt. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.";
 
 pub fn handles(args: &[String]) -> bool {
     args.first().is_some_and(|arg| {
         matches!(
             arg.as_str(),
-            "inspect" | "traffic" | "approvals" | "helper" | "logs" | "diagnose"
+            "inspect" | "traffic" | "approvals" | "helper" | "logs" | "diagnose" | "observations"
         )
     })
 }
@@ -1421,6 +1425,9 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
     if args.iter().any(|arg| arg == "--help") {
         println!("{HELP}");
         return Ok(());
+    }
+    if args[0] == "observations" {
+        return observations::run(&args[1..]).await;
     }
     let options = Options::parse(&args[1..])?;
     let value = match args[0].as_str() {

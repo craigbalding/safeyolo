@@ -89,7 +89,7 @@ impl Drop for Ownership {
     }
 }
 impl Connections {
-    pub(super) fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         self.active.load(Ordering::Acquire)
     }
     pub(crate) fn register(

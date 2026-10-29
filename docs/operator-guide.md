@@ -295,6 +295,53 @@ All seven export formats are supported:
 A flow pruned before the byte read returns unavailable. Retention and exporter
 limits are described in [live traffic inspection](DEVELOPERS.md#live-traffic-inspection).
 
+### Read current observation measurements
+
+On the host account that owns the selected installed instance, keep the proxy
+and its authenticated administrative application programming interface (Admin API)
+running. The native command-line interface (CLI) uses that instance's
+configuration and operator token. These commands read existing metadata and do
+not enable payload capture, content storage, files or capture listeners:
+
+```sh
+safeyolo observations
+safeyolo observations --json
+```
+
+For another installed instance, put `--root /path/to/instance` or
+`--config /path/to/selected.toml` before `observations`. The report identifies
+the selected config, durable `instance_id` and process `runtime_id`. The CLI
+checks the returned instance against the selected installation's identity.
+JSON preserves the existing stats owner's values under `observations`;
+`source` identifies their owner and effective queue, payload and capture state.
+
+The measurements aggregate all agents, requests and connections in that runtime.
+They are not evidence about an individual retained connection or request.
+Reload preserves counters, namespace and effective observation settings.
+Restart changes `runtime_id` and resets counters. To check a namespace found
+with `logs list`, replace `INSTANCE_ID` and `RUNTIME_ID` with its exact values:
+
+```sh
+safeyolo observations --instance INSTANCE_ID --runtime RUNTIME_ID --json
+```
+
+A different runtime, missing identity, unavailable Admin API or absent
+measurement data returns an error, not a zero report. Identity and measurements
+come from one authenticated response, so a restart cannot attach one process's
+identity to another process's counters. A terminated response fails. The report
+describes the responding process at acquisition; it does not guarantee that
+the process remains running afterward or retrieve historical aggregates.
+
+Attempted observations, canonical admission loss, delivered consumer metadata
+and individual sink loss have different counters. A zero sink counter does not
+prove delivery or availability; check `source` for capture and subscription
+state. Empty `payload_layers` means metadata-only observation. Wire acquisition
+and interface/filter loss have their separate scope. Fixed behaviour series
+show counters and cumulative finite histogram buckets, counts and sums.
+Counters are sampled as traffic continues; canonical processing can lag
+attempted observations.
+See [observation counter meanings and limits](native-observations.md#configuration-and-operational-state).
+
 ### Follow local NSM evidence
 
 On the host, Network Security Monitoring (NSM) pivots read the configured local
