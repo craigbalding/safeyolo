@@ -1082,6 +1082,12 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
     }
     println!("{}", text(&search["limits"]));
     for correlation in value["correlations"].as_array().into_iter().flatten() {
+        if correlation["warning"]["status"] == "investigate" {
+            println!(
+                "\nInvestigation warning: {}",
+                safe(text(&correlation["warning"]["reason"]))
+            );
+        }
         println!(
             "\nPrompt exposure correlation from line {} ({}):",
             correlation["exposure_line"],

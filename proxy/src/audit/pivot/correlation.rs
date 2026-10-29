@@ -9,6 +9,107 @@ fn lines(rows: &[&(RecordLine, Value)], matches: impl Fn(&Value) -> bool) -> Vec
         .collect()
 }
 
+fn novelty_fact(row: &Value, role: &str) -> Option<String> {
+    let details = &row["details"];
+    let evidence = &details["novelty"];
+    let previous = !evidence["previous"].is_null();
+    let client = !evidence["client"].is_null();
+    let current = &evidence["current"];
+    let fact = match (
+        details["rule"].as_str()?,
+        details["indicator_type"].as_str()?,
+    ) {
+        ("destination.first_observation.v1", "destination_novelty")
+            if role == "server" && !previous && !client && evidence["destination"].is_string() =>
+        {
+            format!(
+                "first destination observation {} via {}",
+                evidence["destination"], evidence["route"]
+            )
+        }
+        ("origin_ip.first_observation.v1", "origin_ip_novelty")
+            if role == "server" && !previous && !client && current["origin_ip"].is_string() =>
+        {
+            format!(
+                "first measured origin IP observation {}",
+                current["origin_ip"]
+            )
+        }
+        ("tls.client_fingerprint_first_observation.v1", "tls_client_fingerprint_novelty")
+            if role == "client"
+                && !previous
+                && !client
+                && current["client_fingerprint"].is_object() =>
+        {
+            format!(
+                "first client TLS fingerprint observation {}",
+                current["client_fingerprint"]
+            )
+        }
+        ("tls.client_fingerprint_changed.v1", "tls_client_fingerprint_change")
+            if role == "client"
+                && previous
+                && !client
+                && current["client_fingerprint"].is_object() =>
+        {
+            format!(
+                "client TLS fingerprint changed from {} to {}",
+                evidence["previous"]["client_fingerprint"], current["client_fingerprint"]
+            )
+        }
+        ("tls.client_destination_first_observation.v1", "tls_client_destination_novelty")
+            if role == "server" && client && !previous =>
+        {
+            format!(
+                "first client TLS fingerprint {} and destination {} pairing via {}",
+                evidence["client"]["client_fingerprint"],
+                evidence["destination"],
+                evidence["route"]
+            )
+        }
+        ("tls.origin_identity_changed.v1", "tls_identity_change")
+            if role == "server"
+                && previous
+                && !client
+                && current["cert_sha256"].is_string()
+                && current["origin_ip"].is_null() =>
+        {
+            format!(
+                "origin certificate or public key changed for {} via {} (verification name {})",
+                evidence["destination"], evidence["route"], evidence["verification_name"]
+            )
+        }
+        ("tls.origin_negotiation_changed.v1", "tls_negotiation_change")
+            if role == "server" && previous && !client && current["negotiation"].is_object() =>
+        {
+            format!(
+                "origin TLS negotiation changed from {} to {} for {} via {}",
+                evidence["previous"]["negotiation"],
+                current["negotiation"],
+                evidence["destination"],
+                evidence["route"]
+            )
+        }
+        ("tls.origin_spki_new_ip.v1", "tls_spki_new_origin_ip")
+            if role == "server"
+                && previous
+                && !client
+                && current["spki_sha256"].is_string()
+                && current["origin_ip"].is_string() =>
+        {
+            format!(
+                "origin public key {} observed at new IP {} (previous {})",
+                current["spki_sha256"], current["origin_ip"], evidence["previous"]["origin_ip"]
+            )
+        }
+        _ => return None,
+    };
+    Some(format!(
+        "{fact} in bounded {} history (capacity {})",
+        evidence["history_scope"], evidence["history_capacity"]
+    ))
+}
+
 fn novelty(
     rows: &[&(RecordLine, Value)],
     query: &Query<'_>,
@@ -23,6 +124,7 @@ fn novelty(
                 && row["details"]["novelty"]["current"]["connection_id"] == connection
         })
         .map(|(line, row)| {
+            let fact = novelty_fact(row, role);
             let support: Vec<_> = links(*line, row, query)
                 .into_iter()
                 .filter(|link| link.field.starts_with("details.novelty."))
@@ -43,6 +145,12 @@ fn novelty(
                                 candidate["details"]["leg"] == "proxy_to_upstream"
                                     && candidate["details"]["client_connection_id"] == client
                             }
+                        } else if link.field == "details.novelty.previous" {
+                            candidate["details"]["leg"] == if role == "client" {
+                                "client_to_proxy"
+                            } else {
+                                "proxy_to_upstream"
+                            }
                         } else {
                             true
                         }
@@ -53,21 +161,58 @@ fn novelty(
                     link
                 })
                 .collect();
-            let available = !support.is_empty()
+            let available = fact.is_some() && !support.is_empty()
                 && support.iter().all(|link| link.status == "available");
             json!({
                 "indicator_line":line,"event_id":row["event_id"],
                 "connection_id":connection,"connection_role":role,
+                "indicator_type":row["details"]["indicator_type"],"rule":row["details"]["rule"],
+                "fact":fact,"evidence":row["details"]["novelty"],
                 "status":if available {"available"} else {"unavailable"},
                 "reason":if available {
                     "The flow owns this connection and every recorded novelty observation resolves to its exact connection/event ID. This is connection-wide evidence, which may predate or serve multiple requests."
                 } else {
-                    "The indicator names this flow's connection, but at least one exact supporting connection/event or client ownership link is unavailable. The novelty combination is incomplete."
+                    "The indicator names this flow's connection, but its recorded rule/type/role lacks required observations, or an exact supporting connection/event or client ownership link is unavailable. The novelty combination is incomplete."
                 },
                 "support":support
             })
         })
         .collect()
+}
+
+fn investigation_warning(source_available: bool, source: &Value, model: &Value) -> Value {
+    let mut signals = Vec::new();
+    let mut reasons = Vec::new();
+    if source_available {
+        for (side, transport) in [("source_transport", source), ("model_transport", model)] {
+            for entry in transport["novelty"].as_array().into_iter().flatten() {
+                if entry["status"] != "available" {
+                    continue;
+                }
+                reasons.push(format!(
+                    "{} {} connection {}: {}",
+                    side.trim_end_matches("_transport"),
+                    entry["connection_role"].as_str().unwrap_or_default(),
+                    entry["connection_id"],
+                    entry["fact"].as_str().unwrap_or_default()
+                ));
+                // The side and original indicator locate the complete observation
+                // links below, without copying the supporting records again.
+                signals.push(json!({"side":side,"indicator_line":entry["indicator_line"],
+                    "event_id":entry["event_id"]}));
+            }
+        }
+    }
+    let supported = !signals.is_empty();
+    json!({
+        "status":if supported {"investigate"} else {"unavailable"},
+        "reason":if supported {
+            format!("Investigate: an exact response-source indication was matched by the native source-text overlap indicator in a model-bound request, together with {}. Source text reaching a model-bound request and novelty on an owned transport merit investigation together; either signal alone does not establish this warning.", reasons.join("; "))
+        } else {
+            "No combined investigation warning is established: an exact supported response-source exposure and at least one fully supported connection-history novelty indication on an owned source/model transport are required. Essential evidence may be missing or conflicting; absence is not a clean verdict.".into()
+        },
+        "supported_novelty":signals
+    })
 }
 
 fn transport(
@@ -220,7 +365,8 @@ pub(super) fn exposures(
             "source":{"reference":source,"status":if source_available {"available"} else {"unavailable"},
                 "record_lines":source_lines,"reason":"A source indication must match request ID, client connection ID, response direction, host and evidence hash within the same instance/runtime and resolved trusted agent."},
             "source_transport":source_transport,"model_transport":model_transport,
-            "novelty_status":if novelty_available {"available"} else {"unavailable"}
+            "novelty_status":if novelty_available {"available"} else {"unavailable"},
+            "warning":investigation_warning(source_available, &source_transport, &model_transport)
         });
         include_evidence(&result, included);
         result

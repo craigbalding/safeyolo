@@ -229,6 +229,12 @@ pub(super) async fn assert_native_runs(root: &Path, bytes: &[u8], bindings: &[Va
                 ];
                 args.extend(&files);
                 let pivot = success(&selected_root, &args).await;
+                if *run == bindings[0] {
+                    assert_eq!(
+                        correlation::only_correlation(&pivot)["warning"]["status"],
+                        "investigate"
+                    );
+                }
                 let records = pivot["records"].as_array().unwrap();
                 assert!(!records.is_empty());
                 assert!(
@@ -337,6 +343,10 @@ async fn every_run_relationship_requires_the_same_recorded_binding() {
         correlation::only_correlation(&selected(root.path()).await)["status"],
         "linked"
     );
+    assert_eq!(
+        correlation::only_correlation(&selected(root.path()).await)["warning"]["status"],
+        "investigate"
+    );
     for index in 0..original.len() {
         for replacement in [
             Some(binding(RUN_B)),
@@ -371,6 +381,15 @@ async fn every_run_relationship_requires_the_same_recorded_binding() {
                 not_linked(&unfiltered);
             }
             for view in [&view, &unfiltered] {
+                if index == 4 || index == original.len() - 1 {
+                    assert!(
+                        view["correlations"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .all(|entry| entry["warning"]["status"] == "unavailable")
+                    );
+                }
                 for link in view["links"]
                     .as_array()
                     .unwrap()

@@ -553,7 +553,7 @@ Novelty links require the recorded connection and event ID. A prompt exposure
 source requires a response indication with its recorded request ID, connection
 ID and evidence hash. Copy a linked connection or request ID into the same
 command to continue. Supporting links are followed once; the command does not
-recursively traverse history or infer a correlation verdict.
+recursively traverse history.
 
 When investigating a `prompt_injection_exposure` indication, use its envelope
 `request_id` in `logs request` as above. Both ordinary and JSON output include
@@ -565,10 +565,25 @@ the same prompt exposure correlation:
    lines. These labels distinguish the fetched source from the authenticated
    model request. Each novelty entry identifies the client or server connection
    it concerns, its original indicator, exact supporting event links and reason.
-3. Read the overall `linked`, `partial` or `unavailable` status together with
+3. Look for `Investigation warning` in ordinary output, or
+   `correlations[].warning.status: investigate` in JSON. The reason combines
+   exact response-source exposure with the actual novelty fact on a named
+   source/model client or server connection. Follow `warning.supported_novelty`
+   to that transport's original indicator and current/previous/client support
+   lines. Exposure alone, novelty alone, routine policy/credential activity and
+   chunk measurements do not establish this combined warning.
+4. Read the overall `linked`, `partial` or `unavailable` status together with
    the individual support statuses. Increase `--lines` if required evidence is
    outside the current window. The original exposure remains visible when
    support is missing; no available novelty is not a clean verdict.
+
+The warning uses the same configured audit file or selected `--file` inputs as
+the pivot. A supported warning can remain visible with a `partial` relationship
+when additional context is missing. `--capture` adds retained measurements and
+observation/packet/offset references when available; capture is optional.
+Missing or conflicting essential source or novelty support leaves the warning
+`unavailable`. A recorded sandbox run must match when present, but standalone
+traffic does not need a run.
 
 Connection-wide novelty can predate or serve several requests, including both
 exchanges. The correlation does not claim novelty unique to this request,

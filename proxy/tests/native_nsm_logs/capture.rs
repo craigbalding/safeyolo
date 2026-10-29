@@ -95,6 +95,7 @@ pub(super) async fn assert_exposure_views(root: &Path, exposure: &Value, path: &
     let result = view(&offline, exposure, path, "request", request, &extra).await;
     let correlation = &result["correlations"][0];
     assert_eq!(correlation["status"], "linked");
+    assert_eq!(correlation["warning"]["status"], "investigate");
     let mut intervals = 0;
     for side in ["source_transport", "model_transport"] {
         let transport = &correlation[side];
@@ -253,6 +254,10 @@ pub(super) async fn assert_exposure_views(root: &Path, exposure: &Value, path: &
         "unavailable"
     );
     assert_eq!(
+        absent_source["correlations"][0]["warning"]["status"],
+        "unavailable"
+    );
+    assert_eq!(
         absent_source["correlations"][0]["model_transport"]["behaviour"]["status"],
         "available"
     );
@@ -407,6 +412,10 @@ pub(super) async fn assert_exposure_views(root: &Path, exposure: &Value, path: &
             changed["capture"]["loss"][0]["connection_request_attribution"],
             "unavailable"
         );
+        assert_eq!(
+            changed["correlations"][0]["warning"]["status"],
+            "investigate"
+        );
         assert_eq!(changed["capture"]["loss"][0]["scope"], "runtime");
         for side in ["source_transport", "model_transport"] {
             assert_eq!(
@@ -417,6 +426,10 @@ pub(super) async fn assert_exposure_views(root: &Path, exposure: &Value, path: &
     }
     fs::write(&altered, &bytes[..bytes.len() - 1]).unwrap();
     let truncated = view(&offline, exposure, &altered, "request", request, &extra).await;
+    assert_eq!(
+        truncated["correlations"][0]["warning"]["status"],
+        "investigate"
+    );
     assert_eq!(truncated["capture"]["scan"]["status"], "partial");
     assert_eq!(
         truncated["correlations"][0]["source_transport"]["behaviour"]["status"],
@@ -424,6 +437,10 @@ pub(super) async fn assert_exposure_views(root: &Path, exposure: &Value, path: &
     );
     fs::remove_file(&altered).unwrap();
     let missing = view(&offline, exposure, &altered, "request", request, &extra).await;
+    assert_eq!(
+        missing["correlations"][0]["warning"]["status"],
+        "investigate"
+    );
     assert_eq!(
         missing["correlations"][0]["source_transport"]["behaviour"]["status"],
         "unavailable"

@@ -265,7 +265,11 @@ names its client/server connection role, original indicator line/event ID,
 exact current/previous/client observation links, availability and reason. Only a
 current observation on that transport establishes the relationship; a previous
 observation alone does not. The view consumes the recorded novelty indication
-without running the detector again.
+without running the detector again. Each entry also retains the recorded rule,
+indicator type and novelty evidence. Its `fact` names the actual observation or
+change within the recorded bounded history. An unsupported rule/type/connection
+role or missing required current, previous or client observation leaves that
+novelty unavailable.
 
 A correlation is `linked` when its source indication and both transports are
 available, at least one companion novelty indication has complete support, and
@@ -276,6 +280,28 @@ sensor/rule/direction, or when selected copies of the exposure conflict. The ori
 Per-source, transport and novelty statuses explain which evidence is missing.
 No available novelty in the searched window means unavailable evidence, not a
 clean verdict.
+
+Each correlation also has a separate `warning`. Its status is `investigate`
+when the exact source indication supports the native source-text overlap
+exposure and at least one connection-history novelty indication has complete
+support on an owned source or model transport. Its reason names the side,
+client/server role, connection and actual novelty fact. The combination merits
+investigation because indicated response text reached a model-bound request
+and an owned transport also has a recorded novelty indication. Exposure alone,
+novelty alone, policy/credential activity and capture measurements cannot
+establish this warning.
+
+`warning.supported_novelty[]` points to each contributing transport entry by
+side, original indicator line and event ID when recorded. The parent correlation
+retains the exposure, source, flow, connection and exact novelty support references. Selected
+inputs use `{input, line}` references to the original physical lines. A warning
+can accompany a `partial` relationship: missing additional novelty, the other
+transport's context or optional capture does not erase a fully supported
+combination. Missing or conflicting essential support leaves the warning
+`unavailable`, with the retained evidence and omissions still visible. Recorded
+run checks continue to apply when present; a run is not mandatory for standalone
+traffic. Capture adds measurements and observation/packet/offset references;
+it is not a warning prerequisite. No score or transport threshold is applied.
 
 This is a read-only connection relationship, not request-level novelty. A
 connection-wide indication can predate or serve multiple requests, including
