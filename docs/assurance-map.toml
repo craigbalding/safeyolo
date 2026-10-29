@@ -6,104 +6,552 @@ initial_review = "https://github.com/craigbalding/safeyolo/issues/838#issuecomme
 native_inventory = "https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5801132524"
 patch_review = "https://github.com/craigbalding/safeyolo/issues/636#issuecomment-5736479281"
 
-# Cargo.toml and Cargo.lock are hashed by the checker. These selected direct
-# library handoffs explain critical work delegated by the mapped decisions.
+# Cargo.toml and Cargo.lock are hashed by the checker. The direct production
+# library rows record API use, feature reasons, exposure and ownership decisions.
+# tools/assurance/rust_dependencies.py measures their target-specific closures.
 [[libraries]]
-name = "hyper"
-version = "1.11"
-features = ["client", "server", "http1", "http2"]
-handoff = "Agent/admin HTTP parsing, origin client and CONNECT framing; local patch in proxy/vendor/hyper."
+name = "async-nats"
+version = "0.47.0"
+features = ["jetstream", "ring", "nuid", "server_2_10", "server_2_11", "server_2_12"]
+handoff = "Loopback coordination client and JetStream persistence."
+default_features = false
+apis = "ConnectOptions::{new,user_and_password,connect}, Client::{connection_state,request,publish}, HeaderMap; jetstream Context, stream Config/StorageType and pull consumers in agent_api/coord.rs and coord_rooms.rs."
+feature_use = "JetStream provides durable rooms; ring keeps the existing TLS provider; nuid preserves inbox generation; server_2_10/11/12 preserve current stream/message fields. Disable unused nkeys, websockets, service, kv, object-store and crypto."
+exposure = "Unchecked UTF-8 in header/subject internals; TLS/native roots and proc-macro serialization remain shared. Remove the exclusive NKey signing/Ed25519 and WebSocket/root-certificate branches. No local patch."
+decision = "Reduce features. Owning NATS reconnect, acknowledgments, sequence/deduplication, retention and failure semantics would be disproportionate."
+
 
 [[libraries]]
-name = "h2"
-version = "0.4.19"
+name = "base64"
+version = "0.23.1"
 features = []
-handoff = "HTTP/2 flow control and cancellation; local patch in proxy/vendor/h2."
+default_features = true
+handoff = "credentials.rs, native_client.rs, traffic exports and http_content.rs."
+apis = "Engine::{encode,decode,decode_slice}, general_purpose::{STANDARD,URL_SAFE_NO_PAD,GeneralPurpose}, alphabet/config in credentials.rs, native_client.rs, traffic exports and http_content.rs."
+feature_use = "std/alloc for owned strings and bytes; scalar GeneralPurpose engines only. simd-unsafe remains enabled by pem/reqwest defaults even after disabling the direct default."
+exposure = "Unsafe optimized implementations and two resolved base64 versions. Both versions remain through other production callers; no build script."
+decision = "Retain. Feature knockout saves nothing; shared primitive replacement or local codec would remove no package and would add malformed-input/padding semantics."
 
 [[libraries]]
-name = "rustls"
-version = "0.23.46"
-features = ["ring", "std", "tls12"]
-handoff = "Origin and interception TLS verification, handshakes and PEM decoding through rustls::pki_types::pem."
-
-[[libraries]]
-name = "x509-parser"
-version = "0.18.1"
+name = "brotli-decompressor"
+version = "5.0.3"
 features = []
-handoff = "Interception CA constraints, key-usage and validity parsing."
+default_features = true
+handoff = "http_content.rs."
+apis = "BrotliDecompressStream, BrotliResult, BrotliState and StandardAlloc in http_content.rs."
+feature_use = "Default std allocator supports incremental bounded body decompression."
+exposure = "Unsafe decoder/allocation internals; alloc-stdlib and alloc-no-stdlib are exclusive. No native build."
+decision = "Retain. Adversarial compression format and streaming limits make absorption disproportionate."
 
 [[libraries]]
-name = "rcgen"
-version = "0.14.10"
-features = ["ring", "pem", "x509-parser"]
-handoff = "Destination leaf key generation and certificate signing under the imported CA."
-
-[[libraries]]
-name = "pkcs8"
-version = "0.10.2"
-features = ["std"]
-handoff = "In-memory wrapping of an existing RSA PKCS#1 key for the CA signer."
-
-[[libraries]]
-name = "ring"
-version = "0.17.14"
+name = "bzip2"
+version = "0.6.1"
 features = []
-handoff = "Credential HMAC, digest and random primitives used by the proxy and TLS signer."
+default_features = true
+handoff = "http_content.rs."
+apis = "Decompress::{new,decompress,total_in,total_out}, Status and Error in http_content.rs."
+feature_use = "Default selects the maintained Rust libbz2 implementation for incremental/concatenated streams."
+exposure = "Unsafe FFI-shaped wrapper over exclusive libbz2-rs-sys; this selected backend has no C compilation."
+decision = "Retain. Compression corruption, concatenation and output-limit semantics belong upstream."
+
+[[libraries]]
+name = "bytes"
+version = "1.12.1"
+features = []
+default_features = true
+handoff = "bodies, flow recording and guest acquisition."
+apis = "Bytes::{new,from,from_static,from_owner,copy_from_slice} and slices in bodies, flow recording and guest acquisition."
+feature_use = "std and transitive serde; from_owner retains zeroizing owners without copying."
+exposure = "Unsafe reference counting, owner erasure and buffer manipulation; shared throughout HTTP/NATS/OCI."
+decision = "Retain. No exclusive closure; a Vec replacement would lose shared ownership/zeroizing-owner behavior or require parallel machinery."
+
+[[libraries]]
+name = "encoding_rs"
+version = "0.8.41"
+features = []
+default_features = true
+handoff = "http_content.rs."
+apis = "Encoding::{for_label,new_decoder_without_bom_handling}, decoder decode_to_string variants and DecoderResult in http_content.rs."
+feature_use = "Default alloc for decoded text; encoding labels/BOM handling remain required."
+exposure = "Unsafe SIMD/encoding internals, build script, multiversion_no_op and rustversion proc macros; generated mapping tables."
+decision = "Retain. Browser encoding tables and malformed byte semantics are specification-heavy."
 
 [[libraries]]
 name = "fernet"
 version = "0.2.2"
-features = ["rustcrypto", "fernet_danger_timestamps"]
+features = ["rustcrypto"]
 handoff = "Vault secret encryption and decryption using the existing Fernet format."
+default_features = false
+apis = "Fernet::{new,encrypt,decrypt} in credentials.rs."
+feature_use = "Explicit rustcrypto avoids OpenSSL. Remove fernet_danger_timestamps: no current producer or test calls the optional encrypt_at_time/decrypt_at_time helpers; ordinary encrypt/decrypt retain their system-time implementation."
+exposure = "Cryptographic protocol; RustCrypto AES/CBC/HMAC and zeroize derive boundary. No local patch."
+decision = "Reduce unused timestamp API feature; retain the cryptographic implementation. A small call site does not justify owning authenticated encryption or secret handling."
 
-[[libraries]]
-name = "subtle"
-version = "2.6.1"
-features = []
-handoff = "Constant-time equality for Admin API bearer authentication."
-
-[[libraries]]
-name = "zeroize"
-version = "1.9.0"
-features = []
-handoff = "Secret and retained WebSocket buffer clearing on drop."
-
-[[libraries]]
-name = "tungstenite"
-version = "0.30.0"
-features = ["handshake"]
-handoff = "WebSocket handshake validation and frame header parsing."
-
-[[libraries]]
-name = "memmap2"
-version = "0.9.11"
-features = []
-handoff = "Read-only mapping of completed WebSocket spill files for inspection."
-
-[[libraries]]
-name = "rusqlite"
-version = "0.40.2"
-features = ["bundled"]
-handoff = "Stored flow bodies and indexed evidence reads."
 
 [[libraries]]
 name = "fancy-regex"
 version = "0.19.2"
 features = []
 handoff = "Credential and content pattern inspection; local patch in proxy/vendor/fancy-regex."
+default_features = true
+apis = "Regex/RegexBuilder/RegexInput, captures, fallible iteration and cancellation/error variants in inspection.rs and policy regex helpers."
+feature_use = "Default std, Unicode, performance and variable-lookbehind behavior implement current policy/inspection semantics."
+exposure = "Accepted local patch: allocation/cancellation and Python backreferences; generated lowercase data with retained provenance. regex-automata shared."
+decision = "Retain. Reuse #636 provenance/regressions; no regex-engine absorption or feature semantics change."
+
 
 [[libraries]]
-name = "async-nats"
-version = "0.47"
+name = "flate2"
+version = "1.1.10"
+features = ["zlib-rs"]
+default_features = false
+handoff = "http_content.rs and websocket_relay/compression.rs."
+apis = "Decompress/Compress, FlushDecompress/FlushCompress, Status and read::MultiGzDecoder in http_content.rs and websocket_relay/compression.rs."
+feature_use = "Defaults disabled; zlib-rs is the selected Rust codec. Both HTTP and per-message WebSocket compression use streaming state."
+exposure = "Unsafe codec implementation boundary; zlib-rs exclusive, no system zlib/C selection."
+decision = "Retain. Streaming compression, truncation and flush semantics are not bounded glue."
+
+[[libraries]]
+name = "h2"
+version = "0.4.19"
 features = []
-handoff = "Loopback coordination client and JetStream persistence."
+handoff = "HTTP/2 flow control and cancellation; local patch in proxy/vendor/h2."
+default_features = true
+apis = "ext::OriginalHeaderFields, StreamParseErrorObserver, StreamId, Error and Reason in HTTP completion/capture paths."
+feature_use = "No explicit features; shared Hyper HTTP/2 path stays enabled."
+exposure = "Accepted local patch, unchecked UTF-8 header internals, shared Tokio/bytes/tracing. HPACK and connection state remain upstream."
+decision = "Retain. #636 validation/provenance unchanged; protocol replacement is disproportionate."
+
+
+[[libraries]]
+name = "http-body-util"
+version = "0.1.5"
+features = []
+default_features = true
+handoff = "BodyExt::{collect,boxed,frame}, Full, Empty, Limited and combinators::BoxBody across HTTP/admin/native client paths."
+apis = "BodyExt::{collect,boxed,frame}, Full, Empty, Limited and combinators::BoxBody across HTTP/admin/native client paths."
+feature_use = "Empty default plus shared byte buffers; body size limits and trailers require the maintained combinators."
+exposure = "Unsafe pin/projection implementation; dependencies shared with Hyper."
+decision = "Retain. Removing the direct edge saves no package; absorbing combinators adds cancellation/stream ownership obligations."
+
+[[libraries]]
+name = "hyper"
+version = "1.11.1"
+features = ["client", "server", "http1", "http2"]
+handoff = "Agent/admin HTTP parsing, origin client and CONNECT framing; local patch in proxy/vendor/hyper."
+default_features = true
+apis = "Request/Response/Method/Uri/HeaderMap, Incoming; client/server conn http1/http2, upgrade and patched extensions in http.rs/native_client.rs."
+feature_use = "client+server and http1+http2 are all actual production callers."
+exposure = "Accepted local patch; unsafe parser/buffer internals; HTTP date crate is the only exclusive package on direct-edge removal."
+decision = "Retain. HTTP admission, framing, completion and upgrade state machines must stay with the maintained implementation."
+
+
+[[libraries]]
+name = "hyper-util"
+version = "0.1.20"
+features = ["tokio"]
+default_features = true
+handoff = "native_client.rs, http.rs and connections."
+apis = "rt::{TokioIo,TokioExecutor} in native_client.rs, http.rs and connections."
+feature_use = "Explicit tokio adapter; client-legacy/client-proxy/http1 also activated by reqwest through OCI."
+exposure = "Unsafe adapter/proxy internals; all packages shared."
+decision = "Retain. A local IO adapter removes no crate because OCI retains hyper-util; avoid duplicating unsafe pin/IO glue."
+
+[[libraries]]
+name = "indexmap"
+version = "2.14.2"
+features = []
+default_features = true
+handoff = "policy/circuits/traffic."
+apis = "IndexMap constructors, ordered iteration, entry, shift_remove and indexing in policy/circuits/traffic."
+feature_use = "Default std; stable insertion order is observable in policy and JSON."
+exposure = "Unsafe hash-table internals delegated to shared hashbrown; no unique removal closure."
+decision = "Retain. BTreeMap changes ordering; Vec/map combinations add ownership code without removing shared packages."
+
+[[libraries]]
+name = "libc"
+version = "0.2.189"
+features = []
+default_features = true
+handoff = "host_platform.rs, linux_host and fd acceptance."
+apis = "Unix descriptors/flags, flock/fcntl/kill/getuid, process/terminal calls; macOS sysctl/proc_pidinfo and platform constants in host_platform.rs, linux_host and fd acceptance."
+feature_use = "Default std; extra_traits is unified transitively. Both Linux and macOS source uses remain."
+exposure = "Raw unsafe operating-system ABI/FFI definitions and a build script; cfg-specific declarations."
+decision = "Retain. Handwritten platform constants/layouts would add ABI risk and remove no shared package."
+
+[[libraries]]
+name = "memmap2"
+version = "0.9.11"
+features = []
+handoff = "Read-only mapping of completed WebSocket spill files for inspection."
+default_features = true
+apis = "MmapOptions::map and Linux Advice::Sequential in websocket.rs for completed spill files."
+feature_use = "No optional feature. macOS omits advise while retaining read-only mapping."
+exposure = "Explicit unsafe caller contract: owned completed files stay unchanged while mappings are inspected; platform mmap/unmap ownership."
+decision = "Retain after knockout (one package). Estimated 50-100 lines plus platform/lifetime/error tests for local mapping; read_to_end changes resident allocation for large spills. Neither improves ownership."
+
+
+[[libraries]]
+name = "num-bigint"
+version = "0.4.8"
+features = []
+default_features = true
+handoff = "circuits/numeric.rs, policy.rs and test_context.rs."
+apis = "BigInt/BigUint/Sign, parsing, conversions, arithmetic and comparisons in circuits/numeric.rs, policy.rs and test_context.rs."
+feature_use = "Default std; Python-sized integer/numeric semantics are observable."
+exposure = "Unsafe optimized arithmetic internals; ASN.1 dependencies already retain bigint/integer/traits."
+decision = "Retain. Zero exclusive closure and substantial numeric edge behavior."
+
+[[libraries]]
+name = "oci-client"
+version = "0.18.0"
+features = ["rustls-tls-no-provider"]
+default_features = false
+handoff = "guest_acquisition.rs."
+apis = "Client, Reference, RegistryAuth, ClientConfig/Certificate, pull_manifest and streamed pull_blob in guest_acquisition.rs."
+feature_use = "Defaults disabled; rustls-tls-no-provider uses the selected Rustls provider. Streaming/content authentication are required."
+exposure = "Largest exclusive branch: OCI models, reqwest/tower/chrono and procedural derives; adversarial registry responses, auth and digest contracts."
+decision = "Retain. Replacing this with existing Hyper would move registry challenge/auth, redirects, media negotiation, streams and errors into first-party code; not a bounded absorption."
+
+[[libraries]]
+name = "pkcs8"
+version = "0.10.2"
+features = ["std"]
+handoff = "In-memory wrapping of an existing RSA PKCS#1 key for the CA signer."
+default_features = true
+apis = "PrivateKeyInfo, AlgorithmIdentifierRef, ObjectIdentifier, der::{Encode,asn1::AnyRef} in tls.rs."
+feature_use = "std DER encoding wraps PKCS#1 RSA input in memory; pem is no longer transitively activated by unused NKeys."
+exposure = "ASN.1/PKCS security format; shared der/spki, no direct unsafe/native build."
+decision = "Retain. Shared closure is zero; hand-encoding keys risks length/OID/key-format errors."
+
+
+[[libraries]]
+name = "percent-encoding"
+version = "2.3.2"
+features = []
+default_features = true
+handoff = "API routes and operator URL components."
+apis = "percent_decode_str::{decode_utf8,decode_utf8_lossy}, utf8_percent_encode, NON_ALPHANUMERIC/AsciiSet in API routes and operator URL components."
+feature_use = "Default std/alloc; callers deliberately choose strict or lossy UTF-8 and form-plus handling separately."
+exposure = "Unsafe optimized scanning; shared through URL/reqwest. No build script."
+decision = "Retain. Knockout saves zero packages. An estimated 30-60 lines plus malformed-percent/UTF-8 tests would only duplicate shared behavior."
+
+[[libraries]]
+name = "pulldown-cmark"
+version = "0.13.5"
+features = []
+default_features = false
+handoff = "mattermost/render.rs."
+apis = "Parser, Event, Tag/TagEnd and CodeBlockKind in mattermost/render.rs."
+feature_use = "Defaults already disabled; event parsing supports safe Markdown projection without HTML rendering helpers."
+exposure = "Unsafe Markdown parsing/arena internals, generated tables and build script; unicase shared."
+decision = "Retain. One exclusive package; adversarial Markdown/link/code semantics are not a bounded local parser."
+
+[[libraries]]
+name = "rcgen"
+version = "0.14.10"
+features = ["ring", "pem", "x509-parser"]
+handoff = "Destination leaf key generation and certificate signing under the imported CA."
+default_features = false
+apis = "CertificateParams, Issuer, KeyPair, DnType, ExtendedKeyUsagePurpose and KeyUsagePurpose in tls.rs."
+feature_use = "Defaults disabled; ring signing, pem serialization and x509-parser import are actual calls."
+exposure = "Certificate/signature machinery, exclusive yasna/pem and bit-vec version; ring/native crypto shared."
+decision = "Retain. Certificate construction/CA validation complexity is disproportionate to its call count."
+
+
+[[libraries]]
+name = "rand"
+version = "0.10.2"
+features = []
+default_features = true
+handoff = "circuit_runtime.rs, http.rs and mattermost/recovery.rs."
+apis = "random::<f64> for circuit sampling and Mattermost retry jitter in circuit_runtime.rs, http.rs and mattermost/recovery.rs."
+feature_use = "Default thread_rng/std_rng supplies the infallible sampling interface; tungstenite retains the same rand/defaults."
+exposure = "Unsafe RNG/OS interface internals; rand 0.8 remains via NUID, 0.10 via WebSocket. Not used for SafeYolo secret generation."
+decision = "Retain. Replacing sampling with ring or a local generator removes no crate/features and introduces conversion/distribution code."
+
+[[libraries]]
+name = "regex"
+version = "1.13.1"
+features = []
+default_features = true
+handoff = "Regex/RegexSet and bytes::Regex, captures, find/replace helpers across policy source, HTTP, release metadata and repo-map."
+apis = "Regex/RegexSet and bytes::Regex, captures, find/replace helpers across policy source, HTTP, release metadata and repo-map."
+feature_use = "Default Unicode/performance features implement current user patterns and text behavior; parser consumers also enable them."
+exposure = "Pattern parsing and shared regex-automata/syntax update boundaries; optimized unsafe engine code remains upstream. The graph is shared with fancy-regex/tree-sitter/OCI/NATS."
+decision = "Retain. No exclusive closure; no Unicode/regex semantics reductions."
+
+[[libraries]]
+name = "rustyline"
+version = "18.0.1"
+features = []
+default_features = false
+handoff = "coord_operator.rs."
+apis = "DefaultEditor, ExternalPrinter, ReadlineError and line/history methods in coord_operator.rs."
+feature_use = "Defaults already disabled; no home-directory, file-history or custom-binding defaults."
+exposure = "Local patch retains terminal ownership/cleanup and style behavior; Unix unsafe terminal code, nix and Unicode segmentation."
+decision = "Retain. Terminal editing, signals and Unicode behavior would require disproportionate first-party platform maintenance."
+
+[[libraries]]
+name = "ring"
+version = "0.17.14"
+features = []
+handoff = "Credential HMAC, digest and random primitives used by the proxy and TLS signer."
+default_features = true
+apis = "digest::{digest,Context,SHA256}, hmac::{Key,sign}, rand::{SystemRandom,SecureRandom} in credential_hmac.rs, credentials.rs, services.rs and hashes."
+feature_use = "Default alloc; shared dev_urandom_fallback. Same ring provider backs TLS/signing."
+exposure = "Unsafe C/assembly crypto with native build script and cc boundary; already shared by Rustls/rcgen/NATS."
+decision = "Retain. Security primitives stay upstream; removing direct calls cannot remove the crypto backend."
+
+
+[[libraries]]
+name = "rustls"
+version = "0.23.46"
+features = ["ring", "std", "tls12"]
+handoff = "Origin and interception TLS verification, handshakes and PEM decoding through rustls::pki_types::pem."
+default_features = false
+apis = "ClientConfig/ServerConfig, ClientConnection, RootCertStore, ServerName/CertificateDer/PrivateKeyDer/PemObject, certificate resolver and ring provider in TLS/native clients."
+feature_use = "Defaults disabled; ring+std+tls12 preserve the selected provider and supported TLS versions."
+exposure = "TLS/X.509 verification; Rustls forbids unsafe code. Its build script and shared ring C/assembly/webpki remain separate update boundaries."
+decision = "Retain. No protocol/cryptographic replacement or TLS-version restriction."
+
+
+[[libraries]]
+name = "rustls-native-certs"
+version = "0.8.4"
+features = []
+default_features = true
+handoff = "lib.rs during outbound trust construction."
+apis = "load_native_certs in lib.rs during outbound trust construction."
+feature_use = "No explicit features; Linux certificate environment/files and macOS system roots remain supported."
+exposure = "Platform trust-store handoff; macOS adds security-framework/Core Foundation FFI. Also shared by NATS."
+decision = "Retain. OS trust semantics differ by platform; zero exclusive closure."
+
+[[libraries]]
+name = "rusqlite"
+version = "0.40.2"
+features = ["bundled"]
+handoff = "Stored flow bodies and indexed evidence reads."
+default_features = false
+apis = "Connection, OpenFlags, OptionalExtension, params!, transactions, prepare/query/execute in flow_store.rs, coord_rooms.rs and host state."
+feature_use = "Defaults disabled; bundled selects a reproducible SQLite build and modern_sqlite APIs."
+exposure = "Unsafe SQLite FFI; libsqlite3-sys compiles bundled C using cc and checked-in bindings; pkg-config/vcpkg/build boundary."
+decision = "Retain. Database locking, transactions and SQL parsing remain upstream; switching to system SQLite changes installation/build contracts."
+
+
+[[libraries]]
+name = "serde"
+version = "1.0.229"
+features = ["derive"]
+default_features = true
+handoff = "Serialize/Deserialize derives, serializers/deserializers, Visitor and error traits across persisted/wire records."
+apis = "Serialize/Deserialize derives, serializers/deserializers, Visitor and error traits across persisted/wire records."
+feature_use = "derive is explicitly required; std/alloc unify through callers."
+exposure = "serde_derive proc macro; build-generated cfg/private facade and unsafe serialization internals."
+decision = "Retain. Shared foundational wire/persistence contract; handwritten serializers would increase maintenance and trust surface."
+
+[[libraries]]
+name = "serde_json"
+version = "1.0.151"
+features = ["preserve_order", "arbitrary_precision", "raw_value"]
+default_features = true
+handoff = "native records, policy and event inputs."
+apis = "Value/Map/Number, json!, from_slice/from_str/from_value, to_vec/to_string and RawValue in native records, policy and event inputs."
+feature_use = "preserve_order, arbitrary_precision and raw_value preserve Python numeric/order behavior and raw-field validation."
+exposure = "Unsafe optimized parsing; build script; indexmap and serde_derive shared."
+decision = "Retain. Removing any selected semantic feature would change current policy/record interpretation."
+
+[[libraries]]
+name = "subtle"
+version = "2.6.1"
+features = []
+handoff = "Constant-time equality for Admin API bearer authentication."
+default_features = true
+apis = "ConstantTimeEq::ct_eq for admin, desktop and token authentication."
+feature_use = "Default std/i128; also activated by cryptographic callers."
+exposure = "Optimization-resistant constant-time primitive with an unsafe compiler barrier; shared with Rustls/Fernet."
+decision = "Retain. A hand-rolled comparison adds security responsibility and removes no package."
+
+
+[[libraries]]
+name = "tempfile"
+version = "3.27.0"
+features = []
+default_features = true
+handoff = "spill storage, native subprocesses and transactional publication."
+apis = "NamedTempFile, Builder::{tempdir_in,prefix}, tempfile/tempdir and persist paths in spill storage, native subprocesses and transactional publication."
+feature_use = "Default getrandom provides secure name creation; std filesystem behavior is required."
+exposure = "Race-resistant OS file creation, unsafe platform code; exclusive rustix/linux-raw-sys/fastrand on selected Linux graph."
+decision = "Retain. Replacing secure temporary files needs platform/race/cleanup ownership; removing getrandom does not remove shared randomness and is not justified."
+
+[[libraries]]
+name = "toml_edit"
+version = "0.25.15+spec-1.1.0"
+features = []
+default_features = true
+handoff = "native config/policy writers."
+apis = "DocumentMut, Item, Value, Table/InlineTable, value and formatting-preserving edits in native config/policy writers."
+feature_use = "Default parse+display are both used; no serde conversion feature."
+exposure = "Pure Rust mutable TOML syntax/trivia and parser/writer subcrates; no native/build/proc-macro boundary."
+decision = "Retain. Comment/order-preserving operator edits and type/error handling would be a substantial parser/writer replacement."
+
+[[libraries]]
+name = "tree-sitter"
+version = "0.25.10"
+features = []
+default_features = true
+handoff = "inspector_tools.rs."
+apis = "Parser::{new,set_language,parse}, Node traversal/ranges in inspector_tools.rs."
+feature_use = "Default std; incremental Python syntax input and exact source spans."
+exposure = "C parser engine compiled by build.rs/cc; Rust unsafe FFI lives in binding_rust; generated language interface."
+decision = "Retain. Replacing adversarial Python syntax parsing with text matching would degrade correctness."
+
+[[libraries]]
+name = "tree-sitter-python"
+version = "0.25.0"
+features = []
+default_features = true
+handoff = "inspector_tools.rs."
+apis = "LANGUAGE.into() passed to Parser::set_language in inspector_tools.rs."
+feature_use = "No optional features; Python grammar tables/scanner are required."
+exposure = "Generated Python C grammar and native scanner compiled through cc; must match Tree-sitter ABI."
+decision = "Retain. One exclusive package does not justify owning the Python grammar."
+
+[[libraries]]
+name = "time"
+version = "0.3.55"
+features = ["parsing", "formatting"]
+default_features = true
+handoff = "TLS, audit, credentials and traffic."
+apis = "OffsetDateTime, Duration, format_description::well_known::Rfc3339, parse/format and UNIX timestamps in TLS, audit, credentials and traffic."
+feature_use = "Explicit parsing+formatting; macros/serde/serde-well-known also activated by NATS."
+exposure = "Unsafe date/time implementation paths; time-macros proc macro and generated format machinery."
+decision = "Retain. Shared date parsing, offsets and certificate bounds; no local calendar parser."
 
 [[libraries]]
 name = "tokio"
-version = "1.53.1"
-features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"]
+version = "1.53.3"
+features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"]
 handoff = "The provider stream uses async process spawn and bidirectional pipes. Cargo.toml enables the process feature for this route."
+default_features = true
+apis = "Async runtimes/macros, fs, io stdin/stdout and buffers, net, process, Unix signal, sync and time throughout native binaries."
+feature_use = "Every explicit feature has production callers, including io-std in coord_tools.rs; test-util is ALSO a normal dependency of tryhard via NATS, not merely root dev use."
+exposure = "Unsafe async scheduling/IO, socket/mio/signal platform FFI and tokio-macros; target-specific Windows declarations are not Linux production packages."
+decision = "Retain. Runtime/state-machine ownership is disproportionate; direct-edge knockout only removes signal-hook-registry."
 
+
+[[libraries]]
+name = "futures-util"
+version = "0.3.34"
+features = []
+default_features = true
+handoff = "tests."
+apis = "StreamExt::next in agent_api/coord.rs; TryStreamExt in guest_acquisition.rs; future::join_all in factory.rs; poll! in tests."
+feature_use = "std/alloc and sink are shared; OCI client retains default async-await macros after the direct-default knockout."
+exposure = "Unsafe polling/projection internals and futures-macro procedural macro; all packages remain through other callers."
+decision = "Retain. Direct-default experiment removes no feature or package; replacing extension methods adds code without reducing exposure."
+
+[[libraries]]
+name = "tokio-rustls"
+version = "0.26.5"
+features = ["ring", "tls12"]
+default_features = false
+handoff = "native clients and http.rs."
+apis = "TlsConnector::{from,connect} and TlsAcceptor in native clients and http.rs."
+feature_use = "Defaults disabled; ring+tls12 align with the shared Rustls provider."
+exposure = "Async TLS IO adapter over shared Rustls; no separate native build."
+decision = "Retain. Shared by NATS; local adapter saves no package and adds handshake/cancellation ownership."
+
+[[libraries]]
+name = "tungstenite"
+version = "0.30.0"
+features = ["handshake"]
+handoff = "WebSocket handshake validation and frame header parsing."
+default_features = false
+apis = "handshake::server::create_response, frame Frame/FrameHeader/OpCode/Control parsing in websocket.rs and websocket_relay."
+feature_use = "Defaults disabled; handshake activates HTTP, SHA-1 and encoding required by WebSocket upgrade validation."
+exposure = "Unsafe protocol framing; SHA-1 handshake dependency with a separate digest generation; HTTP parser shared."
+decision = "Retain. WebSocket masking/control/length/handshake semantics are protocol machinery."
+
+
+[[libraries]]
+name = "uuid"
+version = "1.26.1"
+features = ["v4"]
+default_features = true
+handoff = "host_runs.rs for boot IDs."
+apis = "Uuid::new_v4, simple/to_string for event/run/attention IDs; parse_str+hyphenated in host_runs.rs for boot IDs."
+feature_use = "Explicit v4; default std and shared getrandom supply system entropy."
+exposure = "Unsafe optimized parsing/formatting, no build script; exactly one exclusive package."
+decision = "Retain after bounded formatter/validator experiment. 46 prototype lines plus 48 control lines and widespread caller changes would replace one maintained package; entropy failures, UUID bits, both encodings and canonical boot-ID validation become first-party obligations."
+
+[[libraries]]
+name = "unicode-normalization"
+version = "0.1.25"
+features = []
+default_features = true
+handoff = "services.rs, factory_proposals.rs, repo_map.rs and HTTP URL normalization."
+apis = "UnicodeNormalization::nfkc in services.rs, factory_proposals.rs, repo_map.rs and HTTP URL normalization."
+feature_use = "Default std; NFKC is a current identity/path matching input transform."
+exposure = "Generated Unicode tables and optimized unsafe iteration; tinyvec shared and olpc-cjson retains the crate."
+decision = "Retain. Zero exclusive closure; replacing Unicode normalization is expressly out of scope."
+
+[[libraries]]
+name = "unicode-width"
+version = "0.2.2"
+features = []
+default_features = true
+handoff = "coord_timeline.rs and compact display."
+apis = "UnicodeWidthChar::width and UnicodeWidthStr::width in coord_timeline.rs and compact display."
+feature_use = "Default cjk tables preserve terminal widths; rustyline also retains the crate/default."
+exposure = "Generated Unicode width tables, no build script or proc macro."
+decision = "Retain. Zero closure; ASCII approximations degrade current terminal output."
+
+[[libraries]]
+name = "x509-parser"
+version = "0.18.1"
+features = []
+handoff = "Interception CA constraints, key-usage and validity parsing."
+default_features = true
+apis = "parse_x509_certificate, GeneralName, validity/basic_constraints/key_usage/public-key access in tls.rs and tls_observation.rs."
+feature_use = "Transitive verify+ring from rcgen; current CA/key checks and certificate observations use parsed fields."
+exposure = "Adversarial ASN.1/X.509 parser plus derive/proc-macro boundaries and shared ring verification."
+decision = "Retain. Zero closure; certificate parsing/verification must remain maintained upstream."
+
+
+[[libraries]]
+name = "yaml-rust2"
+version = "0.13.0"
+features = []
+default_features = false
+handoff = "policy/source.rs."
+apis = "parser::{Parser,Event,Tag}, scanner::TScalarStyle and event loading in policy/source.rs."
+feature_use = "Defaults already disabled; input events preserve explicit scalar/collection semantics."
+exposure = "Pure Rust YAML scanner/parser and exclusive hashlink/arraydeque tables; malformed/recursive input behavior."
+decision = "Retain. YAML grammar, aliases, tags and scalar styles are not a bounded local parser."
+
+[[libraries]]
+name = "zeroize"
+version = "1.9.0"
+features = []
+handoff = "Secret and retained WebSocket buffer clearing on drop."
+default_features = true
+apis = "Zeroize, Zeroizing for secrets, headers, buffers and owning Bytes across credentials, inspection and WebSocket paths."
+feature_use = "Default alloc; zeroize_derive is transitively selected by Fernet."
+exposure = "Unsafe volatile writes/compiler fences; derive is a separate proc-macro boundary."
+decision = "Retain. Required secret-clearing guarantee; shared crypto packages remain."
+
+
+[[libraries]]
+name = "zstd"
+version = "0.14.3"
+features = []
+default_features = false
+handoff = "http_content.rs, guest archive handling and CLI packaging."
+apis = "stream::raw::{Decoder,Operation}, stream::read::Decoder and streaming encoders in http_content.rs, guest archive handling and CLI packaging."
+feature_use = "Defaults already disabled; raw/std stream APIs still use the native codec."
+exposure = "Unsafe FFI into zstd-sys, bundled native C/build script and cc/jobserver boundary."
+decision = "Retain. Streaming decompression, frame/truncation checks and bounded output must remain maintained upstream."
 [[decisions]]
 id = "identity"
 inputs = "Operator listener configuration supplies agent_id, socket_path and source_id. Accepted HTTP bytes and declaration fields are untrusted."
