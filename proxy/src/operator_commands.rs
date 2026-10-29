@@ -26,8 +26,8 @@ safeyolo [--root ROOT] approvals delegations [--json]\nsafeyolo [--root ROOT] ap
 safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
 safeyolo [--root ROOT] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] logs list [--instance ID] [--runtime ID] [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] logs connection ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] logs request ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] logs connection ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] logs request ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] observations [--instance ID] [--runtime ID] [--json]
 safeyolo [--root ROOT] diagnose [--agent NAME] [--json]
 safeyolo helper show ID|diagnostic ID|prepare ID --reason TEXT [--socket PATH] [--token-file FILE]
@@ -47,6 +47,7 @@ Reject records a refusal without adding a policy deny rule. Terminal decisions c
 Helper uses its Agent API token (default /app/agent_token) and the existing guest proxy route.
 If evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable.
 Observations reads current runtime aggregates. --instance and --runtime check a retained namespace; they do not retrieve historical or per-agent measurements. Reload preserves counters; restart changes the runtime. Reading observations does not enable payload capture or content storage.
+Logs connection/request accept --capture FILE to read existing current pcap:compat metadata. Matches require the selected audit namespace, connection and recorded agent attribution; request observations require the selected request ID. Lower-layer ancestry can be shared input, not exclusive request bytes. Results include audit lines, one-based packet numbers and PCAP packet-header byte offsets. --lines also bounds retained matching connection observations and runtime loss records separately. Missing/unsupported captures remain unavailable; malformed/truncated input and omissions can leave partial evidence. Loss is runtime-wide with unknown connection/request attribution. Synthetic headers are representation, not measured wire behaviour. No payload is returned or capture enabled. EOF does not prove complete evidence.
 Logs use the configured local audit file unless --file PATH is supplied. Repeat --file for explicitly selected offline inputs; no installed config or API is needed. Each file is validated to EOF and retains the last --lines selected-agent rows (default 100 per file), so total retention is at most input count times --lines. Selected-file pivots identify every input/physical line and duplicate copy, and refuse conflicting event copies or transport owners as join evidence. Input order is not chronological order. Selection and schema validation do not authenticate the producer. Use logs list to discover retained namespaces, agent context, and connection/request/indicator references; --instance and --runtime optionally narrow that listing. It is not live inventory. Unknown attribution and conflicting copies stay distinct from recorded resolved agent context. Pivots require instance and runtime; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Prompt exposure correlations explain exact source and source/model transport novelty support, including partial or unavailable evidence. These are connection-wide relationships, not proof of malicious intent or model receipt. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.";
 
 pub fn handles(args: &[String]) -> bool {
@@ -108,6 +109,7 @@ struct Options {
     option: Option<String>,
     delegation: Option<String>,
     files: Vec<PathBuf>,
+    capture: Option<PathBuf>,
     scope: serde_json::Map<String, Value>,
     positional: Vec<String>,
 }
@@ -128,7 +130,7 @@ impl Options {
                 "--agent" | "--factory" | "--helper" | "--filter" | "--lines" | "--offset"
                 | "--socket" | "--token-file" | "--reason" | "--test" | "--intent" | "--role"
                 | "--expect" | "--option" | "--delegation" | "--file" | "--instance"
-                | "--runtime" | "--sandbox-run" => {
+                | "--runtime" | "--sandbox-run" | "--capture" => {
                     let value = args
                         .next()
                         .ok_or_else(|| format!("{arg} requires a value"))?;
@@ -148,6 +150,7 @@ impl Options {
                         "--option" => options.option = Some(value.clone()),
                         "--delegation" => options.delegation = Some(value.clone()),
                         "--file" => options.files.push(value.into()),
+                        "--capture" => options.capture = Some(value.into()),
                         key => {
                             options.scope.insert(
                                 if key == "--test" {
@@ -867,6 +870,11 @@ async fn traffic(root: &Path, options: &Options) -> Result<Value, Error> {
 }
 
 fn logs(_root: &Path, options: &Options) -> Result<Value, Error> {
+    if options.capture.is_some()
+        && !matches!(options.positional.as_slice(), [kind, _] if matches!(kind.as_str(), "connection" | "request"))
+    {
+        return Err("--capture requires logs connection ID or logs request ID".into());
+    }
     if options.positional.is_empty() && options.sandbox_run.is_some() {
         return Err("--sandbox-run requires logs list, logs connection or logs request".into());
     }
@@ -917,26 +925,26 @@ fn logs(_root: &Path, options: &Options) -> Result<Value, Error> {
                 "limits":"Each selected file is validated to EOF and retains at most --lines selected-agent rows. Input order is not chronological order. Selection and schema validation do not authenticate the producer."}))
         }
         [kind, id] if matches!(kind.as_str(), "connection" | "request") => {
-            crate::audit::pivot::read(
-                &paths,
-                tails,
-                explicit,
-                &crate::audit::pivot::Query {
-                    instance: options
-                        .instance
-                        .as_deref()
-                        .ok_or("logs pivot requires --instance ID")?,
-                    runtime: options
-                        .runtime
-                        .as_deref()
-                        .ok_or("logs pivot requires --runtime ID")?,
-                    kind,
-                    id,
-                    agent: options.agent.as_deref(),
-                    sandbox_run: options.sandbox_run.as_deref(),
-                    lines: options.lines,
-                },
-            )
+            let query = crate::audit::pivot::Query {
+                instance: options
+                    .instance
+                    .as_deref()
+                    .ok_or("logs pivot requires --instance ID")?,
+                runtime: options
+                    .runtime
+                    .as_deref()
+                    .ok_or("logs pivot requires --runtime ID")?,
+                kind,
+                id,
+                agent: options.agent.as_deref(),
+                sandbox_run: options.sandbox_run.as_deref(),
+                lines: options.lines,
+            };
+            let mut result = crate::audit::pivot::read(&paths, tails, explicit, &query)?;
+            if let Some(path) = &options.capture {
+                result["capture"] = crate::audit::pivot::capture::read(path, &result, &query);
+            }
+            Ok(result)
         }
         _ => Err("usage: safeyolo logs --help".into()),
     }
@@ -1107,6 +1115,13 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
             text(&link["field"]),
             serde_json::to_string(link)?
         );
+    }
+    if let Some(capture) = value.get("capture") {
+        println!(
+            "\nSelected capture metadata ({}):",
+            text(&capture["status"])
+        );
+        print_json(capture)?;
     }
     Ok(())
 }

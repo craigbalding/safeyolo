@@ -21,7 +21,7 @@ use tokio::{
     task::JoinSet,
 };
 
-mod compat;
+pub(crate) mod compat;
 mod pcapng;
 pub(crate) mod secrets;
 mod stdout;
