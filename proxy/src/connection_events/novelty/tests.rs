@@ -13,6 +13,8 @@ use tokio::{
 
 const LIMIT: Duration = Duration::from_secs(5);
 
+mod origin_ip;
+
 fn key(agent: &str, destination: &str) -> Key {
     Key::Destination {
         agent: agent.into(),
@@ -511,7 +513,7 @@ async fn native_tls_renewal_key_change_isolation_reload_and_restart() {
     for _ in 0..2 {
         request(directory.path(), "alice", &url).await;
     }
-    assert_eq!(indicators(&records(&runtime, directory.path())).len(), 1);
+    assert_eq!(indicators(&records(&runtime, directory.path())).len(), 2);
     proxy.reload(configuration.clone()).await.unwrap();
     request(directory.path(), "alice", &url).await;
     request(directory.path(), "alice", &url).await;
@@ -529,7 +531,7 @@ async fn native_tls_renewal_key_change_isolation_reload_and_restart() {
     let clues = indicators(&rows);
     assert_eq!(
         clues.len(),
-        5,
+        7,
         "{}",
         serde_json::to_string_pretty(&clues).unwrap()
     );
@@ -608,7 +610,7 @@ async fn native_tls_renewal_key_change_isolation_reload_and_restart() {
         .collect();
     assert_eq!(
         clues.len(),
-        1,
+        2,
         "retained JSONL does not restore comparison state"
     );
     assert_eq!(
@@ -663,7 +665,7 @@ async fn native_same_certificate_version_and_alpn_changes_keep_exact_links() {
     for _ in 0..2 {
         request(directory.path(), "alice", &url).await;
     }
-    assert_eq!(indicators(&records(&runtime, directory.path())).len(), 1);
+    assert_eq!(indicators(&records(&runtime, directory.path())).len(), 2);
     proxy.reload(configuration.clone()).await.unwrap();
     for _ in 0..4 {
         request(directory.path(), "alice", &url).await;
@@ -680,7 +682,7 @@ async fn native_same_certificate_version_and_alpn_changes_keep_exact_links() {
     proxy.shutdown().await;
     let rows = records(&runtime, directory.path());
     let clues = indicators(&rows);
-    assert_eq!(clues.len(), 6, "{clues:?}");
+    assert_eq!(clues.len(), 8, "{clues:?}");
     assert_eq!(
         clues
             .iter()
@@ -749,7 +751,7 @@ async fn native_same_certificate_version_and_alpn_changes_keep_exact_links() {
         .collect();
     assert_eq!(
         clues.len(),
-        1,
+        2,
         "restart does not restore negotiation history"
     );
     assert_eq!(
@@ -1758,6 +1760,7 @@ async fn native_origin_spki_concurrency_uses_supporting_audit_order() {
     }
     proxy.shutdown().await;
     let rows = records(&runtime, directory.path());
+    origin_ip::assert_first_events(&rows, 2);
     let samples: Vec<_> = rows
         .iter()
         .filter(|row| {
@@ -1842,6 +1845,7 @@ async fn native_origin_spki_does_not_treat_a_parent_peer_as_a_new_origin_ip() {
     }
     proxy.shutdown().await;
     let rows = records(&runtime, directory.path());
+    origin_ip::assert_first_events(&rows, 1);
     assert!(spki_ip_indicators(&rows).is_empty());
     let parent_record = rows
         .iter()
