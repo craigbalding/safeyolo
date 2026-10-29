@@ -252,7 +252,7 @@ fn conflicting_lines(rows: &[&(RecordLine, Value)]) -> HashSet<RecordLine> {
                 .or_default()
                 .push((*line, canonical.to_string()));
         }
-        let details = &row["details"];
+        let details = &canonical["details"];
         let ownership = match row["event"].as_str() {
             Some("network.connection") => Some((
                 json!([
@@ -370,8 +370,8 @@ fn retained_rows(
     let mut seen = HashMap::new();
     for (index, tail) in tails.into_iter().enumerate() {
         for (line, row) in tail.rows {
-            // Historical rows stay readable in raw logs, never NSM choices.
-            if row["schema_version"] != super::nsm::SCHEMA_VERSION || !include(&row) {
+            // Unscoped control records never establish NSM relationships.
+            if !super::nsm::is_scoped(&row) || !include(&row) {
                 continue;
             }
             let line = if explicit {

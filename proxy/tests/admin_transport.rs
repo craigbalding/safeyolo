@@ -39,38 +39,8 @@ const TASK_PATH: &str = "/admin/policy/task/alpha";
 const DETECTABLE_BEARER_TOKEN: &str =
     "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_";
 
-#[test]
-#[ignore = "actual Python parser/auth hook; set SAFEYOLO_POLICY_PYTHON"]
-fn operator_audit_auth_parser_matches_actual_source() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for (fixture, failures) in [
-        ("admin_audit_source.json", false),
-        ("admin_audit_failures_source.json", true),
-    ] {
-        let mut command = std::process::Command::new(
-            std::env::var_os("SAFEYOLO_POLICY_PYTHON").expect("source Python"),
-        );
-        command
-            .arg("-B")
-            .arg(root.join("tests/admin_audit_source.py"));
-        if failures {
-            command.arg("--failures");
-        }
-        let result = command
-            .arg("--check")
-            .arg(root.join("tests").join(fixture))
-            .output()
-            .unwrap();
-        assert!(
-            result.status.success(),
-            "{}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-    }
-}
-
 #[tokio::test]
-async fn operator_auth_target_and_client_text_match_source_canonical_events() {
+async fn operator_auth_target_and_client_text_reach_current_audit_records() {
     let directory = TempDir::new().unwrap();
     let token = synthetic();
     let config = config(directory.path(), &token);
@@ -113,7 +83,7 @@ async fn operator_auth_target_and_client_text_match_source_canonical_events() {
         .unwrap()
         .lines()
         .map(|line| {
-            let mut row: Value = serde_json::from_str(line).unwrap();
+            let mut row = safeyolo_proxy::audit::parse_record(line).unwrap();
             assert!(row.as_object_mut().unwrap().remove("ts").is_some());
             row
         })
@@ -121,12 +91,17 @@ async fn operator_auth_target_and_client_text_match_source_canonical_events() {
         .collect();
     assert_eq!(rows.len(), cases.as_array().unwrap().len() + 1);
     for (row, case) in rows.iter().zip(cases.as_array().unwrap()) {
-        assert_eq!(row, &case["event"]);
+        assert_eq!(row["schema_version"], 2);
+        let mut payload = row.clone();
+        payload.as_object_mut().unwrap().remove("schema_version");
+        let mut expected = case["event"].clone();
+        expected.as_object_mut().unwrap().remove("schema_version");
+        assert_eq!(payload, expected);
     }
     assert_eq!(
         rows.last().unwrap(),
         &json!({
-            "schema_version":1,"event":"admin.task_policy_update","kind":"admin","severity":"medium",
+            "schema_version":2,"event":"admin.task_policy_update","kind":"admin","severity":"medium",
             "summary":"Task policy 'alpha' updated: 0 permissions","addon":"admin-api",
             "details":{"client_ip":"127.0.0.1","task_id":"alpha","permission_count":0}
         })

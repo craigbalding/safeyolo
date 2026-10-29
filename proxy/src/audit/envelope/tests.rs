@@ -1,5 +1,4 @@
 use super::*;
-use crate::policy::{Format, Policy, TimestampPaths};
 
 #[test]
 fn cleanup_of_deep_typed_objects_and_arrays_uses_an_owned_worklist() {
@@ -22,137 +21,93 @@ fn cleanup_of_deep_typed_objects_and_arrays_uses_an_owned_worklist() {
         .unwrap();
 }
 
-fn kind(value: &str) -> Kind {
-    match value {
-        "security" => Kind::Security,
-        "gateway" => Kind::Gateway,
-        "traffic" => Kind::Traffic,
-        "ops" => Kind::Ops,
-        "admin" => Kind::Admin,
-        "agent" => Kind::Agent,
-        "plumb" => Kind::Plumb,
-        "coord" => Kind::Coord,
-        _ => panic!("fixture kind"),
-    }
-}
-fn temporal_details(source: &str) -> CircuitValue {
-    let yaml = format!(
-        "addons:\n  circuit_breaker:\n    details:\n{}",
-        source
-            .lines()
-            .map(|line| format!("      {line}\n"))
-            .collect::<String>()
-    );
-    let policy = Policy::parse_at(&yaml, Format::Yaml, 0.).unwrap();
-    let view = policy.circuit_settings();
-    let raw = view.values().unwrap()["details"].clone();
-    let mut types = TimestampPaths::default();
-    let mut pending = vec![(&raw, Vec::<String>::new())];
-    while let Some((value, path)) = pending.pop() {
-        let relative: Vec<_> = path.iter().map(String::as_str).collect();
-        let absolute: Vec<_> = std::iter::once("details")
-            .chain(relative.iter().copied())
-            .collect();
-        if let Some(value) = view.temporal_value(&absolute) {
-            types.insert_value(&relative, value.clone());
-            continue;
-        }
-        if let Some(value) = view.temporal_key(&absolute) {
-            types.insert_key(&relative, value.clone());
-        }
-        match value {
-            Value::Object(values) => {
-                for (key, value) in values {
-                    let mut next = path.clone();
-                    next.push(key.clone());
-                    pending.push((value, next));
-                }
-            }
-            Value::Array(values) => {
-                for (index, value) in values.iter().enumerate() {
-                    let mut next = path.clone();
-                    next.push(index.to_string());
-                    pending.push((value, next));
-                }
-            }
-            _ => {}
-        }
-    }
-    CircuitValue::from_annotated(raw, types)
-}
-
 #[test]
-fn envelope_matches_actual_source_bytes_and_schema_consumer() {
-    let fixtures: Value =
-        serde_json::from_str(include_str!("../../../tests/audit_source.json")).unwrap();
-    let now = OffsetDateTime::parse(
-        "2026-01-02T03:04:05.123456Z",
-        &time::format_description::well_known::Rfc3339,
-    )
-    .unwrap();
-    for row in fixtures["rows"].as_array().unwrap() {
-        let input = &row["input"];
+fn current_ordinary_families_round_trip_their_owned_fields() {
+    for kind in [
+        Kind::Security,
+        Kind::Gateway,
+        Kind::Traffic,
+        Kind::Ops,
+        Kind::Admin,
+        Kind::Agent,
+        Kind::Plumb,
+        Kind::Coord,
+    ] {
         let mut event = Event::new(
-            input["event"].as_str().unwrap(),
-            kind(input["kind"].as_str().unwrap()),
+            format!("{}.fixture", kind.as_str()),
+            kind,
             Severity::Low,
-            input["summary"].as_str().unwrap(),
+            "owned fixture",
         );
-        let optional = |name: &str| input.get(name).and_then(Value::as_str).map(str::to_owned);
-        event.request_id = optional("request_id");
-        event.agent = optional("agent");
-        event.addon = optional("addon");
-        event.host = optional("host");
-        if input.get("decision").is_some() {
-            event.decision = Some(Decision::RequireApproval);
-        }
-        if let Some(approval) = input.get("approval") {
-            event.approval = Some(Approval {
-                required: approval["required"].as_bool().unwrap(),
-                approval_type: ApprovalType::NetworkEgress,
-                key: approval["key"].as_str().unwrap().into(),
-                target: approval["target"].as_str().unwrap().into(),
-                scope_hint: approval["scope_hint"].clone().into(),
-            });
-        }
-        event.attribution = Some(Attribution {
-            evidence_owner: optional("evidence_owner"),
-            trusted_transport_identity: optional("trusted_transport_identity"),
-            initiator: input.get("initiator").map(|_| Initiator::Unknown),
-            status: input
-                .get("attribution_status")
-                .map(|_| AttributionStatus::Resolved),
-            provenance: input
-                .get("attribution_provenance")
-                .cloned()
-                .map(CircuitValue::from),
+        event.event_id = Some("event-1".into());
+        event.request_id = Some("request-1".into());
+        event.agent = Some("alice".into());
+        event.decision = Some(Decision::RequireApproval);
+        event.approval = Some(Approval {
+            required: true,
+            approval_type: ApprovalType::NetworkEgress,
+            key: "owned-key".into(),
+            target: "owned.invalid".into(),
+            scope_hint: serde_json::json!({"host":"owned.invalid"}).into(),
         });
-        if let Some(text) = row["details_json"].as_str() {
-            event.details = CircuitValue::parse_json(text).unwrap();
-        }
-        if let Some(source) = row["details_yaml"].as_str() {
-            event.details = temporal_details(source);
-        }
-        if let Some(depth) = row["depth"].as_u64() {
-            let mut value = CircuitValue::Other(Value::Null);
-            for _ in 0..depth {
-                value = CircuitValue::Object(IndexMap::from([("nested".into(), value)]));
-            }
-            event.details = value;
-        }
-        let record = event.record(now);
-        let mut encoded = record.encode().unwrap().to_string();
-        encoded.push('\n');
-        let hex = encoded
-            .as_bytes()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        event.details = serde_json::json!({"count":7,"attribution":{
+            "evidence_owner":"forged", "trusted_transport_identity":"forged"}})
+        .into();
+        event.attribution = Some(Attribution {
+            evidence_owner: Some("alice".into()),
+            status: Some(AttributionStatus::Resolved),
+            ..Default::default()
+        });
+        let bytes = event.record(OffsetDateTime::UNIX_EPOCH).encode().unwrap();
+        let row = crate::audit::parse_record(&bytes).unwrap();
+        assert_eq!(row["schema_version"], 2);
+        assert_eq!(row["kind"], kind.as_str());
+        assert_eq!(row["request_id"], "request-1");
+        assert_eq!(row["decision"], "require_approval");
+        assert_eq!(row["approval"]["scope_hint"]["host"], "owned.invalid");
+        assert_eq!(row["details"]["count"], 7);
+        assert_eq!(row["details"]["attribution"]["evidence_owner"], "alice");
         assert!(
-            hex == row["line_hex"].as_str().unwrap(),
-            "source bytes differ: case {}",
-            row["name"]
+            row["details"]["attribution"]
+                .get("trusted_transport_identity")
+                .is_none()
         );
+        assert!(!crate::audit::nsm::is_scoped(&row));
+        for (pointer, value) in [
+            ("/kind", serde_json::json!("invented")),
+            ("/event", serde_json::json!("other.fixture")),
+            ("/ts", serde_json::json!("not a timestamp")),
+            ("/summary", serde_json::json!("")),
+            ("/severity", serde_json::json!("invented")),
+            ("/details", serde_json::json!([])),
+            ("/agent", serde_json::json!(5)),
+            ("/decision", serde_json::json!("invented")),
+            ("/approval/required", serde_json::json!("yes")),
+            ("/approval/approval_type", serde_json::json!("invented")),
+            ("/approval/scope_hint", Value::Null),
+        ] {
+            let mut invalid = row.clone();
+            *invalid.pointer_mut(pointer).unwrap() = value;
+            assert!(
+                crate::audit::parse_record(&invalid.to_string()).is_err(),
+                "{pointer}"
+            );
+        }
+        let mut extra = row.clone();
+        extra["payload"] = serde_json::json!("not an envelope field");
+        assert!(crate::audit::parse_record(&extra.to_string()).is_err());
+        for version in [Value::Null, serde_json::json!(1), serde_json::json!(99)] {
+            let mut invalid = row.clone();
+            if version.is_null() {
+                invalid.as_object_mut().unwrap().remove("schema_version");
+            } else {
+                invalid["schema_version"] = version;
+            }
+            assert!(crate::audit::parse_record(&invalid.to_string()).is_err());
+        }
+    }
+    for invalid in ["[]", "null", "42", "{}", "not json"] {
+        assert!(crate::audit::parse_record(invalid).is_err());
     }
 }
 
@@ -173,8 +128,7 @@ fn optional_event_id_and_timestamp_are_construction_time_fields() {
     for (seconds, expected) in [(1, "+00:00"), (-1, "-00:00"), (61, "+00:01")] {
         let at = OffsetDateTime::UNIX_EPOCH
             .to_offset(time::UtcOffset::from_whole_seconds(seconds).unwrap());
-        assert!(timestamp(at, true).ends_with(expected));
-        assert!(timestamp(at, false).ends_with(&format!("{expected}:01")));
+        assert!(timestamp(at).ends_with(expected));
     }
 }
 

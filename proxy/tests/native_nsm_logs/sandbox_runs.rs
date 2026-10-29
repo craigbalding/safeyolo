@@ -116,7 +116,12 @@ pub(super) async fn assert_native_runs(root: &Path, bytes: &[u8], bindings: &[Va
         .collect();
     let nsm: Vec<_> = rows
         .iter()
-        .filter(|row| row["schema_version"] == 2)
+        .filter(|row| {
+            matches!(
+                row["event"].as_str(),
+                Some("network.connection" | "traffic.flow" | "security.indicator")
+            ) || row["details"].get("client_connection_id").is_some()
+        })
         .collect();
     assert!(!nsm.is_empty());
     assert!(
@@ -395,6 +400,65 @@ async fn every_run_relationship_requires_the_same_recorded_binding() {
         listing["namespaces"][0]["agents"][0]["run_context"],
         "unavailable"
     );
+}
+
+#[tokio::test]
+async fn run_field_order_preserves_lifecycle_and_decision_relationships() {
+    let root = tempfile::tempdir().unwrap();
+    configure(root.path());
+    let mut rows = bound_rows();
+    let reordered: Value = serde_json::from_str(&format!(
+        r#"{{"run_id":"{RUN_A}","agent_id":"{AGENT_ID}","agent":"alice"}}"#
+    ))
+    .unwrap();
+    assert_eq!(reordered, binding(RUN_A));
+    let mut closed = rows[2].clone();
+    closed["event_id"] = json!("model-client-closed");
+    closed["details"]["state"] = json!("closed");
+    closed["details"]["ended_at"] = json!("2026-01-01T00:00:01Z");
+    closed["details"]["sandbox_run"] = reordered.clone();
+    rows.push(closed);
+    let mut flow = rows[6].clone();
+    flow["details"]["sandbox_run"] = reordered.clone();
+    rows.push(flow);
+    let mut decision = decisions::scoped_decision();
+    decision["details"]["sandbox_run"] = reordered;
+    rows.push(decision);
+    write_rows(root.path(), &rows);
+    let path = root.path().join("audit.jsonl");
+    let bytes = fs::read(&path).unwrap();
+    for offline in [false, true] {
+        let files = if offline {
+            vec![
+                "--file",
+                path.to_str().unwrap(),
+                "--file",
+                path.to_str().unwrap(),
+            ]
+        } else {
+            vec![]
+        };
+        let mut args = vec!["logs", "list", "--sandbox-run", RUN_A, "--json"];
+        args.extend(&files);
+        let listing = success(root.path(), &args).await;
+        assert_eq!(listing["search"]["conflicting_nsm_records"], 0);
+        let mut args = pivot_args("request", "F1");
+        args.extend(["--sandbox-run", RUN_A]);
+        args.extend(&files);
+        let view = success(root.path(), &args).await;
+        assert_eq!(correlation::only_correlation(&view)["status"], "linked");
+        assert!(
+            view["links"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|link| link["status"] == "available")
+        );
+        if offline {
+            assert!(view["search"]["duplicate_namespace_rows"].as_u64().unwrap() > 0);
+        }
+    }
+    assert_eq!(fs::read(path).unwrap(), bytes);
 }
 
 #[tokio::test]

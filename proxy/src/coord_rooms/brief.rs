@@ -127,7 +127,7 @@ pub(crate) fn set(root: &Path, room: &str, markdown: &str, expected: i64) -> Res
     let timestamp =
         time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339)?;
     let event = json!({
-        "schema_version":1,"event_id":event_id,"ts":timestamp,"event":"coord.brief_updated",
+        "schema_version":crate::audit::SCHEMA_VERSION,"event_id":event_id,"ts":timestamp,"event":"coord.brief_updated",
         "kind":"coord","severity":"low","summary":"Coord operator brief updated","addon":"coord",
         "details":{"actor":"operator","room_id":room_id,"object_id":object_id,"revision":revision,"content_hash":content_hash,"operation_id":operation_id,"operation_type":"coord.brief.set"},
     });
@@ -137,4 +137,43 @@ pub(crate) fn set(root: &Path, room: &str, markdown: &str, expected: i64) -> Res
     )?;
     transaction.commit()?;
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn brief_mutation_stages_a_current_audit_record_without_trusted_prose() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        fs::create_dir(&data).unwrap();
+        fs::write(data.join("instance_id"), "owned-instance").unwrap();
+        fs::write(
+            root.path().join("config.toml"),
+            format!("data_dir={:?}\n", data),
+        )
+        .unwrap();
+        super::super::bootstrap(root.path()).unwrap();
+        let db = open(root.path()).unwrap();
+        db.execute("INSERT INTO rooms VALUES('rm-owned','owned',0)", [])
+            .unwrap();
+        let result = set(root.path(), "owned", "Private standing context", 0).unwrap();
+        assert_eq!(result["revision"], 1);
+        let payload: String = db
+            .query_row(
+                "SELECT payload_json FROM coord_outbox WHERE destination='audit-jsonl'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let record = crate::audit::parse_record(&payload).unwrap();
+        assert_eq!(record["schema_version"], 2);
+        assert_eq!(record["event"], "coord.brief_updated");
+        assert_eq!(record["details"]["actor"], "operator");
+        assert_eq!(record["details"]["revision"], 1);
+        assert!(record.get("agent").is_none());
+        assert!(!payload.contains("Private standing context"));
+    }
 }

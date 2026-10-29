@@ -62,7 +62,7 @@ pub(crate) fn read(
         tails
             .iter()
             .flat_map(|tail| &tail.rows)
-            .filter(|(_, row)| row["schema_version"] != super::super::nsm::SCHEMA_VERSION)
+            .filter(|(_, row)| !super::super::nsm::is_scoped(row))
             .count()
     );
     let retained = retained_rows(tails, explicit, true, |row| {
@@ -81,7 +81,7 @@ pub(crate) fn read(
     );
     search["conflicting_nsm_records"] = json!(conflicts.len());
     search["limits"] = json!(
-        "Retained evidence only, not live agents or sessions. Each input is validated to EOF; --lines retains the last selected-agent rows per input before namespace selection. Counts describe retained records and copies, not lifetime traffic. Equal parsed records share evidence; every retained location is preserved. Conflicting records and unknown attribution remain separate from resolved agent context. References name recorded keys, not verified relationships; use the scoped pivot to inspect support. Legacy rows remain available through raw logs. Unselected rotations, filtered/outside-window rows, queues and loss can omit evidence. Input order and timestamps do not establish global chronology. Selection and schema validation do not authenticate a producer. No content is fetched or input changed."
+        "Retained evidence only, not live agents or sessions. Each input is validated to EOF; --lines retains the last selected-agent rows per input before namespace selection. Counts describe retained records and copies, not lifetime traffic. Equal parsed records share evidence; every retained location is preserved. Conflicting records and unknown attribution remain separate from resolved agent context. References name recorded keys, not verified relationships; use the scoped pivot to inspect support. Unscoped control records remain available through ordinary logs. Unselected rotations, filtered/outside-window rows, queues and loss can omit evidence. Input order and timestamps do not establish global chronology. Selection and schema validation do not authenticate a producer. No content is fetched or input changed."
     );
     // Separate attribution classes even when their envelope agent names match.
     let mut namespaces = BTreeMap::new();

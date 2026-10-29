@@ -597,12 +597,12 @@ async fn hostile_text_and_secret_evidence_do_not_enter_helper_or_routine_summari
         .unwrap();
     let private = format!(
         "{}\n",
-        json!({"request_id":id,"agent":"worker","event":"test.private_evidence","details":{"secret":SECRET}})
+        json!({"schema_version":2,"ts":"2026-10-29T00:00:00Z","kind":"ops","severity":"low","summary":"Private evidence fixture","request_id":id,"agent":"worker","event":"ops.private_evidence","details":{"secret":SECRET}})
     );
     audit.write_all(private.as_bytes()).unwrap();
     let peer_evidence = format!(
         "{}\n",
-        json!({"request_id":peer,"agent":"peer","event":"test.private_evidence","details":{"secret":"synthetic-peer-821-out-of-scope"}})
+        json!({"schema_version":2,"ts":"2026-10-29T00:00:00Z","kind":"ops","severity":"low","summary":"Private evidence fixture","request_id":peer,"agent":"peer","event":"ops.private_evidence","details":{"secret":"synthetic-peer-821-out-of-scope"}})
     );
     audit.write_all(peer_evidence.as_bytes()).unwrap();
     drop(audit);
@@ -884,10 +884,11 @@ async fn credential_lookup_preserves_scope_staleness_and_evidence_refusals() {
         .json();
     let credential_id = "req-cccccccccccccccccccccccccccccccc";
     let event = |id: &str, host: &str, key: &str| {
-        json!({"ts":"2026-10-17T10:00:00Z","event":"security.credential_guard",
+        json!({"schema_version":2,"ts":"2026-10-17T10:00:00Z","event":"security.credential_guard",
+            "summary":"Credential approval required",
             "kind":"security","severity":"high","request_id":id,"agent":"worker",
             "details":{"agent_id":WORKER_ID},
-            "approval":{"required":true,"approval_type":"credential","key":key,"target":host}})
+            "approval":{"required":true,"approval_type":"credential","key":key,"target":host,"scope_hint":{}}})
     };
     let mut audit = fs::OpenOptions::new()
         .append(true)
