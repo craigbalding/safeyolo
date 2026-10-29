@@ -9,8 +9,8 @@ Issue #582 defines these contracts. Issue #583 adds emission from actual
 client and upstream transport owners. Issue #584 adds native Transport Layer
 Security (TLS) client fingerprints and upstream certificate identity. Issue
 #585 adds the first reusable indicator producer and a bounded prompt-injection
-sensor. The destination/TLS history sensor adds first-observation and upstream
-certificate-change clues under issue #581.
+sensor. The connection history sensor adds destination, client-fingerprint and
+upstream TLS change clues under issue #581.
 
 ## Version and reader compatibility
 
@@ -51,6 +51,9 @@ The current reader continues to accept indicators that omit it.
 Negotiation-change records add the optional `negotiation` object inside each
 novelty observation. Earlier strict readers need this addition; the current
 reader still accepts certificate and destination observations that omit it.
+Client-fingerprint records add optional `client_fingerprint` observations and
+omit destination and route fields. Earlier strict readers need these additions;
+the current reader still accepts the earlier destination/TLS evidence.
 
 All NSM payload fields below are in `details`, except `request_id`, which
 uses the existing envelope field. Existing `ts`, `event_id`, `severity`,
@@ -308,7 +311,7 @@ reader still accepts earlier records that omit them.
 
 ### Destination and upstream TLS history
 
-The native connection owners run `connection-history.v1`. The sensor emits three
+The native connection owners run `connection-history.v1`. The sensor emits five
 low-severity rules through the shared indicator producer:
 
 | Stable rule | Observable condition |
@@ -316,6 +319,8 @@ low-severity rules through the shared indicator producer:
 | `destination.first_observation.v1` | The first native upstream record for an agent/destination/route absent from the bounded runtime cache. |
 | `tls.origin_identity_changed.v1` | A later full origin TLS handshake has a different certificate hash, or two available SPKI hashes differ. |
 | `tls.origin_negotiation_changed.v1` | A later successful origin TLS handshake has a different measured TLS version or negotiated Application-Layer Protocol Negotiation (ALPN) result. |
+| `tls.client_fingerprint_first_observation.v1` | The first complete supported ClientHello for a trusted agent absent from bounded runtime history. |
+| `tls.client_fingerprint_changed.v1` | A later observed ClientHello for that agent has a different JA3 or JA4 fingerprint. |
 
 These rules have confidence 1.0 in the stated metadata comparison. They do not
 estimate the probability of compromise. Certificate renewal, key rotation,
@@ -324,6 +329,10 @@ can explain a TLS change. Negotiation changes use indicator type
 `tls_negotiation_change`; certificate changes retain `tls_identity_change`.
 When both change, the sensor emits separate records with their own comparable
 baselines.
+Client-fingerprint rules use indicator types `tls_client_fingerprint_novelty`
+and `tls_client_fingerprint_change`. Client library updates, TLS settings and
+randomized extension order can explain changes. Fingerprints describe observed
+client TLS behavior; they do not identify an executable or prove compromise.
 
 On the operator host, with the native CLI installed, replace `AGENT` with an
 existing configured agent name. This command reads recent audit records:
@@ -338,13 +347,14 @@ Find `security.indicator` records whose `details.sensor` is
 | Field | Meaning |
 | --- | --- |
 | `history_scope` | `runtime_fifo`: process-local history with first-in, first-out eviction. |
-| `history_capacity` | At most 4096 distinct agent/destination/route entries across the runtime. |
-| `destination` | Logical requested host and explicit port, including the effective default port. DNS names use ASCII lowercase without the root dot. Parsed IP addresses use canonical spelling; IPv6 addresses have brackets. |
-| `route` | `direct`, `parent`, or `provider`. Each route has separate comparison state. |
-| `verification_name` | The normalized origin TLS verification name for a TLS change; null for a first destination observation. |
-| `current` | Supporting `connection_id`, `event_id`, optional `cert_sha256`/`spki_sha256` hashes, and optional `negotiation`. |
-| `previous` | The previous comparable observation for the same rule, with the same fields as `current`; null for a first destination observation. |
+| `history_capacity` | At most 4096 entries shared by agent/destination/route history and client-agent history across the runtime. Each client agent uses one entry. |
+| `destination` | Logical requested host and explicit port, including the effective default port. DNS names use ASCII lowercase without the root dot. Parsed IP addresses use canonical spelling; IPv6 addresses have brackets. Absent for client-fingerprint observations. |
+| `route` | `direct`, `parent`, or `provider`. Each route has separate destination/TLS comparison state. Absent for client-fingerprint observations. |
+| `verification_name` | The normalized origin TLS verification name for an upstream TLS change; null for destination and client-fingerprint observations. |
+| `current` | Supporting `connection_id`, `event_id`, optional `cert_sha256`/`spki_sha256` hashes, optional `negotiation`, and optional `client_fingerprint`. |
+| `previous` | The previous comparable observation for the same rule, with the same fields as `current`; null for a first destination or client-fingerprint observation. |
 | `current.negotiation`, `previous.negotiation` | Measured `version` and `alpn` from the completed origin handshake. Present only for negotiation-change records; their certificate hashes are null. |
+| `current.client_fingerprint`, `previous.client_fingerprint` | The observed `ja3` and `ja4` from the client ClientHello. Certificate hashes are null and negotiation evidence is absent. |
 
 Join each observation to its exact `network.connection` event by `event_id`
 and connection key in the indicator's instance/runtime namespace. The outer
@@ -391,13 +401,25 @@ and one certificate baseline. A different verification name resets the affected
 baseline without comparing names. Neither baseline mixes origin observations
 with parent/provider transport TLS.
 
+Client-fingerprint comparison uses the trusted UDS agent identity alone, across
+destinations and routes. Request headers and claimed process/tool names cannot
+select this identity. Each observation links to the `client_to_proxy` update
+that records the actual ClientHello. The proxy's own upstream TLS never enters
+this baseline. A complete supported ClientHello can establish an observation
+even if the handshake later fails. Missing, malformed, incomplete or unsupported
+hellos and unknown attribution supply no baseline or measured change. External
+ingress does not enter this UDS-owned comparison. Stable fingerprint pairs
+advance the prior-event link without another indication. A change to either
+fingerprint emits one change indication containing both values.
+
 Cache operations serialize concurrent observations. Identical comparable observations
 advance the supporting baseline without another indicator. Closing an older
 connection does not replay its TLS snapshot into the comparison. Reconnects
 compare while their entry remains cached. Repetition does not refresh FIFO age.
-Eviction discards destination, certificate and negotiation state; a later attempt can
-produce a new first observation. If eviction occurs before an in-flight TLS
-handshake completes, that handshake supplies no comparison. Policy reloads
+Eviction discards the evicted entry's state; a later observation can produce
+a new first observation. Destination/TLS and client-agent entries compete for
+the same capacity. If a destination entry is evicted before an in-flight origin
+TLS handshake completes, that handshake supplies no comparison. Policy reloads
 preserve the cache; process restart clears it, even when JSONL files remain.
 First observation therefore means first in this bounded runtime history, never
 first over the agent's lifetime.

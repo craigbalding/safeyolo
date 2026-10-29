@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ConnectionIdentity, audit,
     security_indicators::{self, Indicator},
-    tls_identity::TlsSession,
+    tls_identity::{ClientHello, TlsSession},
 };
 
 use super::ConnectionEvents;
@@ -40,10 +40,24 @@ fn normalize_host(host: &str) -> String {
 }
 
 #[derive(Clone, Hash, Eq, PartialEq)]
-struct Key {
-    agent: String,
-    destination: String,
-    route: &'static str,
+enum Key {
+    Destination {
+        agent: String,
+        destination: String,
+        route: &'static str,
+    },
+    Client(String),
+}
+
+impl Key {
+    fn destination_and_route(&self) -> (Option<String>, Option<String>) {
+        match self {
+            Self::Destination {
+                destination, route, ..
+            } => (Some(destination.clone()), Some((*route).into())),
+            Self::Client(_) => (None, None),
+        }
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -55,6 +69,30 @@ pub(crate) struct Observation {
     pub(crate) spki_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) negotiation: Option<Negotiation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) client_fingerprint: Option<ClientFingerprint>,
+}
+
+#[derive(Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ClientFingerprint {
+    ja3: String,
+    ja4: String,
+}
+
+impl ClientFingerprint {
+    fn valid(&self) -> bool {
+        self.ja3.len() == 32
+            && self
+                .ja3
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            && self.ja4.len() == 36
+            && self
+                .ja4
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    }
 }
 
 #[derive(Clone, PartialEq, Deserialize, Serialize)]
@@ -73,6 +111,7 @@ impl Observation {
             cert_sha256: None,
             spki_sha256: None,
             negotiation: None,
+            client_fingerprint: None,
         }
     }
 
@@ -88,6 +127,12 @@ impl Observation {
             && self.cert_sha256.as_deref().is_none_or(hash)
             && self.spki_sha256.as_deref().is_none_or(hash)
             && (self.spki_sha256.is_none() || self.cert_sha256.is_some())
+            && self.client_fingerprint.as_ref().is_none_or(|value| {
+                value.valid()
+                    && self.cert_sha256.is_none()
+                    && self.spki_sha256.is_none()
+                    && self.negotiation.is_none()
+            })
             && self.negotiation.as_ref().is_none_or(|value| {
                 !value.version.trim().is_empty()
                     && value.version.len() <= 1024
@@ -103,8 +148,10 @@ impl Observation {
 pub(crate) struct Evidence {
     pub(crate) history_scope: String,
     pub(crate) history_capacity: usize,
-    pub(crate) destination: String,
-    pub(crate) route: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) destination: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) route: Option<String>,
     pub(crate) verification_name: Option<String>,
     pub(crate) current: Observation,
     pub(crate) previous: Option<Observation>,
@@ -114,10 +161,35 @@ impl Evidence {
     pub(crate) fn valid(&self, connection_id: Option<&str>) -> bool {
         self.history_scope == SCOPE
             && (1..=CAPACITY).contains(&self.history_capacity)
-            && !self.destination.trim().is_empty()
-            && matches!(self.route.as_str(), "direct" | "parent" | "provider")
             && connection_id == Some(self.current.connection_id.as_str())
             && self.current.valid()
+            && if self.current.client_fingerprint.is_some() {
+                self.valid_client_fingerprint()
+            } else {
+                self.valid_destination()
+            }
+    }
+
+    fn valid_client_fingerprint(&self) -> bool {
+        self.destination.is_none()
+            && self.route.is_none()
+            && self.verification_name.is_none()
+            && self.previous.as_ref().is_none_or(|previous| {
+                previous.valid()
+                    && previous.event_id != self.current.event_id
+                    && previous.client_fingerprint.is_some()
+                    && previous.client_fingerprint != self.current.client_fingerprint
+            })
+    }
+
+    fn valid_destination(&self) -> bool {
+        self.destination
+            .as_ref()
+            .is_some_and(|name| !name.trim().is_empty())
+            && matches!(
+                self.route.as_deref(),
+                Some("direct" | "parent" | "provider")
+            )
             && match &self.previous {
                 None => {
                     self.verification_name.is_none()
@@ -159,6 +231,7 @@ struct TlsObservation {
 struct TlsHistory {
     certificate: Option<TlsObservation>,
     negotiation: Option<TlsObservation>,
+    client_fingerprint: Option<Observation>,
 }
 
 pub(super) struct History {
@@ -178,24 +251,71 @@ impl Default for History {
 }
 
 impl History {
+    fn insert(&mut self, key: &Key, entry: TlsHistory) {
+        while self.entries.len() >= self.capacity {
+            let oldest = self.oldest.pop_front().expect("bounded history entry");
+            self.entries.remove(&oldest);
+        }
+        self.oldest.push_back(key.clone());
+        self.entries.insert(key.clone(), entry);
+    }
+
     fn destination(&mut self, key: &Key, current: Observation) -> Option<Evidence> {
         if self.entries.contains_key(key) {
             return None;
         }
-        while self.entries.len() >= self.capacity {
-            self.entries.remove(&self.oldest.pop_front()?);
-        }
-        self.oldest.push_back(key.clone());
-        self.entries.insert(key.clone(), TlsHistory::default());
+        self.insert(key, TlsHistory::default());
+        let (destination, route) = key.destination_and_route();
         Some(Evidence {
             history_scope: SCOPE.into(),
             history_capacity: self.capacity,
-            destination: key.destination.clone(),
-            route: key.route.into(),
+            destination,
+            route,
             verification_name: None,
             current,
             previous: None,
         })
+    }
+
+    fn client_fingerprint(
+        &mut self,
+        agent: &str,
+        hello: &ClientHello,
+        mut current: Observation,
+    ) -> Option<Evidence> {
+        if !hello.valid() {
+            return None;
+        }
+        current.client_fingerprint = Some(ClientFingerprint {
+            ja3: hello.ja3.clone(),
+            ja4: hello.ja4.clone(),
+        });
+        let key = Key::Client(agent.into());
+        let previous = match self.entries.get_mut(&key) {
+            Some(entry) => entry.client_fingerprint.replace(current.clone()),
+            None => {
+                self.insert(
+                    &key,
+                    TlsHistory {
+                        client_fingerprint: Some(current.clone()),
+                        ..TlsHistory::default()
+                    },
+                );
+                None
+            }
+        };
+        let evidence = Evidence {
+            history_scope: SCOPE.into(),
+            history_capacity: self.capacity,
+            destination: None,
+            route: None,
+            verification_name: None,
+            current,
+            previous,
+        };
+        evidence
+            .valid(Some(&evidence.current.connection_id))
+            .then_some(evidence)
     }
 
     fn certificate(
@@ -265,11 +385,12 @@ impl History {
         if previous.verification_name != verification_name {
             return None;
         }
+        let (destination, route) = key.destination_and_route();
         let evidence = Evidence {
             history_scope: SCOPE.into(),
             history_capacity: capacity,
-            destination: key.destination.clone(),
-            route: key.route.into(),
+            destination,
+            route,
             verification_name: Some(verification_name),
             current,
             previous: Some(previous.observation),
@@ -281,6 +402,54 @@ impl History {
 }
 
 impl ConnectionEvents {
+    pub(super) fn observe_client_fingerprint(
+        &self,
+        history: &mut History,
+        identity: &ConnectionIdentity,
+        hello: &ClientHello,
+        current: Observation,
+    ) {
+        let Some(agent) = identity.request_agent() else {
+            return;
+        };
+        let Some(evidence) = history.client_fingerprint(agent, hello, current) else {
+            return;
+        };
+        let change = evidence.previous.is_some();
+        security_indicators::emit(
+            self,
+            identity,
+            None,
+            None,
+            Indicator {
+                indicator_type: if change {
+                    "tls_client_fingerprint_change"
+                } else {
+                    "tls_client_fingerprint_novelty"
+                },
+                sensor: "connection-history.v1",
+                rule: if change {
+                    "tls.client_fingerprint_changed.v1"
+                } else {
+                    "tls.client_fingerprint_first_observation.v1"
+                },
+                confidence: 1.0,
+                severity: audit::Severity::Low,
+                summary: if change {
+                    "Client TLS fingerprint changed in bounded runtime history"
+                } else {
+                    "First client TLS fingerprint observation in bounded runtime history"
+                },
+                connection_id: Some(&evidence.current.connection_id),
+                direction: None,
+                evidence_hash: None,
+                content: None,
+                source: None,
+                novelty: Some(&evidence),
+            },
+        );
+    }
+
     pub(super) fn observe_destination(
         &self,
         history: &mut History,
@@ -292,7 +461,7 @@ impl ConnectionEvents {
         let (Some(agent), Some(destination)) = (identity.request_agent(), destination) else {
             return;
         };
-        let key = Key {
+        let key = Key::Destination {
             agent: agent.into(),
             destination: destination.authority.clone(),
             route: destination.route,
