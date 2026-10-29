@@ -352,6 +352,58 @@ fn novelty_links_are_typed_scoped_metadata_and_require_comparable_changes() {
 }
 
 #[test]
+fn negotiation_changes_require_two_measured_bounded_results() {
+    let mut row = record(indicator());
+    row["details"]["indicator_type"] = json!("tls_negotiation_change");
+    row["details"]["sensor"] = json!("connection-history.v1");
+    row["details"]["rule"] = json!("tls.origin_negotiation_changed.v1");
+    row["details"]["novelty"] = json!({
+        "history_scope":"runtime_fifo", "history_capacity":4096,
+        "destination":"origin.invalid:443", "route":"direct", "verification_name":"origin.invalid",
+        "current":{"connection_id":"S1","event_id":"observation-1",
+            "negotiation":{"version":"TLSv1_3","alpn":"http/1.1"}},
+        "previous":{"connection_id":"S0","event_id":"observation-0",
+            "negotiation":{"version":"TLSv1_3","alpn":null}},
+    });
+    assert!(
+        parse_record(&row.to_string()).is_ok(),
+        "observed no-ALPN differs from a negotiated protocol"
+    );
+    for (pointer, value) in [
+        ("/current/negotiation/version", Value::Null),
+        ("/current/negotiation/version", json!("")),
+        ("/current/negotiation/version", json!("x".repeat(1025))),
+        ("/current/negotiation/alpn", json!("x".repeat(1025))),
+        ("/current/negotiation/alpn", Value::Null),
+        ("/previous/negotiation", Value::Null),
+        ("/previous/event_id", json!("observation-1")),
+        ("/verification_name", Value::Null),
+        ("/previous", Value::Null),
+    ] {
+        let mut invalid = row.clone();
+        *invalid["details"]["novelty"].pointer_mut(pointer).unwrap() = value;
+        assert!(parse_record(&invalid.to_string()).is_err(), "{pointer}");
+    }
+    for observation in ["current", "previous"] {
+        let mut mixed = row.clone();
+        mixed["details"]["novelty"][observation]["cert_sha256"] = json!("a".repeat(64));
+        assert!(
+            parse_record(&mixed.to_string()).is_err(),
+            "certificate and negotiation evidence stay separate"
+        );
+        let mut unknown = row.clone();
+        unknown["details"]["novelty"][observation]["negotiation"]["body"] =
+            json!("private payload");
+        assert!(parse_record(&unknown.to_string()).is_err());
+    }
+    row["details"]["novelty"]["current"]["negotiation"] = json!({"version":"TLSv1_2","alpn":null});
+    assert!(
+        parse_record(&row.to_string()).is_ok(),
+        "a version change needs no ALPN protocol"
+    );
+}
+
+#[test]
 fn native_route_facts_keep_origin_and_physical_peer_distinct() {
     let mut upstream = record(connection("S1", true));
     upstream["details"]["client_connection_id"] = json!("C1");
