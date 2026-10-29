@@ -9,6 +9,7 @@ use tokio::{
 const WAIT: Duration = Duration::from_secs(5);
 fn identity() -> crate::ConnectionIdentity {
     crate::ConnectionIdentity {
+        ingress_binding: None,
         agent_id: "alice".into(),
         run: None,
         connection_id: "conn-local".into(),

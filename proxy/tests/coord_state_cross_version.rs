@@ -34,6 +34,7 @@ struct Reply {
 fn config(root: &Path) -> Config {
     Config {
         native_product: false,
+        ingress_bindings: vec![],
         native_settings: None,
         native_config_dir: None,
         native_config_path: None,

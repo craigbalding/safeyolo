@@ -248,6 +248,13 @@ See [policy configuration](installation.md#check-show-and-apply).
 
 ## Read traffic and save evidence
 
+For externally generated traffic, the source prototype can bind a named TCP
+HTTP proxy to an existing agent's policy and evidence partition. Configure and
+remove the binding on the host. Read its actual address and lifecycle from the
+proxy readiness file. Follow the [external-ingress procedure and limits](networking-vsock-uds.md#operator-bound-external-ingress-prototype).
+External provenance does not claim that the selected sandbox initiated the
+traffic. Existing capture and content-retention settings still apply.
+
 In inspect with an agent selected, `traffic` lists its HTTP exchanges, called
 flows. `traffic ~c 428` selects flows with response code 428. Copy a full flow
 `id` from the result and replace `FLOW_ID` before entering these inputs:

@@ -525,9 +525,10 @@ impl Recording {
             "request_id": self.request_id, "ts_start": ts_start, "ts_end": ts_end,
             "duration_ms": ts_end - ts_start, "engagement_id": agent, "agent_id": agent,
             "evidence_owner": evidence_owner, "trusted_transport_identity": trusted_transport_identity,
-            "initiator": "unknown", "attribution_status": attribution_status,
+            "initiator": attribution.initiator.map(audit::Initiator::as_str), "attribution_status": attribution_status,
             "attribution_provenance_json": python_json::encode(&provenance_json),
-            "source_id": self.identity.source_id.as_deref().unwrap_or("unknown"), "source_type": null,
+            "source_id": self.identity.ingress_binding.as_deref().or(self.identity.source_id.as_deref()).unwrap_or("unknown"),
+            "source_type": self.identity.ingress_binding.as_ref().map(|_| "external"),
             "flow_state": if success { "completed" } else { "error" },
             "status_code": record.head.as_ref().map(|head| head.status.as_u16()),
             "reason": if !success { record.error.as_deref().map(|v| v.to_string()) } else {

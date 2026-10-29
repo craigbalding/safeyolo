@@ -126,6 +126,14 @@ On Linux, a synthetic loopback address supplies attribution. It is not an
 external interface or a direct egress path. Existing explicit operator
 listeners keep their configured paths.
 
+An operator can also configure a named external TCP ingress for one existing
+listener's policy and evidence partition. The native proxy fixes that owner
+at accept and records external binding provenance. External bytes carry no
+sandbox run or source-slot authority. The operator chooses the TCP exposure;
+the ingress does not authenticate external clients. The existing operator-port
+shield prevents proxy egress from entering these listeners. See the
+[prototype's identity and lifecycle limits](docs/networking-vsock-uds.md#operator-bound-external-ingress-prototype).
+
 For a resolved service-gateway token, SafeYolo rejects a path spelling if
 service route normalization changes it. This includes dot segments, encoded
 separators, encoded unreserved characters, doubled slashes, and a trailing

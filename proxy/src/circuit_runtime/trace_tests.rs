@@ -41,6 +41,7 @@ fn context(store: &Arc<TraceStore>) -> Arc<RequestTrace> {
     let trace = Arc::new(RequestTrace::new(
         store.clone(),
         &ConnectionIdentity {
+            ingress_binding: None,
             run: None,
             agent_id: "alice".into(),
             connection_id: "owned-connection".into(),
@@ -271,6 +272,7 @@ fn trace_failure_and_opt_out_do_not_change_response_effects() {
         let trace = Arc::new(RequestTrace::new(
             runtime.traces.clone(),
             &ConnectionIdentity {
+                ingress_binding: None,
                 run: None,
                 agent_id: "alice".into(),
                 connection_id: "owned-connection".into(),
@@ -358,6 +360,7 @@ fn selected_source_hooks_match_decisions_and_retained_state() {
         let trace = Arc::new(RequestTrace::new(
             runtime.traces.clone(),
             &ConnectionIdentity {
+                ingress_binding: None,
                 run: None,
                 agent_id: "alice".into(),
                 connection_id: "owned-connection".into(),

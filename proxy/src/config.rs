@@ -104,6 +104,9 @@ pub struct Config {
     #[serde(default)]
     pub native_product: bool,
     pub listeners: Vec<AgentListener>,
+    /// Operator-owned TCP ingress into an existing listener's policy partition.
+    #[serde(default)]
+    pub ingress_bindings: Vec<crate::external_ingress::Binding>,
     /// Per-process state directory for credential HMAC and local Agent API
     /// material. The key itself is never part of Config serialization.
     pub data_dir: Option<PathBuf>,
@@ -334,6 +337,7 @@ impl Config {
                 return Err("listeners need an agent identity and a unique socket path".into());
             }
         }
+        crate::external_ingress::validate(self)?;
         for path in [&self.readiness_file]
             .into_iter()
             .chain(self.policy_file.iter())

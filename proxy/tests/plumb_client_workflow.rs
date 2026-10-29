@@ -33,6 +33,7 @@ fn config(root: &Path) -> Config {
     std::fs::write(root.join("policy.json"), r#"{"permissions":[]}"#).unwrap();
     Config {
         native_product: false,
+        ingress_bindings: vec![],
         native_settings: None,
         native_config_dir: None,
         native_config_path: None,
