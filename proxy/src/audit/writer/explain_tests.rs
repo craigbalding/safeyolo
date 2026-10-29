@@ -6,7 +6,7 @@ fn freshness_observation_failure_still_reads_retained_events() {
     let path = directory.path().join("audit.jsonl");
     fs::write(
         &path,
-        br#"{"request_id":"owned","agent":"alice","event":"available"}"#,
+        br#"{"schema_version":2,"ts":"2026-10-29T00:00:00Z","request_id":"owned","agent":"alice","event":"traffic.available","kind":"traffic","severity":"low","summary":"Available retained event","details":{}}"#,
     )
     .unwrap();
     let writer = Writer::new(path, Settings::default());

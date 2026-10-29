@@ -185,6 +185,7 @@ pub(super) fn exposures(
         let agent = trusted_agent(exposure);
         let scoped: Vec<_> = rows.iter().copied().filter(|(line, row)| {
             !conflicts.contains(line) && agent.is_some() && trusted_agent(row) == agent
+                && row["details"]["sandbox_run"] == exposure["details"]["sandbox_run"]
         }).collect();
         let usable = !conflicts.contains(line) && agent.is_some()
             && exposure["details"]["sensor"] == "prompt-injection.v1"
@@ -212,6 +213,7 @@ pub(super) fn exposures(
             && source_transport["status"] == "available" && model_transport["status"] == "available";
         let result = json!({
             "exposure_line":line,"event_id":exposure["event_id"],"request_id":exposure["request_id"],"agent":agent,
+            "sandbox_run":exposure["details"]["sandbox_run"],
             "status":if complete {"linked"} else if usable {"partial"} else {"unavailable"},
             "reason":if complete {"The exact prompt source indication, source/model flows and supporting connection-wide novelty evidence are linked."} else {"The retained exposure remains visible, but trusted attribution, exact source, flow, connection or novelty support is incomplete or unavailable. Absence is not a clean verdict."},
             "meaning":"Observed source text overlap and connection relationships do not prove malicious intent, request-level novelty, model receipt or causal compromise.",

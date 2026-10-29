@@ -19,6 +19,7 @@ pub(crate) struct Query<'a> {
     pub(crate) kind: &'a str,
     pub(crate) id: &'a str,
     pub(crate) agent: Option<&'a str>,
+    pub(crate) sandbox_run: Option<&'a str>,
     pub(crate) lines: usize,
 }
 
@@ -39,6 +40,7 @@ struct Link<'a> {
     instance_id: &'a str,
     runtime_id: &'a str,
     agent: Option<&'a str>,
+    sandbox_run: &'a Value,
     connection_id: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     request_id: Option<&'a str>,
@@ -54,7 +56,10 @@ struct Link<'a> {
 
 impl Link<'_> {
     fn matches(&self, row: &Value) -> bool {
-        if row["event"] != self.event || row["agent"].as_str() != self.agent {
+        if row["event"] != self.event
+            || row["agent"].as_str() != self.agent
+            || row["details"]["sandbox_run"] != *self.sandbox_run
+        {
             return false;
         }
         if self.event == "traffic.flow" {
@@ -97,6 +102,7 @@ fn links<'a>(line: RecordLine, row: &'a Value, query: &Query<'a>) -> Vec<Link<'a
                 instance_id: query.instance,
                 runtime_id: query.runtime,
                 agent: row["agent"].as_str(),
+                sandbox_run: &row["details"]["sandbox_run"],
                 connection_id,
                 request_id,
                 event_id,
@@ -180,6 +186,7 @@ fn links<'a>(line: RecordLine, row: &'a Value, query: &Query<'a>) -> Vec<Link<'a
             instance_id: query.instance,
             runtime_id: query.runtime,
             agent: row["agent"].as_str(),
+            sandbox_run: &details["sandbox_run"],
             connection_id: details["client_connection_id"]
                 .as_str()
                 .expect("validated scope"),
@@ -203,6 +210,11 @@ fn trusted_agent(row: &Value) -> Option<&str> {
         && attribution["trusted_transport_identity"] == agent
         && attribution["evidence_owner"] == agent)
         .then_some(agent)
+}
+
+fn sandbox_run_key(row: &Value) -> Option<(&str, &str)> {
+    let run = &row["details"]["sandbox_run"];
+    Some((run["agent_id"].as_str()?, run["run_id"].as_str()?))
 }
 
 fn direct_connections(row: &Value) -> impl Iterator<Item = &str> {
@@ -240,7 +252,7 @@ fn conflicting_lines(rows: &[&(RecordLine, Value)]) -> HashSet<RecordLine> {
                 .or_default()
                 .push((*line, canonical.to_string()));
         }
-        let details = &row["details"];
+        let details = &canonical["details"];
         let ownership = match row["event"].as_str() {
             Some("network.connection") => Some((
                 json!([
@@ -250,7 +262,11 @@ fn conflicting_lines(rows: &[&(RecordLine, Value)]) -> HashSet<RecordLine> {
                     row["agent"],
                     details["connection_id"]
                 ]),
-                json!([details["leg"], details["client_connection_id"]]),
+                json!([
+                    details["leg"],
+                    details["client_connection_id"],
+                    details["sandbox_run"]
+                ]),
             )),
             Some("traffic.flow") => Some((
                 json!([
@@ -262,7 +278,8 @@ fn conflicting_lines(rows: &[&(RecordLine, Value)]) -> HashSet<RecordLine> {
                 ]),
                 json!([
                     details["client_connection_id"],
-                    details["server_connection_id"]
+                    details["server_connection_id"],
+                    details["sandbox_run"]
                 ]),
             )),
             _ => None,
@@ -288,7 +305,10 @@ fn conflicting_lines(rows: &[&(RecordLine, Value)]) -> HashSet<RecordLine> {
                     .to_string(),
                 )
                 .or_default()
-                .push((*line, details["client_connection_id"].to_string()));
+                .push((
+                    *line,
+                    json!([details["client_connection_id"], details["sandbox_run"]]).to_string(),
+                ));
         }
     }
     groups
@@ -350,8 +370,8 @@ fn retained_rows(
     let mut seen = HashMap::new();
     for (index, tail) in tails.into_iter().enumerate() {
         for (line, row) in tail.rows {
-            // Historical rows stay readable in raw logs, never NSM choices.
-            if row["schema_version"] != super::nsm::SCHEMA_VERSION || !include(&row) {
+            // Unscoped control records never establish NSM relationships.
+            if !super::nsm::is_scoped(&row) || !include(&row) {
                 continue;
             }
             let line = if explicit {
@@ -391,6 +411,9 @@ pub(crate) fn read(
     explicit: bool,
     query: &Query<'_>,
 ) -> Result<Value, crate::Error> {
+    if query.sandbox_run.is_some_and(|id| id.trim().is_empty()) {
+        return Err("--sandbox-run requires a nonempty ID".into());
+    }
     if !matches!(query.kind, "connection" | "request")
         || [query.instance, query.runtime, query.id]
             .iter()
@@ -418,6 +441,16 @@ pub(crate) fn read(
         );
         search["conflicting_namespace_rows"] = json!(conflicts.len());
     }
+    // Detect conflicts before selection: choosing one claim cannot make an
+    // incompatible owner of the same namespace/local ID disappear.
+    let rows: Vec<_> = rows
+        .into_iter()
+        .filter(|(_, row)| {
+            query
+                .sandbox_run
+                .is_none_or(|id| row["details"]["sandbox_run"]["run_id"] == id)
+        })
+        .collect();
     let seeds: HashSet<_> = rows
         .iter()
         .filter(|(line, row)| {
@@ -443,7 +476,8 @@ pub(crate) fn read(
                     || trusted_agent(row).is_some())
         })
         .flat_map(|(_, row)| {
-            direct_connections(row).map(|connection| (row["agent"].as_str(), connection))
+            direct_connections(row)
+                .map(|connection| (row["agent"].as_str(), sandbox_run_key(row), connection))
         })
         .collect();
     let requests: HashSet<_> = rows
@@ -457,6 +491,7 @@ pub(crate) fn read(
         .map(|(_, row)| {
             (
                 trusted_agent(row),
+                sandbox_run_key(row),
                 row["request_id"].as_str(),
                 row["details"]["client_connection_id"].as_str(),
             )
@@ -471,15 +506,16 @@ pub(crate) fn read(
                     && trusted_agent(row).is_some()
                     && requests.contains(&(
                         trusted_agent(row),
+                        sandbox_run_key(row),
                         row["request_id"].as_str(),
                         row["details"]["client_connection_id"].as_str(),
                     )))
                 || (matches!(
                     row["event"].as_str(),
                     Some("network.connection" | "security.indicator")
-                ) && row["details"]["connection_id"]
-                    .as_str()
-                    .is_some_and(|id| connections.contains(&(row["agent"].as_str(), id))))
+                ) && row["details"]["connection_id"].as_str().is_some_and(|id| {
+                    connections.contains(&(row["agent"].as_str(), sandbox_run_key(row), id))
+                }))
         })
         .map(|(line, _)| *line)
         .collect();
@@ -519,7 +555,11 @@ pub(crate) fn read(
     }
     let correlations = correlation::exposures(&rows, &related, query, &conflicts, &mut included);
     let records: Vec<_> = rows.iter().filter(|(line, _)| included.contains(line)).map(|(line, row)| {
-        let mut entry = json!({"line":line,"selection":if related.contains(line) {"related"} else {"supporting"},"record":row});
+        let run_context = if sandbox_run_key(row).is_none() { "unavailable" }
+            else if conflicts.contains(line) { "conflicting" }
+            else if trusted_agent(row).is_some() { "recorded" } else { "unknown" };
+        let mut entry = json!({"line":line,"selection":if related.contains(line) {"related"} else {"supporting"},"record":row,
+            "sandbox_run":row["details"]["sandbox_run"],"run_context":run_context});
         if explicit {
             entry["locations"] = json!(copies[line]);
             entry["conflicting"] = json!(conflicts.contains(line));
@@ -527,7 +567,7 @@ pub(crate) fn read(
         entry
     }).collect();
     let mut result = json!({
-        "query":{"instance_id":query.instance,"runtime_id":query.runtime,"kind":query.kind,"id":query.id,"agent":query.agent},
+        "query":{"instance_id":query.instance,"runtime_id":query.runtime,"kind":query.kind,"id":query.id,"agent":query.agent,"sandbox_run_id":query.sandbox_run},
         "search":search,"records":records,"links":evidence,"correlations":correlations
     });
     if explicit {

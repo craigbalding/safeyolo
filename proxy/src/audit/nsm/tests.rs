@@ -87,14 +87,14 @@ fn writer_and_reader_preserve_namespace_and_many_to_one_correlation() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("audit.jsonl");
     let writer = Writer::new(path.clone(), Settings::default()).with_named_controls(true);
-    let mut old = Event::new(
+    let mut unscoped = Event::new(
         "traffic.request",
         Kind::Traffic,
         Severity::Low,
-        "Legacy request",
+        "Unscoped request",
     );
-    old.request_id = Some("F1".into());
-    writer.emit(old).unwrap();
+    unscoped.request_id = Some("F1".into());
+    writer.emit(unscoped).unwrap();
     for (instance, runtime) in [
         ("instance-a", "runtime-1"),
         ("instance-b", "runtime-1"),
@@ -110,7 +110,7 @@ fn writer_and_reader_preserve_namespace_and_many_to_one_correlation() {
             let mut details = event.details.json().unwrap();
             details["instance_id"] = json!(instance);
             details["runtime_id"] = json!(runtime);
-            // Untrusted compatibility fields cannot replace the trust snapshot.
+            // Untrusted payload fields cannot replace the trust snapshot.
             details["attribution"] = json!({"evidence_owner":"forged","initiator":"agent"});
             event.details = details.into();
             event.addon = Some("fixture".into());
@@ -123,7 +123,8 @@ fn writer_and_reader_preserve_namespace_and_many_to_one_correlation() {
         .lines()
         .map(|line| parse_record(line).unwrap())
         .collect();
-    assert_eq!(rows[0]["schema_version"], 1);
+    assert_eq!(rows[0]["schema_version"], 2);
+    assert!(!super::is_scoped(&rows[0]));
     let connections: HashSet<_> = rows
         .iter()
         .filter(|row| row["event"] == "network.connection")
@@ -258,11 +259,14 @@ fn strict_versions_kinds_payloads_and_content_boundaries() {
     assert!(parse_record(&changed.to_string()).is_err());
     let mut invalid_event = self::indicator();
     invalid_event.decision = Some(Decision::Deny);
-    // Preserve the existing diagnostic fallback, never stamp invalid data v2.
-    assert!(record(invalid_event).get("schema_version").is_none());
+    // Invalid source data becomes a distinct current diagnostic, never NSM evidence.
+    assert_eq!(
+        record(invalid_event)["event"],
+        "ops.audit_validation_failed"
+    );
     let mut wrong_kind = self::connection("C1", false);
     wrong_kind.kind = Kind::Traffic;
-    assert!(record(wrong_kind).get("schema_version").is_none());
+    assert_eq!(record(wrong_kind)["event"], "ops.audit_validation_failed");
 }
 
 #[test]
@@ -640,26 +644,6 @@ fn quiet_hosts_suppresses_verbose_transactions_but_not_sparse_connections() {
 }
 
 #[test]
-fn legacy_reader_results_and_unversioned_fallbacks_are_preserved() {
-    let source: Value =
-        serde_json::from_str(include_str!("../../../tests/audit_source.json")).unwrap();
-    for row in source["rows"].as_array().unwrap() {
-        let hex = row["line_hex"].as_str().unwrap();
-        let bytes: Vec<_> = (0..hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
-            .collect();
-        let line = std::str::from_utf8(&bytes).unwrap();
-        match serde_json::from_str::<Value>(line) {
-            Ok(legacy) => assert_eq!(parse_record(line).unwrap(), legacy, "{}", row["name"]),
-            // Keep the existing native reader's JSON nesting limit.
-            Err(_) => assert!(parse_record(line).is_err(), "{}", row["name"]),
-        }
-    }
-    assert!(parse_record("not json").is_err());
-}
-
-#[test]
 fn client_fingerprint_evidence_requires_measured_changes_and_excludes_other_scopes() {
     let mut row = record(indicator());
     row["details"]["novelty"] = json!({
@@ -848,7 +832,7 @@ fn client_destination_evidence_links_separate_client_and_attempt_without_mixing_
 }
 
 #[test]
-fn scoped_request_decisions_validate_without_upgrading_legacy_events() {
+fn current_request_decisions_require_their_explicit_scope_for_nsm() {
     for name in [
         "security.network_guard",
         "security.credential_guard",
@@ -890,12 +874,26 @@ fn scoped_request_decisions_validate_without_upgrading_legacy_events() {
                 json!({"connection_id":"C1", "approval_id":"unrelated-control-id"}).into();
             event
         };
-        assert_eq!(record(make())["schema_version"], 1);
+        let unscoped = record(make());
+        assert_eq!(unscoped["schema_version"], 2);
+        assert!(!super::is_scoped(&unscoped));
+        let run = crate::host_runs::AgentRun {
+            agent: "alice".into(),
+            agent_id: "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            run_id: "0123456789abcdef0123456789abcdef".into(),
+        };
         let mut event = make();
-        event.bind_request_scope("instance-a", "runtime-1", "C1");
+        event.bind_request_scope("instance-a", "runtime-1", "C1", Some(&run));
+        // Later producer details cannot replace the native owner's snapshot.
+        event.details = json!({"connection_id":"C1", "sandbox_run":{"run_id":"claimed"}}).into();
         let scoped = record(event);
         assert_eq!(scoped["schema_version"], 2);
         assert_eq!(scoped["details"]["client_connection_id"], "C1");
+        assert_eq!(scoped["details"]["sandbox_run"], json!(run));
+        let mut unavailable = make();
+        unavailable.details = json!({"connection_id":"C1", "sandbox_run":run}).into();
+        unavailable.bind_request_scope("instance-a", "runtime-1", "C1", None);
+        assert!(record(unavailable)["details"].get("sandbox_run").is_none());
         for native in [false, true] {
             let mut row = scoped.clone();
             if native {
@@ -913,6 +911,9 @@ fn scoped_request_decisions_validate_without_upgrading_legacy_events() {
                 "/details/runtime_id",
                 "/details/client_connection_id",
                 "/decision",
+                "/details/sandbox_run/agent",
+                "/details/sandbox_run/agent_id",
+                "/details/sandbox_run/run_id",
             ] {
                 for value in [Value::Null, json!(""), json!(5)] {
                     let mut bad = row.clone();
@@ -921,19 +922,18 @@ fn scoped_request_decisions_validate_without_upgrading_legacy_events() {
                 }
             }
             let mut unknown = row.clone();
-            unknown["event"] = json!("security.unrelated_control");
-            assert!(parse_record(&unknown.to_string()).is_err());
+            unknown["event"] = json!(format!(
+                "{}.unrelated_control",
+                row["kind"].as_str().unwrap()
+            ));
+            assert!(parse_record(&unknown.to_string()).is_ok());
+            assert!(!super::is_scoped(&unknown));
             let mut conflict = row.clone();
             conflict["details"]["connection_id"] = json!("another-client");
             if !gateway {
                 assert!(parse_record(&conflict.to_string()).is_err());
             }
         }
-        let mut legacy = scoped.clone();
-        legacy["schema_version"] = json!(1);
-        assert_eq!(parse_record(&legacy.to_string()).unwrap(), legacy);
-        legacy.as_object_mut().unwrap().remove("schema_version");
-        assert_eq!(parse_record(&legacy.to_string()).unwrap(), legacy);
     }
 }
 
@@ -949,7 +949,7 @@ fn scoped_guard_evaluations_keep_the_existing_outcome_and_policy_fields() {
         event.request_id = Some("F1".into());
         event.host = Some("origin.invalid".into());
         event.details = json!({"connection_id":"C1", "outcome":"allowed", "pdp":{"effect":"allow"}, "evaluations":[]}).into();
-        event.bind_request_scope("instance-a", "runtime-1", "C1");
+        event.bind_request_scope("instance-a", "runtime-1", "C1", None);
         let value = record(event);
         assert!(value.get("decision").is_none());
         for (pointer, bad) in [

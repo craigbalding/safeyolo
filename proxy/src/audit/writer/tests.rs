@@ -15,7 +15,7 @@ fn values(path: &Path) -> Vec<Value> {
     fs::read_to_string(path)
         .unwrap()
         .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
+        .map(|line| crate::audit::parse_record(line).unwrap())
         .collect()
 }
 

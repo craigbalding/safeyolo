@@ -174,7 +174,7 @@ fn check(row: &Value, phase: &str, authority: &str, host: &str, port: u16, elaps
         details["error"] = json!(error);
     }
     let expected = json!({
-        "schema_version":1,"ts":timestamp,"event":format!("traffic.passthrough_{phase}"),
+        "schema_version":2,"ts":timestamp,"event":format!("traffic.passthrough_{phase}"),
         "kind":"traffic","severity":severity,
         "summary":format!("TLS passthrough {verb} {authority}"),
         "agent":"alice","addon":"ignored-host-logger","host":host,"details":details

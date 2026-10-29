@@ -19,6 +19,12 @@ mod exposure;
 mod listing;
 #[path = "native_nsm_logs/offline.rs"]
 mod offline;
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+#[path = "support/owned_run.rs"]
+mod owned_run;
+#[path = "native_nsm_logs/sandbox_runs.rs"]
+mod sandbox_runs;
 mod test_owned_endpoint;
 
 async fn cli(root: &Path, args: &[&str]) -> std::process::Output {
@@ -144,7 +150,7 @@ fn pivot_args<'a>(kind: &'a str, id: &'a str) -> Vec<&'a str> {
 }
 
 #[tokio::test]
-async fn exact_links_preserve_sources_and_exclude_other_namespaces_agents_and_legacy_rows() {
+async fn exact_links_preserve_sources_and_exclude_other_namespaces_agents_and_unscoped_records() {
     let root = tempfile::tempdir().unwrap();
     configure(root.path());
     let original = fixture_rows();
@@ -164,11 +170,11 @@ async fn exact_links_preserve_sources_and_exclude_other_namespaces_agents_and_le
             rows.push(record);
         }
     }
-    rows.push(
-        json!({"event":"network.connection","request_id":"F1","agent":"alice",
-        "details":{"instance_id":"I1","runtime_id":"R1","connection_id":"S1"}}),
-    );
-    rows.push(json!({"schema_version":1,"event":"traffic.request","kind":"traffic","request_id":"F1","agent":"alice"}));
+    rows.push(row(
+        "traffic.request",
+        json!({"instance_id":"I1", "runtime_id":"R1",
+        "connection_id":"S1"}),
+    ));
     write_rows(root.path(), &rows);
     let bytes = fs::read(root.path().join("audit.jsonl")).unwrap();
     for (kind, id) in [
@@ -210,14 +216,7 @@ async fn exact_links_preserve_sources_and_exclude_other_namespaces_agents_and_le
             .as_array()
             .unwrap()
             .iter()
-            .any(|row| row.get("schema_version").is_none())
-    );
-    assert!(
-        logs["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["schema_version"] == 1)
+            .any(|row| row["event"] == "traffic.request")
     );
     assert_eq!(fs::read(root.path().join("audit.jsonl")).unwrap(), bytes);
 }

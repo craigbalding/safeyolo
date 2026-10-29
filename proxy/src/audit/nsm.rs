@@ -9,8 +9,6 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use super::{Error, ErrorKind, Result};
 
-pub(super) const SCHEMA_VERSION: i64 = 2;
-
 pub(super) fn is_event(name: &str) -> bool {
     matches!(
         name,
@@ -18,8 +16,7 @@ pub(super) fn is_event(name: &str) -> bool {
     )
 }
 
-/// Existing decision events opt into v2 only at scoped request publications.
-/// Their historical v1 representations remain ordinary, unscoped audit data.
+/// Decision events participate in NSM joins at scoped request publications.
 pub(super) fn is_request_decision(name: &str) -> bool {
     matches!(
         name,
@@ -34,6 +31,21 @@ pub(super) fn is_request_decision(name: &str) -> bool {
             | "gateway.https_redirect"
             | "gateway.http_injection_allowed"
     )
+}
+
+/// A partial scope must be validated, never treated as an unscoped decision.
+pub(super) fn is_scoped(record: &Value) -> bool {
+    let name = record["event"].as_str().unwrap_or_default();
+    is_event(name)
+        || (is_request_decision(name)
+            && [
+                "instance_id",
+                "runtime_id",
+                "client_connection_id",
+                "sandbox_run",
+            ]
+            .iter()
+            .any(|key| record["details"].get(key).is_some()))
 }
 
 fn request_decision_valid(record: &Value) -> bool {
@@ -239,39 +251,25 @@ pub(super) fn validate(record: &Value) -> Result<()> {
         }
         _ => return Err(invalid()),
     };
-    if record["kind"] != expected_kind
-        || record["ts"]
-            .as_str()
-            .is_none_or(|ts| OffsetDateTime::parse(ts, &Rfc3339).is_err())
-        || record.as_object().ok_or_else(invalid)?.keys().any(|key| {
-            !matches!(
-                key.as_str(),
-                "schema_version"
-                    | "event_id"
-                    | "ts"
-                    | "event"
-                    | "kind"
-                    | "severity"
-                    | "summary"
-                    | "request_id"
-                    | "agent"
-                    | "addon"
-                    | "control"
-                    | "decision"
-                    | "host"
-                    | "approval"
-                    | "details"
-            )
-        })
-    {
+    if record["kind"] != expected_kind {
         return Err(invalid());
     }
     let mut details = record["details"].as_object().ok_or_else(invalid)?.clone();
-    // Attribution has one authority and one wire location for both versions.
+    // Attribution has one authority and one wire location.
     if let Some(attribution) = details.remove("attribution")
         && !attribution.is_object()
     {
         return Err(invalid());
+    }
+    if let Some(run) = details.remove("sandbox_run").filter(|run| !run.is_null()) {
+        let run: crate::host_runs::AgentRun = decode(run)?;
+        if !required(&[&run.agent, &run.agent_id])
+            || record["agent"] != run.agent
+            || run.run_id.len() != 32
+            || !run.run_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(invalid());
+        }
     }
     let details = Value::Object(details);
     let valid = match name {

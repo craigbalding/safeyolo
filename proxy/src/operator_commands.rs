@@ -25,9 +25,9 @@ safeyolo [--root ROOT] approvals ask|context ID [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals delegations [--json]\nsafeyolo [--root ROOT] approvals delegation check|preview|apply|revoke NAME --file PROPOSAL.json [--json]\nsafeyolo [--root ROOT] approvals review --agent NAME
 safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
 safeyolo [--root ROOT] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] logs list [--instance ID] [--runtime ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] logs connection ID --instance ID --runtime ID [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] logs request ID --instance ID --runtime ID [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] logs list [--instance ID] [--runtime ID] [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] logs connection ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] logs request ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] observations [--instance ID] [--runtime ID] [--json]
 safeyolo [--root ROOT] diagnose [--agent NAME] [--json]
 safeyolo helper show ID|diagnostic ID|prepare ID --reason TEXT [--socket PATH] [--token-file FILE]
@@ -100,6 +100,7 @@ struct Options {
     lines: usize,
     instance: Option<String>,
     runtime: Option<String>,
+    sandbox_run: Option<String>,
     offset: u64,
     socket: Option<PathBuf>,
     token: Option<PathBuf>,
@@ -127,7 +128,7 @@ impl Options {
                 "--agent" | "--factory" | "--helper" | "--filter" | "--lines" | "--offset"
                 | "--socket" | "--token-file" | "--reason" | "--test" | "--intent" | "--role"
                 | "--expect" | "--option" | "--delegation" | "--file" | "--instance"
-                | "--runtime" => {
+                | "--runtime" | "--sandbox-run" => {
                     let value = args
                         .next()
                         .ok_or_else(|| format!("{arg} requires a value"))?;
@@ -139,6 +140,7 @@ impl Options {
                         "--lines" => options.lines = value.parse()?,
                         "--instance" => options.instance = Some(value.clone()),
                         "--runtime" => options.runtime = Some(value.clone()),
+                        "--sandbox-run" => options.sandbox_run = Some(value.clone()),
                         "--offset" => options.offset = value.parse()?,
                         "--socket" => options.socket = Some(value.into()),
                         "--token-file" => options.token = Some(value.into()),
@@ -865,6 +867,9 @@ async fn traffic(root: &Path, options: &Options) -> Result<Value, Error> {
 }
 
 fn logs(_root: &Path, options: &Options) -> Result<Value, Error> {
+    if options.positional.is_empty() && options.sandbox_run.is_some() {
+        return Err("--sandbox-run requires logs list, logs connection or logs request".into());
+    }
     let explicit = !options.files.is_empty();
     let paths = if explicit {
         options.files.clone()
@@ -893,6 +898,7 @@ fn logs(_root: &Path, options: &Options) -> Result<Value, Error> {
             options.instance.as_deref(),
             options.runtime.as_deref(),
             options.agent.as_deref(),
+            options.sandbox_run.as_deref(),
         ),
         [] if !explicit => {
             let rows: Vec<_> = tails
@@ -927,6 +933,7 @@ fn logs(_root: &Path, options: &Options) -> Result<Value, Error> {
                     kind,
                     id,
                     agent: options.agent.as_deref(),
+                    sandbox_run: options.sandbox_run.as_deref(),
                     lines: options.lines,
                 },
             )
@@ -976,6 +983,11 @@ fn show_log_listing(value: &Value) -> Result<(), Error> {
                 context_json(&group["agent"])?,
                 text(&group["context"])
             );
+            println!(
+                "Sandbox run: {} | Run context: {}",
+                context_json(&group["sandbox_run"])?,
+                text(&group["run_context"])
+            );
             for record in group["records"].as_array().into_iter().flatten() {
                 println!(
                     "  {} | Decision: {} | Event ID: {} | Time: {} | Locations: {}\n    {}",
@@ -1001,7 +1013,7 @@ fn show_log_listing(value: &Value) -> Result<(), Error> {
         }
     }
     println!(
-        "\nUse logs connection ID or logs request ID with the listed --instance ID --runtime ID, optional --agent NAME, and the same --file/--lines selection. IDs above use JSON escaping; decode escapes when supplying an argument."
+        "\nUse logs connection ID or logs request ID with the listed --instance ID --runtime ID, optional --agent NAME --sandbox-run RUN_ID, and the same --file/--lines selection. IDs above use JSON escaping; decode escapes when supplying an argument."
     );
     Ok(())
 }
@@ -1024,6 +1036,9 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
             .map(safe)
             .unwrap_or_else(|| "all".into())
     );
+    if let Some(run) = query["sandbox_run_id"].as_str() {
+        println!("Sandbox run selection: {}", safe(run));
+    }
     if let Some(inputs) = value["inputs"].as_array() {
         for input in inputs {
             println!("Input {}: {}", input["input"], safe(text(&input["file"])));
@@ -1066,6 +1081,11 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
     }
     for entry in value["records"].as_array().into_iter().flatten() {
         println!("\nLine {} ({}):", entry["line"], text(&entry["selection"]));
+        println!(
+            "Sandbox run: {} | Run context: {}",
+            context_json(&entry["sandbox_run"])?,
+            text(&entry["run_context"])
+        );
         // JSON escapes control characters and preserves original attribution,
         // timestamps, event IDs and evidence instead of rebuilding an event.
         if let Some(locations) = entry.get("locations") {

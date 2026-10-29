@@ -1,7 +1,7 @@
 //! Concrete request decisions use the existing producer, reader and CLI.
 use super::*;
 
-fn scoped_decision() -> Value {
+pub(super) fn scoped_decision() -> Value {
     let mut value = row(
         "security.credential_guard",
         json!({
@@ -194,7 +194,7 @@ pub(super) async fn assert_native_views(root: &Path, bytes: &[u8]) {
 async fn decision_joins_require_exact_scope_attribution_and_ownership() {
     let root = tempfile::tempdir().unwrap();
     configure(root.path());
-    for mutation in 0..12 {
+    for mutation in 0..11 {
         let mut decision = scoped_decision();
         let mut rows = support();
         match mutation {
@@ -202,21 +202,22 @@ async fn decision_joins_require_exact_scope_attribution_and_ownership() {
             1 => decision["details"]["instance_id"] = json!("foreign-instance"),
             2 => decision["details"]["runtime_id"] = json!("foreign-runtime"),
             3 => decision["agent"] = json!("foreign-agent"),
-            4 => decision["schema_version"] = json!(1),
-            5 => {
-                decision.as_object_mut().unwrap().remove("schema_version");
+            4 => {
+                for key in ["instance_id", "runtime_id", "client_connection_id"] {
+                    decision["details"].as_object_mut().unwrap().remove(key);
+                }
             }
-            6 => decision["details"]["attribution"]["attribution_status"] = json!("unavailable"),
-            7 => decision["details"]["attribution"]["evidence_owner"] = json!("foreign-agent"),
-            8 => {
+            5 => decision["details"]["attribution"]["attribution_status"] = json!("unavailable"),
+            6 => decision["details"]["attribution"]["evidence_owner"] = json!("foreign-agent"),
+            7 => {
                 rows.retain(|row| row["event"] != "traffic.flow");
             }
-            9 => {
+            8 => {
                 let mut conflict = decision.clone();
                 conflict["decision"] = json!("deny");
                 rows.push(conflict);
             }
-            10 => {
+            9 => {
                 let mut conflict = rows
                     .iter()
                     .find(|row| row["event"] == "traffic.flow")
@@ -225,7 +226,7 @@ async fn decision_joins_require_exact_scope_attribution_and_ownership() {
                 conflict["details"]["client_connection_id"] = json!("another-client");
                 rows.push(conflict);
             }
-            11 => {
+            10 => {
                 for row in &mut rows {
                     row["details"]["attribution"]["attribution_status"] = json!("conflict");
                 }
@@ -241,12 +242,12 @@ async fn decision_joins_require_exact_scope_attribution_and_ownership() {
             .iter()
             .filter(|link| link["event"] == "traffic.flow")
             .collect();
-        if (1..=5).contains(&mutation) {
+        if (1..=4).contains(&mutation) {
             assert!(links.is_empty(), "case {mutation}: {result}");
         } else {
             assert_eq!(
                 links.len(),
-                if mutation == 9 { 2 } else { 1 },
+                if mutation == 8 { 2 } else { 1 },
                 "case {mutation}"
             );
             assert!(

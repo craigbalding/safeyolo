@@ -11,6 +11,7 @@ fn references(line: RecordLine, row: &Value) -> Vec<Value> {
         kind: "connection",
         id: "",
         agent: row["agent"].as_str(),
+        sandbox_run: None,
         lines: 0,
     };
     let mut references = Vec::new();
@@ -38,6 +39,7 @@ fn references(line: RecordLine, row: &Value) -> Vec<Value> {
     references
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn read(
     paths: &[PathBuf],
     tails: Vec<super::super::reader::LocalTail>,
@@ -46,20 +48,21 @@ pub(crate) fn read(
     instance: Option<&str>,
     runtime: Option<&str>,
     agent: Option<&str>,
+    sandbox_run: Option<&str>,
 ) -> Result<Value, crate::Error> {
-    if [instance, runtime]
+    if [instance, runtime, sandbox_run]
         .into_iter()
         .flatten()
         .any(|id| id.trim().is_empty())
     {
-        return Err("logs list namespace filters require nonempty IDs".into());
+        return Err("logs list filters require nonempty IDs".into());
     }
     let (inputs, mut search) = search_window(paths, &tails, explicit, lines);
     search["non_nsm_rows"] = json!(
         tails
             .iter()
             .flat_map(|tail| &tail.rows)
-            .filter(|(_, row)| row["schema_version"] != super::super::nsm::SCHEMA_VERSION)
+            .filter(|(_, row)| !super::super::nsm::is_scoped(row))
             .count()
     );
     let retained = retained_rows(tails, explicit, true, |row| {
@@ -78,11 +81,14 @@ pub(crate) fn read(
     );
     search["conflicting_nsm_records"] = json!(conflicts.len());
     search["limits"] = json!(
-        "Retained evidence only, not live agents or sessions. Each input is validated to EOF; --lines retains the last selected-agent rows per input before namespace selection. Counts describe retained records and copies, not lifetime traffic. Equal parsed records share evidence; every retained location is preserved. Conflicting records and unknown attribution remain separate from resolved agent context. References name recorded keys, not verified relationships; use the scoped pivot to inspect support. Legacy rows remain available through raw logs. Unselected rotations, filtered/outside-window rows, queues and loss can omit evidence. Input order and timestamps do not establish global chronology. Selection and schema validation do not authenticate a producer. No content is fetched or input changed."
+        "Retained evidence only, not live agents or sessions. Each input is validated to EOF; --lines retains the last selected-agent rows per input before namespace selection. Counts describe retained records and copies, not lifetime traffic. Equal parsed records share evidence; every retained location is preserved. Conflicting records and unknown attribution remain separate from resolved agent context. References name recorded keys, not verified relationships; use the scoped pivot to inspect support. Unscoped control records remain available through ordinary logs. Unselected rotations, filtered/outside-window rows, queues and loss can omit evidence. Input order and timestamps do not establish global chronology. Selection and schema validation do not authenticate a producer. No content is fetched or input changed."
     );
     // Separate attribution classes even when their envelope agent names match.
     let mut namespaces = BTreeMap::new();
     for (line, row) in &retained.records {
+        if sandbox_run.is_some_and(|id| row["details"]["sandbox_run"]["run_id"] != id) {
+            continue;
+        }
         let context = if conflicts.contains(line) {
             "conflicting"
         } else if trusted_agent(row).is_some() {
@@ -97,7 +103,7 @@ pub(crate) fn read(
             ))
             .or_insert_with(BTreeMap::new);
         let records = groups
-            .entry((row["agent"].as_str(), context))
+            .entry((row["agent"].as_str(), context, sandbox_run_key(row)))
             .or_insert_with(Vec::new);
         let mut entry = json!({
             "line":line,"locations":retained.copies[line],"event":row["event"],
@@ -119,13 +125,17 @@ pub(crate) fn read(
     let namespaces: Vec<_> = namespaces
         .into_iter()
         .map(|((instance, runtime), groups)| {
-            let agents: Vec<_> = groups.into_iter().map(|((agent, context), records)|
-            json!({"agent":agent,"context":context,"records":records})).collect();
+            let agents: Vec<_> = groups.into_iter().map(|((agent, context, run), records)| {
+                let sandbox_run = run.map(|(agent_id, run_id)| json!({"agent":agent,"agent_id":agent_id,"run_id":run_id}));
+                let run_context = if sandbox_run.is_none() { "unavailable" }
+                    else if context == "resolved_agent" { "recorded" } else { context };
+                json!({"agent":agent,"context":context,"sandbox_run":sandbox_run,"run_context":run_context,"records":records})
+            }).collect();
             json!({"instance_id":instance,"runtime_id":runtime,"agents":agents})
         })
         .collect();
     Ok(json!({
-        "selection":{"instance_id":instance,"runtime_id":runtime,"agent":agent},
+        "selection":{"instance_id":instance,"runtime_id":runtime,"agent":agent,"sandbox_run_id":sandbox_run},
         "inputs":inputs,"search":search,"namespaces":namespaces
     }))
 }

@@ -81,7 +81,12 @@ impl ConnectionEvents {
     /// Add scope without submitting: the caller retains its ordinary or
     /// confirmed audit write and pending-approval binding.
     pub(crate) fn bind_request(&self, identity: &ConnectionIdentity, event: &mut audit::Event) {
-        event.bind_request_scope(&self.instance_id, &self.runtime_id, &identity.connection_id);
+        event.bind_request_scope(
+            &self.instance_id,
+            &self.runtime_id,
+            &identity.connection_id,
+            identity.run.as_ref(),
+        );
         event.agent = identity.request_agent().map(str::to_owned);
         event.attribution = Some(identity.audit_attribution());
     }
@@ -94,6 +99,15 @@ impl ConnectionEvents {
     ) {
         details["instance_id"] = json!(self.instance_id);
         details["runtime_id"] = json!(self.runtime_id);
+        // Historical provenance is the accepted ingress snapshot. A late close
+        // still belongs to it, even after current-run authority has expired.
+        details
+            .as_object_mut()
+            .expect("NSM details")
+            .remove("sandbox_run");
+        if let Some(run) = &identity.run {
+            details["sandbox_run"] = json!(run);
+        }
         event.agent = identity.request_agent().map(str::to_owned);
         event.attribution = Some(identity.audit_attribution());
         event.details = details.into();

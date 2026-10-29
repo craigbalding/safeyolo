@@ -13,60 +13,32 @@ sensor. The connection history sensor adds destination, measured origin Internet
 Protocol (IP) address, client-fingerprint and upstream TLS change clues under
 issue #581.
 
-## Version and reader compatibility
+## Current audit contract
 
-The three NSM events use `schema_version: 2`. The new `network` kind is valid
-only in version 2. Event prefixes must still match their kind. A producer cannot
-label one of these three NSM contracts as version 1 to avoid validation.
-The bounded request-path decision events described below also use version 2
-when explicitly bound by the native connection owner. Their historical version 1
-and unversioned forms remain readable and unscoped. Other existing events keep
-version 1 and their existing wire representation.
+All native audit families use `schema_version: 2`: security, gateway, traffic,
+operations, admin, agent, plumb, Coord and network events. This number identifies
+an audit format generation, not a SafeYolo product release. Event prefixes match
+their kind. A current control event does not become scoped NSM evidence merely
+because it uses the same envelope generation.
 
-Producers use the existing `audit::Event` and `audit::Writer`. The writer selects
-the version from the event name, kind and explicit request binding, and validates the scoped fields before
-queueing. Invalid input follows the existing audit validation failure path:
-a diagnostic and an unversioned minimal fallback. The fallback is not a valid
-NSM record and cannot establish a correlation relationship.
+Producers use `audit::Event` and `audit::Writer`. Coord's transactional audit
+outbox uses the same current envelope. Scoped connection, flow, indicator and
+request-decision publications also validate their NSM fields before queueing.
+An unscoped decision remains an ordinary audit record. A partial request scope
+fails validation; missing namespace or run context is never invented.
 
-The native `audit::parse_record` reader accepts historical version 1 records
-and validates version 2 records. The `safeyolo logs` command uses this reader.
-Unknown schema versions and invalid version 2 contracts fail explicitly; the
-raw log remains inspectable. Historical unversioned JSON, including writer
-fallbacks, remains readable without being promoted to a validated schema.
-Strict version 1 consumers reject version 2. Upgrade those consumers before
-using NSM data; do not reinterpret `network.connection` as a traffic event.
-The historical Python test reference is not the native product reader.
+If a producer cannot construct an event, the writer emits a current
+`ops.audit_validation_failed` diagnostic. Its `details` contain only the failed
+publication's event name, kind and summary. The diagnostic preserves the
+publication's severity and records its own timestamp. It carries no request
+scope, approval, attribution or original payload. It cannot establish an NSM
+relationship. A file-write failure retains the existing categorical diagnostic
+and stderr event output; it does not establish successful retained publication.
 
-The #583 producer adds optional route, origin-peer, owning-client and Server
-Name Indication (SNI) fields, plus `transport: stream`. A strict reader built against the earlier
-version 2 field list must update before reading these producer records.
-The current reader still accepts earlier version 2 payloads that omit the
-new fields.
-
-Issue #584 adds optional `tls_client_hello` and `tls_sessions` fields and the
-`updated` connection state. Earlier strict version 2 readers need these additions.
-The current reader continues to accept earlier records that omit TLS metadata.
-
-The destination/TLS history sensor adds optional `novelty` evidence to indicators.
-Earlier strict version 2 readers need this field before reading the new records.
-The current reader continues to accept indicators that omit it.
-Negotiation-change records add the optional `negotiation` object inside each
-novelty observation. Earlier strict readers need this addition; the current
-reader still accepts certificate and destination observations that omit it.
-Client-fingerprint records add optional `client_fingerprint` observations and
-omit destination and route fields. Earlier strict readers need these additions;
-the current reader still accepts the earlier destination/TLS evidence.
-Origin key/IP reuse records add optional `origin_ip` to each supporting
-observation. Earlier strict readers need this addition; the current reader
-continues to accept observations that omit it.
-First origin-IP observations use `origin_ip` without certificate hashes and omit
-destination and route fields. Earlier readers that require certificate evidence
-with every origin IP must update. The current reader still requires full
-certificate evidence for origin key/IP reuse records.
-Client/destination pairing records add optional `client` evidence inside
-`novelty`. Earlier strict readers need this addition; the current reader
-continues to accept observations that omit it.
+The native `audit::parse_record` reader and `safeyolo logs` validate the current
+envelope and the applicable scoped contract. Earlier generations, unversioned
+JSON and invalid current records fail explicitly. The selected-file bytes remain
+unchanged. The reader does not migrate or reinterpret them.
 
 All NSM payload fields below are in `details`, except `request_id`, which
 uses the existing envelope field. Existing `ts`, `event_id`, `severity`,
@@ -114,7 +86,7 @@ co-location in a file do not establish traffic relationships.
 A denial may have no upstream flow or connection. The view retains the decision
 and available ingress evidence; missing flow support is `unavailable`. Conflicting
 event copies, request/client owners or attribution cannot establish a decision
-link. Version 1 and unversioned events never acquire scope from a matching ID.
+link. Unscoped events never acquire scope from a matching ID.
 Missing, filtered, outside-window, queued or lost events leave policy and
 credential handling unknown. Schema validation does not authenticate the
 producer or operator-selected inputs.
@@ -122,8 +94,7 @@ producer or operator-selected inputs.
 An indication, policy decision, credential handling event and observed traffic
 are different evidence. An allow or injection event does not prove upstream
 delivery, model receipt, malicious intent or compromise. This binding adds no
-credential policy, content retention or enforcement decision. Older strict
-version 2 readers must update to accept these additional event contracts.
+credential policy, content retention or enforcement decision.
 
 ## Correlation and trusted attribution
 
@@ -142,14 +113,31 @@ is unavailable or invalid, the proxy reports that diagnostic and omits NSM
 records rather than claiming a different installed identity. Ordinary traffic
 and audit behavior continue.
 
+When existing host-run authority is available at Unix domain socket (UDS)
+accept, the connection owner retains `sandbox_run` with `agent`, `agent_id` and
+`run_id`. These are the host-owned agent name, immutable agent identity and
+sandbox generation bound to that ingress. The run ID has 32 hexadecimal
+characters. The name must match the envelope agent; the agent identity must be
+nonempty. The optional object accepts only those three fields. Absent or null
+bindings mean run-unavailable, including standalone traffic and ingress without
+host-run authority.
+Schema checks establish representation and consistency, not producer identity.
+
+The snapshot is carried through connection lifecycle, flow, indicator and
+scoped request-decision publications. It is never read from HTTP headers or
+reconstructed from mutable host files when displaying retained records.
+Closing or late events keep their original ingress run after that generation
+stops or is replaced. Historical provenance does not renew current authority;
+the existing stale-run request check remains in force. A sandbox run is distinct
+from the proxy runtime, host launch/terminal and coding task. It establishes
+neither executable/process attribution nor current liveness.
+
 The connection key is `(instance_id, runtime_id, connection_id)`. Connection
 IDs must identify real transport ownership and be unique across both legs
 within that namespace. The transaction key is
 `(instance_id, runtime_id, request_id)`. Local IDs may repeat in another
 instance or runtime. Every reference in one record uses that record's namespace.
 Never join records across instances or restarts using only a local ID.
-Legacy version 1 records without this namespace need trusted source context
-before a collector can join them to NSM records.
 
 The live `safeyolo observations` view identifies the same observation-owner
 namespace. Use `--instance ID --runtime ID` to check whether a retained
@@ -161,13 +149,19 @@ totals. See the [live measurement workflow](operator-guide.md#read-current-obser
 The local operator can start with `logs list` to discover retained namespaces,
 agent context and concrete connection/request/indicator references without
 reading raw JSON. Optional `--instance`, `--runtime` and `--agent` filters narrow
-that listing. Entries preserve physical source locations and distinguish
-recorded resolved agent context from unknown attribution and conflicting
+that listing. Run groups expose the exact `sandbox_run` object and `run_context`:
+`recorded`, `unavailable`, `unknown` or `conflicting`. Optional `--sandbox-run ID`
+selects recorded run IDs in the listing and scoped pivots. It never matches an
+absent binding. Run selection follows conflict detection, so selecting one claim
+cannot hide an incompatible owner of the same local ID. Namespace counts still
+describe the retained namespace before run selection. Entries preserve physical
+source locations and distinguish recorded resolved agent context from unknown attribution and conflicting
 records. A name alone does not establish trusted attribution. References name
 retained keys, not verified relationships or live sessions. The listing
 collapses equal parsed records in configured and selected-file modes, preserves
 all retained locations, and reports retained distinct-record/copy counts.
-Historical rows stay readable through raw logs without becoming NSM choices.
+Unscoped current records remain visible through ordinary logs without becoming
+NSM choices.
 
 The operator can use `logs connection ID` or `logs request ID` with
 `--instance ID --runtime ID` to inspect these relationships. See the
@@ -193,8 +187,14 @@ with consistent owners remain distinct records. Input order and wall timestamps
 do not establish a global chronological order.
 
 Both ends of a cross-file join must agree on instance/runtime, agent and the
-recorded reference fields. Historical and version 1 records remain readable,
-but are not promoted to trusted version 2 joins. The reader validates every row
+recorded reference fields. They must also have the same complete `sandbox_run`
+binding, or both lack one. Missing context is never filled from a matching
+agent, request or connection ID. Different run claims for one connection or
+request owner are conflicts, even when a run selector excludes one claim.
+Source and novelty references into another run remain visible but cannot
+complete that run's supporting links or transport correlations. Run-unavailable
+records retain their namespace and local-ID relationships and remain explicitly
+unavailable for run selection. The reader validates every row
 to end of file. If any selected file is malformed, unsupported or unreadable,
 the command fails with an input-number diagnostic and no partial output.
 Windows apply before namespace selection, and no additional output limit hides
@@ -210,7 +210,7 @@ File-mode links with conflicting support identify `conflicting_record_lines`;
 matching candidate records remain visible without establishing availability.
 Novelty links match both connection ID and exact source event ID. Prompt source
 links match the recorded request ID, connection ID and evidence hash of a
-response indication. Neither a coincident local ID nor a legacy row can
+response indication. A coincident local ID or an unscoped record cannot
 establish availability. Agent filtering also applies to supporting records.
 The original records are returned unchanged inside `records[].record`.
 Rotation, drops, queued writes, an unavailable file and the selected window
@@ -259,7 +259,7 @@ by this explanation, and no new audit event is emitted.
 Reuse `audit::Attribution`. Its wire location remains `details.attribution`:
 `evidence_owner`, `trusted_transport_identity`, `initiator`,
 `attribution_status`, and `attribution_provenance`. The writer's attribution
-argument takes precedence over compatibility fields in `details`.
+argument supplies these fields; payload claims in `details` are removed first.
 Do not duplicate these fields in the NSM payload or obtain them from headers.
 For an agent Unix domain socket (UDS), reuse the accepted listener identity.
 For an upstream connection, reuse the owning client's trusted attribution
@@ -424,7 +424,7 @@ Each `tls_sessions` entry contains `peer`, `sni`, `version`, `cipher`, `alpn`,
 absent values remain null. SNI is absent for IP verification names. DNS names
 omit the trailing root dot, as rustls encodes them. A parent session and an
 origin session remain separate entries, even though the
-compatibility `tls_server_name` field names the latest completed session.
+`tls_server_name` field names the latest completed session.
 The leaf entry contains `cert_sha256` over the full certificate DER and
 `spki_sha256` over the DER-encoded SubjectPublicKeyInfo (SPKI). A renewed
 certificate can change the certificate hash while retaining the same SPKI hash.
@@ -542,10 +542,8 @@ Issue #585 adds optional `content_type`, `inspected_bytes`, and
 `prefix_truncated` metadata. `content_type` is a nonempty media type of at most
 128 bytes. `inspected_bytes` is an unsigned byte count. `prefix_truncated` is a
 Boolean that reports whether inspection omitted a suffix. The byte count and
-truncation flag require `evidence_hash`. Earlier strict version 2 readers need
-these optional fields and the optional `source` link below before reading the
-new sensor records. The current
-reader still accepts earlier records that omit them.
+truncation flag require `evidence_hash`. The optional `source` link below names
+recorded supporting evidence.
 
 ### Destination and upstream TLS history
 

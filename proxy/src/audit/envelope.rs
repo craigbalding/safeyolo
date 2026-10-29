@@ -68,6 +68,7 @@ struct RequestScope {
     instance_id: String,
     runtime_id: String,
     client_connection_id: String,
+    sandbox_run: Option<crate::host_runs::AgentRun>,
 }
 
 impl Event {
@@ -96,18 +97,25 @@ impl Event {
         }
     }
 
-    pub(crate) fn bind_request_scope(&mut self, instance: &str, runtime: &str, client: &str) {
+    pub(crate) fn bind_request_scope(
+        &mut self,
+        instance: &str,
+        runtime: &str,
+        client: &str,
+        sandbox_run: Option<&crate::host_runs::AgentRun>,
+    ) {
         self.request_scope = Some(RequestScope {
             instance_id: instance.into(),
             runtime_id: runtime.into(),
             client_connection_id: client.into(),
+            sandbox_run: sandbox_run.cloned(),
         });
         self.event_id
             .get_or_insert_with(|| uuid::Uuid::new_v4().to_string());
     }
 
-    /// A concrete producer has reached a source envelope type error. Retain
-    /// only the same five fallback fields through the normal writer path.
+    /// A concrete producer could not construct its event. Publish a current
+    /// diagnostic without its payload, request scope or attribution.
     pub fn validation_fallback(
         event: impl Into<String>,
         kind: Kind,
@@ -119,8 +127,7 @@ impl Event {
         event
     }
 
-    /// Match utils.write_event: invalid envelope fields yield its minimal
-    /// unvalidated fallback, not a rejected request or fabricated attribution.
+    /// Invalid event fields produce a diagnostic through the same writer.
     pub(super) fn record(self, now: OffsetDateTime) -> Record {
         match self.envelope(now) {
             Ok(value) => Record(value),
@@ -130,11 +137,23 @@ impl Event {
                     "[safeyolo] audit event validation failed"
                 );
                 Record(CircuitValue::Object(IndexMap::from([
-                    ("ts".into(), text(timestamp(now, false))),
-                    ("event".into(), text(self.event.clone())),
-                    ("kind".into(), text(self.kind.as_str())),
+                    (
+                        "schema_version".into(),
+                        CircuitValue::Integer(super::SCHEMA_VERSION.into()),
+                    ),
+                    ("ts".into(), text(timestamp(now))),
+                    ("event".into(), text("ops.audit_validation_failed")),
+                    ("kind".into(), text("ops")),
                     ("severity".into(), text(self.severity.as_str())),
-                    ("summary".into(), text(self.summary.clone())),
+                    ("summary".into(), text("Audit event validation failed")),
+                    (
+                        "details".into(),
+                        CircuitValue::Object(IndexMap::from([
+                            ("event".into(), text(self.event.clone())),
+                            ("kind".into(), text(self.kind.as_str())),
+                            ("summary".into(), text(self.summary.clone())),
+                        ])),
+                    ),
                 ])))
             }
         }
@@ -153,20 +172,12 @@ impl Event {
             return Err(invalid());
         }
         let mut fields = IndexMap::new();
-        let version = if self.request_scope.is_some()
-            || self.kind == Kind::Network
-            || super::nsm::is_event(&self.event)
-        {
-            super::nsm::SCHEMA_VERSION
-        } else {
-            1
-        };
         fields.insert(
             "schema_version".into(),
-            CircuitValue::Integer(version.into()),
+            CircuitValue::Integer(super::SCHEMA_VERSION.into()),
         );
         optional(&mut fields, "event_id", self.event_id.as_deref());
-        fields.insert("ts".into(), text(timestamp(now, true)));
+        fields.insert("ts".into(), text(timestamp(now)));
         fields.insert("event".into(), text(&self.event));
         fields.insert("kind".into(), text(self.kind.as_str()));
         fields.insert("severity".into(), text(self.severity.as_str()));
@@ -197,8 +208,8 @@ impl Event {
         } else {
             IndexMap::new()
         };
-        // write_event supplies each top-level attribution argument, even None.
-        // The schema removes corresponding compatibility nested inputs first.
+        // Only the producer's explicit attribution fields may supply ownership.
+        // Remove claims from its payload before applying that trusted snapshot.
         if let Some(CircuitValue::Object(nested)) = details.get_mut("attribution") {
             for name in [
                 "evidence_owner",
@@ -257,10 +268,19 @@ impl Event {
                 "client_connection_id".into(),
                 text(&scope.client_connection_id),
             );
+            details.shift_remove("sandbox_run");
+            if let Some(run) = &scope.sandbox_run {
+                details.insert("sandbox_run".into(), serde_json::json!(run).into());
+            }
         }
         fields.insert("details".into(), CircuitValue::Object(details));
         let value = CircuitValue::Object(fields);
-        if version == super::nsm::SCHEMA_VERSION {
+        if self.request_scope.is_some()
+            || self.kind == Kind::Network
+            || super::nsm::is_event(&self.event)
+            || (super::nsm::is_request_decision(&self.event)
+                && super::nsm::is_scoped(&value.json().map_err(|_| invalid())?))
+        {
             super::nsm::validate(&value.json().map_err(|_| invalid())?)?;
         }
         Ok(value)
@@ -390,7 +410,7 @@ fn text(value: impl Into<String>) -> CircuitValue {
     CircuitValue::Other(Value::String(value.into()))
 }
 
-fn timestamp(now: OffsetDateTime, model: bool) -> String {
+fn timestamp(now: OffsetDateTime) -> String {
     let mut text = format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
         now.year(),
@@ -404,7 +424,7 @@ fn timestamp(now: OffsetDateTime, model: bool) -> String {
         text.push_str(&format!(".{:06}", now.microsecond()));
     }
     let offset = now.offset().whole_seconds();
-    if offset == 0 && model {
+    if offset == 0 {
         text.push('Z');
     } else {
         text.push_str(&format!(
@@ -413,9 +433,6 @@ fn timestamp(now: OffsetDateTime, model: bool) -> String {
             offset.abs() / 3600,
             offset.abs() / 60 % 60
         ));
-        if !model && offset.abs() % 60 != 0 {
-            text.push_str(&format!(":{:02}", offset.abs() % 60));
-        }
     }
     text
 }

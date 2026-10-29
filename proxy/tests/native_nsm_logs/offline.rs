@@ -402,6 +402,8 @@ async fn any_bad_selected_input_aborts_without_echoing_paths_content_or_secrets(
     for bytes in [
         b"PRIVATE_DATA\n".to_vec(),
         b"{\"schema_version\":99,\"secret\":\"PRIVATE_DATA\"}\n".to_vec(),
+        br#"{"schema_version":1,"ts":"2026-10-29T00:00:00Z","event":"ops.fixture","kind":"ops","severity":"low","summary":"PRIVATE_DATA","details":{}}"#.to_vec(),
+        br#"{"ts":"2026-10-29T00:00:00Z","event":"ops.fixture","kind":"ops","severity":"low","summary":"PRIVATE_DATA","details":{}}"#.to_vec(),
         vec![0xff, b'\n'],
     ] {
         fs::write(&b, bytes).unwrap();
@@ -489,24 +491,64 @@ async fn any_bad_selected_input_aborts_without_echoing_paths_content_or_secrets(
 }
 
 #[tokio::test]
-async fn historical_rows_remain_inspectable_offline_without_becoming_nsm_support() {
+async fn current_control_records_and_validation_diagnostics_do_not_supply_nsm_support() {
+    use safeyolo_proxy::audit::{Event, Kind, Settings, Severity, Writer};
     let root = tempfile::tempdir().unwrap();
-    let a = root.path().join("history.jsonl");
+    let a = root.path().join("controls.jsonl");
     let b = root.path().join("exposure.jsonl");
     let rows = correlation_rows();
-    let mut legacy = rows[4].clone();
-    legacy.as_object_mut().unwrap().remove("schema_version");
-    let historical =
-        json!({"schema_version":1,"event":"traffic.request","kind":"traffic","request_id":"F0"});
-    let bytes = save(&a, &[legacy.clone(), historical.clone()]);
+    let writer = Writer::new(a.clone(), Settings::default());
+    for (name, kind) in [
+        ("traffic.request", Kind::Traffic),
+        ("ops.fixture", Kind::Ops),
+    ] {
+        let mut event = Event::new(name, kind, Severity::Low, "Unscoped control");
+        event.agent = Some("alice".into());
+        event.request_id = Some("F0".into());
+        // Even matching reference text cannot make another family NSM evidence.
+        event.details = rows[4]["details"].clone().into();
+        writer.emit(event).unwrap();
+    }
+    let mut invalid = Event::validation_fallback(
+        "network.connection",
+        Kind::Network,
+        Severity::Medium,
+        "Invalid producer input",
+    );
+    invalid.agent = Some("alice".into());
+    invalid.request_id = Some("F0".into());
+    invalid.details = rows[4]["details"].clone().into();
+    writer.emit(invalid).unwrap();
+    assert!(writer.shutdown(Duration::from_secs(2)).unwrap());
+    let bytes = fs::read(&a).unwrap();
     save(&b, &rows[11..]);
     let raw = success(
         root.path(),
         &["logs", "--file", a.to_str().unwrap(), "--json"],
     )
     .await;
-    assert_eq!(raw["inputs"][0]["events"][0]["record"], legacy);
-    assert_eq!(raw["inputs"][0]["events"][1]["record"], historical);
+    let events = raw["inputs"][0]["events"].as_array().unwrap();
+    assert_eq!(events.len(), 3);
+    assert!(
+        events
+            .iter()
+            .all(|entry| entry["record"]["schema_version"] == 2)
+    );
+    let diagnostic = &events[2]["record"];
+    assert_eq!(diagnostic["event"], "ops.audit_validation_failed");
+    assert_eq!(
+        diagnostic["details"],
+        json!({"event":"network.connection", "kind":"network", "summary":"Invalid producer input"})
+    );
+    assert!(diagnostic.get("agent").is_none());
+    assert!(diagnostic.get("request_id").is_none());
+    let listing = success(
+        root.path(),
+        &["logs", "list", "--file", a.to_str().unwrap(), "--json"],
+    )
+    .await;
+    assert!(listing["namespaces"].as_array().unwrap().is_empty());
+    assert_eq!(listing["search"]["non_nsm_rows"], 3);
     let result = pivot(root.path(), &[&a, &b], "request", "F1", &[]).await;
     assert_eq!(only_correlation(&result)["source"]["status"], "unavailable");
     assert_eq!(result["records"].as_array().unwrap().len(), 1);

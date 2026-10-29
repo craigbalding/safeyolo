@@ -139,7 +139,7 @@ fn drained(proxy: &Proxy, directory: &Path) -> Vec<Value> {
             )
         })
         .filter(|row| {
-            assert_eq!(row["schema_version"], 1);
+            assert_eq!(row["schema_version"], 2);
             !(row["addon"] == "memory-monitor" && row["event"] == "ops.memory.conn_closed")
         })
         .filter(|row| {
@@ -163,7 +163,7 @@ fn names(rows: &[Value]) -> Vec<&str> {
         .collect()
 }
 fn canonical(row: &Value, expected: &str, decision: Option<&str>) {
-    assert_eq!(row["schema_version"], 1);
+    assert_eq!(row["schema_version"], 2);
     assert_eq!(row["event"], expected);
     assert_eq!(row["kind"], "security");
     assert_eq!(

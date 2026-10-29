@@ -153,10 +153,10 @@ async fn namespaces_agent_context_and_recorded_references_are_discoverable() {
         .remove("connection_id");
     standalone["event_id"] = json!("standalone-indicator");
     rows.push(standalone);
-    rows.push(
-        json!({"event":"network.connection", "agent":"alice", "details":{
-        "instance_id":"I3", "runtime_id":"R3", "connection_id":"LEGACY"}}),
-    );
+    rows.push(row(
+        "ops.fixture",
+        json!({"instance_id":"I3", "runtime_id":"R3", "connection_id":"UNSCOPED"}),
+    ));
     write_rows(root.path(), &rows);
     let bytes = fs::read(root.path().join("audit.jsonl")).unwrap();
     let result = list(root.path(), &[], &[]).await;
@@ -237,7 +237,7 @@ async fn namespaces_agent_context_and_recorded_references_are_discoverable() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|row| row["details"]["connection_id"] == "LEGACY")
+            .any(|row| row["details"]["connection_id"] == "UNSCOPED")
     );
     assert_eq!(fs::read(root.path().join("audit.jsonl")).unwrap(), bytes);
 }
@@ -396,6 +396,8 @@ async fn invalid_selected_inputs_fail_listing_without_partial_output() {
         b"{SECRET".as_slice(),
         b"\xff\n",
         b"{\"schema_version\":99,\"SECRET\":true}\n",
+        br#"{"schema_version":1,"ts":"2026-10-29T00:00:00Z","event":"ops.fixture","kind":"ops","severity":"low","summary":"SECRET","details":{}}"#,
+        br#"{"ts":"2026-10-29T00:00:00Z","event":"ops.fixture","kind":"ops","severity":"low","summary":"SECRET","details":{}}"#,
     ] {
         fs::write(&path, bytes).unwrap();
         let output = cli(

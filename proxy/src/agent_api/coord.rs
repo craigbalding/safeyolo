@@ -1708,7 +1708,7 @@ fn advance_over_retention_gap(
             .format(&Rfc3339)
             .map_err(|_| CoordError::Data)?;
         let payload = json!({
-            "schema_version": 1,
+            "schema_version": crate::audit::SCHEMA_VERSION,
             "event_id": event_id.clone(),
             "ts": timestamp,
             "event": "coord.attention_projection_lost",
@@ -4472,6 +4472,40 @@ mod tests {
             )
             .unwrap();
         assert_eq!(frontier, 1);
+    }
+
+    #[test]
+    fn retention_gap_stages_a_current_audit_record_with_the_recorded_loss() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("v0.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(include_str!("../coord_schema.sql"))
+            .unwrap();
+        conn.execute_batch(
+            "PRAGMA user_version=5; INSERT INTO rooms VALUES('rm-owned','owned',0);
+            INSERT INTO coord_message_attention_projection VALUES('rm-owned',0,0);",
+        )
+        .unwrap();
+        assert!(matches!(
+            advance_over_retention_gap(&db, "rm-owned", 0, 4).unwrap(),
+            GapAdvance::Advanced {
+                frontier: 3,
+                lost_last: 3
+            }
+        ));
+        let payload: String = conn
+            .query_row(
+                "SELECT payload_json FROM coord_outbox WHERE destination='audit-jsonl'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let record = crate::audit::parse_record(&payload).unwrap();
+        assert_eq!(record["schema_version"], 2);
+        assert_eq!(record["event"], "coord.attention_projection_lost");
+        assert_eq!(record["details"]["from_sequence"], 1);
+        assert_eq!(record["details"]["to_sequence"], 3);
+        assert!(record.get("agent").is_none());
     }
 
     #[test]

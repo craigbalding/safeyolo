@@ -96,7 +96,7 @@ fn assert_policy_reload(row: &Value) {
     assert_eq!(
         event,
         json!({
-            "schema_version":1,"event":"ops.policy_reload","kind":"ops",
+            "schema_version":2,"event":"ops.policy_reload","kind":"ops",
             "severity":"medium","summary":"Baseline policy reloaded: 0 permissions",
             "addon":"policy-loader","details":{"policy_type":"baseline","permissions_count":0}
         })

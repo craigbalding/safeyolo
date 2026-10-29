@@ -189,7 +189,7 @@ fn check_event(
 ) {
     let timestamp = row["ts"].as_str().unwrap();
     time::OffsetDateTime::parse(timestamp, &time::format_description::well_known::Rfc3339).unwrap();
-    let mut expected = json!({"schema_version":1,"ts":timestamp,
+    let mut expected = json!({"schema_version":2,"ts":timestamp,
         "event":if response {"traffic.response"} else {"traffic.request"},
         "kind":"traffic","severity":"low",
         "summary":format!("{} {host}{path}",if response {"200"} else {"POST"})});
@@ -1491,7 +1491,7 @@ async fn network_security_events_precede_traffic_and_use_trusted_uds_identity() 
                     _ => "high",
                 }
             );
-            assert_eq!(security["schema_version"], 1);
+            assert_eq!(security["schema_version"], 2);
             if mode == "prompt" {
                 let key: Value =
                     serde_json::from_str(security["approval"]["key"].as_str().unwrap()).unwrap();

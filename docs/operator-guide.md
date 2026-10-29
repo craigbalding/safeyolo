@@ -360,6 +360,37 @@ safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --a
 safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --lines 1000 --json
 ```
 
+To distinguish successive supervised sandbox runs of the same agent, read the
+listing's `sandbox_run` and `run_context`. A `recorded` binding contains the
+host-owned agent name, agent identity and sandbox run ID captured at ingress.
+Replace `RUN_ID` below with that exact `sandbox_run.run_id`, and use the same
+namespace, agent and window as the listing:
+
+```sh
+safeyolo logs list --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --sandbox-run RUN_ID --lines 1000 --json
+safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --sandbox-run RUN_ID --lines 1000
+safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --sandbox-run RUN_ID --lines 1000 --json
+```
+
+The same `--sandbox-run` option works with repeated offline `--file` inputs.
+Without this option, pivots keep their existing selection and distinguish each
+record's run context. Run selection never matches missing context or borrows
+support from another run with reused local IDs. Conflict detection precedes run
+selection. Namespace counts describe the searched namespace before run selection.
+Source or novelty references into another run remain inspectable with unavailable
+support. `unavailable` includes standalone traffic and ingress without host-run
+authority. `unknown` attribution and `conflicting` claims remain separate from
+recorded context. Run-unavailable records can still support their existing
+run-unavailable relationships.
+
+A retained run can be stopped or replaced while its evidence remains readable.
+Late connection events retain the original ingress binding. This is historical
+provenance, not a liveness check or renewed permission. A sandbox run ID is not
+the proxy runtime ID, host launch/terminal ID or coding task. The view does not
+identify an executable or process. Request claims, filenames and current host
+files cannot supply missing historical run context. File/schema validation does
+not authenticate these claims.
+
 To inspect admission or credential handling, select the request reference from a
 scoped `security.network_guard`, guard evaluation, `security.credential_guard`
 or gateway entry. The request pivot shows the original decision or evaluation
@@ -375,9 +406,9 @@ recorded client connection. Guard evaluations show their existing `outcome`,
 may have only ingress evidence and no upstream flow. Read an unavailable link
 as missing support in this search. An allow or credential-injection event does
 not establish upstream delivery, model receipt or compromise. Approval IDs are
-not traffic join keys. Historical unscoped events cannot acquire scope from a
+not traffic join keys. Unscoped events cannot acquire scope from a
 matching request ID. See the [scoped request contract](nsm-events.md#scoped-request-decisions)
-for supported events and compatibility limits.
+for supported events and evidence limits.
 
 For offline inspection on a machine with the native `safeyolo` CLI, copy retained
 native audit JSONL files from your owned instances through your existing trusted
@@ -394,9 +425,10 @@ safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --a
 safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --file instance-a.jsonl --file instance-a-earlier.jsonl --lines 1000 --json
 ```
 
-The listing groups records by instance/runtime, envelope agent name and recorded
-attribution. `resolved_agent` requires resolved attribution whose evidence owner
-and trusted transport identity both match that agent. `unknown` includes missing,
+The listing groups records by instance/runtime, envelope agent name, recorded
+attribution and sandbox run binding. `resolved_agent` requires resolved
+attribution whose evidence owner and trusted transport identity both match
+that agent. `unknown` includes missing,
 unavailable or inconsistent attribution, even when an agent name is present.
 `conflicting` identifies incompatible event copies or transport/request owners.
 These groups stay separate. Selecting `--agent` filters recorded names; it does
@@ -418,9 +450,9 @@ namespace selection. Increase `--lines` to search a larger retained window.
 Input reports show rows read, retained physical line ranges and selected-agent
 rows omitted by the window. Listing counts describe retained distinct NSM
 records, duplicate copies and conflicts, not lifetime traffic. Non-NSM retained
-rows are counted as input copies and excluded from discovery. Legacy and
-unversioned records remain readable with plain `logs --json`; they cannot create
-NSM namespace or agent choices. An empty listing means no matching NSM evidence
+rows are counted as input copies and excluded from discovery. Ordinary control
+records and `ops.audit_validation_failed` diagnostics remain visible with plain
+`logs --json`; they cannot create NSM namespace, agent or run choices. An empty listing means no matching NSM evidence
 in the searched window, not that no agent or traffic existed.
 
 Repeat `--file` for each selected input, including files from several instances.
@@ -477,9 +509,10 @@ text reuse can produce the underlying prompt signals. See the
 [correlation meaning and limits](nsm-events.md) for the exact join rules.
 
 Both namespace options are required. Local IDs from another instance or restart
-cannot join. `--agent` filters rows before links are resolved. Historical
-unversioned and version 1 rows remain readable with ordinary `logs`, but cannot
-supply either side of an NSM link.
+cannot join. `--agent` filters rows before links are resolved. All current audit
+families use `schema_version: 2`. Earlier generations, unversioned JSON and
+invalid current records fail explicitly. Unscoped current records cannot supply
+either side of an NSM link. No selected input is migrated or changed.
 
 For pivots, `--lines` retains the last selected-agent rows before namespace and
 pivot selection; its default is 100 **per input file**. Total retention is at most
