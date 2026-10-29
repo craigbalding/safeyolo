@@ -590,6 +590,7 @@ mod tests {
         ObservationSource::new(
             bus.clone(),
             &crate::ConnectionIdentity {
+                ingress_binding: None,
                 agent_id: "owned".into(),
                 connection_id: "ingress".into(),
                 source_id: None,

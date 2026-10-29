@@ -54,6 +54,7 @@ impl Layer {
 #[serde(rename_all = "snake_case")]
 pub enum Point {
     AgentUds,
+    ExternalIngress,
     Upstream,
     ClientTls,
     ParentTls,

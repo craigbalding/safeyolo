@@ -145,6 +145,26 @@ impl ConnectionEvents {
         connection
     }
 
+    pub(crate) fn tcp_ingress(
+        self: &Arc<Self>,
+        identity: &ConnectionIdentity,
+        local: Option<SocketAddr>,
+        remote: Option<SocketAddr>,
+    ) -> Connection {
+        let connection = self.connection(
+            identity,
+            &identity.connection_id,
+            "client_to_proxy",
+            "tcp",
+            None,
+            None,
+            None,
+            None,
+        );
+        connection.connected(local.map(ip_endpoint), remote.map(ip_endpoint), None);
+        connection
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn upstream(
         self: &Arc<Self>,
@@ -190,7 +210,7 @@ impl ConnectionEvents {
             "started_at":timestamp(started), "ended_at":null, "state":"open",
             "local_endpoint":null, "remote_endpoint":null,
             "requested_target":target, "resolved_peer":null,
-            "resolved_origin_peer":null, "route":route, "ingress":"agent-uds",
+            "resolved_origin_peer":null, "route":route, "ingress":identity.ingress(),
         });
         if leg == "proxy_to_upstream" {
             details["client_connection_id"] = json!(identity.connection_id);
@@ -200,7 +220,11 @@ impl ConnectionEvents {
             identity,
             id,
             if leg == "client_to_proxy" {
-                crate::observations::Point::AgentUds
+                if identity.ingress_binding.is_some() {
+                    crate::observations::Point::ExternalIngress
+                } else {
+                    crate::observations::Point::AgentUds
+                }
             } else {
                 crate::observations::Point::Upstream
             },

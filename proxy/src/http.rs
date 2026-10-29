@@ -1121,10 +1121,6 @@ async fn open_egress_for_flow(
     });
     #[cfg(test)]
     wait_test_dial_barrier(&destination.host, destination.port).await;
-    let protect_addresses = runtime.admin_shield.protects_port(port)
-        || runtime
-            .admin_address
-            .is_some_and(|bound| bound.port() == port);
     let mut recorded = false;
     let connecting: Result<TcpStream, Error> = resolve_and_connect_egress(
         phase_timeout,
@@ -1140,6 +1136,12 @@ async fn open_egress_for_flow(
         },
         |address| async move { TcpStream::connect(address).await.map_err(Into::into) },
         |address| {
+            // Reload can add an ingress while DNS is pending. Consult the
+            // shared endpoint set when checking each resolved address.
+            let protect_addresses = runtime.admin_shield.protects_port(port)
+                || runtime
+                    .admin_address
+                    .is_some_and(|bound| bound.port() == port);
             !(protect_addresses
                 && (runtime.admin_shield.blocks_address(address)
                     || runtime.admin_address.is_some_and(|bound| {
@@ -4938,8 +4940,12 @@ pub(crate) fn serve_request(
             let source = connection.source();
             // Plain CONNECT replays a prefix from the outer HTTP connection;
             // its new parser offsets cannot identify that older stream range.
-            let parser_offsets_match_source =
-                !(tunnel.is_some() && source.point == crate::observations::Point::AgentUds);
+            let parser_offsets_match_source = !(tunnel.is_some()
+                && matches!(
+                    source.point,
+                    crate::observations::Point::AgentUds
+                        | crate::observations::Point::ExternalIngress
+                ));
             let byte_range = request
                 .extensions()
                 .get::<hyper::ext::RequestByteRange>()

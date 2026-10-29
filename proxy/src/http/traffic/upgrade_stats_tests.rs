@@ -744,9 +744,13 @@ async fn dropping_listener_stops_its_unpolled_task() {
     let listener = crate::RunningListener::start(
         socket,
         path,
-        "alice".into(),
-        None,
+        crate::AgentListener {
+            agent_id: "alice".into(),
+            socket_path: directory.path().join("alice.sock"),
+            source_id: None,
+        },
         std::sync::Arc::new(std::sync::RwLock::new(runtime.clone())),
+        std::sync::Arc::default(),
     );
     let task = listener.task.abort_handle();
     // Directly dropping the listener closes its stop channel. The task must

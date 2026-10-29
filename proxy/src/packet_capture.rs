@@ -331,7 +331,7 @@ impl Drop for Receiver {
 
 pub(crate) struct Capture {
     bus: Weak<ObservationBus>,
-    pub(crate) tcp_endpoint: Option<crate::admin_shield::CaptureEndpoint>,
+    pub(crate) tcp_endpoint: Option<crate::admin_shield::BoundTcpEndpoint>,
     session: Session,
     pub(crate) settings: Settings,
     sinks: Mutex<Vec<Weak<SinkQueue>>>,
@@ -741,37 +741,12 @@ fn report(counters: &crate::observations::Counters, kind: Sink, reason: &'static
 
 pub(crate) struct BoundTcp {
     listener: tokio::net::TcpListener,
-    pub(crate) endpoint: crate::admin_shield::CaptureEndpoint,
+    pub(crate) endpoint: crate::admin_shield::BoundTcpEndpoint,
 }
 impl BoundTcp {
     fn new(listener: tokio::net::TcpListener) -> std::io::Result<Self> {
-        use std::os::fd::AsRawFd;
-        let address = listener.local_addr()?;
-        let mut ipv6_only: libc::c_int = 0;
-        if address.is_ipv6() {
-            let mut length = std::mem::size_of_val(&ipv6_only) as libc::socklen_t;
-            // SAFETY: the socket and the writable option buffer remain valid
-            // for the call. Retain the OS setting, not an assumed platform default.
-            if unsafe {
-                libc::getsockopt(
-                    listener.as_raw_fd(),
-                    libc::IPPROTO_IPV6,
-                    libc::IPV6_V6ONLY,
-                    (&mut ipv6_only as *mut libc::c_int).cast(),
-                    &mut length,
-                )
-            } != 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
-        }
-        Ok(Self {
-            listener,
-            endpoint: crate::admin_shield::CaptureEndpoint {
-                address,
-                ipv6_only: ipv6_only != 0,
-            },
-        })
+        let endpoint = crate::admin_shield::BoundTcpEndpoint::new(&listener)?;
+        Ok(Self { listener, endpoint })
     }
 }
 pub(crate) async fn bind_tcp(config: &mut crate::Config) -> Option<Result<BoundTcp, ()>> {

@@ -51,6 +51,12 @@ pub(super) fn begin<B>(
         headers,
         started: crate::circuit_runtime::now(),
     });
+    if identity.ingress_binding.is_some() {
+        exchange.metadata(&serde_json::Map::from_iter([
+            ("ingress".into(), serde_json::json!(identity.ingress())),
+            ("initiator".into(), serde_json::json!("external")),
+        ]));
+    }
     // Capture the parser-owned request line before forwarding rewrites the
     // request URI and protocol for the upstream leg.
     exchange.request_line(

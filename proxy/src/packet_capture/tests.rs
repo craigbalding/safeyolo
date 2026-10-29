@@ -963,7 +963,7 @@ async fn a_gap_crossing_a_new_sink_starts_at_that_sessions_first_sequence() {
 #[test]
 fn capture_endpoint_shield_covers_mapped_addresses_without_claiming_other_hosts() {
     let mut shield = crate::admin_shield::AdminShield::new(9090, "").unwrap();
-    let endpoint = |address: &str| crate::admin_shield::CaptureEndpoint {
+    let endpoint = |address: &str| crate::admin_shield::BoundTcpEndpoint {
         address: address.parse().unwrap(),
         ipv6_only: false,
     };
