@@ -109,7 +109,7 @@ the file, physical line range, rows read and omitted rows. It displays all
 related records and one level of recorded supporting links within that window.
 Request pivots include their connections and those connections' indications;
 connection indications can describe other requests on the same transport.
-These are recorded relationships, not a new correlation verdict.
+These are recorded relationships, not a verdict about an agent.
 
 Each link reports `available` with matching file lines, or `unavailable`.
 Novelty links match both connection ID and exact source event ID. Prompt source
@@ -121,6 +121,44 @@ Rotation, drops, queued writes, an unavailable file and the selected window
 limit the evidence; missing evidence is not proof of absence. Rotated files
 and FlowStore bodies are not read by this view. The view makes no additional
 retention or completeness guarantee.
+
+For retained `prompt_injection_exposure` records, the view also derives
+`correlations[]`. Each explanation names its exposure line/event ID and exact
+source indication lines. The source must match the recorded request, client
+connection, response direction, host and evidence hash. All participating records
+must share the selected instance/runtime and resolved trusted agent attribution;
+omitting `--agent` does not permit cross-agent joins.
+
+`source_transport` and `model_transport` distinguish the fetched response's
+transport from the authenticated model request's transport. Each uses that
+request's retained `traffic.flow`, its client connection, and its upstream
+connection with the matching client owner. Conflicting flow ownership cannot
+establish a transport relationship. Connection lifecycle snapshots are listed
+together rather than multiplied into combinations. Each companion novelty entry
+names its client/server connection role, original indicator line/event ID,
+exact current/previous/client observation links, availability and reason. Only a
+current observation on that transport establishes the relationship; a previous
+observation alone does not. The view consumes the recorded novelty indication
+without running the detector again.
+
+A correlation is `linked` when its source indication and both transports are
+available, at least one companion novelty indication has complete support, and
+all listed novelty support is available. It is `partial` when the recognized,
+trusted exposure lacks part of that evidence. It is `unavailable` when the
+exposure lacks resolved trusted attribution or the recognized exposure
+sensor/rule/direction. The original exposure remains visible in every case.
+Per-source, transport and novelty statuses explain which evidence is missing.
+No available novelty in the searched window means unavailable evidence, not a
+clean verdict.
+
+This is a read-only connection relationship, not request-level novelty. A
+connection-wide indication can predate or serve multiple requests, including
+both the source and model exchange. Quoted instructions and legitimate text
+reuse can produce the underlying prompt indications. Even a `linked` result
+does not prove malicious intent, model receipt, instruction following or causal
+compromise. The exposure sensor's [bounded visibility](#initial-network-to-model-exposure-signal)
+and the reader's window/loss limits still apply. No content is fetched or stored
+by this explanation, and no new audit event is emitted.
 
 Reuse `audit::Attribution`. Its wire location remains `details.attribution`:
 `evidence_owner`, `trusted_transport_identity`, `initiator`,

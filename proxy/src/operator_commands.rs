@@ -42,7 +42,7 @@ Gateway route approval defaults to once; --option selects an offered lifetime. S
 Reject records a refusal without adding a policy deny rule. Terminal decisions cannot grant again.
 Helper uses its Agent API token (default /app/agent_token) and the existing guest proxy route.
 If evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable.
-Logs pivots search the last --lines selected-agent rows (default 100) of the configured local audit file only. Instance and runtime are required; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.";
+Logs pivots search the last --lines selected-agent rows (default 100) of the configured local audit file only. Instance and runtime are required; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Prompt exposure correlations explain exact source and source/model transport novelty support, including partial or unavailable evidence. These are connection-wide relationships, not proof of malicious intent or model receipt. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.";
 
 pub fn handles(args: &[String]) -> bool {
     args.first().is_some_and(|arg| {
@@ -918,6 +918,14 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
         search["lines_read"]
     );
     println!("{}", text(&search["limits"]));
+    for correlation in value["correlations"].as_array().into_iter().flatten() {
+        println!(
+            "\nPrompt exposure correlation from line {} ({}):",
+            correlation["exposure_line"],
+            text(&correlation["status"])
+        );
+        print_json(correlation)?;
+    }
     for entry in value["records"].as_array().into_iter().flatten() {
         println!("\nLine {} ({}):", entry["line"], text(&entry["selection"]));
         // JSON escapes control characters and preserves original attribution,

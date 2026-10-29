@@ -323,6 +323,27 @@ ID and evidence hash. Copy a linked connection or request ID into the same
 command to continue. Supporting links are followed once; the command does not
 recursively traverse history or infer a correlation verdict.
 
+When investigating a `prompt_injection_exposure` indication, use its envelope
+`request_id` in `logs request` as above. Both ordinary and JSON output include
+the same prompt exposure correlation:
+
+1. Inspect `source.record_lines` for the exact response indication named by
+   the exposure's source request, connection, direction, host and hash.
+2. Follow `source_transport` and `model_transport` to their flow and connection
+   lines. These labels distinguish the fetched source from the authenticated
+   model request. Each novelty entry identifies the client or server connection
+   it concerns, its original indicator, exact supporting event links and reason.
+3. Read the overall `linked`, `partial` or `unavailable` status together with
+   the individual support statuses. Increase `--lines` if required evidence is
+   outside the current window. The original exposure remains visible when
+   support is missing; no available novelty is not a clean verdict.
+
+Connection-wide novelty can predate or serve several requests, including both
+exchanges. The correlation does not claim novelty unique to this request,
+malicious intent, model receipt or causal compromise. Legitimate quotation or
+text reuse can produce the underlying prompt signals. See the
+[correlation meaning and limits](nsm-events.md) for the exact join rules.
+
 Both namespace options are required. Local IDs from another instance or restart
 cannot join. `--agent` filters rows before links are resolved. Historical
 unversioned and version 1 rows remain readable with ordinary `logs`, but cannot

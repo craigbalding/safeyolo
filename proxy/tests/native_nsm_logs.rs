@@ -9,6 +9,10 @@ use tokio::{
     time::timeout,
 };
 
+#[path = "native_nsm_logs/correlation.rs"]
+mod correlation;
+#[path = "native_nsm_logs/exposure.rs"]
+mod exposure;
 mod test_owned_endpoint;
 
 async fn cli(root: &Path, args: &[&str]) -> std::process::Output {

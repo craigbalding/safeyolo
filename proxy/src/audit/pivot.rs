@@ -5,6 +5,8 @@ use std::{collections::HashSet, path::Path};
 use serde::Serialize;
 use serde_json::{Value, json};
 
+mod correlation;
+
 pub(crate) struct Query<'a> {
     pub(crate) instance: &'a str,
     pub(crate) runtime: &'a str,
@@ -21,6 +23,7 @@ struct Link<'a> {
     event: &'static str,
     instance_id: &'a str,
     runtime_id: &'a str,
+    agent: Option<&'a str>,
     connection_id: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     request_id: Option<&'a str>,
@@ -34,7 +37,10 @@ struct Link<'a> {
 
 impl Link<'_> {
     fn matches(&self, row: &Value) -> bool {
-        if row["event"] != self.event || row["details"]["connection_id"] != self.connection_id {
+        if row["event"] != self.event
+            || row["details"]["connection_id"] != self.connection_id
+            || row["agent"].as_str() != self.agent
+        {
             return false;
         }
         if self.event_id.is_some_and(|id| row["event_id"] != id) {
@@ -69,6 +75,7 @@ fn links<'a>(line: usize, row: &'a Value, query: &Query<'a>) -> Vec<Link<'a>> {
                 },
                 instance_id: query.instance,
                 runtime_id: query.runtime,
+                agent: row["agent"].as_str(),
                 connection_id,
                 request_id,
                 event_id,
@@ -220,6 +227,7 @@ pub(crate) fn read(path: &Path, query: &Query<'_>) -> Result<Value, crate::Error
             evidence.push(link);
         }
     }
+    let correlations = correlation::exposures(&rows, &related, query, &mut included);
     let records: Vec<_> = rows.iter().filter(|(line, _)| included.contains(line))
         .map(|(line, row)| json!({"line":line,"selection":if related.contains(line) {"related"} else {"supporting"},"record":row}))
         .collect();
@@ -233,6 +241,6 @@ pub(crate) fn read(path: &Path, query: &Query<'_>) -> Result<Value, crate::Error
             "files":"configured_file_only", "output_limited":false,
             "limits":"Only the retained window of the opened local audit file was searched. Rotated files are not searched. Queued, dropped, rotated-away, outside-window or agent-filtered evidence may be unavailable. No event is reconstructed; absence is not proof that nothing occurred. Supporting links are followed once; retained bodies require the existing traffic commands."
         },
-        "records":records,"links":evidence
+        "records":records,"links":evidence,"correlations":correlations
     }))
 }
