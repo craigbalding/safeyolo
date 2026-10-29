@@ -1652,6 +1652,9 @@ async fn decide(
             crate::policy::current_time_ms(),
             |intent| {
                 let mut event = intent.event(identity.audit_attribution());
+                if let Some(events) = &runtime.connection_events {
+                    events.bind_request(identity, &mut event);
+                }
                 crate::approvals::network_action::bind(&mut event, policy);
                 if let crate::circuits::CircuitValue::Object(fields) = &mut event.details
                     && let Some(action) = fields
@@ -1732,7 +1735,7 @@ async fn decide(
         }
         // Keep guard evaluation metadata without copying canonical audit intents.
         // URL queries and application bytes stay excluded.
-        runtime.audit.emit(identity.request_event(
+        let mut event = identity.request_event(
             "security.network_guard.evaluated",
             crate::audit::Kind::Security,
             request.request_id,
@@ -1750,7 +1753,11 @@ async fn decide(
             "approval_id": (outcome.kind == OutcomeKind::Allowed).then(||
                 policy.network_approval(identity.request_agent(), request.host, request.port)).flatten()
             }),
-        ))?;
+        );
+        if let Some(events) = &runtime.connection_events {
+            events.bind_request(identity, &mut event);
+        }
+        runtime.audit.emit(event)?;
         let allow = outcome.kind != OutcomeKind::Blocked;
         let (status, headers, body) = match outcome.response {
             Some(response) => {
@@ -2284,9 +2291,11 @@ fn publish_gateway_evidence(
     evidence: &crate::credential_injection::Evidence,
 ) -> Result<(), Error> {
     for intent in &evidence.audit {
-        runtime
-            .audit
-            .emit(intent.event(identity.audit_attribution()))?;
+        let mut event = intent.event(identity.audit_attribution());
+        if let Some(events) = &runtime.connection_events {
+            events.bind_request(identity, &mut event);
+        }
+        runtime.audit.emit(event)?;
     }
     runtime.audit.emit(identity.request_event(
         "gateway.evaluated",
@@ -3241,7 +3250,13 @@ where
         let mut events: Vec<_> = outcome
             .audit
             .iter()
-            .map(|intent| intent.event(identity.audit_attribution()))
+            .map(|intent| {
+                let mut event = intent.event(identity.audit_attribution());
+                if let Some(events) = &runtime.connection_events {
+                    events.bind_request(identity, &mut event);
+                }
+                event
+            })
             .collect();
         let pending = crate::approvals::pending::bind_credentials(
             identity.run.as_ref(),
@@ -3280,7 +3295,7 @@ where
         if let Some(record) = pending.as_ref() {
             crate::approvals::pending::delegation::notify(&runtime, record).await;
         }
-        runtime.audit.emit(identity.request_event(
+        let mut event = identity.request_event(
             "security.credential_guard.evaluated",
             crate::audit::Kind::Security,
             request_id,
@@ -3295,7 +3310,11 @@ where
             "body_scope": if codex_refresh.is_some() { "codex_refresh_token" } else { "headers_only" },
             "query_scope": "policy_context_only"
             }),
-        ))?;
+        );
+        if let Some(events) = &runtime.connection_events {
+            events.bind_request(identity, &mut event);
+        }
+        runtime.audit.emit(event)?;
         if codex_routing::routing_discovery(request.method(), &destination.path)
             && let Some(record) = pending.as_ref()
             && codex_routing::wait_for_decision(&state, &record.approval_id, upgrades.stop.clone())
@@ -3967,7 +3986,13 @@ where
         let mut events: Vec<_> = outcome
             .audit
             .iter()
-            .map(|intent| intent.event(identity.audit_attribution()))
+            .map(|intent| {
+                let mut event = intent.event(identity.audit_attribution());
+                if let Some(events) = &runtime.connection_events {
+                    events.bind_request(identity, &mut event);
+                }
+                event
+            })
             .collect();
         let pending = crate::approvals::pending::bind_credentials(
             identity.run.as_ref(),
@@ -4006,7 +4031,7 @@ where
         if let Some(record) = pending.as_ref() {
             crate::approvals::pending::delegation::notify(&runtime, record).await;
         }
-        runtime.audit.emit(identity.request_event(
+        let mut event = identity.request_event(
             "security.credential_guard.evaluated",
             crate::audit::Kind::Security,
             request_id,
@@ -4021,7 +4046,11 @@ where
             "body_scope": "headers_only",
             "query_scope": "policy_context_only"
             }),
-        ))?;
+        );
+        if let Some(events) = &runtime.connection_events {
+            events.bind_request(identity, &mut event);
+        }
+        runtime.audit.emit(event)?;
         if let Some(enforcement) = outcome.response {
             let body = enforcement.body_bytes();
             let mut blocked = Response::builder()
@@ -4669,6 +4698,9 @@ where
                             );
                             event.addon = Some("credential-guard".into());
                             event.decision = Some(crate::audit::Decision::Allow);
+                            if let Some(events) = &runtime.connection_events {
+                                events.bind_request(identity, &mut event);
+                            }
                             runtime.audit.emit_confirmed(event).await?;
                         }
                     }

@@ -52,9 +52,11 @@ async fn native_source_response_to_bound_model_request_has_inspectable_cli_corre
         {"action":"network:request","resource":"*","effect":"allow"},
         {"action":"credential:use","resource":"*","effect":"allow"},
         {"action":"gateway:request","resource":"claude:/v1/messages","effect":"allow"}],
+        "credential_rules":[{"name":"injected-fixture","patterns":["synthetic-correlation-credential"],
+            "allowed_hosts":["api.anthropic.com"],"header_names":["authorization"]}],
         "gateway":{"host_map":{"api.anthropic.com":"claude"},"token_map":{
             "sgw_correlation-fixture":{"agent":"alice","service":"claude","capability":"inference","token":"claude-reference"}}},
-        "addons":{"credential_guard":{"enabled":true,"detection_level":"none","settings":{"use_default_credential_rules":false,"standard_auth_headers":[]}}}
+        "addons":{"credential_guard":{"enabled":true,"detection_level":"none","settings":{"use_default_credential_rules":false,"standard_auth_headers":["authorization"]}}}
     }).to_string()).unwrap();
     let ca_key = rcgen::KeyPair::generate().unwrap();
     let mut ca_params = rcgen::CertificateParams::default();
@@ -150,6 +152,7 @@ async fn native_source_response_to_bound_model_request_has_inspectable_cli_corre
         .unwrap();
     proxy.shutdown().await;
     let bytes = fs::read(root.path().join("audit.jsonl")).unwrap();
+    decisions::assert_native_views(root.path(), &bytes).await;
     let rows: Vec<_> = std::str::from_utf8(&bytes)
         .unwrap()
         .lines()
@@ -161,6 +164,14 @@ async fn native_source_response_to_bound_model_request_has_inspectable_cli_corre
         .find(|(_, row)| row["details"]["indicator_type"] == "prompt_injection_exposure")
         .unwrap();
     let request = exposure["request_id"].as_str().unwrap();
+    assert!(
+        rows.iter()
+            .any(|row| row["event"] == "security.credential_guard"
+                && row["request_id"] == request
+                && row["details"]["rule"] == "injected-fixture"
+                && row["decision"] == "allow"),
+        "the injected credential must reach the final guard publication"
+    );
     let instance = exposure["details"]["instance_id"].as_str().unwrap();
     let runtime = exposure["details"]["runtime_id"].as_str().unwrap();
     let args = [

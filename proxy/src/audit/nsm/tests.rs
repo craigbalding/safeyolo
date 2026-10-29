@@ -846,3 +846,130 @@ fn client_destination_evidence_links_separate_client_and_attempt_without_mixing_
     payload["details"]["novelty"]["client"]["body"] = json!("private");
     assert!(parse_record(&payload.to_string()).is_err());
 }
+
+#[test]
+fn scoped_request_decisions_validate_without_upgrading_legacy_events() {
+    for name in [
+        "security.network_guard",
+        "security.credential_guard",
+        "security.credential_guard.codex_refreshed",
+        "gateway.allow",
+        "gateway.deny",
+        "gateway.refresh_failed",
+        "gateway.https_redirect",
+        "gateway.http_injection_allowed",
+    ] {
+        let gateway = name.starts_with("gateway.");
+        let make = || {
+            let mut event = Event::new(
+                name,
+                if gateway {
+                    Kind::Gateway
+                } else {
+                    Kind::Security
+                },
+                Severity::Low,
+                "Concrete decision",
+            );
+            event.agent = Some("alice".into());
+            event.request_id = Some("F1".into());
+            event.host = Some("origin.invalid".into());
+            event.addon = Some(
+                if gateway {
+                    "service-gateway"
+                } else if name == "security.network_guard" {
+                    "network-guard"
+                } else {
+                    "credential-guard"
+                }
+                .into(),
+            );
+            event.decision = Some(Decision::Allow);
+            event.attribution = Some(attribution());
+            event.details =
+                json!({"connection_id":"C1", "approval_id":"unrelated-control-id"}).into();
+            event
+        };
+        assert_eq!(record(make())["schema_version"], 1);
+        let mut event = make();
+        event.bind_request_scope("instance-a", "runtime-1", "C1");
+        let scoped = record(event);
+        assert_eq!(scoped["schema_version"], 2);
+        assert_eq!(scoped["details"]["client_connection_id"], "C1");
+        for native in [false, true] {
+            let mut row = scoped.clone();
+            if native {
+                let addon = row.as_object_mut().unwrap().remove("addon").unwrap();
+                row["control"] = json!(crate::policy::native::control_label(
+                    addon.as_str().unwrap()
+                ));
+            }
+            parse_record(&row.to_string()).unwrap();
+            for pointer in [
+                "/request_id",
+                "/event_id",
+                "/host",
+                "/details/instance_id",
+                "/details/runtime_id",
+                "/details/client_connection_id",
+                "/decision",
+            ] {
+                for value in [Value::Null, json!(""), json!(5)] {
+                    let mut bad = row.clone();
+                    *bad.pointer_mut(pointer).unwrap() = value;
+                    assert!(parse_record(&bad.to_string()).is_err(), "{name}: {pointer}");
+                }
+            }
+            let mut unknown = row.clone();
+            unknown["event"] = json!("security.unrelated_control");
+            assert!(parse_record(&unknown.to_string()).is_err());
+            let mut conflict = row.clone();
+            conflict["details"]["connection_id"] = json!("another-client");
+            if !gateway {
+                assert!(parse_record(&conflict.to_string()).is_err());
+            }
+        }
+        let mut legacy = scoped.clone();
+        legacy["schema_version"] = json!(1);
+        assert_eq!(parse_record(&legacy.to_string()).unwrap(), legacy);
+        legacy.as_object_mut().unwrap().remove("schema_version");
+        assert_eq!(parse_record(&legacy.to_string()).unwrap(), legacy);
+    }
+}
+
+#[test]
+fn scoped_guard_evaluations_keep_the_existing_outcome_and_policy_fields() {
+    for network in [false, true] {
+        let name = if network {
+            "security.network_guard.evaluated"
+        } else {
+            "security.credential_guard.evaluated"
+        };
+        let mut event = Event::new(name, Kind::Security, Severity::Low, "Evaluation");
+        event.request_id = Some("F1".into());
+        event.host = Some("origin.invalid".into());
+        event.details = json!({"connection_id":"C1", "outcome":"allowed", "pdp":{"effect":"allow"}, "evaluations":[]}).into();
+        event.bind_request_scope("instance-a", "runtime-1", "C1");
+        let value = record(event);
+        assert!(value.get("decision").is_none());
+        for (pointer, bad) in [
+            ("/details/outcome", json!("injected")),
+            (
+                if network {
+                    "/details/pdp"
+                } else {
+                    "/details/evaluations"
+                },
+                json!("malformed"),
+            ),
+        ] {
+            let mut malformed = value.clone();
+            *malformed.pointer_mut(pointer).unwrap() = bad;
+            assert!(parse_record(&malformed.to_string()).is_err());
+        }
+        let mut bad = value.clone();
+        bad["decision"] = json!("allow");
+        assert!(parse_record(&bad.to_string()).is_err());
+        assert_eq!(value["details"]["pdp"]["effect"], "allow");
+    }
+}

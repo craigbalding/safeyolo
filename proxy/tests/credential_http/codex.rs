@@ -337,10 +337,19 @@ async fn imported_login_two_rotations_reload_restart_and_redaction() {
             std::fs::read_to_string(fixture.config.audit_log_path.as_ref().unwrap()).unwrap();
         let refreshed: Vec<Value> = audit
             .lines()
-            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .map(|line| safeyolo_proxy::audit::parse_record(line).unwrap())
             .filter(|row| row["event"] == "security.credential_guard.codex_refreshed")
             .collect();
         assert_eq!(refreshed.len(), 4);
+        for row in &refreshed {
+            assert_eq!(row["schema_version"], 2);
+            assert!(row["details"]["instance_id"].is_string());
+            assert!(row["details"]["runtime_id"].is_string());
+            assert_eq!(
+                row["details"]["client_connection_id"],
+                row["details"]["connection_id"]
+            );
+        }
         assert!(
             refreshed.iter().all(|row| row["agent"] == "alice"
                 && row["host"] == "auth.openai.com"

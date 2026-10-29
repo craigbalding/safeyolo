@@ -47,6 +47,7 @@ pub struct Approval {
 /// Details retain the existing typed JSON number and temporal representation.
 pub struct Event {
     validation_failed: bool,
+    request_scope: Option<RequestScope>,
     pub event: String,
     pub kind: Kind,
     pub severity: Severity,
@@ -62,6 +63,13 @@ pub struct Event {
     pub details: CircuitValue,
 }
 
+/// Set only by the native connection owner at a request-path publication.
+struct RequestScope {
+    instance_id: String,
+    runtime_id: String,
+    client_connection_id: String,
+}
+
 impl Event {
     pub fn new(
         event: impl Into<String>,
@@ -71,6 +79,7 @@ impl Event {
     ) -> Self {
         Self {
             validation_failed: false,
+            request_scope: None,
             event: event.into(),
             kind,
             severity,
@@ -85,6 +94,16 @@ impl Event {
             attribution: None,
             details: CircuitValue::Object(IndexMap::new()),
         }
+    }
+
+    pub(crate) fn bind_request_scope(&mut self, instance: &str, runtime: &str, client: &str) {
+        self.request_scope = Some(RequestScope {
+            instance_id: instance.into(),
+            runtime_id: runtime.into(),
+            client_connection_id: client.into(),
+        });
+        self.event_id
+            .get_or_insert_with(|| uuid::Uuid::new_v4().to_string());
     }
 
     /// A concrete producer has reached a source envelope type error. Retain
@@ -134,7 +153,10 @@ impl Event {
             return Err(invalid());
         }
         let mut fields = IndexMap::new();
-        let version = if self.kind == Kind::Network || super::nsm::is_event(&self.event) {
+        let version = if self.request_scope.is_some()
+            || self.kind == Kind::Network
+            || super::nsm::is_event(&self.event)
+        {
             super::nsm::SCHEMA_VERSION
         } else {
             1
@@ -227,6 +249,14 @@ impl Event {
                 prior.extend(nested);
                 details.insert("attribution".into(), CircuitValue::Object(prior));
             }
+        }
+        if let Some(scope) = &self.request_scope {
+            details.insert("instance_id".into(), text(&scope.instance_id));
+            details.insert("runtime_id".into(), text(&scope.runtime_id));
+            details.insert(
+                "client_connection_id".into(),
+                text(&scope.client_connection_id),
+            );
         }
         fields.insert("details".into(), CircuitValue::Object(details));
         let value = CircuitValue::Object(fields);
