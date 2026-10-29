@@ -705,6 +705,57 @@ fn origin_spki_ip_evidence_requires_the_same_measured_key_on_distinct_ips() {
 }
 
 #[test]
+fn origin_ip_evidence_accepts_transport_without_mixing_certificate_or_client_scopes() {
+    let mut row = record(indicator());
+    row["details"]["novelty"] = json!({
+        "history_scope":"runtime_fifo", "history_capacity":4096,
+        "verification_name":null, "previous":null,
+        "current":{"connection_id":"S1","event_id":"origin-1", "cert_sha256":null,"spki_sha256":null,"origin_ip":"192.0.2.2"}
+    });
+    for ip in ["192.0.2.2", "2001:db8::1", "::ffff:192.0.2.2"] {
+        row["details"]["novelty"]["current"]["origin_ip"] = json!(ip);
+        assert!(parse_record(&row.to_string()).is_ok());
+    }
+    for (pointer, value) in [
+        ("/current/origin_ip", json!("origin.invalid")),
+        ("/current/origin_ip", json!("192.0.2.2:443")),
+        ("/current/origin_ip", Value::Null),
+        ("/current/connection_id", json!("other")),
+        ("/current/event_id", json!("")),
+        ("/current/cert_sha256", json!("a".repeat(64))),
+        ("/current/spki_sha256", json!("b".repeat(64))),
+        ("/verification_name", json!("origin.invalid")),
+        ("/previous", row["details"]["novelty"]["current"].clone()),
+        ("/history_capacity", json!(4097)),
+    ] {
+        let mut invalid = row.clone();
+        *invalid["details"]["novelty"].pointer_mut(pointer).unwrap() = value;
+        assert!(parse_record(&invalid.to_string()).is_err(), "{pointer}");
+    }
+    for (field, value) in [
+        ("destination", json!("origin.invalid:443")),
+        ("route", json!("direct")),
+        ("client", row["details"]["novelty"]["current"].clone()),
+    ] {
+        let mut invalid = row.clone();
+        invalid["details"]["novelty"][field] = value;
+        assert!(parse_record(&invalid.to_string()).is_err(), "{field}");
+    }
+    for (field, value) in [
+        ("negotiation", json!({"version":"TLSv1_3","alpn":null})),
+        (
+            "client_fingerprint",
+            json!({"ja3":"a".repeat(32),"ja4":"t13d1516h2_8daaf6152771_e5627efa2ab1"}),
+        ),
+        ("body", json!("private payload")),
+    ] {
+        let mut invalid = row.clone();
+        invalid["details"]["novelty"]["current"][field] = value;
+        assert!(parse_record(&invalid.to_string()).is_err(), "{field}");
+    }
+}
+
+#[test]
 fn client_destination_evidence_links_separate_client_and_attempt_without_mixing_tls_scopes() {
     let mut row = record(indicator());
     row["details"]["novelty"] = json!({

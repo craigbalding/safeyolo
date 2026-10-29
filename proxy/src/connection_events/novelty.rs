@@ -59,6 +59,10 @@ enum Key {
         spki_sha256: String,
         ip: IpAddr,
     },
+    OriginIp {
+        agent: String,
+        ip: IpAddr,
+    },
 }
 
 impl Key {
@@ -70,7 +74,7 @@ impl Key {
             | Self::ClientDestination {
                 destination, route, ..
             } => (Some(destination.clone()), Some((*route).into())),
-            Self::Client(_) | Self::OriginSpki { .. } => (None, None),
+            Self::Client(_) | Self::OriginSpki { .. } | Self::OriginIp { .. } => (None, None),
         }
     }
 }
@@ -156,12 +160,12 @@ impl Observation {
             && self.cert_sha256.as_deref().is_none_or(hash)
             && self.spki_sha256.as_deref().is_none_or(hash)
             && (self.spki_sha256.is_none() || self.cert_sha256.is_some())
-            && (self.origin_ip.is_none() || self.spki_sha256.is_some())
             && self.client_fingerprint.as_ref().is_none_or(|value| {
                 value.valid()
                     && self.cert_sha256.is_none()
                     && self.spki_sha256.is_none()
                     && self.negotiation.is_none()
+                    && self.origin_ip.is_none()
             })
             && self.negotiation.as_ref().is_none_or(|value| {
                 !value.version.trim().is_empty()
@@ -169,6 +173,7 @@ impl Observation {
                     && value.alpn.as_ref().is_none_or(|alpn| alpn.len() <= 1024)
                     && self.cert_sha256.is_none()
                     && self.spki_sha256.is_none()
+                    && self.origin_ip.is_none()
             })
     }
 }
@@ -207,10 +212,22 @@ impl Evidence {
             } else if self.current.client_fingerprint.is_some() {
                 self.valid_client_fingerprint()
             } else if self.current.origin_ip.is_some() {
-                self.valid_origin_spki()
+                if self.current.spki_sha256.is_some() {
+                    self.valid_origin_spki()
+                } else {
+                    self.valid_origin_ip()
+                }
             } else {
                 self.valid_destination()
             }
+    }
+
+    fn valid_origin_ip(&self) -> bool {
+        self.destination.is_none()
+            && self.route.is_none()
+            && self.verification_name.is_none()
+            && self.previous.is_none()
+            && self.current.cert_sha256.is_none()
     }
 
     fn valid_client_fingerprint(&self) -> bool {
@@ -390,6 +407,18 @@ impl History {
         evidence
             .valid(Some(&evidence.current.connection_id))
             .then_some(evidence)
+    }
+
+    fn origin_ip(&mut self, agent: &str, ip: IpAddr, mut current: Observation) -> Option<Evidence> {
+        let ip = ip.to_canonical();
+        current.origin_ip = Some(ip);
+        self.destination(
+            &Key::OriginIp {
+                agent: agent.into(),
+                ip,
+            },
+            current,
+        )
     }
 
     fn client_destination(
@@ -648,7 +677,11 @@ impl ConnectionEvents {
             route: destination.route,
         };
         let evidence = match tls {
-            None => [history.destination(&key, current), None, None],
+            None => [
+                history.destination(&key, current.clone()),
+                origin_ip.and_then(|ip| history.origin_ip(agent, ip, current)),
+                None,
+            ],
             Some((name, session)) => [
                 history.certificate(&key, name, session, current.clone()),
                 history.negotiation(&key, name, session, current.clone()),
@@ -658,7 +691,8 @@ impl ConnectionEvents {
         for evidence in evidence.into_iter().flatten() {
             let change = evidence.previous.is_some();
             let negotiation = evidence.current.negotiation.is_some();
-            let origin_spki = evidence.current.origin_ip.is_some();
+            let origin_ip = evidence.current.origin_ip.is_some();
+            let origin_spki = origin_ip && evidence.current.spki_sha256.is_some();
             // Keep comparison and submission in one order across reconnects.
             security_indicators::emit(
                 self,
@@ -668,6 +702,8 @@ impl ConnectionEvents {
                 Indicator {
                     indicator_type: if origin_spki {
                         "tls_spki_new_origin_ip"
+                    } else if origin_ip {
+                        "origin_ip_novelty"
                     } else if negotiation {
                         "tls_negotiation_change"
                     } else if change {
@@ -678,6 +714,8 @@ impl ConnectionEvents {
                     sensor: "connection-history.v1",
                     rule: if origin_spki {
                         "tls.origin_spki_new_ip.v1"
+                    } else if origin_ip {
+                        "origin_ip.first_observation.v1"
                     } else if negotiation {
                         "tls.origin_negotiation_changed.v1"
                     } else if change {
@@ -689,6 +727,8 @@ impl ConnectionEvents {
                     severity: audit::Severity::Low,
                     summary: if origin_spki {
                         "Observed origin public key at a new IP in bounded runtime history"
+                    } else if origin_ip {
+                        "First measured origin IP observation in bounded runtime history"
                     } else if negotiation {
                         "Origin TLS version or negotiated ALPN changed in bounded runtime history"
                     } else if change {
