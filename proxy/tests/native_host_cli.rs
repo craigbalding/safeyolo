@@ -1000,6 +1000,13 @@ esac
                 .unwrap();
         }
         wait_for(&|| root.join("starts").exists());
+        // The child can start before the parent publishes its PID and birth token.
+        // This launch's post_launch hook follows that publication.
+        let post_launch_line = format!("{} post_launch", results[0]["launch_id"].as_str().unwrap());
+        wait_for(&|| {
+            fs::read_to_string(root.join("hooks"))
+                .is_ok_and(|hooks| hooks.lines().any(|line| line == post_launch_line))
+        });
         fs::OpenOptions::new()
             .write(true)
             .open(root.join("transport-gate"))
