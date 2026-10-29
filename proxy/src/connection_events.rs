@@ -522,6 +522,10 @@ impl Connection {
         });
     }
 
+    pub(crate) fn server_hello(&self, hello: crate::tls_identity::ServerHelloObservation) {
+        self.update_tls(None, |details| details["tls_server_hello"] = json!(hello));
+    }
+
     fn update_tls(
         &self,
         tls: Option<(&str, &crate::tls_identity::TlsSession)>,

@@ -1312,15 +1312,15 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
         session["leaf_certificate"]["spki_sha256"],
         expected_spki_hash
     );
-    // One ClientHello and one upstream TLS establishment, independent of the
-    // number of application streams. Terminal records retain the same facts.
+    // One client hello, one origin server hello and one upstream TLS session,
+    // independent of application streams. Terminal records retain the facts.
     assert_eq!(
         rows.iter()
             .filter(
                 |row| row["event"] == "network.connection" && row["details"]["state"] == "updated"
             )
             .count(),
-        2
+        3
     );
     if host.parse::<std::net::IpAddr>().is_ok() {
         assert!(servers[0]["tls_server_name"].is_null());

@@ -476,6 +476,60 @@ fn tls_updates_keep_the_connection_key_and_reject_raw_or_unbounded_content() {
 }
 
 #[test]
+fn server_hello_schema_retains_status_and_rejects_raw_or_inconsistent_evidence() {
+    let mut upstream = record(connection("S1", true));
+    let hello = json!({"legacy_version":771,"cipher_suite":4865,"extension_types":[43,51],
+        "extension_count":2,"truncated":false,"ja3s":"f4febc55ea12b31ae17cfb7e614afda8"});
+    upstream["details"]["tls_server_hello"] =
+        json!({"status":"complete","hello":hello,"hello_retry_request":null});
+    assert!(parse_record(&upstream.to_string()).is_ok());
+    for (pointer, value) in [
+        ("/details/leg", json!("client_to_proxy")),
+        ("/details/tls_server_hello/raw_bytes", json!([1, 2, 3])),
+        ("/details/tls_server_hello/status", json!("invented")),
+        ("/details/tls_server_hello/status", json!("incomplete")),
+        ("/details/tls_server_hello/hello", Value::Null),
+        ("/details/tls_server_hello/hello/extension_count", json!(1)),
+        (
+            "/details/tls_server_hello/hello/extension_types",
+            json!(vec![43; 65]),
+        ),
+        ("/details/tls_server_hello/hello/truncated", json!(true)),
+        (
+            "/details/tls_server_hello/hello/ja3s",
+            json!("not a digest"),
+        ),
+        (
+            "/details/tls_server_hello/hello/extension_payloads",
+            json!([]),
+        ),
+    ] {
+        let mut invalid = upstream.clone();
+        // Unknown fields must be inserted explicitly; JSON pointers only select
+        // existing values.
+        if let Some(slot) = invalid.pointer_mut(pointer) {
+            *slot = value;
+        } else if pointer.ends_with("raw_bytes") {
+            invalid["details"]["tls_server_hello"]["raw_bytes"] = value;
+        } else {
+            invalid["details"]["tls_server_hello"]["hello"]["extension_payloads"] = value;
+        }
+        assert!(parse_record(&invalid.to_string()).is_err(), "{pointer}");
+    }
+    for status in ["incomplete", "invalid", "unavailable", "limit_exceeded"] {
+        upstream["details"]["tls_server_hello"] =
+            json!({"status":status,"hello":null,"hello_retry_request":hello});
+        assert!(parse_record(&upstream.to_string()).is_ok());
+    }
+    // Existing schema-v2 records can omit the new optional observation.
+    upstream["details"]
+        .as_object_mut()
+        .unwrap()
+        .remove("tls_server_hello");
+    assert!(parse_record(&upstream.to_string()).is_ok());
+}
+
+#[test]
 fn unknown_observations_external_ingress_and_terminal_states_are_representable() {
     let mut external = connection("external-C1", false);
     external.attribution = Some(Attribution {

@@ -698,6 +698,7 @@ async fn native_same_certificate_version_and_alpn_changes_keep_exact_links() {
                 && row["details"]["state"] == "updated"
                 && row["details"]["leg"] == "proxy_to_upstream"
                 && row["details"]["requested_target"] == address.to_string()
+                && row["details"]["tls_sessions"][0]["peer"] == "origin"
         })
         .collect();
     assert_eq!(samples.len(), 7, "{rows:?}");
@@ -817,6 +818,7 @@ async fn native_concurrent_tls_comparisons_follow_supporting_event_order() {
             row["event"] == "network.connection"
                 && row["details"]["state"] == "updated"
                 && row["details"]["leg"] == "proxy_to_upstream"
+                && row["details"]["tls_sessions"][0]["peer"] == "origin"
         })
         .collect();
     assert_eq!(samples.len(), 12);
