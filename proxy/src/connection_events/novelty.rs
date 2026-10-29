@@ -1,6 +1,7 @@
 //! Bounded metadata comparisons owned by the native connection namespace.
 
 use std::collections::{HashMap, VecDeque};
+use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +48,11 @@ enum Key {
         route: &'static str,
     },
     Client(String),
+    OriginSpki {
+        agent: String,
+        spki_sha256: String,
+        ip: IpAddr,
+    },
 }
 
 impl Key {
@@ -55,7 +61,7 @@ impl Key {
             Self::Destination {
                 destination, route, ..
             } => (Some(destination.clone()), Some((*route).into())),
-            Self::Client(_) => (None, None),
+            Self::Client(_) | Self::OriginSpki { .. } => (None, None),
         }
     }
 }
@@ -71,6 +77,8 @@ pub(crate) struct Observation {
     pub(crate) negotiation: Option<Negotiation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) client_fingerprint: Option<ClientFingerprint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) origin_ip: Option<IpAddr>,
 }
 
 #[derive(Clone, PartialEq, Deserialize, Serialize)]
@@ -112,6 +120,7 @@ impl Observation {
             spki_sha256: None,
             negotiation: None,
             client_fingerprint: None,
+            origin_ip: None,
         }
     }
 
@@ -127,6 +136,7 @@ impl Observation {
             && self.cert_sha256.as_deref().is_none_or(hash)
             && self.spki_sha256.as_deref().is_none_or(hash)
             && (self.spki_sha256.is_none() || self.cert_sha256.is_some())
+            && (self.origin_ip.is_none() || self.spki_sha256.is_some())
             && self.client_fingerprint.as_ref().is_none_or(|value| {
                 value.valid()
                     && self.cert_sha256.is_none()
@@ -165,6 +175,8 @@ impl Evidence {
             && self.current.valid()
             && if self.current.client_fingerprint.is_some() {
                 self.valid_client_fingerprint()
+            } else if self.current.origin_ip.is_some() {
+                self.valid_origin_spki()
             } else {
                 self.valid_destination()
             }
@@ -199,6 +211,7 @@ impl Evidence {
                 }
                 Some(previous) => {
                     previous.valid()
+                        && previous.origin_ip.is_none()
                         && previous.event_id != self.current.event_id
                         && self
                             .verification_name
@@ -220,6 +233,39 @@ impl Evidence {
                 }
             }
     }
+
+    fn valid_origin_spki(&self) -> bool {
+        self.destination
+            .as_ref()
+            .is_some_and(|s| !s.trim().is_empty())
+            && matches!(
+                self.route.as_deref(),
+                Some("direct" | "parent" | "provider")
+            )
+            && self
+                .verification_name
+                .as_ref()
+                .is_some_and(|s| !s.trim().is_empty())
+            && self.previous.as_ref().is_some_and(|previous| {
+                previous.valid()
+                    && previous.event_id != self.current.event_id
+                    && previous.spki_sha256 == self.current.spki_sha256
+                    && previous.origin_ip.is_some()
+                    && previous.origin_ip.map(|ip| ip.to_canonical())
+                        != self.current.origin_ip.map(|ip| ip.to_canonical())
+            })
+    }
+}
+
+fn full_origin_certificate(session: &TlsSession) -> Option<&crate::tls_identity::Certificate> {
+    // A resumed chain may be cached by rustls. Parent TLS is a different peer.
+    (session.peer == "origin"
+        && matches!(
+            session.handshake_kind.as_deref(),
+            Some("Full" | "FullWithHelloRetryRequest")
+        ))
+    .then_some(session.leaf_certificate.as_ref())
+    .flatten()
 }
 
 struct TlsObservation {
@@ -232,6 +278,7 @@ struct TlsHistory {
     certificate: Option<TlsObservation>,
     negotiation: Option<TlsObservation>,
     client_fingerprint: Option<Observation>,
+    origin_spki: Option<Observation>,
 }
 
 pub(super) struct History {
@@ -325,21 +372,68 @@ impl History {
         session: &TlsSession,
         mut current: Observation,
     ) -> Option<Evidence> {
-        // A resumed chain may be cached by rustls. Parent TLS is a different
-        // peer, and absence is not a measured certificate change.
-        if session.peer != "origin"
-            || !matches!(
-                session.handshake_kind.as_deref(),
-                Some("Full" | "FullWithHelloRetryRequest")
-            )
-        {
-            return None;
-        }
-        let cert = session.leaf_certificate.as_ref()?;
+        let cert = full_origin_certificate(session)?;
         let baseline = &mut self.entries.get_mut(key)?.certificate;
         current.cert_sha256 = Some(cert.cert_sha256.clone());
         current.spki_sha256 = cert.spki_sha256.clone();
         Self::compare(self.capacity, key, name, baseline, current)
+    }
+
+    fn origin_spki(
+        &mut self,
+        agent: &str,
+        destination: &Destination,
+        tls: (&str, &TlsSession),
+        ip: Option<IpAddr>,
+        mut current: Observation,
+    ) -> Option<Evidence> {
+        let cert = full_origin_certificate(tls.1)?;
+        let spki_sha256 = cert.spki_sha256.as_ref()?;
+        let ip = ip?.to_canonical();
+        current.cert_sha256 = Some(cert.cert_sha256.clone());
+        current.spki_sha256 = Some(spki_sha256.clone());
+        current.origin_ip = Some(ip);
+        if !current.valid() {
+            return None;
+        }
+        let key = Key::OriginSpki {
+            agent: agent.into(),
+            spki_sha256: spki_sha256.clone(),
+            ip,
+        };
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.origin_spki = Some(current);
+            return None;
+        }
+        // Select the most recently inserted retained IP for this agent/key.
+        // Stable repeats update its evidence without changing FIFO age.
+        let previous = self.oldest.iter().rev().find_map(|key| match key {
+            Key::OriginSpki {
+                agent: a,
+                spki_sha256: s,
+                ..
+            } if a == agent && s == spki_sha256 => self.entries.get(key)?.origin_spki.clone(),
+            _ => None,
+        });
+        self.insert(
+            &key,
+            TlsHistory {
+                origin_spki: Some(current.clone()),
+                ..TlsHistory::default()
+            },
+        );
+        let evidence = Evidence {
+            history_scope: SCOPE.into(),
+            history_capacity: self.capacity,
+            destination: Some(destination.authority.clone()),
+            route: Some(destination.route.into()),
+            verification_name: Some(normalize_host(tls.0)),
+            current,
+            previous,
+        };
+        evidence
+            .valid(Some(&evidence.current.connection_id))
+            .then_some(evidence)
     }
 
     fn negotiation(
@@ -457,6 +551,7 @@ impl ConnectionEvents {
         destination: Option<&Destination>,
         current: Observation,
         tls: Option<(&str, &TlsSession)>,
+        origin_ip: Option<IpAddr>,
     ) {
         let (Some(agent), Some(destination)) = (identity.request_agent(), destination) else {
             return;
@@ -467,15 +562,17 @@ impl ConnectionEvents {
             route: destination.route,
         };
         let evidence = match tls {
-            None => [history.destination(&key, current), None],
+            None => [history.destination(&key, current), None, None],
             Some((name, session)) => [
                 history.certificate(&key, name, session, current.clone()),
-                history.negotiation(&key, name, session, current),
+                history.negotiation(&key, name, session, current.clone()),
+                history.origin_spki(agent, destination, (name, session), origin_ip, current),
             ],
         };
         for evidence in evidence.into_iter().flatten() {
             let change = evidence.previous.is_some();
             let negotiation = evidence.current.negotiation.is_some();
+            let origin_spki = evidence.current.origin_ip.is_some();
             // Keep comparison and submission in one order across reconnects.
             security_indicators::emit(
                 self,
@@ -483,7 +580,9 @@ impl ConnectionEvents {
                 None,
                 None,
                 Indicator {
-                    indicator_type: if negotiation {
+                    indicator_type: if origin_spki {
+                        "tls_spki_new_origin_ip"
+                    } else if negotiation {
                         "tls_negotiation_change"
                     } else if change {
                         "tls_identity_change"
@@ -491,7 +590,9 @@ impl ConnectionEvents {
                         "destination_novelty"
                     },
                     sensor: "connection-history.v1",
-                    rule: if negotiation {
+                    rule: if origin_spki {
+                        "tls.origin_spki_new_ip.v1"
+                    } else if negotiation {
                         "tls.origin_negotiation_changed.v1"
                     } else if change {
                         "tls.origin_identity_changed.v1"
@@ -500,7 +601,9 @@ impl ConnectionEvents {
                     },
                     confidence: 1.0,
                     severity: audit::Severity::Low,
-                    summary: if negotiation {
+                    summary: if origin_spki {
+                        "Observed origin public key at a new IP in bounded runtime history"
+                    } else if negotiation {
                         "Origin TLS version or negotiated ALPN changed in bounded runtime history"
                     } else if change {
                         "Upstream certificate or public key changed in bounded runtime history"

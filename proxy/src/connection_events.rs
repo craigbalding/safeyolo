@@ -262,6 +262,12 @@ impl ConnectionEnd {
             .novelty
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // Only the direct socket owner currently supplies this origin peer.
+        // The immediate parent/provider peer does not measure an origin IP.
+        let origin_ip = details["resolved_origin_peer"]
+            .as_str()
+            .and_then(|peer| peer.parse::<SocketAddr>().ok())
+            .map(|peer| peer.ip());
         let observation = self.emit(details);
         self.events.observe_destination(
             &mut history,
@@ -269,6 +275,7 @@ impl ConnectionEnd {
             self.destination.as_ref(),
             observation,
             tls,
+            origin_ip,
         );
     }
 }
