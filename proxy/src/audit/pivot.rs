@@ -1,8 +1,11 @@
 //! Read-only local NSM pivots over the ordinary logs reader's retained window.
 
-use std::{collections::HashSet, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 mod correlation;
@@ -16,9 +19,18 @@ pub(crate) struct Query<'a> {
     pub(crate) lines: usize,
 }
 
+/// Installed views keep their physical-line references. Selected files need
+/// an input number as well; equal physical line numbers must never alias.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(untagged)]
+enum RecordLine {
+    Local(usize),
+    Selected { input: usize, line: usize },
+}
+
 #[derive(Serialize)]
 struct Link<'a> {
-    from_line: usize,
+    from_line: RecordLine,
     field: &'static str,
     event: &'static str,
     instance_id: &'a str,
@@ -32,7 +44,9 @@ struct Link<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     evidence_hash: Option<&'a str>,
     status: &'static str,
-    record_lines: Vec<usize>,
+    record_lines: Vec<RecordLine>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    conflicting_record_lines: Vec<RecordLine>,
 }
 
 impl Link<'_> {
@@ -57,7 +71,7 @@ impl Link<'_> {
     }
 }
 
-fn links<'a>(line: usize, row: &'a Value, query: &Query<'a>) -> Vec<Link<'a>> {
+fn links<'a>(line: RecordLine, row: &'a Value, query: &Query<'a>) -> Vec<Link<'a>> {
     let mut result = Vec::new();
     let mut add = |field,
                    connection: Option<&'a str>,
@@ -82,6 +96,7 @@ fn links<'a>(line: usize, row: &'a Value, query: &Query<'a>) -> Vec<Link<'a>> {
                 evidence_hash,
                 status: "unavailable",
                 record_lines: Vec::new(),
+                conflicting_record_lines: Vec::new(),
             });
         }
     };
@@ -157,7 +172,55 @@ fn direct_connections(row: &Value) -> impl Iterator<Item = &str> {
     .filter_map(|key| details[key].as_str())
 }
 
-pub(crate) fn read(path: &Path, query: &Query<'_>) -> Result<Value, crate::Error> {
+/// Conflicting copies of an event, or incompatible owners of the same local
+/// transport/request, cannot establish a join. Lifecycle snapshots with the
+/// same owner remain usable. Agent-local IDs are compared within each agent.
+fn conflicting_lines(rows: &[&(RecordLine, Value)]) -> HashSet<RecordLine> {
+    let mut groups: HashMap<String, Vec<(RecordLine, String)>> = HashMap::new();
+    for (line, row) in rows {
+        let mut canonical = row.clone();
+        canonical.sort_all_objects();
+        if let Some(event) = row["event_id"].as_str() {
+            groups
+                .entry(json!(["event", event]).to_string())
+                .or_default()
+                .push((*line, canonical.to_string()));
+        }
+        let details = &row["details"];
+        let ownership = match row["event"].as_str() {
+            Some("network.connection") => Some((
+                json!(["connection", row["agent"], details["connection_id"]]),
+                json!([details["leg"], details["client_connection_id"]]),
+            )),
+            Some("traffic.flow") => Some((
+                json!(["request", row["agent"], row["request_id"]]),
+                json!([
+                    details["client_connection_id"],
+                    details["server_connection_id"]
+                ]),
+            )),
+            _ => None,
+        };
+        if let Some((key, owner)) = ownership {
+            groups
+                .entry(key.to_string())
+                .or_default()
+                .push((*line, owner.to_string()));
+        }
+    }
+    groups
+        .values()
+        .filter(|group| group.iter().any(|(_, value)| value != &group[0].1))
+        .flat_map(|group| group.iter().map(|(line, _)| *line))
+        .collect()
+}
+
+pub(crate) fn read(
+    paths: &[PathBuf],
+    tails: Vec<super::reader::LocalTail>,
+    explicit: bool,
+    query: &Query<'_>,
+) -> Result<Value, crate::Error> {
     if !matches!(query.kind, "connection" | "request")
         || [query.instance, query.runtime, query.id]
             .iter()
@@ -165,18 +228,87 @@ pub(crate) fn read(path: &Path, query: &Query<'_>) -> Result<Value, crate::Error
     {
         return Err("logs pivot requires connection|request ID --instance ID --runtime ID".into());
     }
-    let tail = super::local_tail(path, query.agent, query.lines)?;
-    // Only validated v2 NSM records can supply either side of a join.
-    // Filter attribution before discovering links or testing availability.
-    let rows: Vec<_> = tail
-        .rows
-        .iter()
-        .filter(|(_, row)| {
-            row["schema_version"] == super::nsm::SCHEMA_VERSION
-                && row["details"]["instance_id"] == query.instance
-                && row["details"]["runtime_id"] == query.runtime
-        })
-        .collect();
+    let inputs: Vec<_> = paths.iter().zip(&tails).enumerate().map(|(index, (path, tail))| json!({
+        "input":index + 1,"file":path,"lines_read":tail.lines_read,"agent_rows":tail.agent_rows,
+        "retained_rows":tail.rows.len(),"omitted_rows":tail.agent_rows - tail.rows.len(),
+        "first_line":tail.rows.front().map(|(line,_)| line),"last_line":tail.rows.back().map(|(line,_)| line)
+    })).collect();
+    let mut search = json!({
+        "lines_read":tails.iter().map(|tail| tail.lines_read).sum::<usize>(),
+        "agent_rows":tails.iter().map(|tail| tail.agent_rows).sum::<usize>(),
+        "line_limit":query.lines,"retained_rows":tails.iter().map(|tail| tail.rows.len()).sum::<usize>(),
+        "omitted_rows":tails.iter().map(|tail| tail.agent_rows - tail.rows.len()).sum::<usize>(),
+        "output_limited":false
+    });
+    if explicit {
+        search["files"] = json!("explicit_inputs_only");
+        search["line_limit_per_input"] = json!(query.lines);
+        search["input_count"] = json!(paths.len());
+        search["limits"] = json!(
+            "Each selected file is validated to EOF and retains at most --lines selected-agent rows before namespace/pivot selection. Totals include all input copies; evidence deduplicates equal records. Input order and wall timestamps do not establish a global chronology. Only the selected files/windows are searched. Queued, dropped, unselected, outside-window or agent-filtered evidence may be unavailable. Supporting links are followed once. No event is reconstructed or content fetched. Selection and schema validation do not authenticate a producer."
+        );
+    } else {
+        search["files"] = json!("configured_file_only");
+        search["first_line"] = inputs[0]["first_line"].clone();
+        search["last_line"] = inputs[0]["last_line"].clone();
+        search["limits"] = json!(
+            "Only the retained window of the opened local audit file was searched. Rotated files are not searched. Queued, dropped, rotated-away, outside-window or agent-filtered evidence may be unavailable. No event is reconstructed; absence is not proof that nothing occurred. Supporting links are followed once; retained bodies require the existing traffic commands."
+        );
+    }
+    let mut retained = Vec::new();
+    let mut copies: HashMap<RecordLine, Vec<RecordLine>> = HashMap::new();
+    let mut seen = HashMap::new();
+    for (index, tail) in tails.into_iter().enumerate() {
+        for (line, row) in tail.rows {
+            // Both ends of every join must be validated v2 records in this
+            // namespace. Historical records remain readable with plain logs.
+            if row["schema_version"] != super::nsm::SCHEMA_VERSION
+                || row["details"]["instance_id"] != query.instance
+                || row["details"]["runtime_id"] != query.runtime
+            {
+                continue;
+            }
+            let line = if explicit {
+                RecordLine::Selected {
+                    input: index + 1,
+                    line,
+                }
+            } else {
+                RecordLine::Local(line)
+            };
+            if explicit {
+                let mut canonical = row.clone();
+                canonical.sort_all_objects();
+                let key = canonical.to_string();
+                if let Some(first) = seen.get(&key) {
+                    copies
+                        .get_mut(first)
+                        .expect("first copy retained")
+                        .push(line);
+                    continue;
+                }
+                seen.insert(key, line);
+                copies.insert(line, vec![line]);
+            }
+            retained.push((line, row));
+        }
+    }
+    let rows: Vec<_> = retained.iter().collect();
+    let conflicts = if explicit {
+        conflicting_lines(&rows)
+    } else {
+        HashSet::new()
+    };
+    if explicit {
+        search["unique_namespace_rows"] = json!(rows.len());
+        search["duplicate_namespace_rows"] = json!(
+            copies
+                .values()
+                .map(|locations| locations.len() - 1)
+                .sum::<usize>()
+        );
+        search["conflicting_namespace_rows"] = json!(conflicts.len());
+    }
     let seeds: HashSet<_> = rows
         .iter()
         .filter(|(line, row)| {
@@ -194,10 +326,11 @@ pub(crate) fn read(path: &Path, query: &Query<'_>) -> Result<Value, crate::Error
     let connections: HashSet<_> = rows
         .iter()
         .filter(|(line, _)| seeds.contains(line))
-        .flat_map(|(_, row)| direct_connections(row))
+        .flat_map(|(_, row)| {
+            direct_connections(row).map(|connection| (row["agent"].as_str(), connection))
+        })
         .collect();
-    // One bounded expansion adds connection context and its indications.
-    // Supporting records are resolved below without recursive traversal.
+    // One bounded expansion adds same-agent connection context and indications.
     let related: HashSet<_> = rows
         .iter()
         .filter(|(line, row)| {
@@ -207,7 +340,7 @@ pub(crate) fn read(path: &Path, query: &Query<'_>) -> Result<Value, crate::Error
                     Some("network.connection" | "security.indicator")
                 ) && row["details"]["connection_id"]
                     .as_str()
-                    .is_some_and(|id| connections.contains(id)))
+                    .is_some_and(|id| connections.contains(&(row["agent"].as_str(), id))))
         })
         .map(|(line, _)| *line)
         .collect();
@@ -220,27 +353,39 @@ pub(crate) fn read(path: &Path, query: &Query<'_>) -> Result<Value, crate::Error
                 .filter(|(_, candidate)| link.matches(candidate))
                 .map(|(line, _)| *line)
                 .collect();
-            if !link.record_lines.is_empty() {
+            link.conflicting_record_lines = link
+                .record_lines
+                .iter()
+                .filter(|line| conflicts.contains(line))
+                .copied()
+                .collect();
+            if !conflicts.contains(line)
+                && !link.record_lines.is_empty()
+                && link.conflicting_record_lines.is_empty()
+            {
                 link.status = "available";
-                included.extend(link.record_lines.iter().copied());
             }
+            included.extend(link.record_lines.iter().copied());
             evidence.push(link);
         }
     }
-    let correlations = correlation::exposures(&rows, &related, query, &mut included);
-    let records: Vec<_> = rows.iter().filter(|(line, _)| included.contains(line))
-        .map(|(line, row)| json!({"line":line,"selection":if related.contains(line) {"related"} else {"supporting"},"record":row}))
-        .collect();
-    Ok(json!({
-        "file":path,
+    let correlations = correlation::exposures(&rows, &related, query, &conflicts, &mut included);
+    let records: Vec<_> = rows.iter().filter(|(line, _)| included.contains(line)).map(|(line, row)| {
+        let mut entry = json!({"line":line,"selection":if related.contains(line) {"related"} else {"supporting"},"record":row});
+        if explicit {
+            entry["locations"] = json!(copies[line]);
+            entry["conflicting"] = json!(conflicts.contains(line));
+        }
+        entry
+    }).collect();
+    let mut result = json!({
         "query":{"instance_id":query.instance,"runtime_id":query.runtime,"kind":query.kind,"id":query.id,"agent":query.agent},
-        "search":{
-            "lines_read":tail.lines_read,"agent_rows":tail.agent_rows,"line_limit":query.lines,
-            "retained_rows":tail.rows.len(),"omitted_rows":tail.agent_rows-tail.rows.len(),
-            "first_line":tail.rows.front().map(|(line,_)| line),"last_line":tail.rows.back().map(|(line,_)| line),
-            "files":"configured_file_only", "output_limited":false,
-            "limits":"Only the retained window of the opened local audit file was searched. Rotated files are not searched. Queued, dropped, rotated-away, outside-window or agent-filtered evidence may be unavailable. No event is reconstructed; absence is not proof that nothing occurred. Supporting links are followed once; retained bodies require the existing traffic commands."
-        },
-        "records":records,"links":evidence,"correlations":correlations
-    }))
+        "search":search,"records":records,"links":evidence,"correlations":correlations
+    });
+    if explicit {
+        result["inputs"] = json!(inputs);
+    } else {
+        result["file"] = json!(paths[0]);
+    }
+    Ok(result)
 }

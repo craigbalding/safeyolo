@@ -8,7 +8,7 @@ pub(crate) struct LocalTail {
     pub(crate) agent_rows: usize,
 }
 
-/// Validate the whole configured file, retaining the last selected-agent rows.
+/// Validate the whole supplied file, retaining the last selected-agent rows.
 /// Diagnostics must not echo retained bytes, paths or decoding errors.
 pub(crate) fn local_tail(
     path: &std::path::Path,
@@ -96,4 +96,21 @@ pub fn parse_record(line: &str) -> Result<Value> {
     }
     nsm::validate(&value)?;
     Ok(value)
+}
+
+/// A selected input failure aborts the view rather than silently omitting a file.
+/// The input number identifies the argument without echoing its path or content.
+pub(crate) fn selected_tails(
+    paths: &[std::path::PathBuf],
+    agent: Option<&str>,
+    limit: usize,
+) -> std::result::Result<Vec<LocalTail>, crate::Error> {
+    paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            local_tail(path, agent, limit)
+                .map_err(|error| format!("audit input {}: {error}", index + 1).into())
+        })
+        .collect()
 }

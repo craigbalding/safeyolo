@@ -13,7 +13,7 @@ fn trusted_agent(row: &Value) -> Option<&str> {
         .then_some(agent)
 }
 
-fn lines(rows: &[&(usize, Value)], matches: impl Fn(&Value) -> bool) -> Vec<usize> {
+fn lines(rows: &[&(RecordLine, Value)], matches: impl Fn(&Value) -> bool) -> Vec<RecordLine> {
     rows.iter()
         .filter(|(_, row)| matches(row))
         .map(|(line, _)| *line)
@@ -21,7 +21,7 @@ fn lines(rows: &[&(usize, Value)], matches: impl Fn(&Value) -> bool) -> Vec<usiz
 }
 
 fn novelty(
-    rows: &[&(usize, Value)],
+    rows: &[&(RecordLine, Value)],
     query: &Query<'_>,
     connection: &str,
     client: &str,
@@ -82,7 +82,7 @@ fn novelty(
 }
 
 fn transport(
-    rows: &[&(usize, Value)],
+    rows: &[&(RecordLine, Value)],
     query: &Query<'_>,
     request: Option<&str>,
     client: Option<&str>,
@@ -158,15 +158,14 @@ fn transport(
     result
 }
 
-fn include_evidence(value: &Value, included: &mut HashSet<usize>) {
+fn include_evidence(value: &Value, included: &mut HashSet<RecordLine>) {
     let mut add = |value: &Value| {
         included.extend(
             value
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter_map(Value::as_u64)
-                .map(|line| line as usize),
+                .filter_map(|line| serde_json::from_value::<RecordLine>(line.clone()).ok()),
         );
     };
     add(&value["source"]["record_lines"]);
@@ -184,20 +183,21 @@ fn include_evidence(value: &Value, included: &mut HashSet<usize>) {
 }
 
 pub(super) fn exposures(
-    rows: &[&(usize, Value)],
-    related: &HashSet<usize>,
+    rows: &[&(RecordLine, Value)],
+    related: &HashSet<RecordLine>,
     query: &Query<'_>,
-    included: &mut HashSet<usize>,
+    conflicts: &HashSet<RecordLine>,
+    included: &mut HashSet<RecordLine>,
 ) -> Vec<Value> {
     rows.iter().filter(|(line, row)| related.contains(line)
         && row["event"] == "security.indicator"
         && row["details"]["indicator_type"] == "prompt_injection_exposure")
     .map(|(line, exposure)| {
         let agent = trusted_agent(exposure);
-        let scoped: Vec<_> = rows.iter().copied().filter(|(_, row)| {
-            agent.is_some() && trusted_agent(row) == agent
+        let scoped: Vec<_> = rows.iter().copied().filter(|(line, row)| {
+            !conflicts.contains(line) && agent.is_some() && trusted_agent(row) == agent
         }).collect();
-        let usable = agent.is_some()
+        let usable = !conflicts.contains(line) && agent.is_some()
             && exposure["details"]["sensor"] == "prompt-injection.v1"
             && exposure["details"]["rule"] == "prompt.source_text_overlap.v1"
             && exposure["details"]["direction"] == "client_to_server";

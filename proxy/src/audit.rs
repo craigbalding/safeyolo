@@ -14,8 +14,8 @@ pub use envelope::{
     Severity,
 };
 pub use explain::{ExplainError, ExplainErrorKind};
-pub(crate) use reader::local_tail;
 pub use reader::parse_record;
+pub(crate) use reader::{local_tail, selected_tails};
 pub use writer::{Settings, Submission, Writer};
 
 use std::fmt;

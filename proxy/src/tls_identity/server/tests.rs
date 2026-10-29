@@ -447,8 +447,9 @@ async fn production_origin_tls12_tls13_full_resumed_and_retry_match_wire() {
                     agent: Some("alice"),
                     lines: 1000,
                 };
-                let view = crate::audit::pivot::read(&directory.path().join("audit.jsonl"), &query)
-                    .unwrap();
+                let path = directory.path().join("audit.jsonl");
+                let tail = crate::audit::local_tail(&path, query.agent, query.lines).unwrap();
+                let view = crate::audit::pivot::read(&[path], vec![tail], false, &query).unwrap();
                 assert!(view["records"].as_array().unwrap().iter().any(|entry| {
                     let row = &entry["record"];
                     row["event_id"].is_string()

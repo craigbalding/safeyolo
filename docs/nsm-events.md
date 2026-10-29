@@ -102,23 +102,49 @@ before a collector can join them to NSM records.
 The local operator can use `logs connection ID` or `logs request ID` with
 `--instance ID --runtime ID` to inspect these relationships. See the
 [operator workflow](operator-guide.md#follow-local-nsm-evidence) for complete
-commands. The read-only view uses the ordinary logs reader and its configured
-local file. A pivot keeps the last `--lines` selected-agent rows (default 100),
-then selects validated version 2 records within that namespace. It reports
-the file, physical line range, rows read and omitted rows. It displays all
-related records and one level of recorded supporting links within that window.
+commands. The read-only view uses the ordinary logs reader. By default it reads
+the configured local file. Repeated `--file PATH` options instead select retained
+files for offline inspection without installed config, proxy or Admin API.
+The operator supplies those files through an existing trusted operational route;
+the CLI neither acquires remote logs nor authenticates them through schema
+validation. Provenance comes from source selection and the original trusted
+producer, never from filenames or arbitrary identity claims.
+
+A pivot keeps the last `--lines` selected-agent rows (default 100) per input,
+then selects validated version 2 records within the requested namespace. Total
+retention is at most input count times `--lines`, before duplicate removal.
+Each selected input reports its supplied path, physical line range, rows read
+and omitted rows. Total counts include input copies. File-mode line references
+use `{"input":N,"line":L}`; `inputs` identifies the corresponding file and
+`locations` preserves every retained copy of an original record. Equal parsed
+records share evidence across repeated or overlapping inputs. Conflicting event
+copies or transport owners cannot establish a join. Different lifecycle snapshots
+with consistent owners remain distinct records. Input order and wall timestamps
+do not establish a global chronological order.
+
+Both ends of a cross-file join must agree on instance/runtime, agent and the
+recorded reference fields. Historical and version 1 records remain readable,
+but are not promoted to trusted version 2 joins. The reader validates every row
+to end of file. If any selected file is malformed, unsupported or unreadable,
+the command fails with an input-number diagnostic and no partial output.
+Windows apply before namespace selection, and no additional output limit hides
+related or supporting evidence. The view displays one level of recorded links
+within those windows; unselected files, rotation, queues and loss can leave
+support unavailable. It preserves input bytes and never fetches content.
 Request pivots include their connections and those connections' indications;
 connection indications can describe other requests on the same transport.
 These are recorded relationships, not a verdict about an agent.
 
 Each link reports `available` with matching file lines, or `unavailable`.
+File-mode links with conflicting support identify `conflicting_record_lines`;
+matching candidate records remain visible without establishing availability.
 Novelty links match both connection ID and exact source event ID. Prompt source
 links match the recorded request ID, connection ID and evidence hash of a
 response indication. Neither a coincident local ID nor a legacy row can
 establish availability. Agent filtering also applies to supporting records.
 The original records are returned unchanged inside `records[].record`.
 Rotation, drops, queued writes, an unavailable file and the selected window
-limit the evidence; missing evidence is not proof of absence. Rotated files
+limit the evidence; missing evidence is not proof of absence. Unselected rotated files
 and FlowStore bodies are not read by this view. The view makes no additional
 retention or completeness guarantee.
 
@@ -146,7 +172,7 @@ available, at least one companion novelty indication has complete support, and
 all listed novelty support is available. It is `partial` when the recognized,
 trusted exposure lacks part of that evidence. It is `unavailable` when the
 exposure lacks resolved trusted attribution or the recognized exposure
-sensor/rule/direction. The original exposure remains visible in every case.
+sensor/rule/direction, or when selected copies of the exposure conflict. The original exposure remains visible in every case.
 Per-source, transport and novelty statuses explain which evidence is missing.
 No available novelty in the searched window means unavailable evidence, not a
 clean verdict.
