@@ -360,6 +360,25 @@ safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --a
 safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --lines 1000 --json
 ```
 
+To inspect admission or credential handling, select the request reference from a
+scoped `security.network_guard`, guard evaluation, `security.credential_guard`
+or gateway entry. The request pivot shows the original decision or evaluation
+beside retained flow, connection and indication records. Each record retains its
+source file and physical line. Use a listed connection reference to inspect
+decisions for the requests whose flows name that connection. The same workflow
+works with the explicit files below, including decisions and transport evidence
+retained in separate files.
+
+Decision links require the same instance, runtime, resolved agent, request and
+recorded client connection. Guard evaluations show their existing `outcome`,
+`pdp` or `evaluations`; they do not imply credential detection. A denied request
+may have only ingress evidence and no upstream flow. Read an unavailable link
+as missing support in this search. An allow or credential-injection event does
+not establish upstream delivery, model receipt or compromise. Approval IDs are
+not traffic join keys. Historical unscoped events cannot acquire scope from a
+matching request ID. See the [scoped request contract](nsm-events.md#scoped-request-decisions)
+for supported events and compatibility limits.
+
 For offline inspection on a machine with the native `safeyolo` CLI, copy retained
 native audit JSONL files from your owned instances through your existing trusted
 operational route. In a local directory containing those files, replace

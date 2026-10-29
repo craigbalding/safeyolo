@@ -15,14 +15,16 @@ issue #581.
 
 ## Version and reader compatibility
 
-Existing events keep `schema_version: 1` and their existing wire representation.
 The three NSM events use `schema_version: 2`. The new `network` kind is valid
-only in version 2. Event prefixes must still match their kind. Version 2
-currently accepts only the three NSM event names. A producer cannot label an
-NSM payload as version 1 to avoid validation.
+only in version 2. Event prefixes must still match their kind. A producer cannot
+label one of these three NSM contracts as version 1 to avoid validation.
+The bounded request-path decision events described below also use version 2
+when explicitly bound by the native connection owner. Their historical version 1
+and unversioned forms remain readable and unscoped. Other existing events keep
+version 1 and their existing wire representation.
 
 Producers use the existing `audit::Event` and `audit::Writer`. The writer selects
-the version from the event name and kind, and validates the NSM fields before
+the version from the event name, kind and explicit request binding, and validates the scoped fields before
 queueing. Invalid input follows the existing audit validation failure path:
 a diagnostic and an unversioned minimal fallback. The fallback is not a valid
 NSM record and cannot establish a correlation relationship.
@@ -70,8 +72,58 @@ All NSM payload fields below are in `details`, except `request_id`, which
 uses the existing envelope field. Existing `ts`, `event_id`, `severity`,
 `summary`, `agent`, and `addon`/`control` fields retain their envelope roles.
 `ts` is the record time; it does not replace a connection's observed start/end
-times. Version 2 accepts only the documented payload fields and existing
-envelope fields.
+times. The three NSM contracts accept only their documented payload fields and
+existing envelope fields. Scoped request decisions preserve their existing
+decision-specific details in addition to the required binding below.
+
+## Scoped request decisions
+
+The connection owner binds the following existing publications to its actual
+instance, runtime and ingress connection:
+
+- `security.network_guard` and `security.network_guard.evaluated`;
+- `security.credential_guard`, `security.credential_guard.evaluated` and
+  `security.credential_guard.codex_refreshed`;
+- `gateway.allow`, `gateway.deny`, `gateway.refresh_failed`,
+  `gateway.https_redirect` and `gateway.http_injection_allowed`.
+
+These version 2 events require nonempty envelope `request_id`, `event_id` and
+`host`, plus `details.instance_id`, `details.runtime_id` and
+`details.client_connection_id`. The binding is supplied by the same owner as
+connection evidence and survives policy reload. Guard records also retain
+`details.connection_id`, which must equal the bound ingress connection.
+The original decision, approval fields and decision-specific details remain
+available. Decision records require an existing `decision` value and the matching
+`addon` label, or its native `control` label (`network`, `credentials` or
+`services`). Guard evaluation records instead retain `outcome` and `pdp` or
+`evaluations`; they do not acquire an invented envelope decision. An allowed
+ordinary request may have an evaluation record without a separate
+`security.network_guard` intent. Evaluations do not imply that a credential was
+detected. The confirmed Codex response event describes an observed authorized
+refresh, not an arbitrary upstream response.
+
+Use `logs list` to find the bound request or connection, then use the ordinary
+request/connection pivots. Both configured-file and explicit multi-file views
+show the unchanged event and its physical source lines. Decision links resolve
+only to a same-namespace, same-resolved-agent ingress connection and to that
+request's `traffic.flow` with the same client owner. An upstream pivot includes
+decisions for the requests whose flows actually name that upstream connection.
+One level of recorded support is followed. Approval IDs, control IDs and
+co-location in a file do not establish traffic relationships.
+
+A denial may have no upstream flow or connection. The view retains the decision
+and available ingress evidence; missing flow support is `unavailable`. Conflicting
+event copies, request/client owners or attribution cannot establish a decision
+link. Version 1 and unversioned events never acquire scope from a matching ID.
+Missing, filtered, outside-window, queued or lost events leave policy and
+credential handling unknown. Schema validation does not authenticate the
+producer or operator-selected inputs.
+
+An indication, policy decision, credential handling event and observed traffic
+are different evidence. An allow or injection event does not prove upstream
+delivery, model receipt, malicious intent or compromise. This binding adds no
+credential policy, content retention or enforcement decision. Older strict
+version 2 readers must update to accept these additional event contracts.
 
 ## Correlation and trusted attribution
 

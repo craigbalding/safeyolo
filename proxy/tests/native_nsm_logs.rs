@@ -11,6 +11,8 @@ use tokio::{
 
 #[path = "native_nsm_logs/correlation.rs"]
 mod correlation;
+#[path = "native_nsm_logs/decisions.rs"]
+mod decisions;
 #[path = "native_nsm_logs/exposure.rs"]
 mod exposure;
 #[path = "native_nsm_logs/listing.rs"]
@@ -352,7 +354,13 @@ async fn actual_native_request_and_connection_pivots_show_transport_flow_and_ind
     let policy = root.path().join("policy.json");
     fs::write(
         &policy,
-        json!({"permissions":[{"action":"network:request","resource":"*","effect":"allow"}]})
+        json!({"permissions":[
+            {"action":"network:request","resource":"blocked.invalid/*","effect":"deny"},
+            {"action":"network:request","resource":"*","effect":"allow"},
+            {"action":"credential:use","resource":"*","effect":"allow"}],
+            "credential_rules":[{"name":"synthetic","patterns":["key-[a-z]+"],
+                "allowed_hosts":["127.0.0.1"],"header_names":["authorization"]}],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}})
             .to_string(),
     )
     .unwrap();
@@ -376,7 +384,7 @@ async fn actual_native_request_and_connection_pivots_show_transport_flow_and_ind
     let mut client = UnixStream::connect(root.path().join("alice.sock"))
         .await
         .unwrap();
-    client.write_all(format!("GET http://{address}/source HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    client.write_all(format!("GET http://{address}/source HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer key-nativefixture\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
     let mut response = Vec::new();
     timeout(Duration::from_secs(5), client.read_to_end(&mut response))
         .await
@@ -384,8 +392,19 @@ async fn actual_native_request_and_connection_pivots_show_transport_flow_and_ind
         .unwrap();
     assert!(response.starts_with(b"HTTP/1.1 200"));
     serving.await.unwrap();
+    let mut denied = UnixStream::connect(root.path().join("alice.sock"))
+        .await
+        .unwrap();
+    denied.write_all(b"GET http://blocked.invalid/blocked HTTP/1.1\r\nHost: blocked.invalid\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut reply = Vec::new();
+    timeout(Duration::from_secs(5), denied.read_to_end(&mut reply))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(reply.starts_with(b"HTTP/1.1 403"));
     proxy.shutdown().await;
     let bytes = fs::read(root.path().join("audit.jsonl")).unwrap();
+    decisions::assert_native_views(root.path(), &bytes).await;
     let rows: Vec<_> = std::str::from_utf8(&bytes)
         .unwrap()
         .lines()

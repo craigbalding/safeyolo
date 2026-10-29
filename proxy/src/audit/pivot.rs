@@ -54,10 +54,14 @@ struct Link<'a> {
 
 impl Link<'_> {
     fn matches(&self, row: &Value) -> bool {
-        if row["event"] != self.event
-            || row["details"]["connection_id"] != self.connection_id
-            || row["agent"].as_str() != self.agent
-        {
+        if row["event"] != self.event || row["agent"].as_str() != self.agent {
+            return false;
+        }
+        if self.event == "traffic.flow" {
+            return row["request_id"].as_str() == self.request_id
+                && row["details"]["client_connection_id"] == self.connection_id;
+        }
+        if row["details"]["connection_id"] != self.connection_id {
             return false;
         }
         if self.event_id.is_some_and(|id| row["event_id"] != id) {
@@ -159,7 +163,33 @@ fn links<'a>(line: RecordLine, row: &'a Value, query: &Query<'a>) -> Vec<Link<'a
                 );
             }
         }
+        Some(name) if super::nsm::is_request_decision(name) => add(
+            "details.client_connection_id",
+            details["client_connection_id"].as_str(),
+            None,
+            None,
+            None,
+        ),
         _ => {}
+    }
+    if super::nsm::is_request_decision(row["event"].as_str().unwrap_or_default()) {
+        result.push(Link {
+            from_line: line,
+            field: "request_id",
+            event: "traffic.flow",
+            instance_id: query.instance,
+            runtime_id: query.runtime,
+            agent: row["agent"].as_str(),
+            connection_id: details["client_connection_id"]
+                .as_str()
+                .expect("validated scope"),
+            request_id: row["request_id"].as_str(),
+            event_id: None,
+            evidence_hash: None,
+            status: "unavailable",
+            record_lines: Vec::new(),
+            conflicting_record_lines: Vec::new(),
+        });
     }
     result
 }
@@ -177,12 +207,14 @@ fn trusted_agent(row: &Value) -> Option<&str> {
 
 fn direct_connections(row: &Value) -> impl Iterator<Item = &str> {
     let details = &row["details"];
+    let decision = super::nsm::is_request_decision(row["event"].as_str().unwrap_or_default());
     [
         "connection_id",
         "client_connection_id",
         "server_connection_id",
     ]
     .into_iter()
+    .filter(move |key| !decision || *key == "client_connection_id")
     .filter_map(|key| details[key].as_str())
 }
 
@@ -240,6 +272,23 @@ fn conflicting_lines(rows: &[&(RecordLine, Value)]) -> HashSet<RecordLine> {
                 .entry(key.to_string())
                 .or_default()
                 .push((*line, owner.to_string()));
+        }
+        if row["event"] == "traffic.flow"
+            || super::nsm::is_request_decision(row["event"].as_str().unwrap_or_default())
+        {
+            groups
+                .entry(
+                    json!([
+                        "request-client",
+                        details["instance_id"],
+                        details["runtime_id"],
+                        row["agent"],
+                        row["request_id"]
+                    ])
+                    .to_string(),
+                )
+                .or_default()
+                .push((*line, details["client_connection_id"].to_string()));
         }
     }
     groups
@@ -358,11 +407,7 @@ pub(crate) fn read(
             && row["details"]["runtime_id"] == query.runtime
     });
     let rows: Vec<_> = retained.iter().collect();
-    let conflicts = if explicit {
-        conflicting_lines(&rows)
-    } else {
-        HashSet::new()
-    };
+    let conflicts = conflicting_lines(&rows);
     if explicit {
         search["unique_namespace_rows"] = json!(rows.len());
         search["duplicate_namespace_rows"] = json!(
@@ -377,7 +422,9 @@ pub(crate) fn read(
         .iter()
         .filter(|(line, row)| {
             if query.kind == "request" {
-                row["request_id"] == query.id || row["details"]["source"]["request_id"] == query.id
+                row["request_id"] == query.id
+                    || (row["event"] == "security.indicator"
+                        && row["details"]["source"]["request_id"] == query.id)
             } else {
                 row["details"]["connection_id"] == query.id
                     || links(*line, row, query)
@@ -389,9 +436,30 @@ pub(crate) fn read(
         .collect();
     let connections: HashSet<_> = rows
         .iter()
-        .filter(|(line, _)| seeds.contains(line))
+        .filter(|(line, row)| {
+            seeds.contains(line)
+                && !conflicts.contains(line)
+                && (!super::nsm::is_request_decision(row["event"].as_str().unwrap_or_default())
+                    || trusted_agent(row).is_some())
+        })
         .flat_map(|(_, row)| {
             direct_connections(row).map(|connection| (row["agent"].as_str(), connection))
+        })
+        .collect();
+    let requests: HashSet<_> = rows
+        .iter()
+        .filter(|(line, row)| {
+            seeds.contains(line)
+                && !conflicts.contains(line)
+                && row["event"] == "traffic.flow"
+                && trusted_agent(row).is_some()
+        })
+        .map(|(_, row)| {
+            (
+                trusted_agent(row),
+                row["request_id"].as_str(),
+                row["details"]["client_connection_id"].as_str(),
+            )
         })
         .collect();
     // One bounded expansion adds same-agent connection context and indications.
@@ -399,6 +467,13 @@ pub(crate) fn read(
         .iter()
         .filter(|(line, row)| {
             seeds.contains(line)
+                || (super::nsm::is_request_decision(row["event"].as_str().unwrap_or_default())
+                    && trusted_agent(row).is_some()
+                    && requests.contains(&(
+                        trusted_agent(row),
+                        row["request_id"].as_str(),
+                        row["details"]["client_connection_id"].as_str(),
+                    )))
                 || (matches!(
                     row["event"].as_str(),
                     Some("network.connection" | "security.indicator")
@@ -412,9 +487,18 @@ pub(crate) fn read(
     let mut evidence = Vec::new();
     for (line, row) in rows.iter().filter(|(line, _)| related.contains(line)) {
         for mut link in links(*line, row, query) {
+            let decision =
+                super::nsm::is_request_decision(row["event"].as_str().unwrap_or_default());
             link.record_lines = rows
                 .iter()
-                .filter(|(_, candidate)| link.matches(candidate))
+                .filter(|(_, candidate)| {
+                    link.matches(candidate)
+                        && (!decision
+                            || (trusted_agent(row).is_some()
+                                && trusted_agent(candidate) == trusted_agent(row)
+                                && (link.event != "network.connection"
+                                    || candidate["details"]["leg"] == "client_to_proxy")))
+                })
                 .map(|(line, _)| *line)
                 .collect();
             link.conflicting_record_lines = link

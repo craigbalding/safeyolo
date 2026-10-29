@@ -102,6 +102,7 @@ pub(crate) fn read(
         let mut entry = json!({
             "line":line,"locations":retained.copies[line],"event":row["event"],
             "event_id":row["event_id"],"ts":row["ts"],"summary":row["summary"],
+            "decision":row["decision"],
             "attribution":row["details"]["attribution"],"conflicting":conflicts.contains(line),
             "references":references(*line, row)
         });

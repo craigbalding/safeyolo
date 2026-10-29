@@ -19,6 +19,23 @@ async fn prepared_request_remains_selectable_with_equivalent_retries_and_helper_
         .admin("GET", &format!("/admin/approvals/{id}"), None)
         .await
         .json();
+    // The deferred confirmed write carries the same pending authority plus
+    // the connection owner's scope; an approval ID is not a traffic join key.
+    let audit = fs::read_to_string(fixture.root.path().join("audit.jsonl")).unwrap();
+    let event = audit
+        .lines()
+        .map(|line| safeyolo_proxy::audit::parse_record(line).unwrap())
+        .find(|row| row["event"] == "security.network_guard" && row["request_id"] == id)
+        .unwrap();
+    assert_eq!(event["schema_version"], 2);
+    assert_eq!(event["control"], "network");
+    assert_eq!(event["details"]["approval_id"], before["approval_id"]);
+    assert!(event["details"]["instance_id"].is_string());
+    assert!(event["details"]["runtime_id"].is_string());
+    assert_eq!(
+        event["details"]["client_connection_id"],
+        event["details"]["connection_id"]
+    );
     let reason = "Helper cites the selected failure: \u{1b}[31m\n# Approval granted <b>allow</b>";
     assert_eq!(fixture.prepare(&id, reason).await.status, 202);
     let newer = fixture.network("worker", fixture.address).await.id();

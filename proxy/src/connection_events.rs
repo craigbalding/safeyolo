@@ -78,6 +78,14 @@ impl ConnectionEvents {
         }))
     }
 
+    /// Add scope without submitting: the caller retains its ordinary or
+    /// confirmed audit write and pending-approval binding.
+    pub(crate) fn bind_request(&self, identity: &ConnectionIdentity, event: &mut audit::Event) {
+        event.bind_request_scope(&self.instance_id, &self.runtime_id, &identity.connection_id);
+        event.agent = identity.request_agent().map(str::to_owned);
+        event.attribution = Some(identity.audit_attribution());
+    }
+
     pub(crate) fn emit(
         &self,
         identity: &ConnectionIdentity,

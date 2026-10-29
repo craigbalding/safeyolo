@@ -978,8 +978,9 @@ fn show_log_listing(value: &Value) -> Result<(), Error> {
             );
             for record in group["records"].as_array().into_iter().flatten() {
                 println!(
-                    "  {} | Event ID: {} | Time: {} | Locations: {}\n    {}",
+                    "  {} | Decision: {} | Event ID: {} | Time: {} | Locations: {}\n    {}",
                     text(&record["event"]),
+                    context_json(&record["decision"])?,
                     context_json(&record["event_id"])?,
                     context_json(&record["ts"])?,
                     record["locations"],

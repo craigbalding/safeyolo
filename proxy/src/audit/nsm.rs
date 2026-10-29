@@ -18,6 +18,69 @@ pub(super) fn is_event(name: &str) -> bool {
     )
 }
 
+/// Existing decision events opt into v2 only at scoped request publications.
+/// Their historical v1 representations remain ordinary, unscoped audit data.
+pub(super) fn is_request_decision(name: &str) -> bool {
+    matches!(
+        name,
+        "security.network_guard"
+            | "security.network_guard.evaluated"
+            | "security.credential_guard"
+            | "security.credential_guard.evaluated"
+            | "security.credential_guard.codex_refreshed"
+            | "gateway.allow"
+            | "gateway.deny"
+            | "gateway.refresh_failed"
+            | "gateway.https_redirect"
+            | "gateway.http_injection_allowed"
+    )
+}
+
+fn request_decision_valid(record: &Value) -> bool {
+    let details = &record["details"];
+    let name = record["event"].as_str().unwrap_or_default();
+    let addon = match name {
+        "security.network_guard" | "security.network_guard.evaluated" => "network-guard",
+        "security.credential_guard"
+        | "security.credential_guard.evaluated"
+        | "security.credential_guard.codex_refreshed" => "credential-guard",
+        _ => "service-gateway",
+    };
+    let evaluated = name.ends_with(".evaluated");
+    ["instance_id", "runtime_id", "client_connection_id"]
+        .iter()
+        .all(|key| details[key].as_str().is_some_and(|id| required(&[id])))
+        && ["request_id", "event_id", "host"]
+            .iter()
+            .all(|key| record[key].as_str().is_some_and(|id| required(&[id])))
+        && ((evaluated && record.get("addon").is_none() && record.get("control").is_none())
+            || (record["addon"] == addon && record.get("control").is_none())
+            || (record["control"] == crate::policy::native::control_label(addon)
+                && record.get("addon").is_none()))
+        && (if evaluated {
+            record.get("decision").is_none()
+                && matches!(
+                    details["outcome"].as_str(),
+                    Some("allowed" | "blocked" | "warned" | "bypassed" | "no_detection")
+                )
+                && if name == "security.network_guard.evaluated" {
+                    details["outcome"] != "no_detection"
+                        && details
+                            .get("pdp")
+                            .is_some_and(|pdp| pdp.is_null() || pdp.is_object())
+                } else {
+                    details["evaluations"].is_array()
+                }
+        } else {
+            matches!(
+                record["decision"].as_str(),
+                Some("allow" | "deny" | "warn" | "require_approval" | "budget_exceeded" | "log")
+            )
+        })
+        && ((addon == "service-gateway" && details.get("connection_id").is_none())
+            || details["connection_id"] == details["client_connection_id"])
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Endpoint {
@@ -167,6 +230,13 @@ pub(super) fn validate(record: &Value) -> Result<()> {
         "network.connection" => "network",
         "traffic.flow" => "traffic",
         "security.indicator" => "security",
+        name if is_request_decision(name) => {
+            if name.starts_with("gateway.") {
+                "gateway"
+            } else {
+                "security"
+            }
+        }
         _ => return Err(invalid()),
     };
     if record["kind"] != expected_kind
@@ -252,6 +322,7 @@ pub(super) fn validate(record: &Value) -> Result<()> {
                 && record.get("decision").is_none()
                 && record.get("approval").is_none()
         }
+        name if is_request_decision(name) => request_decision_valid(record),
         _ => false,
     };
     if valid { Ok(()) } else { Err(invalid()) }
