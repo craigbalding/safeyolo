@@ -25,11 +25,13 @@ fn first_observation(client: bool, connection: &str, event: &str) -> Value {
         "current":{"connection_id":connection,"event_id":event,"cert_sha256":null,"spki_sha256":null},
         "previous":null});
     if client {
+        result["details"]["rule"] = json!("tls.client_fingerprint_first_observation.v1");
         result["details"]["indicator_type"] = json!("tls_client_fingerprint_novelty");
         result["details"]["novelty"]["current"]["client_fingerprint"] = json!({
             "ja3":"a".repeat(32),"ja4":"t13d1516h2_8daaf6152771_e5627efa2ab1"});
     } else {
-        result["details"]["indicator_type"] = json!("destination_first_seen");
+        result["details"]["indicator_type"] = json!("destination_novelty");
+        result["details"]["rule"] = json!("destination.first_observation.v1");
         result["details"]["novelty"]["destination"] = json!("example.invalid:443");
         result["details"]["novelty"]["route"] = json!("direct");
     }
@@ -221,6 +223,15 @@ async fn generated_sparse_controls_require_exact_source_flows_events_and_trusted
         let result = success(root.path(), &pivot_args("request", "F1")).await;
         let correlation = only_correlation(&result);
         assert_eq!(
+            correlation["warning"]["status"],
+            if mask & 33 == 0 && mask & 6 != 6 {
+                "investigate"
+            } else {
+                "unavailable"
+            },
+            "warning mask={mask}: {correlation}"
+        );
+        assert_eq!(
             correlation["status"],
             if mask == 0 {
                 "linked"
@@ -289,6 +300,7 @@ async fn generated_sparse_controls_require_exact_source_flows_events_and_trusted
             "{pointer}: {correlation}"
         );
         assert_eq!(correlation["source_transport"]["novelty"], json!([]));
+        assert_eq!(correlation["warning"]["status"], "unavailable");
         if pointer == "/agent" {
             assert!(
                 result["links"]
@@ -311,6 +323,7 @@ async fn paired_and_previous_observations_and_conflicting_flow_owners_require_re
         let mut rows = correlation_rows();
         // Pairing needs both exact events on this flow's client and server.
         rows[10]["details"]["indicator_type"] = json!("tls_client_destination_novelty");
+        rows[10]["details"]["rule"] = json!("tls.client_destination_first_observation.v1");
         rows[10]["details"]["novelty"]["client"] = rows[9]["details"]["novelty"]["current"].clone();
         match mode {
             1 => {
@@ -327,6 +340,8 @@ async fn paired_and_previous_observations_and_conflicting_flow_owners_require_re
                 previous["event_id"] = json!("missing-previous-event");
                 previous["client_fingerprint"]["ja3"] = json!("b".repeat(32));
                 rows[9]["details"]["novelty"]["previous"] = previous;
+                rows[9]["details"]["rule"] = json!("tls.client_fingerprint_changed.v1");
+                rows[9]["details"]["indicator_type"] = json!("tls_client_fingerprint_change");
             }
             4 => {
                 let mut conflicting = flow("F1", "C1", "another-upstream");
@@ -375,6 +390,8 @@ async fn paired_and_previous_observations_and_conflicting_flow_owners_require_re
     let mut other = first_observation(true, "other-client", "other-event");
     other["details"]["novelty"]["current"]["client_fingerprint"]["ja3"] = json!("b".repeat(32));
     other["details"]["novelty"]["previous"] = rows[9]["details"]["novelty"]["current"].clone();
+    other["details"]["rule"] = json!("tls.client_fingerprint_changed.v1");
+    other["details"]["indicator_type"] = json!("tls_client_fingerprint_change");
     other["details"]["attribution"] = rows[9]["details"]["attribution"].clone();
     rows.push(other);
     write_rows(root.path(), &rows);

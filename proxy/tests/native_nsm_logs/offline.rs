@@ -103,6 +103,7 @@ pub(super) async fn assert_native_split(root: &Path, bytes: &[u8], exposure: &Va
         let result = success(&offline_root, &args).await;
         let correlation = only_correlation(&result);
         assert_eq!(correlation["status"], "linked", "{result}");
+        assert_eq!(correlation["warning"]["status"], "investigate");
         assert_eq!(correlation["exposure_line"], json!({"input":1,"line":1}));
         assert!(
             correlation["source"]["record_lines"]
@@ -127,6 +128,7 @@ pub(super) async fn assert_native_split(root: &Path, bytes: &[u8], exposure: &Va
             "Input 2:",
             "physical lines",
             "Prompt exposure correlation",
+            "Investigation warning:",
             "\"input\": 2",
             "linked",
         ] {
@@ -140,6 +142,260 @@ pub(super) async fn assert_native_split(root: &Path, bytes: &[u8], exposure: &Va
         assert_eq!(fs::read(path).unwrap(), *content);
     }
     assert_eq!(fs::read(root.join("audit.jsonl")).unwrap(), bytes);
+}
+
+/// Keep one real producer's destination indication as the only novelty signal.
+/// Every failure control must then lose that signal rather than another valid
+/// indication accidentally rescuing the warning.
+pub(super) async fn assert_native_warning_controls(root: &Path, rows: &[Value], exposure: &Value) {
+    let path = root.join("warning-controls.jsonl");
+    let offline = root.join("no-warning-instance");
+    let request = exposure["request_id"].as_str().unwrap();
+    for side in ["source", "model"] {
+        let request_id = if side == "source" {
+            &exposure["details"]["source"]["request_id"]
+        } else {
+            &exposure["request_id"]
+        };
+        let flow = rows
+            .iter()
+            .find(|row| row["event"] == "traffic.flow" && row["request_id"] == *request_id)
+            .unwrap();
+        let signal = rows
+            .iter()
+            .find(|row| {
+                row["details"]["rule"] == "destination.first_observation.v1"
+                    && row["details"]["connection_id"] == flow["details"]["server_connection_id"]
+            })
+            .unwrap();
+        let baseline: Vec<_> = rows
+            .iter()
+            .filter(|row| row["details"]["sensor"] != "connection-history.v1" || *row == signal)
+            .cloned()
+            .collect();
+        let source = baseline
+            .iter()
+            .position(|row| {
+                row["event"] == "security.indicator"
+                    && row["details"]["direction"] == "server_to_client"
+            })
+            .unwrap();
+        let indicator = baseline.iter().position(|row| row == signal).unwrap();
+        let current = baseline
+            .iter()
+            .position(|row| row["event_id"] == signal["details"]["novelty"]["current"]["event_id"])
+            .unwrap();
+        let flow_index = baseline.iter().position(|row| row == flow).unwrap();
+        let exposure_index = baseline.iter().position(|row| row == exposure).unwrap();
+        let mut cases = vec![("supported", baseline.clone(), true)];
+        for (label, index) in [
+            ("exposure", exposure_index),
+            ("source", source),
+            ("novelty", indicator),
+            ("current", current),
+            ("flow", flow_index),
+        ] {
+            let mut missing = baseline.clone();
+            missing.remove(index);
+            cases.push((label, missing, false));
+            let mut conflicting = baseline.clone();
+            let mut copy = conflicting[index].clone();
+            // Indicators and flows do not always carry event IDs. Explicitly
+            // claim one shared event before testing incompatible event copies.
+            if copy["event_id"].is_null() {
+                copy["event_id"] = json!("conflicting-fixture-event");
+                conflicting[index]["event_id"] = copy["event_id"].clone();
+            }
+            copy["summary"] = json!("Conflicting copy of essential evidence");
+            conflicting.push(copy);
+            cases.push((label, conflicting, false));
+        }
+        for (index, pointer, replacement) in [
+            (source, "/host", json!("wrong-source.invalid")),
+            (source, "/request_id", json!("wrong-source-request")),
+            (
+                source,
+                "/details/evidence_hash",
+                json!(format!("sha256:{}", "b".repeat(64))),
+            ),
+            (current, "/event_id", json!("wrong-exact-event")),
+            (
+                current,
+                "/details/client_connection_id",
+                json!("wrong-client-owner"),
+            ),
+            (indicator, "/details/instance_id", json!("wrong-instance")),
+            (indicator, "/details/runtime_id", json!("wrong-runtime")),
+            (indicator, "/agent", json!("bob")),
+            (
+                indicator,
+                "/details/attribution/attribution_status",
+                json!("unavailable"),
+            ),
+            (indicator, "/details/rule", json!("unrecognized.rule.v1")),
+            (
+                indicator,
+                "/details/rule",
+                json!("tls.origin_identity_changed.v1"),
+            ),
+        ] {
+            let mut changed = baseline.clone();
+            *changed[index].pointer_mut(pointer).unwrap() = replacement;
+            cases.push((pointer, changed, false));
+        }
+        let mut wrong_run = baseline.clone();
+        wrong_run[indicator]["details"]["sandbox_run"] = json!({"agent":"alice","agent_id":"fixture-agent","run_id":"0123456789abcdef0123456789abcdef"});
+        cases.push(("wrong recorded run", wrong_run, false));
+        let mut no_context = baseline.clone();
+        no_context.retain(|row| {
+            matches!(
+                row["event"].as_str(),
+                Some("network.connection" | "traffic.flow" | "security.indicator")
+            ) && (row["event"] != "traffic.flow" || row["request_id"] == *request_id)
+        });
+        cases.push(("other flow and decision context absent", no_context, true));
+        let mut partial = baseline.clone();
+        let mut unsupported = signal.clone();
+        unsupported["event_id"] = json!("unsupported-context-indicator");
+        unsupported["details"]["novelty"]["current"]["event_id"] = json!("missing-context-event");
+        partial.push(unsupported);
+        cases.push(("unavailable additional novelty", partial, true));
+        for (label, input, warn) in cases {
+            let bytes = save(&path, &input);
+            let args = [
+                "logs",
+                "request",
+                request,
+                "--instance",
+                exposure["details"]["instance_id"].as_str().unwrap(),
+                "--runtime",
+                exposure["details"]["runtime_id"].as_str().unwrap(),
+                "--file",
+                path.to_str().unwrap(),
+                "--lines",
+                "1000",
+                "--json",
+            ];
+            let result = success(&offline, &args).await;
+            let correlations = result["correlations"].as_array().unwrap();
+            assert_eq!(
+                correlations
+                    .iter()
+                    .any(|entry| entry["warning"]["status"] == "investigate"),
+                warn,
+                "{side} {label}: {result}"
+            );
+            if label == "unavailable additional novelty" {
+                assert_eq!(only_correlation(&result)["status"], "partial");
+                assert!(
+                    only_correlation(&result)[&format!("{side}_transport")]["novelty"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry["status"] == "unavailable")
+                );
+            }
+            if warn {
+                let warning = &only_correlation(&result)["warning"];
+                assert_eq!(warning["supported_novelty"].as_array().unwrap().len(), 1);
+                let original_line = input.iter().position(|row| row == signal).unwrap() + 1;
+                assert_eq!(
+                    warning["supported_novelty"][0]["indicator_line"],
+                    json!({"input":1,"line":original_line})
+                );
+                assert!(
+                    warning["reason"].as_str().unwrap().contains(
+                        signal["details"]["novelty"]["destination"]
+                            .as_str()
+                            .unwrap()
+                    )
+                );
+            }
+            originals(&result, std::slice::from_ref(&bytes));
+            let ordinary = cli(&offline, &args[..args.len() - 1]).await;
+            assert!(ordinary.status.success());
+            assert_eq!(
+                String::from_utf8(ordinary.stdout)
+                    .unwrap()
+                    .contains("Investigation warning:"),
+                warn,
+                "{side} {label}"
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+    assert!(!offline.exists());
+}
+
+#[tokio::test]
+async fn warning_requires_the_recorded_rules_previous_or_client_observation() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("rule-support.jsonl");
+    for paired in [false, true] {
+        for mode in 0..5 {
+            let mut rows = correlation_rows();
+            let signal_index = if paired { 10 } else { 9 };
+            let mut signal = rows[signal_index].clone();
+            if paired {
+                signal["details"]["rule"] = json!("tls.client_destination_first_observation.v1");
+                signal["details"]["indicator_type"] = json!("tls_client_destination_novelty");
+                signal["details"]["novelty"]["client"] =
+                    rows[9]["details"]["novelty"]["current"].clone();
+            } else {
+                signal["details"]["rule"] = json!("tls.client_fingerprint_changed.v1");
+                signal["details"]["indicator_type"] = json!("tls_client_fingerprint_change");
+                let mut previous = rows[7]["details"]["novelty"]["current"].clone();
+                previous["client_fingerprint"]["ja3"] = json!("b".repeat(32));
+                signal["details"]["novelty"]["previous"] = previous;
+            }
+            let required = if paired { "client" } else { "previous" };
+            match mode {
+                1 => signal["details"]["novelty"]["current"]["event_id"] = json!("wrong-current"),
+                2 => signal["details"]["novelty"][required]["event_id"] = json!("wrong-support"),
+                3 => {
+                    signal["details"]["novelty"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove(required);
+                }
+                4 => {
+                    if paired {
+                        signal["details"]["novelty"]["client"] =
+                            rows[7]["details"]["novelty"]["current"].clone();
+                    } else {
+                        rows[0]["details"]["leg"] = json!("proxy_to_upstream");
+                        rows[0]["details"]["client_connection_id"] = json!("another-client");
+                    }
+                }
+                _ => {}
+            }
+            rows.retain(|row| row["details"]["sensor"] != "connection-history.v1");
+            rows.push(signal);
+            save(&path, &rows);
+            let result = pivot(root.path(), &[&path], "request", "F1", &[]).await;
+            let correlation = only_correlation(&result);
+            assert_eq!(
+                correlation["warning"]["status"],
+                if mode == 0 {
+                    "investigate"
+                } else {
+                    "unavailable"
+                },
+                "paired={paired} mode={mode}: {result}"
+            );
+            let support = &correlation["model_transport"]["novelty"][0]["support"];
+            if mode == 0 {
+                assert_eq!(support.as_array().unwrap().len(), 2);
+                assert!(
+                    support
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|link| link["status"] == "available")
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]

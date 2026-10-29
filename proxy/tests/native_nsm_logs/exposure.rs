@@ -306,6 +306,8 @@ async fn native_correlation(supervised: bool) {
     assert_eq!(correlation["status"], "linked", "{correlation}");
     assert_eq!(correlation["exposure_line"], index + 1);
     assert_eq!(correlation["event_id"], exposure["event_id"]);
+    assert_eq!(correlation["warning"]["status"], "investigate");
+    assert!(result.get("capture").is_none());
     let source_line = correlation["source"]["record_lines"][0].as_u64().unwrap() as usize;
     let source = &rows[source_line - 1];
     assert_eq!(source["details"]["direction"], "server_to_client");
@@ -331,12 +333,45 @@ async fn native_correlation(supervised: bool) {
                 }),
             "{transport}"
         );
+        for novelty in transport["novelty"].as_array().unwrap() {
+            let original = &rows[novelty["indicator_line"].as_u64().unwrap() as usize - 1];
+            assert_eq!(novelty["rule"], original["details"]["rule"]);
+            assert_eq!(novelty["evidence"], original["details"]["novelty"]);
+            assert!(novelty["fact"].as_str().unwrap().contains("bounded"));
+            for link in novelty["support"].as_array().unwrap() {
+                for line in link["record_lines"].as_array().unwrap() {
+                    let original = &rows[line.as_u64().unwrap() as usize - 1];
+                    assert_eq!(original["event"], "network.connection");
+                    assert_eq!(original["event_id"], link["event_id"]);
+                    assert_eq!(original["details"]["connection_id"], link["connection_id"]);
+                }
+            }
+        }
+    }
+    for signal in correlation["warning"]["supported_novelty"]
+        .as_array()
+        .unwrap()
+    {
+        let side = signal["side"].as_str().unwrap();
+        let novelty = correlation[side]["novelty"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["indicator_line"] == signal["indicator_line"])
+            .unwrap();
+        let reason = correlation["warning"]["reason"].as_str().unwrap();
+        assert!(reason.contains(side.trim_end_matches("_transport")));
+        assert!(reason.contains(novelty["fact"].as_str().unwrap()));
+        assert_eq!(signal["event_id"], novelty["event_id"]);
     }
     let ordinary = cli(root.path(), &args[..args.len() - 1]).await;
     assert!(ordinary.status.success());
     let text = String::from_utf8(ordinary.stdout).unwrap();
     for expected in [
         "Prompt exposure correlation",
+        "Investigation warning: Investigate:",
+        "first destination observation",
+        "merit investigation together",
         "source_transport",
         "model_transport",
         "connection-wide",
@@ -354,5 +389,6 @@ async fn native_correlation(supervised: bool) {
     assert_eq!(fs::read(root.path().join("audit.jsonl")).unwrap(), bytes);
     capture::assert_exposure_views(root.path(), exposure, capture_path.as_ref().unwrap()).await;
     offline::assert_native_split(root.path(), &bytes, exposure).await;
+    offline::assert_native_warning_controls(root.path(), &rows, exposure).await;
     assert!(!root.path().join("unused.sqlite3").exists());
 }
