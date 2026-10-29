@@ -121,37 +121,6 @@ async fn brief_input_requires_an_explicit_revision_and_exactly_one_source() {
             "shared",
             "text",
             "--expected-revision",
-            "0",
-            "--operation-id",
-        ],
-        vec![
-            "brief",
-            "set",
-            "shared",
-            "text",
-            "--expected-revision",
-            "0",
-            "--operation-id",
-            "one",
-            "--operation-id",
-            "two",
-        ],
-        vec![
-            "brief",
-            "set",
-            "shared",
-            "text",
-            "--expected-revision",
-            "0",
-            "--operation-id",
-            " ",
-        ],
-        vec![
-            "brief",
-            "set",
-            "shared",
-            "text",
-            "--expected-revision",
             "-1",
         ],
         vec![
@@ -238,6 +207,34 @@ async fn brief_input_requires_an_explicit_revision_and_exactly_one_source() {
         [],
     )
     .unwrap();
+    // A real room and exact diagnostics distinguish parser refusal from an
+    // incidental failure to open the missing instance used by the matrix above.
+    for (suffix, diagnostic) in [
+        (vec!["--operation-id"], "--operation-id requires a value"),
+        (
+            vec!["--operation-id", "one", "--operation-id", "two"],
+            "duplicate --operation-id option",
+        ),
+        (vec!["--operation-id", " "], "operation ID must be nonempty"),
+    ] {
+        let mut arguments = vec!["brief", "set", "shared", "text", "--expected-revision", "0"];
+        arguments.extend(suffix);
+        let output = coord_cli(&root, &arguments).await;
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(diagnostic));
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM coord_brief_revisions", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM coord_operations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
     // The retained limit counts encoded bytes rather than Unicode characters.
     let limit = "é".repeat(32 * 1024);
     let file = temp.path().join("limit.md");

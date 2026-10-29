@@ -311,7 +311,7 @@ nodes:
       obtain_from: "the trusted-base native tests and locked Cargo dependencies; the native NATS owner verifies its pinned archive and executable before launch"
       sources:
         - path: proxy/tests/native_coord.rs
-          sha256: 2b3a965af59a059fb8bcba5c90418ba5b4aab162d61033f2d907cc88b6da2384
+          sha256: d5bba6c7bbfd6e32234a3ee82cb0aba0c43da3806cba7ace4bda43849086735a
         - path: proxy/tests/native_coord/stage0.rs
           sha256: 2ebdae909ff085b343756b7dcc2a34dfd7c8e8535485fbfe2273410eb455c106
         - path: proxy/src/coord_rooms.rs
