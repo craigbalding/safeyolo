@@ -311,7 +311,7 @@ One versioned Markdown document per room is enough:
 
 ```text
 coord brief show huddle
-coord brief set huddle <file/text>
+coord brief set huddle --file brief.md --expected-revision 4 --operation-id intent-5
 ```
 
 Avoid structured workflow settings. Put goals, priorities, working style and communication expectations in ordinary operator-authored prose.
@@ -320,6 +320,25 @@ Store the current brief for efficient reads and retain every immutable brief
 revision in canonical SQLite history. Expose the latest version prominently.
 An update generates attention to all room members. Its JSONL event records the
 room, revision, content hash and actor, not the Markdown body.
+
+The owning host account updates the brief with an expected revision and an
+optional caller-selected `--operation-id`. Omitted IDs are generated and
+returned in the result. To recover an ambiguous result, repeat the original
+operation ID, expected revision and exact Markdown. Canonical input contains
+the resolved room ID, expected revision and Markdown bytes, independent of
+whether the caller supplies an argument, file or stdin. Replay returns the
+original committed metadata result before checking the current revision. It
+does not replace a later brief or create more history, audit or attention.
+Changed input under the same operator/type/ID returns an operation conflict.
+Different operations with the same expected revision still produce one update
+and one revision conflict.
+
+The current projection, immutable revision, operation result and metadata audit
+and attention outbox rows commit in the same SQLite transaction. The common
+native delivery worker retries pending rows after restart, preserving their
+original event and attention IDs. Canonical reads and attention resolution
+independently check current receive permission; brief attention resolves its
+original immutable revision. Audit and hints never contain the Markdown.
 
 Key acceptance tests:
 
@@ -330,6 +349,10 @@ Key acceptance tests:
 * Updating v4→v5 wakes all current members and their next state read shows v5.
 * A revoked agent cannot read updates.
 * Concurrent operator edits using the same expected version produce one update and one conflict rather than silently losing an edit.
+* An ambiguous retry returns the original result even after a later update;
+  changed input under the original operation ID conflicts without side effects.
+* Delivered JSONL and attention preserve original revision, hash and IDs across
+  interrupted publication, without copying Markdown into delivery metadata.
 * Previous versions remain auditable.
 * Operator changes "messages succinct; evidence before inference" once; agents joining later receive it without replaying transcript history.
 

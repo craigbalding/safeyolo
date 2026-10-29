@@ -182,7 +182,7 @@ mod tests {
         let db = open_db(&data.join("v0.db"), true).unwrap();
         db.execute("INSERT INTO rooms VALUES('rm-owned','owned',0)", [])
             .unwrap();
-        coord_rooms::brief::set(root.path(), "owned", "Private canonical brief", 0).unwrap();
+        coord_rooms::brief::set(root.path(), "owned", "Private canonical brief", 0, None).unwrap();
         let id = db
             .query_row("SELECT event_id FROM coord_outbox", [], |row| row.get(0))
             .unwrap();

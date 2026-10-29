@@ -22,6 +22,7 @@ struct Options {
     file: Option<String>,
     stdin: bool,
     expected_revision: Option<i64>,
+    operation_id: Option<String>,
     targets: Vec<String>,
     content_type: Option<String>,
     since: u64,
@@ -69,6 +70,9 @@ fn parse(command: &str, args: &[String]) -> Result<Options, Error> {
                             .filter(|revision| *revision >= 0)
                             .ok_or("--expected-revision requires a nonnegative integer")?,
                     );
+                }
+                "--operation-id" if command == "brief set" => {
+                    options.operation_id = Some(value()?.clone());
                 }
                 "--content-type" if command == "send" => {
                     options.content_type = Some(value()?.clone())
@@ -171,7 +175,7 @@ fn body(options: &Options, kind: &str) -> Result<String, Error> {
     Ok(body)
 }
 
-pub const BRIEF_HELP: &str = "safeyolo [--root ROOT] coord brief show ROOM\nsafeyolo [--root ROOT] coord brief set ROOM [MARKDOWN | --file FILE | --stdin] --expected-revision REVISION\n\nShow prints the canonical Markdown, revision and SHA-256, or state=none with revision 0.\nSet reads exactly one nonempty UTF-8 input (at most 65536 bytes). Use expected revision 0 to create a missing brief. Stale expectations fail without changing the brief or attention. Successful writes notify current receive-authorized members through brief_changed attention. A brief is optional standing context; it does not assign work or change workflow state.";
+pub const BRIEF_HELP: &str = "safeyolo [--root ROOT] coord brief show ROOM\nsafeyolo [--root ROOT] coord brief set ROOM [MARKDOWN | --file FILE | --stdin] --expected-revision REVISION [--operation-id ID]\n\nShow prints the canonical Markdown, revision and SHA-256, or state=none with revision 0.\nSet reads exactly one nonempty UTF-8 input (at most 65536 bytes). Use expected revision 0 to create a missing brief. Different operations with stale expectations fail without changing the brief or attention. Choose an operation ID before writing to recover an ambiguous result: retry the same ID, original expected revision and exact Markdown to receive the original result, even after later updates. Changed input under that ID conflicts. Omitted IDs are generated and returned in results. Successful writes notify current receive-authorized members through brief_changed attention. A brief is optional standing context; it does not assign work or change workflow state.";
 
 pub(crate) fn run_brief(root: &Path, arguments: &[String]) -> Result<Value, Error> {
     match arguments {
@@ -195,6 +199,7 @@ pub(crate) fn run_brief(root: &Path, arguments: &[String]) -> Result<Value, Erro
                 options.room.as_deref().ok_or("room missing")?,
                 &markdown,
                 expected,
+                options.operation_id.as_deref(),
             )
         }
         _ => Err(BRIEF_HELP.into()),
