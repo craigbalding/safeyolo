@@ -128,7 +128,7 @@ mod tests {
             .unwrap()
             .remove("status")
             .unwrap();
-        let pivot = json!({"records":[{"line":3,"record":{"agent":observation.agent,
+        let mut pivot = json!({"records":[{"line":3,"record":{"agent":observation.agent,
             "event":"network.connection","details":{"connection_id":observation.connection_id,
             "attribution":attribution}}}]});
         let mut bytes = super::super::session(&session, "file", 65536).unwrap();
@@ -165,7 +165,7 @@ mod tests {
             sandbox_run: None,
             lines: 100,
         };
-        let result = capture::read(&path, &pivot, &query);
+        let result = capture::read(&path, &mut pivot, &query);
         assert_eq!(result["status"], "partial", "{result}");
         assert_eq!(result["scan"]["read_to_eof"], true, "{result}");
         assert_eq!(
@@ -182,7 +182,7 @@ mod tests {
             && gap["count"] == 2));
         let mut conflicting = pivot;
         conflicting["records"][0]["conflicting"] = json!(true);
-        let refused = capture::read(&path, &conflicting, &query);
+        let refused = capture::read(&path, &mut conflicting, &query);
         assert_eq!(refused["status"], "unavailable");
         assert!(refused["observations"].as_array().unwrap().is_empty());
     }
