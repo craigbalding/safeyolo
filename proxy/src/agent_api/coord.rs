@@ -38,6 +38,7 @@ const MAX_DECLARATIONS_PER_AGENT: usize = 32;
 const MAX_DECLARATION_TTL_SECONDS: i64 = 3600;
 const PROJECTION_PAGE: u64 = 200;
 const RECOVERY_INTERVAL: Duration = Duration::from_millis(250);
+pub(crate) mod outbox;
 
 #[derive(Debug)]
 enum CoordError {
@@ -103,25 +104,26 @@ impl CoordCleanup {
 
 pub(crate) struct CoordOwner {
     data_dir: PathBuf,
+    explicit_directory: bool,
     nats: tokio::sync::Mutex<Option<async_nats::Client>>,
     cleanup: Arc<CoordCleanup>,
 }
 
 impl CoordOwner {
     fn new(directory: Option<PathBuf>) -> Self {
+        let directory =
+            directory.or_else(|| std::env::var_os("SAFEYOLO_COORD_DATA_DIR").map(PathBuf::from));
+        let explicit_directory = directory.is_some();
         let data_dir = directory
             .or_else(|| {
-                std::env::var_os("SAFEYOLO_COORD_DATA_DIR")
+                std::env::var_os("HOME")
                     .map(PathBuf::from)
-                    .or_else(|| {
-                        std::env::var_os("HOME")
-                            .map(PathBuf::from)
-                            .map(|home| home.join(".safeyolo/data/coord"))
-                    })
+                    .map(|home| home.join(".safeyolo/data/coord"))
             })
             .unwrap_or_else(|| PathBuf::from(".safeyolo/data/coord"));
         Self {
             data_dir,
+            explicit_directory,
             nats: tokio::sync::Mutex::new(None),
             cleanup: Arc::new(CoordCleanup::new()),
         }
@@ -2646,7 +2648,7 @@ fn error_response(error: CoordError) -> Outcome<'static> {
     }
 }
 
-fn publish_unknown_response(request: Request<'_>) -> Outcome<'static> {
+async fn publish_unknown_response(client: &CoordClient, request: Request<'_>) -> Outcome<'static> {
     let mut outcome = response(
         503,
         json!({
@@ -2670,6 +2672,35 @@ fn publish_unknown_response(request: Request<'_>) -> Outcome<'static> {
         }),
         approval: None,
     });
+    // An ambiguous publish has no cross-store completion claim. Retain its
+    // metadata through the same outbox, never through a direct JSONL fallback.
+    let event_id = format!("evt-{}", uuid::Uuid::new_v4().simple());
+    let mut event = outcome
+        .audit
+        .as_ref()
+        .expect("publish audit intent")
+        .to_event();
+    event.event_id = Some(event_id.clone());
+    let db = client.owner.data_dir.join("v0.db");
+    let staged =
+        tokio::task::spawn_blocking(move || {
+            let payload = event
+                .encode_at(OffsetDateTime::now_utc())
+                .map_err(|_| CoordError::Data)?;
+            open_db(&db, true)?.execute(
+            "INSERT INTO coord_outbox(event_id,destination,event_type,payload_json,created_at)
+             VALUES(?1,'audit-jsonl','coord.publish_outcome_unknown',?2,?3)",
+            params![event_id,payload,now_ms()],
+        ).map_err(|_| CoordError::Data)?;
+            Ok::<_, CoordError>(())
+        })
+        .await;
+    if !matches!(staged, Ok(Ok(()))) {
+        eprintln!(
+            "Coord unknown publish audit could not be staged; message acceptance remains unknown"
+        );
+    }
+    outcome.audit_owned = true;
     outcome
 }
 
@@ -3425,36 +3456,20 @@ async fn publish_prepared(
         .await
     {
         Ok(ack) => ack,
-        Err(_) => return publish_unknown_response(request),
+        Err(_) => return publish_unknown_response(client, request).await,
     };
     let sequence = match ack.await {
         Ok(ack) => ack.sequence,
-        Err(_) => return publish_unknown_response(request),
+        Err(_) => return publish_unknown_response(client, request).await,
     };
     let projection_outcome = client
         .project_room_through(&access.room_id, &mut stream, sequence)
         .await;
-    let mut attention_status = match projection_outcome {
+    let attention_status = match projection_outcome {
         Ok(ProjectionOutcome::Projected) => "ready",
         Ok(ProjectionOutcome::Lost) => "lost",
         Err(_) => "pending",
     };
-    if attention_status == "ready" {
-        for recipient in &recipients {
-            let hint = json!({"attention_id":recipient.attention_id}).to_string();
-            if connection
-                .publish(
-                    format!("coord.attention.{}", recipient.agent_id),
-                    Bytes::from(hint),
-                )
-                .await
-                .is_err()
-            {
-                attention_status = "pending";
-                break;
-            }
-        }
-    }
     response(
         200,
         json!({
@@ -3945,11 +3960,7 @@ mod tests {
         )
         .unwrap();
         CoordClient::with_owner(
-            Arc::new(CoordOwner {
-                data_dir: directory.path().to_owned(),
-                nats: tokio::sync::Mutex::new(None),
-                cleanup: Arc::new(CoordCleanup::new()),
-            }),
+            Arc::new(CoordOwner::new(Some(directory.path().to_owned()))),
             Some(policy_file),
         )
     }

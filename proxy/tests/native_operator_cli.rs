@@ -597,6 +597,7 @@ async fn requesting_context_uses_real_coord_attention_and_the_authenticated_repl
         "worker",
         &[],
         false,
+        None,
     )
     .unwrap();
     let id = fixture.network("worker", fixture.address).await.id();

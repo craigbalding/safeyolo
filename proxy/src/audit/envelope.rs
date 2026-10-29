@@ -72,6 +72,13 @@ struct RequestScope {
 }
 
 impl Event {
+    /// Preserve a producer's complete current envelope in a transactional outbox.
+    pub(crate) fn encode_at(&self, at: OffsetDateTime) -> Result<String> {
+        self.envelope(at)?
+            .render_json(false)
+            .map_err(|_| Error(ErrorKind::Encoding))
+    }
+
     pub fn new(
         event: impl Into<String>,
         kind: Kind,
@@ -439,6 +446,9 @@ fn timestamp(now: OffsetDateTime) -> String {
 
 pub(super) struct Record(CircuitValue);
 impl Record {
+    pub(super) fn from_json(line: &str) -> Result<Self> {
+        Ok(Self(super::parse_record(line)?.into()))
+    }
     pub(super) fn name_control(&mut self) {
         if let CircuitValue::Object(fields) = &mut self.0
             && let Some(value) = fields.shift_remove("addon")

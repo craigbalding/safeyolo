@@ -5,7 +5,10 @@ capabilities that follow the initial NATS room/chat substrate. Treat the work
 as a sequence of independently useful stages, with acceptance tests proving
 semantics rather than UI.
 
-The current implementation is a good base precisely because it is still small: SQLite owns room/membership control state; JetStream owns messages; the agent surface is essentially `join_room`, `send`, `read_room`, `wait_for_message`.   Issue #371 explicitly deferred addressing, operator summons, voting and summarisation until dogfood demonstrated what was actually needed. It has now done that.
+SQLite owns native Coord control state. JetStream owns conversation history.
+The Agent API and MCP expose room reads, messages, durable targeted attention,
+brief reads, and declarations. The stages below distinguish current contracts
+from capabilities that still need implementation and acceptance.
 
 Implement the capabilities in this order.
 
@@ -13,8 +16,8 @@ Implement the capabilities in this order.
 
 Do this before adding features.
 
-Add a real SQLite schema migration/version mechanism, stable object-ID
-conventions, optimistic/version fields where appropriate, generic mutation
+Use the native versioned SQLite store, stable object-ID
+conventions, optimistic/version fields where appropriate, mutation
 idempotency, immutable revision/transition history, and a `coord.*` audit-event
 family. The kernel invariants are:
 
@@ -45,13 +48,14 @@ the original result; reusing it with different input returns a conflict.
 `operation_id` handles ambiguous retries. Object revisions and claim
 generations independently reject stale concurrent mutations.
 
-Stage 0 deliberately uses the existing local `operator` sentinel as the scope
-for operator mutations. It does not introduce or imply a real authenticated
-operator-ID model. The first implementation boundary is:
+Host-local mutations authenticate through the owning host account and use the
+existing `operator` sentinel as their ledger principal. Agents cannot invoke
+these mutations through the Agent API. Stage 0 does not introduce separate
+operator identities. The caller boundary is:
 
 | Mutation | Stage-0 `operation_id` contract |
 |---|---|
-| `grant` / `revoke` | Caller-visible, generation or explicit CLI retry handle |
+| `grant` / `revoke` | Optional `--operation-id ID`; generated IDs appear in results |
 | grant suboperations inside `room_create` | Internal generated IDs only |
 | `room_create` | Unsupported at the caller boundary |
 | `send` | Unsupported; JetStream recovery is designed with the cross-store stage |
@@ -60,48 +64,61 @@ Do not partially claim caller-visible idempotency across SQLite and
 JetStream. `room_create` and `send` need explicit cross-store recovery
 semantics before they can make that promise.
 
-The migration foundation matters because the current store simply creates
-three tables idempotently; once several durable object classes appear, ad-hoc
-`CREATE TABLE IF NOT EXISTS` evolution becomes debt quickly. Migrations use
-explicit SQLite transaction control and individual statements, never
-`sqlite3.executescript()`. An unversioned database is classified as either
-fresh/empty or the semantically compatible current-master legacy schema. A
-partial or malformed legacy schema is rejected rather than stamped current.
+Canonical grant input uses the resolved room and durable agent IDs, with sorted,
+distinct permissions. Omitted grant permissions mean `receive,send`. Revoke has
+no permission input. Replay precedes membership mutation: a retry cannot restore
+a grant revoked by a later operation. The operation result records the original
+membership generation and transition time. The immutable operation ledger,
+membership change, and metadata audit row commit in one SQLite transaction.
 
-Stage 0 also introduces a generic transactional outbox with stable event IDs.
+SafeYolo is pre-v1. Current-master state and retained messages must remain
+usable across the candidate boundary. Bootstrap accepts an empty database or
+the current native schema; it refuses populated unversioned, incompatible, or
+unknown newer schemas. It does not convert earlier implementation generations.
+Bootstrap and schema changes use explicit transactions. A failure rolls back
+the entire transaction.
+
+Stage 0 uses the existing transactional outbox with stable event IDs.
 Canonical state and its logical event commit together. JSONL is an
 at-least-once projection: a crash after append but before delivery marking may
 produce a duplicate with the same `event_id`. Each append is flushed and
 `fsync()`ed, along with each newly created containing directory entry, before
 the outbox records successful delivery; any file or directory `fsync()` failure
 leaves the edge pending for retry. All `coord.*` JSONL events flow through this
-outbox. A failure before migration 0→1 creates the outbox is
-reported only through normal operational logging. Later migration failures
-may use an already-existing older-version outbox through a recovery-only path,
-even while normal candidate operations refuse the outdated schema.
+outbox. The shared writer serializes file recovery, rotation, and append across
+native writers. Before appending, it removes an incomplete final line left by
+an interrupted write and preserves all complete lines. Pending outbox rows
+retain the original records for retry. One process-owned native worker delivers
+audit rows through the shared audit writer and attention hints through
+authenticated NATS. The worker resumes pending rows in the selected instance
+at proxy startup and survives policy reloads. A NATS flush confirms
+the server received a hint; it does not prove a subscriber consumed it. SQLite
+attention remains authoritative. Publication without a successful flush, audit
+sync failure, or a crash before delivery marking leaves the row pending.
+Retries preserve the event ID. Delivery failures in one destination do not
+prevent attempts in the other destination. No canonical body enters a hint or
+audit row. Bootstrap failures before an operational outbox exists use normal
+operational logging.
 
 Key acceptance tests:
 
 * Upgrade a real current-master coord database containing rooms, grants and retained messages; everything remains usable.
-* Fresh/unversioned classification accepts semantically compatible legacy DDL
-  independent of incidental SQLite SQL text, but rejects partial tables,
-  missing keys/uniqueness, and incompatible foreign keys without stamping it.
+* Bootstrap refuses populated unversioned and unsupported schemas without
+  changing their state.
 * Fresh bootstrap and repeated bootstrap produce the same schema/state.
-* Two simultaneous bootstraps/migrations cannot corrupt or partially migrate the DB.
-* Simulated failure halfway through a migration rolls back cleanly.
-* Failure before the outbox exists produces operational logging but no direct
-  `coord.*` JSONL write; a later failure is recoverably enqueued through the
-  older valid outbox while ordinary API use remains schema-gated.
+* Two simultaneous bootstraps cannot corrupt or partially initialize the DB.
+* Simulated failure during bootstrap or a mutation rolls back cleanly.
+* Failure before the outbox exists produces no direct `coord.*` JSONL write.
 * New code refuses a database schema newer than it understands rather than silently operating on it.
 * Existing chat dogfood tests remain green with no semantic change.
 * `coord.*` events round-trip through the shared audit schema and `watch` without schema-drift warnings. The existing audit envelope is already designed as the shared contract for future PEPs/control-plane consumers.
 * Retrying a mutation with the same `operation_id` and request returns the
   original result; changing the request under that ID returns a conflict.
-* A minimal test-local typed object proves that a current-state projection and
-  immutable revision append commit atomically, enforce expected revisions,
-  roll back together and replay deterministic outcomes. Typed brief, work and
-  signal schemas remain in their own stages; Stage 0 adds no generic object
-  store.
+* Native membership and brief controls prove that current-state projections,
+  immutable outcome/revision history, and audit staging commit atomically and
+  roll back together. The controls verify operation replay and the expected
+  revisions exposed by each caller. Typed brief, work, and signal contracts
+  remain in their own stages; Stage 0 adds no generic object store.
 * `room_create` gives each grant suboperation a distinct internal operation ID
   without exposing or claiming room-level caller idempotency.
 * Audit events contain only the object identity, revision/transition,
@@ -779,7 +796,7 @@ Require every behavioural stage to pass four levels before moving on:
 
 1. **Model/API tests** — authorization, validation, state transitions, bounds.
 2. **Concurrency/restart tests** — simultaneous agents, ambiguous retries, process/NATS restart, revocation races.
-3. **Real Agent-API/NATS black-box tests** — don't just call Python functions; prove transport-derived identity and real substrate behaviour.
+3. **Real Agent-API/NATS black-box tests** — exercise the authenticated native transport and real stores; model-function calls alone do not prove this boundary.
 4. **Three-agent dogfood** — give agents a real SafeYolo task and measure whether the feature actually reduces transcript negotiation.
 
 For control-plane mutations, use the same philosophy as the new assurance work: deliberately interrupt operations around commit/publication boundaries and prove the invariant survives. The coordination state is becoming security-relevant platform state; it deserves stronger testing than a normal task tracker.
