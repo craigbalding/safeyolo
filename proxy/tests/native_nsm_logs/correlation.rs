@@ -36,7 +36,7 @@ fn first_observation(client: bool, connection: &str, event: &str) -> Value {
     result
 }
 
-fn correlation_rows() -> Vec<Value> {
+pub(super) fn correlation_rows() -> Vec<Value> {
     let hash = format!("sha256:{}", "a".repeat(64));
     let mut source = indicator("C0");
     source["host"] = json!("source.invalid");
@@ -80,7 +80,7 @@ fn correlation_rows() -> Vec<Value> {
     rows
 }
 
-fn only_correlation(result: &Value) -> &Value {
+pub(super) fn only_correlation(result: &Value) -> &Value {
     let correlations = result["correlations"].as_array().unwrap();
     assert_eq!(correlations.len(), 1, "{result}");
     &correlations[0]

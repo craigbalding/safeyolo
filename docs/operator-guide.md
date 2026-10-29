@@ -260,7 +260,7 @@ logs
 
 `show` opens the exchange; `body` reads its retained bytes. Bodies include
 exact `data_base64` bytes and `text` when the bytes are UTF-8. JavaScript Object Notation (JSON) output escapes terminal controls. Missing or pruned bytes retain their availability and
-reason fields. `logs` reads the configured host-local audit file.
+reason fields. `logs` reads the configured host-local audit file, or explicitly selected files with `--file`.
 
 For scripts or a terminal without interactive input, direct commands carry
 their own agent selection. Use the actual name from `status`; these examples
@@ -313,6 +313,43 @@ safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --a
 safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --lines 1000 --json
 ```
 
+For offline inspection on a machine with the native `safeyolo` CLI, copy retained
+native audit JSONL files from your owned instances through your existing trusted
+operational route. In a local directory containing those files, replace
+`instance-a.jsonl` and `instance-a-earlier.jsonl` below with the selected paths.
+Use the exact instance, runtime, request and agent values from the retained
+records. The CLI needs normal filesystem read access. File mode needs no
+installed proxy, config, credentials or Admin API. It does not acquire remote
+logs. These commands read the files without modifying them:
+
+```sh
+safeyolo logs --file instance-a.jsonl --file instance-a-earlier.jsonl --lines 1000 --json
+safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --file instance-a.jsonl --file instance-a-earlier.jsonl --lines 1000
+safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --file instance-a.jsonl --file instance-a-earlier.jsonl --lines 1000 --json
+```
+
+Repeat `--file` for each selected input, including files from several instances.
+Only records in the requested instance/runtime and selected agent can supply
+support. Source, flow, connection and novelty records can resolve across selected
+files in the same namespace. Without `--file`, the configured single-file
+workflow above keeps its existing behavior.
+
+Provenance depends on your source selection and the original trusted producer.
+Schema validation does not authenticate a file or its claims. The CLI does not
+infer identity from a filename. File argument order and wall timestamps do not
+establish a global chronological order.
+
+In file-mode pivot output, `inputs` maps each input number to its supplied path
+and read/window counts. A line reference such as `{"input":2,"line":7}` means
+physical line 7 of input 2. Each displayed record has `locations` for all retained
+copies, including repeated input arguments and overlapping exports. Equal parsed
+records share one evidence record even if JSON spacing or key order differs.
+Copies do not count as independent support. Within the retained windows,
+conflicting copies with the same event ID in a namespace, or conflicting connection/request owners within an
+agent, remain inspectable but cannot support a join. Records identify that
+conflict; links remain unavailable and correlations remain partial or unavailable.
+The original parsed records and input bytes are preserved.
+
 The pivot shows related `network.connection`, `traffic.flow` and
 `security.indicator` records, plus available supporting records. The output
 retains source timestamps, event IDs, attribution and details. Each link names
@@ -350,18 +387,25 @@ unversioned and version 1 rows remain readable with ordinary `logs`, but cannot
 supply either side of an NSM link.
 
 For pivots, `--lines` retains the last selected-agent rows before namespace and
-pivot selection; its default is 100. The output identifies the configured file,
-physical line range, total rows read and rows omitted by this limit. All related
-and supporting records in that window are displayed; there is no additional
-output limit. Increase `--lines` to widen the window. The reader validates every
-row in the opened file, including rows outside the window; malformed,
-unsupported or unreadable input fails with a diagnostic that omits event data.
+pivot selection; its default is 100 **per input file**. Total retention is at most
+the number of inputs times `--lines`, before duplicate removal. Read and omitted
+counts include all input copies; unique, duplicate and conflicting namespace
+counts describe the selected pivot search. Each input reports its physical line
+range and total rows read. All related and supporting records in the retained
+windows are displayed; there is no additional output limit. Increase `--lines`
+to widen each window. The limit does not bound bytes read: the reader validates
+every row to end of file, including
+rows outside the window or agent selection. A malformed, unsupported or
+unreadable selected file aborts the command with its input number and a
+diagnostic that omits its path and event data. No partial result is returned as
+a complete search.
 
-Only the opened configured file is searched. Rotated files, queued writes,
-dropped events and earlier evidence outside the window can leave links
+Only the configured file or the explicitly selected files are searched. There
+is no directory discovery or rotation watcher. Unselected rotations, queued
+writes, dropped events and earlier evidence outside the windows can leave links
 unavailable. An unavailable link is not proof that nothing occurred. The view
-does not drain the running writer, reconstruct missing records, change the audit
-file or fetch retained bodies. Use the existing `traffic` commands to inspect
+does not drain the running writer, reconstruct missing records, change audit
+files or fetch retained bodies. Use the existing `traffic` commands to inspect
 content that policy retained in the FlowStore; a request ID is not a FlowStore
 numeric row ID. See [NSM contracts and evidence limits](nsm-events.md).
 

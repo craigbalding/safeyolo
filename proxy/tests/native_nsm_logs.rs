@@ -13,6 +13,8 @@ use tokio::{
 mod correlation;
 #[path = "native_nsm_logs/exposure.rs"]
 mod exposure;
+#[path = "native_nsm_logs/offline.rs"]
+mod offline;
 mod test_owned_endpoint;
 
 async fn cli(root: &Path, args: &[&str]) -> std::process::Output {

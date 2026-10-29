@@ -22,9 +22,9 @@ safeyolo [--root ROOT] approvals show|explain|approve|reject ID [--option ID] [-
 safeyolo [--root ROOT] approvals ask|context ID [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals delegations [--json]\nsafeyolo [--root ROOT] approvals delegation check|preview|apply|revoke NAME --file PROPOSAL.json [--json]\nsafeyolo [--root ROOT] approvals review --agent NAME
 safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
-safeyolo [--root ROOT] logs [--agent NAME] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] logs connection ID --instance ID --runtime ID [--agent NAME] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] logs request ID --instance ID --runtime ID [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] logs connection ID --instance ID --runtime ID [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] logs request ID --instance ID --runtime ID [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] diagnose [--agent NAME] [--json]
 safeyolo helper show ID|diagnostic ID|prepare ID --reason TEXT [--socket PATH] [--token-file FILE]
 safeyolo helper list\nsafeyolo helper approve|reject|defer ID --delegation NAME --option ID\nsafeyolo helper context|respond ID [--reason TEXT] [--socket PATH] [--token-file FILE]
@@ -42,7 +42,7 @@ Gateway route approval defaults to once; --option selects an offered lifetime. S
 Reject records a refusal without adding a policy deny rule. Terminal decisions cannot grant again.
 Helper uses its Agent API token (default /app/agent_token) and the existing guest proxy route.
 If evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable.
-Logs pivots search the last --lines selected-agent rows (default 100) of the configured local audit file only. Instance and runtime are required; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Prompt exposure correlations explain exact source and source/model transport novelty support, including partial or unavailable evidence. These are connection-wide relationships, not proof of malicious intent or model receipt. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.";
+Logs use the configured local audit file unless --file PATH is supplied. Repeat --file for explicitly selected offline inputs; no installed config or API is needed. Each file is validated to EOF and retains the last --lines selected-agent rows (default 100 per file), so total retention is at most input count times --lines. Selected-file pivots identify every input/physical line and duplicate copy, and refuse conflicting event copies or transport owners as join evidence. Input order is not chronological order. Selection and schema validation do not authenticate the producer. Pivots require instance and runtime; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Prompt exposure correlations explain exact source and source/model transport novelty support, including partial or unavailable evidence. These are connection-wide relationships, not proof of malicious intent or model receipt. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.";
 
 pub fn handles(args: &[String]) -> bool {
     args.first().is_some_and(|arg| {
@@ -101,7 +101,7 @@ struct Options {
     reason: Option<String>,
     option: Option<String>,
     delegation: Option<String>,
-    file: Option<PathBuf>,
+    files: Vec<PathBuf>,
     scope: serde_json::Map<String, Value>,
     positional: Vec<String>,
 }
@@ -140,7 +140,7 @@ impl Options {
                         "--reason" => options.reason = Some(value.clone()),
                         "--option" => options.option = Some(value.clone()),
                         "--delegation" => options.delegation = Some(value.clone()),
-                        "--file" => options.file = Some(value.into()),
+                        "--file" => options.files.push(value.into()),
                         key => {
                             options.scope.insert(
                                 if key == "--test" {
@@ -860,19 +860,47 @@ async fn traffic(root: &Path, options: &Options) -> Result<Value, Error> {
 }
 
 fn logs(_root: &Path, options: &Options) -> Result<Value, Error> {
-    let config = native_config::read(&host_platform::config_path())?;
-    let path = config
-        .audit_log_path
-        .ok_or("audit log path is unavailable")?;
+    let explicit = !options.files.is_empty();
+    let paths = if explicit {
+        options.files.clone()
+    } else {
+        vec![
+            native_config::read(&host_platform::config_path())?
+                .audit_log_path
+                .ok_or("audit log path is unavailable")?,
+        ]
+    };
+    let tails = if explicit {
+        crate::audit::selected_tails(&paths, options.agent.as_deref(), options.lines)?
+    } else {
+        vec![crate::audit::local_tail(
+            &paths[0],
+            options.agent.as_deref(),
+            options.lines,
+        )?]
+    };
     match options.positional.as_slice() {
+        [] if !explicit => {
+            let rows: Vec<_> = tails
+                .into_iter()
+                .flat_map(|tail| tail.rows.into_iter().map(|(_, row)| row))
+                .collect();
+            Ok(json!({"file":paths[0],"events":rows}))
+        }
         [] => {
-            let tail = crate::audit::local_tail(&path, options.agent.as_deref(), options.lines)?;
-            let rows: Vec<_> = tail.rows.into_iter().map(|(_, row)| row).collect();
-            Ok(json!({"file":path,"events":rows}))
+            let inputs: Vec<_> = paths.iter().zip(tails).enumerate().map(|(index, (path, tail))| {
+                json!({"input":index + 1,"file":path,"lines_read":tail.lines_read,
+                    "agent_rows":tail.agent_rows,"omitted_rows":tail.agent_rows - tail.rows.len(),
+                    "events":tail.rows.into_iter().map(|(line, record)| json!({"line":line,"record":record})).collect::<Vec<_>>()})
+            }).collect();
+            Ok(json!({"inputs":inputs,"line_limit_per_input":options.lines,
+                "limits":"Each selected file is validated to EOF and retains at most --lines selected-agent rows. Input order is not chronological order. Selection and schema validation do not authenticate the producer."}))
         }
         [kind, id] if matches!(kind.as_str(), "connection" | "request") => {
             crate::audit::pivot::read(
-                &path,
+                &paths,
+                tails,
+                explicit,
                 &crate::audit::pivot::Query {
                     instance: options
                         .instance
@@ -898,7 +926,10 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
     let search = &value["search"];
     println!(
         "Local audit: {}\nInstance: {}\nRuntime: {}\n{}: {}\nAgent: {}",
-        safe(text(&value["file"])),
+        value["file"]
+            .as_str()
+            .map(safe)
+            .unwrap_or_else(|| "explicitly selected files".into()),
         safe(text(&query["instance_id"])),
         safe(text(&query["runtime_id"])),
         safe(text(&query["kind"])),
@@ -908,15 +939,37 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
             .map(safe)
             .unwrap_or_else(|| "all".into())
     );
-    println!(
-        "Searched {} retained rows, physical lines {}..{}; {} selected-agent rows omitted by --lines {} ({} total file rows read).",
-        search["retained_rows"],
-        search["first_line"],
-        search["last_line"],
-        search["omitted_rows"],
-        search["line_limit"],
-        search["lines_read"]
-    );
+    if let Some(inputs) = value["inputs"].as_array() {
+        for input in inputs {
+            println!("Input {}: {}", input["input"], safe(text(&input["file"])));
+            println!(
+                "  Searched {} retained rows, physical lines {}..{}; {} selected-agent rows omitted ({} file rows read).",
+                input["retained_rows"],
+                input["first_line"],
+                input["last_line"],
+                input["omitted_rows"],
+                input["lines_read"]
+            );
+        }
+        println!(
+            "Total: {} retained copies, {} unique namespace records, {} duplicate copies, {} conflicting records; --lines {} per input.",
+            search["retained_rows"],
+            search["unique_namespace_rows"],
+            search["duplicate_namespace_rows"],
+            search["conflicting_namespace_rows"],
+            search["line_limit_per_input"]
+        );
+    } else {
+        println!(
+            "Searched {} retained rows, physical lines {}..{}; {} selected-agent rows omitted by --lines {} ({} total file rows read).",
+            search["retained_rows"],
+            search["first_line"],
+            search["last_line"],
+            search["omitted_rows"],
+            search["line_limit"],
+            search["lines_read"]
+        );
+    }
     println!("{}", text(&search["limits"]));
     for correlation in value["correlations"].as_array().into_iter().flatten() {
         println!(
@@ -930,6 +983,13 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
         println!("\nLine {} ({}):", entry["line"], text(&entry["selection"]));
         // JSON escapes control characters and preserves original attribution,
         // timestamps, event IDs and evidence instead of rebuilding an event.
+        if let Some(locations) = entry.get("locations") {
+            println!(
+                "Locations: {}; conflicting copy or owner: {}",
+                serde_json::to_string(locations)?,
+                entry["conflicting"]
+            );
+        }
         print_json(&entry["record"])?;
     }
     if value["records"].as_array().is_some_and(Vec::is_empty) {
@@ -1322,8 +1382,8 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
                     name,
                 ] => {
                     let input = options
-                        .file
-                        .as_ref()
+                        .files
+                        .last()
                         .ok_or("delegation requires --file PROPOSAL.json")?;
                     let proposal: Value = serde_json::from_slice(&std::fs::read(input)?)?;
                     let operation = if *operation == "check" {

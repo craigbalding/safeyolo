@@ -230,5 +230,6 @@ async fn native_source_response_to_bound_model_request_has_inspectable_cli_corre
             .contains("amber lighthouse")
     );
     assert_eq!(fs::read(root.path().join("audit.jsonl")).unwrap(), bytes);
+    offline::assert_native_split(root.path(), &bytes, exposure).await;
     assert!(!root.path().join("unused.sqlite3").exists());
 }
