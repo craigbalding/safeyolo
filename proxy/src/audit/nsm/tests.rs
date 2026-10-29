@@ -703,3 +703,41 @@ fn origin_spki_ip_evidence_requires_the_same_measured_key_on_distinct_ips() {
         }
     }
 }
+
+#[test]
+fn client_destination_evidence_links_separate_client_and_attempt_without_mixing_tls_scopes() {
+    let mut row = record(indicator());
+    row["details"]["novelty"] = json!({
+        "history_scope":"runtime_fifo", "history_capacity":4096,
+        "destination":"origin.invalid:443", "route":"parent", "verification_name":null,
+        "current":{"connection_id":"S1","event_id":"upstream-1","cert_sha256":null,"spki_sha256":null},
+        "previous":null,
+        "client":{"connection_id":"C1","event_id":"hello-1","cert_sha256":null,"spki_sha256":null,
+            "client_fingerprint":{"ja3":"a".repeat(32),"ja4":"t13d1516h2_8daaf6152771_e5627efa2ab1"}},
+    });
+    assert!(parse_record(&row.to_string()).is_ok());
+    for (pointer, value) in [
+        ("/client/event_id", json!("upstream-1")),
+        ("/client/event_id", json!("")),
+        ("/client/connection_id", json!("S1")),
+        ("/client/client_fingerprint", Value::Null),
+        ("/client/client_fingerprint/ja3", json!("invalid")),
+        ("/client/cert_sha256", json!("a".repeat(64))),
+        ("/current/cert_sha256", json!("a".repeat(64))),
+        ("/route", Value::Null),
+        ("/destination", Value::Null),
+        ("/verification_name", json!("origin.invalid")),
+    ] {
+        let mut invalid = row.clone();
+        *invalid["details"]["novelty"].pointer_mut(pointer).unwrap() = value;
+        assert!(parse_record(&invalid.to_string()).is_err(), "{pointer}");
+    }
+    for field in ["current", "previous"] {
+        let mut mixed = row.clone();
+        mixed["details"]["novelty"][field] = mixed["details"]["novelty"]["client"].clone();
+        assert!(parse_record(&mixed.to_string()).is_err());
+    }
+    let mut payload = row;
+    payload["details"]["novelty"]["client"]["body"] = json!("private");
+    assert!(parse_record(&payload.to_string()).is_err());
+}

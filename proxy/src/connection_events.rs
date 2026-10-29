@@ -4,7 +4,10 @@
 use std::{
     net::SocketAddr,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll},
 };
 
@@ -104,6 +107,7 @@ impl ConnectionEvents {
             None,
             None,
             None,
+            None,
         );
         connection.connected(
             socket
@@ -119,6 +123,7 @@ impl ConnectionEvents {
         connection
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn upstream(
         self: &Arc<Self>,
         identity: &ConnectionIdentity,
@@ -127,6 +132,7 @@ impl ConnectionEvents {
         destination_host_and_port: (&str, u16),
         route: &'static str,
         transport: &'static str,
+        client: Option<&Connection>,
     ) -> Connection {
         self.connection(
             identity,
@@ -140,6 +146,7 @@ impl ConnectionEvents {
                 destination_host_and_port.1,
                 route,
             )),
+            client.cloned(),
         )
     }
 
@@ -153,6 +160,7 @@ impl ConnectionEvents {
         target: Option<&str>,
         route: Option<&str>,
         destination: Option<novelty::Destination>,
+        client: Option<Connection>,
     ) -> Connection {
         let started = OffsetDateTime::now_utc();
         let mut details = json!({
@@ -187,12 +195,16 @@ impl ConnectionEvents {
             events: self.clone(),
             identity: identity.clone(),
             destination,
+            client,
+            client_destination_observed: AtomicBool::new(false),
             source: Mutex::new(source),
             facts: Mutex::new(Facts {
                 details,
                 started,
                 connected: false,
                 error: None,
+                client_hello_observation: None,
+                connected_observation: None,
             }),
         }))
     }
@@ -215,12 +227,16 @@ struct Facts {
     started: OffsetDateTime,
     connected: bool,
     error: Option<&'static str>,
+    client_hello_observation: Option<novelty::Observation>,
+    connected_observation: Option<novelty::Observation>,
 }
 
 struct ConnectionEnd {
     events: Arc<ConnectionEvents>,
     identity: ConnectionIdentity,
     destination: Option<novelty::Destination>,
+    client: Option<Connection>,
+    client_destination_observed: AtomicBool,
     facts: Mutex<Facts>,
     source: Mutex<Arc<crate::observations::Source>>,
     wire: Mutex<Option<crate::packet_capture::wire::Ownership>>,
@@ -250,10 +266,16 @@ impl ConnectionEnd {
         &self,
         details: Value,
         tls: Option<(&str, &crate::tls_identity::TlsSession)>,
-    ) {
+        observe_destination: bool,
+    ) -> novelty::Observation {
         if self.destination.is_none() || self.identity.request_agent().is_none() {
-            self.emit(details);
-            return;
+            return self.emit(details);
+        }
+        // Read the ingress before taking history: ClientHello takes its own
+        // facts lock before history, so the inverse order would deadlock.
+        let client = self.client_hello_observation();
+        if !observe_destination && client.is_none() {
+            return self.emit(details);
         }
         // Serialize the supporting record, comparison and indication together.
         // Concurrent handshakes must not reverse the baseline's audit order.
@@ -269,14 +291,54 @@ impl ConnectionEnd {
             .and_then(|peer| peer.parse::<SocketAddr>().ok())
             .map(|peer| peer.ip());
         let observation = self.emit(details);
-        self.events.observe_destination(
-            &mut history,
-            &self.identity,
-            self.destination.as_ref(),
-            observation,
-            tls,
-            origin_ip,
-        );
+        if observe_destination {
+            self.events.observe_destination(
+                &mut history,
+                &self.identity,
+                self.destination.as_ref(),
+                observation.clone(),
+                tls,
+                origin_ip,
+            );
+        }
+        if let Some(client) = client {
+            self.compare_client_destination(&mut history, client, observation.clone());
+        }
+        observation
+    }
+
+    fn compare_client_destination(
+        &self,
+        history: &mut novelty::History,
+        client: novelty::Observation,
+        observation: novelty::Observation,
+    ) {
+        if !self
+            .client_destination_observed
+            .swap(true, Ordering::Relaxed)
+        {
+            self.events.observe_client_destination(
+                history,
+                &self.identity,
+                self.destination.as_ref().expect("upstream destination"),
+                client,
+                observation,
+            );
+        }
+    }
+
+    fn client_hello_observation(&self) -> Option<novelty::Observation> {
+        if self.client_destination_observed.load(Ordering::Relaxed) {
+            return None;
+        }
+        self.client
+            .as_ref()?
+            .0
+            .facts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .client_hello_observation
+            .clone()
     }
 }
 
@@ -298,11 +360,7 @@ impl Drop for ConnectionEnd {
             } else {
                 crate::observations::State::Closed
             });
-        if !facts.connected {
-            self.emit_observation(facts.details.clone(), None);
-        } else {
-            self.emit(facts.details.clone());
-        }
+        self.emit_observation(facts.details.clone(), None, !facts.connected);
     }
 }
 
@@ -341,7 +399,8 @@ impl Connection {
             .cloned()
             .unwrap_or(Value::Null);
         facts.details["resolved_origin_peer"] = json!(origin);
-        self.0.emit_observation(facts.details.clone(), None);
+        facts.connected_observation =
+            Some(self.0.emit_observation(facts.details.clone(), None, true));
     }
 
     pub(crate) fn source(&self) -> Arc<crate::observations::Source> {
@@ -418,12 +477,33 @@ impl Connection {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let observation = self.0.emit(snapshot);
+        facts.client_hello_observation = observation.clone().with_client_fingerprint(&hello);
         self.0.events.observe_client_fingerprint(
             &mut history,
             &self.0.identity,
             &hello,
             observation,
         );
+    }
+
+    /// The CONNECT attempt can connect before its client sends TLS bytes.
+    /// The byte observer calls this when that attempt acquires a ClientHello.
+    pub(crate) fn observe_client_destination(&self) {
+        let facts = self.0.facts.lock().unwrap_or_else(|e| e.into_inner());
+        let (Some(client), Some(observation)) = (
+            self.0.client_hello_observation(),
+            &facts.connected_observation,
+        ) else {
+            return;
+        };
+        let mut history = self
+            .0
+            .events
+            .novelty
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        self.0
+            .compare_client_destination(&mut history, client, observation.clone());
     }
 
     pub(crate) fn tls_session(&self, peer: &str, name: &str, session: &rustls::ClientConnection) {
@@ -456,7 +536,7 @@ impl Connection {
         let mut snapshot = facts.details.clone();
         snapshot["state"] = json!("updated");
         if tls.is_some() {
-            self.0.emit_observation(snapshot, tls);
+            self.0.emit_observation(snapshot, tls, true);
         } else {
             self.0.emit(snapshot);
         }

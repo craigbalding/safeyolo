@@ -556,14 +556,20 @@ impl Capture {
 struct ObservedClient {
     stream: BoxStream,
     connection: Connection,
+    upstream: Option<Connection>,
     capture: Option<Capture>,
 }
 
-pub(crate) fn observe_client(stream: BoxStream, connection: Option<Connection>) -> BoxStream {
+pub(crate) fn observe_client(
+    stream: BoxStream,
+    connection: Option<Connection>,
+    upstream: Option<Connection>,
+) -> BoxStream {
     match connection {
         Some(connection) => Box::new(ObservedClient {
             stream,
             connection,
+            upstream,
             capture: Some(Capture::default()),
         }),
         None => stream,
@@ -580,8 +586,13 @@ impl AsyncRead for ObservedClient {
         if let Some(capture) = &mut self.capture {
             capture.feed(&buffer.filled()[start..]);
             if capture.done {
-                if let Some(hello) = capture.parsed() {
+                let hello = capture.parsed();
+                let upstream = self.upstream.take();
+                if let Some(hello) = hello {
                     self.connection.client_hello(hello);
+                    if let Some(upstream) = upstream {
+                        upstream.observe_client_destination();
+                    }
                 }
                 self.capture = None;
             }
