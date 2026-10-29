@@ -582,36 +582,62 @@ async fn ingress_endpoint_shield_stops_partition_hops_without_blocking_remote_po
         "[hosts.'*']\negress='allow'\n",
     )
     .unwrap();
-    for bind in ["127.0.0.1:0", "0.0.0.0:0", "[::]:0"] {
+    for bind in ["127.0.0.1:0", "0.0.0.0:0", "[::]:0", "[::1]:0"] {
         config.ingress_bindings[0].listen = bind.parse().unwrap();
         let mut proxy = Proxy::start(config.clone()).await.unwrap();
         let endpoint = address(&config);
         let url = format!("http://127.0.0.1:{}/partition-hop", endpoint.port());
         if endpoint.is_ipv4()
-            || !crate::admin_shield::BoundTcpEndpoint::new(
-                &proxy.ingress_bindings["mobile-test"].listener,
-            )
-            .unwrap()
-            .ipv6_only
+            || endpoint.ip().is_unspecified()
+                && !crate::admin_shield::BoundTcpEndpoint::new(
+                    &proxy.ingress_bindings["mobile-test"].listener,
+                )
+                .unwrap()
+                .ipv6_only
         {
             let (status, body) = uds(&config, "bob", &url, &[]).await;
             assert_eq!(status, 403);
             assert!(body.contains("Admin API not accessible through proxy"));
         }
-        let url = if endpoint.is_ipv6() {
-            format!("http://[::1]:{}/partition-hop", endpoint.port())
+        let hosts = if endpoint.is_ipv6() {
+            ["[::1]", "[::]"]
         } else {
-            format!("http://127.1:{}/partition-hop", endpoint.port())
+            ["127.1", "0.0.0.0"]
         };
-        assert_eq!(uds(&config, "bob", &url, &[]).await.0, 403);
-        let shield = proxy.runtime.read().unwrap().admin_shield.clone();
-        assert!(!shield.blocks_address(SocketAddr::from(([192, 0, 2, 10], endpoint.port()))));
+        let urls = hosts.map(|host| format!("http://{host}:{}/partition-hop", endpoint.port()));
+        for url in &urls {
+            let (status, body) = uds(&config, "bob", url, &[]).await;
+            assert_eq!(status, 403, "binding {bind}, destination {url}");
+            assert!(body.contains("Admin API not accessible through proxy"));
+        }
+        let runtime = proxy.runtime.read().unwrap().clone();
+        let shield = &runtime.admin_shield;
+        for remote in ["192.0.2.10", "2001:db8::10"] {
+            assert!(
+                !shield.blocks_address(SocketAddr::new(remote.parse().unwrap(), endpoint.port()))
+            );
+        }
         if bind == "0.0.0.0:0" {
             assert!(shield.blocks_address(SocketAddr::from(([127, 0, 0, 2], endpoint.port()))));
         }
         proxy.reload(config.clone()).await.unwrap();
-        assert_eq!(uds(&config, "bob", &url, &[]).await.0, 403);
+        for url in &urls {
+            assert_eq!(uds(&config, "bob", url, &[]).await.0, 403);
+        }
         proxy.shutdown().await;
+        assert!(runtime.audit.wait_for_drain(LIMIT).unwrap());
+        let rows: Vec<Value> = std::fs::read_to_string(directory.path().join("logs/audit.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| crate::audit::parse_record(line).unwrap())
+            .collect();
+        assert!(rows.iter().any(|row| row["agent"] == "bob"
+            && row["event"] == "network.connection"
+            && row["details"]["ingress"] == "agent-uds"));
+        assert!(
+            rows.iter()
+                .all(|row| row["details"]["ingress"] != "switchboard/mobile-test")
+        );
     }
 }
 

@@ -7,7 +7,7 @@
 use std::{
     collections::BTreeSet,
     fmt,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{Arc, RwLock},
 };
 
@@ -297,7 +297,7 @@ fn is_local(host: &str) -> bool {
 fn is_protected_local_address(address: IpAddr) -> bool {
     match normalize_mapped(address) {
         IpAddr::V4(ip) => ip == Ipv4Addr::LOCALHOST || ip == Ipv4Addr::UNSPECIFIED,
-        IpAddr::V6(ip) => ip == std::net::Ipv6Addr::LOCALHOST,
+        IpAddr::V6(ip) => ip == Ipv6Addr::LOCALHOST,
     }
 }
 
@@ -365,7 +365,7 @@ fn legacy_ipv4_component(value: &str) -> Option<u32> {
 /// An origin beyond that parent is not a socket opened by this process.
 ///
 /// Source gaps covered: textual aliases, IPv4-mapped IPv6, and the witnessed
-/// IPv4 unspecified destination that reaches a listener on 127.0.0.1. Other
+/// IPv4 and IPv6 unspecified destinations that reach their loopback listeners. Other
 /// loopback addresses and remote hosts on the same port stay outside this rule.
 pub fn targets_listener(selected: SocketAddr, bound: SocketAddr) -> bool {
     if selected.port() != bound.port() {
@@ -375,6 +375,7 @@ pub fn targets_listener(selected: SocketAddr, bound: SocketAddr) -> bool {
     let bound = normalize_mapped(bound.ip());
     selected == bound
         || selected == IpAddr::V4(Ipv4Addr::UNSPECIFIED) && bound == IpAddr::V4(Ipv4Addr::LOCALHOST)
+        || selected == IpAddr::V6(Ipv6Addr::UNSPECIFIED) && bound == IpAddr::V6(Ipv6Addr::LOCALHOST)
 }
 
 fn normalize_mapped(address: IpAddr) -> IpAddr {
