@@ -299,16 +299,16 @@ limits are described in [live traffic inspection](DEVELOPERS.md#live-traffic-ins
 
 On the host, Network Security Monitoring (NSM) pivots read the configured local
 audit JSONL file. The running proxy and its Admin API need not be available.
-Start with a version 2 record from `logs`: copy its `details.instance_id` and
-`details.runtime_id`, and its `request_id` or connection ID. A flow supplies
-`details.client_connection_id` and, when available, `details.server_connection_id`.
-A retained traffic exchange can supply its request ID; obtain the namespace
-from the corresponding NSM audit record. Replace `INSTANCE_ID`, `RUNTIME_ID`,
-`REQUEST_ID` and `CONNECTION_ID` below with those exact values. Use the agent
-name from that record; these examples select `work`.
+Start with `logs list` to discover the retained instance/runtime namespaces and
+agent context. Then narrow the listing with `--instance`, `--runtime` and
+`--agent` as needed. Each entry shows connection/request references, indicator
+metadata, event IDs and physical source locations. Replace `INSTANCE_ID`,
+`RUNTIME_ID`, `REQUEST_ID` and `CONNECTION_ID` below with exact listed values.
+Use the recorded agent name; these examples select `work`.
 
 ```sh
-safeyolo logs --agent work --lines 1000 --json
+safeyolo logs list --lines 1000
+safeyolo logs list --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --lines 1000 --json
 safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --lines 1000
 safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --lines 1000 --json
 ```
@@ -317,16 +317,45 @@ For offline inspection on a machine with the native `safeyolo` CLI, copy retaine
 native audit JSONL files from your owned instances through your existing trusted
 operational route. In a local directory containing those files, replace
 `instance-a.jsonl` and `instance-a-earlier.jsonl` below with the selected paths.
-Use the exact instance, runtime, request and agent values from the retained
-records. The CLI needs normal filesystem read access. File mode needs no
+Start with the listing, then use the exact instance, runtime, request and agent
+values it shows. The CLI needs normal filesystem read access. File mode needs no
 installed proxy, config, credentials or Admin API. It does not acquire remote
 logs. These commands read the files without modifying them:
 
 ```sh
-safeyolo logs --file instance-a.jsonl --file instance-a-earlier.jsonl --lines 1000 --json
+safeyolo logs list --file instance-a.jsonl --file instance-a-earlier.jsonl --lines 1000
 safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --file instance-a.jsonl --file instance-a-earlier.jsonl --lines 1000
 safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --file instance-a.jsonl --file instance-a-earlier.jsonl --lines 1000 --json
 ```
+
+The listing groups records by instance/runtime, envelope agent name and recorded
+attribution. `resolved_agent` requires resolved attribution whose evidence owner
+and trusted transport identity both match that agent. `unknown` includes missing,
+unavailable or inconsistent attribution, even when an agent name is present.
+`conflicting` identifies incompatible event copies or transport/request owners.
+These groups stay separate. Selecting `--agent` filters recorded names; it does
+not resolve unknown attribution. No task, executable or live-agent identity is
+inferred. A connection's recorded state is historical evidence, not a liveness
+check.
+
+References in the listing are recorded keys, including source and novelty
+references whose supporting records may be unavailable. Use a connection or
+request pivot with the same namespace, agent, input files and window to inspect
+those records and link availability. An indicator without a connection/request
+reference still has its event ID, metadata and source locations. The listing
+adds no relationship verdict. Ordinary output uses JSON escaping for exact IDs,
+paths and text, including terminal controls; decode those escapes when supplying
+CLI arguments. JSON output preserves the same values.
+
+`logs list` defaults to the last 100 selected-agent rows per input, before
+namespace selection. Increase `--lines` to search a larger retained window.
+Input reports show rows read, retained physical line ranges and selected-agent
+rows omitted by the window. Listing counts describe retained distinct NSM
+records, duplicate copies and conflicts, not lifetime traffic. Non-NSM retained
+rows are counted as input copies and excluded from discovery. Legacy and
+unversioned records remain readable with plain `logs --json`; they cannot create
+NSM namespace or agent choices. An empty listing means no matching NSM evidence
+in the searched window, not that no agent or traffic existed.
 
 Repeat `--file` for each selected input, including files from several instances.
 Only records in the requested instance/runtime and selected agent can supply

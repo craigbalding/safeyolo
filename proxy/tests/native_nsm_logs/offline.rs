@@ -68,6 +68,12 @@ pub(super) async fn assert_native_split(root: &Path, bytes: &[u8], exposure: &Va
         fs::write(path, content).unwrap();
     }
     let offline_root = root.join("no-installed-instance");
+    listing::assert_native_navigation(root, &[]).await;
+    listing::assert_native_navigation(
+        &offline_root,
+        &inputs.iter().map(|path| path.as_path()).collect::<Vec<_>>(),
+    )
+    .await;
     let paths: Vec<_> = inputs.iter().map(|path| path.to_str().unwrap()).collect();
     for (kind, id) in [
         ("request", exposure["request_id"].as_str().unwrap()),

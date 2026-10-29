@@ -99,7 +99,18 @@ Never join records across instances or restarts using only a local ID.
 Legacy version 1 records without this namespace need trusted source context
 before a collector can join them to NSM records.
 
-The local operator can use `logs connection ID` or `logs request ID` with
+The local operator can start with `logs list` to discover retained namespaces,
+agent context and concrete connection/request/indicator references without
+reading raw JSON. Optional `--instance`, `--runtime` and `--agent` filters narrow
+that listing. Entries preserve physical source locations and distinguish
+recorded resolved agent context from unknown attribution and conflicting
+records. A name alone does not establish trusted attribution. References name
+retained keys, not verified relationships or live sessions. The listing
+collapses equal parsed records in configured and selected-file modes, preserves
+all retained locations, and reports retained distinct-record/copy counts.
+Historical rows stay readable through raw logs without becoming NSM choices.
+
+The operator can use `logs connection ID` or `logs request ID` with
 `--instance ID --runtime ID` to inspect these relationships. See the
 [operator workflow](operator-guide.md#follow-local-nsm-evidence) for complete
 commands. The read-only view uses the ordinary logs reader. By default it reads

@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 mod correlation;
+mod listing;
+
+pub(crate) use listing::read as list;
 
 pub(crate) struct Query<'a> {
     pub(crate) instance: &'a str,
@@ -161,6 +164,17 @@ fn links<'a>(line: RecordLine, row: &'a Value, query: &Query<'a>) -> Vec<Link<'a
     result
 }
 
+fn trusted_agent(row: &Value) -> Option<&str> {
+    let agent = row["agent"]
+        .as_str()
+        .filter(|agent| !agent.trim().is_empty())?;
+    let attribution = &row["details"]["attribution"];
+    (attribution["attribution_status"] == "resolved"
+        && attribution["trusted_transport_identity"] == agent
+        && attribution["evidence_owner"] == agent)
+        .then_some(agent)
+}
+
 fn direct_connections(row: &Value) -> impl Iterator<Item = &str> {
     let details = &row["details"];
     [
@@ -182,18 +196,38 @@ fn conflicting_lines(rows: &[&(RecordLine, Value)]) -> HashSet<RecordLine> {
         canonical.sort_all_objects();
         if let Some(event) = row["event_id"].as_str() {
             groups
-                .entry(json!(["event", event]).to_string())
+                .entry(
+                    json!([
+                        "event",
+                        row["details"]["instance_id"],
+                        row["details"]["runtime_id"],
+                        event
+                    ])
+                    .to_string(),
+                )
                 .or_default()
                 .push((*line, canonical.to_string()));
         }
         let details = &row["details"];
         let ownership = match row["event"].as_str() {
             Some("network.connection") => Some((
-                json!(["connection", row["agent"], details["connection_id"]]),
+                json!([
+                    "connection",
+                    details["instance_id"],
+                    details["runtime_id"],
+                    row["agent"],
+                    details["connection_id"]
+                ]),
                 json!([details["leg"], details["client_connection_id"]]),
             )),
             Some("traffic.flow") => Some((
-                json!(["request", row["agent"], row["request_id"]]),
+                json!([
+                    "request",
+                    details["instance_id"],
+                    details["runtime_id"],
+                    row["agent"],
+                    row["request_id"]
+                ]),
                 json!([
                     details["client_connection_id"],
                     details["server_connection_id"]
@@ -215,6 +249,93 @@ fn conflicting_lines(rows: &[&(RecordLine, Value)]) -> HashSet<RecordLine> {
         .collect()
 }
 
+fn search_window(
+    paths: &[PathBuf],
+    tails: &[super::reader::LocalTail],
+    explicit: bool,
+    lines: usize,
+) -> (Vec<Value>, Value) {
+    let inputs: Vec<_> = paths.iter().zip(tails).enumerate().map(|(index, (path, tail))| json!({
+        "input":index + 1,"file":path,"lines_read":tail.lines_read,"agent_rows":tail.agent_rows,
+        "retained_rows":tail.rows.len(),"omitted_rows":tail.agent_rows - tail.rows.len(),
+        "first_line":tail.rows.front().map(|(line,_)| line),"last_line":tail.rows.back().map(|(line,_)| line)
+    })).collect();
+    let mut search = json!({
+        "lines_read":tails.iter().map(|tail| tail.lines_read).sum::<usize>(),
+        "agent_rows":tails.iter().map(|tail| tail.agent_rows).sum::<usize>(),
+        "line_limit":lines,"retained_rows":tails.iter().map(|tail| tail.rows.len()).sum::<usize>(),
+        "omitted_rows":tails.iter().map(|tail| tail.agent_rows - tail.rows.len()).sum::<usize>(),
+        "output_limited":false
+    });
+    if explicit {
+        search["files"] = json!("explicit_inputs_only");
+        search["line_limit_per_input"] = json!(lines);
+        search["input_count"] = json!(paths.len());
+        search["limits"] = json!(
+            "Each selected file is validated to EOF and retains at most --lines selected-agent rows before namespace/pivot selection. Totals include all input copies; evidence deduplicates equal records. Input order and wall timestamps do not establish a global chronology. Only the selected files/windows are searched. Queued, dropped, unselected, outside-window or agent-filtered evidence may be unavailable. Supporting links are followed once. No event is reconstructed or content fetched. Selection and schema validation do not authenticate a producer."
+        );
+    } else {
+        search["files"] = json!("configured_file_only");
+        search["first_line"] = inputs[0]["first_line"].clone();
+        search["last_line"] = inputs[0]["last_line"].clone();
+        search["limits"] = json!(
+            "Only the retained window of the opened local audit file was searched. Rotated files are not searched. Queued, dropped, rotated-away, outside-window or agent-filtered evidence may be unavailable. No event is reconstructed; absence is not proof that nothing occurred. Supporting links are followed once; retained bodies require the existing traffic commands."
+        );
+    }
+    (inputs, search)
+}
+
+struct RetainedRows {
+    records: Vec<(RecordLine, Value)>,
+    copies: HashMap<RecordLine, Vec<RecordLine>>,
+}
+
+fn retained_rows(
+    tails: Vec<super::reader::LocalTail>,
+    explicit: bool,
+    deduplicate: bool,
+    include: impl Fn(&Value) -> bool,
+) -> RetainedRows {
+    let mut retained = Vec::new();
+    let mut copies: HashMap<RecordLine, Vec<RecordLine>> = HashMap::new();
+    let mut seen = HashMap::new();
+    for (index, tail) in tails.into_iter().enumerate() {
+        for (line, row) in tail.rows {
+            // Historical rows stay readable in raw logs, never NSM choices.
+            if row["schema_version"] != super::nsm::SCHEMA_VERSION || !include(&row) {
+                continue;
+            }
+            let line = if explicit {
+                RecordLine::Selected {
+                    input: index + 1,
+                    line,
+                }
+            } else {
+                RecordLine::Local(line)
+            };
+            if deduplicate {
+                let mut canonical = row.clone();
+                canonical.sort_all_objects();
+                let key = canonical.to_string();
+                if let Some(first) = seen.get(&key) {
+                    copies
+                        .get_mut(first)
+                        .expect("first copy retained")
+                        .push(line);
+                    continue;
+                }
+                seen.insert(key, line);
+            }
+            copies.insert(line, vec![line]);
+            retained.push((line, row));
+        }
+    }
+    RetainedRows {
+        records: retained,
+        copies,
+    }
+}
+
 pub(crate) fn read(
     paths: &[PathBuf],
     tails: Vec<super::reader::LocalTail>,
@@ -228,71 +349,14 @@ pub(crate) fn read(
     {
         return Err("logs pivot requires connection|request ID --instance ID --runtime ID".into());
     }
-    let inputs: Vec<_> = paths.iter().zip(&tails).enumerate().map(|(index, (path, tail))| json!({
-        "input":index + 1,"file":path,"lines_read":tail.lines_read,"agent_rows":tail.agent_rows,
-        "retained_rows":tail.rows.len(),"omitted_rows":tail.agent_rows - tail.rows.len(),
-        "first_line":tail.rows.front().map(|(line,_)| line),"last_line":tail.rows.back().map(|(line,_)| line)
-    })).collect();
-    let mut search = json!({
-        "lines_read":tails.iter().map(|tail| tail.lines_read).sum::<usize>(),
-        "agent_rows":tails.iter().map(|tail| tail.agent_rows).sum::<usize>(),
-        "line_limit":query.lines,"retained_rows":tails.iter().map(|tail| tail.rows.len()).sum::<usize>(),
-        "omitted_rows":tails.iter().map(|tail| tail.agent_rows - tail.rows.len()).sum::<usize>(),
-        "output_limited":false
+    let (inputs, mut search) = search_window(paths, &tails, explicit, query.lines);
+    let RetainedRows {
+        records: retained,
+        copies,
+    } = retained_rows(tails, explicit, explicit, |row| {
+        row["details"]["instance_id"] == query.instance
+            && row["details"]["runtime_id"] == query.runtime
     });
-    if explicit {
-        search["files"] = json!("explicit_inputs_only");
-        search["line_limit_per_input"] = json!(query.lines);
-        search["input_count"] = json!(paths.len());
-        search["limits"] = json!(
-            "Each selected file is validated to EOF and retains at most --lines selected-agent rows before namespace/pivot selection. Totals include all input copies; evidence deduplicates equal records. Input order and wall timestamps do not establish a global chronology. Only the selected files/windows are searched. Queued, dropped, unselected, outside-window or agent-filtered evidence may be unavailable. Supporting links are followed once. No event is reconstructed or content fetched. Selection and schema validation do not authenticate a producer."
-        );
-    } else {
-        search["files"] = json!("configured_file_only");
-        search["first_line"] = inputs[0]["first_line"].clone();
-        search["last_line"] = inputs[0]["last_line"].clone();
-        search["limits"] = json!(
-            "Only the retained window of the opened local audit file was searched. Rotated files are not searched. Queued, dropped, rotated-away, outside-window or agent-filtered evidence may be unavailable. No event is reconstructed; absence is not proof that nothing occurred. Supporting links are followed once; retained bodies require the existing traffic commands."
-        );
-    }
-    let mut retained = Vec::new();
-    let mut copies: HashMap<RecordLine, Vec<RecordLine>> = HashMap::new();
-    let mut seen = HashMap::new();
-    for (index, tail) in tails.into_iter().enumerate() {
-        for (line, row) in tail.rows {
-            // Both ends of every join must be validated v2 records in this
-            // namespace. Historical records remain readable with plain logs.
-            if row["schema_version"] != super::nsm::SCHEMA_VERSION
-                || row["details"]["instance_id"] != query.instance
-                || row["details"]["runtime_id"] != query.runtime
-            {
-                continue;
-            }
-            let line = if explicit {
-                RecordLine::Selected {
-                    input: index + 1,
-                    line,
-                }
-            } else {
-                RecordLine::Local(line)
-            };
-            if explicit {
-                let mut canonical = row.clone();
-                canonical.sort_all_objects();
-                let key = canonical.to_string();
-                if let Some(first) = seen.get(&key) {
-                    copies
-                        .get_mut(first)
-                        .expect("first copy retained")
-                        .push(line);
-                    continue;
-                }
-                seen.insert(key, line);
-                copies.insert(line, vec![line]);
-            }
-            retained.push((line, row));
-        }
-    }
     let rows: Vec<_> = retained.iter().collect();
     let conflicts = if explicit {
         conflicting_lines(&rows)
