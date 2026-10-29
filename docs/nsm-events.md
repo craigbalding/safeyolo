@@ -54,6 +54,9 @@ reader still accepts certificate and destination observations that omit it.
 Client-fingerprint records add optional `client_fingerprint` observations and
 omit destination and route fields. Earlier strict readers need these additions;
 the current reader still accepts the earlier destination/TLS evidence.
+Origin key/IP reuse records add optional `origin_ip` to each supporting
+observation. Earlier strict readers need this addition; the current reader
+continues to accept observations that omit it.
 
 All NSM payload fields below are in `details`, except `request_id`, which
 uses the existing envelope field. Existing `ts`, `event_id`, `severity`,
@@ -311,7 +314,7 @@ reader still accepts earlier records that omit them.
 
 ### Destination and upstream TLS history
 
-The native connection owners run `connection-history.v1`. The sensor emits five
+The native connection owners run `connection-history.v1`. The sensor emits six
 low-severity rules through the shared indicator producer:
 
 | Stable rule | Observable condition |
@@ -321,6 +324,7 @@ low-severity rules through the shared indicator producer:
 | `tls.origin_negotiation_changed.v1` | A later successful origin TLS handshake has a different measured TLS version or negotiated Application-Layer Protocol Negotiation (ALPN) result. |
 | `tls.client_fingerprint_first_observation.v1` | The first complete supported ClientHello for a trusted agent absent from bounded runtime history. |
 | `tls.client_fingerprint_changed.v1` | A later observed ClientHello for that agent has a different JA3 or JA4 fingerprint. |
+| `tls.origin_spki_new_ip.v1` | A full origin handshake measures an already retained SPKI at an IP absent from that trusted agent/key's retained associations. |
 
 These rules have confidence 1.0 in the stated metadata comparison. They do not
 estimate the probability of compromise. Certificate renewal, key rotation,
@@ -333,6 +337,9 @@ Client-fingerprint rules use indicator types `tls_client_fingerprint_novelty`
 and `tls_client_fingerprint_change`. Client library updates, TLS settings and
 randomized extension order can explain changes. Fingerprints describe observed
 client TLS behavior; they do not identify an executable or prove compromise.
+Origin key/IP reuse uses indicator type `tls_spki_new_origin_ip`. It describes
+an observed public key at another measured IP. It does not establish address
+ownership, hosting location, executable identity or compromise.
 
 On the operator host, with the native CLI installed, replace `AGENT` with an
 existing configured agent name. This command reads recent audit records:
@@ -347,14 +354,15 @@ Find `security.indicator` records whose `details.sensor` is
 | Field | Meaning |
 | --- | --- |
 | `history_scope` | `runtime_fifo`: process-local history with first-in, first-out eviction. |
-| `history_capacity` | At most 4096 entries shared by agent/destination/route history and client-agent history across the runtime. Each client agent uses one entry. |
+| `history_capacity` | At most 4096 entries shared by agent/destination/route history, client-agent history and agent/SPKI/IP associations across the runtime. Each client agent and each key/IP association use one entry. |
 | `destination` | Logical requested host and explicit port, including the effective default port. DNS names use ASCII lowercase without the root dot. Parsed IP addresses use canonical spelling; IPv6 addresses have brackets. Absent for client-fingerprint observations. |
 | `route` | `direct`, `parent`, or `provider`. Each route has separate destination/TLS comparison state. Absent for client-fingerprint observations. |
 | `verification_name` | The normalized origin TLS verification name for an upstream TLS change; null for destination and client-fingerprint observations. |
-| `current` | Supporting `connection_id`, `event_id`, optional `cert_sha256`/`spki_sha256` hashes, optional `negotiation`, and optional `client_fingerprint`. |
+| `current` | Supporting `connection_id`, `event_id`, optional `cert_sha256`/`spki_sha256` hashes, optional `negotiation`, optional `client_fingerprint`, and optional `origin_ip`. |
 | `previous` | The previous comparable observation for the same rule, with the same fields as `current`; null for a first destination or client-fingerprint observation. |
 | `current.negotiation`, `previous.negotiation` | Measured `version` and `alpn` from the completed origin handshake. Present only for negotiation-change records; their certificate hashes are null. |
 | `current.client_fingerprint`, `previous.client_fingerprint` | The observed `ja3` and `ja4` from the client ClientHello. Certificate hashes are null and negotiation evidence is absent. |
+| `current.origin_ip`, `previous.origin_ip` | Measured origin IPs for a key/IP reuse indication. Both observations have the same available SPKI hash and distinct canonical IPs. Each also has its measured certificate hash. |
 
 Join each observation to its exact `network.connection` event by `event_id`
 and connection key in the indicator's instance/runtime namespace. The outer
@@ -412,15 +420,40 @@ ingress does not enter this UDS-owned comparison. Stable fingerprint pairs
 advance the prior-event link without another indication. A change to either
 fingerprint emits one change indication containing both values.
 
+Origin key/IP comparison uses the trusted agent, measured SPKI and canonical IP,
+across requested destinations, verification names, ports and routes. A new port
+at a retained IP is stable. The first association for a key supplies a baseline;
+a new IP for that key emits one indication. Returning to a retained association
+updates its supporting event without another indication. For a new association,
+`previous` is the latest observation at the most recently inserted retained IP
+for that key. Stable repeats do not change that selection's FIFO age.
+The top-level destination, route and verification name describe the current
+connection. Follow each supporting event to inspect its own requested target,
+verification name and full measured endpoint, including its port.
+
+Only a successful full origin handshake with both certificate and SPKI hashes
+and a measured `resolved_origin_peer` establishes a key/IP association. The
+current native direct TCP owner supplies this peer from the connected socket.
+Parent and provider routes do not measure an origin address, even when origin
+TLS succeeds. Their immediate peer, a requested numeric target, DNS results and
+synthetic capture addresses cannot substitute for measured origin evidence.
+Resumed or failed handshakes, missing hashes and unknown attribution supply no
+association. IPv6 spelling is canonicalized; IPv4-mapped IPv6 uses its IPv4 form.
+No network location lookup or persistent history query is performed.
+
 Cache operations serialize concurrent observations. Identical comparable observations
 advance the supporting baseline without another indicator. Closing an older
 connection does not replay its TLS snapshot into the comparison. Reconnects
 compare while their entry remains cached. Repetition does not refresh FIFO age.
 Eviction discards the evicted entry's state; a later observation can produce
-a new first observation. Destination/TLS and client-agent entries compete for
-the same capacity. If a destination entry is evicted before an in-flight origin
-TLS handshake completes, that handshake supplies no comparison. Policy reloads
-preserve the cache; process restart clears it, even when JSONL files remain.
+a new first observation. An evicted key/IP association can produce another
+reuse indication if another IP for that key remains; loss of all associations
+leaves a fresh baseline. Destination/TLS, client-agent and key/IP entries compete
+for the same capacity. If a destination entry is evicted before an in-flight origin
+TLS handshake completes, that handshake supplies no destination certificate or
+negotiation comparison. Its measured key/IP association remains independent.
+Policy reloads preserve the cache; process restart clears it, even when JSONL
+files remain.
 First observation therefore means first in this bounded runtime history, never
 first over the agent's lifetime.
 

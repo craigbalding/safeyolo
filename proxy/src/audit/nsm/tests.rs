@@ -657,3 +657,49 @@ fn client_fingerprint_evidence_requires_measured_changes_and_excludes_other_scop
         assert!(parse_record(&unknown.to_string()).is_err());
     }
 }
+
+#[test]
+fn origin_spki_ip_evidence_requires_the_same_measured_key_on_distinct_ips() {
+    let mut row = record(indicator());
+    row["details"]["novelty"] = json!({
+        "history_scope":"runtime_fifo", "history_capacity":4096,
+        "destination":"origin.invalid:443", "route":"direct", "verification_name":"origin.invalid",
+        "current":{"connection_id":"S1","event_id":"origin-1", "cert_sha256":"a".repeat(64),"spki_sha256":"b".repeat(64),"origin_ip":"192.0.2.2"},
+        "previous":{"connection_id":"S0","event_id":"origin-0", "cert_sha256":"c".repeat(64),"spki_sha256":"b".repeat(64),"origin_ip":"2001:db8::1"},
+    });
+    assert!(parse_record(&row.to_string()).is_ok());
+    for (pointer, value) in [
+        ("/current/origin_ip", json!("origin.invalid")),
+        ("/current/origin_ip", json!("192.0.2.2:443")),
+        ("/previous/origin_ip", json!("192.0.2.2")),
+        ("/previous/origin_ip", json!("::ffff:192.0.2.2")),
+        ("/previous/origin_ip", Value::Null),
+        ("/current/origin_ip", Value::Null),
+        ("/current/spki_sha256", Value::Null),
+        ("/previous/spki_sha256", Value::Null),
+        ("/previous/spki_sha256", json!("d".repeat(64))),
+        ("/previous/cert_sha256", Value::Null),
+        ("/current/cert_sha256", Value::Null),
+        ("/previous/event_id", json!("origin-1")),
+        ("/verification_name", Value::Null),
+        ("/previous", Value::Null),
+    ] {
+        let mut invalid = row.clone();
+        *invalid["details"]["novelty"].pointer_mut(pointer).unwrap() = value;
+        assert!(parse_record(&invalid.to_string()).is_err(), "{pointer}");
+    }
+    for observation in ["previous", "current"] {
+        for (field, value) in [
+            ("negotiation", json!({"version":"TLSv1_3","alpn":null})),
+            (
+                "client_fingerprint",
+                json!({"ja3":"a".repeat(32),"ja4":"t13d1516h2_8daaf6152771_e5627efa2ab1"}),
+            ),
+            ("body", json!("private payload")),
+        ] {
+            let mut mixed = row.clone();
+            mixed["details"]["novelty"][observation][field] = value;
+            assert!(parse_record(&mixed.to_string()).is_err());
+        }
+    }
+}

@@ -425,6 +425,14 @@ fn assert_observation(rows: &[Value], indicator: &Value, observation: &Value, ce
         source["details"]["connection_id"],
         observation["connection_id"]
     );
+    if let Some(ip) = observation["origin_ip"].as_str() {
+        let peer: std::net::SocketAddr = source["details"]["resolved_origin_peer"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(peer.ip().to_canonical().to_string(), ip);
+    }
     if certificate {
         assert_eq!(source["details"]["state"], "updated");
         let tls = source["details"]["tls_sessions"]
@@ -1391,4 +1399,457 @@ async fn native_incomplete_and_unsupported_client_hellos_do_not_establish_histor
         .lock()
         .unwrap();
     assert!(!history.entries.contains_key(&Key::Client("alice".into())));
+}
+
+#[test]
+fn origin_spki_history_requires_measured_pairs_and_shares_finite_fifo() {
+    let mut history = History {
+        capacity: 3,
+        ..History::default()
+    };
+    let destination = Destination::new("ORIGIN.INVALID.", 443, "direct");
+    let a = "192.0.2.1".parse().unwrap();
+    let b = "2001:db8::2".parse().unwrap();
+    let measured = session('a', Some('b'));
+    assert!(
+        history
+            .origin_spki(
+                "alice",
+                &destination,
+                ("origin.invalid", &measured),
+                Some(a),
+                observation("first")
+            )
+            .is_none()
+    );
+    assert!(
+        history
+            .origin_spki(
+                "alice",
+                &destination,
+                ("origin.invalid", &measured),
+                Some(a),
+                observation("repeat")
+            )
+            .is_none()
+    );
+    for field in [
+        "parent",
+        "provider",
+        "resumed",
+        "unknown-handshake",
+        "missing-cert",
+        "missing-spki",
+        "invalid-spki",
+        "missing-ip",
+    ] {
+        let mut unavailable = measured.clone();
+        match field {
+            "parent" | "provider" => unavailable.peer = field.into(),
+            "resumed" => unavailable.handshake_kind = Some("Resumed".into()),
+            "unknown-handshake" => unavailable.handshake_kind = None,
+            "missing-cert" => unavailable.leaf_certificate = None,
+            "missing-spki" => unavailable.leaf_certificate.as_mut().unwrap().spki_sha256 = None,
+            "invalid-spki" => {
+                unavailable.leaf_certificate.as_mut().unwrap().spki_sha256 =
+                    Some("unmeasured".into())
+            }
+            _ => (),
+        }
+        assert!(
+            history
+                .origin_spki(
+                    "alice",
+                    &destination,
+                    ("origin.invalid", &unavailable),
+                    (field != "missing-ip").then_some(b),
+                    observation(field)
+                )
+                .is_none()
+        );
+        assert_eq!(
+            history.entries.len(),
+            1,
+            "{field} cannot establish an association"
+        );
+    }
+    let mapped = "::ffff:192.0.2.1".parse().unwrap();
+    assert!(
+        history
+            .origin_spki(
+                "alice",
+                &destination,
+                ("other.invalid", &measured),
+                Some(mapped),
+                observation("mapped-repeat")
+            )
+            .is_none()
+    );
+    assert_eq!(history.entries.len(), 1);
+    let changed = history
+        .origin_spki(
+            "alice",
+            &destination,
+            ("origin.invalid", &measured),
+            Some(b),
+            observation("new-ip"),
+        )
+        .unwrap();
+    assert!(changed.valid(Some("new-ip")));
+    assert_eq!(
+        changed.previous.as_ref().unwrap().connection_id,
+        "mapped-repeat"
+    );
+    assert_eq!(changed.current.origin_ip, Some(b));
+    assert!(
+        history
+            .origin_spki(
+                "alice",
+                &destination,
+                ("origin.invalid", &measured),
+                Some(a),
+                observation("return")
+            )
+            .is_none(),
+        "returning to a retained IP is stable"
+    );
+    let c = "192.0.2.3".parse().unwrap();
+    let changed = history
+        .origin_spki(
+            "alice",
+            &destination,
+            ("origin.invalid", &measured),
+            Some(c),
+            observation("third-ip"),
+        )
+        .unwrap();
+    assert_eq!(
+        changed.previous.unwrap().connection_id,
+        "new-ip",
+        "choose the most recently inserted retained IP"
+    );
+    history.client_fingerprint("bob", &client_hello('a'), observation("bob-client"));
+    assert_eq!(history.entries.len(), 3);
+    assert!(!history.entries.contains_key(&Key::OriginSpki {
+        agent: "alice".into(),
+        spki_sha256: "b".repeat(64),
+        ip: a
+    }));
+    let changed = history
+        .origin_spki(
+            "alice",
+            &destination,
+            ("origin.invalid", &measured),
+            Some(a),
+            observation("after-eviction"),
+        )
+        .unwrap();
+    assert_eq!(changed.previous.unwrap().connection_id, "third-ip");
+    history.destination(&key("bob", "one.invalid:443"), observation("one"));
+    history.destination(&key("bob", "two.invalid:443"), observation("two"));
+    history.destination(&key("bob", "three.invalid:443"), observation("three"));
+    assert!(
+        history
+            .origin_spki(
+                "alice",
+                &destination,
+                ("origin.invalid", &measured),
+                Some(b),
+                observation("all-lost")
+            )
+            .is_none(),
+        "no retained key is a fresh baseline"
+    );
+    assert_eq!(history.entries.len(), history.oldest.len());
+}
+
+fn spki_ip_indicators(rows: &[Value]) -> Vec<&Value> {
+    indicators(rows)
+        .into_iter()
+        .filter(|row| row["details"]["rule"] == "tls.origin_spki_new_ip.v1")
+        .collect()
+}
+
+async fn two_origin_ips() -> (
+    TcpListener,
+    std::net::SocketAddr,
+    TcpListener,
+    std::net::SocketAddr,
+) {
+    let (first, a) = crate::test_owned_endpoint::bind().await;
+    // The second owned loopback works on hosts where only ::1 is available
+    // to bind() as well. These fixtures disable the private-address guard.
+    let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let b = second.local_addr().unwrap();
+    assert_ne!(a.ip(), b.ip());
+    (first, a, second, b)
+}
+
+#[tokio::test]
+async fn native_origin_spki_new_ip_repeats_ports_agents_failure_reload_and_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let (first, a, second, b) = two_origin_ips().await;
+    let (other_port, a2) = crate::test_owned_endpoint::bind_on(a.ip()).await;
+    let failed_listener = TcpListener::bind((b.ip(), 0)).await.unwrap();
+    let failed_address = failed_listener.local_addr().unwrap();
+    let key = rcgen::KeyPair::generate().unwrap();
+    let (pem_a, tls_a, cert_a) = tls_origin(&a.ip().to_string(), &key, 1);
+    let (pem_b, tls_b, cert_b) = tls_origin(&b.ip().to_string(), &key, 2);
+    let (pem_different, different, cert_different) =
+        tls_origin(&b.ip().to_string(), &rcgen::KeyPair::generate().unwrap(), 3);
+    let (pem_wrong, wrong, _) = tls_origin("wrong.invalid", &key, 4);
+    assert_eq!(cert_a.spki_sha256, cert_b.spki_sha256);
+    assert_ne!(cert_a.spki_sha256, cert_different.spki_sha256);
+    let first_peer = tokio::spawn(serve_tls(first, vec![tls_a.clone(); 4]));
+    let port_peer = tokio::spawn(serve_tls(other_port, vec![tls_a]));
+    let second_peer = tokio::spawn(serve_tls(
+        second,
+        vec![
+            tls_b.clone(),
+            tls_b.clone(),
+            different,
+            tls_b.clone(),
+            tls_b.clone(),
+            tls_b.clone(),
+            tls_b,
+        ],
+    ));
+    let failed_peer = tokio::spawn(async move {
+        let (socket, _) = failed_listener.accept().await.unwrap();
+        assert!(
+            tokio_rustls::TlsAcceptor::from(wrong)
+                .accept(socket)
+                .await
+                .is_err()
+        );
+    });
+    let mut configuration = tls_proxy_config(
+        directory.path(),
+        &format!("{pem_a}{pem_b}{pem_different}{pem_wrong}"),
+    );
+    configuration.network_guard_enabled = false;
+    for (agent, source_id) in [("bob", "192.0.2.21"), ("unknown", "192.0.2.22")] {
+        configuration.listeners.push(crate::config::AgentListener {
+            agent_id: agent.into(),
+            source_id: Some(source_id.into()),
+            socket_path: directory.path().join(format!("{agent}.sock")),
+        });
+    }
+    let mut proxy = Proxy::start(configuration.clone()).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    for address in [a, a, a2] {
+        request(directory.path(), "alice", &format!("https://{address}")).await;
+    }
+    for agent in ["bob", "unknown"] {
+        request(directory.path(), agent, &format!("https://{b}")).await;
+    }
+    let failed = response(
+        directory.path(),
+        "alice",
+        &format!("https://{failed_address}"),
+    )
+    .await;
+    assert!(failed.starts_with(b"HTTP/1.1 502"));
+    request(directory.path(), "alice", &format!("https://{b}")).await; // Different key.
+    assert!(spki_ip_indicators(&records(&runtime, directory.path())).is_empty());
+    for _ in 0..2 {
+        request(directory.path(), "alice", &format!("https://{b}")).await;
+    }
+    proxy.reload(configuration.clone()).await.unwrap();
+    for address in [a, b] {
+        request(directory.path(), "alice", &format!("https://{address}")).await;
+    }
+    proxy.shutdown().await;
+    let rows = records(&runtime, directory.path());
+    let clues = spki_ip_indicators(&rows);
+    assert_eq!(clues.len(), 1, "{clues:?}");
+    let clue = clues[0];
+    assert_eq!(clue["agent"], "alice");
+    assert_eq!(clue["details"]["indicator_type"], "tls_spki_new_origin_ip");
+    let evidence = &clue["details"]["novelty"];
+    assert_eq!(evidence["destination"], b.to_string());
+    assert_eq!(evidence["verification_name"], b.ip().to_string());
+    assert_eq!(evidence["route"], "direct");
+    for (field, address, cert) in [("previous", a, &cert_a), ("current", b, &cert_b)] {
+        assert_eq!(evidence[field]["origin_ip"], address.ip().to_string());
+        assert_eq!(evidence[field]["cert_sha256"], cert.cert_sha256);
+        assert_eq!(evidence[field]["spki_sha256"], json!(cert.spki_sha256));
+        assert_observation(&rows, clue, &evidence[field], true);
+    }
+    let prior = rows
+        .iter()
+        .find(|row| row["event_id"] == evidence["previous"]["event_id"])
+        .unwrap();
+    assert_eq!(
+        prior["details"]["resolved_origin_peer"],
+        a2.to_string(),
+        "a new port refreshes the same IP's supporting link"
+    );
+    assert!(rows.iter().any(|r| r["event"] == "network.connection"
+        && r["details"]["error"] == "origin_tls_failed"
+        && r["details"]["resolved_origin_peer"] == failed_address.to_string()
+        && r["details"]["tls_sessions"].is_null()));
+    assert!(rows.iter().any(|r| r["event"] == "network.connection"
+        && r["details"]["attribution"]["attribution_status"] == "unavailable"));
+    let proxy = Proxy::start(configuration).await.unwrap();
+    let restarted = proxy.runtime.read().unwrap().clone();
+    request(directory.path(), "alice", &format!("https://{b}")).await;
+    assert!(
+        spki_ip_indicators(&records(&restarted, directory.path()))
+            .iter()
+            .all(|r| r["details"]["runtime_id"] != restarted.instance_id)
+    );
+    request(directory.path(), "alice", &format!("https://{a}")).await;
+    proxy.shutdown().await;
+    let rows = records(&restarted, directory.path());
+    let clues: Vec<_> = spki_ip_indicators(&rows)
+        .into_iter()
+        .filter(|r| r["details"]["runtime_id"] == restarted.instance_id)
+        .collect();
+    assert_eq!(
+        clues.len(),
+        1,
+        "retained audit rows do not restore associations"
+    );
+    for peer in [first_peer, port_peer, second_peer, failed_peer] {
+        timeout(LIMIT, peer).await.unwrap().unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_origin_spki_concurrency_uses_supporting_audit_order() {
+    let directory = tempfile::tempdir().unwrap();
+    let (first, a, second, b) = two_origin_ips().await;
+    let key = rcgen::KeyPair::generate().unwrap();
+    let (pem_a, tls_a, _) = tls_origin(&a.ip().to_string(), &key, 1);
+    let (pem_b, tls_b, _) = tls_origin(&b.ip().to_string(), &key, 2);
+    let peers = [
+        tokio::spawn(serve_tls(first, vec![tls_a; 6])),
+        tokio::spawn(serve_tls(second, vec![tls_b; 6])),
+    ];
+    let mut configuration = tls_proxy_config(directory.path(), &format!("{pem_a}{pem_b}"));
+    configuration.network_guard_enabled = false;
+    let proxy = Proxy::start(configuration).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let mut clients = tokio::task::JoinSet::new();
+    for address in [a, b].into_iter().cycle().take(12) {
+        let path = directory.path().to_owned();
+        clients.spawn(async move {
+            request(&path, "alice", &format!("https://{address}")).await;
+        });
+    }
+    while let Some(result) = clients.join_next().await {
+        result.unwrap();
+    }
+    for peer in peers {
+        timeout(LIMIT, peer).await.unwrap().unwrap();
+    }
+    proxy.shutdown().await;
+    let rows = records(&runtime, directory.path());
+    let samples: Vec<_> = rows
+        .iter()
+        .filter(|row| {
+            row["event"] == "network.connection"
+                && row["details"]["state"] == "updated"
+                && row["details"]["tls_sessions"][0]["peer"] == "origin"
+        })
+        .collect();
+    assert_eq!(samples.len(), 12);
+    let first_ip: std::net::SocketAddr = samples[0]["details"]["resolved_origin_peer"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let other_index = samples
+        .iter()
+        .position(|row| {
+            row["details"]["resolved_origin_peer"]
+                .as_str()
+                .unwrap()
+                .parse::<std::net::SocketAddr>()
+                .unwrap()
+                .ip()
+                != first_ip.ip()
+        })
+        .unwrap();
+    let clues = spki_ip_indicators(&rows);
+    assert_eq!(clues.len(), 1, "{clues:?}");
+    let evidence = &clues[0]["details"]["novelty"];
+    assert_eq!(
+        evidence["previous"]["event_id"],
+        samples[other_index - 1]["event_id"]
+    );
+    assert_eq!(
+        evidence["current"]["event_id"],
+        samples[other_index]["event_id"]
+    );
+    for field in ["previous", "current"] {
+        assert_observation(&rows, clues[0], &evidence[field], true);
+    }
+}
+
+#[tokio::test]
+async fn native_origin_spki_does_not_treat_a_parent_peer_as_a_new_origin_ip() {
+    let directory = tempfile::tempdir().unwrap();
+    let (origin, a, parent, b) = two_origin_ips().await;
+    let key = rcgen::KeyPair::generate().unwrap();
+    let (pem_a, tls_a, _) = tls_origin(&a.ip().to_string(), &key, 1);
+    let (pem_b, tls_b, _) = tls_origin(&b.ip().to_string(), &key, 2);
+    let first_peer = tokio::spawn(serve_tls(origin, vec![tls_a.clone()]));
+    let parent_peer = tokio::spawn(async move {
+        let (socket, _) = parent.accept().await.unwrap();
+        let mut outer = tokio_rustls::TlsAcceptor::from(tls_b)
+            .accept(socket)
+            .await
+            .unwrap();
+        assert!(head(&mut outer).await.starts_with(b"CONNECT "));
+        outer.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
+        let mut inner = tokio_rustls::TlsAcceptor::from(tls_a)
+            .accept(outer)
+            .await
+            .unwrap();
+        head(&mut inner).await;
+        inner
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nunchanged",
+            )
+            .await
+            .unwrap();
+        inner.shutdown().await.unwrap();
+    });
+    let mut configuration = tls_proxy_config(directory.path(), &format!("{pem_a}{pem_b}"));
+    configuration.network_guard_enabled = false;
+    let mut proxy = Proxy::start(configuration.clone()).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    request(directory.path(), "alice", &format!("https://{a}")).await;
+    configuration.parent_proxy = Some(format!("https://{b}"));
+    proxy.reload(configuration).await.unwrap();
+    request(directory.path(), "alice", &format!("https://{a}")).await;
+    for peer in [first_peer, parent_peer] {
+        timeout(LIMIT, peer).await.unwrap().unwrap();
+    }
+    proxy.shutdown().await;
+    let rows = records(&runtime, directory.path());
+    assert!(spki_ip_indicators(&rows).is_empty());
+    let parent_record = rows
+        .iter()
+        .find(|r| {
+            r["event"] == "network.connection"
+                && r["details"]["state"] == "updated"
+                && r["details"]["tls_sessions"]
+                    .as_array()
+                    .is_some_and(|s| s.len() == 2)
+        })
+        .unwrap();
+    assert_eq!(parent_record["details"]["route"], "parent");
+    assert_eq!(parent_record["details"]["resolved_peer"], b.to_string());
+    assert!(parent_record["details"]["resolved_origin_peer"].is_null());
+    let sessions = parent_record["details"]["tls_sessions"].as_array().unwrap();
+    assert_eq!(sessions[0]["peer"], "parent");
+    assert_eq!(sessions[1]["peer"], "origin");
+    assert_eq!(
+        sessions[0]["leaf_certificate"]["spki_sha256"],
+        sessions[1]["leaf_certificate"]["spki_sha256"],
+        "even the same key on a parent does not measure an origin association"
+    );
 }
