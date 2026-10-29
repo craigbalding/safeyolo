@@ -1534,6 +1534,9 @@ async fn open_outbound(
             "pending",
             json!({"verification_name": destination.host}),
         );
+        // After parent CONNECT, these are the inner TLS bytes. Do not observe
+        // the outer parent handshake as origin ServerHello evidence.
+        stream = crate::tls_identity::observe_server(stream, connection.network.clone());
         let tls = refresh_origin_tls_phase(phase_timeout, async {
             TlsConnector::from(Arc::new(config))
                 .connect(name, stream)

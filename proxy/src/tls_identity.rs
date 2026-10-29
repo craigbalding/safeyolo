@@ -1,5 +1,5 @@
 //! Connection-scoped TLS observations. Wire bytes are transient and never
-//! serialized. Fingerprints describe client behavior, not executable identity.
+//! serialized. Fingerprints describe TLS behavior, not executable identity.
 
 use std::{
     pin::Pin,
@@ -13,6 +13,8 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use crate::{connection_events::Connection, tunnels::BoxStream};
 
 mod md5;
+mod server;
+pub(crate) use server::{ServerHelloObservation, observe_server};
 
 const LIST_LIMIT: usize = 64;
 const ALPN_LIMIT: usize = 16;

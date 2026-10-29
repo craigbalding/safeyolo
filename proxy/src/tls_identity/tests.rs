@@ -353,6 +353,7 @@ async fn real_ingress_retains_fingerprint_when_handshake_fails_after_fragmented_
     assert!(clients[0]["tls_sessions"].is_null());
     for server in connections(&rows, "proxy_to_upstream", "terminal") {
         assert!(server["tls_sessions"].is_null());
+        assert!(server["tls_server_hello"].is_null());
     }
     for row in rows.iter().filter(|r| r["event"] == "network.connection") {
         let text = row.to_string();
@@ -384,14 +385,14 @@ async fn nested_parent_tls_keeps_both_sessions_and_preserves_parent_on_origin_fa
     for origin_valid in [true, false] {
         let directory = tempfile::tempdir().unwrap();
         let (parent, address) = crate::test_owned_endpoint::bind().await;
-        let endpoint = |name: String| {
+        let endpoint = |name: String, version: &'static rustls::SupportedProtocolVersion| {
             let rcgen::CertifiedKey { cert, signing_key } =
                 rcgen::generate_simple_self_signed(vec![name]).unwrap();
             let pem = cert.pem();
             let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
                 rustls::crypto::ring::default_provider(),
             ))
-            .with_safe_default_protocol_versions()
+            .with_protocol_versions(&[version])
             .unwrap()
             .with_no_client_auth()
             .with_single_cert(
@@ -402,7 +403,10 @@ async fn nested_parent_tls_keeps_both_sessions_and_preserves_parent_on_origin_fa
             tls.alpn_protocols = vec![b"http/1.1".to_vec()];
             (pem, Arc::new(tls), sha256(cert.der()))
         };
-        let (parent_pem, parent_tls, parent_hash) = endpoint(address.ip().to_string());
+        // A different parent cipher/version makes outer-handshake confusion
+        // observable to the independent inner-wire oracle.
+        let (parent_pem, parent_tls, parent_hash) =
+            endpoint(address.ip().to_string(), &rustls::version::TLS12);
         let (origin_pem, origin_tls, origin_hash) = endpoint(
             if origin_valid {
                 "origin.invalid"
@@ -410,6 +414,7 @@ async fn nested_parent_tls_keeps_both_sessions_and_preserves_parent_on_origin_fa
                 "wrong.invalid"
             }
             .into(),
+            &rustls::version::TLS13,
         );
         let trust = directory.path().join("trust.pem");
         std::fs::write(&trust, format!("{parent_pem}{origin_pem}")).unwrap();
@@ -433,12 +438,13 @@ async fn nested_parent_tls_keeps_both_sessions_and_preserves_parent_on_origin_fa
                     .starts_with(b"CONNECT origin.invalid.:443 HTTP/1.1")
             );
             outer.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
+            let (outer, wire) = super::server::tests::tap(outer);
             let inner = tokio_rustls::TlsAcceptor::from(origin_tls)
                 .accept(outer)
                 .await;
             if !origin_valid {
                 assert!(inner.is_err());
-                return;
+                return wire;
             }
             let mut inner = inner.unwrap();
             assert_eq!(inner.get_ref().1.server_name(), Some("origin.invalid"));
@@ -448,6 +454,7 @@ async fn nested_parent_tls_keeps_both_sessions_and_preserves_parent_on_origin_fa
                 .await
                 .unwrap();
             inner.shutdown().await.unwrap();
+            wire
         });
         let proxy = Proxy::start(configuration).await.unwrap();
         let runtime = proxy.runtime.read().unwrap().clone();
@@ -470,7 +477,7 @@ async fn nested_parent_tls_keeps_both_sessions_and_preserves_parent_on_origin_fa
             String::from_utf8_lossy(&reply)
         );
         drop(client);
-        timeout(Duration::from_secs(5), peer)
+        let wire = timeout(Duration::from_secs(5), peer)
             .await
             .unwrap()
             .unwrap();
@@ -482,13 +489,16 @@ async fn nested_parent_tls_keeps_both_sessions_and_preserves_parent_on_origin_fa
         assert_eq!(servers[0]["route"], "parent");
         assert_eq!(servers[0]["resolved_peer"], address.to_string());
         assert!(servers[0]["resolved_origin_peer"].is_null());
+        super::server::tests::assert_wire(&servers[0]["tls_server_hello"], &wire);
         let sessions = servers[0]["tls_sessions"].as_array().unwrap();
         assert_eq!(sessions.len(), if origin_valid { 2 } else { 1 });
         assert_eq!(sessions[0]["peer"], "parent");
+        assert_eq!(sessions[0]["version"], "TLSv1_2");
         assert_eq!(sessions[0]["leaf_certificate"]["cert_sha256"], parent_hash);
         assert!(sessions[0]["sni"].is_null());
         if origin_valid {
             assert_eq!(sessions[1]["peer"], "origin");
+            assert_eq!(sessions[1]["version"], "TLSv1_3");
             assert_eq!(sessions[1]["sni"], "origin.invalid");
             assert_eq!(sessions[1]["alpn"], "http/1.1");
             assert_eq!(sessions[1]["leaf_certificate"]["cert_sha256"], origin_hash);
@@ -497,7 +507,10 @@ async fn nested_parent_tls_keeps_both_sessions_and_preserves_parent_on_origin_fa
         }
         assert_eq!(
             connections(&rows, "proxy_to_upstream", "updated").len(),
-            sessions.len()
+            sessions.len() + 1
+        );
+        assert!(
+            connections(&rows, "proxy_to_upstream", "updated")[0]["tls_server_hello"].is_null()
         );
         assert!(connections(&rows, "client_to_proxy", "terminal")[0]["tls_client_hello"].is_null());
     }

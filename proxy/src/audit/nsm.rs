@@ -46,6 +46,7 @@ struct Connection {
     route: Option<String>,
     tls_server_name: Option<String>,
     tls_client_hello: Option<crate::tls_identity::ClientHello>,
+    tls_server_hello: Option<crate::tls_identity::ServerHelloObservation>,
     tls_sessions: Option<Vec<crate::tls_identity::TlsSession>>,
     ingress: String,
 }
@@ -129,6 +130,10 @@ impl Connection {
                     && sessions.len() <= 2
                     && sessions.iter().all(crate::tls_identity::TlsSession::valid)
             })
+            && self
+                .tls_server_hello
+                .as_ref()
+                .is_none_or(|hello| self.leg == "proxy_to_upstream" && hello.valid())
             && self
                 .route
                 .as_deref()

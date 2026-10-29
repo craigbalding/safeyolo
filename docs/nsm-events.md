@@ -226,7 +226,64 @@ Its extension hash sorts non-GREASE extension types excluding SNI and ALPN,
 then appends signature algorithms in offered order. SHA-256 hash sections keep
 12 lowercase hex digits. Empty sorted lists produce twelve zeroes. Unknown
 versions use `00`. These values characterize client behavior; they are not
-cryptographic process or executable identities. JA3S and JA4S are out of scope.
+cryptographic process or executable identities. JA4S remains out of scope pending
+applicable implementation and distribution rights.
+
+`tls_server_hello` records bytes read immediately below the origin TLS handshake,
+after any parent CONNECT. It contains `status`, `hello`, and
+`hello_retry_request`. Each hello contains the unsigned wire `legacy_version`,
+selected `cipher_suite`, ordered `extension_types`, `extension_count`,
+`truncated`, and `ja3s`. Extension summaries keep the first 64 types; the digest
+uses the complete list. JA3S is the MD5 digest of the decimal
+`legacy_version,cipher_suite,extension-types` tuple, with extension types joined
+by hyphens. An absent extension vector leaves the third segment empty.
+As in the [Salesforce JA3S implementation](https://github.com/salesforce/ja3/blob/502cc6395811c54743b0561419d61900a6df3ff7/python/ja3s.py),
+all server extension types participate in their wire order, including GREASE
+values. No upstream implementation source is imported.
+
+The observer reassembles a ServerHello across records and read boundaries.
+Under [RFC 8446 section 4.1.3](https://www.rfc-editor.org/rfc/rfc8446#section-4.1.3),
+a TLS 1.3 ServerHello has wire `legacy_version: 771` (0x0303).
+The independently negotiated session version remains `TLSv1_3` (0x0304).
+The observer recognizes HelloRetryRequest by its specified random value, records
+it separately, and waits for the final ServerHello. A retry fingerprint does
+not substitute for the final server fingerprint. TLS 1.3 compatibility
+ChangeCipherSpec records can separate these messages.
+
+The observation status describes wire availability, separately from connection
+success or certificate verification:
+
+| Status | Meaning |
+|---|---|
+| `complete` | A complete final ServerHello was parsed. `hello` is present. |
+| `incomplete` | The stream ended or the handshake was dropped before a complete final hello. A parsed retry can remain. |
+| `invalid` | The observed record or handshake framing was malformed, or extension types were duplicated. |
+| `unavailable` | Non-handshake bytes prevented observation, such as an alert or opaque/encrypted record. |
+| `limit_exceeded` | A declared ServerHello exceeded its bounded observation size. |
+
+For every status except `complete`, `hello` is null. An absent
+`tls_server_hello` means no observation was recorded; it does not prove absence
+of a handshake. The observer holds at most one bounded ServerHello message and
+one record header transiently. It drops raw bytes after classification and
+stores no extension payloads. Observation does not reject or change traffic.
+
+The server responds to SafeYolo's upstream ClientHello. This fingerprint does
+not describe the intercepted agent's original ClientHello. The outer parent's
+TLS handshake cannot supply `tls_server_hello`; its negotiated evidence stays
+in the separate parent session. A provider route can supply observed TLS bytes
+over the named guest-port stream. Those bytes do not establish an independently
+measured external origin or origin IP. The existing route, endpoint and trusted
+attribution fields retain those distinctions.
+
+A complete hello emits an update on the actual upstream connection key before
+the negotiated-session update. An unavailable or incomplete observation also
+emits an update when classification finishes. Terminal snapshots retain these
+facts even if TLS verification subsequently fails. Existing `logs connection`
+and `logs request` pivots expose these records in their instance/runtime
+namespace through the recorded connection and flow IDs. Audit queue loss,
+rotation and selected read windows can still make evidence unavailable.
+Observation happens before optional, lossy payload retention and requires no
+packet/content capture. Existing capture controls remain unchanged.
 
 Each `tls_sessions` entry contains `peer`, `sni`, `version`, `cipher`, `alpn`,
 `handshake_kind`, and `leaf_certificate`. The native rustls session supplies negotiated values;
@@ -258,7 +315,11 @@ in memory and does not change TLS admission. Failed upstream handshakes do not
 produce an established-session entry: tokio-rustls does not return that TLS
 session on failure. No negotiated values or certificates are fabricated.
 If a preceding parent TLS handshake succeeded, its evidence remains when the
-origin handshake fails. Raw ClientHello bytes, extension payloads, certificates,
+origin handshake fails. A complete observed ServerHello can survive that failure
+without an established origin-session entry. Resumption observes a fresh
+ServerHello, while rustls can still supply cached certificates in `tls_sessions`;
+the new hello does not make those certificates fresh wire observations.
+Raw ClientHello or ServerHello bytes, extension payloads, certificates,
 TLS secrets and HTTP content are not stored in these sparse records.
 
 The deterministic fixtures in `proxy/src/tls_identity/tests.rs` encode the two
@@ -273,6 +334,15 @@ records and reads. The JA3 expected value for that synthetic JA4 body is
 decimal preimage with Python's `hashlib.md5`. The local MD5 implementation also
 checks the [RFC 1321 test vectors](https://www.rfc-editor.org/rfc/rfc1321).
 No reference implementation source or fingerprint dependency is imported.
+
+The ServerHello tests in `proxy/src/tls_identity/server/tests.rs` cover ordered
+tuples, fragmentation, coalescing, retries, summary limits and unavailable or
+invalid evidence. Owned TLS 1.2/1.3 endpoints exercise the production handshake
+path, including full and resumed sessions. A test-only endpoint tap supplies
+the emitted wire bytes to an independent field reader and OpenSSL MD5 oracle.
+The nested-parent fixture applies the same oracle to inner origin bytes,
+including certificate-verification failure. These tests require OpenSSL in
+the test host's command path.
 
 The two public PEM fixtures in `proxy/tests/fixtures/tls-identity-*.pem` were
 generated with OpenSSL using the same P-256 key and serials 58401 and 58402.
