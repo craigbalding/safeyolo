@@ -146,18 +146,27 @@ nonempty and no larger than 65,536 UTF-8 bytes. This command creates revision
 `1` only if the room still has no brief:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord brief set chat --file brief.md --expected-revision 0
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord brief set chat --file brief.md --expected-revision 0 --operation-id chat-intent-1
 "$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord brief show chat
 ```
 
 For a later update, read the current brief and use its revision as
 `--expected-revision`. Inspect the existing text before replacing it. Set accepts
 exactly one source: a Markdown argument, `--file FILE`, or `--stdin`. It preserves
-the input bytes, including trailing newlines. A stale revision fails without
-changing the brief or emitting brief-change attention. If a command's result
-is uncertain, read the canonical brief before deciding whether to write again.
+the input bytes, including trailing newlines. A different operation with a stale
+revision fails without changing the brief or emitting brief-change attention.
 
-Successful writes report the new revision/hash and attention count. Each write
+If the result is uncertain, retry with the same `--operation-id`, original
+expected revision and exact Markdown. Keep the original input file for that
+retry. The command returns the original committed result even if a later
+operation has changed the brief. It does not reapply the old intent. Changed
+input under the same ID fails with an operation conflict. Read the current brief
+separately to inspect any later change. The operation ID is scoped to the
+operator and brief-set operation type across rooms. If you omit
+`--operation-id`, the command generates an ID and reports it in its result;
+choose the ID before the first attempt when you need ambiguous-result recovery.
+
+Successful writes report the operation ID, revision/hash and attention count. Each write
 retains operator attribution and notifies current receive-authorized members
 through `brief_changed`. Agents can read authorized briefs but cannot update
 them. A brief is optional standing context: it does not assign work, require a

@@ -121,6 +121,37 @@ async fn brief_input_requires_an_explicit_revision_and_exactly_one_source() {
             "shared",
             "text",
             "--expected-revision",
+            "0",
+            "--operation-id",
+        ],
+        vec![
+            "brief",
+            "set",
+            "shared",
+            "text",
+            "--expected-revision",
+            "0",
+            "--operation-id",
+            "one",
+            "--operation-id",
+            "two",
+        ],
+        vec![
+            "brief",
+            "set",
+            "shared",
+            "text",
+            "--expected-revision",
+            "0",
+            "--operation-id",
+            " ",
+        ],
+        vec![
+            "brief",
+            "set",
+            "shared",
+            "text",
+            "--expected-revision",
             "-1",
         ],
         vec![
@@ -197,6 +228,7 @@ async fn brief_input_requires_an_explicit_revision_and_exactly_one_source() {
     let help = coord_cli(&root, &["brief", "--help"]).await;
     assert!(help.status.success());
     assert!(String::from_utf8_lossy(&help.stdout).contains("--expected-revision"));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("--operation-id"));
     assert!(!root.exists());
     assert!(host_cli(&root, &["init"]).await.status.success());
     coord_rooms::bootstrap(&root).unwrap();
