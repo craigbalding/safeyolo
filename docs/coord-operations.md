@@ -7,6 +7,36 @@ Guest `safeyolo-coord` calls retain agent attribution.
 SafeYolo owns the host-local, authenticated NATS server's lifecycle. Do not
 launch a second server or edit its generated configuration.
 
+## Retry a membership change
+
+Run grant and revoke as the host account that owns the instance. The room and
+agent must already exist. In this example the instance is `$HOME/.safeyolo`,
+the room is `chat`, and the agent is `alice`. Choose an operation ID before
+calling if you need to recover from a lost response:
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord grant chat alice receive --operation-id chat-alice-receive
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord revoke chat alice --operation-id chat-alice-revoke
+```
+
+Repeat the exact operation ID and input after an ambiguous response. SafeYolo
+returns the original result, including its membership generation and transition
+time. Permission order and duplicates do not change grant input. Omitting
+permissions grants both `receive` and `send`. Changing the canonical input under
+the same ID returns a conflict. Grant and revoke have separate ID scopes.
+To request a new change after a later grant or revoke, choose a new ID.
+When you omit `--operation-id`, SafeYolo generates one and includes it in the
+result; a lost response then also loses that retry handle.
+
+Membership changes commit with immutable operation history and metadata-only
+audit rows. The running proxy delivers staged Coord audit and attention hints
+through one common worker. Staging is not delivery. Failed delivery remains
+pending across restart; audit retries can produce duplicates with the same
+`event_id`. The audit directory must permit a sibling `.lock` file. The writer
+needs read and write access to recover an incomplete final line before append.
+Canonical brief and message bodies stay in their existing stores.
+These retry semantics do not apply to room creation or message sends.
+
 ## Schedule an operator message
 
 Use a host scheduler when a message must be sent while the target sandbox is

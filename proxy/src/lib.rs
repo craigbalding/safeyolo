@@ -1882,6 +1882,7 @@ pub struct Proxy {
     default_via: String,
     readiness_file: PathBuf,
     circuit_snapshots: Option<circuit_runtime::Snapshots>,
+    coord_delivery: Option<agent_api::coord::outbox::Delivery>,
     service_files: Option<services::CatalogMetadata>,
     service_check_at: Option<tokio::time::Instant>,
     policy_check_at: Option<tokio::time::Instant>,
@@ -1941,6 +1942,7 @@ impl Proxy {
             default_via,
             readiness_file: config.readiness_file.clone(),
             circuit_snapshots: None,
+            coord_delivery: None,
             service_check_at: service_files.as_ref().map(|_| tokio::time::Instant::now()),
             service_files,
             policy_check_at: config
@@ -1997,6 +1999,16 @@ impl Proxy {
                 Some(circuit_runtime::Snapshots::start(proxy.runtime.clone())?);
         }
         startup.record("listeners_readiness");
+        {
+            let runtime = proxy
+                .runtime
+                .read()
+                .map_err(|_| "runtime read lock poisoned")?;
+            proxy.coord_delivery = agent_api::coord::outbox::Delivery::start(
+                runtime.coord.clone(),
+                runtime.audit.clone(),
+            );
+        }
         Ok(proxy)
     }
 
@@ -2407,6 +2419,9 @@ impl Proxy {
             .coord
             .clone();
         coord.shutdown().await;
+        if let Some(delivery) = self.coord_delivery.take() {
+            delivery.stop().await;
+        }
         let recorder = self
             .runtime
             .read()

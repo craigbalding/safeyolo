@@ -292,7 +292,7 @@ impl AuditIntent {
             ),
             AuditKind::CoordPublishOutcomeUnknown => (
                 "coord.publish_outcome_unknown",
-                Kind::Security,
+                Kind::Coord,
                 Severity::High,
                 "agent-api",
                 Some(Decision::Deny),

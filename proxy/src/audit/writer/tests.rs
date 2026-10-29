@@ -84,6 +84,79 @@ fn rotation_uses_source_suffix_and_runs_before_whole_batch() {
 }
 
 #[test]
+fn coord_durability_propagates_file_and_directory_sync_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("audit.jsonl");
+    let file = fs::File::create(&path).unwrap();
+    for failed_call in [1, 2, 3] {
+        let mut calls = 0;
+        let result = sync_coord_append(&file, &path, |file| {
+            calls += 1;
+            assert_eq!(file.metadata()?.is_file(), calls == 1);
+            if calls == failed_call {
+                Err(io::Error::other("injected sync failure"))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(calls, failed_call);
+    }
+    sync_coord_append(&file, &path, fs::File::sync_all).unwrap();
+}
+
+#[test]
+fn interrupted_append_recovers_only_the_incomplete_tail_before_rotation() {
+    for (has_complete, tail_bytes, rotate_now) in [
+        (true, 17, false),
+        (true, 16385, false),
+        (false, 17, false),
+        (true, 17, true),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("audit.jsonl");
+        let settings = Settings::default();
+        if has_complete {
+            append(
+                &path,
+                &settings,
+                &[event(0).record(OffsetDateTime::UNIX_EPOCH)],
+            )
+            .unwrap();
+        }
+        let original = fs::read(&path).unwrap_or_default();
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&vec![b'x'; tail_bytes])
+            .unwrap();
+        let settings = if rotate_now {
+            Settings {
+                max_bytes: 0.into(),
+                ..settings
+            }
+        } else {
+            settings
+        };
+        append(
+            &path,
+            &settings,
+            &[event(1).record(OffsetDateTime::UNIX_EPOCH)],
+        )
+        .unwrap();
+        if rotate_now {
+            assert_eq!(fs::read(backup(&path, &1.into())).unwrap(), original);
+            assert_eq!(values(&path).len(), 1);
+        } else {
+            assert!(fs::read(&path).unwrap().starts_with(&original));
+            assert_eq!(values(&path).len(), if has_complete { 2 } else { 1 });
+        }
+    }
+}
+
+#[test]
 fn settings_keep_source_integer_modes_without_allocating_capacity() {
     for queue in ["0", "-1", "+１２_３", "1\u{001c}", "", "x"] {
         let settings = Settings::from_environment_values(Some(queue), None, None).unwrap();

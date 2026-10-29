@@ -47,6 +47,7 @@ fn isolated_with_queue(name: &str, queue: Option<&str>, test: impl FnOnce(&Path)
         command.env_remove("SAFEYOLO_AUDIT_QUEUE_MAX");
     }
     let output = command
+        .env_remove("SAFEYOLO_COORD_DATA_DIR")
         .env_remove("SAFEYOLO_LOG_MAX_MB")
         .env_remove("SAFEYOLO_LOG_BACKUPS")
         .output()
@@ -70,6 +71,35 @@ fn config(directory: &Path, sink: &Path) -> Config {
         "policy_file":policy,"data_dir":directory.join("data"),"flow_store_enabled":false,"audit_log_path":sink,"readiness_file":directory.join("ready"),
     }))
     .unwrap()
+}
+
+#[test]
+fn coord_delivery_requires_an_explicit_namespace() {
+    isolated(
+        "coord_delivery_requires_an_explicit_namespace",
+        |directory| {
+            let executor = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            executor.block_on(async {
+                let proxy = Proxy::start(config(directory, &directory.join("audit.jsonl")))
+                    .await
+                    .unwrap();
+                assert!(proxy.coord_delivery.is_none());
+                proxy.shutdown().await;
+                unsafe {
+                    std::env::set_var("SAFEYOLO_COORD_DATA_DIR", directory.join("selected-coord"));
+                }
+                let proxy = Proxy::start(config(directory, &directory.join("audit.jsonl")))
+                    .await
+                    .unwrap();
+                assert!(proxy.coord_delivery.is_some());
+                proxy.shutdown().await;
+                assert!(!directory.join("selected-coord/v0.db").exists());
+            });
+        },
+    );
 }
 
 fn event(index: usize) -> Event {

@@ -10,6 +10,9 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[path = "native_coord/stage0.rs"]
+mod stage0;
+
 struct NatsCleanup(PathBuf);
 impl Drop for NatsCleanup {
     fn drop(&mut self) {
@@ -348,6 +351,8 @@ responses=['DONE','BLOCKED','FAILED']
     let counts = || -> (i64, i64, i64, i64) {
         db.query_row("SELECT (SELECT count(*) FROM coord_brief_revisions), (SELECT count(*) FROM coord_attention_edges), (SELECT count(*) FROM coord_outbox), (SELECT count(*) FROM coord_operations)", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap()
     };
+    // Room creation and grants already have immutable outcomes and audit rows.
+    let initial = counts();
     let proxy = Proxy::start(native_config::read(&root.join("config.toml")).unwrap())
         .await
         .unwrap();
@@ -452,7 +457,10 @@ responses=['DONE','BLOCKED','FAILED']
     assert_eq!((&*actor.0, &*actor.1), ("operator", "operator"));
     let history_actor: (String,String,String) = db.query_row("SELECT actor_kind,actor_id,operation_id FROM coord_brief_revisions WHERE room_id=?1 AND revision=1",[room["room_id"].as_str().unwrap()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
     assert_eq!(actor, history_actor);
-    assert_eq!(counts(), (1, 2, 3, 1));
+    assert_eq!(
+        counts(),
+        (initial.0 + 1, initial.1 + 2, initial.2 + 3, initial.3 + 1)
+    );
     let payloads:Vec<String>=db.prepare("SELECT payload_json FROM coord_outbox UNION ALL SELECT outcome_json FROM coord_operations").unwrap().query_map([],|row|row.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
     assert!(
         payloads
@@ -606,7 +614,10 @@ responses=['DONE','BLOCKED','FAILED']
         coord_json(root, &["brief", "show", "shared"]).await["revision"],
         3
     );
-    assert_eq!(counts(), (3, 6, 9, 3));
+    assert_eq!(
+        counts(),
+        (initial.0 + 3, initial.1 + 6, initial.2 + 9, initial.3 + 3)
+    );
 
     proxy.shutdown().await;
     coord_json(root, &["stop"]).await;
@@ -1987,7 +1998,7 @@ async fn send_receipt_identifies_each_recipient_request() {
     let _cleanup = NatsCleanup(root.into());
     coord_rooms::create_room(root, "shared").await.unwrap();
     for agent in ["alice", "bob"] {
-        coord_rooms::grant(&root.join("config.toml"), "shared", agent, &[], false).unwrap();
+        coord_rooms::grant(&root.join("config.toml"), "shared", agent, &[], false, None).unwrap();
     }
     let alice = Client {
         socket: Some(root.join("alice.sock")),
@@ -2087,9 +2098,9 @@ async fn fresh_rooms_restart_authorization_mcp_and_nats_failure() {
     let room = coord_rooms::create_room(root, "shared").await.unwrap();
     coord_rooms::create_room(root, "private").await.unwrap();
     for agent in ["alice", "bob"] {
-        coord_rooms::grant(&config_path, "shared", agent, &[], false).unwrap();
+        coord_rooms::grant(&config_path, "shared", agent, &[], false, None).unwrap();
     }
-    coord_rooms::grant(&config_path, "private", "bob", &[], false).unwrap();
+    coord_rooms::grant(&config_path, "private", "bob", &[], false, None).unwrap();
     let alice = Client {
         socket: Some(root.join("alice.sock")),
         token_file: root.join("data/agent_token"),
