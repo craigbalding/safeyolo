@@ -48,6 +48,9 @@ The current reader continues to accept earlier records that omit TLS metadata.
 The destination/TLS history sensor adds optional `novelty` evidence to indicators.
 Earlier strict version 2 readers need this field before reading the new records.
 The current reader continues to accept indicators that omit it.
+Negotiation-change records add the optional `negotiation` object inside each
+novelty observation. Earlier strict readers need this addition; the current
+reader still accepts certificate and destination observations that omit it.
 
 All NSM payload fields below are in `details`, except `request_id`, which
 uses the existing envelope field. Existing `ts`, `event_id`, `severity`,
@@ -305,17 +308,22 @@ reader still accepts earlier records that omit them.
 
 ### Destination and upstream TLS history
 
-The native connection owners run `connection-history.v1`. The sensor emits two
+The native connection owners run `connection-history.v1`. The sensor emits three
 low-severity rules through the shared indicator producer:
 
 | Stable rule | Observable condition |
 | --- | --- |
 | `destination.first_observation.v1` | The first native upstream record for an agent/destination/route absent from the bounded runtime cache. |
 | `tls.origin_identity_changed.v1` | A later full origin TLS handshake has a different certificate hash, or two available SPKI hashes differ. |
+| `tls.origin_negotiation_changed.v1` | A later successful origin TLS handshake has a different measured TLS version or negotiated Application-Layer Protocol Negotiation (ALPN) result. |
 
 These rules have confidence 1.0 in the stated metadata comparison. They do not
 estimate the probability of compromise. Certificate renewal, key rotation,
-load balancing, and operator configuration changes can explain a TLS change.
+load balancing, server protocol configuration, and operator configuration changes
+can explain a TLS change. Negotiation changes use indicator type
+`tls_negotiation_change`; certificate changes retain `tls_identity_change`.
+When both change, the sensor emits separate records with their own comparable
+baselines.
 
 On the operator host, with the native CLI installed, replace `AGENT` with an
 existing configured agent name. This command reads recent audit records:
@@ -334,8 +342,9 @@ Find `security.indicator` records whose `details.sensor` is
 | `destination` | Logical requested host and explicit port, including the effective default port. DNS names use ASCII lowercase without the root dot. Parsed IP addresses use canonical spelling; IPv6 addresses have brackets. |
 | `route` | `direct`, `parent`, or `provider`. Each route has separate comparison state. |
 | `verification_name` | The normalized origin TLS verification name for a TLS change; null for a first destination observation. |
-| `current` | Supporting `connection_id`, `event_id`, and optional `cert_sha256`/`spki_sha256` hashes. |
-| `previous` | The previous comparable full origin certificate observation, with the same fields as `current`; null for a first destination observation. |
+| `current` | Supporting `connection_id`, `event_id`, optional `cert_sha256`/`spki_sha256` hashes, and optional `negotiation`. |
+| `previous` | The previous comparable observation for the same rule, with the same fields as `current`; null for a first destination observation. |
+| `current.negotiation`, `previous.negotiation` | Measured `version` and `alpn` from the completed origin handshake. Present only for negotiation-change records; their certificate hashes are null. |
 
 Join each observation to its exact `network.connection` event by `event_id`
 and connection key in the indicator's instance/runtime namespace. The outer
@@ -343,6 +352,13 @@ and connection key in the indicator's instance/runtime namespace. The outer
 are lowercase SHA-256 hexadecimal values, as in `tls_sessions`. First destination
 observations have null certificate hashes. The indicator does not invent an
 application request or duplicate content evidence.
+
+Within a `negotiation` object, `version` is the native rustls protocol-version
+name, such as `TLSv1_3`. `alpn` uses the same escaped protocol bytes as
+`tls_sessions`. A null `alpn` means the completed handshake negotiated no ALPN.
+The absence of `negotiation` means the observation supplies no negotiation
+evidence; it does not mean no ALPN. A missing version or incomplete handshake
+cannot establish a negotiation comparison.
 
 The destination key uses the accepted UDS agent identity, normalized requested
 host and port, and route. Request headers cannot select the agent. A physical
@@ -355,7 +371,7 @@ explicit, including `unknown`. Unattributed connections retain their native
 records and do not enter this agent comparison cache. External ingress is not
 an input to this UDS-owned producer.
 
-TLS comparison uses only `peer: origin` sessions from full native rustls
+Certificate comparison uses only `peer: origin` sessions from full native rustls
 handshakes. Parent TLS, resumed sessions with potentially cached certificates,
 failed handshakes, and missing certificates do not advance the certificate
 baseline. Opaque passthrough tunnels supply no origin certificate observation.
@@ -365,11 +381,21 @@ when an SPKI hash is unavailable. A different verification name resets that
 entry's single certificate baseline without comparing names. This matters when
 a numeric CONNECT endpoint later acquires a logical SNI name.
 
-Cache operations serialize concurrent observations. Identical full observations
+Negotiation comparison also uses only `peer: origin` sessions. Successful full
+and resumed handshakes measure the current version and ALPN result independently
+of certificate availability. Failed handshakes, missing versions, parent TLS and
+opaque passthrough tunnels do not advance this baseline. Unknown metadata is
+not a change. A transition between a measured null ALPN and a measured protocol
+is a change. Each agent/destination/route entry keeps one negotiation baseline
+and one certificate baseline. A different verification name resets the affected
+baseline without comparing names. Neither baseline mixes origin observations
+with parent/provider transport TLS.
+
+Cache operations serialize concurrent observations. Identical comparable observations
 advance the supporting baseline without another indicator. Closing an older
 connection does not replay its TLS snapshot into the comparison. Reconnects
 compare while their entry remains cached. Repetition does not refresh FIFO age.
-Eviction discards both destination and certificate state; a later attempt can
+Eviction discards destination, certificate and negotiation state; a later attempt can
 produce a new first observation. If eviction occurs before an in-flight TLS
 handshake completes, that handshake supplies no comparison. Policy reloads
 preserve the cache; process restart clears it, even when JSONL files remain.
