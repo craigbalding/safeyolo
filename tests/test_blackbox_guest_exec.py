@@ -346,19 +346,22 @@ def test_guest_preparation_preserves_selected_root_and_propagates_failure(tmp_pa
     for failure in (None, 'setup', 'home', 'workspace', 'node', 'read-timeout')
 ] + [(True, 'seed'), (True, 'no-node-input')])
 def test_persistence_preparation_has_its_own_budget_and_preserves_read_assertions(tmp_path, offline, failure):
-    """Run the maintained test with cold setup longer than its scaled read timer."""
+    """Keep content checks independent of the short read-timeout control."""
     repository = tmp_path / 'repository'
     suite = repository / 'tests/blackbox/host/lifecycle'
     suite.mkdir(parents=True)
     shutil.copy2('tests/blackbox/host/lifecycle/test_home_persistence.py', suite)
-    # Keep the production timeout value and scope under test. Scale only its
-    # duration so the cold-preparation regression takes less than a second.
-    (suite / 'conftest.py').write_text('''import pytest
+    # Preserve the maintained timeout for content and setup-error checks.
+    # Only the timeout control needs a short timer, exceeded by cold setup.
+    (suite / 'conftest.py').write_text('''import os
+import pytest
 def pytest_collection_modifyitems(items):
     for item in items:
         marker = item.get_closest_marker('timeout')
-        if marker:
-            assert marker.args == (120,)
+        assert marker is not None
+        assert marker.args == (120,)
+        assert marker.kwargs == {'func_only': True}
+        if os.environ['PROBE_FAILURE'] == 'read-timeout':
             item.add_marker(pytest.mark.timeout(0.5, **marker.kwargs), append=False)
 ''')
     tools = tmp_path / 'tools'
@@ -408,6 +411,8 @@ elif command.startswith('cat '):
     path = root / ('home-marker' if home else pathlib.Path(command.split()[-1]).name)
     print('wrong' if failure == ('home' if home else 'workspace') else path.read_text(), end='')
 elif command.startswith('node '):
+    # A restored tool can respond after the timeout control's short deadline.
+    time.sleep(0.75)
     print('v20.0.0' if failure == 'node' else 'v22.0.0\\n/home/agent/.mise/installs/node/22/bin/node')
 else:
     assert command == 'true', command
@@ -422,7 +427,7 @@ else:
                        PYTHONPATH=str(Path('tests/blackbox').resolve()),
                        SAFEYOLO_CONFIG_DIR=str(tmp_path / 'instance'), PROBE_ROOT=str(repository),
                        PROBE_FAILURE=failure or '')
-    result = subprocess.run([sys.executable, '-m', 'pytest', '-q', '--tb=short', '--timeout=0.5',
+    result = subprocess.run([sys.executable, '-m', 'pytest', '-q', '--tb=short',
                              '--basetemp', str(tmp_path / 'pytest'), str(suite)],
                             cwd=repository, env=environment, text=True, capture_output=True, timeout=15)
     assert result.returncode == (0 if failure in (None, 'no-node-input') else 1), result.stdout + result.stderr
