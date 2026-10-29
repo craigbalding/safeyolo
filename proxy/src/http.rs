@@ -1973,6 +1973,7 @@ where
                 coord: Some(agent_api::CoordContext {
                     client: &runtime.coord,
                     cancellation: upgrades.cancellation_receiver.clone(),
+                    runtime: Some(state),
                 }),
             },
             agent_api::RequestBody {

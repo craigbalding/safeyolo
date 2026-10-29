@@ -1364,6 +1364,35 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             json!({"schema_version":1,"state":"active","instance_id":instance_id}),
         ));
     }
+    if let Some(room) = path
+        .strip_prefix("/admin/coord/rooms/")
+        .and_then(|path| path.strip_suffix("/state"))
+        .filter(|room| !room.is_empty() && !room.contains('/'))
+    {
+        if method != Method::GET {
+            return Ok(unsupported(method));
+        }
+        let Some(state) = task_state else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"runtime is unavailable"}),
+            ));
+        };
+        let room = services::decode_name(room)?;
+        return Ok(
+            match crate::agent_api::coord::operator_state(state, &room).await {
+                Ok(value) => response(StatusCode::OK, value),
+                Err(error) => response(
+                    if error.unavailable {
+                        StatusCode::SERVICE_UNAVAILABLE
+                    } else {
+                        StatusCode::NOT_FOUND
+                    },
+                    json!({"error":"room state unavailable or not accessible"}),
+                ),
+            },
+        );
+    }
     if matches!(*method, Method::POST | Method::DELETE) && path == "/admin/credentials/unlock" {
         let Some(state) = task_state else {
             return Ok(response(

@@ -401,6 +401,7 @@ async fn run() -> Result<(), Error> {
             #[cfg(target_os = "linux")]
             println!("{}", safeyolo_proxy::linux_host::HELP);
             println!("{}", safeyolo_proxy::coord_operator::HELP);
+            println!("{}", safeyolo_proxy::coord_rooms::INVENTORY_HELP);
             println!("{}", safeyolo_proxy::factory_proposals::HELP);
             println!("{}", safeyolo_proxy::dispatch::request::HELP);
             println!("{}", safeyolo_proxy::dispatch::HELP);
