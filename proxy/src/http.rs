@@ -1076,6 +1076,7 @@ async fn open_egress_for_flow(
             (&destination.host, destination.port),
             route_name,
             "tcp",
+            allowed.tasks.ingress.get(),
         )
     });
     if let Some(recording) = allowed.recording {
@@ -1454,6 +1455,7 @@ async fn open_outbound(
                     (&destination.host, destination.port),
                     "provider",
                     "stream",
+                    allowed.tasks.ingress.get(),
                 )
             });
             if let Some(recording) = allowed.recording {
@@ -2864,7 +2866,11 @@ where
                     _ = stop.changed() => return Ok(()),
                     result = upgrade => Box::new(TokioIo::new(result?)),
                 };
-                let client = crate::tls_identity::observe_client(client, descendants.ingress.get().cloned());
+                let client = crate::tls_identity::observe_client(
+                    client,
+                    descendants.ingress.get().cloned(),
+                    connected.as_ref().and_then(|connection| connection.network.clone()),
+                );
                 let (stream, connection_facts) = match connected {
                     Some(Connected { stream, h1_request_form, peer, observation, network }) => (Some(stream), Some((h1_request_form, peer, observation, network))),
                     None => (None, None),
