@@ -60,6 +60,17 @@ fn fifo_repeats_eviction_and_tls_after_eviction_are_bounded() {
             .unwrap()
             .valid(Some("a1"))
     );
+    let first = session('a', Some('b'));
+    assert!(
+        history
+            .certificate(&a, "a.invalid", &first, observation("cert-a1"))
+            .is_none()
+    );
+    assert!(
+        history
+            .negotiation(&a, "a.invalid", &first, observation("negotiation-a1"))
+            .is_none()
+    );
     assert!(history.destination(&b, observation("b1")).is_some());
     assert!(history.destination(&a, observation("a2")).is_none());
     assert!(history.destination(&c, observation("c1")).is_some());
@@ -69,7 +80,7 @@ fn fifo_repeats_eviction_and_tls_after_eviction_are_bounded() {
     );
     assert!(
         history
-            .tls(
+            .certificate(
                 &a,
                 "a.invalid",
                 &session('a', Some('b')),
@@ -78,6 +89,13 @@ fn fifo_repeats_eviction_and_tls_after_eviction_are_bounded() {
             .is_none()
     );
     assert!(history.destination(&a, observation("a3")).is_some());
+    let mut changed = first;
+    changed.version = Some("TLSv1_2".into());
+    assert!(
+        history
+            .negotiation(&a, "a.invalid", &changed, observation("new-baseline"))
+            .is_none()
+    );
     assert_eq!(history.entries.len(), 2);
     assert_eq!(history.oldest.len(), 2);
     assert!(!history.entries.contains_key(&b));
@@ -99,12 +117,12 @@ fn only_comparable_full_origin_certificates_advance_the_baseline() {
     let first = session('a', Some('b'));
     assert!(
         history
-            .tls(&key, "ORIGIN.INVALID.", &first, observation("first"))
+            .certificate(&key, "ORIGIN.INVALID.", &first, observation("first"))
             .is_none()
     );
     assert!(
         history
-            .tls(&key, "origin.invalid", &first, observation("repeat"))
+            .certificate(&key, "origin.invalid", &first, observation("repeat"))
             .is_none()
     );
     {
@@ -112,26 +130,26 @@ fn only_comparable_full_origin_certificates_advance_the_baseline() {
         unknown.peer = "parent".into();
         assert!(
             history
-                .tls(&key, "origin.invalid", &unknown, observation("parent"))
+                .certificate(&key, "origin.invalid", &unknown, observation("parent"))
                 .is_none()
         );
         unknown.peer = "origin".into();
         unknown.handshake_kind = Some("Resumed".into());
         assert!(
             history
-                .tls(&key, "origin.invalid", &unknown, observation("resumed"))
+                .certificate(&key, "origin.invalid", &unknown, observation("resumed"))
                 .is_none()
         );
         unknown.handshake_kind = Some("Full".into());
         unknown.leaf_certificate = None;
         assert!(
             history
-                .tls(&key, "origin.invalid", &unknown, observation("missing"))
+                .certificate(&key, "origin.invalid", &unknown, observation("missing"))
                 .is_none()
         );
     }
     let renewal = history
-        .tls(
+        .certificate(
             &key,
             "origin.invalid",
             &session('c', Some('b')),
@@ -144,7 +162,7 @@ fn only_comparable_full_origin_certificates_advance_the_baseline() {
         renewal.current.spki_sha256
     );
     let missing_spki = history
-        .tls(
+        .certificate(
             &key,
             "origin.invalid",
             &session('d', None),
@@ -155,7 +173,7 @@ fn only_comparable_full_origin_certificates_advance_the_baseline() {
     // Learning a previously absent SPKI is not a measured change.
     assert!(
         history
-            .tls(
+            .certificate(
                 &key,
                 "origin.invalid",
                 &session('d', Some('e')),
@@ -164,7 +182,7 @@ fn only_comparable_full_origin_certificates_advance_the_baseline() {
             .is_none()
     );
     let changed = history
-        .tls(
+        .certificate(
             &key,
             "origin.invalid",
             &session('f', Some('a')),
@@ -180,7 +198,106 @@ fn only_comparable_full_origin_certificates_advance_the_baseline() {
     // that single baseline instead of comparing certificates for two names.
     assert!(
         history
-            .tls(&key, "other.invalid", &first, observation("other-name"))
+            .certificate(&key, "other.invalid", &first, observation("other-name"))
+            .is_none()
+    );
+}
+
+#[test]
+fn negotiation_availability_resumption_verification_and_route_are_distinct() {
+    let mut history = History::default();
+    let key = key("alice", "origin.invalid:443");
+    history.destination(&key, observation("open"));
+    let mut measured = session('a', Some('b'));
+    assert!(
+        history
+            .negotiation(&key, "ORIGIN.INVALID.", &measured, observation("first"))
+            .is_none()
+    );
+    assert!(
+        history
+            .negotiation(&key, "origin.invalid", &measured, observation("repeat"))
+            .is_none()
+    );
+    for peer in ["parent", "provider"] {
+        let mut unavailable = measured.clone();
+        unavailable.peer = peer.into();
+        unavailable.alpn = Some("h2".into());
+        assert!(
+            history
+                .negotiation(&key, "origin.invalid", &unavailable, observation(peer))
+                .is_none()
+        );
+    }
+    for field in ["version", "handshake_kind"] {
+        let mut unavailable = measured.clone();
+        if field == "version" {
+            unavailable.version = None;
+        } else {
+            unavailable.handshake_kind = None;
+        }
+        unavailable.alpn = Some("h2".into());
+        assert!(
+            history
+                .negotiation(&key, "origin.invalid", &unavailable, observation(field))
+                .is_none()
+        );
+    }
+    // The negotiated values are current even when a resumed certificate chain
+    // could be cached, or a certificate summary is unavailable.
+    measured.handshake_kind = Some("Resumed".into());
+    measured.leaf_certificate = None;
+    measured.alpn = Some("h2".into());
+    let changed = history
+        .negotiation(&key, "origin.invalid", &measured, observation("resumed"))
+        .unwrap();
+    assert_eq!(changed.previous.as_ref().unwrap().connection_id, "repeat");
+    assert!(
+        changed
+            .previous
+            .as_ref()
+            .unwrap()
+            .negotiation
+            .as_ref()
+            .unwrap()
+            .alpn
+            .is_none()
+    );
+    assert!(changed.valid(Some("resumed")));
+    measured.version = Some("TLSv1_2".into());
+    let changed = history
+        .negotiation(
+            &key,
+            "origin.invalid",
+            &measured,
+            observation("version-change"),
+        )
+        .unwrap();
+    assert_eq!(changed.previous.as_ref().unwrap().connection_id, "resumed");
+    assert!(
+        history
+            .negotiation(&key, "other.invalid", &measured, observation("other-name"))
+            .is_none()
+    );
+    measured.alpn = None;
+    let changed = history
+        .negotiation(&key, "other.invalid", &measured, observation("no-alpn"))
+        .unwrap();
+    assert_eq!(
+        changed.previous.as_ref().unwrap().connection_id,
+        "other-name"
+    );
+    let mut other_route = key.clone();
+    other_route.route = "provider";
+    history.destination(&other_route, observation("provider-open"));
+    assert!(
+        history
+            .negotiation(
+                &other_route,
+                "other.invalid",
+                &measured,
+                observation("provider-origin")
+            )
             .is_none()
     );
 }
@@ -198,21 +315,36 @@ fn tls_origin(
     params.serial_number = Some(serial.into());
     let cert = params.self_signed(key).unwrap();
     let identity = crate::tls_identity::certificate(&[cert.der().clone()]).unwrap();
+    let tls = tls_config(
+        cert.der().clone(),
+        key,
+        rustls::DEFAULT_VERSIONS,
+        Some(b"http/1.1"),
+    );
+    (cert.pem(), tls, identity)
+}
+
+fn tls_config(
+    cert: rustls::pki_types::CertificateDer<'static>,
+    key: &rcgen::KeyPair,
+    versions: &[&'static rustls::SupportedProtocolVersion],
+    alpn: Option<&[u8]>,
+) -> Arc<rustls::ServerConfig> {
     let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
-    .with_safe_default_protocol_versions()
+    .with_protocol_versions(versions)
     .unwrap()
     .with_no_client_auth()
     .with_single_cert(
-        vec![cert.der().clone()],
+        vec![cert],
         rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
     )
     .unwrap();
-    tls.alpn_protocols = vec![b"http/1.1".to_vec()];
+    tls.alpn_protocols = alpn.into_iter().map(<[u8]>::to_vec).collect();
     tls.send_tls13_tickets = 0;
     tls.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
-    (cert.pem(), Arc::new(tls), identity)
+    Arc::new(tls)
 }
 
 async fn serve_tls(listener: TcpListener, configs: Vec<Arc<rustls::ServerConfig>>) {
@@ -301,6 +433,17 @@ fn assert_observation(rows: &[Value], indicator: &Value, observation: &Value, ce
         assert_eq!(tls["peer"], "origin");
         for field in ["cert_sha256", "spki_sha256"] {
             assert_eq!(tls["leaf_certificate"][field], observation[field]);
+        }
+    }
+    if observation["negotiation"].is_object() {
+        let tls = source["details"]["tls_sessions"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap();
+        assert_eq!(tls["peer"], "origin");
+        for field in ["version", "alpn"] {
+            assert_eq!(tls[field], observation["negotiation"][field]);
         }
     }
 }
@@ -464,13 +607,155 @@ async fn native_tls_renewal_key_change_isolation_reload_and_restart() {
     );
 }
 
+#[tokio::test]
+async fn native_same_certificate_version_and_alpn_changes_keep_exact_links() {
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
+    let directory = tempfile::tempdir().unwrap();
+    let (listener, address) = crate::test_owned_endpoint::bind().await;
+    let (other, other_address) = crate::test_owned_endpoint::bind().await;
+    let key = rcgen::KeyPair::generate().unwrap();
+    let (pem, a, cert) = tls_origin(&address.ip().to_string(), &key, 1);
+    let der = CertificateDer::from_pem_slice(pem.as_bytes()).unwrap();
+    let b = tls_config(
+        der.clone(),
+        &key,
+        &[&rustls::version::TLS12],
+        Some(b"http/1.1"),
+    );
+    let c = tls_config(der, &key, &[&rustls::version::TLS12], None);
+    let peer = tokio::spawn(serve_tls(
+        listener,
+        vec![
+            a.clone(),
+            a.clone(),
+            b.clone(),
+            b.clone(),
+            c.clone(),
+            c.clone(),
+            a.clone(),
+            c.clone(),
+            a,
+            b,
+        ],
+    ));
+    let other_peer = tokio::spawn(serve_tls(other, vec![c]));
+    let mut configuration = tls_proxy_config(directory.path(), &pem);
+    for (agent, source_id) in [("bob", "192.0.2.21"), ("unknown", "192.0.2.22")] {
+        configuration.listeners.push(crate::config::AgentListener {
+            agent_id: agent.into(),
+            source_id: Some(source_id.into()),
+            socket_path: directory.path().join(format!("{agent}.sock")),
+        });
+    }
+    let url = format!("https://{address}");
+    let mut proxy = Proxy::start(configuration.clone()).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    for _ in 0..2 {
+        request(directory.path(), "alice", &url).await;
+    }
+    assert_eq!(indicators(&records(&runtime, directory.path())).len(), 1);
+    proxy.reload(configuration.clone()).await.unwrap();
+    for _ in 0..4 {
+        request(directory.path(), "alice", &url).await;
+    }
+    request(directory.path(), "bob", &url).await;
+    request(directory.path(), "unknown", &url).await;
+    request(directory.path(), "alice", &url).await;
+    request(
+        directory.path(),
+        "alice",
+        &format!("https://{other_address}"),
+    )
+    .await;
+    proxy.shutdown().await;
+    let rows = records(&runtime, directory.path());
+    let clues = indicators(&rows);
+    assert_eq!(clues.len(), 6, "{clues:?}");
+    assert_eq!(
+        clues
+            .iter()
+            .filter(|r| r["details"]["rule"] == "destination.first_observation.v1")
+            .count(),
+        3
+    );
+    let samples: Vec<_> = rows
+        .iter()
+        .filter(|row| {
+            row["event"] == "network.connection"
+                && row["agent"] == "alice"
+                && row["details"]["state"] == "updated"
+                && row["details"]["leg"] == "proxy_to_upstream"
+                && row["details"]["requested_target"] == address.to_string()
+        })
+        .collect();
+    assert_eq!(samples.len(), 7, "{rows:?}");
+    for sample in &samples {
+        assert_eq!(
+            sample["details"]["tls_sessions"][0]["leaf_certificate"]["cert_sha256"],
+            cert.cert_sha256
+        );
+    }
+    let changes: Vec<_> = clues
+        .iter()
+        .filter(|r| r["details"]["rule"] == "tls.origin_negotiation_changed.v1")
+        .collect();
+    assert_eq!(changes.len(), 3);
+    for (change, previous_index, current_index, version, alpn) in [
+        (changes[0], 1, 2, "TLSv1_2", Some("http/1.1")),
+        (changes[1], 3, 4, "TLSv1_2", None),
+        (changes[2], 5, 6, "TLSv1_3", Some("http/1.1")),
+    ] {
+        let evidence = &change["details"]["novelty"];
+        assert_eq!(
+            change["details"]["indicator_type"],
+            "tls_negotiation_change"
+        );
+        assert_eq!(
+            evidence["previous"]["event_id"],
+            samples[previous_index]["event_id"]
+        );
+        assert_eq!(
+            evidence["current"]["event_id"],
+            samples[current_index]["event_id"]
+        );
+        assert_eq!(evidence["current"]["negotiation"]["version"], version);
+        assert_eq!(evidence["current"]["negotiation"]["alpn"], json!(alpn));
+        assert_eq!(evidence["destination"], address.to_string());
+        for field in ["current", "previous"] {
+            assert_observation(&rows, change, &evidence[field], false);
+            assert!(evidence[field]["cert_sha256"].is_null());
+        }
+    }
+    let proxy = Proxy::start(configuration).await.unwrap();
+    let restarted = proxy.runtime.read().unwrap().clone();
+    request(directory.path(), "alice", &url).await;
+    proxy.shutdown().await;
+    timeout(LIMIT, peer).await.unwrap().unwrap();
+    timeout(LIMIT, other_peer).await.unwrap().unwrap();
+    let rows = records(&restarted, directory.path());
+    let clues: Vec<_> = indicators(&rows)
+        .into_iter()
+        .filter(|r| r["details"]["runtime_id"] == restarted.instance_id)
+        .collect();
+    assert_eq!(
+        clues.len(),
+        1,
+        "restart does not restore negotiation history"
+    );
+    assert_eq!(
+        clues[0]["details"]["rule"],
+        "destination.first_observation.v1"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn native_concurrent_tls_comparisons_follow_supporting_event_order() {
     let directory = tempfile::tempdir().unwrap();
     let (listener, address) = crate::test_owned_endpoint::bind().await;
     let key = rcgen::KeyPair::generate().unwrap();
     let (pem_a, a, _) = tls_origin(&address.ip().to_string(), &key, 1);
-    let (pem_b, b, _) = tls_origin(&address.ip().to_string(), &key, 2);
+    let (pem_b, mut b, _) = tls_origin(&address.ip().to_string(), &key, 2);
+    Arc::make_mut(&mut b).alpn_protocols.clear();
     let peer = tokio::spawn(async move {
         let mut tasks = tokio::task::JoinSet::new();
         for index in 0..12 {
@@ -544,12 +829,24 @@ async fn native_concurrent_tls_comparisons_follow_supporting_event_order() {
         .collect();
     assert_eq!(changes.len(), expected.len());
     assert!(!changes.is_empty());
-    for (change, pair) in changes.into_iter().zip(expected) {
+    for (change, pair) in changes.into_iter().zip(&expected) {
         let evidence = &change["details"]["novelty"];
         assert_eq!(evidence["previous"]["event_id"], pair[0]["event_id"]);
         assert_eq!(evidence["current"]["event_id"], pair[1]["event_id"]);
         assert_observation(&rows, change, &evidence["previous"], true);
         assert_observation(&rows, change, &evidence["current"], true);
+    }
+    let negotiation_changes: Vec<_> = clues
+        .iter()
+        .filter(|r| r["details"]["rule"] == "tls.origin_negotiation_changed.v1")
+        .collect();
+    assert_eq!(negotiation_changes.len(), expected.len());
+    for (change, pair) in negotiation_changes.into_iter().zip(expected) {
+        let evidence = &change["details"]["novelty"];
+        assert_eq!(evidence["previous"]["event_id"], pair[0]["event_id"]);
+        assert_eq!(evidence["current"]["event_id"], pair[1]["event_id"]);
+        assert_observation(&rows, change, &evidence["previous"], false);
+        assert_observation(&rows, change, &evidence["current"], false);
     }
 }
 
@@ -562,13 +859,16 @@ async fn native_parent_certificate_changes_and_failed_origin_tls_keep_origin_bas
         &rcgen::KeyPair::generate().unwrap(),
         1,
     );
-    let (pem_pb, pb, _) = tls_origin(
+    let (pem_pb, mut pb, _) = tls_origin(
         &address.ip().to_string(),
         &rcgen::KeyPair::generate().unwrap(),
         2,
     );
+    Arc::make_mut(&mut pb).alpn_protocols.clear();
     let (pem_a, a, cert_a) = tls_origin("origin.invalid", &rcgen::KeyPair::generate().unwrap(), 3);
-    let (pem_b, b, cert_b) = tls_origin("origin.invalid", &rcgen::KeyPair::generate().unwrap(), 4);
+    let (pem_b, mut b, cert_b) =
+        tls_origin("origin.invalid", &rcgen::KeyPair::generate().unwrap(), 4);
+    Arc::make_mut(&mut b).alpn_protocols.clear();
     let (pem_wrong, wrong, _) =
         tls_origin("wrong.invalid", &rcgen::KeyPair::generate().unwrap(), 5);
     let peer = tokio::spawn(async move {
@@ -625,7 +925,7 @@ async fn native_parent_certificate_changes_and_failed_origin_tls_keep_origin_bas
     proxy.shutdown().await;
     let rows = records(&runtime, directory.path());
     let clues = indicators(&rows);
-    assert_eq!(clues.len(), 2, "{clues:?}");
+    assert_eq!(clues.len(), 3, "{clues:?}");
     let evidence = &clues[1]["details"]["novelty"];
     assert_eq!(evidence["destination"], "origin.invalid:443");
     assert_eq!(evidence["route"], "parent");
@@ -634,6 +934,24 @@ async fn native_parent_certificate_changes_and_failed_origin_tls_keep_origin_bas
     assert_eq!(evidence["current"]["cert_sha256"], cert_b.cert_sha256);
     assert_observation(&rows, clues[1], &evidence["previous"], true);
     assert_observation(&rows, clues[1], &evidence["current"], true);
+    assert_eq!(
+        clues[2]["details"]["rule"],
+        "tls.origin_negotiation_changed.v1"
+    );
+    let negotiation = &clues[2]["details"]["novelty"];
+    assert_eq!(negotiation["route"], "parent");
+    assert_eq!(
+        negotiation["previous"]["event_id"],
+        evidence["previous"]["event_id"]
+    );
+    assert_eq!(
+        negotiation["current"]["event_id"],
+        evidence["current"]["event_id"]
+    );
+    assert_eq!(negotiation["previous"]["negotiation"]["alpn"], "http/1.1");
+    assert!(negotiation["current"]["negotiation"]["alpn"].is_null());
+    assert_observation(&rows, clues[2], &negotiation["previous"], false);
+    assert_observation(&rows, clues[2], &negotiation["current"], false);
     let failed = rows
         .iter()
         .find(|r| {

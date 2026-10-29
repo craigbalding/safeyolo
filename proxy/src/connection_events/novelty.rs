@@ -53,6 +53,16 @@ pub(crate) struct Observation {
     pub(crate) event_id: String,
     pub(crate) cert_sha256: Option<String>,
     pub(crate) spki_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) negotiation: Option<Negotiation>,
+}
+
+#[derive(Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Negotiation {
+    version: String,
+    // Null inside a measured negotiation means that no ALPN was negotiated.
+    alpn: Option<String>,
 }
 
 impl Observation {
@@ -62,6 +72,7 @@ impl Observation {
             event_id,
             cert_sha256: None,
             spki_sha256: None,
+            negotiation: None,
         }
     }
 
@@ -77,6 +88,13 @@ impl Observation {
             && self.cert_sha256.as_deref().is_none_or(hash)
             && self.spki_sha256.as_deref().is_none_or(hash)
             && (self.spki_sha256.is_none() || self.cert_sha256.is_some())
+            && self.negotiation.as_ref().is_none_or(|value| {
+                !value.version.trim().is_empty()
+                    && value.version.len() <= 1024
+                    && value.alpn.as_ref().is_none_or(|alpn| alpn.len() <= 1024)
+                    && self.cert_sha256.is_none()
+                    && self.spki_sha256.is_none()
+            })
     }
 }
 
@@ -105,6 +123,7 @@ impl Evidence {
                     self.verification_name.is_none()
                         && self.current.cert_sha256.is_none()
                         && self.current.spki_sha256.is_none()
+                        && self.current.negotiation.is_none()
                 }
                 Some(previous) => {
                     previous.valid()
@@ -113,25 +132,37 @@ impl Evidence {
                             .verification_name
                             .as_ref()
                             .is_some_and(|name| !name.trim().is_empty())
-                        && previous.cert_sha256.is_some()
-                        && self.current.cert_sha256.is_some()
-                        && (previous.cert_sha256 != self.current.cert_sha256
-                            || matches!(
-                                (&previous.spki_sha256, &self.current.spki_sha256),
-                                (Some(a), Some(b)) if a != b
-                            ))
+                        && match (&previous.negotiation, &self.current.negotiation) {
+                            (Some(a), Some(b)) => a != b,
+                            (None, None) => {
+                                previous.cert_sha256.is_some()
+                                    && self.current.cert_sha256.is_some()
+                                    && (previous.cert_sha256 != self.current.cert_sha256
+                                        || matches!(
+                                            (&previous.spki_sha256, &self.current.spki_sha256),
+                                            (Some(a), Some(b)) if a != b
+                                        ))
+                            }
+                            _ => false,
+                        }
                 }
             }
     }
 }
 
-struct CertificateObservation {
+struct TlsObservation {
     verification_name: String,
     observation: Observation,
 }
 
+#[derive(Default)]
+struct TlsHistory {
+    certificate: Option<TlsObservation>,
+    negotiation: Option<TlsObservation>,
+}
+
 pub(super) struct History {
-    entries: HashMap<Key, Option<CertificateObservation>>,
+    entries: HashMap<Key, TlsHistory>,
     oldest: VecDeque<Key>,
     capacity: usize,
 }
@@ -155,7 +186,7 @@ impl History {
             self.entries.remove(&self.oldest.pop_front()?);
         }
         self.oldest.push_back(key.clone());
-        self.entries.insert(key.clone(), None);
+        self.entries.insert(key.clone(), TlsHistory::default());
         Some(Evidence {
             history_scope: SCOPE.into(),
             history_capacity: self.capacity,
@@ -167,7 +198,7 @@ impl History {
         })
     }
 
-    fn tls(
+    fn certificate(
         &mut self,
         key: &Key,
         name: &str,
@@ -185,11 +216,49 @@ impl History {
             return None;
         }
         let cert = session.leaf_certificate.as_ref()?;
-        let baseline = self.entries.get_mut(key)?;
+        let baseline = &mut self.entries.get_mut(key)?.certificate;
         current.cert_sha256 = Some(cert.cert_sha256.clone());
         current.spki_sha256 = cert.spki_sha256.clone();
+        Self::compare(self.capacity, key, name, baseline, current)
+    }
+
+    fn negotiation(
+        &mut self,
+        key: &Key,
+        name: &str,
+        session: &TlsSession,
+        mut current: Observation,
+    ) -> Option<Evidence> {
+        // Resumption still measures these negotiated values on this connection.
+        // No session or missing version cannot establish even a no-ALPN result.
+        if session.peer != "origin"
+            || !matches!(
+                session.handshake_kind.as_deref(),
+                Some("Full" | "FullWithHelloRetryRequest" | "Resumed")
+            )
+        {
+            return None;
+        }
+        current.negotiation = Some(Negotiation {
+            version: session.version.clone()?,
+            alpn: session.alpn.clone(),
+        });
+        if !current.valid() {
+            return None;
+        }
+        let baseline = &mut self.entries.get_mut(key)?.negotiation;
+        Self::compare(self.capacity, key, name, baseline, current)
+    }
+
+    fn compare(
+        capacity: usize,
+        key: &Key,
+        name: &str,
+        baseline: &mut Option<TlsObservation>,
+        current: Observation,
+    ) -> Option<Evidence> {
         let verification_name = normalize_host(name);
-        let previous = baseline.replace(CertificateObservation {
+        let previous = baseline.replace(TlsObservation {
             verification_name: verification_name.clone(),
             observation: current.clone(),
         })?;
@@ -198,7 +267,7 @@ impl History {
         }
         let evidence = Evidence {
             history_scope: SCOPE.into(),
-            history_capacity: self.capacity,
+            history_capacity: capacity,
             destination: key.destination.clone(),
             route: key.route.into(),
             verification_name: Some(verification_name),
@@ -229,44 +298,55 @@ impl ConnectionEvents {
             route: destination.route,
         };
         let evidence = match tls {
-            None => history.destination(&key, current),
-            Some((name, session)) => history.tls(&key, name, session, current),
+            None => [history.destination(&key, current), None],
+            Some((name, session)) => [
+                history.certificate(&key, name, session, current.clone()),
+                history.negotiation(&key, name, session, current),
+            ],
         };
-        let Some(evidence) = evidence else { return };
-        let change = evidence.previous.is_some();
-        // Keep comparison and submission in one order across reconnects.
-        security_indicators::emit(
-            self,
-            identity,
-            None,
-            None,
-            Indicator {
-                indicator_type: if change {
-                    "tls_identity_change"
-                } else {
-                    "destination_novelty"
+        for evidence in evidence.into_iter().flatten() {
+            let change = evidence.previous.is_some();
+            let negotiation = evidence.current.negotiation.is_some();
+            // Keep comparison and submission in one order across reconnects.
+            security_indicators::emit(
+                self,
+                identity,
+                None,
+                None,
+                Indicator {
+                    indicator_type: if negotiation {
+                        "tls_negotiation_change"
+                    } else if change {
+                        "tls_identity_change"
+                    } else {
+                        "destination_novelty"
+                    },
+                    sensor: "connection-history.v1",
+                    rule: if negotiation {
+                        "tls.origin_negotiation_changed.v1"
+                    } else if change {
+                        "tls.origin_identity_changed.v1"
+                    } else {
+                        "destination.first_observation.v1"
+                    },
+                    confidence: 1.0,
+                    severity: audit::Severity::Low,
+                    summary: if negotiation {
+                        "Origin TLS version or negotiated ALPN changed in bounded runtime history"
+                    } else if change {
+                        "Upstream certificate or public key changed in bounded runtime history"
+                    } else {
+                        "First destination observation in bounded runtime history"
+                    },
+                    connection_id: Some(&evidence.current.connection_id),
+                    direction: None,
+                    evidence_hash: None,
+                    content: None,
+                    source: None,
+                    novelty: Some(&evidence),
                 },
-                sensor: "connection-history.v1",
-                rule: if change {
-                    "tls.origin_identity_changed.v1"
-                } else {
-                    "destination.first_observation.v1"
-                },
-                confidence: 1.0,
-                severity: audit::Severity::Low,
-                summary: if change {
-                    "Upstream certificate or public key changed in bounded runtime history"
-                } else {
-                    "First destination observation in bounded runtime history"
-                },
-                connection_id: Some(&evidence.current.connection_id),
-                direction: None,
-                evidence_hash: None,
-                content: None,
-                source: None,
-                novelty: Some(&evidence),
-            },
-        );
+            );
+        }
     }
 }
 
