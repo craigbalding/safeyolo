@@ -295,6 +295,55 @@ All seven export formats are supported:
 A flow pruned before the byte read returns unavailable. Retention and exporter
 limits are described in [live traffic inspection](DEVELOPERS.md#live-traffic-inspection).
 
+### Follow local NSM evidence
+
+On the host, Network Security Monitoring (NSM) pivots read the configured local
+audit JSONL file. The running proxy and its Admin API need not be available.
+Start with a version 2 record from `logs`: copy its `details.instance_id` and
+`details.runtime_id`, and its `request_id` or connection ID. A flow supplies
+`details.client_connection_id` and, when available, `details.server_connection_id`.
+A retained traffic exchange can supply its request ID; obtain the namespace
+from the corresponding NSM audit record. Replace `INSTANCE_ID`, `RUNTIME_ID`,
+`REQUEST_ID` and `CONNECTION_ID` below with those exact values. Use the agent
+name from that record; these examples select `work`.
+
+```sh
+safeyolo logs --agent work --lines 1000 --json
+safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --lines 1000
+safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --lines 1000 --json
+```
+
+The pivot shows related `network.connection`, `traffic.flow` and
+`security.indicator` records, plus available supporting records. The output
+retains source timestamps, event IDs, attribution and details. Each link names
+its source field, scoped IDs, availability and matching physical file lines.
+Novelty links require the recorded connection and event ID. A prompt exposure
+source requires a response indication with its recorded request ID, connection
+ID and evidence hash. Copy a linked connection or request ID into the same
+command to continue. Supporting links are followed once; the command does not
+recursively traverse history or infer a correlation verdict.
+
+Both namespace options are required. Local IDs from another instance or restart
+cannot join. `--agent` filters rows before links are resolved. Historical
+unversioned and version 1 rows remain readable with ordinary `logs`, but cannot
+supply either side of an NSM link.
+
+For pivots, `--lines` retains the last selected-agent rows before namespace and
+pivot selection; its default is 100. The output identifies the configured file,
+physical line range, total rows read and rows omitted by this limit. All related
+and supporting records in that window are displayed; there is no additional
+output limit. Increase `--lines` to widen the window. The reader validates every
+row in the opened file, including rows outside the window; malformed,
+unsupported or unreadable input fails with a diagnostic that omits event data.
+
+Only the opened configured file is searched. Rotated files, queued writes,
+dropped events and earlier evidence outside the window can leave links
+unavailable. An unavailable link is not proof that nothing occurred. The view
+does not drain the running writer, reconstruct missing records, change the audit
+file or fetch retained bodies. Use the existing `traffic` commands to inspect
+content that policy retained in the FlowStore; a request ID is not a FlowStore
+numeric row ID. See [NSM contracts and evidence limits](nsm-events.md).
+
 To return to an existing agent terminal, use `attach` in inspect. It requires
 a running, attachable command. A missing terminal produces an error and keeps
 your selection; attach does not launch another command. Returning from the

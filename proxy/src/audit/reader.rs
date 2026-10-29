@@ -2,6 +2,43 @@ use serde_json::Value;
 
 use super::{Error, ErrorKind, Result, nsm};
 
+pub(crate) struct LocalTail {
+    pub(crate) rows: std::collections::VecDeque<(usize, Value)>,
+    pub(crate) lines_read: usize,
+    pub(crate) agent_rows: usize,
+}
+
+/// Validate the whole configured file, retaining the last selected-agent rows.
+/// Diagnostics must not echo retained bytes, paths or decoding errors.
+pub(crate) fn local_tail(
+    path: &std::path::Path,
+    agent: Option<&str>,
+    limit: usize,
+) -> std::result::Result<LocalTail, crate::Error> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).map_err(|_| "local audit file could not be opened")?;
+    let mut tail = LocalTail {
+        rows: std::collections::VecDeque::new(),
+        lines_read: 0,
+        agent_rows: 0,
+    };
+    for line in std::io::BufReader::new(file).lines() {
+        let line = line.map_err(|_| "local audit file could not be read as UTF-8")?;
+        let row = parse_record(&line)
+            .map_err(|_| "local audit record is invalid; raw log remains inspectable")?;
+        tail.lines_read += 1;
+        if agent.is_some_and(|agent| row["agent"] != agent) {
+            continue;
+        }
+        tail.agent_rows += 1;
+        tail.rows.push_back((tail.lines_read, row));
+        if tail.rows.len() > limit {
+            tail.rows.pop_front();
+        }
+    }
+    Ok(tail)
+}
+
 /// Read mixed historical and current JSONL without upgrading stored records.
 /// Unversioned writer fallbacks remain inspectable, but are not validated events.
 pub fn parse_record(line: &str) -> Result<Value> {

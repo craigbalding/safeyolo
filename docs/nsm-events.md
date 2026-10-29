@@ -99,6 +99,29 @@ Never join records across instances or restarts using only a local ID.
 Legacy version 1 records without this namespace need trusted source context
 before a collector can join them to NSM records.
 
+The local operator can use `logs connection ID` or `logs request ID` with
+`--instance ID --runtime ID` to inspect these relationships. See the
+[operator workflow](operator-guide.md#follow-local-nsm-evidence) for complete
+commands. The read-only view uses the ordinary logs reader and its configured
+local file. A pivot keeps the last `--lines` selected-agent rows (default 100),
+then selects validated version 2 records within that namespace. It reports
+the file, physical line range, rows read and omitted rows. It displays all
+related records and one level of recorded supporting links within that window.
+Request pivots include their connections and those connections' indications;
+connection indications can describe other requests on the same transport.
+These are recorded relationships, not a new correlation verdict.
+
+Each link reports `available` with matching file lines, or `unavailable`.
+Novelty links match both connection ID and exact source event ID. Prompt source
+links match the recorded request ID, connection ID and evidence hash of a
+response indication. Neither a coincident local ID nor a legacy row can
+establish availability. Agent filtering also applies to supporting records.
+The original records are returned unchanged inside `records[].record`.
+Rotation, drops, queued writes, an unavailable file and the selected window
+limit the evidence; missing evidence is not proof of absence. Rotated files
+and FlowStore bodies are not read by this view. The view makes no additional
+retention or completeness guarantee.
+
 Reuse `audit::Attribution`. Its wire location remains `details.attribution`:
 `evidence_owner`, `trusted_transport_identity`, `initiator`,
 `attribution_status`, and `attribution_provenance`. The writer's attribution

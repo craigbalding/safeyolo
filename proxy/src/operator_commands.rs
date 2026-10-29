@@ -1,8 +1,7 @@
 //! One native operator session over existing instance, evidence and approval owners.
 
 use std::{
-    collections::VecDeque,
-    io::{BufRead, IsTerminal, Write},
+    io::{IsTerminal, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -24,6 +23,8 @@ safeyolo [--root ROOT] approvals ask|context ID [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals delegations [--json]\nsafeyolo [--root ROOT] approvals delegation check|preview|apply|revoke NAME --file PROPOSAL.json [--json]\nsafeyolo [--root ROOT] approvals review --agent NAME
 safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
 safeyolo [--root ROOT] logs [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] logs connection ID --instance ID --runtime ID [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] logs request ID --instance ID --runtime ID [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] diagnose [--agent NAME] [--json]
 safeyolo helper show ID|diagnostic ID|prepare ID --reason TEXT [--socket PATH] [--token-file FILE]
 safeyolo helper list\nsafeyolo helper approve|reject|defer ID --delegation NAME --option ID\nsafeyolo helper context|respond ID [--reason TEXT] [--socket PATH] [--token-file FILE]
@@ -40,7 +41,8 @@ Persistent network approval is reusable for the selected agent and host/port. Pe
 Gateway route approval defaults to once; --option selects an offered lifetime. Service access can require an offered credential option.
 Reject records a refusal without adding a policy deny rule. Terminal decisions cannot grant again.
 Helper uses its Agent API token (default /app/agent_token) and the existing guest proxy route.
-If evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable.";
+If evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable.
+Logs pivots search the last --lines selected-agent rows (default 100) of the configured local audit file only. Instance and runtime are required; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.";
 
 pub fn handles(args: &[String]) -> bool {
     args.first().is_some_and(|arg| {
@@ -91,6 +93,8 @@ struct Options {
     filter: String,
     json: bool,
     lines: usize,
+    instance: Option<String>,
+    runtime: Option<String>,
     offset: u64,
     socket: Option<PathBuf>,
     token: Option<PathBuf>,
@@ -117,7 +121,8 @@ impl Options {
                 }
                 "--agent" | "--factory" | "--helper" | "--filter" | "--lines" | "--offset"
                 | "--socket" | "--token-file" | "--reason" | "--test" | "--intent" | "--role"
-                | "--expect" | "--option" | "--delegation" | "--file" => {
+                | "--expect" | "--option" | "--delegation" | "--file" | "--instance"
+                | "--runtime" => {
                     let value = args
                         .next()
                         .ok_or_else(|| format!("{arg} requires a value"))?;
@@ -127,6 +132,8 @@ impl Options {
                         "--helper" => options.helper = Some(value.clone()),
                         "--filter" => options.filter = value.clone(),
                         "--lines" => options.lines = value.parse()?,
+                        "--instance" => options.instance = Some(value.clone()),
+                        "--runtime" => options.runtime = Some(value.clone()),
                         "--offset" => options.offset = value.parse()?,
                         "--socket" => options.socket = Some(value.into()),
                         "--token-file" => options.token = Some(value.into()),
@@ -857,25 +864,78 @@ fn logs(_root: &Path, options: &Options) -> Result<Value, Error> {
     let path = config
         .audit_log_path
         .ok_or("audit log path is unavailable")?;
-    let input = std::io::BufReader::new(std::fs::File::open(&path)?);
-    let mut rows = VecDeque::new();
-    for line in input.lines() {
-        let line = line?;
-        let row = crate::audit::parse_record(&line)
-            .map_err(|_| "local audit record is invalid; raw log remains inspectable")?;
-        if options
-            .agent
-            .as_ref()
-            .is_some_and(|agent| row["agent"] != *agent)
-        {
-            continue;
+    match options.positional.as_slice() {
+        [] => {
+            let tail = crate::audit::local_tail(&path, options.agent.as_deref(), options.lines)?;
+            let rows: Vec<_> = tail.rows.into_iter().map(|(_, row)| row).collect();
+            Ok(json!({"file":path,"events":rows}))
         }
-        rows.push_back(row);
-        if rows.len() > options.lines {
-            rows.pop_front();
+        [kind, id] if matches!(kind.as_str(), "connection" | "request") => {
+            crate::audit::pivot::read(
+                &path,
+                &crate::audit::pivot::Query {
+                    instance: options
+                        .instance
+                        .as_deref()
+                        .ok_or("logs pivot requires --instance ID")?,
+                    runtime: options
+                        .runtime
+                        .as_deref()
+                        .ok_or("logs pivot requires --runtime ID")?,
+                    kind,
+                    id,
+                    agent: options.agent.as_deref(),
+                    lines: options.lines,
+                },
+            )
         }
+        _ => Err("usage: safeyolo logs --help".into()),
     }
-    Ok(json!({"file":path,"events":rows}))
+}
+
+fn show_log_pivot(value: &Value) -> Result<(), Error> {
+    let query = &value["query"];
+    let search = &value["search"];
+    println!(
+        "Local audit: {}\nInstance: {}\nRuntime: {}\n{}: {}\nAgent: {}",
+        safe(text(&value["file"])),
+        safe(text(&query["instance_id"])),
+        safe(text(&query["runtime_id"])),
+        safe(text(&query["kind"])),
+        safe(text(&query["id"])),
+        query["agent"]
+            .as_str()
+            .map(safe)
+            .unwrap_or_else(|| "all".into())
+    );
+    println!(
+        "Searched {} retained rows, physical lines {}..{}; {} selected-agent rows omitted by --lines {} ({} total file rows read).",
+        search["retained_rows"],
+        search["first_line"],
+        search["last_line"],
+        search["omitted_rows"],
+        search["line_limit"],
+        search["lines_read"]
+    );
+    println!("{}", text(&search["limits"]));
+    for entry in value["records"].as_array().into_iter().flatten() {
+        println!("\nLine {} ({}):", entry["line"], text(&entry["selection"]));
+        // JSON escapes control characters and preserves original attribution,
+        // timestamps, event IDs and evidence instead of rebuilding an event.
+        print_json(&entry["record"])?;
+    }
+    if value["records"].as_array().is_some_and(Vec::is_empty) {
+        println!("No related validated NSM records in the searched window.");
+    }
+    for link in value["links"].as_array().into_iter().flatten() {
+        println!(
+            "Link from line {} {}: {}",
+            link["from_line"],
+            text(&link["field"]),
+            serde_json::to_string(link)?
+        );
+    }
+    Ok(())
 }
 
 async fn state(root: &Path, agent: &str) -> Result<Value, Error> {
@@ -1319,6 +1379,8 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         } else {
             show_context(&value)
         }
+    } else if args[0] == "logs" && !options.json && value.get("query").is_some() {
+        show_log_pivot(&value)
     } else if args[0] == "helper" {
         print_json(&value)
     } else if !options.json && value.get("why_stopped").is_some() {

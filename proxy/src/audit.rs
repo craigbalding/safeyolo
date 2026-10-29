@@ -4,6 +4,7 @@
 mod envelope;
 mod explain;
 mod nsm;
+pub(crate) mod pivot;
 mod reader;
 mod writer;
 
@@ -13,6 +14,7 @@ pub use envelope::{
     Severity,
 };
 pub use explain::{ExplainError, ExplainErrorKind};
+pub(crate) use reader::local_tail;
 pub use reader::parse_record;
 pub use writer::{Settings, Submission, Writer};
 
