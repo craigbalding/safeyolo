@@ -495,7 +495,7 @@ nodes:
         - path: tools/acceptance/pyproject.toml
           sha256: 30ef94b727a4e867be6c6757b1b4512c07af3065511e27404e7101e254f2a737
         - path: tools/acceptance/uv.lock
-          sha256: 0a4a1559d47d0258f3dab10bd3605b7dc7154252b944e1445b66556588cb8827
+          sha256: 1e5c3ea9b0a8559bd4b39debfe03afc064221f92fb06687e06691f6c0caca2bb
       setup: "uv sync --project tools/acceptance --frozen --only-group static"
       verify: "sha256sum tools/acceptance/{pyproject.toml,uv.lock} && uv run --project tools/acceptance --frozen --no-sync mypy --version"
       run:
@@ -550,7 +550,7 @@ nodes:
         - path: tools/acceptance/pyproject.toml
           sha256: 30ef94b727a4e867be6c6757b1b4512c07af3065511e27404e7101e254f2a737
         - path: tools/acceptance/uv.lock
-          sha256: 0a4a1559d47d0258f3dab10bd3605b7dc7154252b944e1445b66556588cb8827
+          sha256: 1e5c3ea9b0a8559bd4b39debfe03afc064221f92fb06687e06691f6c0caca2bb
         - path: tools/acceptance/semgrep-rules.yml
           sha256: 36c03e46e234a6a4d1d72233c72096099d1bb1e798216d9413ddb817eb944555
         - path: tools/acceptance/semgrep-rules.py
@@ -584,7 +584,7 @@ nodes:
         - path: tools/acceptance/pyproject.toml
           sha256: 30ef94b727a4e867be6c6757b1b4512c07af3065511e27404e7101e254f2a737
         - path: tools/acceptance/uv.lock
-          sha256: 0a4a1559d47d0258f3dab10bd3605b7dc7154252b944e1445b66556588cb8827
+          sha256: 1e5c3ea9b0a8559bd4b39debfe03afc064221f92fb06687e06691f6c0caca2bb
       setup: "uv sync --project tools/acceptance --frozen --only-group static; retain /home/agent/.cache/pip-audit across tasks"
       verify: "sha256sum pyproject.toml uv.lock tools/acceptance/{pyproject.toml,uv.lock} && uv run --project tools/acceptance --frozen --no-sync pip-audit --version"
       run:
@@ -608,7 +608,7 @@ nodes:
         - path: tools/acceptance/pyproject.toml
           sha256: 30ef94b727a4e867be6c6757b1b4512c07af3065511e27404e7101e254f2a737
         - path: tools/acceptance/uv.lock
-          sha256: 0a4a1559d47d0258f3dab10bd3605b7dc7154252b944e1445b66556588cb8827
+          sha256: 1e5c3ea9b0a8559bd4b39debfe03afc064221f92fb06687e06691f6c0caca2bb
       setup: "uv sync --project tools/acceptance --frozen --only-group static"
       verify: "sha256sum tools/acceptance/{pyproject.toml,uv.lock} && uv run --project tools/acceptance --frozen --no-sync radon --version"
       run:
