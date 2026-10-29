@@ -391,9 +391,32 @@ impl Connection {
     }
 
     pub(crate) fn client_hello(&self, hello: crate::tls_identity::ClientHello) {
-        self.update_tls(None, |details| {
-            details["tls_client_hello"] = json!(hello);
-        });
+        let mut facts = self
+            .0
+            .facts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        facts.details["tls_client_hello"] = json!(hello);
+        let mut snapshot = facts.details.clone();
+        snapshot["state"] = json!("updated");
+        if snapshot["leg"] != "client_to_proxy" || self.0.identity.request_agent().is_none() {
+            self.0.emit(snapshot);
+            return;
+        }
+        // The observed client bytes and their comparison share the audit order.
+        let mut history = self
+            .0
+            .events
+            .novelty
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let observation = self.0.emit(snapshot);
+        self.0.events.observe_client_fingerprint(
+            &mut history,
+            &self.0.identity,
+            &hello,
+            observation,
+        );
     }
 
     pub(crate) fn tls_session(&self, peer: &str, name: &str, session: &rustls::ClientConnection) {

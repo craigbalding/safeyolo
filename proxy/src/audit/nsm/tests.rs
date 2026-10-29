@@ -604,3 +604,56 @@ fn legacy_reader_results_and_unversioned_fallbacks_are_preserved() {
     }
     assert!(parse_record("not json").is_err());
 }
+
+#[test]
+fn client_fingerprint_evidence_requires_measured_changes_and_excludes_other_scopes() {
+    let mut row = record(indicator());
+    row["details"]["novelty"] = json!({
+        "history_scope":"runtime_fifo", "history_capacity":4096,
+        "verification_name":null,
+        "current":{"connection_id":"S1","event_id":"client-1", "cert_sha256":null,"spki_sha256":null,
+            "client_fingerprint":{"ja3":"a".repeat(32),"ja4":"t13d1516h2_8daaf6152771_e5627efa2ab1"}},
+        "previous":null,
+    });
+    assert!(parse_record(&row.to_string()).is_ok());
+    row["details"]["novelty"]["previous"] = json!({
+        "connection_id":"C0","event_id":"client-0", "cert_sha256":null,"spki_sha256":null,
+        "client_fingerprint":{"ja3":"b".repeat(32),"ja4":"t13d1516h2_8daaf6152771_e5627efa2ab1"},
+    });
+    assert!(parse_record(&row.to_string()).is_ok());
+    for (pointer, value) in [
+        ("/current/client_fingerprint/ja3", json!("invalid")),
+        ("/current/client_fingerprint/ja4", json!("")),
+        ("/previous/client_fingerprint", Value::Null),
+        ("/previous/client_fingerprint/ja3", json!("a".repeat(32))),
+        ("/previous/event_id", json!("client-1")),
+        ("/current/connection_id", json!("unrelated")),
+    ] {
+        let mut invalid = row.clone();
+        *invalid["details"]["novelty"].pointer_mut(pointer).unwrap() = value;
+        assert!(parse_record(&invalid.to_string()).is_err(), "{pointer}");
+    }
+    for (field, value) in [
+        ("destination", json!("origin.invalid:443")),
+        ("route", json!("direct")),
+        ("verification_name", json!("origin.invalid")),
+    ] {
+        let mut mixed = row.clone();
+        mixed["details"]["novelty"][field] = value;
+        assert!(parse_record(&mixed.to_string()).is_err());
+    }
+    for observation in ["previous", "current"] {
+        for (field, value) in [
+            ("cert_sha256", json!("c".repeat(64))),
+            ("negotiation", json!({"version":"TLSv1_3","alpn":null})),
+        ] {
+            let mut mixed = row.clone();
+            mixed["details"]["novelty"][observation][field] = value;
+            assert!(parse_record(&mixed.to_string()).is_err());
+        }
+        let mut unknown = row.clone();
+        unknown["details"]["novelty"][observation]["client_fingerprint"]["body"] =
+            json!("private payload");
+        assert!(parse_record(&unknown.to_string()).is_err());
+    }
+}

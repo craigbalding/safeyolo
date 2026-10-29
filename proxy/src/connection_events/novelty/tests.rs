@@ -14,7 +14,7 @@ use tokio::{
 const LIMIT: Duration = Duration::from_secs(5);
 
 fn key(agent: &str, destination: &str) -> Key {
-    Key {
+    Key::Destination {
         agent: agent.into(),
         destination: destination.into(),
         route: "direct",
@@ -288,7 +288,9 @@ fn negotiation_availability_resumption_verification_and_route_are_distinct() {
         "other-name"
     );
     let mut other_route = key.clone();
-    other_route.route = "provider";
+    if let Key::Destination { route, .. } = &mut other_route {
+        *route = "provider";
+    }
     history.destination(&other_route, observation("provider-open"));
     assert!(
         history
@@ -962,4 +964,431 @@ async fn native_parent_certificate_changes_and_failed_origin_tls_keep_origin_bas
     let sessions = failed["details"]["tls_sessions"].as_array().unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0]["peer"], "parent");
+}
+
+fn client_hello(ja3: char) -> ClientHello {
+    serde_json::from_value(json!({
+        "ja3":ja3.to_string().repeat(32),
+        "ja4":"t13d1516h2_8daaf6152771_e5627efa2ab1",
+        "sni":"origin.invalid", "alpn_offers":["h2"], "legacy_version":771,
+        "supported_versions":[772,771], "cipher_suites":[4865], "cipher_suite_count":1,
+        "extension_types":[0,16], "extension_count":2, "truncated":false,
+    }))
+    .unwrap()
+}
+
+#[test]
+fn client_fingerprint_history_shares_fifo_and_skips_invalid_metadata() {
+    let mut history = History {
+        capacity: 2,
+        ..History::default()
+    };
+    let a = client_hello('a');
+    let b = client_hello('b');
+    assert!(
+        history
+            .client_fingerprint("alice", &a, observation("first"))
+            .unwrap()
+            .previous
+            .is_none()
+    );
+    assert!(
+        history
+            .client_fingerprint("alice", &a, observation("repeat"))
+            .is_none()
+    );
+    for field in ["ja3", "ja4", "sni"] {
+        let mut invalid = b.clone();
+        match field {
+            "ja3" => invalid.ja3 = "unavailable".into(),
+            "ja4" => invalid.ja4.clear(),
+            _ => invalid.sni = Some("x".repeat(254)),
+        }
+        assert!(
+            history
+                .client_fingerprint("alice", &invalid, observation(field))
+                .is_none()
+        );
+    }
+    let changed = history
+        .client_fingerprint("alice", &b, observation("changed"))
+        .unwrap();
+    assert_eq!(changed.previous.unwrap().connection_id, "repeat");
+    let mut ja4_change = b.clone();
+    ja4_change.ja4.replace_range(0..1, "q");
+    assert!(
+        history
+            .client_fingerprint("alice", &ja4_change, observation("ja4-only"))
+            .is_some()
+    );
+    history.destination(&key("alice", "a.invalid:443"), observation("destination"));
+    assert!(
+        history
+            .client_fingerprint("alice", &ja4_change, observation("stable"))
+            .is_none()
+    );
+    assert!(
+        history
+            .client_fingerprint("bob", &a, observation("bob"))
+            .unwrap()
+            .previous
+            .is_none()
+    );
+    assert!(
+        !history.entries.contains_key(&Key::Client("alice".into())),
+        "repetition does not refresh FIFO age"
+    );
+    assert!(
+        history
+            .client_fingerprint("alice", &a, observation("after-eviction"))
+            .unwrap()
+            .previous
+            .is_none()
+    );
+    assert_eq!(history.entries.len(), 2);
+    assert_eq!(history.oldest.len(), 2);
+}
+
+// Rustls randomizes extension order, which intentionally changes JA3. Fix only
+// its two-byte ordering seed in these isolated clients to exercise stable repeats.
+#[derive(Debug)]
+struct StableExtensionOrder;
+impl rustls::crypto::SecureRandom for StableExtensionOrder {
+    fn fill(&self, bytes: &mut [u8]) -> Result<(), rustls::crypto::GetRandomFailed> {
+        rustls::crypto::ring::default_provider()
+            .secure_random
+            .fill(bytes)?;
+        if bytes.len() == 2 {
+            bytes.fill(0);
+        }
+        Ok(())
+    }
+}
+
+fn fingerprint_client(directory: &Path, changed: bool) -> Arc<rustls::ClientConfig> {
+    let ca = crate::tls::CertificateAuthority::load(&directory.join("interception.pem")).unwrap();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ca.certificate().clone()).unwrap();
+    let mut provider = rustls::crypto::ring::default_provider();
+    provider.secure_random = &StableExtensionOrder;
+    let versions = if changed {
+        &[&rustls::version::TLS12][..]
+    } else {
+        rustls::DEFAULT_VERSIONS
+    };
+    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+        .with_protocol_versions(versions)
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    if !changed {
+        tls.alpn_protocols = vec![b"http/1.1".to_vec()];
+    }
+    tls.resumption = rustls::client::Resumption::disabled();
+    Arc::new(tls)
+}
+
+async fn fingerprint_request(
+    directory: &Path,
+    agent: &str,
+    address: std::net::SocketAddr,
+    tls: Arc<rustls::ClientConfig>,
+) {
+    let mut socket = UnixStream::connect(directory.join(format!("{agent}.sock")))
+        .await
+        .unwrap();
+    socket.write_all(format!("CONNECT {address} HTTP/1.1\r\nHost: ignored.invalid\r\nX-SafeYolo-Agent: forged\r\n\r\n").as_bytes()).await.unwrap();
+    assert!(head(&mut socket).await.starts_with(b"HTTP/1.1 200"));
+    let name = rustls::pki_types::ServerName::IpAddress(address.ip().into());
+    let mut socket = timeout(
+        LIMIT,
+        tokio_rustls::TlsConnector::from(tls).connect(name, socket),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    socket
+        .write_all(format!("GET /path HTTP/1.1\r\nHost: {address}\r\nX-SafeYolo-Agent: forged\r\nConnection: close\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut reply = Vec::new();
+    timeout(LIMIT, socket.read_to_end(&mut reply))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        reply.starts_with(b"HTTP/1.1 200"),
+        "{}",
+        String::from_utf8_lossy(&reply)
+    );
+    assert!(reply.ends_with(b"unchanged"));
+}
+
+fn client_indicators(rows: &[Value]) -> Vec<&Value> {
+    indicators(rows)
+        .into_iter()
+        .filter(|row| row["details"]["novelty"]["current"]["client_fingerprint"].is_object())
+        .collect()
+}
+
+fn assert_client_links(rows: &[Value]) {
+    for clue in client_indicators(rows) {
+        let evidence = &clue["details"]["novelty"];
+        assert!(evidence["destination"].is_null());
+        assert!(evidence["route"].is_null());
+        for observation in [&evidence["previous"], &evidence["current"]]
+            .into_iter()
+            .filter(|o| o.is_object())
+        {
+            assert_observation(rows, clue, observation, false);
+            let source_index = rows
+                .iter()
+                .position(|r| r["event_id"] == observation["event_id"])
+                .unwrap();
+            let clue_index = rows.iter().position(|r| r == clue).unwrap();
+            assert!(source_index < clue_index);
+            let source = &rows[source_index]["details"];
+            assert_eq!(source["leg"], "client_to_proxy");
+            assert_eq!(source["state"], "updated");
+            for field in ["ja3", "ja4"] {
+                assert_eq!(
+                    source["tls_client_hello"][field],
+                    observation["client_fingerprint"][field]
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_client_fingerprints_repeat_change_isolate_reload_and_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let (listener, address) = crate::test_owned_endpoint::bind().await;
+    let (pem, origin, _) = tls_origin(
+        &address.ip().to_string(),
+        &rcgen::KeyPair::generate().unwrap(),
+        1,
+    );
+    let peer = tokio::spawn(serve_tls(listener, vec![origin; 9]));
+    let mut configuration = tls_proxy_config(directory.path(), &pem);
+    for (agent, source_id) in [("bob", "192.0.2.21"), ("unknown", "192.0.2.22")] {
+        configuration.listeners.push(crate::config::AgentListener {
+            agent_id: agent.into(),
+            source_id: Some(source_id.into()),
+            socket_path: directory.path().join(format!("{agent}.sock")),
+        });
+    }
+    let a = fingerprint_client(directory.path(), false);
+    let b = fingerprint_client(directory.path(), true);
+    let mut proxy = Proxy::start(configuration.clone()).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    fingerprint_request(directory.path(), "alice", address, a.clone()).await;
+    fingerprint_request(directory.path(), "alice", address, a.clone()).await;
+    assert_eq!(
+        client_indicators(&records(&runtime, directory.path())).len(),
+        1
+    );
+    proxy.reload(configuration.clone()).await.unwrap();
+    fingerprint_request(directory.path(), "alice", address, b.clone()).await;
+    fingerprint_request(directory.path(), "alice", address, b.clone()).await;
+    fingerprint_request(directory.path(), "bob", address, a.clone()).await;
+    fingerprint_request(directory.path(), "unknown", address, b).await;
+    // An absolute HTTPS request measures proxy-to-origin TLS, not client TLS.
+    request(directory.path(), "alice", &format!("https://{address}")).await;
+    fingerprint_request(directory.path(), "alice", address, a.clone()).await;
+    proxy.shutdown().await;
+    let rows = records(&runtime, directory.path());
+    assert_client_links(&rows);
+    let clues = client_indicators(&rows);
+    assert_eq!(clues.len(), 4, "{clues:?}");
+    assert_eq!(clues.iter().filter(|r| r["agent"] == "alice").count(), 3);
+    assert_eq!(clues[2]["agent"], "bob");
+    assert!(clues[2]["details"]["novelty"]["previous"].is_null());
+    let samples: Vec<_> = rows
+        .iter()
+        .filter(|r| {
+            r["event"] == "network.connection"
+                && r["agent"] == "alice"
+                && r["details"]["state"] == "updated"
+                && r["details"]["tls_client_hello"].is_object()
+        })
+        .collect();
+    assert_eq!(samples.len(), 5);
+    for (clue, previous, current) in [(clues[1], 1, 2), (clues[3], 3, 4)] {
+        let evidence = &clue["details"]["novelty"];
+        assert_eq!(clue["details"]["rule"], "tls.client_fingerprint_changed.v1");
+        assert_eq!(
+            evidence["previous"]["event_id"],
+            samples[previous]["event_id"]
+        );
+        assert_eq!(
+            evidence["current"]["event_id"],
+            samples[current]["event_id"]
+        );
+        for field in ["ja3", "ja4"] {
+            assert_ne!(
+                evidence["previous"]["client_fingerprint"][field],
+                evidence["current"]["client_fingerprint"][field]
+            );
+        }
+    }
+    let previous_runtime = clues[0]["details"]["runtime_id"].clone();
+    let proxy = Proxy::start(configuration).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    fingerprint_request(directory.path(), "alice", address, a).await;
+    proxy.shutdown().await;
+    let rows = records(&runtime, directory.path());
+    let clues: Vec<_> = client_indicators(&rows)
+        .into_iter()
+        .filter(|row| row["details"]["runtime_id"] != previous_runtime)
+        .collect();
+    assert_eq!(clues.len(), 1);
+    assert!(clues[0]["details"]["novelty"]["previous"].is_null());
+    assert_ne!(clues[0]["details"]["runtime_id"], previous_runtime);
+    timeout(LIMIT, peer).await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_concurrent_client_fingerprints_follow_supporting_event_order() {
+    let directory = tempfile::tempdir().unwrap();
+    let (listener, address) = crate::test_owned_endpoint::bind().await;
+    let (pem, origin, _) = tls_origin(
+        &address.ip().to_string(),
+        &rcgen::KeyPair::generate().unwrap(),
+        1,
+    );
+    let peer = tokio::spawn(async move {
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..12 {
+            let (socket, _) = listener.accept().await.unwrap();
+            let origin = origin.clone();
+            tasks.spawn(async move {
+                let mut tls = tokio_rustls::TlsAcceptor::from(origin)
+                    .accept(socket)
+                    .await
+                    .unwrap();
+                head(&mut tls).await;
+                tls.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nunchanged",
+                )
+                .await
+                .unwrap();
+                tls.shutdown().await.unwrap();
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+    });
+    let configuration = tls_proxy_config(directory.path(), &pem);
+    let a = fingerprint_client(directory.path(), false);
+    let b = fingerprint_client(directory.path(), true);
+    let proxy = Proxy::start(configuration).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let mut clients = tokio::task::JoinSet::new();
+    for index in 0..12 {
+        let path = directory.path().to_owned();
+        let tls = if index % 2 == 0 { a.clone() } else { b.clone() };
+        clients.spawn(async move {
+            fingerprint_request(&path, "alice", address, tls).await;
+        });
+    }
+    while let Some(result) = timeout(LIMIT, clients.join_next()).await.unwrap() {
+        result.unwrap();
+    }
+    timeout(LIMIT, peer).await.unwrap().unwrap();
+    proxy.shutdown().await;
+    let rows = records(&runtime, directory.path());
+    assert_client_links(&rows);
+    let samples: Vec<_> = rows
+        .iter()
+        .filter(|r| {
+            r["event"] == "network.connection"
+                && r["details"]["state"] == "updated"
+                && r["details"]["tls_client_hello"].is_object()
+        })
+        .collect();
+    assert_eq!(samples.len(), 12);
+    let changes: Vec<_> = samples
+        .windows(2)
+        .filter(|pair| {
+            ["ja3", "ja4"].iter().any(|field| {
+                pair[0]["details"]["tls_client_hello"][field]
+                    != pair[1]["details"]["tls_client_hello"][field]
+            })
+        })
+        .collect();
+    assert!(!changes.is_empty());
+    let clues = client_indicators(&rows);
+    assert_eq!(clues.len(), changes.len() + 1);
+    assert!(clues[0]["details"]["novelty"]["previous"].is_null());
+    for (clue, pair) in clues.into_iter().skip(1).zip(changes) {
+        assert_eq!(
+            clue["details"]["novelty"]["previous"]["event_id"],
+            pair[0]["event_id"]
+        );
+        assert_eq!(
+            clue["details"]["novelty"]["current"]["event_id"],
+            pair[1]["event_id"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_incomplete_and_unsupported_client_hellos_do_not_establish_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let (listener, address) = crate::test_owned_endpoint::bind().await;
+    let peer = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            // TLS classification can close the upstream before any TLS bytes.
+            socket.read_to_end(&mut bytes).await.unwrap();
+        }
+    });
+    let configuration = tls_proxy_config(directory.path(), "");
+    let tls = fingerprint_client(directory.path(), false);
+    let name = rustls::pki_types::ServerName::IpAddress(address.ip().into());
+    let mut client = rustls::ClientConnection::new(tls, name).unwrap();
+    let mut hello = Vec::new();
+    client.write_tls(&mut hello).unwrap();
+    let mut unsupported = hello.clone();
+    unsupported[5] = 2; // ServerHello is not client fingerprint evidence.
+    hello.pop(); // Incomplete handshake framing must remain unavailable.
+    let proxy = Proxy::start(configuration).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    for wire in [hello, unsupported] {
+        let mut socket = UnixStream::connect(directory.path().join("alice.sock"))
+            .await
+            .unwrap();
+        socket
+            .write_all(format!("CONNECT {address} HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        assert!(head(&mut socket).await.starts_with(b"HTTP/1.1 200"));
+        socket.write_all(&wire).await.unwrap();
+        socket.shutdown().await.unwrap();
+        let mut reply = Vec::new();
+        timeout(LIMIT, socket.read_to_end(&mut reply))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    timeout(LIMIT, peer).await.unwrap().unwrap();
+    proxy.shutdown().await;
+    let rows = records(&runtime, directory.path());
+    assert!(client_indicators(&rows).is_empty());
+    assert!(
+        rows.iter()
+            .filter(|r| r["event"] == "network.connection")
+            .all(|r| r["details"]["tls_client_hello"].is_null())
+    );
+    let history = runtime
+        .connection_events
+        .as_ref()
+        .unwrap()
+        .novelty
+        .lock()
+        .unwrap();
+    assert!(!history.entries.contains_key(&Key::Client("alice".into())));
 }
