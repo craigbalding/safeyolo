@@ -2,17 +2,6 @@
 
 use super::*;
 
-fn trusted_agent(row: &Value) -> Option<&str> {
-    let agent = row["agent"]
-        .as_str()
-        .filter(|agent| !agent.trim().is_empty())?;
-    let attribution = &row["details"]["attribution"];
-    (attribution["attribution_status"] == "resolved"
-        && attribution["trusted_transport_identity"] == agent
-        && attribution["evidence_owner"] == agent)
-        .then_some(agent)
-}
-
 fn lines(rows: &[&(RecordLine, Value)], matches: impl Fn(&Value) -> bool) -> Vec<RecordLine> {
     rows.iter()
         .filter(|(_, row)| matches(row))

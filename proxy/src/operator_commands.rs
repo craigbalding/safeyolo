@@ -23,6 +23,7 @@ safeyolo [--root ROOT] approvals ask|context ID [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals delegations [--json]\nsafeyolo [--root ROOT] approvals delegation check|preview|apply|revoke NAME --file PROPOSAL.json [--json]\nsafeyolo [--root ROOT] approvals review --agent NAME
 safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
 safeyolo [--root ROOT] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] logs list [--instance ID] [--runtime ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] logs connection ID --instance ID --runtime ID [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] logs request ID --instance ID --runtime ID [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] diagnose [--agent NAME] [--json]
@@ -42,7 +43,7 @@ Gateway route approval defaults to once; --option selects an offered lifetime. S
 Reject records a refusal without adding a policy deny rule. Terminal decisions cannot grant again.
 Helper uses its Agent API token (default /app/agent_token) and the existing guest proxy route.
 If evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable.
-Logs use the configured local audit file unless --file PATH is supplied. Repeat --file for explicitly selected offline inputs; no installed config or API is needed. Each file is validated to EOF and retains the last --lines selected-agent rows (default 100 per file), so total retention is at most input count times --lines. Selected-file pivots identify every input/physical line and duplicate copy, and refuse conflicting event copies or transport owners as join evidence. Input order is not chronological order. Selection and schema validation do not authenticate the producer. Pivots require instance and runtime; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Prompt exposure correlations explain exact source and source/model transport novelty support, including partial or unavailable evidence. These are connection-wide relationships, not proof of malicious intent or model receipt. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.";
+Logs use the configured local audit file unless --file PATH is supplied. Repeat --file for explicitly selected offline inputs; no installed config or API is needed. Each file is validated to EOF and retains the last --lines selected-agent rows (default 100 per file), so total retention is at most input count times --lines. Selected-file pivots identify every input/physical line and duplicate copy, and refuse conflicting event copies or transport owners as join evidence. Input order is not chronological order. Selection and schema validation do not authenticate the producer. Use logs list to discover retained namespaces, agent context, and connection/request/indicator references; --instance and --runtime optionally narrow that listing. It is not live inventory. Unknown attribution and conflicting copies stay distinct from recorded resolved agent context. Pivots require instance and runtime; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Prompt exposure correlations explain exact source and source/model transport novelty support, including partial or unavailable evidence. These are connection-wide relationships, not proof of malicious intent or model receipt. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.";
 
 pub fn handles(args: &[String]) -> bool {
     args.first().is_some_and(|arg| {
@@ -880,6 +881,15 @@ fn logs(_root: &Path, options: &Options) -> Result<Value, Error> {
         )?]
     };
     match options.positional.as_slice() {
+        [command] if command == "list" => crate::audit::pivot::list(
+            &paths,
+            tails,
+            explicit,
+            options.lines,
+            options.instance.as_deref(),
+            options.runtime.as_deref(),
+            options.agent.as_deref(),
+        ),
         [] if !explicit => {
             let rows: Vec<_> = tails
                 .into_iter()
@@ -919,6 +929,76 @@ fn logs(_root: &Path, options: &Options) -> Result<Value, Error> {
         }
         _ => Err("usage: safeyolo logs --help".into()),
     }
+}
+
+fn show_log_listing(value: &Value) -> Result<(), Error> {
+    println!("Retained NSM evidence (not live inventory)");
+    for input in value["inputs"].as_array().into_iter().flatten() {
+        println!(
+            "Input {}: {}\n  Searched {} retained rows, physical lines {}..{}; {} selected-agent rows omitted ({} file rows read).",
+            input["input"],
+            context_json(&input["file"])?,
+            input["retained_rows"],
+            input["first_line"],
+            input["last_line"],
+            input["omitted_rows"],
+            input["lines_read"]
+        );
+    }
+    let search = &value["search"];
+    println!(
+        "Selected NSM records: {} distinct, {} duplicate copies, {} conflicting; {} non-NSM retained rows excluded.\n{}",
+        search["distinct_nsm_records"],
+        search["duplicate_nsm_rows"],
+        search["conflicting_nsm_records"],
+        search["non_nsm_rows"],
+        text(&search["limits"])
+    );
+    let namespaces = value["namespaces"]
+        .as_array()
+        .ok_or("NSM listing unavailable")?;
+    if namespaces.is_empty() {
+        println!("No NSM records in the selected retained window.");
+    }
+    for namespace in namespaces {
+        println!(
+            "\nInstance: {} | Runtime: {}",
+            context_json(&namespace["instance_id"])?,
+            context_json(&namespace["runtime_id"])?
+        );
+        for group in namespace["agents"].as_array().into_iter().flatten() {
+            println!(
+                "Agent: {} | Context: {}",
+                context_json(&group["agent"])?,
+                text(&group["context"])
+            );
+            for record in group["records"].as_array().into_iter().flatten() {
+                println!(
+                    "  {} | Event ID: {} | Time: {} | Locations: {}\n    {}",
+                    text(&record["event"]),
+                    context_json(&record["event_id"])?,
+                    context_json(&record["ts"])?,
+                    record["locations"],
+                    context_json(&record["summary"])?
+                );
+                for reference in record["references"].as_array().into_iter().flatten() {
+                    println!(
+                        "    {} {} via {}",
+                        text(&reference["kind"]),
+                        context_json(&reference["id"])?,
+                        text(&reference["field"])
+                    );
+                }
+                if record.get("indicator").is_some() {
+                    println!("    Indicator: {}", context_json(&record["indicator"])?);
+                }
+            }
+        }
+    }
+    println!(
+        "\nUse logs connection ID or logs request ID with the listed --instance ID --runtime ID, optional --agent NAME, and the same --file/--lines selection. IDs above use JSON escaping; decode escapes when supplying an argument."
+    );
+    Ok(())
 }
 
 fn show_log_pivot(value: &Value) -> Result<(), Error> {
@@ -1446,6 +1526,13 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
             Ok(())
         } else {
             show_context(&value)
+        }
+    } else if args[0] == "logs" && value.get("namespaces").is_some() {
+        if options.json {
+            println!("{}", context_json(&value)?);
+            Ok(())
+        } else {
+            show_log_listing(&value)
         }
     } else if args[0] == "logs" && !options.json && value.get("query").is_some() {
         show_log_pivot(&value)
