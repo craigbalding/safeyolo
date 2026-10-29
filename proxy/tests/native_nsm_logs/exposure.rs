@@ -22,6 +22,16 @@ async fn head(stream: &mut (impl AsyncRead + Unpin)) -> Vec<u8> {
 
 #[tokio::test]
 async fn native_source_response_to_bound_model_request_has_inspectable_cli_correlation() {
+    native_correlation(false).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn successive_owned_sandbox_runs_keep_ingress_provenance_in_one_proxy_runtime() {
+    native_correlation(true).await;
+}
+
+async fn native_correlation(supervised: bool) {
     let root = tempfile::tempdir().unwrap();
     configure(root.path());
     for name in ["data", "builtin", "services"] {
@@ -58,6 +68,21 @@ async fn native_source_response_to_bound_model_request_has_inspectable_cli_corre
             "sgw_correlation-fixture":{"agent":"alice","service":"claude","capability":"inference","token":"claude-reference"}}},
         "addons":{"credential_guard":{"enabled":true,"detection_level":"none","settings":{"use_default_credential_rules":false,"standard_auth_headers":["authorization"]}}}
     }).to_string()).unwrap();
+    let policy = if supervised {
+        let mut document: Value = serde_json::from_slice(&fs::read(&policy).unwrap()).unwrap();
+        document.as_object_mut().unwrap().remove("addons");
+        document.as_object_mut().unwrap().remove("credential_rules");
+        document["credential"] = json!({"injected-fixture":{"match":["synthetic-correlation-credential"],
+            "allowed_hosts":["api.anthropic.com"],"headers":["authorization"]}});
+        document["agents"] = json!({"alice":{"agent_id":super::sandbox_runs::AGENT_ID}});
+        document["controls"] = json!({"credentials":{"enabled":true,"detection_level":"none",
+            "use_default_credential_rules":false,"standard_auth_headers":["authorization"]}});
+        let path = root.path().join("policy.toml");
+        fs::write(&path, toml::to_string(&document).unwrap()).unwrap();
+        path
+    } else {
+        policy
+    };
     let ca_key = rcgen::KeyPair::generate().unwrap();
     let mut ca_params = rcgen::CertificateParams::default();
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -85,7 +110,7 @@ async fn native_source_response_to_bound_model_request_has_inspectable_cli_corre
     )
     .unwrap();
     let (origin, address) = test_owned_endpoint::bind().await;
-    let config: Config = serde_json::from_value(json!({
+    let mut config: Config = serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":root.path().join("alice.sock")}],
         "policy_file":policy,"data_dir":root.path().join("data"),"readiness_file":root.path().join("ready"),
         "audit_log_path":root.path().join("audit.jsonl"),"flow_store_enabled":false,
@@ -94,56 +119,99 @@ async fn native_source_response_to_bound_model_request_has_inspectable_cli_corre
         "gateway_builtin_services_dir":root.path().join("builtin"),"gateway_services_dir":root.path().join("services"),
         "target_ip_mappings":[{"host":"api.anthropic.com","ip":address.ip(),"port":address.port()}]
     })).unwrap();
+    if supervised {
+        config.native_product = true;
+        config.native_config_dir = Some(root.path().to_owned());
+    }
     let model_body = json!({"messages":[{"role":"user","content":SOURCE}]}).to_string();
     let expected_model = model_body.clone();
+    let rounds = if supervised { 2 } else { 1 };
     let serving = tokio::spawn(async move {
-        let (mut stream, _) = origin.accept().await.unwrap();
-        assert!(head(&mut stream).await.starts_with(b"GET /source "));
-        stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{SOURCE}", SOURCE.len()).as_bytes()).await.unwrap();
-        drop(stream);
-        let (stream, _) = origin.accept().await.unwrap();
-        let mut stream = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
-            .accept(stream)
-            .await
-            .unwrap();
-        let request = String::from_utf8(head(&mut stream).await).unwrap();
-        assert!(request.starts_with("POST /v1/messages "));
-        assert!(request.contains("synthetic-correlation-credential"));
-        assert!(!request.contains("sgw_"));
-        let mut body = vec![0; expected_model.len()];
-        stream.read_exact(&mut body).await.unwrap();
-        assert_eq!(body, expected_model.as_bytes());
-        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
+        for _ in 0..rounds {
+            let (mut stream, _) = origin.accept().await.unwrap();
+            assert!(head(&mut stream).await.starts_with(b"GET /source "));
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{SOURCE}", SOURCE.len()).as_bytes()).await.unwrap();
+            drop(stream);
+            let (stream, _) = origin.accept().await.unwrap();
+            let mut stream = tokio_rustls::TlsAcceptor::from(Arc::new(tls.clone()))
+                .accept(stream)
+                .await
+                .unwrap();
+            let request = String::from_utf8(head(&mut stream).await).unwrap();
+            assert!(request.starts_with("POST /v1/messages "));
+            assert!(request.contains("synthetic-correlation-credential"));
+            assert!(!request.contains("sgw_"));
+            let mut body = vec![0; expected_model.len()];
+            stream.read_exact(&mut body).await.unwrap();
+            assert_eq!(body, expected_model.as_bytes());
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
+        }
     });
+    #[cfg(target_os = "linux")]
+    let mut owned = supervised.then(|| super::sandbox_runs::start_owned(root.path()));
+    let mut bindings = Vec::<Value>::new();
+    if supervised {
+        bindings.push(super::sandbox_runs::recorded_binding(root.path()));
+    }
     let proxy = Proxy::start(config).await.unwrap();
-    for source in [true, false] {
-        let mut client = UnixStream::connect(root.path().join("alice.sock"))
-            .await
-            .unwrap();
-        let request = if source {
-            format!(
-                "GET http://{address}/source HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
-            )
-        } else {
-            format!(
-                "POST https://api.anthropic.com:{}/v1/messages HTTP/1.1\r\nHost: api.anthropic.com\r\nAuthorization: Bearer sgw_correlation-fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{model_body}",
-                address.port(),
-                model_body.len()
-            )
-        };
-        client.write_all(request.as_bytes()).await.unwrap();
-        let mut response = Vec::new();
-        timeout(Duration::from_secs(5), client.read_to_end(&mut response))
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(
-            response.starts_with(b"HTTP/1.1 200"),
-            "{}",
-            String::from_utf8_lossy(&response)
-        );
-        if source {
-            assert!(response.ends_with(SOURCE.as_bytes()));
+    let mut stale: Option<(UnixStream, String)> = None;
+    let mut stale_connection = String::new();
+    for round in 0..rounds {
+        if round > 0 {
+            #[cfg(target_os = "linux")]
+            {
+                super::sandbox_runs::mark_stopped(root.path());
+                drop(owned.take());
+                owned = Some(super::sandbox_runs::start_owned(root.path()));
+            }
+            bindings.push(super::sandbox_runs::recorded_binding(root.path()));
+            let (mut old, connection) = stale.take().unwrap();
+            stale_connection = connection;
+            old.write_all(b"Connection: close\r\n\r\n").await.unwrap();
+            let mut reply = Vec::new();
+            timeout(Duration::from_secs(5), old.read_to_end(&mut reply))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                reply.starts_with(b"HTTP/1.1 403"),
+                "{}",
+                String::from_utf8_lossy(&reply)
+            );
+            assert!(String::from_utf8_lossy(&reply).contains("Current agent run changed"));
+        }
+        for source in [true, false] {
+            let mut client = UnixStream::connect(root.path().join("alice.sock"))
+                .await
+                .unwrap();
+            let request = if source {
+                format!(
+                    "GET http://{address}/source HTTP/1.1\r\nHost: {address}\r\nX-SafeYolo-Run-Id: spoofed-run\r\nX-SafeYolo-Agent: mallory\r\nConnection: close\r\n\r\n"
+                )
+            } else {
+                format!(
+                    "POST https://api.anthropic.com:{}/v1/messages HTTP/1.1\r\nHost: api.anthropic.com\r\nAuthorization: Bearer sgw_correlation-fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{model_body}",
+                    address.port(),
+                    model_body.len()
+                )
+            };
+            client.write_all(request.as_bytes()).await.unwrap();
+            let mut response = Vec::new();
+            timeout(Duration::from_secs(5), client.read_to_end(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                response.starts_with(b"HTTP/1.1 200"),
+                "{}",
+                String::from_utf8_lossy(&response)
+            );
+            if source {
+                assert!(response.ends_with(SOURCE.as_bytes()));
+            }
+        }
+        if supervised && round == 0 {
+            stale = Some(super::sandbox_runs::accepted_client(root.path()).await);
         }
     }
     timeout(Duration::from_secs(5), serving)
@@ -152,6 +220,20 @@ async fn native_source_response_to_bound_model_request_has_inspectable_cli_corre
         .unwrap();
     proxy.shutdown().await;
     let bytes = fs::read(root.path().join("audit.jsonl")).unwrap();
+    if supervised {
+        super::sandbox_runs::assert_native_runs(root.path(), &bytes, &bindings, &stale_connection)
+            .await;
+        assert!(!root.path().join("unused.sqlite3").exists());
+        return;
+    }
+    assert!(
+        std::str::from_utf8(&bytes)
+            .unwrap()
+            .lines()
+            .map(|line| parse_record(line).unwrap())
+            .filter(|row| row["schema_version"] == 2)
+            .all(|row| row["details"].get("sandbox_run").is_none())
+    );
     decisions::assert_native_views(root.path(), &bytes).await;
     let rows: Vec<_> = std::str::from_utf8(&bytes)
         .unwrap()

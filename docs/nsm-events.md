@@ -68,6 +68,11 @@ Client/destination pairing records add optional `client` evidence inside
 `novelty`. Earlier strict readers need this addition; the current reader
 continues to accept observations that omit it.
 
+Scoped NSM and request-decision records also accept optional
+`details.sandbox_run`. Earlier strict version 2 readers must update before
+reading this field. Records that omit it remain readable without acquiring a
+run from another record.
+
 All NSM payload fields below are in `details`, except `request_id`, which
 uses the existing envelope field. Existing `ts`, `event_id`, `severity`,
 `summary`, `agent`, and `addon`/`control` fields retain their envelope roles.
@@ -142,6 +147,24 @@ is unavailable or invalid, the proxy reports that diagnostic and omits NSM
 records rather than claiming a different installed identity. Ordinary traffic
 and audit behavior continue.
 
+When existing host-run authority is available at Unix domain socket (UDS)
+accept, the connection owner retains `sandbox_run` with `agent`, `agent_id` and
+`run_id`. These are the host-owned agent name, immutable agent identity and
+sandbox generation bound to that ingress. The run ID has 32 hexadecimal
+characters. The name must match the envelope agent; the agent identity must be
+nonempty. The optional object accepts only those three fields. Absent or null
+bindings mean run-unavailable, including older records and standalone traffic.
+Schema checks establish representation and consistency, not producer identity.
+
+The snapshot is carried through connection lifecycle, flow, indicator and
+scoped request-decision publications. It is never read from HTTP headers or
+reconstructed from mutable host files when displaying retained records.
+Closing or late events keep their original ingress run after that generation
+stops or is replaced. Historical provenance does not renew current authority;
+the existing stale-run request check remains in force. A sandbox run is distinct
+from the proxy runtime, host launch/terminal and coding task. It establishes
+neither executable/process attribution nor current liveness.
+
 The connection key is `(instance_id, runtime_id, connection_id)`. Connection
 IDs must identify real transport ownership and be unique across both legs
 within that namespace. The transaction key is
@@ -161,8 +184,13 @@ totals. See the [live measurement workflow](operator-guide.md#read-current-obser
 The local operator can start with `logs list` to discover retained namespaces,
 agent context and concrete connection/request/indicator references without
 reading raw JSON. Optional `--instance`, `--runtime` and `--agent` filters narrow
-that listing. Entries preserve physical source locations and distinguish
-recorded resolved agent context from unknown attribution and conflicting
+that listing. Run groups expose the exact `sandbox_run` object and `run_context`:
+`recorded`, `unavailable`, `unknown` or `conflicting`. Optional `--sandbox-run ID`
+selects recorded run IDs in the listing and scoped pivots. It never matches an
+absent binding. Run selection follows conflict detection, so selecting one claim
+cannot hide an incompatible owner of the same local ID. Namespace counts still
+describe the retained namespace before run selection. Entries preserve physical
+source locations and distinguish recorded resolved agent context from unknown attribution and conflicting
 records. A name alone does not establish trusted attribution. References name
 retained keys, not verified relationships or live sessions. The listing
 collapses equal parsed records in configured and selected-file modes, preserves
@@ -193,7 +221,14 @@ with consistent owners remain distinct records. Input order and wall timestamps
 do not establish a global chronological order.
 
 Both ends of a cross-file join must agree on instance/runtime, agent and the
-recorded reference fields. Historical and version 1 records remain readable,
+recorded reference fields. They must also have the same complete `sandbox_run`
+binding, or both lack one. Missing context is never filled from a matching
+agent, request or connection ID. Different run claims for one connection or
+request owner are conflicts, even when a run selector excludes one claim.
+Source and novelty references into another run remain visible but cannot
+complete that run's supporting links or transport correlations. Run-unavailable
+records retain their earlier relationships and remain explicitly unavailable
+for run selection. Historical and version 1 records remain readable,
 but are not promoted to trusted version 2 joins. The reader validates every row
 to end of file. If any selected file is malformed, unsupported or unreadable,
 the command fails with an input-number diagnostic and no partial output.

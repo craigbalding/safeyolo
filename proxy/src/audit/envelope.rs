@@ -68,6 +68,7 @@ struct RequestScope {
     instance_id: String,
     runtime_id: String,
     client_connection_id: String,
+    sandbox_run: Option<crate::host_runs::AgentRun>,
 }
 
 impl Event {
@@ -96,11 +97,18 @@ impl Event {
         }
     }
 
-    pub(crate) fn bind_request_scope(&mut self, instance: &str, runtime: &str, client: &str) {
+    pub(crate) fn bind_request_scope(
+        &mut self,
+        instance: &str,
+        runtime: &str,
+        client: &str,
+        sandbox_run: Option<&crate::host_runs::AgentRun>,
+    ) {
         self.request_scope = Some(RequestScope {
             instance_id: instance.into(),
             runtime_id: runtime.into(),
             client_connection_id: client.into(),
+            sandbox_run: sandbox_run.cloned(),
         });
         self.event_id
             .get_or_insert_with(|| uuid::Uuid::new_v4().to_string());
@@ -257,6 +265,10 @@ impl Event {
                 "client_connection_id".into(),
                 text(&scope.client_connection_id),
             );
+            details.shift_remove("sandbox_run");
+            if let Some(run) = &scope.sandbox_run {
+                details.insert("sandbox_run".into(), serde_json::json!(run).into());
+            }
         }
         fields.insert("details".into(), CircuitValue::Object(details));
         let value = CircuitValue::Object(fields);

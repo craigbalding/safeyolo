@@ -1,7 +1,7 @@
 //! Concrete request decisions use the existing producer, reader and CLI.
 use super::*;
 
-fn scoped_decision() -> Value {
+pub(super) fn scoped_decision() -> Value {
     let mut value = row(
         "security.credential_guard",
         json!({

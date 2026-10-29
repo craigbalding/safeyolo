@@ -445,6 +445,7 @@ async fn production_origin_tls12_tls13_full_resumed_and_retry_match_wire() {
                     kind,
                     id,
                     agent: Some("alice"),
+                    sandbox_run: None,
                     lines: 1000,
                 };
                 let path = directory.path().join("audit.jsonl");

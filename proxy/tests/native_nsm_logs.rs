@@ -19,6 +19,12 @@ mod exposure;
 mod listing;
 #[path = "native_nsm_logs/offline.rs"]
 mod offline;
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+#[path = "support/owned_run.rs"]
+mod owned_run;
+#[path = "native_nsm_logs/sandbox_runs.rs"]
+mod sandbox_runs;
 mod test_owned_endpoint;
 
 async fn cli(root: &Path, args: &[&str]) -> std::process::Output {

@@ -891,11 +891,23 @@ fn scoped_request_decisions_validate_without_upgrading_legacy_events() {
             event
         };
         assert_eq!(record(make())["schema_version"], 1);
+        let run = crate::host_runs::AgentRun {
+            agent: "alice".into(),
+            agent_id: "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            run_id: "0123456789abcdef0123456789abcdef".into(),
+        };
         let mut event = make();
-        event.bind_request_scope("instance-a", "runtime-1", "C1");
+        event.bind_request_scope("instance-a", "runtime-1", "C1", Some(&run));
+        // Later producer details cannot replace the native owner's snapshot.
+        event.details = json!({"connection_id":"C1", "sandbox_run":{"run_id":"claimed"}}).into();
         let scoped = record(event);
         assert_eq!(scoped["schema_version"], 2);
         assert_eq!(scoped["details"]["client_connection_id"], "C1");
+        assert_eq!(scoped["details"]["sandbox_run"], json!(run));
+        let mut unavailable = make();
+        unavailable.details = json!({"connection_id":"C1", "sandbox_run":run}).into();
+        unavailable.bind_request_scope("instance-a", "runtime-1", "C1", None);
+        assert!(record(unavailable)["details"].get("sandbox_run").is_none());
         for native in [false, true] {
             let mut row = scoped.clone();
             if native {
@@ -913,6 +925,9 @@ fn scoped_request_decisions_validate_without_upgrading_legacy_events() {
                 "/details/runtime_id",
                 "/details/client_connection_id",
                 "/decision",
+                "/details/sandbox_run/agent",
+                "/details/sandbox_run/agent_id",
+                "/details/sandbox_run/run_id",
             ] {
                 for value in [Value::Null, json!(""), json!(5)] {
                     let mut bad = row.clone();
@@ -949,7 +964,7 @@ fn scoped_guard_evaluations_keep_the_existing_outcome_and_policy_fields() {
         event.request_id = Some("F1".into());
         event.host = Some("origin.invalid".into());
         event.details = json!({"connection_id":"C1", "outcome":"allowed", "pdp":{"effect":"allow"}, "evaluations":[]}).into();
-        event.bind_request_scope("instance-a", "runtime-1", "C1");
+        event.bind_request_scope("instance-a", "runtime-1", "C1", None);
         let value = record(event);
         assert!(value.get("decision").is_none());
         for (pointer, bad) in [

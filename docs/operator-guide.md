@@ -360,6 +360,37 @@ safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --a
 safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --lines 1000 --json
 ```
 
+To distinguish successive supervised sandbox runs of the same agent, read the
+listing's `sandbox_run` and `run_context`. A `recorded` binding contains the
+host-owned agent name, agent identity and sandbox run ID captured at ingress.
+Replace `RUN_ID` below with that exact `sandbox_run.run_id`, and use the same
+namespace, agent and window as the listing:
+
+```sh
+safeyolo logs list --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --sandbox-run RUN_ID --lines 1000 --json
+safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --sandbox-run RUN_ID --lines 1000
+safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --sandbox-run RUN_ID --lines 1000 --json
+```
+
+The same `--sandbox-run` option works with repeated offline `--file` inputs.
+Without this option, pivots keep their existing selection and distinguish each
+record's run context. Run selection never matches missing context or borrows
+support from another run with reused local IDs. Conflict detection precedes run
+selection. Namespace counts describe the searched namespace before run selection.
+Source or novelty references into another run remain inspectable with unavailable
+support. `unavailable` includes older records and traffic without host-run
+authority. `unknown` attribution and `conflicting` claims remain separate from
+recorded context. Run-unavailable records can still support their existing
+run-unavailable relationships.
+
+A retained run can be stopped or replaced while its evidence remains readable.
+Late connection events retain the original ingress binding. This is historical
+provenance, not a liveness check or renewed permission. A sandbox run ID is not
+the proxy runtime ID, host launch/terminal ID or coding task. The view does not
+identify an executable or process. Request claims, filenames and current host
+files cannot supply missing historical run context. File/schema validation does
+not authenticate these claims.
+
 To inspect admission or credential handling, select the request reference from a
 scoped `security.network_guard`, guard evaluation, `security.credential_guard`
 or gateway entry. The request pivot shows the original decision or evaluation
@@ -394,9 +425,10 @@ safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --a
 safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --file instance-a.jsonl --file instance-a-earlier.jsonl --lines 1000 --json
 ```
 
-The listing groups records by instance/runtime, envelope agent name and recorded
-attribution. `resolved_agent` requires resolved attribution whose evidence owner
-and trusted transport identity both match that agent. `unknown` includes missing,
+The listing groups records by instance/runtime, envelope agent name, recorded
+attribution and sandbox run binding. `resolved_agent` requires resolved
+attribution whose evidence owner and trusted transport identity both match
+that agent. `unknown` includes missing,
 unavailable or inconsistent attribution, even when an agent name is present.
 `conflicting` identifies incompatible event copies or transport/request owners.
 These groups stay separate. Selecting `--agent` filters recorded names; it does

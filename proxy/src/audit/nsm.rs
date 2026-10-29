@@ -273,6 +273,16 @@ pub(super) fn validate(record: &Value) -> Result<()> {
     {
         return Err(invalid());
     }
+    if let Some(run) = details.remove("sandbox_run").filter(|run| !run.is_null()) {
+        let run: crate::host_runs::AgentRun = decode(run)?;
+        if !required(&[&run.agent, &run.agent_id])
+            || record["agent"] != run.agent
+            || run.run_id.len() != 32
+            || !run.run_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(invalid());
+        }
+    }
     let details = Value::Object(details);
     let valid = match name {
         "network.connection" => decode::<Connection>(details)?.valid(),
