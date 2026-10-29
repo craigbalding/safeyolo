@@ -13,6 +13,8 @@ pub(super) const PAYLOAD_BYTES: usize = 1200;
 const MAGIC: &[u8] = b"SAFEYOLO-PCAP-COMPAT/1\n";
 const METADATA_BYTES: usize = 8192;
 
+pub(crate) mod read;
+
 struct Bounded(Vec<u8>);
 impl Write for Bounded {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {

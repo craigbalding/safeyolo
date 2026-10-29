@@ -9,6 +9,8 @@ use tokio::{
     time::timeout,
 };
 
+#[path = "native_nsm_logs/capture.rs"]
+mod capture;
 #[path = "native_nsm_logs/correlation.rs"]
 mod correlation;
 #[path = "native_nsm_logs/decisions.rs"]
@@ -363,12 +365,13 @@ async fn actual_native_request_and_connection_pivots_show_transport_flow_and_ind
             .to_string(),
     )
     .unwrap();
-    let config: Config = serde_json::from_value(json!({
+    let mut config: Config = serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":root.path().join("alice.sock")}],
         "policy_file":policy,"data_dir":root.path().join("data"),"readiness_file":root.path().join("ready"),
         "audit_log_path":root.path().join("audit.jsonl"),"flow_store_enabled":false,
         "flow_store_db_path":root.path().join("unused.sqlite3"),"circuit_breaker_enabled":false,"circuit_state_file":""
     })).unwrap();
+    let capture_path = capture::configure(&mut config, root.path());
     let (origin, address) = test_owned_endpoint::bind().await;
     let serving = tokio::spawn(async move {
         let (mut stream, _) = origin.accept().await.unwrap();
@@ -413,6 +416,7 @@ async fn actual_native_request_and_connection_pivots_show_transport_flow_and_ind
         .iter()
         .find(|row| row["event"] == "traffic.flow")
         .unwrap();
+    capture::assert_native_views(root.path(), flow, &capture_path).await;
     let instance = flow["details"]["instance_id"].as_str().unwrap();
     let runtime = flow["details"]["runtime_id"].as_str().unwrap();
     for (kind, id) in [

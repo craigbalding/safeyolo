@@ -8,6 +8,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub(crate) mod capture;
 mod correlation;
 mod listing;
 
@@ -558,11 +559,10 @@ pub(crate) fn read(
         let run_context = if sandbox_run_key(row).is_none() { "unavailable" }
             else if conflicts.contains(line) { "conflicting" }
             else if trusted_agent(row).is_some() { "recorded" } else { "unknown" };
-        let mut entry = json!({"line":line,"selection":if related.contains(line) {"related"} else {"supporting"},"record":row,
+        let mut entry = json!({"line":line,"selection":if related.contains(line) {"related"} else {"supporting"},"record":row,"conflicting":conflicts.contains(line),
             "sandbox_run":row["details"]["sandbox_run"],"run_context":run_context});
         if explicit {
             entry["locations"] = json!(copies[line]);
-            entry["conflicting"] = json!(conflicts.contains(line));
         }
         entry
     }).collect();

@@ -432,6 +432,46 @@ safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --a
 safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --file instance-a.jsonl --file instance-a-earlier.jsonl --lines 1000 --json
 ```
 
+To follow those audit records into an existing capture, select a current classic
+`pcap:compat` file produced by your instance. On the host or offline machine,
+use the same audit selection and namespace. Replace `capture.pcap` with the
+readable capture path and the IDs with the values from `logs list`:
+
+```sh
+safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --file instance-a.jsonl --capture capture.pcap --lines 1000 --json
+safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --file instance-a.jsonl --capture capture.pcap --lines 1000
+```
+
+The `capture` result shows matching observation metadata, its supporting audit
+lines, and the capture packet number and byte offset. Packet numbers start at
+one; offsets point to the PCAP packet header. The connection view requires the
+recorded connection and agent attribution in the selected instance/runtime.
+The request view selects observations with that recorded request ID and follows
+one level of their retained input ancestry. Lower-layer ancestry can be shared
+by several requests or include parser read-ahead. It does not identify exclusive
+request bytes. Missing lineage stays unavailable; retained lineage references
+describe partial support, not complete coverage.
+
+The reader scans the capture to its current end, keeping at most `--lines`
+matching connection observations and `--lines` runtime loss records. Omitted
+records are counted. Loss ranges identify the runtime; they do not identify
+which connection or request lost evidence. Wrong namespaces, connections,
+requests or agent attribution cannot supply matching observations. Missing
+captures and unsupported formats leave capture evidence unavailable while the
+audit view remains usable. Malformed or truncated captures can leave a partial
+prefix with a scan reason. Reaching end of file without a loss record does not
+prove that capture evidence is complete.
+
+This command reads metadata from the existing reconstructed compatibility
+representation. Synthetic addresses, TCP headers and checksums are not measured
+wire behaviour. It returns no payload and does not enable capture or change
+retention. It does not recover process, executable or coding-task provenance.
+Sandbox-run context comes from the selected audit records; capture metadata does
+not supply a new run binding. File selection and validation do not authenticate
+the producer. See [native capture controls](native-observations.md) for capture
+configuration and content-retention limits. Portable PCAPNG output remains a
+separate outcome.
+
 The listing groups records by instance/runtime, envelope agent name, recorded
 attribution and sandbox run binding. `resolved_agent` requires resolved
 attribution whose evidence owner and trusted transport identity both match
@@ -521,21 +561,21 @@ families use `schema_version: 2`. Earlier generations, unversioned JSON and
 invalid current records fail explicitly. Unscoped current records cannot supply
 either side of an NSM link. No selected input is migrated or changed.
 
-For pivots, `--lines` retains the last selected-agent rows before namespace and
-pivot selection; its default is 100 **per input file**. Total retention is at most
+For audit records, `--lines` retains the last selected-agent rows before namespace and
+pivot selection; its default is 100 **per input audit file**. Total retention is at most
 the number of inputs times `--lines`, before duplicate removal. Read and omitted
 counts include all input copies; unique, duplicate and conflicting namespace
 counts describe the selected pivot search. Each input reports its physical line
 range and total rows read. All related and supporting records in the retained
 windows are displayed; there is no additional output limit. Increase `--lines`
-to widen each window. The limit does not bound bytes read: the reader validates
-every row to end of file, including
+to widen each window. The limit does not bound bytes read: the audit reader validates
+every audit row to end of file, including
 rows outside the window or agent selection. A malformed, unsupported or
-unreadable selected file aborts the command with its input number and a
+unreadable selected audit file aborts the command with its input number and a
 diagnostic that omits its path and event data. No partial result is returned as
 a complete search.
 
-Only the configured file or the explicitly selected files are searched. There
+Only the configured audit file or the explicitly selected audit files are searched. There
 is no directory discovery or rotation watcher. Unselected rotations, queued
 writes, dropped events and earlier evidence outside the windows can leave links
 unavailable. An unavailable link is not proof that nothing occurred. The view

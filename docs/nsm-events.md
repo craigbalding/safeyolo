@@ -174,6 +174,19 @@ the CLI neither acquires remote logs nor authenticates them through schema
 validation. Provenance comes from source selection and the original trusted
 producer, never from filenames or arbitrary identity claims.
 
+An optional `--capture FILE` on these connection/request pivots reads current
+classic `pcap:compat` observation metadata. Audit instance/runtime, connection
+and recorded agent attribution must agree before metadata can join. Request
+observations require the recorded request ID; lower-layer references use only
+recorded input ancestry and can describe shared input or parser read-ahead.
+Each result identifies the supporting audit lines and capture packet/byte offset.
+The reader returns no payload. Runtime-wide loss remains separate from
+connection/request attribution. Missing input, missing lineage, retained-window
+omissions and malformed/truncated input remain unavailable or partial evidence.
+Successful scanning does not establish complete coverage. Synthetic packet
+headers remain representation. See the same operator workflow for capture
+selection, limits and failure behaviour.
+
 A pivot keeps the last `--lines` selected-agent rows (default 100) per input,
 then selects validated version 2 records within the requested namespace. Total
 retention is at most input count times `--lines`, before duplicate removal.
@@ -186,7 +199,7 @@ copies or transport owners cannot establish a join. Different lifecycle snapshot
 with consistent owners remain distinct records. Input order and wall timestamps
 do not establish a global chronological order.
 
-Both ends of a cross-file join must agree on instance/runtime, agent and the
+Audit records at both ends of a cross-file join must agree on instance/runtime, agent and the
 recorded reference fields. They must also have the same complete `sandbox_run`
 binding, or both lack one. Missing context is never filled from a matching
 agent, request or connection ID. Different run claims for one connection or
@@ -194,11 +207,11 @@ request owner are conflicts, even when a run selector excludes one claim.
 Source and novelty references into another run remain visible but cannot
 complete that run's supporting links or transport correlations. Run-unavailable
 records retain their namespace and local-ID relationships and remain explicitly
-unavailable for run selection. The reader validates every row
-to end of file. If any selected file is malformed, unsupported or unreadable,
+unavailable for run selection. The audit reader validates every audit row
+to end of file. If any selected audit file is malformed, unsupported or unreadable,
 the command fails with an input-number diagnostic and no partial output.
-Windows apply before namespace selection, and no additional output limit hides
-related or supporting evidence. The view displays one level of recorded links
+Audit windows apply before namespace selection, and no additional output limit hides
+related or supporting audit evidence. The audit view displays one level of recorded links
 within those windows; unselected files, rotation, queues and loss can leave
 support unavailable. It preserves input bytes and never fetches content.
 Request pivots include their connections and those connections' indications;
