@@ -770,6 +770,49 @@ async fn native_brief_replay_preserves_delivered_revision_metadata_and_authorize
             .unwrap()["content_hash"],
         later["content_hash"]
     );
+    // Retrying an old result must not retarget its attention after membership
+    // changes. A regrant permits current reads, not the old generation's edge.
+    let bob = client("bob");
+    let bob_edge = &metadata[1].0;
+    let snapshot = || -> (i64, i64, i64, i64, i64) {
+        db.query_row("SELECT (SELECT count(*) FROM coord_brief_revisions), (SELECT count(*) FROM coord_operations), (SELECT count(*) FROM coord_attention_edges), (SELECT sum(last_sequence) FROM coord_attention_feeds), (SELECT count(*) FROM coord_outbox)", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap()
+    };
+    for regrant in [false, true] {
+        coord_json(
+            root,
+            &[if regrant { "grant" } else { "revoke" }, "shared", "bob"],
+        )
+        .await;
+        let denied = bob
+            .call("read_attention", &json!({"attention_id":bob_edge}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(denied.contains("404"), "{denied}");
+        let before = snapshot();
+        assert_eq!(coord_json(root, &args).await, first);
+        assert_eq!(snapshot(), before);
+    }
+    assert_eq!(
+        bob.call("read_brief", &json!({"room_name":"shared"}))
+            .await
+            .unwrap()["revision"],
+        6
+    );
+    let page = bob
+        .call(
+            "wait_for_attention",
+            &json!({"since_sequence":0,"limit":100,"timeout_seconds":0}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        page["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|edge| edge["attention_id"] != *bob_edge)
+    );
     coord_json(root, &["grant", "shared", "dora"]).await;
     let joined = client("dora")
         .call("join_room", &json!({"room_name":"shared"}))
