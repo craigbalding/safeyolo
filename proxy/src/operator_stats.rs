@@ -105,6 +105,12 @@ fn document_with_memory(
             CircuitValue::Other(observations.json()),
         );
     }
+    if let Some(events) = &runtime.connection_events {
+        report.insert(
+            "observation_source".into(),
+            CircuitValue::Other(events.observations.operator_source()),
+        );
+    }
     if runtime.config.native_product {
         report = report
             .into_iter()
@@ -244,7 +250,8 @@ mod tests {
                 "flow-recorder",
                 "request-logger",
                 "metrics",
-                "observations"
+                "observations",
+                "observation_source"
             ]
         );
         assert!(!directory.path().join("audit.jsonl").exists());

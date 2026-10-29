@@ -343,6 +343,35 @@ pub(crate) struct Capture {
     secrets_token: zeroize::Zeroizing<String>,
 }
 impl Capture {
+    pub(crate) fn operator_status(&self) -> serde_json::Value {
+        // A configured adapter is not proof of delivery. Inspect existing live
+        // subscriptions without opening a file, listener or capture consumer.
+        let sinks = self.sinks.lock().unwrap_or_else(|e| e.into_inner());
+        let outputs: serde_json::Map<String, serde_json::Value> = [
+            (Sink::File, self.settings.file.is_some()),
+            (Sink::Stdout, self.settings.stdout),
+            (Sink::Tcp, self.settings.tcp.is_some()),
+            (Sink::Wss, self.settings.wss),
+        ]
+        .into_iter()
+        .map(|(kind, configured)| {
+            let subscribed = sinks.iter().filter_map(Weak::upgrade).any(|sink| {
+                sink.kind.index() == kind.index()
+                    && !sink
+                        .pending
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .closed
+            });
+            (
+                kind.name().into(),
+                serde_json::json!({"configured":configured, "subscribed":subscribed}),
+            )
+        })
+        .collect();
+        serde_json::json!({"state":"running", "outputs":outputs})
+    }
+
     pub(crate) fn register_secrets(&self, connection: &str) -> Option<Arc<secrets::Secrets>> {
         self.secrets.as_ref()?.register(connection)
     }

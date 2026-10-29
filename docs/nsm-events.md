@@ -99,6 +99,13 @@ Never join records across instances or restarts using only a local ID.
 Legacy version 1 records without this namespace need trusted source context
 before a collector can join them to NSM records.
 
+The live `safeyolo observations` view identifies the same observation-owner
+namespace. Use `--instance ID --runtime ID` to check whether a retained
+namespace is still the responding runtime. Its counters and histograms are
+runtime aggregates; they cannot be attached to a particular historical agent,
+request or connection. A restart mismatch fails instead of returning historical
+totals. See the [live measurement workflow](operator-guide.md#read-current-observation-measurements).
+
 The local operator can start with `logs list` to discover retained namespaces,
 agent context and concrete connection/request/indicator references without
 reading raw JSON. Optional `--instance`, `--runtime` and `--agent` filters narrow
