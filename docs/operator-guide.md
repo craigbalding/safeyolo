@@ -452,11 +452,32 @@ by several requests or include parser read-ahead. It does not identify exclusive
 request bytes. Missing lineage stays unavailable; retained lineage references
 describe partial support, not complete coverage.
 
+For a prompt exposure, `source_transport.behaviour` and
+`model_transport.behaviour` also summarize the exact source/model connections.
+Groups separate each connection, observation point, layer and direction. Each
+group reports retained chunk counts, observed-byte sums and minimum/maximum
+chunk sizes. `retained_inter_chunk_intervals_ns` reports the count, sum and
+range of intervals between retained chunks in nanoseconds. `chunks` preserves
+observation IDs, measured lengths, stream offsets, timestamps, clock resolutions,
+packet/byte offsets and audit references. The first chunk has no prior interval.
+Reversed observation order or decreasing monotonic time leaves the interval null.
+Unknown clock resolution remains null without discarding same-runtime durations.
+Known lengths supply byte sums and ranges; `chunks_with_observed_length` counts
+those chunks. Intervals can span missing chunks. A model-request query includes its
+source connection's measurements when the exact source/flow evidence resolves.
+These are descriptive connection-wide measurements. They can include other
+requests and shared input/read-ahead. They do not establish exclusive request
+bytes, anomaly scores or causal timing. Do not add layers as application bytes.
+Wire-packet segmentation is excluded, as in the fixed stream behaviour metrics.
+
 The reader scans the capture to its current end, keeping at most `--lines`
-matching connection observations and `--lines` runtime loss records. Omitted
+matching connection observations across the selected and correlated source/model
+connections together, and `--lines` runtime loss records. Omitted
 records are counted. Loss ranges identify the runtime; they do not identify
-which connection or request lost evidence. Wrong namespaces, connections,
-requests or agent attribution cannot supply matching observations. Missing
+which connection or request lost evidence. Wrong namespaces, connections or
+recorded agent attribution cannot supply matching observations. Request IDs
+constrain direct request observations; they do not restrict the connection-wide
+behaviour summary. Missing
 captures and unsupported formats leave capture evidence unavailable while the
 audit view remains usable. Malformed or truncated captures can leave a partial
 prefix with a scan reason. Reaching end of file without a loss record does not

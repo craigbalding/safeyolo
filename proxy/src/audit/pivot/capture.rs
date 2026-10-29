@@ -1,6 +1,9 @@
 //! Join operator-selected compatibility metadata to the pivot's existing audit
 //! scope. Capture selection and schema checks do not authenticate its producer.
-use std::{collections::VecDeque, path::Path};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    path::Path,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -198,8 +201,87 @@ fn ancestry(parent: &Observation, candidate: &Observation) -> bool {
     })
 }
 
-pub(crate) fn read(path: &Path, pivot: &Value, query: &Query<'_>) -> Value {
-    let anchors: Vec<_> = pivot["records"]
+fn transport_lines(transport: &Value) -> impl Iterator<Item = &Value> {
+    ["flow_lines", "client_record_lines", "server_record_lines"]
+        .into_iter()
+        .flat_map(|field| transport[field].as_array().into_iter().flatten())
+}
+
+fn supports(o: &Observation, anchor: &Value) -> bool {
+    owner_matches(o, &anchor["record"])
+        && super::direct_connections(&anchor["record"]).any(|id| id == o.connection_id)
+}
+
+fn behaviour(
+    observations: &VecDeque<Located>,
+    anchors: &[&Value],
+    transport: &Value,
+    partial: bool,
+) -> Value {
+    let mut groups = BTreeMap::<_, Vec<&Located>>::new();
+    if transport["status"] != "unavailable" {
+        for entry in observations {
+            let o = &entry.observation;
+            // Match the current fixed metrics: stream chunks, never synthetic
+            // packet sizes or genuine wire-packet segmentation.
+            if o.state == "chunk"
+                && o.layer != Layer::WirePacket
+                && ["client_connection_id", "server_connection_id"]
+                    .iter()
+                    .any(|field| transport[field] == o.connection_id)
+                && anchors.iter().any(|anchor| {
+                    transport_lines(transport).any(|line| *line == anchor["line"])
+                        && supports(o, anchor)
+                })
+            {
+                groups
+                    .entry((
+                        o.connection_id.as_str(),
+                        o.point.as_str(),
+                        o.layer.name(),
+                        o.direction.as_str(),
+                    ))
+                    .or_default()
+                    .push(entry);
+            }
+        }
+    }
+    let groups: Vec<_> = groups.into_iter().map(|((connection, point, layer, direction), entries)| {
+        let lengths: Vec<_> = entries.iter().filter_map(|e| e.observation.observed_length).collect();
+        let mut previous: Option<&Observation> = None;
+        let mut intervals = Vec::new();
+        let chunks: Vec<_> = entries.iter().map(|entry| {
+            let o = &entry.observation;
+            let interval = previous.and_then(|p| {
+                (p.id.sequence < o.id.sequence)
+                    .then(|| o.timestamp.monotonic_ns.checked_sub(p.timestamp.monotonic_ns)).flatten()
+            });
+            intervals.extend(interval);
+            let audit: Vec<_> = anchors.iter().filter(|anchor| transport_lines(transport).any(|line| *line == anchor["line"]) && supports(o, anchor)).map(|anchor| &anchor["line"]).collect();
+            let chunk = json!({"packet":entry.packet,"byte_offset":entry.byte_offset,
+                "observation_id":o.id,"stream_offset":o.stream_offset,"observed_length":o.observed_length,
+                "timestamp":o.timestamp,"timestamp_resolution":o.timestamp_resolution,"audit_record_lines":audit,
+                "previous_observation_id":previous.map(|p| &p.id),"interval_from_previous_ns":interval});
+            previous = Some(o);
+            chunk
+        }).collect();
+        json!({"connection_id":connection,"point":point,"layer":layer,"direction":direction,
+            "retained_chunks":entries.len(),"chunks_with_observed_length":lengths.len(),
+            "observed_bytes":lengths.iter().map(|n| u128::from(*n)).sum::<u128>(),
+            "min_chunk_bytes":lengths.iter().min(),"max_chunk_bytes":lengths.iter().max(),
+            "retained_inter_chunk_intervals_ns":{"count":intervals.len(),
+                "sum":intervals.iter().map(|n| u128::from(*n)).sum::<u128>(),
+                "min":intervals.iter().min(),"max":intervals.iter().max(),
+                "unavailable":entries.len().saturating_sub(1) - intervals.len()},
+            "chunks":chunks})
+    }).collect();
+    json!({"status":if groups.is_empty() {"unavailable"} else if partial {"partial"} else {"available"},
+        "scope":"retained_connection_chunks","groups":groups,
+        "limits":"Descriptive retained stream measurements use canonical observed lengths and runtime monotonic timestamps. Null intervals lack ordered monotonic timing. Unknown clock resolution remains null without discarding same-runtime durations. Intervals can span missing chunks. Each point/layer/direction stays separate; do not add layers as application bytes. Connections can serve multiple requests and include shared input/read-ahead; these are not exclusive request totals, anomaly scores or causal timing. Capture scan, omissions and runtime-wide loss are reported in capture; loss ownership and complete coverage remain unknown. File selection does not authenticate the producer."})
+}
+
+pub(crate) fn read(path: &Path, pivot: &mut Value, query: &Query<'_>) -> Value {
+    let direct_anchors: Vec<_> = pivot["records"]
         .as_array()
         .into_iter()
         .flatten()
@@ -213,6 +295,36 @@ pub(crate) fn read(path: &Path, pivot: &Value, query: &Query<'_>) -> Value {
             }
         })
         .collect();
+    let mut anchors = direct_anchors.clone();
+    let mut correlated_connections = Vec::new();
+    for correlation in pivot["correlations"].as_array().into_iter().flatten() {
+        for side in ["source_transport", "model_transport"] {
+            let transport = &correlation[side];
+            if transport["status"] != "unavailable" {
+                correlated_connections.extend(
+                    ["client_connection_id", "server_connection_id"]
+                        .into_iter()
+                        .filter_map(|field| transport[field].as_str()),
+                );
+                for anchor in pivot["records"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|anchor| {
+                        anchor["conflicting"] != true
+                            && transport_lines(transport).any(|line| *line == anchor["line"])
+                    })
+                {
+                    if !anchors
+                        .iter()
+                        .any(|existing| existing["line"] == anchor["line"])
+                    {
+                        anchors.push(anchor);
+                    }
+                }
+            }
+        }
+    }
     let mut session = None;
     let mut observations = VecDeque::new();
     let mut loss = VecDeque::new();
@@ -252,12 +364,10 @@ pub(crate) fn read(path: &Path, pivot: &Value, query: &Query<'_>) -> Value {
                 }
                 if o.id.instance_id == query.instance
                     && o.id.runtime_id == query.runtime
-                    && anchors.iter().any(|entry| {
-                        let row = &entry["record"];
-                        owner_matches(&o, row)
-                            && super::direct_connections(row).any(|id| id == o.connection_id)
-                    })
-                    && (query.kind == "request" || o.connection_id == query.id)
+                    && anchors.iter().any(|entry| supports(&o, entry))
+                    && (query.kind == "request"
+                        || o.connection_id == query.id
+                        || correlated_connections.contains(&o.connection_id.as_str()))
                 {
                     retain(
                         &mut observations,
@@ -307,7 +417,14 @@ pub(crate) fn read(path: &Path, pivot: &Value, query: &Query<'_>) -> Value {
     let direct: Vec<_> = observations
         .iter()
         .filter(|entry| {
-            query.kind == "connection" || entry.observation.request_id.as_deref() == Some(query.id)
+            direct_anchors
+                .iter()
+                .any(|anchor| supports(&entry.observation, anchor))
+                && if query.kind == "connection" {
+                    entry.observation.connection_id == query.id
+                } else {
+                    entry.observation.request_id.as_deref() == Some(query.id)
+                }
         })
         .collect();
     let selected: Vec<_> = observations
@@ -320,6 +437,15 @@ pub(crate) fn read(path: &Path, pivot: &Value, query: &Query<'_>) -> Value {
         .collect();
     let mut partial =
         scan["status"] != "available" || omitted > 0 || omitted_loss > 0 || !loss.is_empty();
+    let behaviours: Vec<_> = pivot["correlations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|correlation| {
+            ["source_transport", "model_transport"]
+                .map(|side| behaviour(&observations, &anchors, &correlation[side], partial))
+        })
+        .collect();
     let rows: Vec<_> = selected.iter().map(|entry| {
         let o = &entry.observation;
         let references: Vec<_> = selected.iter().filter(|candidate| ancestry(o, &candidate.observation)).map(|candidate| json!({"packet":candidate.packet,"byte_offset":candidate.byte_offset,"observation_id":candidate.observation.id})).collect();
@@ -332,10 +458,24 @@ pub(crate) fn read(path: &Path, pivot: &Value, query: &Query<'_>) -> Value {
             "selection":if direct.iter().any(|d| d.packet == entry.packet) {"direct"} else {"input_ancestry"},
             "audit_record_lines":audit,"observation":o,"lineage":{"status":lineage,"references":references}})
     }).collect();
-    json!({"file":path,"profile":"pcap:compat","representation":"reconstructed",
+    let result = json!({"file":path,"profile":"pcap:compat","representation":"reconstructed",
         "status":if direct.is_empty() {"unavailable"} else if partial {"partial"} else {"available"},
         "reason":if anchors.is_empty() {Some("no unconflicted selected audit scope")} else if direct.is_empty() {Some("no matching retained connection/request observations")} else {None},
         "scan":scan,"line_limit":query.lines,"omitted_connection_observations":omitted,"omitted_runtime_loss_records":omitted_loss,
         "observations":rows,"loss":loss,
-        "limits":"Only selected current pcap:compat metadata is read. Packet numbers are one-based; byte offsets point to PCAP packet headers. Synthetic addresses, TCP headers and checksums are representation, never measured wire behaviour. Request IDs select direct observations; lower-layer input ancestry can be shared or include read-ahead, not exclusive request bytes. Lineage references are limited to retained matching observations and do not establish complete coverage. Loss ranges cover the runtime; their connection/request owner is unknown. No payload is returned, capture enabled, content recovered, or process/task provenance inferred. Audit run context comes only from the selected audit records. Selection and validation do not authenticate a producer. EOF and absence of recorded loss do not prove complete evidence."})
+        "limits":"Only selected current pcap:compat metadata is read. Packet numbers are one-based; byte offsets point to PCAP packet headers. Synthetic addresses, TCP headers and checksums are representation, never measured wire behaviour. Request IDs select direct observations; lower-layer input ancestry can be shared or include read-ahead, not exclusive request bytes. The observation limit covers selected and correlated source/model connections together. Lineage references are limited to retained matching observations and do not establish complete coverage. Loss ranges cover the runtime; their connection/request owner is unknown. No payload is returned, capture enabled, content recovered, or process/task provenance inferred. Audit run context comes only from the selected audit records. Selection and validation do not authenticate a producer. EOF and absence of recorded loss do not prove complete evidence."});
+    for (correlation, sides) in pivot["correlations"]
+        .as_array_mut()
+        .into_iter()
+        .flatten()
+        .zip(behaviours)
+    {
+        for (side, summary) in ["source_transport", "model_transport"]
+            .into_iter()
+            .zip(sides)
+        {
+            correlation[side]["behaviour"] = summary;
+        }
+    }
+    result
 }

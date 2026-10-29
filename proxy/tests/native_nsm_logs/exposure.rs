@@ -123,6 +123,17 @@ async fn native_correlation(supervised: bool) {
         config.native_product = true;
         config.native_config_dir = Some(root.path().to_owned());
     }
+    let capture_path = (!supervised).then(|| {
+        let path = capture::configure(&mut config, root.path());
+        config
+            .native_settings
+            .as_mut()
+            .unwrap()
+            .packet_capture
+            .payload_layers
+            .clear();
+        path
+    });
     let model_body = json!({"messages":[{"role":"user","content":SOURCE}]}).to_string();
     let expected_model = model_body.clone();
     let rounds = if supervised { 2 } else { 1 };
@@ -130,7 +141,12 @@ async fn native_correlation(supervised: bool) {
         for _ in 0..rounds {
             let (mut stream, _) = origin.accept().await.unwrap();
             assert!(head(&mut stream).await.starts_with(b"GET /source "));
-            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{SOURCE}", SOURCE.len()).as_bytes()).await.unwrap();
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", SOURCE.len(), &SOURCE[..SOURCE.len()/2]).as_bytes()).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            stream
+                .write_all(&SOURCE.as_bytes()[SOURCE.len() / 2..])
+                .await
+                .unwrap();
             drop(stream);
             let (stream, _) = origin.accept().await.unwrap();
             let mut stream = tokio_rustls::TlsAcceptor::from(Arc::new(tls.clone()))
@@ -195,7 +211,20 @@ async fn native_correlation(supervised: bool) {
                     model_body.len()
                 )
             };
-            client.write_all(request.as_bytes()).await.unwrap();
+            if source {
+                client.write_all(request.as_bytes()).await.unwrap();
+            } else {
+                let split = request.len() - model_body.len() / 2;
+                client
+                    .write_all(&request.as_bytes()[..split])
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                client
+                    .write_all(&request.as_bytes()[split..])
+                    .await
+                    .unwrap();
+            }
             let mut response = Vec::new();
             timeout(Duration::from_secs(5), client.read_to_end(&mut response))
                 .await
@@ -323,6 +352,7 @@ async fn native_correlation(supervised: bool) {
             .contains("amber lighthouse")
     );
     assert_eq!(fs::read(root.path().join("audit.jsonl")).unwrap(), bytes);
+    capture::assert_exposure_views(root.path(), exposure, capture_path.as_ref().unwrap()).await;
     offline::assert_native_split(root.path(), &bytes, exposure).await;
     assert!(!root.path().join("unused.sqlite3").exists());
 }

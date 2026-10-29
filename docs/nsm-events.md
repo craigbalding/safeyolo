@@ -187,6 +187,23 @@ Successful scanning does not establish complete coverage. Synthetic packet
 headers remain representation. See the same operator workflow for capture
 selection, limits and failure behaviour.
 
+With capture selected, each prompt-exposure `source_transport` and
+`model_transport` includes a `behaviour` summary for its verified connections.
+The summary groups retained stream chunks by connection, point, layer and
+direction, using canonical observed lengths and runtime monotonic timestamps.
+Each group reports chunk counts, observed-byte sums, size ranges and intervals
+between retained chunks. Each chunk preserves its observation ID, timestamp and
+resolution, stream offset, capture packet/byte offset and supporting audit lines.
+Reversed observation order or decreasing monotonic time leaves intervals unavailable.
+Unknown clock resolution remains null without discarding same-runtime durations.
+Known lengths supply byte sums and ranges; `chunks_with_observed_length` counts
+those chunks. Intervals can span missing chunks. These measurements follow the fixed transport
+metric meanings; wire-packet segmentation is excluded. Layers must not be added
+as application bytes. The summaries describe connection-wide retained evidence,
+including shared input and read-ahead, rather than exclusive request totals or
+anomaly scores. The selected and correlated connections share one observation
+window; omissions and runtime loss can leave partial or unavailable summaries.
+
 A pivot keeps the last `--lines` selected-agent rows (default 100) per input,
 then selects validated version 2 records within the requested namespace. Total
 retention is at most input count times `--lines`, before duplicate removal.
