@@ -355,7 +355,7 @@ nodes:
         - path: proxy/src/coord_work_schema.sql
           sha256: b8b8e736cc80c6e2da7bcd9bafaf084944ab2cd626e3401a1e3f038faf4674cb
         - path: proxy/tests/native_coord/signals.rs
-          sha256: fa131cebfa0a8bffcad8f9067ab78b6195564796d873a66bc61504da234af336
+          sha256: c1c910146c006a282a998a1888a1f61bd6ee81ea98a0a13cfc694d721e86afe4
         - path: proxy/src/coord_rooms/signals.rs
           sha256: fdd1c3b6a29b083d8dd867d8043425312ed636da68bec940fbd72804d082c3d4
         - path: proxy/src/coord_rooms/signals/tests.rs
@@ -369,7 +369,7 @@ nodes:
         - path: proxy/src/admin_api/coord_signals.rs
           sha256: 02a963eef1bf4e390e9c57b9dbb0f95854bbb6c7592f6bb0b461ee2f04f41624
         - path: proxy/src/coord_operator/signals.rs
-          sha256: c29423ad588feb470263cb505f95da62b9bb1022e14cd28fdb9a236cb10cc448
+          sha256: 6e3563a39d0fde69ebf15e1fa80967bb00baf5bc54709fa6bbc0de0cf33d4ce8
         - path: proxy/src/coord_tools.rs
           sha256: dcc476f07bd36596b0dcca5787a1afb5419e52879067e4ecb83a978271b5c768
       setup: "Use the pinned Rust toolchain with curl/tar and an approved NATS acquisition route or the configured verified NATS executable. Tests allocate their own roots and endpoints; never use the operator's live Coord data."

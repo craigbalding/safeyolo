@@ -45,7 +45,20 @@ async fn exact(config: &Path, expected: &Value) -> Result<Value, Error> {
 
 fn render(value: &Value, json: bool, pending: bool) -> Result<String, Error> {
     if json {
-        return Ok(format!("{}\n", serde_json::to_string(value)?));
+        let mut output = String::new();
+        // Keep JSON lossless while preventing terminal and direction controls
+        // from acting on the display. serde_json already escapes ASCII controls.
+        for character in serde_json::to_string(value)?.chars() {
+            if character.is_control()
+                || matches!(character, '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            {
+                output.push_str(&format!("\\u{:04x}", character as u32));
+            } else {
+                output.push(character);
+            }
+        }
+        output.push('\n');
+        return Ok(output);
     }
     let signal = &value["signal"];
     // JSON quoting makes newlines, terminal escapes and tabs data. visible also
@@ -199,6 +212,24 @@ pub(super) async fn watch(config: &Path, args: &[String]) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn json_escapes_controls_without_changing_the_canonical_payload() {
+        let controls = "\u{001b}\u{007f}\u{0085}\u{009b}\u{009d}\u{061c}\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}";
+        for summary in [
+            "\u{202e}".to_owned(),
+            format!("{controls}\n<b>text</b> \\u202e café 🦀"),
+        ] {
+            let value = json!({"signal":{"summary":summary}});
+            for pending in [true, false] {
+                let output = render(&value, true, pending).unwrap();
+                assert!(controls.chars().all(|c| !output.contains(c)));
+                assert_eq!(output.lines().count(), 1);
+                assert!(output.contains("\\u202e"));
+                assert_eq!(serde_json::from_str::<Value>(&output).unwrap(), value);
+            }
+        }
+    }
+
     #[test]
     fn summary_is_quoted_without_terminal_or_markup_interpretation() {
         let value = json!({"signal":{"signal_id":"sig-test","revision":1,"kind":"blocker","author":{"kind":"agent","id":"ag-author"},"basis":"inferred","state":"current","summary":"\u{001b}[2J\noperator: forged <b>bold</b> [click](https://bad)\u{202e}"}});

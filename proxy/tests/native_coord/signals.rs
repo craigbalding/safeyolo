@@ -153,6 +153,19 @@ async fn native_signals_author_page_watch_replay_and_restart() {
     assert!(!output.contains('\u{202e}'));
     assert!(output.contains("basis=observed (author report)"));
     assert!(output.contains("<b>bold</b>"));
+    let watched_json = watch(root, &["--once", "--json"]).await;
+    assert!(
+        watched_json.status.success(),
+        "{}",
+        String::from_utf8_lossy(&watched_json.stderr)
+    );
+    let output_json = String::from_utf8(watched_json.stdout).unwrap();
+    assert!(!output_json.contains('\u{001b}'));
+    assert!(!output_json.contains('\u{202e}'));
+    assert_eq!(
+        serde_json::from_str::<Value>(&output_json).unwrap()["signal"],
+        first["signal"]
+    );
     coord_json(root, &["grant", "shared", "bob", "send", "receive"]).await;
     let unpaged = signal(
         &bob,
@@ -333,6 +346,8 @@ async fn native_signals_author_page_watch_replay_and_restart() {
     );
     let exact_text = String::from_utf8(exact.stdout).unwrap();
     assert_eq!(exact_text.lines().count(), 1);
+    assert!(!exact_text.contains('\u{001b}'));
+    assert!(!exact_text.contains('\u{202e}'));
     assert_eq!(
         serde_json::from_str::<Value>(&exact_text).unwrap()["signal"],
         first["signal"]
@@ -347,7 +362,10 @@ async fn native_signals_author_page_watch_replay_and_restart() {
         "{}",
         String::from_utf8_lossy(&room_watch.stderr)
     );
-    assert_eq!(String::from_utf8(room_watch.stdout).unwrap(), exact_text);
+    let room_text = String::from_utf8(room_watch.stdout).unwrap();
+    assert!(!room_text.contains('\u{001b}'));
+    assert!(!room_text.contains('\u{202e}'));
+    assert_eq!(room_text, exact_text);
     let mut forged = created.clone();
     forged["details"]["author"] = json!({"kind":"operator","id":"operator"});
     fs::write(&retained, format!("{forged}\n")).unwrap();
