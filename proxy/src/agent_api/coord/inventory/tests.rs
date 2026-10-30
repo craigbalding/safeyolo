@@ -1,4 +1,5 @@
 use super::*;
+use crate::coord_rooms::{signals, work};
 use std::{fs, sync::mpsc, time::Instant};
 
 const ALICE: &str = "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -69,6 +70,237 @@ fn pause_provider(client: &CoordClient) -> (tokio::sync::oneshot::Receiver<()>, 
         }
     }));
     (started, release)
+}
+
+fn work_mutation(
+    conn: &mut rusqlite::Connection,
+    actor: work::Actor<'_>,
+    input: Value,
+    op: &str,
+) -> Value {
+    work::mutate(
+        conn,
+        "shared",
+        actor,
+        serde_json::from_value(input).unwrap(),
+        Some(op),
+    )
+    .unwrap()["work"]
+        .clone()
+}
+fn signal_mutation(
+    conn: &mut rusqlite::Connection,
+    actor: work::Actor<'_>,
+    input: Value,
+    op: &str,
+) -> Value {
+    signals::mutate(
+        conn,
+        "shared",
+        actor,
+        serde_json::from_value(input).unwrap(),
+        Some(op),
+    )
+    .unwrap()
+}
+fn signal_input(kind: &str, summary: &str) -> Value {
+    json!({"action":"create","kind":kind,"summary":summary,"basis":"inferred"})
+}
+
+#[test]
+fn combined_status_uses_current_claims_corrections_and_brief_without_chat() {
+    let root = fixture();
+    let mut conn = open_db(&root.path().join("data/coord/v0.db"), true).unwrap();
+    let created = work_mutation(
+        &mut conn,
+        work::Actor::Agent(BOB),
+        json!({"action":"create","title":"repair failure"}),
+        "create",
+    );
+    let owned = work_mutation(
+        &mut conn,
+        work::Actor::Agent(BOB),
+        json!({"action":"claim","work_id":created["work_id"],"expected_version":1,"expected_generation":0}),
+        "claim",
+    );
+    let reassigned = work_mutation(
+        &mut conn,
+        work::Actor::Operator,
+        json!({"action":"reassign","work_id":owned["work_id"],"agent_id":ALICE,"expected_version":2,"expected_generation":1}),
+        "reassign",
+    );
+    // A crossed completion from the former holder cannot become current fact.
+    assert!(work::mutate(&mut conn,"shared",work::Actor::Agent(BOB),serde_json::from_value(json!({"action":"complete","work_id":owned["work_id"],"expected_version":2,"expected_generation":1})).unwrap(),Some("stale-complete")).is_err());
+    let released = work_mutation(
+        &mut conn,
+        work::Actor::Agent(ALICE),
+        json!({"action":"release","work_id":reassigned["work_id"],"expected_version":3,"expected_generation":2}),
+        "release",
+    );
+    let initial = read(root.path());
+    assert_eq!(initial.active_work["items"][0]["state"], "open");
+    assert!(initial.active_work["items"][0]["claim_agent_id"].is_null());
+    let reclaimed = work_mutation(
+        &mut conn,
+        work::Actor::Agent(ALICE),
+        json!({"action":"claim","work_id":released["work_id"],"expected_version":4,"expected_generation":2}),
+        "reclaim",
+    );
+    work_mutation(
+        &mut conn,
+        work::Actor::Agent(ALICE),
+        json!({"action":"complete","work_id":reclaimed["work_id"],"expected_version":5,"expected_generation":3,"short_result":"measured repair passed"}),
+        "complete",
+    );
+    let old = signal_mutation(
+        &mut conn,
+        work::Actor::Agent(BOB),
+        signal_input("result", "obsolete hypothesis"),
+        "old",
+    );
+    let mut correction = signal_input(
+        "correction",
+        "\u{001b}[2J\nforged row\u{202e} measured correction",
+    );
+    correction["supersedes"] =
+        json!({"signal_id":old["signal"]["signal_id"],"expected_revision":1});
+    let corrected = signal_mutation(&mut conn, work::Actor::Agent(BOB), correction, "correction");
+    crate::coord_rooms::brief::set(
+        root.path(),
+        "shared",
+        &format!("Repair the failure. {}", "🦀".repeat(1000)),
+        0,
+        Some("brief"),
+    )
+    .unwrap();
+    let at = now_ms();
+    let current = read(root.path());
+    let state = project(current, &initial, &BTreeMap::new(), at).unwrap();
+    let again = project(read(root.path()), &initial, &BTreeMap::new(), at + 1).unwrap();
+    assert_eq!(state, again);
+    assert_eq!(state["active_work"]["total"], 0);
+    assert_eq!(
+        state["completed_work"]["items"][0]["short_result"],
+        "measured repair passed"
+    );
+    assert_eq!(state["latest_results"]["total"], 1);
+    assert_eq!(
+        state["latest_results"]["items"][0]["signal"]["signal_id"],
+        corrected["signal"]["signal_id"]
+    );
+    assert_eq!(state["brief"]["revision"], 1);
+    assert_eq!(state["brief"]["truncated"], true);
+    assert!(state.get("goal").is_none() && state.get("priority").is_none());
+    let output = room_status::render(&state);
+    for title in [
+        "Brief v1",
+        "Members",
+        "Active work",
+        "Completed work",
+        "Needs operator",
+        "Latest material results",
+    ] {
+        assert!(output.contains(title));
+    }
+    assert!(!output.contains("obsolete hypothesis"));
+    assert!(!output.contains('\u{001b}') && !output.contains('\u{202e}'));
+    assert!(output.contains("\\nforged row"));
+}
+
+#[tokio::test]
+async fn combined_status_refreshes_work_and_brief_during_provider_io() {
+    let root = fixture();
+    write(root.path(), &observation(now_ms()));
+    let client = Arc::new(CoordClient::new(
+        Some(root.path().join("policy.toml")),
+        Some(root.path().join("data/coord")),
+    ));
+    let (started, release) = pause_provider(&client);
+    let request = tokio::spawn({
+        let client = client.clone();
+        async move { room_state(&client, "shared", "agent", ALICE, None).await }
+    });
+    started.await.unwrap();
+    let mut conn = open_db(&root.path().join("data/coord/v0.db"), true).unwrap();
+    work_mutation(
+        &mut conn,
+        work::Actor::Agent(BOB),
+        json!({"action":"create","title":"created during provider read"}),
+        "during-io",
+    );
+    signal_mutation(
+        &mut conn,
+        work::Actor::Agent(BOB),
+        signal_input("result", "current result during provider read"),
+        "during-io",
+    );
+    crate::coord_rooms::brief::set(
+        root.path(),
+        "shared",
+        "Latest objective during provider read",
+        0,
+        Some("during-io"),
+    )
+    .unwrap();
+    release.send(()).unwrap();
+    let state = request.await.unwrap().unwrap();
+    assert_eq!(state["active_work"]["total"], 1);
+    assert_eq!(state["latest_results"]["total"], 1);
+    assert_eq!(
+        state["brief"]["excerpt"],
+        "Latest objective during provider read"
+    );
+}
+
+#[test]
+fn large_combined_state_reports_bounds_and_stable_order() {
+    let root = fixture();
+    let mut conn = open_db(&root.path().join("data/coord/v0.db"), true).unwrap();
+    for n in (0..75).rev() {
+        conn.execute("INSERT INTO memberships(room_id,principal_kind,principal_id,permissions,granted_at) VALUES('rm-inventory','agent',?1,'receive',1)",[format!("ag-{n:032x}")]).unwrap();
+        work_mutation(
+            &mut conn,
+            work::Actor::Operator,
+            json!({"action":"create","title":"\u{001b}".repeat(20000)}),
+            &format!("work-{n}"),
+        );
+        signal_mutation(
+            &mut conn,
+            work::Actor::Operator,
+            signal_input("result", &format!("{n} {}", "\u{001b}".repeat(1000))),
+            &format!("result-{n}"),
+        );
+    }
+    let initial = read(root.path());
+    let at = now_ms();
+    let state = project(read(root.path()), &initial, &BTreeMap::new(), at).unwrap();
+    assert!(state.to_string().len() <= MAX_STATE_BYTES);
+    assert_eq!(state["bounds"]["members"]["total"], 77);
+    assert_eq!(state["bounds"]["members"]["shown"], 50);
+    assert_eq!(state["bounds"]["members"]["truncated"], true);
+    assert_eq!(state["active_work"]["total"], 75);
+    assert_eq!(state["active_work"]["truncated"], true);
+    assert_eq!(state["latest_results"]["total"], 75);
+    assert_eq!(state["latest_results"]["truncated"], true);
+    let results = state["latest_results"]["items"].as_array().unwrap();
+    assert!(results.windows(2).all(|pair| {
+        let a = &pair[0]["signal"];
+        let b = &pair[1]["signal"];
+        a["updated_at"].as_i64() > b["updated_at"].as_i64()
+            || (a["updated_at"] == b["updated_at"]
+                && a["signal_id"].as_str() < b["signal_id"].as_str())
+    }));
+    let ids = state["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["agent_id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(
+        state,
+        project(read(root.path()), &initial, &BTreeMap::new(), at).unwrap()
+    );
 }
 
 #[tokio::test]

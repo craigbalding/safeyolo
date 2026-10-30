@@ -3,6 +3,7 @@ use super::{
     CoordClient, CoordError, Path, RoomAccess, now_ms, open_db, public_name_part, valid_agent_id,
     valid_capability,
 };
+use crate::coord_rooms::room_status::{self, SECTION_BYTES, bounded_items};
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use rusqlite::params;
 use serde::Deserialize;
@@ -344,6 +345,9 @@ struct Inventory {
     declarations: Vec<(String, String, i64, i64)>,
     signals: Value,
     needs_operator: Value,
+    active_work: Value,
+    completed_work: Value,
+    latest_results: Value,
 }
 
 fn read_inventory(
@@ -416,6 +420,12 @@ fn read_inventory(
         false,
     )
     .map_err(|_| CoordError::Data)?;
+    let active_work =
+        room_status::work_page(&conn, &access.room_id, false).map_err(|_| CoordError::Data)?;
+    let completed_work =
+        room_status::work_page(&conn, &access.room_id, true).map_err(|_| CoordError::Data)?;
+    let latest_results = crate::coord_rooms::signals::latest_results(&conn, &access.room_id)
+        .map_err(|_| CoordError::Data)?;
     conn.execute_batch("COMMIT")
         .map_err(|_| CoordError::Unavailable)?;
     Ok(Inventory {
@@ -426,6 +436,9 @@ fn read_inventory(
         declarations,
         signals,
         needs_operator,
+        active_work,
+        completed_work,
+        latest_results,
     })
 }
 
@@ -556,8 +569,15 @@ fn project(
                 "provenance":{"authorization":"safeyolo_current_grant","visibility":"operator_room_advertisement","availability":"provider_observation"}}));
         }
         let declared = current.declarations.iter().filter(|(id,_,_,until)| id == &member.principal_id && now < *until).map(|(id,label,at,until)| json!({"capability":label,"asserted_by_agent_id":id,"asserted_at":at,"valid_until":until,"freshness":"fresh","provenance":"agent_declared"})).collect::<Vec<_>>();
-        members.push(json!({"agent_id":member.principal_id,"display_name":configured.map(|a| &a.name),"configured":configured.is_some(),"origin_instance_id":current.access.instance_id,"room_permissions":member.permissions,"verified":verified,"declared":declared}));
+        let total = verified.len();
+        let mut verified = bounded_items(verified, total, 16 * 1024);
+        let verified_items = verified.as_object_mut().unwrap().remove("items").unwrap();
+        let total = declared.len();
+        let mut declared = bounded_items(declared, total, 8 * 1024);
+        let declared_items = declared.as_object_mut().unwrap().remove("items").unwrap();
+        members.push(json!({"agent_id":member.principal_id,"display_name":configured.map(|a| &a.name),"configured":configured.is_some(),"origin_instance_id":current.access.instance_id,"room_permissions":member.permissions,"verified":verified_items,"declared":declared_items,"bounds":{"verified":verified,"declared":declared}}));
     }
+    members.sort_by(|a, b| a["agent_id"].as_str().cmp(&b["agent_id"].as_str()));
     let leases = current.resources.iter().map(|(provider, resource)| {
         let observation = initial.resources.contains(&(provider.clone(),resource.clone())).then(|| observations.get(provider)).flatten().and_then(|o| o.leases.iter().find(|r| r.resource == *resource));
         let mut fresh = observation.map_or("unknown",|r| freshness(r.observed_at,r.valid_until,now));
@@ -566,7 +586,21 @@ fn project(
         let holder = observation_current.and_then(|r| r.holder_agent_id.as_deref());
         json!({"provider":provider,"resource":resource,"state":match observation_current.map(|r| &r.state) { Some(LeaseState::Held)=>"held",Some(LeaseState::Unleased)=>"unleased",None=>"unknown" },"holder_agent_id":holder,"holder_display_name":holder.and_then(|id| current.configured.get(id)).map(|a| &a.name),"observed_at":observation.map(|r| r.observed_at),"valid_until":observation.map(|r| r.valid_until),"freshness":fresh,"provenance":"provider_owned_lease"})
     }).collect::<Vec<_>>();
-    let state = json!({"room_id":current.access.room_id,"room_name":current.access.room_name,"origin_instance_id":current.access.instance_id,"generated_at":now,"brief":current.access.brief,"members":members,"resource_leases":leases,"signals":current.signals,"needs_operator":current.needs_operator});
+    let total = members.len();
+    let mut member_counts = bounded_items(members, total, SECTION_BYTES);
+    let members = member_counts
+        .as_object_mut()
+        .unwrap()
+        .remove("items")
+        .unwrap();
+    let total = leases.len();
+    let mut lease_counts = bounded_items(leases, total, SECTION_BYTES);
+    let leases = lease_counts
+        .as_object_mut()
+        .unwrap()
+        .remove("items")
+        .unwrap();
+    let state = json!({"room_id":current.access.room_id,"room_name":current.access.room_name,"origin_instance_id":current.access.instance_id,"brief":room_status::brief_excerpt(current.access.brief),"members":members,"resource_leases":leases,"signals":current.signals,"needs_operator":current.needs_operator,"active_work":current.active_work,"completed_work":current.completed_work,"latest_results":current.latest_results,"bounds":{"members":member_counts,"resource_leases":lease_counts,"max_items":room_status::MAX_ITEMS,"section_bytes":SECTION_BYTES,"max_state_bytes":MAX_STATE_BYTES}});
     if state.to_string().len() > MAX_STATE_BYTES {
         return Err(CoordError::Data);
     }

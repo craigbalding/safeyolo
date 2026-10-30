@@ -43,22 +43,26 @@ async fn exact(config: &Path, expected: &Value) -> Result<Value, Error> {
     Ok(value)
 }
 
+pub(crate) fn json_text(value: &Value) -> Result<String, Error> {
+    let mut output = String::new();
+    // Keep JSON lossless while preventing terminal and direction controls
+    // from acting on the display. serde_json already escapes ASCII controls.
+    for character in serde_json::to_string(value)?.chars() {
+        if character.is_control()
+            || matches!(character, '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        {
+            output.push_str(&format!("\\u{:04x}", character as u32));
+        } else {
+            output.push(character);
+        }
+    }
+    output.push('\n');
+    Ok(output)
+}
+
 fn render(value: &Value, json: bool, pending: bool) -> Result<String, Error> {
     if json {
-        let mut output = String::new();
-        // Keep JSON lossless while preventing terminal and direction controls
-        // from acting on the display. serde_json already escapes ASCII controls.
-        for character in serde_json::to_string(value)?.chars() {
-            if character.is_control()
-                || matches!(character, '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-            {
-                output.push_str(&format!("\\u{:04x}", character as u32));
-            } else {
-                output.push(character);
-            }
-        }
-        output.push('\n');
-        return Ok(output);
+        return json_text(value);
     }
     let signal = &value["signal"];
     // JSON quoting makes newlines, terminal escapes and tabs data. visible also

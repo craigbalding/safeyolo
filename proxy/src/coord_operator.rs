@@ -12,7 +12,7 @@ use rustyline::{DefaultEditor, ExternalPrinter, error::ReadlineError};
 use serde_json::{Value, json};
 
 use crate::{Error, agent_api::coord::OperatorCoord, coord_timeline};
-mod signals;
+pub(crate) mod signals;
 pub async fn watch(config: &Path, arguments: &[String]) -> Result<(), Error> {
     signals::watch(config, arguments).await
 }

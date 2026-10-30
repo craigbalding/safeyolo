@@ -485,7 +485,7 @@ pub fn tools() -> Vec<Value> {
     );
     add(
         "get_room_state",
-        "Read room identity, declarations, provider-owned leases, and bounded current signals/needs_operator pages. Signal authors are trusted identities; observed and inferred claims remain attributed author reports. Stale provider evidence is unknown.",
+        "Read the canonical bounded room projection: brief revision/excerpt, current members and authorized capabilities, declarations, provider-owned leases, active work, completed work, current signals, operator needs and latest current results. Counts and truncation expose omitted items. Declarations and signal claims remain attributed reports, not verified capabilities or independent attestation. Stale provider evidence is unknown; durable claims do not expire.",
         json!({"room_name":string}),
         &["room_name"],
     );

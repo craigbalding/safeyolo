@@ -365,6 +365,51 @@ items and 65536 bytes of items per page, ordered by `signal_id`. Follow
 `next_after`; pages do not share a snapshot. Room state includes bounded
 `signals` and `needs_operator` pages with counts and continuation values.
 
+## Return to the current room state
+
+On the owning host account, select an existing room in the instance whose proxy
+is running. For room `chat`, run:
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord status chat
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord status chat --json
+```
+
+The text command shows the brief revision and its first 2048 UTF-8 bytes, current
+agent members, specialist capabilities, resource leases, active work, completed
+work, pending operator needs and latest current results or corrections. It uses
+the same canonical projection as `get_room_state()` and `coord state ROOM`.
+It reads current tables without replaying chat or asking a model to summarize it.
+The brief excerpt is text; status does not infer goal or priority fields from
+Markdown. Use `coord brief show ROOM` for the full brief.
+
+Active ownership comes from the current work version. Releasing a claim removes
+its owner; reassignment replaces its owner. Time and process liveness do not
+release a durable claim. Completed work appears separately with its retained
+result and last holder. A signal's `observed` or `inferred` basis remains its
+author's report, not an independent attestation. Resolved or superseded signals
+do not appear as current needs or results.
+
+Each section contains at most 50 items and 64 KiB of item JSON. Counts and
+truncation identify omitted items. Members and leases are ordered by durable
+agent ID and provider/resource respectively. Active work is ordered by work ID;
+completed work and current material results use newest update first, with
+durable IDs breaking ties. Reads add no changing generation timestamp; identical
+current facts and freshness give identical JSON and text. Current signals and operator needs retain their
+signal-ID ordering and continuation values. Per-member verified and declared
+arrays have limits of 50 entries and 16/8 KiB respectively. Work titles and
+completion results contain at most 512 UTF-8 bytes each. Excerpts preserve code
+point boundaries and report original byte counts. The complete projection is
+limited to 512 KiB. Use `coord work show` and `coord signal show` for complete
+records, and their list commands to inspect larger worksets.
+
+Authorized specialist labels require current grants. Declarations remain
+unverified. Availability requires fresh provider evidence; missing or stale
+evidence yields unknown availability. Revocation is rechecked after
+provider reads. Text and JSON output escape terminal and direction controls;
+signal markup remains text. Bare `coord status` continues to report the owned
+NATS process, independently of a room's work state.
+
 ## Inspect room capabilities and resource leases
 
 On the owning host account, use an existing room and configured agent in the
