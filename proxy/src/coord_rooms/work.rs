@@ -39,13 +39,13 @@ pub(crate) enum Actor<'a> {
     Agent(&'a str),
 }
 impl<'a> Actor<'a> {
-    fn kind(self) -> &'static str {
+    pub(super) fn kind(self) -> &'static str {
         match self {
             Self::Operator => "operator",
             Self::Agent(_) => "agent",
         }
     }
-    fn id(self) -> &'a str {
+    pub(super) fn id(self) -> &'a str {
         match self {
             Self::Operator => "operator",
             Self::Agent(id) => id,
@@ -102,7 +102,7 @@ pub(crate) struct Work {
     pub version: i64,
 }
 
-fn authorize(
+pub(super) fn authorize(
     conn: &Connection,
     room: &str,
     actor: Actor<'_>,

@@ -22,7 +22,8 @@ calling if you need to recover from a lost response:
 Repeat the exact operation ID and input after an ambiguous response. SafeYolo
 returns the original result, including its membership generation and transition
 time. Permission order and duplicates do not change grant input. Omitting
-permissions grants both `receive` and `send`. Changing the canonical input under
+permissions grants `receive`, `send` and `page_operator`. Explicit permissions
+replace that set. Changing the canonical input under
 the same ID returns a conflict. Grant and revoke have separate ID scopes.
 To request a new change after a later grant or revoke, choose a new ID.
 When you omit `--operation-id`, SafeYolo generates one and includes it in the
@@ -270,6 +271,99 @@ contain metadata; canonical work storage contains titles, references and
 results. Work input is bounded to 262144 UTF-8 bytes. Lists return at most 200
 items ordered by `work_id`; use `next_after` to continue. Concurrent changes
 can affect later pages because pagination does not share a snapshot.
+
+## Raise a material signal
+
+With the selected instance's proxy running, a room member uses the native
+`create_signal` tool. The member needs `send` and `receive` permission.
+For example, a member of room `chat` reports an observed failure:
+
+```json
+{"room_name":"chat","kind":"blocker","summary":"The acceptance command failed with EMFILE; I need help checking the child limit.","basis":"observed","refs":["opaque:retained-command-output"],"operation_id":"child-limit-symptom"}
+```
+
+The response contains `signal`, `content_hash` and `operation_id`.
+The trusted listener supplies the durable author identity. `observed` means
+the author reports an observation. `inferred` labels an inference. Neither
+basis independently proves the claim. References are opaque strings and are
+never fetched. An optional `work_id` must identify work in the same room.
+
+The four kinds are `blocker`, `decision`, `result` and `correction`.
+Only unresolved blockers and decisions with `page_operator` permission create
+operator attention. Ordinary members can still create signals without that
+permission. Results and corrections do not page. Work completion retains its
+own `short_result` and never creates a result signal.
+
+On the owning host account, newly created local rooms use default member
+grants that include `page_operator`. To remove Bob's paging permission while
+preserving signal creation in an existing room `chat`, replace his grant:
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord grant chat bob send receive
+```
+
+The change affects future pages. Existing pending signals remain pending.
+An identical current blocker or decision from the same author deduplicates
+to the existing signal, even with another operation ID. A room permits at
+most five new pages per author and 20 total pages in 60 seconds. Excess claims
+are stored with `page_status=rate_limited` and `needs_operator=false`.
+Permission-denied pages likewise retain the claim with
+`page_status=permission_denied`. Granting permission later does not page an
+older claim automatically.
+
+On that host account, watch pending signals through the running Admin API:
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" watch
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" watch --once --json
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord signal list chat --needs-operator
+```
+
+Each attachment displays a pending revision once and reports when an item
+leaves needs-operator. Ctrl-C detaches. Canonical unresolved signals survive
+watch detachment, proxy restart and NATS restart. Watch reads bounded metadata
+pages, then fetches each exact immutable revision through Admin API. Audit
+JSONL contains signal identity, kind, author, basis, revision, state and hash;
+it contains no summary or refs. `watch --jsonl FILE` and
+`coord watch --jsonl FILE` fetch the revision named by each signal event from
+the selected running instance. Historical revisions are labelled as revisions,
+not current pending claims. Terminal controls are escaped. Markup is displayed
+as text.
+
+To inspect or resolve a signal, first use `coord signal list chat` to obtain
+its ID and current revision. For example, if it returns the values assigned
+to `signal_id` and `revision` below, use those exact values on the host:
+
+```sh
+signal_id='sig-REPLACE_WITH_RETURNED_ID'
+revision=1
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord signal show chat "$signal_id" --revision "$revision"
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord signal resolve chat "$signal_id" --expected-revision "$revision" --operation-id answer-child-limit
+```
+
+Only the operator resolves signals. Resolution removes needs-operator while
+preserving the original author and every revision. A stale expectation fails.
+An author corrects their own claim by creating a `correction` with
+`supersedes={"signal_id":"the prior signal ID","expected_revision":1}`.
+The prior signal's current projection becomes `superseded`; its original
+revision remains readable through `read_signal` with `revision=1`.
+A peer or a replacement durable identity cannot supersede that author's claim.
+Current lists omit resolved and superseded claims by default. Use
+`list_signals` with `state=all`, or read an exact revision, to inspect history.
+
+Choose an operation ID before writing. An identical retry returns its original
+result while current room authority remains valid. Changed input under the same
+ID conflicts. Correction expectations and resolution expectations refer to the
+current revision, not the creation revision. Each changed signal revision,
+current projection, operation outcome and metadata audit event commits in one
+SQLite transaction. A correction updates both claims in that transaction.
+
+Summaries permit 1–1024 UTF-8 bytes. References permit at most 16 strings of
+1024 bytes each. The complete mutation permits at most 32768 bytes. Unknown
+fields and unrecognised kinds or bases are refused. Lists contain at most 100
+items and 65536 bytes of items per page, ordered by `signal_id`. Follow
+`next_after`; pages do not share a snapshot. Room state includes bounded
+`signals` and `needs_operator` pages with counts and continuation values.
 
 ## Inspect room capabilities and resource leases
 

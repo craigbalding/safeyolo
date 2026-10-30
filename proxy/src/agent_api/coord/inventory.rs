@@ -342,6 +342,8 @@ struct Inventory {
     capabilities: BTreeSet<(String, String)>,
     resources: BTreeSet<(String, String)>,
     declarations: Vec<(String, String, i64, i64)>,
+    signals: Value,
+    needs_operator: Value,
 }
 
 fn read_inventory(
@@ -394,6 +396,26 @@ fn read_inventory(
     let declarations = conn.prepare("SELECT agent_id,capability,asserted_at,valid_until FROM coord_capability_declarations WHERE room_id=?1 AND valid_until>?2 ORDER BY agent_id,capability")
         .map_err(|_| CoordError::Data)?.query_map(params![access.room_id, now_ms()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))
         .map_err(|_| CoordError::Data)?.collect::<Result<Vec<_>,_>>().map_err(|_| CoordError::Data)?;
+    let signals = crate::coord_rooms::signals::page(
+        &conn,
+        Some(&access.room_id),
+        "",
+        50,
+        Some("current"),
+        false,
+        false,
+    )
+    .map_err(|_| CoordError::Data)?;
+    let needs_operator = crate::coord_rooms::signals::page(
+        &conn,
+        Some(&access.room_id),
+        "",
+        50,
+        Some("current"),
+        true,
+        false,
+    )
+    .map_err(|_| CoordError::Data)?;
     conn.execute_batch("COMMIT")
         .map_err(|_| CoordError::Unavailable)?;
     Ok(Inventory {
@@ -402,6 +424,8 @@ fn read_inventory(
         capabilities,
         resources,
         declarations,
+        signals,
+        needs_operator,
     })
 }
 
@@ -542,7 +566,7 @@ fn project(
         let holder = observation_current.and_then(|r| r.holder_agent_id.as_deref());
         json!({"provider":provider,"resource":resource,"state":match observation_current.map(|r| &r.state) { Some(LeaseState::Held)=>"held",Some(LeaseState::Unleased)=>"unleased",None=>"unknown" },"holder_agent_id":holder,"holder_display_name":holder.and_then(|id| current.configured.get(id)).map(|a| &a.name),"observed_at":observation.map(|r| r.observed_at),"valid_until":observation.map(|r| r.valid_until),"freshness":fresh,"provenance":"provider_owned_lease"})
     }).collect::<Vec<_>>();
-    let state = json!({"room_id":current.access.room_id,"room_name":current.access.room_name,"origin_instance_id":current.access.instance_id,"generated_at":now,"brief":current.access.brief,"members":members,"resource_leases":leases});
+    let state = json!({"room_id":current.access.room_id,"room_name":current.access.room_name,"origin_instance_id":current.access.instance_id,"generated_at":now,"brief":current.access.brief,"members":members,"resource_leases":leases,"signals":current.signals,"needs_operator":current.needs_operator});
     if state.to_string().len() > MAX_STATE_BYTES {
         return Err(CoordError::Data);
     }

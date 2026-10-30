@@ -573,6 +573,11 @@ That last test should deliberately reproduce the README/issue-filing duplication
 
 ### 5. Material signals and operator attention
 
+Native agents use `create_signal`, `read_signal` and `list_signals`. The owning
+host uses `coord signal` to inspect or resolve claims and `safeyolo watch` to
+read pending operator attention. See the [operator workflow](coord-operations.md#raise-a-material-signal).
+The native `coord watch --jsonl` path also fetches exact signal revisions.
+
 Once work exists, give agents a constrained way to say something **matters** without making every chat message important.
 
 Initially support exactly:
@@ -615,6 +620,28 @@ principal with the independently revocable `page_operator` permission causes
 an unresolved blocker/decision to create an operator attention edge.
 Operator-created local collaboration rooms enable `page_operator` by default,
 with bounded rate and deduplication controls.
+
+Native default membership grants include `page_operator` alongside `send` and
+`receive`. An explicit `send receive` grant independently revokes paging while
+preserving creation. Existing pending claims remain pending. Identical current
+blocker/decision input from the same author deduplicates to its original
+signal. At most five new pages per author/room and 20 per room are permitted
+in 60 seconds. Excess claims remain canonical with `page_status=rate_limited`;
+missing permission records `page_status=permission_denied`. Neither case pages
+automatically after time or permission changes.
+
+Summaries allow 1–1024 UTF-8 bytes. Refs allow at most 16 opaque strings of
+1024 bytes each. A mutation allows at most 32768 bytes. Reads require current
+`receive` permission; mutations require `send` and `receive`. The optional work
+reference must identify work in that room. Corrections require `supersedes`
+with the author's signal ID and expected current revision. The correction,
+old signal's superseded revision, current projections, operation result and
+metadata outbox commit atomically. Operator resolution likewise checks the
+expected revision. Replay uses principal, operation type and operation ID and
+checks current authority before returning the original result. Lists are
+bounded to 100 items and 65536 bytes of items, ordered by signal ID with a
+continuation. Current room state exposes bounded signals and needs-operator
+pages; full history remains readable by signal ID and exact revision.
 
 Feed permitted blocker/decision pages into the existing `safeyolo watch` path
 rather than inventing a second notification product. JSONL records signal ID,

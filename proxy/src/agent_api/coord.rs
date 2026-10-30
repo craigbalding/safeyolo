@@ -40,6 +40,7 @@ const PROJECTION_PAGE: u64 = 200;
 const RECOVERY_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) mod inventory;
 pub(crate) mod outbox;
+pub(crate) mod signals;
 mod work;
 
 #[derive(Debug)]
@@ -2024,6 +2025,7 @@ fn route_parts(request: Request<'_>) -> Option<(String, &'static str)> {
         "state" => "state",
         "declarations" => "declarations",
         "work" => "work",
+        "signals" => "signals",
         _ => return None,
     };
     if parts.next().is_some() || room.is_empty() {
@@ -2097,8 +2099,12 @@ where
                 Some(content)
             }
         }
-    } else if route_parts(request).is_some_and(|(_, op)| matches!(op, "declarations" | "work")) {
-        let max_bytes = if route_parts(request).is_some_and(|(_, op)| op == "work") {
+    } else if route_parts(request)
+        .is_some_and(|(_, op)| matches!(op, "declarations" | "work" | "signals"))
+    {
+        let max_bytes = if route_parts(request).is_some_and(|(_, op)| op == "signals") {
+            crate::coord_rooms::signals::MAX_REQUEST_BYTES
+        } else if route_parts(request).is_some_and(|(_, op)| op == "work") {
             crate::coord_rooms::work::MAX_REQUEST_BYTES
         } else {
             MAX_DECLARATION_REQUEST_BYTES
@@ -2266,6 +2272,9 @@ async fn respond_payload(
     };
     match operation {
         "work" => work::respond(request, context.client, &room_name, &principal, payload).await,
+        "signals" => {
+            signals::respond(request, context.client, &room_name, &principal, payload).await
+        }
         "join" => {
             if request.method != "POST" {
                 return response(

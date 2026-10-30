@@ -363,6 +363,9 @@ async fn run() -> Result<(), Error> {
     if safeyolo_proxy::operator_commands::handles(&arguments) {
         return safeyolo_proxy::operator_commands::run(&config, &arguments).await;
     }
+    if arguments.first().is_some_and(|arg| arg == "watch") {
+        return safeyolo_proxy::coord_operator::watch(&config, &arguments[1..]).await;
+    }
     if arguments
         .first()
         .is_some_and(|argument| argument == "dispatch")
@@ -407,7 +410,7 @@ async fn run() -> Result<(), Error> {
             println!("{}", safeyolo_proxy::dispatch::HELP);
             println!("{}", safeyolo_proxy::mattermost::HELP);
             println!(
-                "safeyolo [--root ROOT | --config FILE] init\nsafeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nsafeyolo [--root ROOT] mount --help\nsafeyolo [--root ROOT] coord start [--binary PATH]|stop|status\nsafeyolo [--root ROOT] coord room create NAME|list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send receive]|revoke ROOM AGENT\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status and doctor inspect each runtime and control dimension without changing state."
+                "safeyolo [--root ROOT | --config FILE] init\nsafeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nsafeyolo [--root ROOT] mount --help\nsafeyolo [--root ROOT] coord start [--binary PATH]|stop|status\nsafeyolo [--root ROOT] coord room create NAME|list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send receive page_operator]|revoke ROOM AGENT\nsafeyolo [--root ROOT] coord signal --help\nsafeyolo [--root ROOT] watch [--once] [--json] [--jsonl FILE]\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status and doctor inspect each runtime and control dimension without changing state."
             );
             println!(
                 "safeyolo [--root ROOT] agent recover NAME [--timeout SECONDS]\nsafeyolo guest-command stage HOME SHARE ASSETS CONTEXT_JSON\nRecovery requires an already booted guest with idle command supervision. Staging is for a stopped guest; the caller supplies this run's context."

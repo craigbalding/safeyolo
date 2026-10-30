@@ -19,15 +19,15 @@ pub(super) fn change(
     if revoke {
         permissions.clear();
     } else if permissions.is_empty() {
-        permissions = vec!["receive".into(), "send".into()];
+        permissions = vec!["receive".into(), "send".into(), "page_operator".into()];
     }
     permissions.sort();
     permissions.dedup();
     if permissions
         .iter()
-        .any(|p| !["send", "receive"].contains(&p.as_str()))
+        .any(|p| !["send", "receive", "page_operator"].contains(&p.as_str()))
     {
-        return Err("room permission must be send or receive".into());
+        return Err("room permission must be send, receive or page_operator".into());
     }
     let operation_type = if revoke {
         "coord.revoke"
