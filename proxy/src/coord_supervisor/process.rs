@@ -278,6 +278,7 @@ struct Events {
     harness_failed: bool,
     canonical: bool,
     consumed_information: bool,
+    unresolved_send: bool,
     pi_args: BTreeMap<String, Value>,
 }
 
@@ -370,8 +371,14 @@ impl Events {
                 && let Some(args) = self.pi_args.remove(id)
                 && event["toolName"] == "send"
                 && event["isError"] != true
+                && event["result"]["details"]["envelope"].is_object()
+                && event["result"]["details"]["sequence"]
+                    .as_u64()
+                    .is_some_and(|n| n > 0)
             {
                 self.canonical |= supervisor.outbound(&event["result"]["details"], &args, false)?;
+            } else if event["toolName"] == "send" {
+                self.unresolved_send = true;
             }
         } else if !pi
             && kind == "item.completed"
@@ -380,8 +387,12 @@ impl Events {
         {
             if event["item"]["tool"] == "wait_for_coord" {
                 self.failed = true;
-            } else if let Some((result, args)) = normalized(&event["item"]) {
-                self.canonical |= supervisor.outbound(&result, &args, false)?;
+            } else if matches!(event["item"]["tool"].as_str(), Some("send" | "send_task")) {
+                if let Some((result, args)) = normalized(&event["item"]) {
+                    self.canonical |= supervisor.outbound(&result, &args, false)?;
+                } else {
+                    self.unresolved_send = true;
+                }
             }
         }
         Ok(())
@@ -490,6 +501,7 @@ pub(super) async fn invoke(
     })
     .unwrap_or_else(|| supervisor.config.harness.clone().into());
     let resuming = supervisor.state.thread_id.is_some();
+    let recovering_uncertainty = supervisor.state.phase == "uncertain";
     let mut command = tokio::process::Command::new(program);
     let args = arguments(supervisor);
     if pi {
@@ -643,14 +655,17 @@ pub(super) async fn invoke(
         .filter(|p| p.requires_terminal)
         .count()
         < terminals_before;
-    let success = events.canonical
-        || recovered_terminal
-        || ((supervisor.state.in_flight.is_empty()
-            || (events.consumed_information && !supervisor.state.has_ready_work()))
-            && events.completed
-            && !events.failed
-            && !events.harness_failed
-            && exit_success);
+    let success = recovered_terminal
+        || ((!events.unresolved_send || supervisor.state.in_flight.is_empty())
+            && (events.canonical
+                || ((supervisor.state.in_flight.is_empty()
+                    || (events.consumed_information
+                        && !recovering_uncertainty
+                        && !supervisor.state.has_ready_work()))
+                    && events.completed
+                    && !events.failed
+                    && !events.harness_failed
+                    && exit_success)));
     if supervisor.state.in_flight.is_empty() {
         supervisor.state.phase = "idle".into();
     } else if success {

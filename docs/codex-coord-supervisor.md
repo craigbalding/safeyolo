@@ -78,8 +78,10 @@ page. The turn can recover missing downstream information from canonical room
 history; that history read does not advance the attention cursor. Unconsumed
 attention remains available after the turn frees space. A completed turn that
 consumes informational objects counts as progress while remaining tasks are
-suspended on unanswered handoffs. If the turn makes no progress, the existing
-uncertainty and failure backoff apply.
+suspended on unanswered handoffs and there is no unresolved send or prior
+uncertainty. Informational consumption and empty waits do not clear uncertainty;
+canonical progress or terminal recovery can resolve it. If the turn makes no
+progress, the existing uncertainty and failure backoff apply.
 
 An actionable page launches the selected harness and creates one session.
 Later actionable pages resume that exact session while an inbound request or

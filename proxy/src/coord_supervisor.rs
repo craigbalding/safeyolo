@@ -1283,6 +1283,11 @@ impl Supervisor {
                 if let Ok(Err(error))=tokio::time::timeout(Duration::from_secs(5),self.client.call("send",&json!({"room_name":p.room_name,"body":body,"declared_content_type":"text/plain","notify":notify}))).await {eprintln!("protocol diagnostic unavailable: {error}");}
             }
             if added == 0 {
+                // An empty wait cannot resolve an earlier uncertain turn.
+                // Preserve its backoff without redispatching suspended work.
+                if self.state.phase == "uncertain" {
+                    return Ok(false);
+                }
                 self.state.consecutive_failures = 0;
                 self.state.save(&self.state_path)?;
                 return Ok(true);

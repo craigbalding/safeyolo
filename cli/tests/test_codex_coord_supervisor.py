@@ -196,12 +196,16 @@ result=subprocess.run([{str(binary)!r},"call","send"],input=json.dumps(args),cap
             source += '''print(json.dumps({"type":"tool_execution_start","toolCallId":"send-1","toolName":"send","args":args}),flush=True)
 if result.returncode==0:
     print(json.dumps({"type":"tool_execution_end","toolCallId":"send-1","toolName":"send","isError":False,"result":{"details":json.loads(result.stdout)}}),flush=True)
+else:
+    print(json.dumps({"type":"tool_execution_end","toolCallId":"send-1","toolName":"send","isError":True,"result":{"content":[{"type":"text","text":result.stderr}]}}),flush=True)
 '''
         else:
             source += '''if result.returncode==0:
     print(json.dumps({"type":"item.completed","item":{"type":"mcp_tool_call","server":"safeyolo-coord","tool":"send","status":"completed","arguments":args,"result":{"structured_content":json.loads(result.stdout)}}}),flush=True)
+else:
+    print(json.dumps({"type":"item.completed","item":{"type":"mcp_tool_call","server":"safeyolo-coord","tool":"send","status":"failed","arguments":args,"error":{"message":result.stderr}}}),flush=True)
 '''
-        source += '''else:
+        source += '''if result.returncode!=0:
     print(result.stderr,file=sys.stderr)
 '''
     source += f'print(json.dumps({{"type": {"agent_end" if pi else "turn.completed"!r}}}),flush=True)\n'
@@ -507,9 +511,14 @@ def test_model_narration_and_process_success_do_not_complete_work(binary, fixtur
 
 
 @pytest.mark.parametrize("role", ["owner", "reviewer"])
-def test_canonical_history_recovers_terminal_lost_after_send(binary, fixture, role):
+@pytest.mark.parametrize("pi", [False, True])
+def test_canonical_history_recovers_terminal_lost_after_send(binary, fixture, role, pi):
     coord, _env, config, state, harness, capture = fixture
     factory_configuration(config)
+    if pi:
+        settings = json.loads(config.read_text())
+        settings["harness"] = "pi"
+        config.write_text(json.dumps(settings))
     if role == "reviewer":
         settings = json.loads(config.read_text())
         settings["agent_name"] = "lens"
@@ -521,18 +530,19 @@ def test_canonical_history_recovers_terminal_lost_after_send(binary, fixture, ro
             "body": awaiting_review()["body"],
         }
     coord.unknown_send = True
-    harness_script(harness, binary, capture)
+    harness_script(harness, binary, capture, pi=pi)
     if role == "reviewer":
         target = awaiting_review()["correlation"]["target"]
         harness.write_text(harness.read_text()
                            .replace(f"DONE target={TARGET} attention_id={ATTENTION}", f"READY target={target} attention_id={ATTENTION}")
                            .replace('"notify":["relay"]', '"notify":["relay","forge"]'))
-    result = run(binary, fixture)
+    harness_args = ["--provider", "fixture", "--model", "fixture"] if pi else []
+    result = run(binary, fixture, *harness_args)
     assert result.returncode == 0, result.stderr
     assert "send outcome unknown" in result.stderr
     assert coord.sends == 1
     assert json.loads(state.read_text())["in_flight"] == []
-    assert run(binary, fixture).returncode == 0
+    assert run(binary, fixture, *harness_args).returncode == 0
     assert coord.sends == 1
 
 
@@ -990,6 +1000,66 @@ def test_information_does_not_mask_an_uncertain_send_for_ready_work(binary, fixt
     harness_script(harness, binary, capture, terminal=False)
     assert run(binary, fixture, confirm_fresh_identity=False).returncode != 0
     assert coord.sends == 1
+
+
+@pytest.mark.parametrize("pi", [False, True])
+@pytest.mark.parametrize("outcome", ["none", "receipt", "unknown", "missing_receipt"])
+def test_information_preserves_unresolved_send_with_suspended_parent(binary, fixture, pi, outcome):
+    coord, state, harness, capture, original = retained_tasks(binary, fixture, 1)
+    config = fixture[2]
+    settings = json.loads(config.read_text())
+    settings["harness"] = "pi" if pi else "codex"
+    config.write_text(json.dumps(settings))
+    saved = json.loads(state.read_text())
+    info_id = f"attn-{2000:032x}"
+    saved["in_flight"].append({**saved["in_flight"][0], "attention_id": info_id,
+                              "requires_terminal": False, "body": f"CONTEXT target={TARGET}"})
+    subprocess.run([str(binary), "write-state", str(state)], input=json.dumps(saved), text=True, check=True)
+    coord.page = {"edges": [], "next_cursor": saved["safe_cursor"]}
+    coord.unknown_send = outcome == "unknown"
+    harness_script(harness, binary, capture, pi=pi, terminal=outcome != "none")
+    target = "https://example.test/pull/818/commits/" + "b" * 40
+    source = harness.read_text().replace(f"DONE target={TARGET} attention_id={ATTENTION}",
+                                         f"REVIEW_READY target={target}").replace('"notify":["relay"]', '"notify":["lens"]')
+    if outcome == "missing_receipt":
+        source = source.replace("json.loads(result.stdout)", "{}")
+    harness.write_text(source)
+    harness_args = ["--provider", "fixture", "--model", "fixture"] if pi else []
+    result = run(binary, fixture, *harness_args, confirm_fresh_identity=False)
+    saved = json.loads(state.read_text())
+    uncertain = outcome in {"unknown", "missing_receipt"}
+    assert (result.returncode != 0) == uncertain, result.stderr
+    assert saved["phase"] == ("uncertain" if uncertain else "accepted")
+    assert saved["consecutive_failures"] == int(uncertain)
+    assert saved["in_flight"] == original["in_flight"]
+    assert saved["safe_cursor"] == original["safe_cursor"]
+    assert info_id in saved["recent_attention_ids"]
+    assert saved["awaiting_handoffs"][0] == original["awaiting_handoffs"][0]
+    assert len(saved["awaiting_handoffs"]) == (2 if outcome == "receipt" else 1)
+    assert coord.sends == (0 if outcome == "none" else 1)
+    if outcome == "unknown":
+        assert "send outcome unknown" in result.stderr
+    # Restart cannot repeat the uncertain send or clear its failure state just
+    # because there is no new attention. Another informational turn cannot
+    # establish its missing canonical effect either.
+    if uncertain:
+        harness_script(harness, binary, capture, pi=pi, terminal=False)
+        assert run(binary, fixture, *harness_args, confirm_fresh_identity=False).returncode != 0
+        restarted = json.loads(state.read_text())
+        assert restarted["phase"] == "uncertain"
+        assert restarted["consecutive_failures"] >= saved["consecutive_failures"]
+        assert restarted["awaiting_handoffs"] == saved["awaiting_handoffs"]
+        assert len(list(capture.glob("prompt-*"))) == 1
+        restarted["in_flight"].append({**saved["in_flight"][0], "attention_id": f"attn-{2001:032x}",
+                                      "requires_terminal": False, "body": f"CONTEXT target={TARGET}"})
+        subprocess.run([str(binary), "write-state", str(state)], input=json.dumps(restarted), text=True, check=True)
+        assert run(binary, fixture, *harness_args, confirm_fresh_identity=False).returncode != 0
+        restarted = json.loads(state.read_text())
+        assert restarted["phase"] == "uncertain"
+        assert restarted["consecutive_failures"] > saved["consecutive_failures"]
+        assert restarted["in_flight"] == original["in_flight"]
+        assert restarted["awaiting_handoffs"] == saved["awaiting_handoffs"]
+        assert coord.sends == 1
 
 
 def test_oversized_receive_retains_tasks_handoffs_and_cursor(binary, fixture):
