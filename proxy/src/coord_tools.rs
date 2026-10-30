@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 use std::{collections::HashSet, path::PathBuf, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
+mod github;
+
 #[derive(Clone)]
 pub struct Client {
     pub socket: Option<PathBuf>,
@@ -125,6 +127,27 @@ impl Client {
             .find(|tool| tool["name"] == name)
             .ok_or("unknown Coord tool")?;
         validate_arguments(args, &spec["inputSchema"])?;
+        if name == "read_github_work" {
+            return github::read(self, args).await;
+        }
+        if name == "import_github_work" {
+            let reference = crate::coord_rooms::work::github::Reference::parse(text(args, "url")?)?;
+            let mut body = reference.create();
+            if let Some(operation) = args.get("operation_id") {
+                body["operation_id"] = operation.clone();
+            }
+            return self
+                .request(
+                    Method::POST,
+                    &format!(
+                        "/api/coord/rooms/{}/work",
+                        segment(text(args, "room_name")?)
+                    ),
+                    body,
+                    Duration::from_secs(60),
+                )
+                .await;
+        }
         if name == "list_approvals" {
             return self.get("/approvals").await;
         }
@@ -426,6 +449,18 @@ pub fn tools() -> Vec<Value> {
         "Create open work in an authorized room. external_ref is opaque. Content is attributed to the authenticated agent. Supply operation_id before a write to recover an ambiguous result.",
         json!({"room_name":string,"title":string,"external_ref":string,"operation_id":string}),
         &["room_name", "title"],
+    );
+    add(
+        "import_github_work",
+        "Seed open local work from a GitHub issue or pull request HTTPS URL. Uses normal durable work creation, replay and room permissions. No network fetch or GitHub access is required. Supply operation_id before writing and retry original inputs after an ambiguous result. The initial local title identifies the reference; read_github_work reads external metadata separately.",
+        json!({"room_name":string,"url":string,"operation_id":string}),
+        &["room_name", "url"],
+    );
+    add(
+        "read_github_work",
+        "Read current local work beside clearly external GitHub title/state/URL. Uses only the caller's normal github service binding through its proxy route; the upstream personal access token is never returned. Metadata reads are GET-only, bounded to 1 MiB/15 seconds with a 512-byte inert title excerpt, without redirects or retries. Missing/revoked access or GitHub failure returns external.status=unavailable beside local work. Room authority is rechecked after fetching. No descriptions, assignees or head SHA are copied; claims, targets, attestations and completion never change. Ordinary read_work and claim operations do not fetch GitHub.",
+        json!({"room_name":string,"work_id":string}),
+        &["room_name", "work_id"],
     );
     add(
         "list_work",

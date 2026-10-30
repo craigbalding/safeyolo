@@ -339,12 +339,29 @@ nodes:
       revocation races, pre-commit process interruption and lost responses while
       NATS publication is unavailable. The three-model exact-target exercise
       remains a separate required observation.
+      For read-only GitHub references, select
+      github::native_github_read_uses_caller_service_and_preserves_local_work
+      with --ignored. Its controlled external TLS fixture uses real service
+      grants, vaulted credential injection, authenticated work and real NATS.
+      It checks local ownership, reference replay, external failures, bounded
+      reads and in-flight service/room revocation. These responses are fixtures;
+      actual GitHub transport and three-model use remain separate observations.
     source: proxy/tests/native_coord.rs
     tool:
       obtain_from: "the trusted-base native tests and locked Cargo dependencies; the native NATS owner verifies its pinned archive and executable before launch"
       sources:
         - path: proxy/tests/native_coord.rs
-          sha256: 0d3d1196018b168012ec0a8920e7eb5f807fe6d4e38f073fb64880fe3524fc1b
+          sha256: 9463b106f27b7cd888e0acf0034c58528ea8de671e197c849bb90b15d2450ffc
+        - path: proxy/tests/native_coord/github.rs
+          sha256: 08291998ed63860a67ac8d612cf48c2eb846194a10074ed97812caaf0e93a98a
+        - path: proxy/src/coord_rooms/work/github.rs
+          sha256: 5070f64392febbebd3172479ff0d396288b12bda94cbd2cf5286707674d8e7c7
+        - path: proxy/src/coord_tools/github.rs
+          sha256: da9e4c6e244c232da4aedf17d7f58484862743996c084317a37f4e602d70c164
+        - path: proxy/src/native_client.rs
+          sha256: be61cc4e0e9af09b55701026b74426baa97fdaf48b70190a0cee65bb234aa2ec
+        - path: cli/src/safeyolo/services/github.yaml
+          sha256: 38880c71fbe0a2f995a790c64d21d001baa7a5911d10f44d8e50973914f543d3
         - path: proxy/tests/native_coord/stage0.rs
           sha256: 239dc313484c1a413bae2db56632bb6d8ed437371812536ba6ed5781c0324283
         - path: proxy/src/coord_rooms.rs
@@ -364,11 +381,11 @@ nodes:
         - path: proxy/src/coord_rooms/work/attestation_tests.rs
           sha256: bf8f97d6dd3175aae8cd4a7448effa67d02fda8037e6952116f9e97c861156f7
         - path: proxy/src/coord_rooms/work.rs
-          sha256: 9cd0b35e844d842babb7d652adc87b74dbfee6be27deba7c6686815b2619f554
+          sha256: ce4164e7b4183e00c7570bad746c0cd0526ce58c2c98f4bd56d98516a9774b9d
         - path: proxy/src/coord_rooms/work/tests.rs
           sha256: 0052a9f8e099d600f3e222872740020e6ba7cf5339a385ce5be7fb388c4bcd26
         - path: proxy/src/coord_rooms/work_cli.rs
-          sha256: 6a6fad7526db571cf57ce3ecc32fe398069bcf7c0e93cb997938ba65d7a63d04
+          sha256: 6d7d40f2093b41f7692cff412198bffc78cc71b55d9a7d560da6b3a736a2d6bb
         - path: proxy/src/agent_api/coord/work.rs
           sha256: 6fa72de548de03197200c31132652f08f14d19616cb128dbbdf76eb5c726e10b
         - path: proxy/src/coord_work_schema.sql
@@ -390,11 +407,11 @@ nodes:
         - path: proxy/src/coord_operator/signals.rs
           sha256: 38e446826430b7bd05abf2816b42415c80434e10495d640ab892a514498e4f6c
         - path: proxy/src/coord_tools.rs
-          sha256: 9d101aa845a0ce6d1a930ccbeafcb3763081b076bbc4e6d0865d161ff67a1f65
+          sha256: 5004c6aef1c5d2664b5814b23be6568dd2c03b439bdeeacfc52858b22974da32
         - path: proxy/src/coord_rooms/room_status.rs
-          sha256: 6c2c01ea0d50629847ddd4a60381fd466e064bc372595aa5252fc3986d5e46fe
+          sha256: ac2d0dff5875c2beacc4cef2208d5fec6286ae5b287373a0a2e3902c5bec097b
         - path: proxy/src/coord_rooms/room_status/tests.rs
-          sha256: e8e7ee0d6f41e77eb1181bd5a653401b8de67bf6ba9382efff537e4214beb513
+          sha256: 1d5c49ba950a3220cf551cfebacc40ae0cec10bd96b816ee9b1c03c5150c4559
         - path: proxy/tests/native_coord/room_status.rs
           sha256: 2ee3d5a348cab1b9a5c9a51ec1eab799039149e20efe0913ee03d627e141f68b
       setup: "Use the pinned Rust toolchain with curl/tar and an approved NATS acquisition route or the configured verified NATS executable. Tests allocate their own roots and endpoints; never use the operator's live Coord data."

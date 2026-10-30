@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub(crate) mod attestations;
+pub(crate) mod github;
 
 // Reuse the Coord message content bound for a complete work mutation.
 pub(crate) const MAX_REQUEST_BYTES: usize = 256 * 1024;

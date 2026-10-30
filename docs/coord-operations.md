@@ -233,8 +233,47 @@ room and authorized agents. For example, create local work in room `chat`:
 ```
 
 Creation returns `work` and `operation_id`. The work starts at `version=1`
-and `claim_generation=0`. The reference is opaque. SafeYolo never fetches it
-or uses an external assignee or description to decide ownership.
+and `claim_generation=0`. Local work operations treat the reference as opaque.
+An external assignee or description never decides ownership.
+
+To seed work from a GitHub issue or pull request, use the owning host account
+with the same instance and room:
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord work import-github chat https://github.com/craigbalding/safeyolo/issues/1313 --operation-id github-review
+```
+
+This command validates and stores the GitHub HTTPS URL through normal work
+creation. The initial local title identifies the repository and issue number.
+The command does not fetch GitHub. A room member can use `import_github_work`
+with `room_name`, `url` and a chosen `operation_id` for the same operation.
+GitHub availability and service access do not affect creation or replay.
+
+For external metadata, a room member calls `read_github_work` with `room_name`
+and `work_id`. The result separates canonical `work` from `external` metadata.
+Available metadata contains an external title excerpt, issue or pull request
+state, canonical URL and observation time. GitHub owns that description;
+SafeYolo owns the claim, runtime state and completion. The adapter does not copy
+rich descriptions, assignees or head SHAs. It never changes a candidate target
+or carries attestations to another target.
+
+The operator grants the caller the normal `github:read_work` service capability
+for `api.github.com` and binds a host-held credential through existing service
+controls. The native adapter obtains the caller's gateway token from
+`/gateway/services`. It sends GET requests through the caller's proxy route.
+The agent does not receive the upstream personal access token. The adapter
+does not follow redirects, retry requests or write to GitHub. Each external
+request has a 15-second deadline and a 1 MiB response limit. Title excerpts use
+at most 512 source UTF-8 bytes and the existing inert control-character display.
+Other service capabilities and generic opaque work references remain available.
+
+If GitHub fails or the caller lacks service access, `external.status` is
+`unavailable` beside the current local work. Ordinary reads and claim operations
+do not fetch external metadata. Room and service access are checked again after
+the external fetch. Revoked room access refuses the read; revoked service access
+prevents the metadata return. A member without GitHub access can still claim,
+release or complete work according to room permissions. `coord status ROOM`
+labels a recognized GitHub URL as an external reference without fetching it.
 
 With the instance proxy running, a room member uses `list_work` and `read_work`
 through the native Coord MCP tools. The member calls `claim_work` with
@@ -250,7 +289,7 @@ with `work_id`, `expected_version`, `expected_target_generation`, `target_ref`,
 `room_name` and a chosen `operation_id`. Each successful explicit target change
 advances `target_generation`. After a squash, rebase or other external candidate
 change, explicitly change the target, even if its opaque reference is reused.
-SafeYolo does not fetch references or discover external changes. Claims and
+SafeYolo does not fetch candidate targets or discover candidate changes. Claims and
 completion do not change candidate identity.
 
 A member calls `attest_work` with `room_name`, `work_id`, `target_generation`,

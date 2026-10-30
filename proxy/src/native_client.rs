@@ -103,6 +103,7 @@ where
         .header("host", host)
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
+        .header("user-agent", "SafeYolo")
         .header("connection", "close")
         .body(Full::new(Bytes::from_owner(bytes)))?;
     let response = client.send_request(request).await?;
@@ -311,6 +312,37 @@ pub(crate) async fn https_json(
     method: Method,
     body: Value,
 ) -> Result<Value, Error> {
+    https_json_from(url, token, method, body, None, false, usize::MAX).await
+}
+
+/// A native agent adapter uses the same attributed listener as its Agent API
+/// client. It requires that proxy route and never falls back to direct egress.
+pub(crate) async fn gateway_json(
+    socket: Option<&Path>,
+    url: &str,
+    token: &str,
+) -> Result<Value, Error> {
+    https_json_from(
+        url,
+        token,
+        Method::GET,
+        Value::Null,
+        socket,
+        true,
+        1024 * 1024,
+    )
+    .await
+}
+
+async fn https_json_from(
+    url: &str,
+    token: &str,
+    method: Method,
+    body: Value,
+    proxy_socket: Option<&Path>,
+    require_proxy: bool,
+    max_response_bytes: usize,
+) -> Result<Value, Error> {
     use rustls::pki_types::ServerName;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let uri: hyper::Uri = url.parse()?;
@@ -335,34 +367,50 @@ pub(crate) async fn https_json(
         let proxy = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
             .into_iter()
             .find_map(|key| std::env::var(key).ok().filter(|v| !v.is_empty()));
-        let socket: crate::tunnels::BoxStream = if let Some(proxy) = proxy {
-            let proxy: hyper::Uri = proxy.parse()?;
-            let route = proxy.authority().ok_or("invalid HTTPS proxy route")?;
-            let (credentials, route) = route
-                .as_str()
-                .rsplit_once('@')
-                .map_or((None, route.as_str()), |(c, r)| (Some(c), r));
-            let route: hyper::http::uri::Authority = route.parse()?;
-            let proxy_host = route.host().trim_matches(['[', ']']).to_owned();
-            let encrypted = match proxy.scheme_str() {
-                Some("http") => false,
-                Some("https") => true,
-                _ => return Err("HTTPS proxy route must use HTTP or HTTPS".into()),
-            };
-            let stream = tokio::net::TcpStream::connect((
-                proxy_host.as_str(),
-                route.port_u16().unwrap_or(if encrypted { 443 } else { 80 }),
-            ))
-            .await?;
-            let mut stream: crate::tunnels::BoxStream = if encrypted {
-                Box::new(
-                    tokio_rustls::TlsConnector::from(tls.clone())
-                        .connect(ServerName::try_from(proxy_host)?, stream)
-                        .await?,
-                )
+        let proxy_stream: Option<(crate::tunnels::BoxStream, Option<Zeroizing<String>>)> =
+            if let Some(socket) = proxy_socket {
+                Some((
+                    Box::new(tokio::net::UnixStream::connect(socket).await?),
+                    None,
+                ))
+            } else if let Some(proxy) = proxy {
+                let proxy: hyper::Uri = proxy.parse()?;
+                let route = proxy.authority().ok_or("invalid HTTPS proxy route")?;
+                let (credentials, route) = route
+                    .as_str()
+                    .rsplit_once('@')
+                    .map_or((None, route.as_str()), |(c, r)| (Some(c), r));
+                let route: hyper::http::uri::Authority = route.parse()?;
+                let proxy_host = route.host().trim_matches(['[', ']']).to_owned();
+                let encrypted = match proxy.scheme_str() {
+                    Some("http") => false,
+                    Some("https") => true,
+                    _ => return Err("HTTPS proxy route must use HTTP or HTTPS".into()),
+                };
+                let stream = tokio::net::TcpStream::connect((
+                    proxy_host.as_str(),
+                    route.port_u16().unwrap_or(if encrypted { 443 } else { 80 }),
+                ))
+                .await?;
+                let stream: crate::tunnels::BoxStream = if encrypted {
+                    Box::new(
+                        tokio_rustls::TlsConnector::from(tls.clone())
+                            .connect(ServerName::try_from(proxy_host)?, stream)
+                            .await?,
+                    )
+                } else {
+                    Box::new(stream)
+                };
+                Some((
+                    stream,
+                    credentials.map(|value| Zeroizing::new(value.to_owned())),
+                ))
             } else {
-                Box::new(stream)
+                None
             };
+        let socket: crate::tunnels::BoxStream = if let Some((mut stream, credentials)) =
+            proxy_stream
+        {
             let destination = if uri.port_u16().is_some() {
                 authority.clone()
             } else {
@@ -371,7 +419,7 @@ pub(crate) async fn https_json(
             let mut request = Zeroizing::new(format!(
                 "CONNECT {destination} HTTP/1.1\r\nHost: {destination}\r\n"
             ));
-            if let Some(credentials) = credentials {
+            if let Some(credentials) = credentials.as_ref() {
                 use base64::Engine;
                 let decoded = percent_encoding::percent_decode_str(credentials).decode_utf8()?;
                 request.push_str(&format!(
@@ -406,6 +454,9 @@ pub(crate) async fn https_json(
             }
             stream
         } else {
+            if require_proxy {
+                return Err("GitHub work reads require the caller's configured proxy route".into());
+            }
             Box::new(
                 tokio::net::TcpStream::connect((host.as_str(), uri.port_u16().unwrap_or(443)))
                     .await?,
@@ -427,7 +478,10 @@ pub(crate) async fn https_json(
             }
             .into());
         }
-        let bytes = response.into_body().collect().await?.to_bytes();
+        let bytes = http_body_util::Limited::new(response.into_body(), max_response_bytes)
+            .collect()
+            .await?
+            .to_bytes();
         Ok(serde_json::from_slice(&bytes)?)
     })
     .await?
