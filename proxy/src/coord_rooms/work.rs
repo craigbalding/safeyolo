@@ -40,18 +40,20 @@ fn conflict(detail: &str) -> WorkError {
 pub(crate) enum Actor<'a> {
     Operator,
     Agent(&'a str),
+    Remote(&'a super::federation::RemoteAgent),
 }
 impl<'a> Actor<'a> {
     pub(super) fn kind(self) -> &'static str {
         match self {
             Self::Operator => "operator",
-            Self::Agent(_) => "agent",
+            Self::Agent(_) | Self::Remote(_) => "agent",
         }
     }
     pub(super) fn id(self) -> &'a str {
         match self {
             Self::Operator => "operator",
             Self::Agent(id) => id,
+            Self::Remote(remote) => &remote.principal_id,
         }
     }
 }
@@ -134,8 +136,12 @@ pub(super) fn authorize(
         })
         .optional()?
         .ok_or_else(|| WorkError(404, "room not found or not accessible".into()))?;
-    if let Actor::Agent(id) = actor {
-        member(conn, &room_id, id, write)?;
+    if let Actor::Remote(remote) = actor {
+        super::federation::authorize(conn, remote)
+            .map_err(|_| WorkError(403, "federation access changed".into()))?;
+    }
+    if !matches!(actor, Actor::Operator) {
+        member(conn, &room_id, actor.id(), write)?;
     }
     Ok(room_id)
 }
@@ -383,6 +389,7 @@ pub(crate) fn mutate(
                     }
                     _ => match actor {
                         Actor::Agent(id) => id,
+                        Actor::Remote(remote) => &remote.principal_id,
                         Actor::Operator => {
                             return Err(invalid(
                                 "operator claims use reassign with a durable agent ID",
@@ -406,7 +413,9 @@ pub(crate) fn mutate(
                 if work.state != "claimed" {
                     return Err(conflict("work has no active claim"));
                 }
-                if matches!(actor,Actor::Agent(id) if work.claim_agent_id.as_deref()!=Some(id)) {
+                if !matches!(actor, Actor::Operator)
+                    && work.claim_agent_id.as_deref() != Some(actor.id())
+                {
                     return Err(WorkError(
                         403,
                         "only the holder or operator may release or complete work".into(),
@@ -466,7 +475,7 @@ fn stage_attention(
     let recipients = conn.prepare("SELECT principal_id,granted_at FROM memberships AS m WHERE room_id=?1 AND principal_kind='agent' AND revoked_at IS NULL AND instr(',' || permissions || ',', ',receive,')>0 AND NOT EXISTS(SELECT 1 FROM memberships AS n WHERE n.room_id=m.room_id AND n.principal_kind=m.principal_kind AND n.principal_id=m.principal_id AND n.revoked_at IS NULL AND n.granted_at>m.granted_at)")?
         .query_map([&work.room_id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
     for (agent, granted_at) in recipients {
-        if matches!(actor,Actor::Agent(id) if id==agent) {
+        if !matches!(actor, Actor::Operator) && actor.id() == agent {
             continue;
         }
         let suffix = uuid::Uuid::new_v4().simple().to_string();

@@ -12,6 +12,9 @@ mod github;
 pub struct Client {
     pub socket: Option<PathBuf>,
     pub token_file: PathBuf,
+    /// Explicit home selection applies only to Coord operations. Service
+    /// access and approvals remain on the caller's own SafeYolo instance.
+    pub home: Option<String>,
 }
 
 impl Default for Client {
@@ -21,6 +24,7 @@ impl Default for Client {
             token_file: std::env::var_os("SAFEYOLO_COORD_TOKEN_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| "/app/agent_token".into()),
+            home: None,
         }
     }
 }
@@ -105,10 +109,21 @@ impl Client {
         body: Value,
         timeout: Duration,
     ) -> Result<Value, Error> {
+        let path = if let Some(home) = &self.home
+            && path.starts_with("/api/coord/")
+        {
+            format!(
+                "{path}{}home={}",
+                if path.contains('?') { "&" } else { "?" },
+                segment(home)
+            )
+        } else {
+            path.to_owned()
+        };
         helper_timeout(
             self.socket.as_deref(),
             &self.token_file,
-            path,
+            &path,
             method,
             body,
             timeout,
@@ -127,6 +142,18 @@ impl Client {
             .find(|tool| tool["name"] == name)
             .ok_or("unknown Coord tool")?;
         validate_arguments(args, &spec["inputSchema"])?;
+        let mut scoped = self.clone();
+        let mut arguments = args.clone();
+        if let Some(home) = arguments
+            .as_object_mut()
+            .and_then(|args| args.remove("home"))
+        {
+            scoped.home = Some(home.as_str().ok_or("home must be a string")?.to_owned());
+        }
+        scoped.call_scoped(name, &arguments).await
+    }
+
+    async fn call_scoped(&self, name: &str, args: &Value) -> Result<Value, Error> {
         if name == "read_github_work" {
             return github::read(self, args).await;
         }
@@ -619,6 +646,14 @@ pub fn tools() -> Vec<Value> {
         json!({"room_name":string,"since_sequence":integer,"timeout_seconds":number,"limit":integer,"include_self":{"type":"boolean"}}),
         &["room_name"],
     );
+    for tool in &mut result {
+        if !matches!(
+            tool["name"].as_str(),
+            Some("list_approvals" | "read_approval" | "resolve_approval")
+        ) {
+            tool["inputSchema"]["properties"]["home"] = json!({"type":"string","description":"Explicit configured home SafeYolo. Omit for local operations. Attention cursors belong to the selected home."});
+        }
+    }
     result
 }
 

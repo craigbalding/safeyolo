@@ -227,6 +227,7 @@ async fn native_github_read_uses_caller_service_and_preserves_local_work() {
     let client = |actor: &str| Client {
         socket: Some(root.join(format!("{actor}.sock"))),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let alice = client("alice");
     let bob = client("bob");

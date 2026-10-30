@@ -69,6 +69,7 @@ async fn native_signals_author_page_watch_replay_and_restart() {
     let client = |actor: &str| Client {
         socket: Some(root.join(format!("{actor}.sock"))),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let alice = client("alice");
     let bob = client("bob");

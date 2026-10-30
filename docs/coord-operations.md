@@ -547,6 +547,113 @@ returns the original result, while changed input under that ID conflicts.
 They use the existing atomic operation ledger and audit outbox. Raw provider
 payloads and errors are never returned in room state or those audit events.
 
+## Collaborate through a home SafeYolo
+
+Each mutable room has one home SafeYolo. Remote agents use the home for room
+state, messages, claims, briefs and attention. The peer instance keeps no copy
+of the room's mutable state. If the connection fails, remote operations can
+fail or have an unknown outcome. Reconnection reads home state; it does not
+merge claim histories.
+
+Run setup as the trusted host account on each instance. Both instances must
+have current native SafeYolo, their own initialized roots, and running proxies
+and Coord. Keep federation credentials, certificate keys and configuration
+outside agent-writable mounts. The home operator must know the peer's actual
+`data/instance_id` and the remote agent's durable `agent_id` from that peer's
+policy. A human agent name alone does not identify a recreated agent.
+
+The examples use a home root at `/srv/home-safeyolo`, a peer root at
+`/srv/peer-safeyolo`, and an existing home room `shared`. Before running them,
+replace `sy-PEER`, `sy-HOME` and `ag-BOB` with the corresponding actual IDs.
+The home needs a TLS certificate for `home.example.test`, its private key, and
+the certificate authority (CA) file that the peer will pin. Use certificate
+files issued through your existing trusted host setup. SafeYolo does not create
+an operator identity or signing hierarchy.
+
+On the peer host, create a credential in an existing private directory:
+
+```sh
+/srv/peer-safeyolo/bin/safeyolo --root /srv/peer-safeyolo coord federation credential /srv/peer-safeyolo/federation-secret
+```
+
+Transfer that file privately to `/srv/home-safeyolo/peer-secret` on the home
+host. Keep both copies readable only by their owning host accounts. On the
+home, trust that peer and grant Bob the existing room permissions:
+
+```sh
+/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation trust sy-PEER /srv/home-safeyolo/peer-secret
+/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation member shared sy-PEER ag-BOB remote-bob --operation-id grant-remote-bob
+```
+
+Trust alone grants no room access. The home maps the instance and agent IDs to
+a home-qualified principal ID. The display name `remote-bob` is the name used
+for targeted attention in this home. It must differ from local agent names and
+other remote display names. Omitting permissions grants `send`, `receive` and
+`page_operator`, as for a local membership. An explicit permission list replaces
+that set. `member` and `unmember` use the existing membership retry contract.
+
+On the home, run the relay in the foreground. In this example the operator
+has selected TCP port 7443 and placed the certificate and key at the shown
+paths. The listener exposes only authenticated Coord operations. It exposes
+neither the Admin API nor the Agent API's other endpoints.
+
+```sh
+/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation serve 0.0.0.0:7443 /srv/home-safeyolo/home-cert.pem /srv/home-safeyolo/home-key.pem
+```
+
+The first JSON line reports the actual listener address and home instance ID.
+Keep that foreground process running while peers participate. Ctrl-C closes
+the listener and its connections. Federation does not bind, export or connect
+the private loopback NATS account to a peer. The separate TLS relay calls the
+home's current room authorization and kernel operations.
+
+On the peer, install the home's public CA file at the shown path. Configure an
+explicit route named `primary` using the peer's credential:
+
+```sh
+/srv/peer-safeyolo/bin/safeyolo --root /srv/peer-safeyolo coord federation home primary sy-HOME https://home.example.test:7443 /srv/peer-safeyolo/home-ca.pem /srv/peer-safeyolo/federation-secret
+```
+
+Bob uses ordinary Coord tools through his own authenticated Agent API. Set
+`home` to `primary` for remote operations. For example, these are tool arguments:
+
+```json
+{"room_name":"shared","home":"primary"}
+```
+
+Those arguments work with `join_room`, `get_room_state`, `read_brief` and
+`list_work`. Other room tools take their ordinary additional arguments.
+`wait_for_attention`, `wait_for_coord` and `read_attention` also accept `home`.
+Keep each attention cursor with its selected home. Omitting `home` selects the
+caller's local instance. Approvals and service credentials remain local.
+`read_github_work` reads home-owned work, then uses the caller's own GitHub
+service grant. It rechecks home room access before returning external metadata.
+
+Remote envelopes carry the authenticated source `origin_instance_id`, the
+home-qualified `sender_agent_id`, and the original source `origin_agent_id`.
+Claims and attestations use the home-qualified principal. These fields come
+from the two SafeYolos, never from the agent's message body. Peer content stays
+attributed and untrusted.
+
+After an unavailable mutation, reconcile with the home. For durable mutations,
+retry only the original operation ID and canonical input. A send has no such
+retry contract; inspect retained home history before repeating an uncertain
+send. A successful local operation during a partition remains home truth.
+
+On the home, revoke one membership or all access from the peer:
+
+```sh
+/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation unmember shared sy-PEER ag-BOB --operation-id revoke-remote-bob
+/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation revoke sy-PEER
+```
+
+Peer revocation disables authentication and revokes its memberships atomically.
+Re-trusting a peer does not restore revoked room grants. Regranting a room
+exposes its retained history, as for a local membership. A request authenticated
+before a trust change cannot use the new trust epoch to mutate work or signals.
+On the peer, `coord federation unhome primary` removes the outgoing route and
+prevents delivery of responses already in flight through that route.
+
 ## Focused proof and remaining work
 
 `tests/proxy_contracts/test_native_coord_operator.py` binds the installed G5

@@ -76,6 +76,7 @@ async fn native_room_status_current_authority_restart_and_cli() {
     let client = |name: &str| Client {
         socket: Some(root.join(format!("{name}.sock"))),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let alice = client("alice");
     let bob = client("bob");

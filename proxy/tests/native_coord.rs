@@ -12,6 +12,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[path = "native_coord/attestations.rs"]
 mod attestations;
+#[path = "native_coord/federation.rs"]
+mod federation;
 #[path = "native_coord/github.rs"]
 mod github;
 #[path = "native_coord/inventory.rs"]
@@ -400,6 +402,7 @@ responses=['DONE','BLOCKED','FAILED']
     let client = |name: &str| Client {
         socket: Some(root.join(format!("{name}.sock"))),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let alice = client("alice");
     let bob = client("bob");
@@ -1042,6 +1045,7 @@ async fn repeated_host_start_recovers_coord_without_replacing_the_proxy_or_state
     let alice = Client {
         socket: Some(root.join("alice.sock")),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let bob = Client {
         socket: Some(root.join("bob.sock")),
@@ -1441,6 +1445,7 @@ async fn explicit_listener_ports_isolate_instances_and_refuse_conflicts() {
     let client = |root: &Path| Client {
         socket: Some(root.join("alice.sock")),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let a_client = client(&a);
     let b_client = client(&b);
@@ -2044,10 +2049,12 @@ async fn send_receipt_identifies_each_recipient_request() {
     let alice = Client {
         socket: Some(root.join("alice.sock")),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let bob = Client {
         socket: Some(root.join("bob.sock")),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let proxy = Proxy::start(native_config::read(&root.join("config.toml")).unwrap())
         .await
@@ -2145,10 +2152,12 @@ async fn fresh_rooms_restart_authorization_mcp_and_nats_failure() {
     let alice = Client {
         socket: Some(root.join("alice.sock")),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let bob = Client {
         socket: Some(root.join("bob.sock")),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let proxy = Proxy::start(native_config::read(&config_path).unwrap())
         .await
