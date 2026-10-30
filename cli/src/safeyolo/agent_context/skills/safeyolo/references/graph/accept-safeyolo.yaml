@@ -353,7 +353,7 @@ nodes:
         - path: proxy/tests/native_coord.rs
           sha256: 9463b106f27b7cd888e0acf0034c58528ea8de671e197c849bb90b15d2450ffc
         - path: proxy/tests/native_coord/github.rs
-          sha256: 4b0765e8a36eed12929ba92e5f9c87e5d434fdc6d6fea7cd2c01dec2a2086fe3
+          sha256: a747e3e7c09e6cc5617677c1637f59540279058535761329060a182143932537
         - path: proxy/src/coord_rooms/work/github.rs
           sha256: 5070f64392febbebd3172479ff0d396288b12bda94cbd2cf5286707674d8e7c7
         - path: proxy/src/coord_tools/github.rs

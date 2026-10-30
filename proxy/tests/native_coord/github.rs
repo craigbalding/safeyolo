@@ -362,5 +362,6 @@ async fn native_github_read_uses_caller_service_and_preserves_local_work() {
     println!(
         "GitHub fixture passed: GET-only vaulted injection, no-access participation, outage/redirect/size isolation, revocation races and restart replay; local work={work}"
     );
+    drop(_cleanup);
     fs::remove_dir_all(root).unwrap();
 }
