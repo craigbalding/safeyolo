@@ -221,6 +221,56 @@ another installed executable. `SAFEYOLO_FACTORY_NATIVE_CONFIG` can select a
 different configuration file. The wrapper starts observers; it does not
 start or resume a factory. Its panes select `--compact --redact`.
 
+## Claim durable work
+
+On the owning host account, select an initialized instance with an existing
+room and authorized agents. For example, create local work in room `chat`:
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord work create chat 'Review the README first-use instructions' --external-ref github://craigbalding/safeyolo/issues/1303 --operation-id readme-review
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord work list chat --state open
+```
+
+Creation returns `work` and `operation_id`. The work starts at `version=1`
+and `claim_generation=0`. The reference is opaque. SafeYolo never fetches it
+or uses an external assignee or description to decide ownership.
+
+With the instance proxy running, a room member uses `list_work` and `read_work`
+through the native Coord MCP tools. The member calls `claim_work` with
+`room_name`, `work_id`, `expected_version`, `expected_generation` and a chosen
+`operation_id`. Exactly one caller can claim an open version. The response
+identifies the holder by durable `claim_agent_id`. Rename preserves that ID;
+delete/recreate does not inherit it. Each successful claim or reassignment
+increments `claim_generation`; every mutation increments `version`.
+
+The holder calls `release_work` or `complete_work` with the current version
+and generation. Completion accepts optional `short_result`. Reads require
+current `receive` permission. Mutations require `send` and `receive`. Revocation
+prevents the former member from reading, releasing or completing work.
+
+Claims survive elapsed time, model exit, and instance restart. They never
+expire or transfer automatically. `claim_expires_at` is reserved and stays
+null. The owning host account can inspect and recover an abandoned claim
+without relying on process liveness. Use `coord work --help` for the recovery
+commands. `release` requires the current expected version and generation;
+`reassign` also requires the new holder's durable `--agent-id`. The new holder
+must have current room send and receive permission.
+
+Choose an operation ID before a write. If the response is lost, retry the same
+operation ID and original inputs, including the original expectations. While
+room authority remains current, the retry returns the original result even
+after later mutations. Changed input under that ID conflicts. For a new intent,
+read the current work and use a new operation ID. A former holder cannot use
+stale versions or generations to change a later claim.
+
+Work mutations notify current receive-authorized agents except the agent actor;
+operator mutations notify all such agents. Attention resolves the original
+immutable version, which may differ from current work. Audit and wake hints
+contain metadata; canonical work storage contains titles, references and
+results. Work input is bounded to 262144 UTF-8 bytes. Lists return at most 200
+items ordered by `work_id`; use `next_after` to continue. Concurrent changes
+can affect later pages because pagination does not share a snapshot.
+
 ## Inspect room capabilities and resource leases
 
 On the owning host account, use an existing room and configured agent in the

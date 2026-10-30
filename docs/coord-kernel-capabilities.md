@@ -7,7 +7,7 @@ semantics rather than UI.
 
 SQLite owns native Coord control state. JetStream owns conversation history.
 The Agent API and MCP expose room reads, messages, durable targeted attention,
-brief reads, and declarations. The stages below distinguish current contracts
+brief reads, work ownership, and declarations. The stages below distinguish current contracts
 from capabilities that still need implementation and acceptance.
 
 Implement the capabilities in this order.
@@ -509,6 +509,31 @@ claim_work
 release_work
 complete_work
 ```
+
+Native agents use `create_work`, `list_work`, `read_work`, `claim_work`,
+`release_work` and `complete_work` through MCP or the native Coord client.
+Reads require current room `receive` permission. Mutations require both
+`send` and `receive`, because they read and change canonical work. The
+owning host account uses `coord work` for creation, reads and explicit
+release, completion or reassignment. It can recover a removed or revoked
+holder without granting that holder room access.
+
+Each mutation accepts an optional `operation_id`; omitted IDs are generated
+and returned. Canonical input contains the resolved room ID and typed mutation,
+including expectations, content and any reassignment's durable agent ID.
+Replay checks current room authority, then returns the original result before
+checking the current work version. It never reapplies old ownership. All work
+content in one mutation is bounded by the existing 256 KiB Coord content bound.
+Lists use bounded pages ordered by `work_id`; pages do not share a snapshot.
+
+The current work projection, immutable version, operation result, metadata
+audit and attention outbox commit in one SQLite transaction. Work changes
+notify current receive-authorized members except the agent actor. Operator
+changes notify every current receive-authorized agent. A `work_changed` edge
+resolves its original immutable work version, with current membership-generation
+authorization. Work titles, references and results do not enter audit or wake
+hints. Completion retains the final holder and claim timestamp in state `done`;
+release clears the holder and timestamp and returns the item to `open`.
 
 `external_ref` is deliberately opaque:
 

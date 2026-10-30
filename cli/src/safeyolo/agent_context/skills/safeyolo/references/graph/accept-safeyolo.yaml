@@ -313,22 +313,40 @@ nodes:
       Its controlled provider snapshots prove the trusted observation boundary,
       not a deployed external lease. Unsupported deployed observations remain
       unknown. The actual three-agent comparison is a separate required observation.
+      For durable work ownership, select
+      work::native_work_claims_replay_identity_revocation_and_crash_recovery
+      with --ignored. Set SAFEYOLO_WORK_RETAIN_SECONDS=1800 for the actual
+      30-minute ownership boundary. The test overlaps the wait with its other
+      checks and reports the observed elapsed time. A shorter run cannot prove
+      that duration. The three-model work exercise remains separate.
     source: proxy/tests/native_coord.rs
     tool:
       obtain_from: "the trusted-base native tests and locked Cargo dependencies; the native NATS owner verifies its pinned archive and executable before launch"
       sources:
         - path: proxy/tests/native_coord.rs
-          sha256: 142e1cfc14a5858dc92f115954b6a4fe51b031aea4621967dc75992b7102cab0
+          sha256: b9bfb44fd125eb8a50b8f0c286995f78f735e447e11ef77a722a3f402c14c543
         - path: proxy/tests/native_coord/stage0.rs
           sha256: 239dc313484c1a413bae2db56632bb6d8ed437371812536ba6ed5781c0324283
         - path: proxy/src/coord_rooms.rs
-          sha256: 7b21dd57e4dde4f57e50a63738a5541ec0ca9c51f62c1338f0d3952e1430107a
+          sha256: 9314615be1142c6115b2d3baa2d304eb1f08fadf781df881083d094a0591fa35
         - path: proxy/tests/native_coord/inventory.rs
           sha256: c2faf29eb73ac726dcc0387209252240fc51a2c9a69b1a749546978c62585fb7
         - path: proxy/src/agent_api/coord/inventory.rs
           sha256: 78e3cd9a0f4e1d6eba6ba1fe897633d330e79618e772964ec9349afa44e7253a
         - path: proxy/src/coord_rooms/inventory.rs
           sha256: 043c13f0398038972f8cafdab35015fd0730953290b6dbc3760dd08db0804683
+        - path: proxy/tests/native_coord/work.rs
+          sha256: 26c1def8ea52e3fd91dc35ccb4651da38331dd43104bf7112731c2211f8c5194
+        - path: proxy/src/coord_rooms/work.rs
+          sha256: bd981547dac80b82618e0f5ce15ccef9aac89ca4e520efd316c2cef8bad488ad
+        - path: proxy/src/coord_rooms/work/tests.rs
+          sha256: 8790b21786a63d898f028a0bd7076ab4522f9de054cec0824ff7ebe0422b109a
+        - path: proxy/src/coord_rooms/work_cli.rs
+          sha256: 415d3542502569f1a582fa9c8a64fad1407665e57eb3ae9cd8a488ca387e9cac
+        - path: proxy/src/agent_api/coord/work.rs
+          sha256: b73fec7d93a969ce8efdbc3e57bdbeeb43ba06a085c94c14113a464bcda4db65
+        - path: proxy/src/coord_work_schema.sql
+          sha256: b8b8e736cc80c6e2da7bcd9bafaf084944ab2cd626e3401a1e3f038faf4674cb
       setup: "Use the pinned Rust toolchain with curl/tar and an approved NATS acquisition route or the configured verified NATS executable. Tests allocate their own roots and endpoints; never use the operator's live Coord data."
       verify: "sha256sum proxy/tests/native_coord.rs proxy/tests/native_coord/stage0.rs proxy/tests/native_coord/inventory.rs proxy/src/coord_rooms.rs proxy/src/agent_api/coord/inventory.rs proxy/src/coord_rooms/inventory.rs && cargo --version"
       run: "CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test native_coord"

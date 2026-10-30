@@ -40,6 +40,7 @@ const PROJECTION_PAGE: u64 = 200;
 const RECOVERY_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) mod inventory;
 pub(crate) mod outbox;
+mod work;
 
 #[derive(Debug)]
 enum CoordError {
@@ -767,6 +768,24 @@ impl CoordClient {
         })
         .await
         .map_err(|_| CoordError::Unavailable)??;
+        if edge.kind == "work_changed" {
+            let db = self.owner.data_dir.join("v0.db");
+            let edge_for_read = edge.clone();
+            let object = tokio::task::spawn_blocking(move || {
+                let conn = open_db(&db, false)?;
+                crate::coord_rooms::work::revision(
+                    &conn,
+                    &edge_for_read.room_id,
+                    &edge_for_read.object_id,
+                    edge_for_read.revision_or_sequence as i64,
+                )
+                .map_err(|_| CoordError::Data)
+            })
+            .await
+            .map_err(|_| CoordError::Unavailable)??;
+            self.verify_attention_access(principal, &edge).await?;
+            return Ok(json!({"edge":edge.public_json(),"object":object}));
+        }
         if edge.kind == "brief_changed" {
             let expected_object_id = format!("brief-{}", edge.room_id.trim_start_matches("rm-"));
             if edge.object_id != expected_object_id {
@@ -2004,6 +2023,7 @@ fn route_parts(request: Request<'_>) -> Option<(String, &'static str)> {
         "brief" => "brief",
         "state" => "state",
         "declarations" => "declarations",
+        "work" => "work",
         _ => return None,
     };
     if parts.next().is_some() || room.is_empty() {
@@ -2077,14 +2097,19 @@ where
                 Some(content)
             }
         }
-    } else if route_parts(request).is_some_and(|(_, op)| op == "declarations") {
-        match read_capped_content(body, MAX_DECLARATION_REQUEST_BYTES).await? {
+    } else if route_parts(request).is_some_and(|(_, op)| matches!(op, "declarations" | "work")) {
+        let max_bytes = if route_parts(request).is_some_and(|(_, op)| op == "work") {
+            crate::coord_rooms::work::MAX_REQUEST_BYTES
+        } else {
+            MAX_DECLARATION_REQUEST_BYTES
+        };
+        match read_capped_content(body, max_bytes).await? {
             CappedContent::TooLarge => {
                 return Ok(response(
                     413,
                     json!({
                         "error":"request body too large",
-                        "max_bytes":MAX_DECLARATION_REQUEST_BYTES,
+                        "max_bytes":max_bytes,
                     }),
                 ));
             }
@@ -2240,6 +2265,7 @@ async fn respond_payload(
         Err(error) => return error_response(error),
     };
     match operation {
+        "work" => work::respond(request, context.client, &room_name, &principal, payload).await,
         "join" => {
             if request.method != "POST" {
                 return response(
