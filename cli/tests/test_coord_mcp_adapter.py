@@ -86,6 +86,7 @@ def test_discovery_and_rpc_errors(adapter):
         "create_work", "list_work", "read_work", "claim_work", "release_work", "complete_work",
         "create_signal", "read_signal", "list_signals",
         "change_work_target", "attest_work", "list_work_attestations",
+        "import_github_work", "read_github_work",
     }
     for name, required in {
         "list_approvals": [],
@@ -119,6 +120,36 @@ def test_native_exact_work_target_requests(adapter):
     request = urlsplit(calls[-1][1])
     assert request.path == "/api/coord/rooms/backlog/work"
     assert parse_qs(request.query) == {"work_id": ["work-example"], "attestations": ["true"], "limit": ["2"], "after": ["att-previous"]}
+
+
+def test_github_import_uses_local_create_replay_without_remote_access(adapter):
+    call, _, calls, _, _ = adapter
+    call("import_github_work", {"room_name": "backlog", "url": "https://github.com/owner/repo/issues/42#comment", "operation_id": "seed42"})
+    assert len(calls) == 1
+    assert calls[0][2] == {"action": "create", "title": "GitHub owner/repo#42", "external_ref": "https://github.com/owner/repo/issues/42", "operation_id": "seed42"}
+    call("import_github_work", {"room_name": "backlog", "url": "https://evil.test/o/r/issues/42"})
+    assert len(calls) == 1
+
+
+def test_github_read_without_service_returns_local_work_and_no_secret(adapter):
+    call, _, calls, replies, _ = adapter
+    work = {"work_id": "work-42", "external_ref": "https://github.com/owner/repo/pull/42", "state": "claimed", "claim_agent_id": "alice", "version": 3, "target_generation": 2}
+    replies["/api/coord/rooms/backlog/work"] = (200, work)
+    replies["/gateway/services"] = (200, {"authorized": {"other": {"token": "sgw_PRIVATE"}}})
+    result = call("read_github_work", {"room_name": "backlog", "work_id": "work-42"})
+    assert result["structuredContent"]["work"] == work
+    assert result["structuredContent"]["external"]["status"] == "unavailable"
+    assert "PRIVATE" not in json.dumps(result)
+    assert all(method == "GET" for method, *_ in calls)
+    assert [urlsplit(path).path for _, path, *_ in calls] == ["/api/coord/rooms/backlog/work", "/gateway/services", "/api/coord/rooms/backlog/work"]
+
+
+def test_github_read_requires_current_room_access_even_when_service_is_unavailable(adapter):
+    call, _, calls, replies, _ = adapter
+    replies["/api/coord/rooms/backlog/work"] = (403, {"error": "room revoked"})
+    result = call("read_github_work", {"room_name": "backlog", "work_id": "work-42"})
+    assert result["isError"] is True
+    assert len(calls) == 1
 
 
 def test_native_send_defaults_and_exact_task_producer(adapter):

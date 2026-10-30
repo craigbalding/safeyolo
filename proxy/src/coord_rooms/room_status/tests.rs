@@ -19,6 +19,14 @@ fn excerpts_keep_utf8_boundaries_and_full_record_identity() {
     assert_eq!(work["title_truncated"], true);
     assert_eq!(work["short_result_truncated"], true);
     assert_eq!(work["version"], 4);
+    let github = work_summary(
+        json!({"title":"local","external_ref":"https://github.com/o/r/issues/42#comment"}),
+    );
+    assert_eq!(
+        github["github_reference"],
+        json!({"source":"github","url":"https://github.com/o/r/issues/42"})
+    );
+    assert!(github.get("external_ref").is_none());
 }
 
 #[test]

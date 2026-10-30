@@ -44,7 +44,14 @@ pub(crate) fn bounded_items(items: Vec<Value>, total: usize, budget: usize) -> V
 fn work_summary(mut work: Value) -> Value {
     // Descriptions and refs can fill a complete mutation. Status needs the
     // current ownership/version and a bounded title or completion result.
-    work.as_object_mut().unwrap().remove("external_ref");
+    let external_ref = work.as_object_mut().unwrap().remove("external_ref");
+    if let Some(reference) = external_ref
+        .as_ref()
+        .and_then(Value::as_str)
+        .and_then(|value| crate::coord_rooms::work::github::Reference::parse(value).ok())
+    {
+        work["github_reference"] = json!({"source":"github","url":reference.url});
+    }
     for field in ["title", "short_result"] {
         if let Some(text) = work[field].as_str() {
             let excerpt = prefix(text, WORK_TEXT_BYTES).to_owned();
@@ -108,7 +115,7 @@ pub(crate) fn work_page(conn: &Connection, room: &str, completed: bool) -> Resul
     Ok(bounded_items(items, total as usize, SECTION_BYTES))
 }
 
-pub(crate) const HELP: &str = "safeyolo [--root ROOT] coord status ROOM [--json]\n\nRead the canonical room state through Admin API. Show the brief revision and a UTF-8 prefix of at most 2048 bytes, current agent members, advertised authorized capabilities, expiring declarations, provider-owned leases, active work, recent completions, operator needs and latest current results/corrections. No chat replay or model is used. Each section shows at most 50 items and 64 KiB of item JSON, with counts and truncation. Per-member verified and declared capability arrays also have byte limits. Work titles and completion results show at most 512 UTF-8 bytes each. Each work item shows its current target generation and acceptance counts, with up to eight attestation excerpts in 4096 item JSON bytes, current first. Attestation summaries show at most 128 UTF-8 bytes; evidence refs are counted and remain untrusted external content. Counts include omitted current and stale attestations. No majority or automatic completion is inferred. Use coord brief show, coord work show, coord work attestations and coord signal show for full canonical records. Availability without fresh provider evidence is unknown. Claims remain owned until an explicit transition. Bare coord status reports the owned NATS process.";
+pub(crate) const HELP: &str = "safeyolo [--root ROOT] coord status ROOM [--json]\n\nRead the canonical room state through Admin API. Show the brief revision and a UTF-8 prefix of at most 2048 bytes, current agent members, advertised authorized capabilities, expiring declarations, provider-owned leases, active work, recent completions, operator needs and latest current results/corrections. No chat replay or model is used. Each section shows at most 50 items and 64 KiB of item JSON, with counts and truncation. Per-member verified and declared capability arrays also have byte limits. Work titles and completion results show at most 512 UTF-8 bytes each. Recognized GitHub URLs are labelled external references without a network fetch; read_github_work reads external metadata through the caller's service access. Each work item shows its current target generation and acceptance counts, with up to eight attestation excerpts in 4096 item JSON bytes, current first. Attestation summaries show at most 128 UTF-8 bytes; evidence refs are counted and remain untrusted external content. Counts include omitted current and stale attestations. No majority or automatic completion is inferred. Use coord brief show, coord work show, coord work attestations and coord signal show for full canonical records. Availability without fresh provider evidence is unknown. Claims remain owned until an explicit transition. Bare coord status reports the owned NATS process.";
 
 fn text(value: &Value) -> &str {
     value.as_str().unwrap_or("none")
@@ -171,6 +178,13 @@ fn work_rows(output: &mut String, title: &str, page: &Value) {
                 ""
             }
         );
+        if work["github_reference"].is_object() {
+            let _ = writeln!(
+                output,
+                "    GitHub reference (external): {}; metadata requires read_github_work and the caller's service access",
+                quoted(&work["github_reference"]["url"])
+            );
+        }
         let evidence = &work["attestations"];
         let acceptance = &evidence["current_acceptance"];
         let _ = writeln!(
