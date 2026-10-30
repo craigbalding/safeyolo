@@ -76,7 +76,7 @@ private keys, and raw credential material from ordinary output.
 | Circuit cache and counters (durable when configured; worker/process lifetime) | `cli/src/safeyolo/mitm_addons/circuit_breaker.py` and its snapshot worker write/read JSON state; operator circuit APIs consume it. | `proxy/src/circuits.rs` and its process-owned snapshot worker write/read the existing JSON state; `runtime.rs` and circuit APIs use the published domains. | Preserve host keys, counters, streak/open timing, settings and valid state. Malformed state is rejected without partial publication; absent/empty path is explicit no-write. | `proxy/tests/circuit_persistence.rs`, `circuit_persistence_close.rs`, `tests/proxy_contracts/test_circuit_reload.py`, `test_operator_circuits.py`. The opt-in `test_selected_python_native_python_circuit_state_transition` is the owned Python→Rust→Python→Rust fixture: it records state hashes, proves Python open-state blocking, and proves final Rust reads Python's change, blocks first, then recovers. |
 | Flow evidence (durable SQLite) | `cli/src/safeyolo/storage/flow_store.py` and `core/flow_writer.py` write; source flow APIs/readers and doctor tooling read. | `proxy/src/flow_store.rs` and `http/flow_recording.rs` write/read the retained version-2 SQLite schema, including version-1 migration. | Preserve owners/tags, request IDs, body presence/truncation, compression and transaction rollback; failed tags must not commit a row later. | `proxy/tests/flow_store*.rs`, `proxy/src/flow_store/details/tests.rs`, `tests/proxy_contracts/test_http_test_context.py`. #635 owner supplies final integrated evidence writer/readers. |
 | Audit, trace and metrics evidence (append-only files or process state) | `cli/src/safeyolo/core/{audit_writer,trace,flow_writer}.py` and readers/stream APIs write/read JSONL, trace and SQLite evidence. | `proxy/src/audit.rs`, trace/metrics modules and shared runtime writers write/read the retained schemas. | Use the current audit envelope with native writers/readers; no earlier-format audit compatibility. Preserve owner, correlation, decision, scope and failure attribution; no raw credentials; report write failure separately from application success. | `proxy/src/audit_runtime_tests.rs`, audit/trace/API tests, `docs/proxy-parity.md` evidence sections. Audit/evidence owners must supply final integrated readers. |
-| Coordination/collaboration state (external service boundary) | `cli/src/safeyolo/coord/{store,nats_client,api}.py` writes room membership, messages, attention, declarations, and resource advertisements to NATS/SQLite. `core/plumb_service.py` owns collaboration SQLite. A provider writes its own optional public lease snapshot outside the proxy. | `proxy/src/agent_api/coord.rs` reads retained advertisements and reads/writes declarations, messages, and attention through NATS/SQLite, without a replacement store. Native room state reports an advertised provider lease as `unknown`; it neither owns nor persists the provider's live lease. | Preserve trusted sender/room/attention ownership and ambiguity/error outcomes. Provider observations and active waits are not proxy-persisted state. The provider snapshot remains under its owner across a proxy switch. | `cli/tests/test_coord*`, `tests/test_plumb*`, issues #628/#629, `proxy/tests/coord_state_cross_version.rs`, and the installed transition below. |
+| Coordination/collaboration state (external service boundary) | `cli/src/safeyolo/coord/{store,nats_client,api}.py` writes room membership, messages, attention, declarations, and resource advertisements to NATS/SQLite. `core/plumb_service.py` owns collaboration SQLite. A provider writes its own optional public lease snapshot outside the proxy. | `proxy/src/agent_api/coord.rs` reads retained advertisements and reads/writes declarations, messages, and attention through NATS/SQLite, without a replacement store. Native room state reports an advertised provider lease as `unknown`; it neither owns nor persists the provider's live lease. | Preserve trusted sender/room/attention ownership and ambiguity/error outcomes. Provider observations and active waits are not proxy-persisted state. The provider snapshot remains under its owner across a proxy switch. | `cli/tests/test_coord*`, `tests/test_plumb*`, issues #628/#629, `proxy/tests/native_coord/inventory.rs`, `proxy/tests/coord_wait_shutdown.rs`, and the historical installed transition below. |
 | Readiness, runtime identity, listener registry and task registry (ephemeral) | Source startup/lifecycle writes readiness/PID markers and keeps listener/task state in process memory; restart intentionally creates a new process state. | `proxy/src/lib.rs` and `runtime.rs` own readiness/listeners and the process-local task registry; native admin/API writers do not persist these records. | Verify cleanup, identity attribution and restart reset. Do not treat an in-memory snapshot as durable rollback evidence. | `tests/proxy_contracts/test_readiness.py`, `test_operator_task_api.py`, `test_agent_api_status.py`; #637 owns installed lifecycle and #627 owns retained operator controls. |
 
 ## Historical installed Linux transition and package return
@@ -225,18 +225,18 @@ file's SHA-256 and mode, compares the root certificate trust identity, and
 proves a missing native root is rejected without creating a replacement. Leaf
 bytes remain generated per consumer and are not treated as durable state.
 
-The coordination row has a separate bounded transition in
-`proxy/tests/coord_state_cross_version.rs`. The pinned Python comparator
-creates one room membership and two capability declarations in the retained
-v0 store; native reads them, replaces them through its authenticated
-declaration route, and reads its own write. After the native consumer closes,
-Python reads that generation and writes the next declaration set, and a fresh
-native consumer reloads it. The evidence records the comparator and NATS
-binary identities plus a raw v0 database hash for each writer generation.
-That bounded fixture proves the declaration slice at the existing SQLite/NATS
-boundary. The installed transition above adds the selected room, attention,
-message, collaboration, and provider-ownership observations. Neither test
-claims that active waits or provider-owned leases are proxy-persisted state.
+The coordination comparator and its Python/native rollback handshake are retired.
+Current native declaration coverage lives in
+`proxy/tests/native_coord/inventory.rs`. Its named restart test checks complete
+declaration-set replacement and retained declarations through proxy and NATS
+restarts, using authenticated clients and current native bootstrap and grants.
+`proxy/tests/coord_fixture.py` uses the native CLI to prepare the owned NATS
+runtime and shutdown room for both `coord_wait_shutdown` tests. Those tests check
+subscription and consumer reclamation, exact audit deltas, listener cleanup and
+absence of fabricated replies for initial and restarted owners. These current
+tests do not establish compatibility with earlier stores. The historical installed
+transition above retains its original scope; active waits and provider-owned
+leases are not proxy-persisted state.
 
 The grants/bindings row has a separate opt-in transition.
 `selected_python_native_python_native_grants_bindings_transition` uses the old

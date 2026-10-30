@@ -8,8 +8,8 @@
 //! the NATS subscription before returning.
 //!
 //! The test needs a real SafeYolo NATS fixture.  The command used to produce
-//! the retained evidence starts the pinned fixture through the existing
-//! Python `nats_runtime`; the test does not create a second coordination
+//! the retained evidence starts the pinned fixture through the current
+//! native CLI; the test does not create a second coordination
 //! database or substitute a fake provider.
 
 use rusqlite::Connection;

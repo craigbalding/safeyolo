@@ -424,7 +424,7 @@ def test_full_matrix_is_overnight_or_explicit_and_uses_the_exact_head() -> None:
     assert steps["Test the Rust proxy"]["timeout-minutes"] == (
         "${{ matrix.os == 'macos-latest' && 20 || 15 }}"
     )
-    assert steps["Stop the Python-owned Coord fixture"]["if"] == "always()"
+    assert steps["Stop the native Coord fixture"]["if"] == "always()"
     peer = steps["Provide the macOS owned HTTP peer addresses"]
     assert peer["if"] == "matrix.os == 'macos-latest'"
     assert "ifconfig lo0 alias 127.0.0.2" in peer["run"]
@@ -462,25 +462,31 @@ def test_full_matrix_uses_only_the_native_proxy() -> None:
 def test_overnight_compilation_prepares_shared_outputs_then_keeps_all_release_targets():
     job = rust_workflow()["jobs"]["contracts"]
     steps = {step.get("name"): step for step in job["steps"]}
-    shared = steps["Compile shared Rust contract targets"]
+    library = steps["Compile Rust library contract target"]
+    binaries = steps["Compile Rust binary contract targets"]
     complete = steps["Compile Rust contract executables"]
-    assert shared["run"] == (
+    assert library["run"] == (
         "../scripts/cargo_with_space.sh test --release --locked "
-        "--lib --bins --test version --no-run --timings --verbose"
+        "--lib --no-run --timings --verbose"
+    )
+    assert binaries["run"] == (
+        "../scripts/cargo_with_space.sh test --release --locked "
+        "--bins --test version --no-run --timings --verbose"
     )
     assert complete["run"] == (
         "../scripts/cargo_with_space.sh test --release --locked --no-run --timings --verbose"
     )
-    for step in (shared, complete):
+    for step in (library, binaries, complete):
         assert step["working-directory"] == "proxy"
         assert step["timeout-minutes"] == "${{ matrix.os == 'macos-latest' && 20 || 25 }}"
         assert step["env"] == {"SAFEYOLO_PYTHON": "${{ github.workspace }}/.venv/bin/python"}
         assert "if" not in step
         assert not step.get("continue-on-error")
     ordered = [steps[name] for name in (
-        "Compile production native executables", "Compile shared Rust contract targets",
+        "Compile production native executables", "Compile Rust library contract target",
+        "Compile Rust binary contract targets",
         "Compile Rust contract executables", "Retain Rust compilation timings",
-        "Start the Python-owned Coord fixture", "Test the Rust proxy",
+        "Start the native Coord fixture", "Test the Rust proxy",
     )]
     assert [job["steps"].index(step) for step in ordered] == sorted(
         job["steps"].index(step) for step in ordered
@@ -491,6 +497,7 @@ def test_overnight_compilation_prepares_shared_outputs_then_keeps_all_release_ta
     assert timings["with"]["if-no-files-found"] == "ignore"
     execution = steps["Test the Rust proxy"]["run"]
     assert "../scripts/cargo_with_space.sh test --release --locked\n" in execution
+    assert "inventory::native_inventory_uses_current_grants_and_fixture_provider_evidence_across_restart -- --exact --ignored" in execution
     assert "../scripts/cargo_with_space.sh build --release --locked --bins" in execution
 
 
@@ -503,7 +510,7 @@ def test_overnight_harness_callers_receive_prepared_native_inputs(tmp_path, maco
     assert consumer["shell"] == "bash"
     assert "if" not in consumer
     for producer in ("Compile production native executables", "Restore Linux guest executable permissions",
-                     "Start the Python-owned Coord fixture", "Prepare macOS VM package inputs"):
+                     "Start the native Coord fixture", "Prepare macOS VM package inputs"):
         assert job["steps"].index(steps[producer]) < job["steps"].index(consumer)
 
     commands, scripts = tmp_path / "commands", tmp_path / "scripts"

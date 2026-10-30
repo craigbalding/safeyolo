@@ -1,43 +1,40 @@
-"""Provision the Python-owned Coord fixture for Rust integration tests.
+"""Provision current native Coord state for the Rust shutdown tests.
 
-The fixture uses the same pinned NATS runtime and SQLite store as the Stage-0
-Coord acceptance lane. It remains alive until its caller requests teardown so
-the ordinary Rust suite can exercise both cross-version state and wait cleanup.
+The native CLI owns bootstrap, the pinned NATS runtime, room creation, grants
+and verified shutdown. The fixture stays alive until its caller requests teardown.
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
 import hashlib
 import json
 import os
-import sys
+import sqlite3
+import subprocess
 import time
 from pathlib import Path
-from typing import Any
 
-ROLLBACK_ROOM = "coord-rollback-room"
-ROLLBACK_AGENT = "ag-11111111111111111111111111111111"
 SHUTDOWN_ROOM = "coord-shutdown-room"
 SHUTDOWN_AGENT = "ag-alice"
-INITIAL_CAPABILITIES = ["python:initial", "python:shared"]
-FINAL_CAPABILITIES = ["python:final", "python:shared"]
-NATIVE_CAPABILITIES = ["rust:native", "rust:shared"]
 FIXTURE_STOP_TIMEOUT_S = 15.0
 
 
 def fixture_root() -> Path:
-    """Return the isolated Coord directory required by the pinned runtime."""
-    configured_root = os.environ.get("SAFEYOLO_COORD_DATA_DIR")
+    """Require an isolated native instance root and dynamic test endpoints."""
+    configured_root = os.environ.get("SAFEYOLO_COORD_FIXTURE_ROOT")
     if not configured_root:
-        raise RuntimeError("SAFEYOLO_COORD_DATA_DIR must name an isolated fixture directory")
+        raise RuntimeError("SAFEYOLO_COORD_FIXTURE_ROOT must name an isolated fixture directory")
     root = Path(configured_root)
     if not root.is_absolute():
-        raise RuntimeError("SAFEYOLO_COORD_DATA_DIR must be an absolute path")
+        raise RuntimeError("SAFEYOLO_COORD_FIXTURE_ROOT must be an absolute path")
     if not os.environ.get("SAFEYOLO_NATS_TEST_INSTANCE"):
         raise RuntimeError("SAFEYOLO_NATS_TEST_INSTANCE must name the test-owned NATS server")
-    return root.resolve(strict=False)
+    root = root.resolve(strict=False)
+    operator_root = (Path.home() / ".safeyolo").resolve(strict=False)
+    if root == operator_root or operator_root in root.parents:
+        raise RuntimeError("Coord tests cannot use state under the operator's ~/.safeyolo")
+    return root
 
 
 def fixture_path(root: Path, name: str) -> Path:
@@ -48,183 +45,97 @@ def fixture_path(root: Path, name: str) -> Path:
     return path
 
 
-def coord_modules() -> tuple[Any, Any, Any]:
-    """Load Coord from this checkout after selecting the isolated environment."""
-    repository_root = Path(__file__).resolve().parents[2]
-    # The fixture is a standalone workflow helper, so import the candidate's
-    # source tree only after the caller has selected its test-owned state path.
-    sys.path.insert(0, str(repository_root / "tests" / "reference"))
-    from safeyolo.coord import api, nats_client, nats_runtime
-
-    return api, nats_client, nats_runtime
-
-
-def sha256(path: Path) -> str:
-    """Return the content identity recorded in the synthetic fixture manifest."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def write_json(path: Path, value: dict[str, Any]) -> None:
-    path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
+def native(root: Path, *arguments: str) -> str:
+    """Run the maintained CLI and retain useful diagnostics on failure."""
+    default = Path(__file__).resolve().parents[1] / "target/release/safeyolo"
+    binary = os.environ.get("SAFEYOLO_NATIVE_CLI", str(default))
+    result = subprocess.run(
+        [binary, "--root", str(root), *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    if result.returncode:
+        raise RuntimeError(f"native {' '.join(arguments)} exited {result.returncode}:\n{result.stdout}\n{result.stderr}")
+    return result.stdout
 
 
-async def create_rooms(api: Any) -> tuple[str, str]:
-    """Create the retained declaration and shutdown rooms on one NATS loop."""
-    rollback_room_id = await api.create_room(ROLLBACK_ROOM)
-    shutdown_room_id = await api.create_room(SHUTDOWN_ROOM)
-    return rollback_room_id, shutdown_room_id
+def drain_setup_audits(root: Path) -> None:
+    """Deliver native membership audits before the two shutdown owners start."""
+    default = Path(__file__).resolve().parents[1] / "target/release/safeyolo-proxy"
+    binary = os.environ.get("SAFEYOLO_RUST_PROXY", str(default))
+    log_path = root / "setup-proxy.log"
+    with log_path.open("w", encoding="utf-8") as log:
+        proxy = subprocess.Popen([binary, "--config", str(root / "config.toml")], stdout=log, stderr=log)
+        try:
+            deadline = time.monotonic() + 10
+            with sqlite3.connect(root / "data/coord/v0.db") as connection:
+                while connection.execute(
+                    "SELECT COUNT(*) FROM coord_outbox WHERE destination='audit-jsonl' AND delivered_at IS NULL"
+                ).fetchone()[0]:
+                    if proxy.poll() is not None or time.monotonic() >= deadline:
+                        raise RuntimeError(f"setup audit delivery failed; inspect {log_path}")
+                    time.sleep(0.05)
+        finally:
+            if proxy.poll() is None:
+                proxy.terminate()
+            try:
+                status = proxy.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                # This is our Popen child, not a PID recovered from disk.
+                proxy.kill()
+                proxy.wait(timeout=5)
+                raise
+        if status:
+            raise RuntimeError(f"setup proxy exited {status}; inspect {log_path}")
 
 
 def prepare_fixture(root: Path, ready_path: Path) -> None:
-    """Start pinned NATS and write the durable inputs consumed by Rust tests."""
-    api, nats_client, nats_runtime = coord_modules()
-    # nats_root validates the instance token and rejects an operator-home path
-    # before the fixture can inspect or create any selected state.
-    nats_runtime.nats_root()
+    """Create the current native store and one receive-only shutdown room."""
     if root.exists() and any(root.iterdir()):
         raise RuntimeError(f"fixture directory must be empty before setup: {root}")
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
-
+    coord = root / "data/coord"
     try:
-        selected_binary = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
-        if selected_binary:
-            # Reuse the pinned test input; start_server still verifies its
-            # checksum before execution. All mutable state stays under root.
-            binary_path = nats_runtime.nats_binary_path()
-            binary_path.parent.mkdir(parents=True, exist_ok=True)
-            binary_path.symlink_to(Path(selected_binary).resolve(strict=True))
-        nats_pid = nats_runtime.start_server(ready_timeout=8.0)
-        nats_client.reset_for_tests()
-        instance_id = api.bootstrap()
-        rollback_room_id, shutdown_room_id = asyncio.run(create_rooms(api))
-        api.grant(
-            ROLLBACK_ROOM,
-            "agent",
-            ROLLBACK_AGENT,
-            ["receive"],
-            operation_id="proxy-rust-fixture-rollback-grant",
-        )
-        api.declare_capabilities(
-            ROLLBACK_ROOM,
-            ROLLBACK_AGENT,
-            INITIAL_CAPABILITIES,
-            ttl_seconds=900,
-        )
-        api.grant(
-            SHUTDOWN_ROOM,
-            "agent",
-            SHUTDOWN_AGENT,
-            ["receive"],
-            operation_id="proxy-rust-fixture-shutdown-grant",
-        )
-        fixture_json = fixture_path(root, "fixture.json")
-        write_json(
-            fixture_json,
-            {
-                "agent_id": ROLLBACK_AGENT,
-                "db_sha256_initial": sha256(root / "v0.db"),
-                "initial_capabilities": INITIAL_CAPABILITIES,
-                "instance_id": instance_id,
-                "nats_binary_sha256": sha256(nats_runtime.nats_binary_path()),
-                "nats_pid": nats_pid,
-                "nats_url": nats_runtime.client_url(),
-                "nats_version": nats_runtime.NATS_VERSION,
-                "rollback_room_id": rollback_room_id,
-                "room_id": shutdown_room_id,
-                "room_name": ROLLBACK_ROOM,
-                "shutdown_agent_id": SHUTDOWN_AGENT,
-                "shutdown_room_name": SHUTDOWN_ROOM,
-            },
-        )
+        native(root, "init")
+        (root / "config.toml").write_text("admin_port=0\nflow_store_enabled=false\n", encoding="utf-8")
+        (root / "policy.toml").write_text(f"[agents.alice]\nagent_id='{SHUTDOWN_AGENT}'\n", encoding="utf-8")
+        start = ["coord", "start"]
+        if selected_binary := os.environ.get("SAFEYOLO_COORD_NATS_BINARY"):
+            start.extend(["--binary", selected_binary])
+        owner = json.loads(native(root, *start))
+        room = json.loads(native(root, "coord", "room", "create", SHUTDOWN_ROOM))
+        native(root, "coord", "grant", SHUTDOWN_ROOM, "alice", "receive",
+               "--operation-id", "proxy-rust-fixture-shutdown-grant")
+        drain_setup_audits(root)
+        binary = coord / "nats/bin/2.14.5/nats-server"
+        fixture = {
+            "instance_id": (coord / "instance_id").read_text(encoding="utf-8").strip(),
+            "nats_binary": str(binary),
+            "nats_binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+            "nats_pid": owner["pid"],
+            "nats_version": "2.14.5",
+            "room_id": room["room_id"],
+            "shutdown_agent_id": SHUTDOWN_AGENT,
+            "shutdown_room_name": SHUTDOWN_ROOM,
+        }
+        (coord / "fixture.json").write_text(json.dumps(fixture, sort_keys=True) + "\n", encoding="utf-8")
         ready_path.touch()
-        print(
-            json.dumps(
-                {
-                    "fixture": "ready",
-                    "nats_pid": nats_pid,
-                    "room_id": shutdown_room_id,
-                }
-            ),
-            flush=True,
-        )
-        wait_for_native_generation(root, nats_runtime, api)
+        print(json.dumps({"fixture": "ready", "nats_pid": owner["pid"], "room_id": room["room_id"]}), flush=True)
+        stop_path = fixture_path(root, "fixture.stop")
+        while not stop_path.exists():
+            time.sleep(0.05)
     finally:
-        try:
-            nats_client.reset_for_tests()
-        finally:
-            nats_runtime.stop_server()
+        if coord.exists():
+            native(root, "coord", "stop")
         fixture_path(root, "fixture.stopped").touch()
-
-
-def native_generation(path: Path) -> dict[str, Any] | None:
-    """Read a complete native handoff, tolerating only its truncate/write race."""
-    if not path.exists():
-        return None
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        # Rust writes this small handoff directly; retry only the observable
-        # truncate/write race instead of accepting malformed state.
-        return None
-    if not isinstance(value, dict):
-        raise RuntimeError("native fixture generation must be a JSON object")
-    if value.get("capabilities") != NATIVE_CAPABILITIES:
-        raise RuntimeError("native fixture generation has unexpected capabilities")
-    return value
-
-
-def pause_before_deadline(deadline: float, message: str) -> None:
-    """Sleep for the bounded polling interval or report the caller's timeout."""
-    if time.monotonic() >= deadline:
-        raise TimeoutError(message)
-    time.sleep(0.05)
-
-
-def wait_for_stop(stop_path: Path) -> None:
-    """Keep the fixture alive until its workflow owner requests teardown."""
-    while not stop_path.exists():
-        time.sleep(0.05)
-
-
-def wait_for_native_generation(root: Path, nats_runtime: Any, api: Any) -> None:
-    """Publish the retained Python response, then wait for explicit teardown."""
-    stop_path = fixture_path(root, "fixture.stop")
-    native_written = fixture_path(root, "native-written.json")
-    deadline = time.monotonic() + 900
-    while not stop_path.exists():
-        value = native_generation(native_written)
-        if value is not None:
-            break
-        pause_before_deadline(deadline, "native cross-version witness did not write its generation")
-    else:
-        return
-
-    api.declare_capabilities(
-        ROLLBACK_ROOM,
-        ROLLBACK_AGENT,
-        FINAL_CAPABILITIES,
-        ttl_seconds=900,
-    )
-    write_json(
-        fixture_path(root, "python-updated.json"),
-        {
-            "capabilities": FINAL_CAPABILITIES,
-            "db_sha256": sha256(root / "v0.db"),
-            "native_generation": value,
-            "nats_version": nats_runtime.NATS_VERSION,
-        },
-    )
-    print(json.dumps({"fixture": "updated"}), flush=True)
-    wait_for_stop(stop_path)
 
 
 def stop_fixture(root: Path) -> None:
     """Ask the fixture owner to stop NATS and wait for its stop receipt."""
-    _, _, nats_runtime = coord_modules()
-    nats_runtime.nats_root()
     if not root.exists():
         return
-
     stopped_path = fixture_path(root, "fixture.stopped")
     if stopped_path.is_file():
         return
@@ -232,25 +143,17 @@ def stop_fixture(root: Path) -> None:
     deadline = time.monotonic() + FIXTURE_STOP_TIMEOUT_S
     while not stopped_path.is_file():
         if time.monotonic() >= deadline:
-            # If the owner died, attempt the runtime's ownership-verified
-            # cleanup. Never report a missing receipt as a clean stop.
-            nats_runtime.stop_server()
+            # An absent owner cannot confirm cleanup. Try the native runtime's
+            # ownership-verified stop, but still report the missing receipt.
+            native(root, "coord", "stop")
             raise TimeoutError(f"fixture owner did not confirm NATS shutdown: {stopped_path}")
         time.sleep(0.05)
 
 
 def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Provision the test-owned Python Coord fixture for Rust tests.")
-    parser.add_argument(
-        "--ready-file",
-        type=Path,
-        help="write this file below SAFEYOLO_COORD_DATA_DIR after fixture setup",
-    )
-    parser.add_argument(
-        "--teardown",
-        action="store_true",
-        help="request owner-verified fixture shutdown and wait for its stop receipt",
-    )
+    parser = argparse.ArgumentParser(description="Provision the test-owned native Coord fixture for Rust tests.")
+    parser.add_argument("--ready-file", type=Path, help="write this file below SAFEYOLO_COORD_FIXTURE_ROOT after setup")
+    parser.add_argument("--teardown", action="store_true", help="request verified shutdown and wait for the owner receipt")
     return parser.parse_args()
 
 
@@ -263,13 +166,9 @@ def main() -> None:
             raise RuntimeError("--ready-file cannot be combined with --teardown")
         stop_fixture(root)
         return
-
     ready_path = fixture_path(root, "fixture.ready")
     if arguments.ready_file is not None:
-        requested_ready_path = arguments.ready_file.resolve(strict=False)
-        if root not in requested_ready_path.parents:
-            raise RuntimeError("--ready-file must remain below SAFEYOLO_COORD_DATA_DIR")
-        ready_path = requested_ready_path
+        ready_path = fixture_path(root, str(arguments.ready_file))
     prepare_fixture(root, ready_path)
 
 
