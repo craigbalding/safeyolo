@@ -552,6 +552,20 @@ impl State {
             self.in_flight.iter().collect()
         }
     }
+    fn has_ready_work(&self) -> bool {
+        let suspended: BTreeSet<_> = self
+            .awaiting_handoffs
+            .iter()
+            .filter_map(|a| a.parent_attention_id.as_ref())
+            .collect();
+        let suspend_all_tasks = self
+            .awaiting_handoffs
+            .iter()
+            .any(|a| a.parent_attention_id.is_none());
+        self.in_flight.iter().any(|p| {
+            !suspended.contains(&p.attention_id) && (!p.requires_terminal || !suspend_all_tasks)
+        })
+    }
 }
 fn validate_pending(p: &Pending) -> Result<(), Error> {
     if !attention_id(&p.attention_id)
@@ -1222,24 +1236,14 @@ impl Supervisor {
             self.state.phase = "idle".into();
             self.state.save(&self.state_path)?;
         }
-        let suspended: BTreeSet<_> = self
-            .state
-            .awaiting_handoffs
-            .iter()
-            .filter_map(|a| a.parent_attention_id.as_ref())
-            .collect();
-        let other_ready = self.state.in_flight.iter().any(|p| {
-            !suspended.contains(&p.attention_id)
-                && (!p.requires_terminal
-                    || !self
-                        .state
-                        .awaiting_handoffs
-                        .iter()
-                        .any(|a| a.parent_attention_id.is_none()))
-        });
+        let page_limit = self
+            .config
+            .page_limit
+            .min(MAX_PENDING - self.state.in_flight.len());
         if self.state.repair_selection.is_none()
+            && page_limit > 0
             && (self.state.in_flight.is_empty()
-                || (!self.state.awaiting_handoffs.is_empty() && !other_ready))
+                || (!self.state.awaiting_handoffs.is_empty() && !self.state.has_ready_work()))
         {
             let previous: BTreeSet<_> = self
                 .state
@@ -1247,7 +1251,7 @@ impl Supervisor {
                 .iter()
                 .map(|p| p.attention_id.clone())
                 .collect();
-            let page=self.client.call("wait_for_coord",&json!({"since_sequence":self.state.safe_cursor,"timeout_seconds":self.config.wait_seconds,"limit":self.config.page_limit})).await?;
+            let page=self.client.call("wait_for_coord",&json!({"since_sequence":self.state.safe_cursor,"timeout_seconds":self.config.wait_seconds,"limit":page_limit})).await?;
             let added = self.accept_page(&page, &rooms)?;
             for p in self
                 .state
@@ -1279,6 +1283,11 @@ impl Supervisor {
                 if let Ok(Err(error))=tokio::time::timeout(Duration::from_secs(5),self.client.call("send",&json!({"room_name":p.room_name,"body":body,"declared_content_type":"text/plain","notify":notify}))).await {eprintln!("protocol diagnostic unavailable: {error}");}
             }
             if added == 0 {
+                // An empty wait cannot resolve an earlier uncertain turn.
+                // Preserve its backoff without redispatching suspended work.
+                if self.state.phase == "uncertain" {
+                    return Ok(false);
+                }
                 self.state.consecutive_failures = 0;
                 self.state.save(&self.state_path)?;
                 return Ok(true);
