@@ -199,7 +199,10 @@ def test_linux_input_retention_requires_successful_producers_after_test_failure(
     producers = {step.get("id"): step for step in job["steps"]}
     host_build = producers["linux_host_inputs"]
     guest_build = producers["linux_guest_inputs"]
-    assert "--bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy" in host_build["run"]
+    assert host_build["run"] == (
+        "scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked "
+        "--bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy"
+    )
     assert "pytest" not in host_build["run"]
     assert guest_build["run"] == "scripts/build_guest_command.sh"
     assert guest_build["env"]["SAFEYOLO_BUILD_PROFILE"] == "production"
@@ -324,6 +327,42 @@ def test_installed_linux_tests_keep_their_failure_after_build_separation(tmp_pat
             "cli/tests/test_host_setup_scripts.py::test_claude_setup_does_not_write_through_guest_created_host_links "
             f"--basetemp {tmp_path}/native-policy"
         ]
+
+
+@pytest.mark.parametrize("failure", [None, "build", "fixture"])
+def test_quick_coord_fixture_preserves_producer_and_consumer_failures(tmp_path, failure):
+    """Run the workflow commands with controlled build and pytest exits."""
+    steps = rust_workflow()["jobs"]["focused-pr"]["steps"]
+    build = next(step for step in steps if step.get("id") == "linux_host_inputs")
+    fixture = next(step for step in steps if step.get("name") == "Test current native Coord fixture boundaries")
+    assert steps.index(build) < steps.index(fixture)
+    assert not build.get("continue-on-error") and not fixture.get("continue-on-error")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    cargo = scripts / "cargo_with_space.sh"
+    cargo.write_text('#!/bin/sh\nprintf "native preparation\\n"\nexit "$FIXTURE_BUILD_EXIT"\n')
+    cargo.chmod(0o755)
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    uv = commands / "uv"
+    uv.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > "$FIXTURE_UV_CALLS"\n'
+                  'printf "fixture command diagnostic\\n" >&2\nexit "$FIXTURE_TEST_EXIT"\n')
+    uv.chmod(0o755)
+    calls = tmp_path / "uv-calls"
+    result = subprocess.run(
+        ["bash", "-e", "-c", build["run"] + "\n" + fixture["run"]], cwd=tmp_path,
+        capture_output=True, text=True,
+        env=dict(os.environ, PATH=f"{commands}:{os.environ['PATH']}", BASH_ENV=os.devnull,
+                 FIXTURE_BUILD_EXIT="29" if failure == "build" else "0",
+                 FIXTURE_TEST_EXIT="23" if failure == "fixture" else "0", FIXTURE_UV_CALLS=str(calls)),
+    )
+    assert "native preparation" in result.stdout
+    assert result.returncode == {None: 0, "build": 29, "fixture": 23}[failure]
+    if failure == "build":
+        assert not calls.exists()
+    else:
+        assert calls.read_text().splitlines() == ["run --frozen pytest -q tests/test_proxy_rust_coord_fixture.py"]
+        assert "fixture command diagnostic" in result.stderr
 
 
 @pytest.mark.parametrize("packages,architecture,source,ref,expected", [
@@ -703,11 +742,18 @@ def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix
     (".github/workflows/guest-test-inputs.yml", {"rust": "true", "macos": "true"}, "available"),
     (".github/workflows/ci.yml", {"rust": "true", "macos": "true"}, "available"),
     ("scripts/rust_cache_command.sh", {"rust": "true", "macos": "true"}, "available"),
+    ("scripts/cargo_with_space.sh", {"rust": "true"}, "available"),
+    ("tests/test_proxy_rust_coord_fixture.py", {"rust": "true"}, "available"),
+    ("tests/test_proxy_rust_ci_events.py", {}, "available"),
+    ("tests/test_blackbox_harness.py", {}, "available"),
+    ("guest/command/src/main.rs", {"guest": "true"}, "available"),
     ("proxy/src/host_platform.rs", {}, "missing"),
     ("proxy/src/host_platform.rs", {}, "failing"),
 ], ids=["linux-only", "mac-only", "shared-native", "native-policy-only", "first-agent-only", "readiness-only",
         "docs-only", "dispatch-content", "dispatch-workflow",
-        "native-profile-workflow", "shared-profile-workflow", "python-profile-workflow", "rust-cache-command", "missing-grep", "failing-grep"])
+        "native-profile-workflow", "shared-profile-workflow", "python-profile-workflow", "rust-cache-command",
+        "cargo-wrapper-only", "coord-fixture-only", "workflow-controls-only", "blackbox-only", "guest-only",
+        "missing-grep", "failing-grep"])
 def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, expected, matcher):
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=tmp_path, text=True).strip()
@@ -752,6 +798,20 @@ def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, e
         assert "changed-path matcher failed" in result.stderr
     actual = dict(line.split("=", 1) for line in output.read_text().splitlines()) if output.exists() else {}
     assert actual == expected
+    if matcher == "available":
+        fixture = next(step for step in steps if step.get("name") == "Test current native Coord fixture boundaries")
+        build = next(step for step in steps if step.get("id") == "linux_host_inputs")
+        boundaries = next(step for step in steps if step.get("name") == "Test workflow, fixture, deletion, and blackbox runner boundaries")
+        assert "tests/test_proxy_rust_coord_fixture.py" not in boundaries["run"]
+        assert fixture["if"] == build["if"] == "steps.changes.outputs.rust == 'true'"
+        assert steps.index(build) < steps.index(fixture)
+        assert fixture["env"] == {
+            "SAFEYOLO_NATIVE_CLI": "${{ github.workspace }}/proxy/target/release/safeyolo",
+            "SAFEYOLO_RUST_PROXY": "${{ github.workspace }}/proxy/target/release/safeyolo-proxy",
+        }
+        assert rust_workflow()["jobs"]["focused-pr"]["env"]["SAFEYOLO_BUILD_REVISION"] == (
+            "${{ github.event.pull_request.head.sha || github.sha }}"
+        )
     if matcher != "available" or expected.get("guest") or expected.get("dispatch"):
         return
     installed = next(step for step in steps if step.get("name") == "Test installed native policy commands")
