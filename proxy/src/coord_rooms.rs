@@ -15,6 +15,8 @@ use std::{
 const NATS_VERSION: &str = "2.14.5";
 pub(crate) mod brief;
 mod inventory;
+pub(crate) mod work;
+mod work_cli;
 pub use inventory::HELP as INVENTORY_HELP;
 mod membership;
 fn directory(root: &Path) -> Result<PathBuf, Error> {
@@ -63,6 +65,7 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
             format!("Coord schema {version} is not operational; expected version 5").into(),
         );
     }
+    transaction.execute_batch(include_str!("coord_work_schema.sql"))?;
     let stored: String = transaction.query_row("SELECT id FROM instance", [], |row| row.get(0))?;
     if stored != id.trim() {
         return Err("Coord identity differs from this SafeYolo instance; preserve the store and select its owning root".into());
@@ -660,6 +663,11 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
     }
     let root = config.parent().ok_or("instance root is missing")?;
     let result = match arguments {
+        [kind, options @ ..] if kind == "work" && (options.is_empty() || options == ["--help"]) => {
+            println!("{}", work_cli::HELP);
+            return Ok(());
+        }
+        [kind, arguments @ ..] if kind == "work" => work_cli::run(root, arguments)?,
         [kind, room] if kind == "state" => {
             let room =
                 percent_encoding::utf8_percent_encode(room, percent_encoding::NON_ALPHANUMERIC);

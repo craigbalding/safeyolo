@@ -14,6 +14,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 mod inventory;
 #[path = "native_coord/stage0.rs"]
 mod stage0;
+#[path = "native_coord/work.rs"]
+mod work;
 
 struct NatsCleanup(PathBuf);
 impl Drop for NatsCleanup {

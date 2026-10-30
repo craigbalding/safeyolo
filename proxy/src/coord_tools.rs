@@ -205,6 +205,35 @@ impl Client {
         let room = segment(text(args, "room_name")?);
         let base = format!("/api/coord/rooms/{room}");
         let (method, path, body, timeout) = match name {
+            "create_work" | "claim_work" | "release_work" | "complete_work" => {
+                let mut body = args
+                    .as_object()
+                    .ok_or("work arguments must be an object")?
+                    .clone();
+                body.remove("room_name");
+                body.insert("action".into(), json!(name.trim_end_matches("_work")));
+                (
+                    Method::POST,
+                    format!("{base}/work"),
+                    Value::Object(body),
+                    60.0,
+                )
+            }
+            "read_work" => (
+                Method::GET,
+                format!("{base}/work?work_id={}", segment(text(args, "work_id")?)),
+                Value::Null,
+                60.0,
+            ),
+            "list_work" => {
+                let mut path = format!("{base}/work?limit={}", integer(args, "limit", 50)?);
+                for key in ["after", "state"] {
+                    if let Some(value) = args.get(key).and_then(Value::as_str) {
+                        path.push_str(&format!("&{key}={}", segment(value)));
+                    }
+                }
+                (Method::GET, path, Value::Null, 60.0)
+            }
             "join_room" => (Method::POST, format!("{base}/join"), json!({}), 60.0),
             "read_brief" => (Method::GET, format!("{base}/brief"), Value::Null, 60.0),
             "get_room_state" => (Method::GET, format!("{base}/state"), Value::Null, 60.0),
@@ -330,6 +359,54 @@ pub fn tools() -> Vec<Value> {
     let mut add = |name: &str, description: &str, properties: Value, required: &[&str]| {
         result.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}}));
     };
+    add(
+        "create_work",
+        "Create open work in an authorized room. external_ref is opaque. Content is attributed to the authenticated agent. Supply operation_id before a write to recover an ambiguous result.",
+        json!({"room_name":string,"title":string,"external_ref":string,"operation_id":string}),
+        &["room_name", "title"],
+    );
+    add(
+        "list_work",
+        "List canonical work ordered by work_id. Use next_after to continue. Pages contain at most 200 items; they do not share a snapshot.",
+        json!({"room_name":string,"after":string,"limit":integer,"state":string}),
+        &["room_name"],
+    );
+    add(
+        "read_work",
+        "Read the current canonical work and its version and claim generation. Room receive permission is checked on every read.",
+        json!({"room_name":string,"work_id":string}),
+        &["room_name", "work_id"],
+    );
+    for (name, description) in [
+        (
+            "claim_work",
+            "Atomically claim open work for your durable agent ID. Claims never expire or transfer with process liveness. Mutations require send and receive. Supply original expectations and operation_id for retry; changed input conflicts.",
+        ),
+        (
+            "release_work",
+            "Release your current claim with its exact version and generation. A former holder cannot release a later claim. An identical operation-ID retry returns its original result while room authority remains current.",
+        ),
+        (
+            "complete_work",
+            "Complete your current claim with its exact version and generation and an optional short_result. Work/result content stays in canonical storage; audit and attention contain metadata.",
+        ),
+    ] {
+        let mut properties = json!({"room_name":string,"work_id":string,"expected_version":integer,"expected_generation":integer,"operation_id":string});
+        if name == "complete_work" {
+            properties["short_result"] = string.clone();
+        }
+        add(
+            name,
+            description,
+            properties,
+            &[
+                "room_name",
+                "work_id",
+                "expected_version",
+                "expected_generation",
+            ],
+        );
+    }
     add(
         "list_approvals",
         "List canonical pending approvals inside your current deciding delegation. Room references confer no authority.",
