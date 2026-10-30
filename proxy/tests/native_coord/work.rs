@@ -71,6 +71,7 @@ async fn native_work_claims_replay_identity_revocation_and_crash_recovery() {
     let client = |actor: &str| Client {
         socket: Some(root.join(format!("{actor}.sock"))),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let alice = client("alice");
     let bob = client("bob");

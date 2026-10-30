@@ -348,6 +348,7 @@ struct Inventory {
     active_work: Value,
     completed_work: Value,
     latest_results: Value,
+    remote_agents: HashMap<String, (String, String)>,
 }
 
 fn read_inventory(
@@ -374,7 +375,22 @@ fn read_inventory(
         .filter(|m| m.principal_kind == "agent")
         .map(|m| m.principal_id.clone())
         .collect::<Vec<_>>();
-    let configured = configured_agents(policy, &ids);
+    let mut configured = configured_agents(policy, &ids);
+    let mut remote_agents = HashMap::new();
+    for (id, name, instance, agent) in
+        crate::coord_rooms::federation::names(&conn).map_err(|_| CoordError::Data)?
+    {
+        if ids.contains(&id) {
+            configured.insert(
+                id.clone(),
+                ConfiguredAgent {
+                    name,
+                    grants: BTreeSet::new(),
+                },
+            );
+            remote_agents.insert(id, (instance, agent));
+        }
+    }
     // Ingress resolved the listener name before provider I/O. A removed or
     // replaced identity must not finish that read using its former room grant.
     if kind == "agent" && !configured.contains_key(principal) {
@@ -439,6 +455,7 @@ fn read_inventory(
         active_work,
         completed_work,
         latest_results,
+        remote_agents,
     })
 }
 
@@ -575,7 +592,12 @@ fn project(
         let total = declared.len();
         let mut declared = bounded_items(declared, total, 8 * 1024);
         let declared_items = declared.as_object_mut().unwrap().remove("items").unwrap();
-        members.push(json!({"agent_id":member.principal_id,"display_name":configured.map(|a| &a.name),"configured":configured.is_some(),"origin_instance_id":current.access.instance_id,"room_permissions":member.permissions,"verified":verified_items,"declared":declared_items,"bounds":{"verified":verified,"declared":declared}}));
+        let remote = current.remote_agents.get(&member.principal_id);
+        let mut member = json!({"agent_id":member.principal_id,"display_name":configured.map(|a| &a.name),"configured":configured.is_some(),"origin_instance_id":remote.map_or(current.access.instance_id.as_str(),|(instance,_)|instance.as_str()),"room_permissions":member.permissions,"verified":verified_items,"declared":declared_items,"bounds":{"verified":verified,"declared":declared}});
+        if let Some((_, agent)) = remote {
+            member["origin_agent_id"] = json!(agent);
+        }
+        members.push(member);
     }
     members.sort_by(|a, b| a["agent_id"].as_str().cmp(&b["agent_id"].as_str()));
     let leases = current.resources.iter().map(|(provider, resource)| {

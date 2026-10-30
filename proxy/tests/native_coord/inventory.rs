@@ -109,6 +109,7 @@ async fn native_inventory_uses_current_grants_and_fixture_provider_evidence_acro
     let client = |actor: &str| Client {
         socket: Some(root.join(format!("{actor}.sock"))),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let alice = client("alice");
     assert!(

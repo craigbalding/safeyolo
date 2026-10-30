@@ -79,25 +79,23 @@ pub(super) async fn respond(
     let db = client.owner.data_dir.join("v0.db");
     let room = room.to_owned();
     let principal = principal.to_owned();
+    let remote = client.remote.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut conn = open_db(&db, mutation.is_some())
             .map_err(|_| SignalError(503, "signal store unavailable".into()))?;
+        let actor = remote
+            .as_ref()
+            .map_or(Actor::Agent(&principal), Actor::Remote);
         match mutation {
-            Some((mutation, operation)) => signals::mutate(
-                &mut conn,
-                &room,
-                Actor::Agent(&principal),
-                mutation,
-                operation.as_deref(),
-            ),
+            Some((mutation, operation)) => {
+                signals::mutate(&mut conn, &room, actor, mutation, operation.as_deref())
+            }
             None => match id {
-                Some(id) => {
-                    signals::read(&mut conn, &room, Actor::Agent(&principal), &id, revision)
-                }
+                Some(id) => signals::read(&mut conn, &room, actor, &id, revision),
                 None => signals::list(
                     &mut conn,
                     &room,
-                    Actor::Agent(&principal),
+                    actor,
                     after.as_deref().unwrap_or(""),
                     limit,
                     state.as_deref(),

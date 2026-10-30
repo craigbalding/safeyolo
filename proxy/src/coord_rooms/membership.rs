@@ -3,6 +3,7 @@ use super::{Error, hash, now};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn change(
     transaction: &Connection,
     room_id: &str,
@@ -11,6 +12,7 @@ pub(super) fn change(
     permissions: &[String],
     revoke: bool,
     operation_id: &str,
+    display_name: Option<&str>,
 ) -> Result<Value, Error> {
     if operation_id.trim().is_empty() {
         return Err("operation ID must be nonempty".into());
@@ -35,7 +37,10 @@ pub(super) fn change(
         "coord.grant"
     };
     // Fixed field order and normalized permission sets define canonical input.
-    let request = json!({"room_id":room_id,"principal_kind":kind,"principal_id":principal,"permissions":permissions});
+    let mut request = json!({"room_id":room_id,"principal_kind":kind,"principal_id":principal,"permissions":permissions});
+    if let Some(name) = display_name {
+        request["display_name"] = json!(name);
+    }
     let request_hash = hash(request.to_string().as_bytes());
     let prior: Option<(String, String)> = transaction
         .query_row(
@@ -80,8 +85,11 @@ pub(super) fn change(
         )?;
         generation = Some(next);
     }
-    let result = json!({"room_id":room_id,"agent_id":principal,"permissions":permissions,
+    let mut result = json!({"room_id":room_id,"agent_id":principal,"permissions":permissions,
         "operation_id":operation_id,"membership_granted_at":generation,"changed_at":changed_at});
+    if let Some(name) = display_name {
+        result["display_name"] = json!(name);
+    }
     transaction.execute(
         "INSERT INTO coord_operations(principal_kind,principal_id,operation_type,operation_id,request_hash,outcome_kind,outcome_json,created_at)
          VALUES('operator','operator',?1,?2,?3,'success',?4,?5)",

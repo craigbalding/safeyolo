@@ -119,6 +119,7 @@ fn attributed_creation_dedup_replay_and_independent_page_permission() {
         &["send".into(), "receive".into()],
         false,
         "revoke-page",
+        None,
     )
     .unwrap();
     let no_page = mutate(
@@ -357,6 +358,7 @@ fn bounds_pagination_and_rates_keep_claims_without_unbounded_pages() {
             &[],
             false,
             &format!("default-{id}"),
+            None,
         )
         .unwrap();
         for n in 0..5 {

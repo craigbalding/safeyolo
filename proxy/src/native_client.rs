@@ -312,7 +312,7 @@ pub(crate) async fn https_json(
     method: Method,
     body: Value,
 ) -> Result<Value, Error> {
-    https_json_from(url, token, method, body, None, false, usize::MAX).await
+    https_json_from(url, token, method, body, HttpsRoute::default()).await
 }
 
 /// A native agent adapter uses the same attributed listener as its Agent API
@@ -327,11 +327,54 @@ pub(crate) async fn gateway_json(
         token,
         Method::GET,
         Value::Null,
-        socket,
-        true,
-        1024 * 1024,
+        HttpsRoute {
+            proxy_socket: socket,
+            require_proxy: true,
+            max_response_bytes: 1024 * 1024,
+            ..HttpsRoute::default()
+        },
     )
     .await
+}
+
+/// Only the host's explicit federation route supplies pinned peer trust.
+/// Loopback peers stay inside this host. External peers use the configured
+/// proxy, including its normal TLS trust and credential mediation.
+pub(crate) async fn federation_json(
+    url: &str,
+    token: &str,
+    body: Value,
+    tls: std::sync::Arc<rustls::ClientConfig>,
+) -> Result<Value, Error> {
+    https_json_from(
+        url,
+        token,
+        Method::POST,
+        body,
+        HttpsRoute {
+            peer_tls: Some(tls),
+            max_response_bytes: 8 * 1024 * 1024,
+            ..HttpsRoute::default()
+        },
+    )
+    .await
+}
+
+struct HttpsRoute<'a> {
+    proxy_socket: Option<&'a Path>,
+    require_proxy: bool,
+    max_response_bytes: usize,
+    peer_tls: Option<std::sync::Arc<rustls::ClientConfig>>,
+}
+impl Default for HttpsRoute<'_> {
+    fn default() -> Self {
+        Self {
+            proxy_socket: None,
+            require_proxy: false,
+            max_response_bytes: usize::MAX,
+            peer_tls: None,
+        }
+    }
 }
 
 async fn https_json_from(
@@ -339,9 +382,7 @@ async fn https_json_from(
     token: &str,
     method: Method,
     body: Value,
-    proxy_socket: Option<&Path>,
-    require_proxy: bool,
-    max_response_bytes: usize,
+    route: HttpsRoute<'_>,
 ) -> Result<Value, Error> {
     use rustls::pki_types::ServerName;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -362,13 +403,25 @@ async fn https_json_from(
         .to_owned();
     let path = uri.path_and_query().map_or("/", |p| p.as_str());
     let ca = std::env::var_os("SSL_CERT_FILE").or_else(|| std::env::var_os("REQUESTS_CA_BUNDLE"));
-    let tls = crate::http::client_tls(ca.as_deref().map(Path::new))?;
-    tokio::time::timeout(Duration::from_secs(15), async {
+    let parent_tls = crate::http::client_tls(ca.as_deref().map(Path::new))?;
+    let tls = route.peer_tls.clone().unwrap_or_else(|| parent_tls.clone());
+    let loopback = route.peer_tls.is_some()
+        && host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    let timeout = if route.peer_tls.is_some() {
+        Duration::from_secs(330)
+    } else {
+        Duration::from_secs(15)
+    };
+    tokio::time::timeout(timeout, async {
         let proxy = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
             .into_iter()
             .find_map(|key| std::env::var(key).ok().filter(|v| !v.is_empty()));
         let proxy_stream: Option<(crate::tunnels::BoxStream, Option<Zeroizing<String>>)> =
-            if let Some(socket) = proxy_socket {
+            if loopback {
+                None
+            } else if let Some(socket) = route.proxy_socket {
                 Some((
                     Box::new(tokio::net::UnixStream::connect(socket).await?),
                     None,
@@ -394,7 +447,7 @@ async fn https_json_from(
                 .await?;
                 let stream: crate::tunnels::BoxStream = if encrypted {
                     Box::new(
-                        tokio_rustls::TlsConnector::from(tls.clone())
+                        tokio_rustls::TlsConnector::from(parent_tls.clone())
                             .connect(ServerName::try_from(proxy_host)?, stream)
                             .await?,
                     )
@@ -454,7 +507,7 @@ async fn https_json_from(
             }
             stream
         } else {
-            if require_proxy {
+            if route.require_proxy {
                 return Err("GitHub work reads require the caller's configured proxy route".into());
             }
             Box::new(
@@ -478,7 +531,7 @@ async fn https_json_from(
             }
             .into());
         }
-        let bytes = http_body_util::Limited::new(response.into_body(), max_response_bytes)
+        let bytes = http_body_util::Limited::new(response.into_body(), route.max_response_bytes)
             .collect()
             .await?
             .to_bytes();

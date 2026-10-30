@@ -38,6 +38,7 @@ const MAX_DECLARATIONS_PER_AGENT: usize = 32;
 const MAX_DECLARATION_TTL_SECONDS: i64 = 3600;
 const PROJECTION_PAGE: u64 = 200;
 const RECOVERY_INTERVAL: Duration = Duration::from_millis(250);
+pub(crate) mod federation;
 pub(crate) mod inventory;
 pub(crate) mod outbox;
 pub(crate) mod signals;
@@ -142,6 +143,8 @@ pub struct CoordClient {
     owner: Arc<CoordOwner>,
     policy_file: Option<PathBuf>,
     provider_directory: Option<PathBuf>,
+    remote: Option<crate::coord_rooms::federation::RemoteAgent>,
+    relay_config: Option<PathBuf>,
 }
 
 impl CoordClient {
@@ -158,6 +161,8 @@ impl CoordClient {
             owner,
             policy_file,
             provider_directory,
+            remote: None,
+            relay_config: None,
         }
     }
 
@@ -325,8 +330,15 @@ impl CoordClient {
         room: &str,
         sender: Sender<'_>,
     ) -> Result<RoomAccess, CoordError> {
+        self.check_remote().await?;
         match sender {
-            Sender::Agent { id, .. } => self.access(room, id).await,
+            Sender::Agent { id, .. } => {
+                let mut access = self.access(room, id).await?;
+                if let Some(remote) = &self.remote {
+                    access.instance_id = remote.instance_id.clone();
+                }
+                Ok(access)
+            }
             Sender::Operator => {
                 let db = self.owner.data_dir.join("v0.db");
                 let room = room.to_owned();
@@ -342,11 +354,24 @@ impl CoordClient {
     async fn display_names(&self, principal_ids: &[String]) -> HashMap<String, String> {
         let principal_ids = principal_ids.to_vec();
         let policy_file = self.policy_file.clone();
+        let db = self.owner.data_dir.join("v0.db");
         tokio::task::spawn_blocking(move || {
-            inventory::configured_agents(policy_file.as_deref(), &principal_ids)
-                .into_iter()
-                .map(|(id, agent)| (id, agent.name))
-                .collect()
+            let mut names: HashMap<_, _> =
+                inventory::configured_agents(policy_file.as_deref(), &principal_ids)
+                    .into_iter()
+                    .map(|(id, agent)| (id, agent.name))
+                    .collect();
+            if let Ok(conn) = open_db(&db, false)
+                && let Ok(remote) = crate::coord_rooms::federation::names(&conn)
+            {
+                names.extend(
+                    remote
+                        .into_iter()
+                        .filter(|(id, _, _, _)| principal_ids.contains(id))
+                        .map(|(id, name, _, _)| (id, name)),
+                );
+            }
+            names
         })
         .await
         .unwrap_or_default()
@@ -358,6 +383,7 @@ impl CoordClient {
     ) -> Result<HashMap<String, String>, CoordError> {
         let requested_names = requested_names.to_vec();
         let policy_file = self.policy_file.clone();
+        let db = self.owner.data_dir.join("v0.db");
         tokio::task::spawn_blocking(move || {
             let Some(path) = policy_file else {
                 return Err(CoordError::Unavailable);
@@ -387,6 +413,14 @@ impl CoordClient {
                     duplicate_ids.insert(id.to_owned());
                 }
             }
+            let conn = open_db(&db, false)?;
+            for (id, name, _, _) in
+                crate::coord_rooms::federation::names(&conn).map_err(|_| CoordError::Data)?
+            {
+                if by_name.insert(name, id.clone()).is_some() {
+                    duplicate_ids.insert(id);
+                }
+            }
             let mut resolved = HashMap::new();
             for name in requested_names {
                 let id = by_name.get(&name).ok_or(CoordError::Invalid)?;
@@ -408,6 +442,28 @@ impl CoordClient {
         _access: &RoomAccess,
         runtime: Option<&crate::RuntimeState>,
     ) -> Result<Value, CoordError> {
+        if let Some(config) = &self.relay_config {
+            // Reuse the running home's view, including its live service-grant
+            // checks. The relay's disk policy is not a substitute for it.
+            let value = crate::native_client::admin(
+                config,
+                &format!(
+                    "/admin/coord/rooms/{}/state",
+                    crate::coord_tools::segment(room_name)
+                ),
+                hyper::Method::GET,
+                Value::Null,
+                Duration::from_secs(5),
+            )
+            .await
+            .map_err(|_| CoordError::Unavailable)?;
+            let access = self.access(room_name, principal).await?;
+            if !access.permissions.iter().any(|p| p == "receive") {
+                return Err(CoordError::Forbidden);
+            }
+            self.check_remote().await?;
+            return Ok(value);
+        }
         inventory::room_state(self, room_name, "agent", principal, runtime).await
     }
 
@@ -422,8 +478,16 @@ impl CoordClient {
         let room = room_name.to_owned();
         let principal = principal.to_owned();
         let capabilities = capabilities.to_vec();
+        let remote = self.remote.clone();
         tokio::task::spawn_blocking(move || {
-            write_declarations(&db, &room, &principal, &capabilities, ttl_seconds)
+            write_declarations(
+                &db,
+                &room,
+                &principal,
+                &capabilities,
+                ttl_seconds,
+                remote.as_ref(),
+            )
         })
         .await
         .map_err(|_| CoordError::Unavailable)?
@@ -1381,11 +1445,16 @@ fn write_declarations(
     principal: &str,
     capabilities: &[String],
     ttl_seconds: i64,
+    remote: Option<&crate::coord_rooms::federation::RemoteAgent>,
 ) -> Result<Value, CoordError> {
     let conn = open_db(db, true)?;
     conn.execute("BEGIN IMMEDIATE", [])
         .map_err(|_| CoordError::Unavailable)?;
     let result = (|| {
+        if let Some(remote) = remote {
+            crate::coord_rooms::federation::authorize(&conn, remote)
+                .map_err(|_| CoordError::Forbidden)?;
+        }
         let room_id = room_id_for(&conn, room_name)?;
         let permissions = current_agent_permissions(&conn, &room_id, principal)?;
         if !permissions.iter().any(|permission| permission == "receive") {
@@ -2198,6 +2267,24 @@ async fn respond_payload(
         Ok(principal) => principal,
         Err(_) => return response(403, json!({"error":"Could not identify registered agent"})),
     };
+    match query_parameter(request.path_and_query, "home") {
+        Ok(Some(home)) => {
+            return federation::forward(request, &context, payload, agent_name, &principal, &home)
+                .await;
+        }
+        Err(()) => return response(400, json!({"error":"invalid home"})),
+        Ok(None) => {}
+    }
+    respond_as(request, context, payload, &principal, agent_name).await
+}
+
+async fn respond_as(
+    request: Request<'_>,
+    context: CoordContext<'_>,
+    payload: Option<&[u8]>,
+    principal: &str,
+    agent_name: &str,
+) -> Outcome<'static> {
     if attention_wait_route(request) {
         if request.method != "GET" {
             return response(
@@ -2220,7 +2307,7 @@ async fn respond_payload(
         return match context
             .client
             .wait_attention(
-                &principal,
+                principal,
                 since,
                 limit,
                 timeout,
@@ -2253,7 +2340,7 @@ async fn respond_payload(
         }
         return match context
             .client
-            .attention_object(&principal, &attention_id)
+            .attention_object(principal, &attention_id)
             .await
         {
             Ok(value) => response(200, value),
@@ -2266,14 +2353,14 @@ async fn respond_payload(
             json!({"error":"coord resource not found or not accessible"}),
         );
     };
-    let access = match context.client.access(&room_name, &principal).await {
+    let access = match context.client.access(&room_name, principal).await {
         Ok(access) => access,
         Err(error) => return error_response(error),
     };
     match operation {
-        "work" => work::respond(request, context.client, &room_name, &principal, payload).await,
+        "work" => work::respond(request, context.client, &room_name, principal, payload).await,
         "signals" => {
-            signals::respond(request, context.client, &room_name, &principal, payload).await
+            signals::respond(request, context.client, &room_name, principal, payload).await
         }
         "join" => {
             if request.method != "POST" {
@@ -2285,7 +2372,7 @@ async fn respond_payload(
             let state = if access.permissions.iter().any(|p| p == "receive") {
                 match context
                     .client
-                    .room_state(&room_name, &principal, &access, context.runtime)
+                    .room_state(&room_name, principal, &access, context.runtime)
                     .await
                 {
                     Ok(state) => state,
@@ -2328,7 +2415,7 @@ async fn respond_payload(
                 request,
                 &room_name,
                 Sender::Agent {
-                    id: &principal,
+                    id: principal,
                     name: agent_name,
                 },
                 payload,
@@ -2362,7 +2449,7 @@ async fn respond_payload(
                 &room_name,
                 access,
                 Sender::Agent {
-                    id: &principal,
+                    id: principal,
                     name: agent_name,
                 },
                 since,
@@ -2403,7 +2490,7 @@ async fn respond_payload(
             wait_room(
                 &context,
                 &room_name,
-                &principal,
+                principal,
                 since,
                 limit,
                 timeout,
@@ -2443,7 +2530,7 @@ async fn respond_payload(
             }
             match context
                 .client
-                .room_state(&room_name, &principal, &access, context.runtime)
+                .room_state(&room_name, principal, &access, context.runtime)
                 .await
             {
                 Ok(state) => response(200, state),
@@ -2482,7 +2569,7 @@ async fn respond_payload(
             };
             match context
                 .client
-                .write_declarations(&room_name, &principal, &capabilities, ttl)
+                .write_declarations(&room_name, principal, &capabilities, ttl)
                 .await
             {
                 Ok(result) => response(200, result),
@@ -3231,16 +3318,19 @@ async fn prepare_send(
         Notification::LegacyRoom => "legacy_room",
         Notification::Agents(_) => "agents",
     };
-    let envelope = json!({
+    let mut envelope = json!({
         "msg_id":msg_id,
         "sent_at":sent_at,
         "sender_kind":sender_kind,
         "sender_agent_id":if sender_kind=="agent" {Some(principal)} else {None},
         "sender_agent_name":agent_name,
-        "origin_instance_id":final_access.instance_id,
+        "origin_instance_id":client.remote.as_ref().map_or(final_access.instance_id.as_str(),|remote|remote.instance_id.as_str()),
         "content_type":content_type,
         "body":body,
     });
+    if let Some(remote) = &client.remote {
+        envelope["origin_agent_id"] = json!(remote.agent_id);
+    }
     let manifest = json!({
         "version":1,
         "msg_id":envelope["msg_id"],

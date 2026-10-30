@@ -21,6 +21,7 @@ mod signals_cli;
 pub(crate) mod work;
 mod work_cli;
 pub use inventory::HELP as INVENTORY_HELP;
+pub(crate) mod federation;
 mod membership;
 fn directory(root: &Path) -> Result<PathBuf, Error> {
     let config_path = if root == crate::host_platform::config_dir() {
@@ -70,6 +71,7 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
     }
     transaction.execute_batch(include_str!("coord_work_schema.sql"))?;
     transaction.execute_batch(include_str!("coord_signal_schema.sql"))?;
+    transaction.execute_batch(include_str!("coord_federation_schema.sql"))?;
     let stored: String = transaction.query_row("SELECT id FROM instance", [], |row| row.get(0))?;
     if stored != id.trim() {
         return Err("Coord identity differs from this SafeYolo instance; preserve the store and select its owning root".into());
@@ -582,6 +584,7 @@ pub async fn create_room(root: &Path, name: &str) -> Result<Value, Error> {
             &[],
             false,
             &uuid::Uuid::new_v4().simple().to_string(),
+            None,
         )?;
         transaction.commit()?;
         Ok(())
@@ -634,6 +637,7 @@ pub fn grant(
         permissions,
         revoke,
         operation_id.unwrap_or(&generated),
+        None,
     )?;
     transaction.commit()?;
     Ok(result)
@@ -698,6 +702,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
         return Ok(());
     }
     let result = match arguments {
+        [kind, arguments @ ..] if kind == "federation" => federation::run(root, arguments).await?,
         [kind, options @ ..] if kind == "work" && (options.is_empty() || options == ["--help"]) => {
             println!("{}", work_cli::HELP);
             return Ok(());
@@ -829,6 +834,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
             println!("{}", crate::factory_proposals::HELP);
             println!("{}", crate::dispatch::request::HELP);
             println!("{}", crate::mattermost::HELP);
+            println!("{}", federation::HELP);
             return Ok(());
         }
         _ => return Err("usage: safeyolo coord --help".into()),
@@ -878,6 +884,7 @@ pub(crate) async fn ensure_factory_rooms(
                 &[],
                 false,
                 &uuid::Uuid::new_v4().simple().to_string(),
+                None,
             )?;
         }
         transaction.commit()?;

@@ -369,6 +369,7 @@ async fn native_stage0_replay_and_delivery_survive_current_master_and_process_cr
         .map(|name| Client {
             socket: Some(root.join(format!("{name}.sock"))),
             token_file: root.join("data/agent_token"),
+            home: None,
         })
         .into();
     for client in &clients {
@@ -612,6 +613,7 @@ async fn native_brief_replay_preserves_delivered_revision_metadata_and_authorize
     let client = |actor: &str| Client {
         socket: Some(root.join(format!("{actor}.sock"))),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     for (index, actor) in ["alice", "bob"].into_iter().enumerate() {
         let reader = client(actor);

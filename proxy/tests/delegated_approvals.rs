@@ -2386,6 +2386,7 @@ async fn reviewer_attention_is_a_reference_and_reconnect_rechecks_canonical_auth
     let client = safeyolo_proxy::coord_tools::Client {
         socket: Some(f.root.path().join("helper.sock")),
         token_file: f.root.path().join("data/agent_token"),
+        home: None,
     };
     let prior = client
         .call(

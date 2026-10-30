@@ -70,35 +70,23 @@ pub(super) async fn respond(
     let db = client.owner.data_dir.join("v0.db");
     let room = room.to_owned();
     let principal = principal.to_owned();
+    let remote = client.remote.clone();
     let result = tokio::task::spawn_blocking(move || {
         let mut conn = open_db(&db, mutation.is_some())
             .map_err(|_| work::WorkError(503, "work store unavailable".into()))?;
+        let actor = remote
+            .as_ref()
+            .map_or(Actor::Agent(&principal), Actor::Remote);
         match mutation {
-            Some((mutation, operation)) => work::mutate(
-                &mut conn,
-                &room,
-                Actor::Agent(&principal),
-                mutation,
-                operation.as_deref(),
-            ),
+            Some((mutation, operation)) => {
+                work::mutate(&mut conn, &room, actor, mutation, operation.as_deref())
+            }
             None => match work_id {
-                Some(id) if attestations => work::attestations::list(
-                    &mut conn,
-                    &room,
-                    Actor::Agent(&principal),
-                    &id,
-                    &after,
-                    limit,
-                ),
-                Some(id) => work::read(&mut conn, &room, Actor::Agent(&principal), &id),
-                None => work::list(
-                    &mut conn,
-                    &room,
-                    Actor::Agent(&principal),
-                    &after,
-                    limit,
-                    state.as_deref(),
-                ),
+                Some(id) if attestations => {
+                    work::attestations::list(&mut conn, &room, actor, &id, &after, limit)
+                }
+                Some(id) => work::read(&mut conn, &room, actor, &id),
+                None => work::list(&mut conn, &room, actor, &after, limit, state.as_deref()),
             },
         }
     })
