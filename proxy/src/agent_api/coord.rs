@@ -2307,7 +2307,7 @@ async fn respond_as(
         return match context
             .client
             .wait_attention(
-                &principal,
+                principal,
                 since,
                 limit,
                 timeout,
@@ -2340,7 +2340,7 @@ async fn respond_as(
         }
         return match context
             .client
-            .attention_object(&principal, &attention_id)
+            .attention_object(principal, &attention_id)
             .await
         {
             Ok(value) => response(200, value),
@@ -2353,7 +2353,7 @@ async fn respond_as(
             json!({"error":"coord resource not found or not accessible"}),
         );
     };
-    let access = match context.client.access(&room_name, &principal).await {
+    let access = match context.client.access(&room_name, principal).await {
         Ok(access) => access,
         Err(error) => return error_response(error),
     };
@@ -2372,7 +2372,7 @@ async fn respond_as(
             let state = if access.permissions.iter().any(|p| p == "receive") {
                 match context
                     .client
-                    .room_state(&room_name, &principal, &access, context.runtime)
+                    .room_state(&room_name, principal, &access, context.runtime)
                     .await
                 {
                     Ok(state) => state,
@@ -2415,7 +2415,7 @@ async fn respond_as(
                 request,
                 &room_name,
                 Sender::Agent {
-                    id: &principal,
+                    id: principal,
                     name: agent_name,
                 },
                 payload,
@@ -2449,7 +2449,7 @@ async fn respond_as(
                 &room_name,
                 access,
                 Sender::Agent {
-                    id: &principal,
+                    id: principal,
                     name: agent_name,
                 },
                 since,
@@ -2490,7 +2490,7 @@ async fn respond_as(
             wait_room(
                 &context,
                 &room_name,
-                &principal,
+                principal,
                 since,
                 limit,
                 timeout,
@@ -2530,7 +2530,7 @@ async fn respond_as(
             }
             match context
                 .client
-                .room_state(&room_name, &principal, &access, context.runtime)
+                .room_state(&room_name, principal, &access, context.runtime)
                 .await
             {
                 Ok(state) => response(200, state),
@@ -2569,7 +2569,7 @@ async fn respond_as(
             };
             match context
                 .client
-                .write_declarations(&room_name, &principal, &capabilities, ttl)
+                .write_declarations(&room_name, principal, &capabilities, ttl)
                 .await
             {
                 Ok(result) => response(200, result),

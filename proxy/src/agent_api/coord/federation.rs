@@ -205,6 +205,7 @@ pub(super) async fn forward(
 }
 
 fn allowed(request: Request<'_>) -> bool {
+    // DOC: docs/coord-operations.md, docs/coord-trust-boundary.md
     request.path_and_query.len() <= 16384
         && query_parameter(request.path_and_query, "home").is_ok_and(|home| home.is_none())
         && (route_parts(request).is_some()

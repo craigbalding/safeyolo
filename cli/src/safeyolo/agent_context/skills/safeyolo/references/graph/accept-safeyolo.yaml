@@ -365,9 +365,9 @@ nodes:
         - path: proxy/tests/native_coord/federation.rs
           sha256: 4383e3662d0b21819c387f47b1e41aac261a1101c34e94238537e26c0d85e87e
         - path: proxy/src/agent_api/coord.rs
-          sha256: d854f3ac6d1140438ccfc21c61ba18ee23c66d6ad66c3a3d8b097138a6042eba
+          sha256: 9a37eacd0aa2e4871f2243178b30bf524c7bb5536209aafc2a57d54b942b64af
         - path: proxy/src/agent_api/coord/federation.rs
-          sha256: 179f43f4c5bbc910f85159179ec7e576eb82862b428c4478b7a3e8f83d918043
+          sha256: 42806cd33e27c250841615d5d6bfab5057b037b065d00f3f34cd0219c93ab7bd
         - path: proxy/src/agent_api/coord/federation/tests.rs
           sha256: 0172482d36d05a08f16b331779296d31d6b558bcc332badf97cf207c133f77be
         - path: proxy/src/coord_rooms/federation.rs
