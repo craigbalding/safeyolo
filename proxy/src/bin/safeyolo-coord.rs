@@ -20,6 +20,12 @@ async fn run() -> Result<(), Error> {
         [kind, rest @ ..] if kind == "codex-attention" => {
             safeyolo_proxy::coord_codex_attention::run(rest).await?;
         }
+        [kind, rest @ ..] if kind == "acp-attention" => {
+            safeyolo_proxy::coord_acp_attention::run(rest).await?;
+        }
+        [kind, rest @ ..] if kind == "claude-channel" => {
+            safeyolo_proxy::coord_tools::claude_channel(rest).await?;
+        }
         [kind, help] if kind == "ssh-proxy" && help == "--help" => {
             println!(
                 "{}",

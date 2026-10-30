@@ -19,6 +19,8 @@ mod config;
 mod connection_events;
 mod connection_tasks;
 pub mod contracts;
+pub mod coord_acp_attention;
+mod coord_attention;
 pub mod coord_codex_attention;
 pub mod coord_operator;
 pub mod coord_rooms;

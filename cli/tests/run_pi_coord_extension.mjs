@@ -66,7 +66,8 @@ await test("Pi native attention modes, retention, duplicate receipts, home and f
         on(name, handler){ hooks.set(name, handler); }, appendEntry(customType, data){ entries.push({ type: "custom", customType, data }); },
         sendMessage(message, options){ sent.push({ message, options }); } });
       flags.set("coord-attention", true); flags.set("coord-attention-mode", mode); flags.set("coord-home", "selected-home");
-      const ctx = { ui: { notify(message){ errors.push(message); }, setStatus(){} }, sessionManager: { getBranch(){ return entries; } }, async abort(){ aborts++; } };
+      const ctx = { ui: { notify(message){ errors.push(message); }, setStatus(){} }, sessionManager: { getBranch(){ return entries; } },
+        isIdle(){ return mode !== "interrupt"; }, abort(){ aborts++; queueMicrotask(() => hooks.get("agent_settled")()); } };
       hooks.get("session_start")({}, ctx); await flush();
       assert.equal(requests.at(-1).input.since_sequence, 0);
       assert.equal(requests.at(-1).input.home, "selected-home");
