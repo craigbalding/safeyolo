@@ -185,6 +185,10 @@ def test_raw_tree_export_preserves_metadata_and_uses_selected_mapping(local):
             os.setxattr(tree / "command", "system.posix_acl_access", acl)
             subprocess.run(["sudo", "-n", "chown", "-Rh", "0:0", str(tree)], check=True)
             subprocess.run(["sudo", "-n", "chown", "1000:33", str(tree / "command")], check=True)
+            capability = struct.pack("<IIIII", 0x02000001, 1 << 10, 0, 0, 0)
+            subprocess.run(["sudo", "-n", sys.executable, "-c",
+                'import os,sys; os.chmod(sys.argv[1], 0o6751); os.setxattr(sys.argv[1], "security.capability", bytes.fromhex(sys.argv[2]))',
+                str(tree / "command"), capability.hex()], check=True)
             architecture = "amd64" if os.uname().machine == "x86_64" else "arm64"
             (built / "build-inputs.json").write_text(json.dumps({"architecture": architecture, "output_kind": "tree"}))
             (built / "build-base.txt").write_text("docker.io/kalilinux/kali-rolling@sha256:" + "a" * 64)
@@ -203,15 +207,21 @@ def test_raw_tree_export_preserves_metadata_and_uses_selected_mapping(local):
             assert (exported.stat().st_uid, exported.stat().st_gid) == ((231072, 400000) if local else (100000, 100000))
             assert (exported / "command").stat().st_uid == (os.getuid() if local else 101000)
             assert (exported / "command").stat().st_gid == (400033 if local else 100033)
-            assert (exported / "command").stat().st_mode & 0o777 == 0o751
+            assert (exported / "command").stat().st_mode & 0o7777 == 0o6751
             assert (exported / "command").stat().st_ino == (exported / "hard").stat().st_ino
             assert (exported / "symbolic").readlink() == Path("command")
             attributes = subprocess.check_output(["sudo", "-n", sys.executable, "-c",
-                'import json,os,sys; print(json.dumps([os.getxattr(sys.argv[1], name).hex() for name in ("user.safeyolo.fixture", "system.posix_acl_access")]))',
+                'import json,os,sys; print(json.dumps([os.getxattr(sys.argv[1], name).hex() for name in ("user.safeyolo.fixture", "system.posix_acl_access", "security.capability")]))',
                 str(exported / "command")], text=True)
             expected_acl = bytearray(acl)
             expected_acl[16:20] = (231105 if local else 100033).to_bytes(4, "little")
-            assert json.loads(attributes) == [b"metadata".hex(), expected_acl.hex()]
+            expected_capability = (struct.pack("<I", 0x03000001) + capability[4:]
+                                   + struct.pack("<I", 231072 if local else 100000))
+            assert json.loads(attributes) == [b"metadata".hex(), expected_acl.hex(), expected_capability.hex()]
+            original_capability = subprocess.check_output(["sudo", "-n", sys.executable, "-c",
+                'import os,sys; print(os.getxattr(sys.argv[1], "security.capability").hex())',
+                str(tree / "command")], text=True)
+            assert original_capability.strip() == capability.hex()
             assert tree.stat().st_uid == 0 and (tree / "command").stat().st_uid == 1000
         finally:
             subprocess.run(["sudo", "-n", "rm", "-rf", "--", str(directory)], check=True)
