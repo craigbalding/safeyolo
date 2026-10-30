@@ -458,7 +458,7 @@ pub fn tools() -> Vec<Value> {
     );
     add(
         "read_github_work",
-        "Read current local work beside clearly external GitHub title/state/URL. Uses only the caller's normal github service binding through its proxy route; the upstream personal access token is never returned. Metadata reads are GET-only, bounded to 1 MiB/15 seconds with a 512-byte inert title excerpt, without redirects or retries. Missing/revoked access or GitHub failure returns external.status=unavailable beside local work. Room authority is rechecked after fetching. No descriptions, assignees or head SHA are copied; claims, targets, attestations and completion never change. Ordinary read_work and claim operations do not fetch GitHub.",
+        "Read current local work beside clearly external GitHub title/state/URL. Uses only the caller's normal github service binding through its proxy route; the upstream personal access token is never returned. Metadata reads are GET-only, bounded to 1 MiB/15 seconds, without redirects or retries. A title keeps at most 512 original UTF-8 bytes before inert control escaping; escaping can make the returned text longer. Missing/revoked access or GitHub failure returns external.status=unavailable beside local work. Room authority is rechecked after fetching. No descriptions, assignees or head SHA are copied; claims, targets, attestations and completion never change. Ordinary read_work and claim operations do not fetch GitHub.",
         json!({"room_name":string,"work_id":string}),
         &["room_name", "work_id"],
     );

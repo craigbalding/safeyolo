@@ -407,7 +407,7 @@ nodes:
         - path: proxy/src/coord_operator/signals.rs
           sha256: 38e446826430b7bd05abf2816b42415c80434e10495d640ab892a514498e4f6c
         - path: proxy/src/coord_tools.rs
-          sha256: 5004c6aef1c5d2664b5814b23be6568dd2c03b439bdeeacfc52858b22974da32
+          sha256: b904b0ace74eec8f0e7756f736e9e17ba3db5bc68d86c5664b8c86ca44149890
         - path: proxy/src/coord_rooms/room_status.rs
           sha256: ac2d0dff5875c2beacc4cef2208d5fec6286ae5b287373a0a2e3902c5bec097b
         - path: proxy/src/coord_rooms/room_status/tests.rs

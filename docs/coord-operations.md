@@ -265,6 +265,7 @@ The agent does not receive the upstream personal access token. The adapter
 does not follow redirects, retry requests or write to GitHub. Each external
 request has a 15-second deadline and a 1 MiB response limit. Title excerpts use
 at most 512 source UTF-8 bytes and the existing inert control-character display.
+Escaping can make the returned title longer than 512 bytes.
 Other service capabilities and generic opaque work references remain available.
 
 If GitHub fails or the caller lacks service access, `external.status` is
