@@ -50,7 +50,11 @@ async fn native_attestations_exact_candidate_authorship_replay_and_recovery() {
         .prefix("coord-attestations-")
         .tempdir_in(std::env::current_dir().unwrap())
         .unwrap();
-    let root = temp.path();
+    // Preserve reached effects on failure so an observer correction can inspect
+    // the original operation, rather than replaying it for bookkeeping.
+    let retained = temp.keep();
+    let root = retained.as_path();
+    println!("attestation fixture: {}", root.display());
     assert!(host_cli(root, &["init"]).await.status.success());
     fs::write(root.join("config.toml"),"admin_port=0\nflow_store_enabled=false\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n[[listeners]]\nagent_id='bob'\nsocket_path='bob.sock'\n[[listeners]]\nagent_id='carol'\nsocket_path='carol.sock'\n").unwrap();
     fs::write(root.join("policy.toml"),format!("[controls.network]\nenabled=false\n[hosts]\n[agents.alice]\nagent_id='{ALICE}'\n[agents.bob]\nagent_id='{BOB}'\n[agents.carol]\nagent_id='{CAROL}'\n")).unwrap();
@@ -408,4 +412,6 @@ async fn native_attestations_exact_candidate_authorship_replay_and_recovery() {
         json!({"lost_response_input":offline_input,"recovered":saved,"advanced_target":advanced,"canonical_attention":resolved,"restarted_status":stable})
     );
     stage0::crash(proxy).await;
+    drop(_cleanup);
+    fs::remove_dir_all(root).unwrap();
 }
