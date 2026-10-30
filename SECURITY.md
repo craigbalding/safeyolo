@@ -74,7 +74,7 @@ Service capabilities scope what an agent can do within a service. Risky routes (
 
 ### Auditability
 
-Behind the scenes, every request gets a unique ID. Every security decision — credential detection, policy evaluation, gateway enforcement — is logged to structured JSONL with the reasoning: what was detected, where it was going, what the policy said, and what happened. The `watch` command gives operators a real-time view of all decisions.
+Behind the scenes, every request gets a unique ID. Every security decision — credential detection, policy evaluation, gateway enforcement — is logged to structured JSONL with the reasoning: what was detected, where it was going, what the policy said, and what happened. Use `logs` to read retained events. Use `approvals` or `inspect` for current approval requests. Use `watch` for pending Coord signals.
 
 ## Enforcement Layers
 
