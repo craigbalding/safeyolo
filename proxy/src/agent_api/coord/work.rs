@@ -40,12 +40,29 @@ pub(super) async fn respond(
     } else {
         None
     };
-    let fields = ["work_id", "after", "state", "limit"]
+    let fields = ["work_id", "after", "state", "limit", "attestations"]
         .map(|key| query_parameter(request.path_and_query, key));
-    let [Ok(work_id), Ok(after), Ok(state), Ok(limit)] = fields else {
+    let [
+        Ok(work_id),
+        Ok(after),
+        Ok(state),
+        Ok(limit),
+        Ok(attestations),
+    ] = fields
+    else {
         return response(400, json!({"error":"invalid work query"}));
     };
     let after = after.unwrap_or_default();
+    let attestations = match attestations.as_deref() {
+        None | Some("false") => false,
+        Some("true") if work_id.is_some() => true,
+        _ => {
+            return response(
+                400,
+                json!({"error":"attestations must be true or false; true requires work_id"}),
+            );
+        }
+    };
     let limit = match limit.as_deref().unwrap_or("50").parse::<usize>() {
         Ok(value) => value,
         Err(_) => return response(400, json!({"error":"invalid work page limit"})),
@@ -65,6 +82,14 @@ pub(super) async fn respond(
                 operation.as_deref(),
             ),
             None => match work_id {
+                Some(id) if attestations => work::attestations::list(
+                    &mut conn,
+                    &room,
+                    Actor::Agent(&principal),
+                    &id,
+                    &after,
+                    limit,
+                ),
                 Some(id) => work::read(&mut conn, &room, Actor::Agent(&principal), &id),
                 None => work::list(
                     &mut conn,

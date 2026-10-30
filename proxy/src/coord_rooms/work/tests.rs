@@ -65,6 +65,7 @@ fn counts(conn: &Connection) -> Vec<i64> {
     [
         "coord_work",
         "coord_work_revisions",
+        "coord_work_attestations",
         "coord_operations",
         "coord_attention_edges",
         "coord_attention_feeds",
@@ -77,6 +78,9 @@ fn counts(conn: &Connection) -> Vec<i64> {
     })
     .collect()
 }
+
+#[path = "attestation_tests.rs"]
+mod attestation_tests;
 
 #[test]
 fn ownership_replay_generations_revocation_and_operator_recovery() {

@@ -77,12 +77,15 @@ def test_discovery_and_rpc_errors(adapter):
     assert results[1]["result"]["protocolVersion"] == "2025-03-26"
     tools = results[2]["result"]["tools"]
     by_name = {tool["name"]: tool for tool in tools}
-    assert len(tools) == len(by_name) == 14
+    assert len(tools) == len(by_name)
     assert set(by_name) == {
         "join_room", "read_brief", "get_room_state", "declare_capabilities",
         "send", "send_task", "read_room", "wait_for_coord", "wait_for_attention",
         "read_attention", "wait_for_message",
         "list_approvals", "read_approval", "resolve_approval",
+        "create_work", "list_work", "read_work", "claim_work", "release_work", "complete_work",
+        "create_signal", "read_signal", "list_signals",
+        "change_work_target", "attest_work", "list_work_attestations",
     }
     for name, required in {
         "list_approvals": [],
@@ -97,6 +100,22 @@ def test_discovery_and_rpc_errors(adapter):
     assert results[None]["error"]["code"] == -32600
     assert results[3]["error"]["code"] == -32601
     assert calls == []
+
+
+def test_native_exact_work_target_requests(adapter):
+    call, _, calls, _, _ = adapter
+    target = {"work_id": "work-example", "expected_version": 3, "expected_target_generation": 2,
+              "target_ref": "opaque:branch?candidate=π", "operation_id": "target-change"}
+    call("change_work_target", {"room_name": "backlog", **target})
+    assert calls[-1][0:2] == ("POST", "/api/coord/rooms/backlog/work")
+    assert calls[-1][2] == {"action": "change_target", **target}
+    evidence = {"work_id": "work-example", "target_generation": 3, "kind": "acceptance",
+                "verdict": "reject", "summary": "Check this exact candidate", "evidence_refs": ["https://untrusted.invalid/ref"],
+                "operation_id": "attestation"}
+    call("attest_work", {"room_name": "backlog", **evidence})
+    assert calls[-1][2] == {"action": "attest", **evidence}
+    call("list_work_attestations", {"room_name": "backlog", "work_id": "work-example", "after": "att-previous", "limit": 2})
+    assert calls[-1][0:2] == ("GET", "/api/coord/rooms/backlog/work?work_id=work-example&attestations=true&limit=2&after=att-previous")
 
 
 def test_native_send_defaults_and_exact_task_producer(adapter):
