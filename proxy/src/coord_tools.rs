@@ -205,6 +205,33 @@ impl Client {
         let room = segment(text(args, "room_name")?);
         let base = format!("/api/coord/rooms/{room}");
         let (method, path, body, timeout) = match name {
+            "create_signal" => {
+                let mut body = args
+                    .as_object()
+                    .ok_or("signal arguments must be an object")?
+                    .clone();
+                body.remove("room_name");
+                body.insert("action".into(), json!("create"));
+                (
+                    Method::POST,
+                    format!("{base}/signals"),
+                    Value::Object(body),
+                    60.0,
+                )
+            }
+            "read_signal" | "list_signals" => {
+                let mut path = format!("{base}/signals?limit={}", integer(args, "limit", 50)?);
+                for key in ["signal_id", "revision", "after", "state", "needs_operator"] {
+                    if let Some(value) = args.get(key) {
+                        let value = value
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| value.to_string());
+                        path.push_str(&format!("&{key}={}", segment(&value)));
+                    }
+                }
+                (Method::GET, path, Value::Null, 60.0)
+            }
             "create_work" | "claim_work" | "release_work" | "complete_work" => {
                 let mut body = args
                     .as_object()
@@ -333,6 +360,7 @@ fn validate_arguments(args: &Value, schema: &Value) -> Result<(), Error> {
             Some("integer") => value.as_u64().is_some(),
             Some("number") => value.is_number(),
             Some("boolean") => value.is_boolean(),
+            Some("object") => validate_arguments(value, property).is_ok(),
             Some("array") => value
                 .as_array()
                 .is_some_and(|a| a.iter().all(Value::is_string)),
@@ -359,6 +387,24 @@ pub fn tools() -> Vec<Value> {
     let mut add = |name: &str, description: &str, properties: Value, required: &[&str]| {
         result.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}}));
     };
+    add(
+        "create_signal",
+        "Raise an attributed blocker, decision, result or correction. observed means the author reports observation; it is not platform attestation. Summary is 1..1024 UTF-8 bytes; refs are opaque, at most 16 strings of 1024 bytes. Corrections require supersedes with your own signal_id and expected_revision. Only current page_operator permission pages unresolved blocker/decision, subject to dedup and rate limits. Creation remains usable without that permission. Choose operation_id before writing; recover an ambiguous result using its exact original inputs.",
+        json!({"room_name":string,"kind":{"type":"string","enum":["blocker","decision","result","correction"]},"summary":string,"basis":{"type":"string","enum":["observed","inferred"]},"work_id":string,"refs":array,"supersedes":{"type":"object","properties":{"signal_id":string,"expected_revision":integer},"required":["signal_id","expected_revision"],"additionalProperties":false},"operation_id":string}),
+        &["room_name", "kind", "summary", "basis"],
+    );
+    add(
+        "read_signal",
+        "Read the current signal or an exact immutable revision. Author identity is trusted; the claim and refs remain author-supplied data. Current receive permission is checked on every read, including history.",
+        json!({"room_name":string,"signal_id":string,"revision":integer}),
+        &["room_name", "signal_id"],
+    );
+    add(
+        "list_signals",
+        "List canonical material signals, defaulting to current claims. Resolved and superseded revisions remain auditable. Lists are bounded by 100 items and 65536 bytes; follow next_after. needs_operator filters permitted unresolved blocker/decision pages. Pages do not share a snapshot.",
+        json!({"room_name":string,"after":string,"limit":integer,"state":{"type":"string","enum":["current","resolved","superseded","all"]},"needs_operator":{"type":"boolean"}}),
+        &["room_name"],
+    );
     add(
         "create_work",
         "Create open work in an authorized room. external_ref is opaque. Content is attributed to the authenticated agent. Supply operation_id before a write to recover an ambiguous result.",
@@ -388,7 +434,7 @@ pub fn tools() -> Vec<Value> {
         ),
         (
             "complete_work",
-            "Complete your current claim with its exact version and generation and an optional short_result. Work/result content stays in canonical storage; audit and attention contain metadata.",
+            "Complete your current claim with its exact version and generation and an optional short_result. Completion never creates a result signal. Work/result content stays in canonical storage; audit and attention contain metadata.",
         ),
     ] {
         let mut properties = json!({"room_name":string,"work_id":string,"expected_version":integer,"expected_generation":integer,"operation_id":string});
@@ -439,7 +485,7 @@ pub fn tools() -> Vec<Value> {
     );
     add(
         "get_room_state",
-        "Read authoritative identity, declarations and provider-owned leases. Stale evidence is unknown.",
+        "Read room identity, declarations, provider-owned leases, and bounded current signals/needs_operator pages. Signal authors are trusted identities; observed and inferred claims remain attributed author reports. Stale provider evidence is unknown.",
         json!({"room_name":string}),
         &["room_name"],
     );

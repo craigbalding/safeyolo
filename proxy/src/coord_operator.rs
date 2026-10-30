@@ -12,6 +12,10 @@ use rustyline::{DefaultEditor, ExternalPrinter, error::ReadlineError};
 use serde_json::{Value, json};
 
 use crate::{Error, agent_api::coord::OperatorCoord, coord_timeline};
+mod signals;
+pub async fn watch(config: &Path, arguments: &[String]) -> Result<(), Error> {
+    signals::watch(config, arguments).await
+}
 
 pub const HELP: &str = "safeyolo [--root ROOT] coord send ROOM [TEXT | --file FILE | --stdin] [--to AGENT ...] [--content-type text/plain|text/markdown]\nsafeyolo [--root ROOT] coord chat ROOM [--since SEQUENCE] [--to AGENT] [--observe]\nsafeyolo [--root ROOT] coord history ROOM [--since SEQUENCE]\nsafeyolo [--root ROOT] coord watch ROOM [--history COUNT] [--since SEQUENCE] [--once] [--raw|--json|--compact] [--max-text COUNT] [--redact] [--show-unknown] [--no-color]\nsafeyolo coord watch --jsonl FILE [--raw|--json|--compact] [--max-text COUNT] [--redact] [--show-unknown]\n\nSend reads exactly one UTF-8 input and preserves its payload. --to targets receive-authorized members; otherwise it notifies the room.\nChat receives while you edit. :paste/:p reads the host clipboard, :edit/:e opens $VISUAL or $EDITOR, :q exits. Composed clipboard/editor messages require confirmation. Chat requires a terminal on stdin and stdout.\nWatch renders room messages and Codex/Pi harness events. --compact shows the concise transcript, with one start line and only failures or useful receipts on completion. Text is complete by default. --max-text limits only display; --redact is optional. --json preserves canonical payloads as JSONL. --jsonl - reads stdin.\nUnknown publication is reported without automatic retry. Inspect history before deciding whether to send again.";
 
@@ -601,13 +605,25 @@ async fn run_options(
         } else {
             Box::new(std::io::BufReader::new(std::fs::File::open(path)?))
         };
+        let mut rendered_signals = BTreeSet::new();
         for line in input.lines() {
             let line = line?;
             if line.is_empty() {
                 continue;
             }
-            if serde_json::from_str::<Value>(&line).is_err() {
+            let Ok(event) = serde_json::from_str::<Value>(&line) else {
                 eprintln!("coord watch: invalid JSONL event; continuing with the next line");
+                continue;
+            };
+            if let Some(output) =
+                signals::audit_revision(config, &event, options.display.json).await?
+            {
+                if rendered_signals.insert((
+                    event["details"]["signal_id"].to_string(),
+                    event["details"]["revision"].to_string(),
+                )) {
+                    print!("{output}");
+                }
                 continue;
             }
             let message = json!({"sent_at":time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000,"sender_kind":"agent","sender_agent_name":"reviewer","body":line});

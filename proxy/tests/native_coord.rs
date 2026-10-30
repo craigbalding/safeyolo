@@ -12,6 +12,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[path = "native_coord/inventory.rs"]
 mod inventory;
+#[path = "native_coord/signals.rs"]
+mod signals;
 #[path = "native_coord/stage0.rs"]
 mod stage0;
 #[path = "native_coord/work.rs"]

@@ -32,6 +32,7 @@ use crate::tasks::{self, Registry};
 
 mod approvals;
 mod audit_events;
+mod coord_signals;
 mod gateway;
 mod services;
 mod traffic;
@@ -1363,6 +1364,9 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             StatusCode::OK,
             json!({"schema_version":1,"state":"active","instance_id":instance_id}),
         ));
+    }
+    if path == "/admin/coord/signals" || path.starts_with("/admin/coord/signals/") {
+        return coord_signals::respond(request, &path, task_state).await;
     }
     if let Some(room) = path
         .strip_prefix("/admin/coord/rooms/")

@@ -43,7 +43,7 @@ fn canonical_replay_conflict_and_immutable_history_survive_later_changes() {
     let first = mutate(
         root.path(),
         "alice",
-        &["send", "receive", "send"],
+        &["send", "receive", "send", "page_operator"],
         false,
         "same",
     )
@@ -54,7 +54,14 @@ fn canonical_replay_conflict_and_immutable_history_survive_later_changes() {
     );
     assert_eq!(
         first,
-        mutate(root.path(), "alice", &["receive", "send"], false, "same").unwrap()
+        mutate(
+            root.path(),
+            "alice",
+            &["receive", "send", "page_operator"],
+            false,
+            "same"
+        )
+        .unwrap()
     );
     for (agent, permissions) in [("alice", vec!["send"]), ("bob", vec![])] {
         assert!(

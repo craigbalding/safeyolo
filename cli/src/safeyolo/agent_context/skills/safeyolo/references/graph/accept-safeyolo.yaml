@@ -319,26 +319,33 @@ nodes:
       30-minute ownership boundary. The test overlaps the wait with its other
       checks and reports the observed elapsed time. A shorter run cannot prove
       that duration. The three-model work exercise remains separate.
+      For material signals and operator attention, select
+      signals::native_signals_author_page_watch_replay_and_restart with
+      --ignored. It uses the authenticated Agent API, owned real NATS,
+      native watch and the Admin API. It checks permission revocation,
+      author-only correction, failed-write rollback, lost-response recovery,
+      metadata-only audit and exact immutable revision rendering. The actual
+      three-model symptom/inference/correction exercise remains separate.
     source: proxy/tests/native_coord.rs
     tool:
       obtain_from: "the trusted-base native tests and locked Cargo dependencies; the native NATS owner verifies its pinned archive and executable before launch"
       sources:
         - path: proxy/tests/native_coord.rs
-          sha256: b9bfb44fd125eb8a50b8f0c286995f78f735e447e11ef77a722a3f402c14c543
+          sha256: 63a3a3971eb5396fcb1b0d510892be2c801f443d220a3f5d8c54fe5efd7079e0
         - path: proxy/tests/native_coord/stage0.rs
           sha256: 239dc313484c1a413bae2db56632bb6d8ed437371812536ba6ed5781c0324283
         - path: proxy/src/coord_rooms.rs
-          sha256: 9314615be1142c6115b2d3baa2d304eb1f08fadf781df881083d094a0591fa35
+          sha256: d4ec7b88d216d07f5095f65a26a6f9e00503412c5f9b7d62ea4e3d52ab8130a6
         - path: proxy/tests/native_coord/inventory.rs
           sha256: c2faf29eb73ac726dcc0387209252240fc51a2c9a69b1a749546978c62585fb7
         - path: proxy/src/agent_api/coord/inventory.rs
-          sha256: 78e3cd9a0f4e1d6eba6ba1fe897633d330e79618e772964ec9349afa44e7253a
+          sha256: ed31af13f68546e3f806a50976327d9e6fbfbf7425fa542f407ef75b63dca620
         - path: proxy/src/coord_rooms/inventory.rs
           sha256: 043c13f0398038972f8cafdab35015fd0730953290b6dbc3760dd08db0804683
         - path: proxy/tests/native_coord/work.rs
           sha256: 26c1def8ea52e3fd91dc35ccb4651da38331dd43104bf7112731c2211f8c5194
         - path: proxy/src/coord_rooms/work.rs
-          sha256: bd981547dac80b82618e0f5ce15ccef9aac89ca4e520efd316c2cef8bad488ad
+          sha256: 3862d62ff17e939b8a773ddfc569eb59fe98ec937edca6b32bd6b2e25462d241
         - path: proxy/src/coord_rooms/work/tests.rs
           sha256: 8790b21786a63d898f028a0bd7076ab4522f9de054cec0824ff7ebe0422b109a
         - path: proxy/src/coord_rooms/work_cli.rs
@@ -347,6 +354,24 @@ nodes:
           sha256: b73fec7d93a969ce8efdbc3e57bdbeeb43ba06a085c94c14113a464bcda4db65
         - path: proxy/src/coord_work_schema.sql
           sha256: b8b8e736cc80c6e2da7bcd9bafaf084944ab2cd626e3401a1e3f038faf4674cb
+        - path: proxy/tests/native_coord/signals.rs
+          sha256: fa131cebfa0a8bffcad8f9067ab78b6195564796d873a66bc61504da234af336
+        - path: proxy/src/coord_rooms/signals.rs
+          sha256: fdd1c3b6a29b083d8dd867d8043425312ed636da68bec940fbd72804d082c3d4
+        - path: proxy/src/coord_rooms/signals/tests.rs
+          sha256: 6552d023b8820deb8cca9d93caafb94148cd57d48fd8a89f6fd15621562a27e4
+        - path: proxy/src/coord_rooms/signals_cli.rs
+          sha256: f2574b47569fbf3b590c3d7def75abd66c76b14c677a6841c6c26178e7973ea3
+        - path: proxy/src/coord_signal_schema.sql
+          sha256: 059ad7dcad31ae77f43cf8a9a890f110c7349aad8723b158aa666f34b2ae1bd0
+        - path: proxy/src/agent_api/coord/signals.rs
+          sha256: a3e23a453f685252e9f220436379775e4d862e601ec77f3a1178371eb8b84bce
+        - path: proxy/src/admin_api/coord_signals.rs
+          sha256: 02a963eef1bf4e390e9c57b9dbb0f95854bbb6c7592f6bb0b461ee2f04f41624
+        - path: proxy/src/coord_operator/signals.rs
+          sha256: c29423ad588feb470263cb505f95da62b9bb1022e14cd28fdb9a236cb10cc448
+        - path: proxy/src/coord_tools.rs
+          sha256: dcc476f07bd36596b0dcca5787a1afb5419e52879067e4ecb83a978271b5c768
       setup: "Use the pinned Rust toolchain with curl/tar and an approved NATS acquisition route or the configured verified NATS executable. Tests allocate their own roots and endpoints; never use the operator's live Coord data."
       verify: "sha256sum proxy/tests/native_coord.rs proxy/tests/native_coord/stage0.rs proxy/tests/native_coord/inventory.rs proxy/src/coord_rooms.rs proxy/src/agent_api/coord/inventory.rs proxy/src/coord_rooms/inventory.rs && cargo --version"
       run: "CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test native_coord"

@@ -15,6 +15,8 @@ use std::{
 const NATS_VERSION: &str = "2.14.5";
 pub(crate) mod brief;
 mod inventory;
+pub(crate) mod signals;
+mod signals_cli;
 pub(crate) mod work;
 mod work_cli;
 pub use inventory::HELP as INVENTORY_HELP;
@@ -66,6 +68,7 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
         );
     }
     transaction.execute_batch(include_str!("coord_work_schema.sql"))?;
+    transaction.execute_batch(include_str!("coord_signal_schema.sql"))?;
     let stored: String = transaction.query_row("SELECT id FROM instance", [], |row| row.get(0))?;
     if stored != id.trim() {
         return Err("Coord identity differs from this SafeYolo instance; preserve the store and select its owning root".into());
@@ -668,6 +671,13 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
             return Ok(());
         }
         [kind, arguments @ ..] if kind == "work" => work_cli::run(root, arguments)?,
+        [kind, options @ ..]
+            if kind == "signal" && (options.is_empty() || options == ["--help"]) =>
+        {
+            println!("{}", signals_cli::HELP);
+            return Ok(());
+        }
+        [kind, arguments @ ..] if kind == "signal" => signals_cli::run(root, arguments)?,
         [kind, room] if kind == "state" => {
             let room =
                 percent_encoding::utf8_percent_encode(room, percent_encoding::NON_ALPHANUMERIC);
@@ -691,6 +701,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
             if kind == "brief" && (options.is_empty() || options == ["--help"]) =>
         {
             println!("{}", crate::coord_operator::BRIEF_HELP);
+            println!("{}", signals_cli::HELP);
             return Ok(());
         }
         [kind, arguments @ ..] if kind == "brief" => {
@@ -778,7 +789,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
         }
         [help] if help == "--help" => {
             println!(
-                "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive] [--operation-id ID]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT [--operation-id ID]\nInstance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports bind to 127.0.0.1. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
+                "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT [--operation-id ID]\nInstance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports bind to 127.0.0.1. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
             );
             println!("{}", crate::coord_operator::HELP);
             println!("{}", crate::coord_operator::BRIEF_HELP);
