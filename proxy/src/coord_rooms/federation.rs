@@ -200,6 +200,15 @@ pub(crate) async fn run(root: &Path, arguments: &[String]) -> Result<Value, Erro
                 name,
             )?;
             if !replay && let Some(name) = name {
+                // Reuse a display name after its former principal's last grant
+                // ends. The same transaction preserves immutable authorship and
+                // prevents replay from restoring the obsolete binding.
+                tx.execute(
+                    "DELETE FROM coord_federation_agents WHERE display_name=?1 AND principal_id<>?2
+                     AND NOT EXISTS(SELECT 1 FROM memberships WHERE principal_kind='agent'
+                       AND principal_id=coord_federation_agents.principal_id AND revoked_at IS NULL)",
+                    params![name,id],
+                )?;
                 tx.execute("INSERT INTO coord_federation_agents VALUES(?1,?2,?3,?4) ON CONFLICT(principal_id) DO UPDATE SET display_name=excluded.display_name",params![id,instance,agent,name])?;
             }
             result

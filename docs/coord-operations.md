@@ -588,8 +588,11 @@ home, trust that peer and grant Bob the existing room permissions:
 Trust alone grants no room access. The home maps the instance and agent IDs to
 a home-qualified principal ID. The display name `remote-bob` is the name used
 for targeted attention in this home. It must differ from local agent names and
-other remote display names. Omitting permissions grants `send`, `receive` and
-`page_operator`, as for a local membership. An explicit permission list replaces
+remote names held by agents with active room grants. If the former principal
+has no active grants, a replacement durable ID can reuse its name. Old message
+authorship, work history and operation replay retain their original principal.
+Omitting permissions grants `send`, `receive` and `page_operator`, as for a
+local membership. An explicit permission list replaces
 that set. `member` and `unmember` use the existing membership retry contract.
 
 On the home, run the relay in the foreground. In this example the operator

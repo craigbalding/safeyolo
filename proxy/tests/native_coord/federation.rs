@@ -627,7 +627,7 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
         .await
         .is_err()
     );
-    coord_json(
+    let restored_bob = coord_json(
         &home,
         &[
             "federation",
@@ -648,6 +648,118 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
             .to_string()
             .contains("Revoked agent cannot read this")
     );
+    // An active grant in any room keeps the current name unambiguous. Once
+    // all grants are revoked, another durable ID may use that human name.
+    coord_json(&home, &["room", "create", "also-shared"]).await;
+    coord_json(
+        &home,
+        &[
+            "federation",
+            "member",
+            "also-shared",
+            &peer_id,
+            BOB,
+            "remote-bob",
+            "--operation-id",
+            "other-room-bob",
+        ],
+    )
+    .await;
+    coord_json(
+        &home,
+        &[
+            "federation",
+            "unmember",
+            "shared",
+            &peer_id,
+            BOB,
+            "--operation-id",
+            "retire-shared-bob",
+        ],
+    )
+    .await;
+    let replacement_args = [
+        "federation",
+        "member",
+        "shared",
+        &peer_id,
+        CAROL,
+        "remote-bob",
+        "--operation-id",
+        "replace-retired-bob",
+    ];
+    assert!(!coord_cli(&home, &replacement_args).await.status.success());
+    assert!(
+        bob.call("read_room", &json!({"room_name":"also-shared"}))
+            .await
+            .is_ok()
+    );
+    coord_json(
+        &home,
+        &[
+            "federation",
+            "unmember",
+            "also-shared",
+            &peer_id,
+            BOB,
+            "--operation-id",
+            "retire-other-bob",
+        ],
+    )
+    .await;
+    let replacement = coord_json(&home, &replacement_args).await;
+    assert_ne!(replacement["agent_id"], remote_bob);
+    assert!(
+        bob.call("read_room", &json!({"room_name":"shared"}))
+            .await
+            .is_err()
+    );
+    let retained_history = carol
+        .call("read_room", &json!({"room_name":"shared"}))
+        .await
+        .unwrap();
+    let old_message = retained_history["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["msg_id"] == forged["envelope"]["msg_id"])
+        .unwrap();
+    for field in [
+        "sender_agent_id",
+        "sender_agent_name",
+        "origin_instance_id",
+        "origin_agent_id",
+        "body",
+    ] {
+        assert_eq!(old_message[field], forged["envelope"][field]);
+    }
+    let old_work = json!({"room_name":"shared","work_id":remote_import["work"]["work_id"]});
+    assert_eq!(
+        carol.call("read_work", &old_work).await.unwrap(),
+        remote_import["work"]
+    );
+    assert_eq!(
+        coord_json(
+            &home,
+            &[
+                "federation",
+                "member",
+                "shared",
+                &peer_id,
+                BOB,
+                "remote-bob",
+                "--operation-id",
+                "restore-bob"
+            ]
+        )
+        .await,
+        restored_bob
+    );
+    assert!(
+        bob.call("read_room", &json!({"room_name":"shared"}))
+            .await
+            .is_err()
+    );
     coord_json(&home, &["federation", "revoke", &peer_id]).await;
     assert!(
         bob.call("get_room_state", &json!({"room_name":"shared"}))
@@ -660,6 +772,63 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
             .await
             .is_err()
     );
+    // Re-trusting restores no grants or old name reservation. A replacement
+    // grant is explicit; replaying the former grant cannot steal it back.
+    coord_json(
+        &home,
+        &[
+            "federation",
+            "trust",
+            &peer_id,
+            peer.join("federation-secret").to_str().unwrap(),
+        ],
+    )
+    .await;
+    assert!(
+        carol
+            .call("read_room", &json!({"room_name":"shared"}))
+            .await
+            .is_err()
+    );
+    let replacement_after_trust = coord_json(
+        &home,
+        &[
+            "federation",
+            "member",
+            "shared",
+            &peer_id,
+            BOB,
+            "remote-bob",
+            "--operation-id",
+            "replace-after-retrust",
+        ],
+    )
+    .await;
+    assert_eq!(replacement_after_trust["agent_id"], remote_bob);
+    assert_eq!(
+        bob.call("read_work", &old_work).await.unwrap(),
+        remote_import["work"]
+    );
+    assert_eq!(coord_json(&home, &replacement_args).await, replacement);
+    assert!(
+        carol
+            .call("read_room", &json!({"room_name":"shared"}))
+            .await
+            .is_err()
+    );
+    let current_state = bob
+        .call("get_room_state", &json!({"room_name":"shared"}))
+        .await
+        .unwrap();
+    let current_names = current_state["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|member| member["display_name"] == "remote-bob")
+        .collect::<Vec<_>>();
+    assert_eq!(current_names.len(), 1);
+    assert_eq!(current_names[0]["agent_id"], remote_bob);
+    coord_json(&home, &["federation", "revoke", &peer_id]).await;
     coord_json(&peer, &["federation", "unhome", "primary"]).await;
     assert!(
         bob.call("read_room", &json!({"room_name":"shared"}))
@@ -671,7 +840,7 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
         .await
         .unwrap();
     assert!(local_after.to_string().contains("Private local history"));
-    let report = json!({"home_instance_id":home_id,"peer_instance_id":peer_id,"remote_principal_id":remote_bob,"contested_winner":winner,"partition_home_claim":claimed,"replayed_creation":replay["work"],"retained_message":retained_message,"local_only_message_id":local_message["envelope"]["msg_id"],"brief_revisions":[brief["revision"].clone(),update["revision"].clone()],"targeted_attention":attention,"github":remote_external,"peer_work_rows":count(&peer,"SELECT count(*) FROM coord_work"),"seconds":started.elapsed().as_secs_f64(),"limits":"Two independent native roots, proxy processes, NATS processes and a real TLS home relay on one owned host. TCP link interruption during a source mutation; discarded response after observed durable commit. No second physical host, real WAN performance, GitHub external access or model participation is inferred by this test."});
+    let report = json!({"home_instance_id":home_id,"peer_instance_id":peer_id,"remote_principal_id":remote_bob,"contested_winner":winner,"partition_home_claim":claimed,"replayed_creation":replay["work"],"retained_message":retained_message,"local_only_message_id":local_message["envelope"]["msg_id"],"brief_revisions":[brief["revision"].clone(),update["revision"].clone()],"targeted_attention":attention,"github":remote_external,"name_reuse":{"after_unmember":replacement,"after_peer_retrust":replacement_after_trust},"peer_work_rows":count(&peer,"SELECT count(*) FROM coord_work"),"seconds":started.elapsed().as_secs_f64(),"limits":"Two independent native roots, proxy processes, NATS processes and a real TLS home relay on one owned host. TCP link interruption during a source mutation; discarded response after observed durable commit. No second physical host, real WAN performance, GitHub external access or model participation is inferred by this test."});
     fs::write(
         retained.join("observations.json"),
         serde_json::to_vec_pretty(&report).unwrap(),

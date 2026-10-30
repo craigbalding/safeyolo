@@ -353,7 +353,9 @@ nodes:
       a mutation's route. The test checks one concurrent claimant, qualified
       identity, local-only history, targeted remote attention, home brief
       versions, unavailable GitHub access on both callers, discarded-response
-      replay, restart, reconnection and peer/member revocation. It proves this
+      replay, restart, reconnection and peer/member revocation. It also checks
+      display-name reuse after the last grant or peer revocation, current-name
+      uniqueness, unchanged authorship and original-operation replay. It proves this
       two-instance boundary on one owned host; WAN behavior, external GitHub
       access and three actual model participants remain separate observations.
     source: proxy/tests/native_coord.rs
@@ -363,7 +365,7 @@ nodes:
         - path: proxy/tests/native_coord.rs
           sha256: edd5fdeb0943ffd63ee52020e5a6c38543e487df9d37b58c4cbc657f041d9258
         - path: proxy/tests/native_coord/federation.rs
-          sha256: 4383e3662d0b21819c387f47b1e41aac261a1101c34e94238537e26c0d85e87e
+          sha256: b4f44c1465fd834f467ca5fb4f703efb3c372a57d327644deb8a8e2545e81578
         - path: proxy/src/agent_api/coord.rs
           sha256: 9a37eacd0aa2e4871f2243178b30bf524c7bb5536209aafc2a57d54b942b64af
         - path: proxy/src/agent_api/coord/federation.rs
@@ -371,7 +373,7 @@ nodes:
         - path: proxy/src/agent_api/coord/federation/tests.rs
           sha256: 0172482d36d05a08f16b331779296d31d6b558bcc332badf97cf207c133f77be
         - path: proxy/src/coord_rooms/federation.rs
-          sha256: 536ae9bf745d13637df1630ba2da1a3abb23a863c46913ce4f6094f4f30d1177
+          sha256: ee3732ccad8e2df401630722af5ce80ae248b2db6e74640af06d5b7f8b0f34d4
         - path: proxy/src/coord_rooms/federation/tests.rs
           sha256: 2c61194f81b57c913d2fb17f1c035d5e0704f1d0849f3d8d204028c70f47ae91
         - path: proxy/src/coord_federation_schema.sql
