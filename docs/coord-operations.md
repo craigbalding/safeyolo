@@ -494,6 +494,73 @@ provider reads. Text and JSON output escape terminal and direction controls;
 signal markup remains text. Bare `coord status` continues to report the owned
 NATS process, independently of a room's work state.
 
+## Request an optional catch-up narrative
+
+On the owning host account, use the same instance root and existing room as
+`coord status`. The proxy must be running. The command below shows current
+canonical state without running a model or reading the transcript:
+
+```sh
+safeyolo --root "$HOME/.safeyolo" coord catch-up chat
+```
+
+To generate a narrative, export the bounded request below. The file contains
+room data. Give that file to an already authorized model through its existing
+text interface. Request only the JSON response described by `output_example`.
+The model needs no Coord tools or mutation permissions. Save its returned JSON
+as `catch-up-summary.json` in your current directory.
+
+```sh
+safeyolo --root "$HOME/.safeyolo" coord catch-up chat --prompt > catch-up-input.json
+safeyolo --root "$HOME/.safeyolo" coord catch-up chat --summary catch-up-summary.json --evidence
+```
+
+The second command reads fresh canonical state first. It then displays a
+visibly derived narrative and its cited sources. Each assertion requires text
+and at least one source from the request: `state:<SHA256>` identifies the exact
+canonical projection, and `message:<SEQUENCE>` identifies a retained message in
+that room and instance. The response must repeat the request's `room_id` and
+`origin_instance_id`. References to another instance or room are rejected.
+Evidence reads use the selected instance and current room permissions.
+`--evidence` shows each available source with its original structured
+attribution. Message bodies remain historical author claims. External links
+and model text are never fetched or executed.
+
+Citations do not establish that the narrative is correct. If a narrative
+contradicts ownership, completion or acceptance, the canonical state displayed
+first takes precedence. If the state digest changed, the command marks that
+source unavailable; retain the original input to inspect the earlier
+projection. Missing, expired, deleted or inaccessible message evidence is also
+marked unavailable. The command never substitutes a nearby sequence.
+
+The default request selects the last 100 sequence positions without replaying
+the full transcript. `--max-messages` accepts 1 through 200. History contains at
+most 256 KiB of item JSON, with message bodies excerpted at 4096 UTF-8 bytes.
+Original body sizes, excerpt flags, earlier omissions and continuation values
+remain visible. Current state retains its existing bounds. State and history
+are separate reads, not one atomic snapshot. A history failure produces an
+explicit unavailable result with current state still present.
+
+For an older or longer interval, select its starting sequence with `--since`
+and follow `history.next_cursor` while `history.has_more` is true. Summarize
+these bounded chunks in the chosen model, preserving original source
+references in every combined assertion. Collaborating agents do not need to
+load those chunks. This example starts at the retained beginning:
+
+```sh
+safeyolo --root "$HOME/.safeyolo" coord catch-up chat --prompt --since 0 --max-messages 200
+```
+
+Summary input is limited to 65536 UTF-8 bytes, 32 assertions, 4096 bytes per
+assertion, eight sources per assertion and 64 distinct sources. Missing sources,
+unknown fields and invalid formats are rejected. Model output is inert text,
+with terminal controls made visible and every physical line kept inside a
+gutter. Generation, import and regeneration never create messages, claims,
+targets, attestations, acceptance or other operational changes. SafeYolo stores
+no summary and launches no model for this command. If generation or import
+fails, use `coord status` normally; an import failure still leaves the fetched
+canonical state visible.
+
 ## Inspect room capabilities and resource leases
 
 On the owning host account, use an existing room and configured agent in the

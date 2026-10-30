@@ -358,16 +358,24 @@ nodes:
       uniqueness, unchanged authorship and original-operation replay. It proves this
       two-instance boundary on one owned host; WAN behavior, external GitHub
       access and three actual model participants remain separate observations.
+      For optional operator catch-up, select
+      catch_up::native_catch_up_keeps_current_authority_and_inspectable_bounded_history
+      with --ignored. It exercises the read-only CLI against authenticated agent
+      mutations and real NATS: narrative contradiction, regeneration, simultaneous
+      readers, bounded long history and continuation, inspectable exact messages,
+      malformed/unavailable evidence, restart and revoked access. The test retains
+      its private fixture and original prompt/results. Actual model generation
+      and three model participants remain a separate observation.
     source: proxy/tests/native_coord.rs
     tool:
       obtain_from: "the trusted-base native tests and locked Cargo dependencies; the native NATS owner verifies its pinned archive and executable before launch"
       sources:
         - path: proxy/tests/native_coord.rs
-          sha256: edd5fdeb0943ffd63ee52020e5a6c38543e487df9d37b58c4cbc657f041d9258
+          sha256: e80d82dc38f9a432ed642892cef39457661ab65ff89475a4bf87fc19d128a0e7
         - path: proxy/tests/native_coord/federation.rs
           sha256: b4f44c1465fd834f467ca5fb4f703efb3c372a57d327644deb8a8e2545e81578
         - path: proxy/src/agent_api/coord.rs
-          sha256: 9a37eacd0aa2e4871f2243178b30bf524c7bb5536209aafc2a57d54b942b64af
+          sha256: 4ae91abe4596642fc4c27ee7ef648cc69f98d3e344724fec6ffc92569574a46d
         - path: proxy/src/agent_api/coord/federation.rs
           sha256: 42806cd33e27c250841615d5d6bfab5057b037b065d00f3f34cd0219c93ab7bd
         - path: proxy/src/agent_api/coord/federation/tests.rs
@@ -393,7 +401,7 @@ nodes:
         - path: proxy/tests/native_coord/stage0.rs
           sha256: 97de83bf334938ba0d6b7bb727789e9da4834dc8bbf6fb659a3176119b8fbc6a
         - path: proxy/src/coord_rooms.rs
-          sha256: 1396414d62fedfd3b5125d1ec151e5565e4ef84afc72b74b90cbcf2f6b391c68
+          sha256: 612ceacbeeeca9af21bc76ceeae4434000e05fa56ea6a1051872d274102bedd3
         - path: proxy/tests/native_coord/inventory.rs
           sha256: 754a50220f3e15a8b15d494808326c3b70a2487eef262292665a60d2eafaef3d
         - path: proxy/src/agent_api/coord/inventory.rs
@@ -442,6 +450,16 @@ nodes:
           sha256: 1d5c49ba950a3220cf551cfebacc40ae0cec10bd96b816ee9b1c03c5150c4559
         - path: proxy/tests/native_coord/room_status.rs
           sha256: d36543f0abc7ba6bd5a4a24ffc160d72d9153cd8bb343f44969e6ee3c0ba0000
+        - path: proxy/src/coord_operator.rs
+          sha256: 0ef703a81eda9019b86ceca58616ccaa62e932f66c4b62bf61da7fbb393834ec
+        - path: proxy/src/coord_operator/catch_up.rs
+          sha256: aa83d743d015fe4cf0cb8c33f893e45daed5566e70b4360b73f10305345d3024
+        - path: proxy/src/coord_operator/catch_up/tests.rs
+          sha256: b36cec3e532f69faad69fcb314a6273659101b6d530e8ebdf1ff10a605cc8078
+        - path: proxy/src/coord_timeline.rs
+          sha256: da3a9e6c293022994dc4df5c7c6288b55eb0d834556f01387cfa5e3fecbba5bf
+        - path: proxy/tests/native_coord/catch_up.rs
+          sha256: 7126f4374e070d659d5f4df0be455f8c5881f3dd0a47277689d74de6593c9146
       setup: "Use the pinned Rust toolchain with curl/tar and an approved NATS acquisition route or the configured verified NATS executable. Tests allocate their own roots and endpoints; never use the operator's live Coord data."
       verify: "sha256sum proxy/tests/native_coord.rs proxy/tests/native_coord/stage0.rs proxy/tests/native_coord/inventory.rs proxy/src/coord_rooms.rs proxy/src/agent_api/coord/inventory.rs proxy/src/coord_rooms/inventory.rs && cargo --version"
       run: "CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test native_coord"
