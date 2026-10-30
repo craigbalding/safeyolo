@@ -17,6 +17,13 @@ const ALICE: &str = "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const BOB: &str = "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const UPSTREAM_TOKEN: &str = "synthetic-host-only-github-token";
 
+async fn observed_request(requests: &mut mpsc::Receiver<String>) -> String {
+    tokio::time::timeout(Duration::from_secs(10), requests.recv())
+        .await
+        .expect("GitHub fixture did not observe a request within 10 seconds")
+        .expect("GitHub fixture stopped before observing the request")
+}
+
 async fn headers(stream: &mut (impl tokio::io::AsyncRead + Unpin)) -> Vec<u8> {
     let mut head = Vec::new();
     while !head.ends_with(b"\r\n\r\n") {
@@ -175,11 +182,21 @@ async fn native_github_read_uses_caller_service_and_preserves_local_work() {
                         release.notified().await;
                     }
                     let state = if selected == 1 { "closed" } else { "open" };
+                    let assignee = if selected == 1 {
+                        "remote-mallory"
+                    } else {
+                        "remote-alice"
+                    };
+                    let head = if selected == 1 {
+                        "changed-remote-head"
+                    } else {
+                        "original-remote-head"
+                    };
                     let body = if selected == 5 {
                         json!({"title":"large","state":"open","body":"x".repeat(1024*1024)})
                             .to_string()
                     } else {
-                        json!({"title":"External fixture π\u{001b}[2J\u{202e}","state":state,"body":"PRIVATE-DESCRIPTION","assignees":["remote-assignee"],"head":{"sha":"remote-head"}}).to_string()
+                        json!({"title":"External fixture π\u{001b}[2J\u{202e}","state":state,"body":"PRIVATE-DESCRIPTION","assignees":[assignee],"head":{"sha":head}}).to_string()
                     };
                     let status = if selected == 2 {
                         "503 Unavailable"
@@ -231,7 +248,11 @@ async fn native_github_read_uses_caller_service_and_preserves_local_work() {
     assert_eq!(open["external"]["state"], "open");
     assert_eq!(open["work"], work);
     assert!(!open.to_string().contains("PRIVATE-DESCRIPTION"));
-    assert!(requests.recv().await.unwrap().contains("/issues/1313 "));
+    assert!(
+        observed_request(&mut requests)
+            .await
+            .contains("/issues/1313 ")
+    );
     let operator_seed = coord_json(
         root,
         &[
@@ -249,18 +270,22 @@ async fn native_github_read_uses_caller_service_and_preserves_local_work() {
         external(root, "alice", &operator_seed["work"]).await["external"]["state"],
         "open"
     );
-    assert!(requests.recv().await.unwrap().contains("/pulls/1314 "));
+    assert!(
+        observed_request(&mut requests)
+            .await
+            .contains("/pulls/1314 ")
+    );
     mode.store(1, Ordering::SeqCst);
     let closed = external(root, "alice", &work).await;
     assert_eq!(closed["external"]["state"], "closed");
     assert_eq!(closed["work"], work); // Closing/reassigning remotely has no local effect.
-    requests.recv().await.unwrap();
+    observed_request(&mut requests).await;
     for selected in [2, 4, 5] {
         mode.store(selected, Ordering::SeqCst);
         let unavailable = external(root, "alice", &work).await;
         assert_eq!(unavailable["external"]["status"], "unavailable");
         assert_eq!(unavailable["work"], work);
-        requests.recv().await.unwrap();
+        observed_request(&mut requests).await;
     }
     // A held external request does not hold the work transaction. Bob lacks
     // GitHub access but can receive a released claim under normal room policy.
@@ -270,7 +295,7 @@ async fn native_github_read_uses_caller_service_and_preserves_local_work() {
         let work = work.clone();
         async move { external(&root, "alice", &work).await }
     });
-    requests.recv().await.unwrap();
+    observed_request(&mut requests).await;
     let released=alice.call("release_work",&json!({"room_name":"shared","work_id":work["work_id"],"expected_version":work["version"],"expected_generation":work["claim_generation"],"operation_id":"release"})).await.unwrap();
     work=bob.call("claim_work",&json!({"room_name":"shared","work_id":work["work_id"],"expected_version":released["work"]["version"],"expected_generation":released["work"]["claim_generation"],"operation_id":"bob-claim"})).await.unwrap()["work"].clone();
     service(root, true).await;
@@ -325,7 +350,7 @@ async fn native_github_read_uses_caller_service_and_preserves_local_work() {
             .await
         }
     });
-    requests.recv().await.unwrap();
+    observed_request(&mut requests).await;
     coord_json(root, &["revoke", "shared", "alice"]).await;
     release.notify_one();
     let denied = pending.await.unwrap();
