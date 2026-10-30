@@ -158,7 +158,10 @@ pub async fn run(arguments: &[OsString]) -> Result<(), Error> {
                     let Some(line) = line? else { return Err("Codex App Server closed; inspect native history before repeating uncertain input".into()); };
                     let value: Value = serde_json::from_str(&line)?;
                     connection.consume_turn(&value);
-                    if connection.internal_request.as_ref().is_some_and(|(id,_)| value.get("id") == Some(id)) {
+                    // Native requests have their own ID namespace. An approval
+                    // request may reuse a frontend request ID without answering it.
+                    let response = value.get("id").is_some() && value.get("method").is_none();
+                    if response && connection.internal_request.as_ref().is_some_and(|(id,_)| value.get("id") == Some(id)) {
                         let (_, interrupt) = connection.internal_request.take().unwrap();
                         if !value["error"].is_null() {
                             write_json(&mut frontend_output, &json!({"method":"safeyolo/attention/rejected","params":{"native_error":value["error"],"safe_cursor":connection.cursor}})).await?;
@@ -178,10 +181,10 @@ pub async fn run(arguments: &[OsString]) -> Result<(), Error> {
                             page = Box::pin(next_page(client.clone(), connection.cursor));
                         }
                     } else {
-                        if starting_turns.remove(&value["id"].to_string()) && value["result"]["turn"]["status"] == "inProgress" {
+                        if response && starting_turns.remove(&value["id"].to_string()) && value["result"]["turn"]["status"] == "inProgress" {
                             connection.active_turn = value["result"]["turn"]["id"].as_str().map(str::to_owned);
                         }
-                        if opens.remove(&value["id"].to_string()) && value["error"].is_null() {
+                        if response && opens.remove(&value["id"].to_string()) && value["error"].is_null() {
                             let id = value["result"]["thread"]["id"].as_str().ok_or("native open response has no thread")?;
                             if connection.thread.is_none() { connection.thread = Some(id.to_owned()); }
                             if connection.thread.as_deref() == Some(id) {

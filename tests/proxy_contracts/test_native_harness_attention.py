@@ -201,7 +201,7 @@ def events_until(process, log, predicate, timeout=120):
     with selectors.DefaultSelector() as selector:
         selector.register(process.stdout, selectors.EVENT_READ)
         while time.monotonic() < deadline:
-            assert process.poll() is None, "Pi exited; inspect pi-stderr.log"
+            assert process.poll() is None, "Native client exited; inspect the client stderr log"
             if b"\n" not in buffer:
                 if not selector.select(timeout=min(1, max(0, deadline - time.monotonic()))):
                     continue
@@ -243,6 +243,86 @@ def test_native_rpc_reader_retains_partial_and_complete_suffixes(tmp_path):
         finally:
             process.stdin.close()
             process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("harness", ["codex", "gemini"])
+def test_native_requests_cannot_complete_frontend_or_attention_requests(tmp_path, _binary_cache, monkeypatch, harness):
+    """Synthetic native RPC control: overlapping IDs must preserve both directions."""
+    native = tmp_path / "rpc-peer"
+    native.write_text(f"#!{sys.executable}\n" + '''
+import json, sys
+pending = {}
+admitted = 0
+def emit(value):
+    print(json.dumps(value), flush=True)
+for line in sys.stdin:
+    value = json.loads(line)
+    method, identifier = value.get("method"), value.get("id")
+    if method == "initialize":
+        emit({"id": identifier, "result": {"protocolVersion": 1}})
+    elif method in ("thread/start", "session/new", "turn/start", "session/prompt"):
+        if method in ("turn/start", "session/prompt"):
+            admitted += 1
+        pending[identifier] = method
+        emit({"id": identifier, "method": "test/requestPermission", "params": {}})
+    elif method == "test/barrier":
+        emit({"id": identifier, "result": {"admitted": admitted}})
+    elif method is None and identifier in pending:
+        operation = pending.pop(identifier)
+        if operation == "thread/start":
+            result = {"thread": {"id": "collision-session"}}
+        elif operation == "session/new":
+            result = {"sessionId": "collision-session"}
+        elif operation == "turn/start":
+            turn = {"id": str(identifier), "status": "inProgress"}
+            emit({"method": "turn/started", "params": {"threadId": "collision-session", "turn": turn}})
+            result = {"turn": turn}
+        else:
+            result = {"stopReason": "end_turn"}
+        emit({"id": identifier, "result": result})
+        if operation == "turn/start":
+            emit({"method": "turn/completed", "params": {"threadId": "collision-session", "turn": {"id": str(identifier), "status": "completed"}}})
+''')
+    native.chmod(0o700)
+    monkeypatch.setenv("SAFEYOLO_CODEX_BIN" if harness == "codex" else "SAFEYOLO_GEMINI_BIN", str(native))
+    with contextmanager(proposal_instance)(tmp_path, nats_binary=_binary_cache) as instance:
+        child = codex_process(instance, tmp_path) if harness == "codex" else acp_process(instance, tmp_path, harness=harness)
+        with child as process, (tmp_path / "rpc-control.jsonl").open("wb") as log:
+            send = rpc_send if harness == "codex" else acp_send
+
+            def approve(identifier):
+                process.stdin.write((json.dumps({"id": identifier, "result": {"allowed": True}}) + "\n").encode())
+                process.stdin.flush()
+
+            send(process, "initialize", {"protocolVersion": 1}, 1)
+            events_until(process, log, lambda event: event.get("id") == 1, timeout=15)
+            if harness == "codex":
+                send(process, "initialized")
+            send(process, "thread/start" if harness == "codex" else "session/new", {"cwd": str(tmp_path)}, 2)
+            request = events_until(process, log, lambda event: event.get("method") == "test/requestPermission", timeout=15)[-1]
+            assert request["id"] == 2
+            approve(2)
+            opened = events_until(process, log, lambda event: event.get("id") == 2, timeout=15)
+            assert "result" in opened[-1]
+            field = "threadId" if harness == "codex" else "sessionId"
+            send(process, "turn/start" if harness == "codex" else "session/prompt", {field: "collision-session"}, 3)
+            request = events_until(process, log, lambda event: event.get("method") == "test/requestPermission", timeout=15)[-1]
+            assert request["id"] == 3
+            accepted = instance.agent_api("lens", f"/api/coord/rooms/{ROOM}/send", method="POST", body={
+                "body": "Queue behind the current native request", "notify": ["relay"],
+            })
+            pending = events_until(process, log, lambda event: event.get("method") == "safeyolo/attention/pending", timeout=15)[-1]
+            assert pending["params"]["safe_cursor"] == 0
+            send(process, "test/barrier", {}, 4)
+            barrier = events_until(process, log, lambda event: event.get("id") == 4, timeout=15)[-1]
+            assert barrier["result"]["admitted"] == 1, "Queued attention was admitted while frontend work was pending"
+            approve(3)
+            request = events_until(process, log, lambda event: event.get("method") == "test/requestPermission", timeout=15)[-1]
+            assert str(request["id"]).startswith("safeyolo-attention-")
+            approve(request["id"])
+            delivered = events_until(process, log, lambda event: event.get("method") == "safeyolo/attention/delivered", timeout=15)[-1]
+            assert delivered["params"]["attention_id"] == pending["params"]["attention_id"]
+            assert accepted["envelope"]["sender_agent_name"] == "lens"
 
 
 def test_claude_channel_canonical_submission_keeps_existing_tools(tmp_path, _binary_cache):

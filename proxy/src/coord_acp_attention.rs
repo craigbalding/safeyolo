@@ -123,13 +123,16 @@ pub async fn run(arguments: &[OsString]) -> Result<(), Error> {
                 line = native_output.next_line() => {
                     let Some(line) = line? else { return Err("native ACP closed; inspect native history before repeating uncertain input".into()); };
                     let value: Value = serde_json::from_str(&line)?;
+                    // Native permission requests can reuse frontend request IDs.
+                    // Only responses complete an open or an active prompt.
+                    let response = value.get("id").is_some() && value.get("method").is_none();
                     if internal.as_ref().is_some_and(|(_,steer)| *steer) && value["method"] == "session/update"
                         && value["params"]["sessionId"].as_str() == session.as_deref() {
                         if let Some(text) = value["params"]["update"]["content"]["text"].as_str() {
                             steer_acknowledged |= hermes_steer_acknowledged(text);
                         }
                     }
-                    if internal.as_ref().is_some_and(|(id,_)| value.get("id") == Some(id)) {
+                    if response && internal.as_ref().is_some_and(|(id,_)| value.get("id") == Some(id)) {
                         let (_,steer) = internal.take().unwrap();
                         if !value["error"].is_null() || (steer && !steer_acknowledged) {
                             write_json(&mut frontend_output,&json!({"jsonrpc":"2.0","method":"safeyolo/attention/rejected","params":{"native_error":value["error"],"steer_unconfirmed":steer && !steer_acknowledged,"safe_cursor":cursor,"recovery":"inspect native history before replay; an unconfirmed steer may have become a native queued prompt"}})).await?;
@@ -144,8 +147,8 @@ pub async fn run(arguments: &[OsString]) -> Result<(), Error> {
                         write_json(&mut frontend_output,&json!({"jsonrpc":"2.0","method":"safeyolo/attention/delivered","params":{"attention_id":id,"next_cursor":cursor,"session_id":session,"confirmation":"native_request_completed","stop_reason":value["result"]["stopReason"]}})).await?;
                         page = Box::pin(next_page(client.clone(),cursor));
                     } else {
-                        active.remove(&value["id"].to_string());
-                        if let Some(requested_session) = opens.remove(&value["id"].to_string()) {
+                        if response { active.remove(&value["id"].to_string()); }
+                        if let Some(requested_session) = response.then(|| opens.remove(&value["id"].to_string())).flatten() {
                             if value["error"].is_null() {
                                 let id = value["result"]["sessionId"].as_str().map(str::to_owned).or(requested_session).ok_or("native open has no session ID")?;
                                 if session.is_none() { session = Some(id.clone()); }
