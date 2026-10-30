@@ -162,6 +162,18 @@ async fn native_room_status_current_authority_restart_and_cli() {
     assert!(!text.contains('\u{001b}') && !text.contains('\u{202e}'));
     assert!(!text.contains("Bob owns every item"));
     assert_eq!(coord_json(root, &["status"]).await["state"], "running");
+    // Room names use the same admitted values as the existing room commands.
+    coord_json(root, &["room", "create", "-literal"]).await;
+    assert_eq!(
+        coord_json(root, &["status", "-literal", "--json"]).await["room_name"],
+        "-literal"
+    );
+    assert!(
+        coord_cli(root, &["status", "-literal"])
+            .await
+            .status
+            .success()
+    );
     for args in [
         &["status", "shared", "--unknown"][..],
         &["status", "--json"][..],

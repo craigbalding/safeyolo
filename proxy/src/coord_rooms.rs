@@ -675,8 +675,8 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
             return Ok(());
         }
         let (room, json) = match options {
-            [room] if !room.starts_with('-') => (room, false),
-            [room, flag] if !room.starts_with('-') && flag == "--json" => (room, true),
+            [room] => (room, false),
+            [room, flag] if flag == "--json" => (room, true),
             _ => return Err(room_status::HELP.into()),
         };
         let state = crate::native_client::admin(
