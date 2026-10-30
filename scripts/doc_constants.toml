@@ -304,3 +304,31 @@ source = "proxy/src/packet_capture/compat.rs"
 pattern = 'METADATA_BYTES: usize = (?P<bytes>\d+);'
 docs = ["docs/native-observations.md"]
 must_contain = "at most {bytes} bytes total"
+
+[[assertion]]
+name = "coord-status-brief-excerpt"
+source = "proxy/src/coord_rooms/room_status.rs"
+pattern = 'const BRIEF_BYTES: usize = (?P<bytes>\d+);'
+docs = ["docs/coord-operations.md"]
+must_contain = "first {bytes} UTF-8 bytes"
+
+[[assertion]]
+name = "coord-status-section-count"
+source = "proxy/src/coord_rooms/room_status.rs"
+pattern = 'const MAX_ITEMS: usize = (?P<count>\d+);'
+docs = ["docs/coord-operations.md"]
+must_contain = "at most {count} items"
+
+[[assertion]]
+name = "coord-status-section-bytes"
+source = "proxy/src/coord_rooms/room_status.rs"
+pattern = 'const SECTION_BYTES: usize = (?P<kib>\d+) \* 1024;'
+docs = ["docs/coord-operations.md"]
+must_contain = "{kib} KiB of item JSON"
+
+[[assertion]]
+name = "coord-status-work-excerpt"
+source = "proxy/src/coord_rooms/room_status.rs"
+pattern = 'const WORK_TEXT_BYTES: usize = (?P<bytes>\d+);'
+docs = ["docs/coord-operations.md"]
+must_contain = "at most {bytes} UTF-8 bytes each"

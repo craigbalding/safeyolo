@@ -194,6 +194,38 @@ pub(crate) fn page(
         after,
         limit as i64 + 1
     ])?;
+    let (items, more) = page_items(&mut rows, limit, metadata)?;
+    let next = if more {
+        items.last().map(|v| {
+            if metadata {
+                v["signal_id"].clone()
+            } else {
+                v["signal"]["signal_id"].clone()
+            }
+        })
+    } else {
+        None
+    };
+    Ok(json!({"room_id":room_id,"items":items,"total":total,"next_after":next,"truncated":more}))
+}
+
+pub(crate) fn latest_results(conn: &Connection, room: &str) -> Result<Value, SignalError> {
+    let filter = "FROM coord_signals s JOIN coord_signal_revisions r ON s.signal_id=r.signal_id AND s.revision=r.revision WHERE s.room_id=?1 AND s.state='current' AND json_extract(s.document_json,'$.kind') IN ('result','correction')";
+    let total: i64 = conn.query_row(&format!("SELECT count(*) {filter}"), [room], |r| r.get(0))?;
+    let mut query = conn.prepare(&format!("SELECT s.document_json,r.content_hash {filter} ORDER BY json_extract(s.document_json,'$.updated_at') DESC,s.signal_id LIMIT ?2"))?;
+    let mut rows = query.query(params![
+        room,
+        crate::coord_rooms::room_status::MAX_ITEMS as i64 + 1
+    ])?;
+    let (items, more) = page_items(&mut rows, crate::coord_rooms::room_status::MAX_ITEMS, false)?;
+    Ok(json!({"items":items,"total":total,"truncated":more}))
+}
+
+fn page_items(
+    rows: &mut rusqlite::Rows<'_>,
+    limit: usize,
+    metadata: bool,
+) -> Result<(Vec<Value>, bool), SignalError> {
     let mut items = Vec::new();
     let mut bytes = 0;
     let mut more = false;
@@ -214,18 +246,7 @@ pub(crate) fn page(
         bytes += size;
         items.push(item);
     }
-    let next = if more {
-        items.last().map(|v| {
-            if metadata {
-                v["signal_id"].clone()
-            } else {
-                v["signal"]["signal_id"].clone()
-            }
-        })
-    } else {
-        None
-    };
-    Ok(json!({"room_id":room_id,"items":items,"total":total,"next_after":next,"truncated":more}))
+    Ok((items, more))
 }
 
 fn metadata_for(signal: &Value, content_hash: &str) -> Value {

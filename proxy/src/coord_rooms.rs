@@ -15,6 +15,7 @@ use std::{
 const NATS_VERSION: &str = "2.14.5";
 pub(crate) mod brief;
 mod inventory;
+pub(crate) mod room_status;
 pub(crate) mod signals;
 mod signals_cli;
 pub(crate) mod work;
@@ -665,6 +666,37 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
         return crate::coord_operator::run(config, arguments).await;
     }
     let root = config.parent().ok_or("instance root is missing")?;
+    if let [kind, options @ ..] = arguments
+        && kind == "status"
+        && !options.is_empty()
+    {
+        if options == ["--help"] {
+            println!("{}", room_status::HELP);
+            return Ok(());
+        }
+        let (room, json) = match options {
+            [room] => (room, false),
+            [room, flag] if flag == "--json" => (room, true),
+            _ => return Err(room_status::HELP.into()),
+        };
+        let state = crate::native_client::admin(
+            config,
+            &format!(
+                "/admin/coord/rooms/{}/state",
+                crate::coord_tools::segment(room)
+            ),
+            hyper::Method::GET,
+            Value::Null,
+            Duration::from_secs(5),
+        )
+        .await?;
+        if json {
+            print!("{}", crate::coord_operator::signals::json_text(&state)?);
+        } else {
+            print!("{}", room_status::render(&state));
+        }
+        return Ok(());
+    }
     let result = match arguments {
         [kind, options @ ..] if kind == "work" && (options.is_empty() || options == ["--help"]) => {
             println!("{}", work_cli::HELP);
@@ -793,6 +825,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
             );
             println!("{}", crate::coord_operator::HELP);
             println!("{}", crate::coord_operator::BRIEF_HELP);
+            println!("{}", room_status::HELP);
             println!("{}", crate::factory_proposals::HELP);
             println!("{}", crate::dispatch::request::HELP);
             println!("{}", crate::mattermost::HELP);

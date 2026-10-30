@@ -1,0 +1,246 @@
+//! Bounded current room projections and the operator's deterministic text view.
+use crate::{Error, coord_timeline::visible};
+use rusqlite::{Connection, params};
+use serde_json::{Value, json};
+use std::fmt::Write;
+
+pub(crate) const MAX_ITEMS: usize = 50;
+pub(crate) const SECTION_BYTES: usize = 64 * 1024;
+const BRIEF_BYTES: usize = 2048;
+const WORK_TEXT_BYTES: usize = 512;
+
+// Limits apply to UTF-8 source bytes, without splitting a code point. The
+// canonical text and revision remain available through their ordinary reads.
+fn prefix(text: &str, limit: usize) -> &str {
+    let mut end = text.len().min(limit);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+pub(crate) fn brief_excerpt(mut brief: Value) -> Value {
+    let markdown = brief.as_object_mut().unwrap().remove("markdown").unwrap();
+    let text = markdown.as_str().unwrap_or("");
+    brief["excerpt"] = json!(prefix(text, BRIEF_BYTES));
+    brief["utf8_bytes"] = json!(text.len());
+    brief["truncated"] = json!(text.len() > BRIEF_BYTES);
+    brief
+}
+
+pub(crate) fn bounded_items(items: Vec<Value>, total: usize, budget: usize) -> Value {
+    let mut bytes = 2; // Array brackets; item separators count below.
+    let items = items
+        .into_iter()
+        .take(MAX_ITEMS)
+        .take_while(|item| {
+            bytes += item.to_string().len() + 1;
+            bytes <= budget
+        })
+        .collect::<Vec<_>>();
+    json!({"total":total,"shown":items.len(),"truncated":items.len()<total,"items":items})
+}
+
+fn work_summary(mut work: Value) -> Value {
+    // Descriptions and refs can fill a complete mutation. Status needs the
+    // current ownership/version and a bounded title or completion result.
+    work.as_object_mut().unwrap().remove("external_ref");
+    for field in ["title", "short_result"] {
+        if let Some(text) = work[field].as_str() {
+            let excerpt = prefix(text, WORK_TEXT_BYTES).to_owned();
+            let bytes = text.len();
+            work[format!("{field}_bytes")] = json!(bytes);
+            work[format!("{field}_truncated")] = json!(excerpt.len() < bytes);
+            work[field] = json!(excerpt);
+        }
+    }
+    work
+}
+
+pub(crate) fn work_page(conn: &Connection, room: &str, completed: bool) -> Result<Value, Error> {
+    let total: i64 = conn.query_row(
+        "SELECT count(*) FROM coord_work WHERE room_id=?1 AND (state='done')=?2",
+        params![room, completed],
+        |row| row.get(0),
+    )?;
+    // Recent completions first; active work uses stable durable IDs. A claim's
+    // age never changes ownership. Released claims are already open in this table.
+    let mut query = conn.prepare("SELECT document_json FROM coord_work WHERE room_id=?1 AND (state='done')=?2 ORDER BY CASE WHEN ?2 THEN json_extract(document_json,'$.updated_at') ELSE 0 END DESC,work_id LIMIT ?3")?;
+    let items = query
+        .query_map(params![room, completed, MAX_ITEMS as i64], |row| {
+            row.get::<_, String>(0)
+        })?
+        .map(|row| Ok(work_summary(serde_json::from_str(&row?)?)))
+        .collect::<Result<Vec<_>, Error>>()?;
+    Ok(bounded_items(items, total as usize, SECTION_BYTES))
+}
+
+pub(crate) const HELP: &str = "safeyolo [--root ROOT] coord status ROOM [--json]\n\nRead the canonical room state through Admin API. Show the brief revision and a UTF-8 prefix of at most 2048 bytes, current agent members, advertised authorized capabilities, expiring declarations, provider-owned leases, active work, recent completions, operator needs and latest current results/corrections. No chat replay or model is used. Each section shows at most 50 items and 64 KiB of item JSON, with counts and truncation. Per-member verified and declared capability arrays also have byte limits. Work titles and completion results show at most 512 UTF-8 bytes each. Use coord brief show, coord work show and coord signal show for full canonical records. Availability without fresh provider evidence is unknown. Claims remain owned until an explicit transition. Bare coord status reports the owned NATS process.";
+
+fn text(value: &Value) -> &str {
+    value.as_str().unwrap_or("none")
+}
+fn quoted(value: &Value) -> String {
+    // Quoting prevents embedded newlines/tabs from impersonating another row.
+    visible(&value.to_string())
+}
+fn heading(output: &mut String, title: &str, page: &Value) {
+    let _ = writeln!(
+        output,
+        "\n{title} ({} of {}{})",
+        page["shown"],
+        page["total"],
+        if page["truncated"] == true {
+            "; truncated"
+        } else {
+            ""
+        }
+    );
+    if page["shown"] == 0 {
+        let _ = writeln!(
+            output,
+            "  {}",
+            if page["total"] == 0 {
+                "none"
+            } else {
+                "no items fit the display limit"
+            }
+        );
+    }
+}
+fn work_rows(output: &mut String, title: &str, page: &Value) {
+    heading(output, title, page);
+    for work in page["items"].as_array().unwrap() {
+        let _ = writeln!(
+            output,
+            "  {} v{} {} title={}{} {}={} generation={} claimed_at={} result={}{}",
+            text(&work["work_id"]),
+            work["version"],
+            text(&work["state"]),
+            quoted(&work["title"]),
+            if work["title_truncated"] == true {
+                " [excerpt]"
+            } else {
+                ""
+            },
+            if work["state"] == "done" {
+                "last_holder"
+            } else {
+                "owner"
+            },
+            text(&work["claim_agent_id"]),
+            work["claim_generation"],
+            work["claimed_at"],
+            quoted(&work["short_result"]),
+            if work["short_result_truncated"] == true {
+                " [excerpt]"
+            } else {
+                ""
+            }
+        );
+    }
+}
+fn signal_rows(output: &mut String, title: &str, page: &Value) {
+    let mut page = page.clone();
+    page["shown"] = json!(page["items"].as_array().unwrap().len());
+    heading(output, title, &page);
+    for item in page["items"].as_array().unwrap() {
+        let signal = &item["signal"];
+        let _ = writeln!(
+            output,
+            "  {} r{} {} author={}:{} basis={} (author report) summary={}",
+            text(&signal["signal_id"]),
+            signal["revision"],
+            text(&signal["kind"]),
+            text(&signal["author"]["kind"]),
+            text(&signal["author"]["id"]),
+            text(&signal["basis"]),
+            quoted(&signal["summary"])
+        );
+    }
+}
+
+pub(crate) fn render(state: &Value) -> String {
+    let mut output = String::new();
+    let _ = writeln!(
+        output,
+        "Room {} ({})\nBrief v{} {}{}",
+        quoted(&state["room_name"]),
+        text(&state["room_id"]),
+        state["brief"]["revision"],
+        quoted(&state["brief"]["excerpt"]),
+        if state["brief"]["truncated"] == true {
+            " [excerpt; use coord brief show]"
+        } else {
+            ""
+        }
+    );
+    heading(&mut output, "Members", &state["bounds"]["members"]);
+    for member in state["members"].as_array().unwrap() {
+        let _ = writeln!(
+            output,
+            "  {} {}",
+            quoted(&member["display_name"]),
+            text(&member["agent_id"])
+        );
+        for capability in member["verified"].as_array().unwrap() {
+            let _ = writeln!(
+                output,
+                "    {} (authorized; availability {}; {}; observed_at={}; valid_until={})",
+                text(&capability["capability"]),
+                text(&capability["availability"]),
+                text(&capability["freshness"]),
+                capability["observed_at"],
+                capability["valid_until"]
+            );
+        }
+        for capability in member["declared"].as_array().unwrap() {
+            let _ = writeln!(
+                output,
+                "    {} (agent declared; unverified; valid_until={})",
+                text(&capability["capability"]),
+                capability["valid_until"]
+            );
+        }
+        for field in ["verified", "declared"] {
+            let counts = &member["bounds"][field];
+            if counts["truncated"] == true {
+                let _ = writeln!(
+                    output,
+                    "    {field}: {} of {}; truncated",
+                    counts["shown"], counts["total"]
+                );
+            }
+        }
+    }
+    heading(
+        &mut output,
+        "Resource leases",
+        &state["bounds"]["resource_leases"],
+    );
+    for lease in state["resource_leases"].as_array().unwrap() {
+        let _ = writeln!(
+            output,
+            "  {}:{} state={} holder={} {} observed_at={} valid_until={}",
+            text(&lease["provider"]),
+            text(&lease["resource"]),
+            text(&lease["state"]),
+            text(&lease["holder_agent_id"]),
+            text(&lease["freshness"]),
+            lease["observed_at"],
+            lease["valid_until"]
+        );
+    }
+    work_rows(&mut output, "Active work", &state["active_work"]);
+    work_rows(&mut output, "Completed work", &state["completed_work"]);
+    signal_rows(&mut output, "Needs operator", &state["needs_operator"]);
+    signal_rows(
+        &mut output,
+        "Latest material results",
+        &state["latest_results"],
+    );
+    visible(&output)
+}
+
+#[cfg(test)]
+mod tests;
