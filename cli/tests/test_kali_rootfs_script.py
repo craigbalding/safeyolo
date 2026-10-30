@@ -1,5 +1,7 @@
 """Regression tests for the bundled Kali custom-rootfs builder."""
 
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -42,13 +44,29 @@ def _write_executable(path: Path, body: str) -> None:
         + ", ".join(MISSING_KALI_BUILDER_TEST_TOOLS)
     ),
 )
-def test_linux_builder_keeps_pull_unprivileged_and_elevates_unpack(
-    tmp_path: Path,
+@pytest.mark.parametrize("manifest_kind", ["index", "manifest", "missing", "ambiguous"])
+def test_kali_base_conversion_preserves_registry_provenance_and_privilege(
+    tmp_path: Path, manifest_kind: str,
 ) -> None:
     """The host password authorizes operations, not the whole build script."""
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     call_log = tmp_path / "calls"
+    child_digest = "sha256:" + "a" * 64
+    manifest = {"schemaVersion": 2}
+    if manifest_kind != "manifest":
+        manifest["manifests"] = [
+            {"platform": {"os": "linux", "architecture": "arm64"},
+             "digest": "sha256:" + "b" * 64},
+            {"platform": {"os": "linux", "architecture": "amd64"}, "digest": child_digest},
+        ]
+        if manifest_kind == "missing":
+            manifest["manifests"].pop()
+        elif manifest_kind == "ambiguous":
+            manifest["manifests"].append(manifest["manifests"][-1])
+    raw_manifest = json.dumps(manifest)
+    if manifest_kind == "manifest":
+        child_digest = "sha256:" + hashlib.sha256(raw_manifest.encode()).hexdigest()
 
     _write_executable(
         fake_bin / "id",
@@ -73,7 +91,8 @@ def test_linux_builder_keeps_pull_unprivileged_and_elevates_unpack(
         "#!/bin/sh\n"
         "printf 'skopeo' >> \"$TEST_CALL_LOG\"\n"
         "for arg in \"$@\"; do printf '|%s' \"$arg\" >> \"$TEST_CALL_LOG\"; done\n"
-        "printf '\\n' >> \"$TEST_CALL_LOG\"\n",
+        "printf '\\n' >> \"$TEST_CALL_LOG\"\n"
+        "if [ \"$1\" = inspect ]; then printf '%s' \"$TEST_BASE_MANIFEST\"; fi\n",
     )
     # The dependency check requires umoci on PATH. The sudo double exits before
     # invoking it, which also catches an accidental unprivileged call.
@@ -88,9 +107,12 @@ def test_linux_builder_keeps_pull_unprivileged_and_elevates_unpack(
         {
             "PATH": f"{fake_bin}:{env['PATH']}",
             "TEST_CALL_LOG": str(call_log),
+            "TEST_BASE_MANIFEST": raw_manifest,
             "SAFEYOLO_AGENT_NAME": "kali-test",
+            "SAFEYOLO_ROOTFS_BASE": "registry.example/kali@sha256:" + "c" * 64,
             "SAFEYOLO_ROOTFS_OUT_TREE": str(tmp_path / "rootfs"),
             "SAFEYOLO_ROOTFS_OUT_CACHE_PATHS": str(tmp_path / "cache-paths"),
+            "SAFEYOLO_ROOTFS_OUT_BUILD_BASE": str(tmp_path / "build-base.txt"),
             "SAFEYOLO_ROOTFS_WORK_DIR": str(work_dir),
             "SAFEYOLO_GUEST_SRC_DIR": str(REPO_ROOT / "guest"),
             "SAFEYOLO_TARGET_ARCH": "amd64",
@@ -101,9 +123,15 @@ def test_linux_builder_keeps_pull_unprivileged_and_elevates_unpack(
         [str(KALI_BUILDER)], env=env, capture_output=True, text=True
     )
 
-    assert result.returncode == 73
     calls = call_log.read_text().splitlines()
     assert calls[0] == "sudo|-v"
+    if manifest_kind in {"missing", "ambiguous"}:
+        assert result.returncode != 0
+        assert "Kali base must contain exactly one linux/amd64 manifest" in result.stderr
+        assert not any("|copy|" in call or "|umoci|" in call for call in calls)
+        assert not (tmp_path / "build-base.txt").exists()
+        return
+    assert result.returncode == 73
     pull_index = next(i for i, call in enumerate(calls) if call.startswith("skopeo|"))
     unpack_index = next(
         i for i, call in enumerate(calls)
@@ -111,6 +139,13 @@ def test_linux_builder_keeps_pull_unprivileged_and_elevates_unpack(
     )
     assert pull_index < unpack_index
     assert not any(call.startswith("sudo|skopeo|") for call in calls)
+    assert (
+        f"skopeo|--override-arch=amd64|--override-os=linux|copy|--format|oci|"
+        f"docker://registry.example/kali@{child_digest}|oci:{work_dir}/oci:kali"
+    ) in calls
+    # OCI conversion can change the manifest digest. Provenance names the
+    # registry child selected from the original pinned index, never that local digest.
+    assert (tmp_path / "build-base.txt").read_text() == f"registry.example/kali@{child_digest}\n"
 
 
 def test_kali_builder_precondition_reports_absent_unzip() -> None:
