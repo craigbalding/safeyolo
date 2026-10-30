@@ -15,8 +15,9 @@ import sqlite3
 import subprocess
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -59,13 +60,22 @@ def rpc_send(process, method, params=None, request_id=None):
 
 
 @contextmanager
-def acp_process(instance, directory, *, harness="hermes", mode="queue", since=0):
+def acp_process(instance, directory, *, harness="hermes", mode="queue", since=0, degrade=False):
     arguments = [str(instance.root / "bin/safeyolo-coord"), "acp-attention", harness,
                  "--mode", mode, "--since", str(since)]
+    if degrade:
+        arguments += ["--degrade-to", "queue"]
     environment = dict(os.environ, SAFEYOLO_COORD_SOCKET=instance.paths["relay"],
                        SAFEYOLO_COORD_TOKEN_PATH=str(instance.root / "data/agent_token"))
     (directory / f"{harness}-{mode}-{since}-command.json").write_text(json.dumps(arguments))
-    with (directory / f"{harness}-{mode}-{since}-stderr.log").open("a") as stderr:
+    with ExitStack() as cleanup:
+        if harness == "hermes":
+            # Native model discovery falls back to gh auth even when Codex is
+            # selected. Keep repository credentials outside this proof child.
+            environment["GH_CONFIG_DIR"] = cleanup.enter_context(TemporaryDirectory(prefix="hermes-gh-", dir=directory))
+            for key in ("GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"):
+                environment.pop(key, None)
+        stderr = cleanup.enter_context((directory / f"{harness}-{mode}-{since}-stderr.log").open("a"))
         process = subprocess.Popen(arguments, cwd=directory, env=environment, stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE, stderr=stderr, bufsize=0)
         try:
@@ -817,3 +827,50 @@ def test_hermes_canonical_restart_and_operator_attribution(tmp_path, _binary_cac
     finally:
         os.write(descriptor, b"x")
         os.close(descriptor)
+
+
+@pytest.mark.skipif(not HERMES_MODEL, reason="select a configured native Hermes profile explicitly")
+def test_hermes_explicit_fallback_and_scoped_catalog_without_inference(tmp_path, _binary_cache):
+    """Observe native fallback capabilities and the corrected discovery input, without a model turn."""
+    with contextmanager(proposal_instance)(tmp_path, nats_binary=_binary_cache) as instance:
+        with acp_process(instance, tmp_path, mode="context", degrade=True) as process, (tmp_path / "hermes-fallback.jsonl").open("wb") as log:
+            session = acp_open(process, log, tmp_path)
+            # Inspect only the selected nonsecret fields of the actual native
+            # child; never include the complete environment in an assertion.
+            children = subprocess.check_output(["ps", "--ppid", str(process.pid), "-o", "pid="], text=True).split()
+            assert len(children) == 1, children
+            wanted = {"GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN", "HERMES_HOME"}
+            selected = {}
+            for field in (Path("/proc") / children[0] / "environ").read_bytes().split(b"\0"):
+                key, separator, value = field.partition(b"=")
+                if separator and key.decode() in wanted:
+                    # Credential presence is enough; never retain its value.
+                    selected[key.decode()] = value.decode() if key in (b"GH_CONFIG_DIR", b"HERMES_HOME") else "present"
+            assert set(selected) == {"GH_CONFIG_DIR", "HERMES_HOME"}, set(selected)
+            assert selected["HERMES_HOME"] == os.environ["HERMES_HOME"]
+            assert not list(Path(selected["GH_CONFIG_DIR"]).iterdir())
+            scoped = dict(os.environ, GH_CONFIG_DIR=selected["GH_CONFIG_DIR"])
+            for key in ("GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"):
+                scoped.pop(key, None)
+            gh = subprocess.run(["gh", "auth", "token"], env=scoped, capture_output=True, text=True, timeout=15)
+            assert gh.returncode == 1 and not gh.stdout, "Scoped gh unexpectedly returned a credential"
+            native_python = Path(os.environ["SAFEYOLO_HERMES_BIN"]).parent / "python"
+            inspected = subprocess.run([str(native_python), "-c",
+                "from hermes_cli.models import _resolve_copilot_catalog_api_key; "
+                "print('catalog_credential_present=' + str(bool(_resolve_copilot_catalog_api_key())))"],
+                env=scoped, cwd=tmp_path, capture_output=True, text=True, timeout=20)
+            assert inspected.returncode == 0, "Native catalog inspection failed; inspect its private stderr"
+            assert inspected.stdout.strip() == "catalog_credential_present=False", "Native catalog unexpectedly resolved a credential"
+            acp_send(process, "session/prompt", {"sessionId": session, "prompt": [{"type": "text", "text": "/status"}]}, 3)
+            status = events_until(process, log, lambda event: event.get("id") == 3, timeout=20)
+            assert "error" not in status[-1], status[-1]
+        events = [json.loads(line) for line in (tmp_path / "hermes-fallback.jsonl").read_text().splitlines() if line.strip()]
+        bound = next(event["params"] for event in events if event.get("method") == "safeyolo/attention/bound")
+        assert bound["requested_mode"] == "context" and bound["effective_mode"] == "queue", bound
+        assert bound["capabilities"]["context"] is False
+        assert not any(event.get("method") == "safeyolo/attention/submitted" for event in events)
+        (tmp_path / "hermes-scoped-input-proof.json").write_text(json.dumps({"harness": "Hermes 0.22.5", "session_id": session,
+            "requested_mode": bound["requested_mode"], "effective_mode": bound["effective_mode"],
+            "actual_native_child_gh_config_empty": True, "github_credential_variables_absent": True,
+            "hermes_home_preserved": True, "native_catalog_credential_present": False,
+            "scoped_gh_exit": gh.returncode, "paid_model_turns": 0}, indent=2) + "\n")
