@@ -66,8 +66,16 @@ pub(crate) fn chat_message(message: &Value) -> String {
             .as_str()
             .unwrap_or("unknown")
     );
+    output.push_str(&text_block(message["body"].as_str().unwrap_or_default()));
+    output.push('\n');
+    output
+}
+
+/// Keep inert text inside a gutter on every physical terminal line.
+pub(crate) fn text_block(text: &str) -> String {
+    let mut output = String::new();
     let limit = width();
-    for line in visible(message["body"].as_str().unwrap_or_default()).split('\n') {
+    for line in visible(text).split('\n') {
         output.push_str("│ ");
         let mut column = 0;
         for character in line.chars() {
@@ -89,7 +97,6 @@ pub(crate) fn chat_message(message: &Value) -> String {
         }
         output.push('\n');
     }
-    output.push('\n');
     output
 }
 

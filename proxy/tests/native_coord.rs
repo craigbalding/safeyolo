@@ -12,6 +12,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[path = "native_coord/attestations.rs"]
 mod attestations;
+#[path = "native_coord/catch_up.rs"]
+mod catch_up;
 #[path = "native_coord/federation.rs"]
 mod federation;
 #[path = "native_coord/github.rs"]

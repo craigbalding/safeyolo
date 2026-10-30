@@ -671,6 +671,11 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
     }
     let root = config.parent().ok_or("instance root is missing")?;
     if let [kind, options @ ..] = arguments
+        && kind == "catch-up"
+    {
+        return crate::coord_operator::catch_up::run(config, options).await;
+    }
+    if let [kind, options @ ..] = arguments
         && kind == "status"
         && !options.is_empty()
     {
@@ -830,6 +835,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
             );
             println!("{}", crate::coord_operator::HELP);
             println!("{}", crate::coord_operator::BRIEF_HELP);
+            println!("{}", crate::coord_operator::catch_up::HELP);
             println!("{}", room_status::HELP);
             println!("{}", crate::factory_proposals::HELP);
             println!("{}", crate::dispatch::request::HELP);

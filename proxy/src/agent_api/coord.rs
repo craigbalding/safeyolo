@@ -2867,6 +2867,28 @@ impl OperatorCoord {
         })
     }
 
+    /// Select a bounded retained tail without replaying the room transcript.
+    /// The subsequent message read checks the current room grant again.
+    pub(crate) async fn history_end(&self, room: &str) -> Result<u64, crate::Error> {
+        let access = self
+            .client
+            .sender_access(room, Sender::Operator)
+            .await
+            .map_err(|_| "room not found or current receive authorization unavailable")?;
+        if !access.permissions.iter().any(|p| p == "receive") {
+            return Err("coordination receive permission denied".into());
+        }
+        let connection = self
+            .client
+            .client()
+            .await
+            .map_err(|_| "coordination substrate unavailable")?;
+        let mut stream = jetstream::new(connection)
+            .get_stream(room_stream(&access.room_id))
+            .await?;
+        Ok(stream.info().await?.state.last_sequence)
+    }
+
     pub(crate) async fn send(
         &self,
         room: &str,
