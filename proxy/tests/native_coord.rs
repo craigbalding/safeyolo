@@ -10,6 +10,8 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[path = "native_coord/attestations.rs"]
+mod attestations;
 #[path = "native_coord/inventory.rs"]
 mod inventory;
 #[path = "native_coord/room_status.rs"]

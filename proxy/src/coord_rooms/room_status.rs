@@ -1,5 +1,5 @@
 //! Bounded current room projections and the operator's deterministic text view.
-use crate::{Error, coord_timeline::visible};
+use crate::{Error, coord_rooms::work::attestations, coord_timeline::visible};
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::fmt::Write;
@@ -70,12 +70,45 @@ pub(crate) fn work_page(conn: &Connection, room: &str, completed: bool) -> Resul
         .query_map(params![room, completed, MAX_ITEMS as i64], |row| {
             row.get::<_, String>(0)
         })?
-        .map(|row| Ok(work_summary(serde_json::from_str(&row?)?)))
+        .map(|row| {
+            let mut work = work_summary(serde_json::from_str(&row?)?);
+            let mut counts = attestations::counts(conn, &work)?;
+            let total =
+                counts["current_total"].as_u64().unwrap() + counts["stale_total"].as_u64().unwrap();
+            let items =
+                attestations::items(conn, room, work["work_id"].as_str().unwrap(), "", 8, true)?
+                    .into_iter()
+                    .map(|mut item| {
+                        let record = item["attestation"].as_object_mut().unwrap();
+                        let summary = record["summary"].as_str().unwrap();
+                        let excerpt = prefix(summary, 128).to_owned();
+                        let truncated = excerpt.len() < summary.len();
+                        record.insert("summary_truncated".into(), json!(truncated));
+                        record.insert("summary".into(), json!(excerpt));
+                        let refs = record.remove("evidence_refs").unwrap();
+                        record.insert(
+                            "evidence_ref_count".into(),
+                            json!(refs.as_array().unwrap().len()),
+                        );
+                        record.remove("target_ref");
+                        record.remove("room_id");
+                        record.remove("work_id");
+                        item
+                    })
+                    .collect();
+            let page = bounded_items(items, total as usize, 4096);
+            counts
+                .as_object_mut()
+                .unwrap()
+                .extend(page.as_object().unwrap().clone());
+            work["attestations"] = counts;
+            Ok(work)
+        })
         .collect::<Result<Vec<_>, Error>>()?;
     Ok(bounded_items(items, total as usize, SECTION_BYTES))
 }
 
-pub(crate) const HELP: &str = "safeyolo [--root ROOT] coord status ROOM [--json]\n\nRead the canonical room state through Admin API. Show the brief revision and a UTF-8 prefix of at most 2048 bytes, current agent members, advertised authorized capabilities, expiring declarations, provider-owned leases, active work, recent completions, operator needs and latest current results/corrections. No chat replay or model is used. Each section shows at most 50 items and 64 KiB of item JSON, with counts and truncation. Per-member verified and declared capability arrays also have byte limits. Work titles and completion results show at most 512 UTF-8 bytes each. Use coord brief show, coord work show and coord signal show for full canonical records. Availability without fresh provider evidence is unknown. Claims remain owned until an explicit transition. Bare coord status reports the owned NATS process.";
+pub(crate) const HELP: &str = "safeyolo [--root ROOT] coord status ROOM [--json]\n\nRead the canonical room state through Admin API. Show the brief revision and a UTF-8 prefix of at most 2048 bytes, current agent members, advertised authorized capabilities, expiring declarations, provider-owned leases, active work, recent completions, operator needs and latest current results/corrections. No chat replay or model is used. Each section shows at most 50 items and 64 KiB of item JSON, with counts and truncation. Per-member verified and declared capability arrays also have byte limits. Work titles and completion results show at most 512 UTF-8 bytes each. Each work item shows its current target generation and acceptance counts, with up to eight attestation excerpts in 4096 item JSON bytes, current first. Attestation summaries show at most 128 UTF-8 bytes; evidence refs are counted and remain untrusted external content. Counts include omitted current and stale attestations. No majority or automatic completion is inferred. Use coord brief show, coord work show, coord work attestations and coord signal show for full canonical records. Availability without fresh provider evidence is unknown. Claims remain owned until an explicit transition. Bare coord status reports the owned NATS process.";
 
 fn text(value: &Value) -> &str {
     value.as_str().unwrap_or("none")
@@ -138,6 +171,53 @@ fn work_rows(output: &mut String, title: &str, page: &Value) {
                 ""
             }
         );
+        let evidence = &work["attestations"];
+        let acceptance = &evidence["current_acceptance"];
+        let _ = writeln!(
+            output,
+            "    target generation={} ref={}; current acceptance approve={} reject={} abstain={}; stale attestations={}",
+            work["target_generation"],
+            quoted(&work["target_ref"]),
+            acceptance["approve"],
+            acceptance["reject"],
+            acceptance["abstain"],
+            evidence["stale_total"]
+        );
+        if acceptance["approve"] == 0 && acceptance["reject"] == 0 && acceptance["abstain"] == 0 {
+            let _ = writeln!(output, "    no current acceptance attestations");
+        }
+        for item in evidence["items"].as_array().unwrap() {
+            let record = &item["attestation"];
+            let _ = writeln!(
+                output,
+                "    {} {} generation={} author={}:{} kind={} verdict={} summary={}{} evidence_refs={} (untrusted external content; use coord work attestations)",
+                text(&record["attestation_id"]),
+                if item["current"] == true {
+                    "current"
+                } else {
+                    "stale"
+                },
+                record["target_generation"],
+                text(&record["author"]["kind"]),
+                text(&record["author"]["id"]),
+                quoted(&record["kind"]),
+                quoted(&record["verdict"]),
+                quoted(&record["summary"]),
+                if record["summary_truncated"] == true {
+                    " [excerpt]"
+                } else {
+                    ""
+                },
+                record["evidence_ref_count"]
+            );
+        }
+        if evidence["truncated"] == true {
+            let _ = writeln!(
+                output,
+                "    attestations: {} of {}; truncated; use coord work attestations",
+                evidence["shown"], evidence["total"]
+            );
+        }
     }
 }
 fn signal_rows(output: &mut String, title: &str, page: &Value) {

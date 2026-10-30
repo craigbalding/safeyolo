@@ -4,6 +4,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub(crate) mod attestations;
+
 // Reuse the Coord message content bound for a complete work mutation.
 pub(crate) const MAX_REQUEST_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_PAGE: usize = 200;
@@ -82,6 +84,21 @@ pub(crate) enum Mutation {
         expected_generation: i64,
         agent_id: String,
     },
+    ChangeTarget {
+        work_id: String,
+        expected_version: i64,
+        expected_target_generation: i64,
+        target_ref: String,
+    },
+    Attest {
+        work_id: String,
+        target_generation: i64,
+        kind: String,
+        verdict: attestations::Verdict,
+        summary: String,
+        #[serde(default)]
+        evidence_refs: Vec<String>,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -90,6 +107,8 @@ pub(crate) struct Work {
     pub room_id: String,
     pub title: String,
     pub external_ref: Option<String>,
+    pub target_ref: Option<String>,
+    pub target_generation: i64,
     pub state: String,
     pub claim_agent_id: Option<String>,
     pub claim_generation: i64,
@@ -244,6 +263,7 @@ pub(crate) fn mutate(
         return Ok(serde_json::from_str(&result)?);
     }
     let changed_at = now();
+    let mut attestation = None;
     let mut work = if let Mutation::Create {
         title,
         external_ref,
@@ -257,6 +277,8 @@ pub(crate) fn mutate(
             room_id: room_id.clone(),
             title,
             external_ref,
+            target_ref: None,
+            target_generation: 0,
             state: "open".into(),
             claim_agent_id: None,
             claim_generation: 0,
@@ -270,20 +292,86 @@ pub(crate) fn mutate(
         }
     } else {
         let id = input["work_id"].as_str().unwrap();
-        let version = input["expected_version"].as_i64().unwrap();
-        let generation = input["expected_generation"].as_i64().unwrap();
-        if version < 1 || generation < 0 {
-            return Err(invalid(
-                "expected version must be positive and expected generation nonnegative",
-            ));
-        }
         let mut work = current(&tx, &room_id, id)?;
-        if work.version != version || work.claim_generation != generation {
-            return Err(conflict(
-                "stale work version or claim generation; read current work before changing it",
-            ));
+        // Independent append-only attestations contend only on the candidate,
+        // not on another author's submission or on ownership changes.
+        if !matches!(mutation, Mutation::Attest { .. }) {
+            let version = input["expected_version"].as_i64().unwrap();
+            let target_change = matches!(mutation, Mutation::ChangeTarget { .. });
+            let generation = input[if target_change {
+                "expected_target_generation"
+            } else {
+                "expected_generation"
+            }]
+            .as_i64()
+            .unwrap();
+            if version < 1 || generation < 0 {
+                return Err(invalid(
+                    "expected version must be positive and expected generation nonnegative",
+                ));
+            }
+            if work.version != version
+                || generation
+                    != if target_change {
+                        work.target_generation
+                    } else {
+                        work.claim_generation
+                    }
+            {
+                return Err(conflict(
+                    "stale work version or generation; read current work before changing it",
+                ));
+            }
         }
         match mutation {
+            Mutation::ChangeTarget { target_ref, .. } => {
+                if target_ref.trim().is_empty() || target_ref.len() > 1024 {
+                    return Err(invalid("target_ref must contain 1..1024 UTF-8 bytes"));
+                }
+                work.target_generation = work
+                    .target_generation
+                    .checked_add(1)
+                    .ok_or_else(|| conflict("target generation cannot advance"))?;
+                // An explicit change can advance a reused opaque ref after an
+                // external squash/rebase. Only operation replay is a no-op.
+                work.target_ref = Some(target_ref);
+            }
+            Mutation::Attest {
+                target_generation,
+                kind,
+                verdict,
+                summary,
+                evidence_refs,
+                ..
+            } => {
+                if target_generation < 1 {
+                    return Err(invalid("target_generation must be positive"));
+                }
+                if work.target_ref.is_none() || work.target_generation != target_generation {
+                    return Err(conflict(
+                        "stale or unset work target; read current work before attesting",
+                    ));
+                }
+                if kind.trim().is_empty()
+                    || kind.len() > 128
+                    || summary.trim().is_empty()
+                    || summary.len() > 1024
+                    || evidence_refs.len() > 16
+                    || evidence_refs.iter().any(|r| r.len() > 1024)
+                {
+                    return Err(invalid(
+                        "attestation kind must contain 1..128 UTF-8 bytes; summary 1..1024; evidence_refs at most 16 strings of 1024 bytes each",
+                    ));
+                }
+                let record = json!({"attestation_id":format!("att-{}",uuid::Uuid::new_v4().simple()),"room_id":room_id,"work_id":work.work_id,
+                    "work_version":work.version.checked_add(1).ok_or_else(||conflict("work version cannot advance"))?,
+                    "target_generation":target_generation,"target_ref":work.target_ref,"kind":kind,"verdict":verdict,
+                    "author":{"kind":actor.kind(),"id":actor.id()},"summary":summary,"evidence_refs":evidence_refs,"created_at":changed_at});
+                if record.to_string().len() > attestations::MAX_RECORD_BYTES {
+                    return Err(invalid("attestation exceeds 32768 serialized UTF-8 bytes"));
+                }
+                attestation = Some(record);
+            }
             Mutation::Claim { .. } | Mutation::Reassign { .. } => {
                 let agent_id = match &mutation {
                     Mutation::Reassign { agent_id, .. } if matches!(actor, Actor::Operator) => {
@@ -341,10 +429,18 @@ pub(crate) fn mutate(
         work
     };
     work.updated_at = changed_at;
-    let result = json!({"work":work,"operation_id":operation});
+    let mut result = json!({"work":work,"operation_id":operation});
     let document = result["work"].to_string();
-    let content_hash = hash(document.as_bytes());
-    tx.execute("INSERT INTO coord_work_revisions(work_id,room_id,version,document_json,content_hash,actor_kind,actor_id,operation_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![work.work_id,room_id,work.version,document,content_hash,actor.kind(),actor.id(),operation,changed_at])?;
+    let mut revision = result["work"].clone();
+    if let Some(record) = attestation {
+        tx.execute("INSERT INTO coord_work_attestations(attestation_id,work_id,room_id,work_version,target_generation,kind,verdict) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            params![record["attestation_id"].as_str(),work.work_id,room_id,work.version,work.target_generation,record["kind"].as_str(),record["verdict"].as_str()])?;
+        revision["attestation"] = record.clone();
+        result["attestation"] = record;
+    }
+    let revision_document = revision.to_string();
+    let content_hash = hash(revision_document.as_bytes());
+    tx.execute("INSERT INTO coord_work_revisions(work_id,room_id,version,document_json,content_hash,actor_kind,actor_id,operation_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![work.work_id,room_id,work.version,revision_document,content_hash,actor.kind(),actor.id(),operation,changed_at])?;
     tx.execute("INSERT INTO coord_work(work_id,room_id,version,state,document_json) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(work_id) DO UPDATE SET version=excluded.version,state=excluded.state,document_json=excluded.document_json",params![work.work_id,room_id,work.version,work.state,document])?;
     tx.execute("INSERT INTO coord_operations(principal_kind,principal_id,operation_type,operation_id,request_hash,outcome_kind,outcome_json,created_at) VALUES(?1,?2,?3,?4,?5,'success',?6,?7)", params![actor.kind(),actor.id(),operation_type,operation,request_hash,result.to_string(),changed_at])?;
     stage_attention(&tx, &work, actor, changed_at)?;
@@ -354,7 +450,7 @@ pub(crate) fn mutate(
         .map_err(|_| WorkError(500, "work timestamp unavailable".into()))?;
     let event_type = format!("coord.work_{action}");
     let event = json!({"schema_version":crate::audit::SCHEMA_VERSION,"event_id":event_id,"ts":timestamp,"event":event_type,"kind":"coord","severity":"low","summary":"Coord work changed","addon":"coord",
-        "details":{"actor_kind":actor.kind(),"actor_id":actor.id(),"room_id":room_id,"object_id":work.work_id,"version":work.version,"claim_generation":work.claim_generation,"content_hash":content_hash,"operation_id":operation,"operation_type":operation_type}});
+        "details":{"actor_kind":actor.kind(),"actor_id":actor.id(),"room_id":room_id,"object_id":work.work_id,"version":work.version,"claim_generation":work.claim_generation,"target_generation":work.target_generation,"attestation_id":result.get("attestation").and_then(|a|a.get("attestation_id")),"content_hash":content_hash,"operation_id":operation,"operation_type":operation_type}});
     tx.execute("INSERT INTO coord_outbox(event_id,destination,event_type,payload_json,created_at) VALUES(?1,'audit-jsonl',?2,?3,?4)", params![event_id,event_type,event.to_string(),changed_at])?;
     tx.commit()?;
     Ok(result)

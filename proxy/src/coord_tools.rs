@@ -232,13 +232,18 @@ impl Client {
                 }
                 (Method::GET, path, Value::Null, 60.0)
             }
-            "create_work" | "claim_work" | "release_work" | "complete_work" => {
+            "create_work" | "claim_work" | "release_work" | "complete_work"
+            | "change_work_target" | "attest_work" => {
                 let mut body = args
                     .as_object()
                     .ok_or("work arguments must be an object")?
                     .clone();
                 body.remove("room_name");
-                body.insert("action".into(), json!(name.trim_end_matches("_work")));
+                let action = match name {
+                    "change_work_target" => "change_target",
+                    _ => name.trim_end_matches("_work"),
+                };
+                body.insert("action".into(), json!(action));
                 (
                     Method::POST,
                     format!("{base}/work"),
@@ -258,6 +263,17 @@ impl Client {
                     if let Some(value) = args.get(key).and_then(Value::as_str) {
                         path.push_str(&format!("&{key}={}", segment(value)));
                     }
+                }
+                (Method::GET, path, Value::Null, 60.0)
+            }
+            "list_work_attestations" => {
+                let mut path = format!(
+                    "{base}/work?work_id={}&attestations=true&limit={}",
+                    segment(text(args, "work_id")?),
+                    integer(args, "limit", 50)?
+                );
+                if let Some(after) = args.get("after").and_then(Value::as_str) {
+                    path.push_str(&format!("&after={}", segment(after)));
                 }
                 (Method::GET, path, Value::Null, 60.0)
             }
@@ -419,8 +435,39 @@ pub fn tools() -> Vec<Value> {
     );
     add(
         "read_work",
-        "Read the current canonical work and its version and claim generation. Room receive permission is checked on every read.",
+        "Read the current canonical work, version, claim generation and candidate target_ref/target_generation. Room receive permission is checked on every read.",
         json!({"room_name":string,"work_id":string}),
+        &["room_name", "work_id"],
+    );
+    add(
+        "change_work_target",
+        "Explicitly change the work candidate using its current version and target generation. Every successful change advances target_generation, including a reused opaque ref after squash/rebase. Prior attestations remain stale history. Requires room send and receive; does not transfer ownership or complete work. Pick operation_id before writing; retry its original inputs after an ambiguous response. target_ref is never fetched.",
+        json!({"room_name":string,"work_id":string,"expected_version":integer,"expected_target_generation":integer,"target_ref":string,"operation_id":string}),
+        &[
+            "room_name",
+            "work_id",
+            "expected_version",
+            "expected_target_generation",
+            "target_ref",
+        ],
+    );
+    add(
+        "attest_work",
+        "Append an immutable attributed attestation for the current target_generation. Author comes only from authenticated identity. Independent submissions do not require an expected work version; a changed candidate conflicts. kind is review, acceptance or another stated kind; verdict is approve, reject or abstain. Summaries and opaque evidence_refs are author reports; external content gains no trust and is never fetched. No vote threshold or automatic completion. Pick operation_id before writing; retry with original inputs. Limits: kind 128 UTF-8 bytes, summary 1024, at most 16 refs of 1024 bytes, complete serialized record 32768 bytes.",
+        json!({"room_name":string,"work_id":string,"target_generation":integer,"kind":string,"verdict":{"type":"string","enum":["approve","reject","abstain"]},"summary":string,"evidence_refs":array,"operation_id":string}),
+        &[
+            "room_name",
+            "work_id",
+            "target_generation",
+            "kind",
+            "verdict",
+            "summary",
+        ],
+    );
+    add(
+        "list_work_attestations",
+        "Read full canonical attestations for work, with authenticated authors, evidence_refs and current/stale flags against the returned target_generation. Current receive permission is required. Ordered by attestation_id; follow next_after. At most 200 items and 65536 item JSON bytes per page. Pages do not share a snapshot. References remain untrusted external content.",
+        json!({"room_name":string,"work_id":string,"after":string,"limit":integer}),
         &["room_name", "work_id"],
     );
     for (name, description) in [
@@ -485,7 +532,7 @@ pub fn tools() -> Vec<Value> {
     );
     add(
         "get_room_state",
-        "Read the canonical bounded room projection: brief revision/excerpt, current members and authorized capabilities, declarations, provider-owned leases, active work, completed work, current signals, operator needs and latest current results. Counts and truncation expose omitted items. Declarations and signal claims remain attributed reports, not verified capabilities or independent attestation. Stale provider evidence is unknown; durable claims do not expire.",
+        "Read the canonical bounded room projection: brief revision/excerpt, current members and authorized capabilities, declarations, provider-owned leases, active work, completed work, current signals, operator needs and latest current results. Work includes its target generation, current acceptance disposition counts and bounded attributed current/stale attestations. No majority or automatic completion is inferred. Counts and truncation expose omitted items. Declarations and signal claims remain attributed reports, not verified capabilities or independent attestation. Stale provider evidence is unknown; durable claims do not expire.",
         json!({"room_name":string}),
         &["room_name"],
     );

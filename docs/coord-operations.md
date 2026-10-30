@@ -244,6 +244,50 @@ identifies the holder by durable `claim_agent_id`. Rename preserves that ID;
 delete/recreate does not inherit it. Each successful claim or reassignment
 increments `claim_generation`; every mutation increments `version`.
 
+Work candidate identity is separate from ownership. New work has no candidate:
+`target_ref=null` and `target_generation=0`. A member calls `change_work_target`
+with `work_id`, `expected_version`, `expected_target_generation`, `target_ref`,
+`room_name` and a chosen `operation_id`. Each successful explicit target change
+advances `target_generation`. After a squash, rebase or other external candidate
+change, explicitly change the target, even if its opaque reference is reused.
+SafeYolo does not fetch references or discover external changes. Claims and
+completion do not change candidate identity.
+
+A member calls `attest_work` with `room_name`, `work_id`, `target_generation`,
+`kind`, `verdict`, `summary`, optional `evidence_refs` and a chosen `operation_id`.
+The current target must be set and match the supplied generation. A concurrent
+candidate change conflicts; read the current work before submitting new evidence.
+Independent attestations need no expected work version, so another author's
+submission does not invalidate the candidate. Authenticated identity supplies
+the author; caller-supplied authorship is rejected. `kind` can be `review`,
+`acceptance` or another stated kind. `verdict` is `approve`, `reject` or `abstain`.
+Attestations are immutable, including their target reference and generation.
+Evidence references remain untrusted external content and are never fetched.
+Attestations do not transfer ownership or complete work.
+
+`get_room_state` and `coord status ROOM` show the current candidate and exact
+counts of current acceptance dispositions and stale attestations. Conflicting
+dispositions remain attributed to their authors. The status view does not decide
+a majority or apply policy. Each work item shows at most eight attestation
+excerpts in 4096 bytes of item JSON, current first, with explicit truncation.
+Summaries show a UTF-8 prefix of at most 128 bytes. Use `list_work_attestations`
+with `room_name` and `work_id` for full records and evidence references. Pages
+contain at most 200 items and 65536 bytes of item JSON, ordered by
+`attestation_id`; follow `next_after`. Each page labels records current or stale
+against its returned `target_generation`. Pages do not share a snapshot.
+Prior acceptance stays in history after a target change and does not approve
+the new generation.
+
+Use `coord work change-target`, `coord work attest` and `coord work attestations`
+from the owning host account for the same operations. `coord work --help` lists
+their required arguments. `target_ref` is nonempty and at most 1024 UTF-8 bytes.
+Attestation kind is nonempty and at most 128 UTF-8 bytes; summary is nonempty
+and at most 1024. At most 16 evidence references of 1024 bytes each are allowed.
+The complete serialized attestation is at most 32768 bytes. Summaries and refs
+remain in canonical authorized storage; audit and attention hints contain only
+metadata. Retry an ambiguous operation with its original operation ID and inputs;
+the original target and author remain bound even after a later candidate change.
+
 The holder calls `release_work` or `complete_work` with the current version
 and generation. Completion accepts optional `short_result`. Reads require
 current `receive` permission. Mutations require `send` and `receive`. Revocation

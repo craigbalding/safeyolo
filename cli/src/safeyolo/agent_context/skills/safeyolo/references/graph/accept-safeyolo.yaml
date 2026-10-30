@@ -332,12 +332,19 @@ nodes:
       challenges false chat claims, current ownership, completions, corrections,
       grant revocation and restart. Actual 30-minute operator absence and three
       actual model participants remain separate required observations.
+      For exact work candidates and attestations, select
+      attestations::native_attestations_exact_candidate_authorship_replay_and_recovery
+      with --ignored. It checks authenticated authorship, retained stale evidence,
+      independent conflicting dispositions, candidate changes, current status,
+      revocation races, pre-commit process interruption and lost responses while
+      NATS publication is unavailable. The three-model exact-target exercise
+      remains a separate required observation.
     source: proxy/tests/native_coord.rs
     tool:
       obtain_from: "the trusted-base native tests and locked Cargo dependencies; the native NATS owner verifies its pinned archive and executable before launch"
       sources:
         - path: proxy/tests/native_coord.rs
-          sha256: e9772487e97f784a0858316c0070e82dfedccf9ff9919f16b9170159f6bf13d0
+          sha256: 0d3d1196018b168012ec0a8920e7eb5f807fe6d4e38f073fb64880fe3524fc1b
         - path: proxy/tests/native_coord/stage0.rs
           sha256: 239dc313484c1a413bae2db56632bb6d8ed437371812536ba6ed5781c0324283
         - path: proxy/src/coord_rooms.rs
@@ -350,16 +357,22 @@ nodes:
           sha256: 043c13f0398038972f8cafdab35015fd0730953290b6dbc3760dd08db0804683
         - path: proxy/tests/native_coord/work.rs
           sha256: 26c1def8ea52e3fd91dc35ccb4651da38331dd43104bf7112731c2211f8c5194
+        - path: proxy/tests/native_coord/attestations.rs
+          sha256: 735eaab415bcc151480ae4f1aac263b576b7f8ff7820344993dbf4f07fb5e98f
+        - path: proxy/src/coord_rooms/work/attestations.rs
+          sha256: 91caf90c13c3ff9c69fadc6c6b1b2d0f2099b0619c0dfcf80b63948b09560703
+        - path: proxy/src/coord_rooms/work/attestation_tests.rs
+          sha256: bf8f97d6dd3175aae8cd4a7448effa67d02fda8037e6952116f9e97c861156f7
         - path: proxy/src/coord_rooms/work.rs
-          sha256: 3862d62ff17e939b8a773ddfc569eb59fe98ec937edca6b32bd6b2e25462d241
+          sha256: 9cd0b35e844d842babb7d652adc87b74dbfee6be27deba7c6686815b2619f554
         - path: proxy/src/coord_rooms/work/tests.rs
-          sha256: 8790b21786a63d898f028a0bd7076ab4522f9de054cec0824ff7ebe0422b109a
+          sha256: 0052a9f8e099d600f3e222872740020e6ba7cf5339a385ce5be7fb388c4bcd26
         - path: proxy/src/coord_rooms/work_cli.rs
-          sha256: 415d3542502569f1a582fa9c8a64fad1407665e57eb3ae9cd8a488ca387e9cac
+          sha256: 6a6fad7526db571cf57ce3ecc32fe398069bcf7c0e93cb997938ba65d7a63d04
         - path: proxy/src/agent_api/coord/work.rs
-          sha256: b73fec7d93a969ce8efdbc3e57bdbeeb43ba06a085c94c14113a464bcda4db65
+          sha256: 6fa72de548de03197200c31132652f08f14d19616cb128dbbdf76eb5c726e10b
         - path: proxy/src/coord_work_schema.sql
-          sha256: b8b8e736cc80c6e2da7bcd9bafaf084944ab2cd626e3401a1e3f038faf4674cb
+          sha256: fb6592902c80c56d51758e3938c3fa14b620daa6988269eedf7a6e215e0dcf99
         - path: proxy/tests/native_coord/signals.rs
           sha256: c1c910146c006a282a998a1888a1f61bd6ee81ea98a0a13cfc694d721e86afe4
         - path: proxy/src/coord_rooms/signals.rs
@@ -377,9 +390,9 @@ nodes:
         - path: proxy/src/coord_operator/signals.rs
           sha256: 38e446826430b7bd05abf2816b42415c80434e10495d640ab892a514498e4f6c
         - path: proxy/src/coord_tools.rs
-          sha256: 7c8693a41d64dfa65dd06d32b4020475acedc11a1ffa8bda2574a889450bcd7b
+          sha256: 9d101aa845a0ce6d1a930ccbeafcb3763081b076bbc4e6d0865d161ff67a1f65
         - path: proxy/src/coord_rooms/room_status.rs
-          sha256: 1e4f3f6b0d00164b671d92c0c1dd796cc817bd6c2fe14a3508c67867e475192c
+          sha256: 6c2c01ea0d50629847ddd4a60381fd466e064bc372595aa5252fc3986d5e46fe
         - path: proxy/src/coord_rooms/room_status/tests.rs
           sha256: e8e7ee0d6f41e77eb1181bd5a653401b8de67bf6ba9382efff537e4214beb513
         - path: proxy/tests/native_coord/room_status.rs
