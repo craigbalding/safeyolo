@@ -38,6 +38,7 @@ const MAX_DECLARATIONS_PER_AGENT: usize = 32;
 const MAX_DECLARATION_TTL_SECONDS: i64 = 3600;
 const PROJECTION_PAGE: u64 = 200;
 const RECOVERY_INTERVAL: Duration = Duration::from_millis(250);
+pub(crate) mod inventory;
 pub(crate) mod outbox;
 
 #[derive(Debug)]
@@ -107,6 +108,7 @@ pub(crate) struct CoordOwner {
     explicit_directory: bool,
     nats: tokio::sync::Mutex<Option<async_nats::Client>>,
     cleanup: Arc<CoordCleanup>,
+    snapshot_reads: Arc<inventory::SnapshotReads>,
 }
 
 impl CoordOwner {
@@ -126,6 +128,7 @@ impl CoordOwner {
             explicit_directory,
             nats: tokio::sync::Mutex::new(None),
             cleanup: Arc::new(CoordCleanup::new()),
+            snapshot_reads: Arc::new(inventory::SnapshotReads::default()),
         }
     }
 }
@@ -136,6 +139,7 @@ impl CoordOwner {
 pub struct CoordClient {
     owner: Arc<CoordOwner>,
     policy_file: Option<PathBuf>,
+    provider_directory: Option<PathBuf>,
 }
 
 impl CoordClient {
@@ -144,11 +148,26 @@ impl CoordClient {
     }
 
     pub(crate) fn with_owner(owner: Arc<CoordOwner>, policy_file: Option<PathBuf>) -> Self {
-        Self { owner, policy_file }
+        let provider_directory = policy_file
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("coord-providers"));
+        Self {
+            owner,
+            policy_file,
+            provider_directory,
+        }
     }
 
     pub(crate) fn owner(&self) -> Arc<CoordOwner> {
         self.owner.clone()
+    }
+
+    pub(crate) fn with_provider_directory(mut self, root: Option<&Path>) -> Self {
+        if let Some(root) = root {
+            self.provider_directory = Some(root.join("coord-providers"));
+        }
+        self
     }
 
     /// Only the host approval path calls this operation. Use the existing
@@ -322,42 +341,10 @@ impl CoordClient {
         let principal_ids = principal_ids.to_vec();
         let policy_file = self.policy_file.clone();
         tokio::task::spawn_blocking(move || {
-            let Some(path) = policy_file else {
-                return HashMap::new();
-            };
-            let Ok(source) = std::fs::read_to_string(path) else {
-                return HashMap::new();
-            };
-            let Ok(document) = source.parse::<toml_edit::DocumentMut>() else {
-                return HashMap::new();
-            };
-            let Some(agents) = document
-                .get("agents")
-                .and_then(toml_edit::Item::as_table_like)
-            else {
-                return HashMap::new();
-            };
-            let mut names = HashMap::new();
-            let mut duplicate_ids = HashSet::new();
-            for (name, item) in agents.iter() {
-                let Some(id) = item
-                    .as_table_like()
-                    .and_then(|item| item.get("agent_id"))
-                    .and_then(toml_edit::Item::as_str)
-                    .filter(|id| valid_agent_id(id))
-                else {
-                    continue;
-                };
-                if principal_ids.iter().any(|principal_id| principal_id == id)
-                    && names.insert(id.to_owned(), name.to_owned()).is_some()
-                {
-                    duplicate_ids.insert(id.to_owned());
-                }
-            }
-            for id in duplicate_ids {
-                names.remove(&id);
-            }
-            names
+            inventory::configured_agents(policy_file.as_deref(), &principal_ids)
+                .into_iter()
+                .map(|(id, agent)| (id, agent.name))
+                .collect()
         })
         .await
         .unwrap_or_default()
@@ -417,96 +404,9 @@ impl CoordClient {
         room_name: &str,
         principal: &str,
         _access: &RoomAccess,
+        runtime: Option<&crate::RuntimeState>,
     ) -> Result<Value, CoordError> {
-        let db = self.owner.data_dir.join("v0.db");
-        let room = room_name.to_owned();
-        let principal = principal.to_owned();
-        let principal_for_read = principal.clone();
-        let data =
-            tokio::task::spawn_blocking(move || read_state_data(&db, &room, &principal_for_read))
-                .await
-                .map_err(|_| CoordError::Unavailable)??;
-        // The bounded SQLite read above is a provider boundary.  Re-read the
-        // current grant before exposing the assembled state so a revoke or a
-        // newer membership generation cannot race the response.
-        let current_access = self.access(room_name, &principal).await?;
-        if !current_access
-            .permissions
-            .iter()
-            .any(|permission| permission == "receive")
-        {
-            return Err(CoordError::Forbidden);
-        }
-        let agent_ids = current_access
-            .members
-            .iter()
-            .filter(|member| member.principal_kind == "agent")
-            .map(|member| member.principal_id.clone())
-            .collect::<Vec<_>>();
-        let display_names = self.display_names(&agent_ids).await;
-        let declaration_map = data.declarations.into_iter().fold(
-            HashMap::<String, Vec<Value>>::new(),
-            |mut declarations, (agent_id, capability, asserted_at, valid_until)| {
-                let asserted_by_agent_id = agent_id.clone();
-                declarations.entry(agent_id).or_default().push(json!({
-                    "capability": capability,
-                    "asserted_by_agent_id": asserted_by_agent_id,
-                    "asserted_at": asserted_at,
-                    "valid_until": valid_until,
-                    "freshness": "fresh",
-                    "provenance": "agent_declared",
-                }));
-                declarations
-            },
-        );
-        let mut seen = HashSet::new();
-        let members = current_access
-            .members
-            .iter()
-            .filter(|member| member.principal_kind == "agent")
-            .filter(|member| seen.insert(member.principal_id.clone()))
-            .map(|member| {
-                let declarations = declaration_map
-                    .get(&member.principal_id)
-                    .cloned()
-                    .unwrap_or_default();
-                json!({
-                    "agent_id": member.principal_id,
-                    "display_name": display_names.get(&member.principal_id),
-                    "configured": display_names.contains_key(&member.principal_id),
-                    "origin_instance_id": current_access.instance_id,
-                    "room_permissions": member.permissions,
-                    "verified": [],
-                    "declared": declarations,
-                })
-            })
-            .collect::<Vec<_>>();
-        let resource_leases = data
-            .resources
-            .into_iter()
-            .map(|(provider, resource)| {
-                json!({
-                    "provider": provider,
-                    "resource": resource,
-                    "state": "unknown",
-                    "holder_agent_id": Value::Null,
-                    "holder_display_name": Value::Null,
-                    "observed_at": Value::Null,
-                    "valid_until": Value::Null,
-                    "freshness": "unknown",
-                    "provenance": "provider_owned_lease",
-                })
-            })
-            .collect::<Vec<_>>();
-        Ok(json!({
-            "room_id": current_access.room_id,
-            "room_name": current_access.room_name,
-            "origin_instance_id": current_access.instance_id,
-            "generated_at": now_ms(),
-            "brief": current_access.brief,
-            "members": members,
-            "resource_leases": resource_leases,
-        }))
+        inventory::room_state(self, room_name, "agent", principal, runtime).await
     }
 
     async fn write_declarations(
@@ -931,6 +831,7 @@ impl CoordClient {
 pub struct CoordContext<'a> {
     pub(crate) client: &'a CoordClient,
     pub(crate) cancellation: tokio::sync::watch::Receiver<bool>,
+    pub(crate) runtime: Option<&'a crate::RuntimeState>,
 }
 
 struct Membership {
@@ -947,11 +848,6 @@ struct RoomAccess {
     members: Vec<Membership>,
     instance_id: String,
     brief: Value,
-}
-
-struct StateData {
-    declarations: Vec<(String, String, i64, i64)>,
-    resources: Vec<(String, String)>,
 }
 
 #[derive(Clone)]
@@ -990,7 +886,7 @@ fn valid_attention_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn valid_agent_id(value: &str) -> bool {
+pub(crate) fn valid_agent_id(value: &str) -> bool {
     let Some(suffix) = value.strip_prefix("ag-") else {
         return false;
     };
@@ -1246,43 +1142,6 @@ fn current_agent_permissions(
         .collect())
 }
 
-fn read_state_data(db: &Path, room_name: &str, principal: &str) -> Result<StateData, CoordError> {
-    let conn = open_db(db, false)?;
-    let room_id = room_id_for(&conn, room_name)?;
-    let permissions = current_agent_permissions(&conn, &room_id, principal)?;
-    if !permissions.iter().any(|permission| permission == "receive") {
-        return Err(CoordError::Forbidden);
-    }
-    let declarations = conn
-        .prepare(
-            "SELECT agent_id, capability, asserted_at, valid_until
-             FROM coord_capability_declarations
-             WHERE room_id = ?1 AND valid_until > ?2
-             ORDER BY agent_id, capability",
-        )
-        .map_err(|_| CoordError::Data)?
-        .query_map(params![room_id, now_ms()], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-        })
-        .map_err(|_| CoordError::Data)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| CoordError::Data)?;
-    let resources = conn
-        .prepare(
-            "SELECT provider, resource FROM coord_resource_advertisements
-             WHERE room_id = ?1 ORDER BY provider, resource",
-        )
-        .map_err(|_| CoordError::Data)?
-        .query_map(params![room_id], |row| Ok((row.get(0)?, row.get(1)?)))
-        .map_err(|_| CoordError::Data)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| CoordError::Data)?;
-    Ok(StateData {
-        declarations,
-        resources,
-    })
-}
-
 fn read_attention_feed(
     db: &Path,
     principal: &str,
@@ -1457,7 +1316,7 @@ fn read_brief_revision(db: &Path, edge: &AttentionEdge) -> Result<Value, CoordEr
     .ok_or(CoordError::Data)
 }
 
-fn public_name_part(value: &str) -> bool {
+pub(crate) fn public_name_part(value: &str) -> bool {
     let bytes = value.as_bytes();
     !bytes.is_empty()
         && bytes.len() <= 64
@@ -1467,7 +1326,7 @@ fn public_name_part(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(byte))
 }
 
-fn valid_capability(value: &str) -> bool {
+pub(crate) fn valid_capability(value: &str) -> bool {
     let Some((provider, name)) = value.split_once(':') else {
         return false;
     };
@@ -2043,6 +1902,15 @@ fn read_access_as(
     principal: &str,
 ) -> Result<RoomAccess, CoordError> {
     let conn = open_db(db, false)?;
+    read_access_from(&conn, room_name, kind, principal)
+}
+
+fn read_access_from(
+    conn: &Connection,
+    room_name: &str,
+    kind: &str,
+    principal: &str,
+) -> Result<RoomAccess, CoordError> {
     let room = conn
         .query_row(
             "SELECT room_id, name FROM rooms WHERE name = ?1",
@@ -2097,8 +1965,7 @@ fn read_access_as(
         .optional()
         .map_err(|_| CoordError::Data)?
         .ok_or(CoordError::Unavailable)?;
-    let brief =
-        crate::coord_rooms::brief::current(&conn, &room_id).map_err(|_| CoordError::Data)?;
+    let brief = crate::coord_rooms::brief::current(conn, &room_id).map_err(|_| CoordError::Data)?;
     Ok(RoomAccess {
         room_id,
         room_name,
@@ -2383,7 +2250,7 @@ async fn respond_payload(
             let state = if access.permissions.iter().any(|p| p == "receive") {
                 match context
                     .client
-                    .room_state(&room_name, &principal, &access)
+                    .room_state(&room_name, &principal, &access, context.runtime)
                     .await
                 {
                     Ok(state) => state,
@@ -2541,7 +2408,7 @@ async fn respond_payload(
             }
             match context
                 .client
-                .room_state(&room_name, &principal, &access)
+                .room_state(&room_name, &principal, &access, context.runtime)
                 .await
             {
                 Ok(state) => response(200, state),
@@ -2851,6 +2718,21 @@ fn operator_result(outcome: Outcome<'_>) -> Result<Value, OperatorCoordError> {
     })
 }
 
+pub(crate) async fn operator_state(
+    state: &crate::RuntimeState,
+    room: &str,
+) -> Result<Value, OperatorCoordError> {
+    let client = state
+        .read()
+        .map_err(|_| OperatorCoordError::display_error("runtime is unavailable".into()))?
+        .coord
+        .clone();
+    match inventory::room_state(&client, room, "operator", "operator", Some(state)).await {
+        Ok(value) => Ok(value),
+        Err(error) => operator_result(error_response(error)),
+    }
+}
+
 impl OperatorCoord {
     pub(crate) fn open(config: &Path) -> Result<Self, crate::Error> {
         let config = crate::native_config::read(config)?;
@@ -2858,7 +2740,8 @@ impl OperatorCoord {
             client: CoordClient::new(
                 config.policy_file.clone(),
                 config.data_dir.map(|dir| dir.join("coord")),
-            ),
+            )
+            .with_provider_directory(config.native_config_dir.as_deref()),
         })
     }
 
@@ -4351,6 +4234,7 @@ mod tests {
             Some(CoordContext {
                 client: &client,
                 cancellation,
+                runtime: None,
             }),
             None,
         )

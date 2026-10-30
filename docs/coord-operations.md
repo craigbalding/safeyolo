@@ -221,6 +221,59 @@ another installed executable. `SAFEYOLO_FACTORY_NATIVE_CONFIG` can select a
 different configuration file. The wrapper starts observers; it does not
 start or resume a factory. Its panes select `--compact --redact`.
 
+## Inspect room capabilities and resource leases
+
+On the owning host account, use an existing room and configured agent in the
+selected instance. Start that instance's proxy before reading state. The
+following examples use room `chat`, agent `bob` and the
+public collaboration label `rundeck:acceptance_runner`:
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord inventory advertise-capability chat bob rundeck:acceptance_runner --operation-id chat-bob-runner
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord inventory advertise-resource chat rundeck acceptance_runner
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord state chat
+```
+
+Advertising selects room visibility. It does not grant service access. A member's
+`verified` list contains only advertised labels that match current host service
+grants and the active gateway policy. A saved, rejected policy edit cannot
+create verified authorization. Revocation removes a label on the next state
+read. An agent can replace its expiring `declared` skills through
+`declare_capabilities`; those declarations
+cannot create verified authorization or availability. The Agent API and Model
+Context Protocol (MCP) expose the same projection to receive-authorized members.
+
+A trusted provider integration must atomically replace
+`<root>/coord-providers/<provider>.json` with public observations from that
+provider. Keep the directory outside agent-writable mounts. Coord only reads
+these observations; writing a JSON file does not establish provider provenance.
+The file contains `capabilities` and `leases` arrays. Capability observations
+identify `agent_id`, `capability` and `availability` (`available` or
+`unavailable`). Lease observations identify `resource`, `state` (`held` or
+`unleased`) and `holder_agent_id` (a current room member for `held`, null for
+`unleased`). Each observation contains integer Unix-millisecond `observed_at`
+and `valid_until` timestamps. Fresh evidence requires
+`observed_at <= now < valid_until`, with at most five minutes between the
+timestamps. Do not put credentials, accounts, connection configuration or raw
+errors in this file.
+
+Only fresh provider evidence can establish availability or lease ownership.
+Missing, failed, malformed or expired evidence produces `unknown`. An expired
+observation retains its timestamps and reports `freshness: "stale"`. Coord does
+not renew or transfer provider leases. Chat cannot change their holders. State
+reads select advertised provider filenames without registration, including
+after restart. Each file is limited to 512 KiB and 1,024 observations. Reads
+have a one-second deadline, a process-wide limit of 32 in flight and a limit
+of two per provider. A blocked file cannot consume the executor used for room
+authorization reads.
+
+To stop sharing a label, use `unadvertise-capability ROOM AGENT LABEL` or
+`unadvertise-resource ROOM PROVIDER RESOURCE` with the same command prefix.
+Advertisement changes accept an optional `--operation-id ID`; an identical retry
+returns the original result, while changed input under that ID conflicts.
+They use the existing atomic operation ledger and audit outbox. Raw provider
+payloads and errors are never returned in room state or those audit events.
+
 ## Focused proof and remaining work
 
 `tests/proxy_contracts/test_native_coord_operator.py` binds the installed G5

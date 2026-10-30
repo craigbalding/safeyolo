@@ -628,6 +628,33 @@ impl GatewaySnapshot {
         self.agents.get(name)?.as_deref()
     }
 
+    /// Answer one advertised collaboration label without copying token,
+    /// credential, account, host or route inventories out of this owner.
+    pub(crate) fn room_capability_authorized(
+        &self,
+        agent: &str,
+        id: &str,
+        provider: &str,
+        capability: &str,
+    ) -> bool {
+        if self.token_issue.is_some() || self.configured_agent_id(agent) != Some(id) {
+            return false;
+        }
+        // The current per-agent service surface selects the last binding for
+        // a service. An earlier capability must not survive its replacement.
+        self.tokens
+            .iter()
+            .zip(&self.token_timestamps)
+            .rev()
+            .find(|(binding, typed)| {
+                !typed.agent
+                    && !typed.service
+                    && binding.agent == agent
+                    && binding.service == provider
+            })
+            .is_some_and(|(binding, typed)| !typed.capability && binding.capability == capability)
+    }
+
     pub fn compiled_routes(&self) -> &[CompiledRoute] {
         &self.routes
     }

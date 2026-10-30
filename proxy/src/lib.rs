@@ -698,19 +698,25 @@ impl Runtime {
                 .unwrap_or_else(|| Arc::new(memory_monitor::MemoryMonitor::new()));
             let coord = previous
                 .map(|runtime| {
-                    Arc::new(agent_api::CoordClient::with_owner(
-                        runtime.coord.owner(),
-                        config.policy_file.clone(),
-                    ))
+                    Arc::new(
+                        agent_api::CoordClient::with_owner(
+                            runtime.coord.owner(),
+                            config.policy_file.clone(),
+                        )
+                        .with_provider_directory(config.native_config_dir.as_deref()),
+                    )
                 })
                 .unwrap_or_else(|| {
-                    Arc::new(agent_api::CoordClient::new(
-                        config.policy_file.clone(),
-                        config
-                            .native_config_dir
-                            .as_ref()
-                            .map(|_| config.data_dir().join("coord")),
-                    ))
+                    Arc::new(
+                        agent_api::CoordClient::new(
+                            config.policy_file.clone(),
+                            config
+                                .native_config_dir
+                                .as_ref()
+                                .map(|_| config.data_dir().join("coord")),
+                        )
+                        .with_provider_directory(config.native_config_dir.as_deref()),
+                    )
                 });
             let flow_recorder = match previous {
                 Some(runtime) => runtime.flow_recorder.clone(),

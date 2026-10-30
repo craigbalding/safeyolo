@@ -14,6 +14,8 @@ use std::{
 
 const NATS_VERSION: &str = "2.14.5";
 pub(crate) mod brief;
+mod inventory;
+pub use inventory::HELP as INVENTORY_HELP;
 mod membership;
 fn directory(root: &Path) -> Result<PathBuf, Error> {
     let config_path = if root == crate::host_platform::config_dir() {
@@ -658,6 +660,25 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
     }
     let root = config.parent().ok_or("instance root is missing")?;
     let result = match arguments {
+        [kind, room] if kind == "state" => {
+            let room =
+                percent_encoding::utf8_percent_encode(room, percent_encoding::NON_ALPHANUMERIC);
+            crate::native_client::admin(
+                config,
+                &format!("/admin/coord/rooms/{room}/state"),
+                hyper::Method::GET,
+                Value::Null,
+                Duration::from_secs(5),
+            )
+            .await?
+        }
+        [kind, options @ ..]
+            if kind == "inventory" && (options.is_empty() || options == ["--help"]) =>
+        {
+            println!("{}", inventory::HELP);
+            return Ok(());
+        }
+        [kind, arguments @ ..] if kind == "inventory" => inventory::run(root, arguments)?,
         [kind, options @ ..]
             if kind == "brief" && (options.is_empty() || options == ["--help"]) =>
         {

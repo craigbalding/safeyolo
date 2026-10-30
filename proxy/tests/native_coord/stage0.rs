@@ -42,7 +42,7 @@ fn count(root: &Path, sql: &str) -> i64 {
         .unwrap()
 }
 
-async fn until(mut condition: impl FnMut() -> bool) {
+pub(super) async fn until(mut condition: impl FnMut() -> bool) {
     tokio::time::timeout(Duration::from_secs(10), async {
         while !condition() {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -52,7 +52,7 @@ async fn until(mut condition: impl FnMut() -> bool) {
     .expect("Stage0 observable boundary timed out");
 }
 
-async fn start_proxy(root: &Path) -> tokio::process::Child {
+pub(super) async fn start_proxy(root: &Path) -> tokio::process::Child {
     let config = native_config::read(&root.join("config.toml")).unwrap();
     let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo-proxy"))
         .args(["--config"])
@@ -79,7 +79,7 @@ async fn start_proxy(root: &Path) -> tokio::process::Child {
     child
 }
 
-async fn crash(mut child: tokio::process::Child) {
+pub(super) async fn crash(mut child: tokio::process::Child) {
     child.kill().await.unwrap();
     assert!(!child.wait().await.unwrap().success());
 }

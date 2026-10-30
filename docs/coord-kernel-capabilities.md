@@ -391,26 +391,33 @@ coord state huddle
 coord inventory advertise-capability huddle bob rundeck:acceptance_runner
 coord inventory unadvertise-capability huddle bob rundeck:acceptance_runner
 coord inventory advertise-resource huddle rundeck acceptance_runner
+coord inventory unadvertise-resource huddle rundeck acceptance_runner
 ```
 
-Provider adapters receive only room ID, stable member IDs, advertised granted
-labels and advertised resource labels. Their raw payloads and errors never
-enter room state: coord allow-lists availability/lease fields, bounds the call
-and output, and changes missing, failed, malformed or stale evidence to
-`unknown`.
+Room state uses stable member IDs, advertised granted capability labels and
+advertised resource labels. Coord selects providers from those labels and
+allow-lists their availability and lease fields. It bounds reads and output.
+Raw provider payloads and errors never enter room state. Missing, failed,
+malformed or stale evidence becomes `unknown`.
 
-The production adapter boundary is provider-neutral. A service integration
-atomically replaces a bounded public observation file at
-`~/.safeyolo/coord-providers/<provider>.json`; coord discovers those adapters
-at process bootstrap and reconstructs them after restart. The JSON object uses
-the same narrow `capabilities` and `leases` evidence shape as the adapter
-contract and must not contain credentials or connection configuration. Coord
-never writes provider state. Missing, unreadable, oversized, malformed, stale,
-or removed snapshots produce `unknown`. The complete provider call, including
-incorrectly blocking implementations, runs outside the Agent API event loop
-behind its timeout. Global and per-provider in-flight caps bound abandoned
-daemon workers, so a hung integration cannot consume the shared executor used
-for authoritative state reads or spawn new work indefinitely.
+The native observation boundary is a host-local public snapshot. A trusted
+service integration atomically replaces a bounded public observation file at
+`~/.safeyolo/coord-providers/<provider>.json`. For a selected instance root,
+the directory is `<root>/coord-providers`. Coord resolves advertised provider
+names on each state read, including the first read after bootstrap or restart.
+No registration or background polling is required. The JSON object uses narrow
+`capabilities` and `leases` arrays and must not contain credentials or connection
+configuration. Each observation has integer Unix-millisecond `observed_at` and
+`valid_until` fields. Fresh evidence requires `observed_at <= now < valid_until`,
+with at most five minutes between the timestamps. Coord never writes provider
+state. Missing, unreadable, oversized, malformed, stale or removed snapshots
+produce `unknown`. The directory and files must remain
+under trusted host/provider control; an agent-writable file is not authoritative
+provider evidence. Snapshot selection does not authenticate a provider. Agents
+cannot upload observations through Coord. The complete snapshot read runs
+outside the Agent API event loop and its shared blocking executor, behind a
+one-second timeout. Process-wide and per-provider in-flight limits bound reads
+that remain blocked after timeout.
 
 Keep provenance explicit:
 
