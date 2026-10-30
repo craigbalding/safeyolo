@@ -196,6 +196,8 @@ async fn start(agent: &host_agents::Agent) -> Result<(), Error> {
     })
     .await??;
     let current = current_selection(agent)?;
+    #[cfg(target_os = "macos")]
+    host_boot::warn_broad_shares(&current);
     // An interactive launch never replays saved task arguments. The existing
     // lifecycle still reuses a live command, regardless of this empty override.
     let mut observed =

@@ -20,6 +20,30 @@ pub(crate) fn workspace(path: &Path, allow_unowned: bool) -> Result<PathBuf, Err
     Ok(path)
 }
 
+#[cfg(target_os = "macos")]
+// DOC: docs/microvm-architecture.md
+pub(crate) fn warn_broad_shares(agent: &Agent) {
+    use std::io::Write;
+
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mounts = agent.mounts.iter().filter_map(|spec| match mount(spec) {
+        Ok((host, _, false)) => Some(host),
+        _ => None, // Validation reports invalid mounts; read-only shares grant no write access.
+    });
+    for path in agent.folder.iter().map(PathBuf::from).chain(mounts) {
+        if let Some(warning) =
+            crate::macos_share_warning::broad_share_warning(&path, home.as_deref())
+        {
+            // Failure to display advice must not refuse an explicit share.
+            let _ = writeln!(
+                std::io::stderr(),
+                "{}",
+                crate::network_guard::sanitize_with_limit(&warning, usize::MAX)
+            );
+        }
+    }
+}
+
 pub(crate) fn mount(spec: &str) -> Result<(PathBuf, String, bool), Error> {
     let parts: Vec<_> = spec.split(':').collect();
     if !(parts.len() == 2 || parts.len() == 3 && parts[2] == "ro") {
