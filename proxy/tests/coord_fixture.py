@@ -75,7 +75,9 @@ def drain_setup_audits(root: Path) -> None:
                     "SELECT COUNT(*) FROM coord_outbox WHERE destination='audit-jsonl' AND delivered_at IS NULL"
                 ).fetchone()[0]:
                     if proxy.poll() is not None or time.monotonic() >= deadline:
-                        raise RuntimeError(f"setup audit delivery failed; inspect {log_path}")
+                        raise RuntimeError(
+                            f"setup audit delivery failed (exit={proxy.poll()}):\n{log_path.read_text(encoding='utf-8')}"
+                        )
                     time.sleep(0.05)
         finally:
             if proxy.poll() is None:
@@ -88,7 +90,7 @@ def drain_setup_audits(root: Path) -> None:
                 proxy.wait(timeout=5)
                 raise
         if status:
-            raise RuntimeError(f"setup proxy exited {status}; inspect {log_path}")
+            raise RuntimeError(f"setup proxy exited {status}:\n{log_path.read_text(encoding='utf-8')}")
 
 
 def prepare_fixture(root: Path, ready_path: Path) -> None:

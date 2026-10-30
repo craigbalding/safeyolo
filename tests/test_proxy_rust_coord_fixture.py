@@ -285,7 +285,8 @@ def test_fixture_reports_setup_proxy_failure_and_cleans_nats(tmp_path: Path, _bi
         capture_output=True, text=True, check=False, timeout=15,
     )
     assert result.returncode != 0
-    assert "setup audit delivery failed" in result.stderr
+    assert "setup audit delivery failed (exit=7)" in result.stderr
+    assert "setup proxy refused" in result.stderr
     assert (root / "setup-proxy.log").read_text() == "setup proxy refused\n"
     assert (root / "fixture.stopped").is_file()
     assert not (root / "fixture.ready").exists()
