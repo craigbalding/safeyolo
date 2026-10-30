@@ -7,7 +7,7 @@ semantics rather than UI.
 
 SQLite owns native Coord control state. JetStream owns conversation history.
 The Agent API and MCP expose room reads, messages, durable targeted attention,
-brief reads, and declarations. The stages below distinguish current contracts
+brief reads, work ownership, and declarations. The stages below distinguish current contracts
 from capabilities that still need implementation and acceptance.
 
 Implement the capabilities in this order.

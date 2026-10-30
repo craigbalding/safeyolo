@@ -115,7 +115,7 @@ command family to its current operating instructions.
 | Manual installation, custom roots, builds or recovery | [Installation reference](docs/installation.md) |
 | Try a useful task and decide its access | [Demo](docs/demo.md) |
 | Controlled experiments | [The Lab](cli/README.md#lab) and [agent debugging](docs/agent-debugging.md) |
-| Coordinating agents | [Factories](docs/factories.md), [Coord](docs/coord-operations.md), [Mattermost](docs/coord-mattermost.md) |
+| Claim shared work or coordinate agents | [Work claims](docs/coord-operations.md#claim-durable-work), [Factories](docs/factories.md), [Coord](docs/coord-operations.md), [Mattermost](docs/coord-mattermost.md) |
 | A different agent or setup | [Host scripts](contrib/HOST_SCRIPT_GUIDE.md) |
 | Kali, Alpine or another rootfs | [Custom rootfs preparation](contrib/ROOTFS_SCRIPT_GUIDE.md) |
 | Contained physical Mac access | [Seatbelt SSH account](contrib/macos-seatbelt-agent/README.md) |
