@@ -277,6 +277,7 @@ struct Events {
     failed: bool,
     harness_failed: bool,
     canonical: bool,
+    consumed_information: bool,
     pi_args: BTreeMap<String, Value>,
 }
 
@@ -348,6 +349,7 @@ impl Events {
                 .filter(|p| !p.requires_terminal && invoked.contains(&p.attention_id))
                 .map(|p| p.attention_id.clone())
                 .collect();
+            self.consumed_information |= !completed.is_empty();
             for id in completed {
                 supervisor.state.complete(&id);
             }
@@ -643,14 +645,15 @@ pub(super) async fn invoke(
         < terminals_before;
     let success = events.canonical
         || recovered_terminal
-        || (supervisor.state.in_flight.is_empty()
+        || ((supervisor.state.in_flight.is_empty()
+            || (events.consumed_information && !supervisor.state.has_ready_work()))
             && events.completed
             && !events.failed
             && !events.harness_failed
             && exit_success);
     if supervisor.state.in_flight.is_empty() {
         supervisor.state.phase = "idle".into();
-    } else if events.canonical {
+    } else if success {
         supervisor.state.phase = "accepted".into();
     } else {
         supervisor.state.phase = "uncertain".into();

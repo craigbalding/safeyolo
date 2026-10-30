@@ -801,6 +801,122 @@ emit({{"type":"turn.completed"}})
     assert any(m["body"].startswith(f"DONE target={second}") for m in messages)
 
 
+@pytest.fixture
+def capacity_supervised(tmp_path, _binary_cache):
+    from tests.proxy_contracts.native_proposal_fixture import ROOM as room
+    from tests.proxy_contracts.native_proposal_fixture import proposal_instance
+
+    # Reuse the direct native API fixture. Package/guest installation is not
+    # part of checkpoint admission, and no executable copy is needed here.
+    with contextmanager(proposal_instance)(tmp_path, nats_binary=_binary_cache) as instance:
+        home = instance.root / "agents/relay/home"
+        directory = home / ".safeyolo"
+        directory.mkdir(parents=True)
+        config = directory / "coord-supervisor.json"
+        config.write_text(json.dumps({"agent_name": "relay", "rooms": [room], "coordinators": ["lens"],
+                                      "agent_room": room, "workspace": str(tmp_path), "wait_seconds": 1,
+                                      "terminate_grace_seconds": 1, "completion_grace_seconds": 5}))
+        environment = dict(instance.environment, HOME=str(home), CODEX_HOME=str(home / ".codex"),
+                           SAFEYOLO_COORD_SOCKET=instance.paths["relay"],
+                           SAFEYOLO_COORD_TOKEN_PATH=str(instance.root / "data/agent_token"))
+        yield instance, config, directory / "coord-supervisor-state.json", environment
+
+
+def test_supervisor_capacity_with_retained_task_and_native_ready(capacity_supervised, tmp_path):
+    instance, config, state, environment = capacity_supervised
+    binary = Path(os.environ.get("SAFEYOLO_COORD_TEST_BINARY", instance.root / "bin/safeyolo-coord"))
+    room = json.loads(config.read_text())["rooms"][0]
+    settings = json.loads(config.read_text())
+    settings["factory"] = {
+        "schema": "safeyolo.factory/v1", "name": "capacity", "role": "owner",
+        "roles": {"coordinator": "lens", "owner": "relay", "reviewer": "lens"},
+        "operator_input": {"to": "coordinator", "types": ["DIRECTION"]},
+        "contract_sha256": "a" * 64, "snapshot_id": "b" * 64,
+        "handoffs": [
+            {"request": "TASK", "from": "coordinator", "to": "owner", "responses": ["DONE"], "response_to": ["coordinator"]},
+            {"request": "REVIEW_READY", "from": "owner", "to": "reviewer", "responses": ["READY"], "response_to": ["owner", "coordinator"]},
+        ], "updates": [{"type": "CONTEXT", "from": "coordinator", "to": "owner", "fields": ["target"]}],
+    }
+    config.write_text(json.dumps(settings))
+    home = Path(environment["HOME"])
+    (home / ".codex").mkdir()
+    (home / ".codex/config.toml").write_text(f'''forced_chatgpt_auth=false
+model_provider="fixture"
+model="fixture-model"
+[mcp_servers.safeyolo-coord]
+command={json.dumps(str(binary))}
+[model_providers.fixture.auth]
+command="/usr/bin/true"
+args=[]
+''')
+    captures = tmp_path / "capacity-prompts"
+    captures.mkdir()
+    target = "https://example.test/issues/capacity"
+    review = "https://example.test/pull/capacity/commits/" + "a" * 40
+    harness = tmp_path / "capacity-codex"
+    harness.write_text(f'''#!{sys.executable}
+import json,os,subprocess,sys
+from pathlib import Path
+if "--version" in sys.argv:
+    print("fixture-codex");sys.exit(0)
+checkpoint=json.loads(sys.stdin.read().split("Supervisor checkpoint:\\n",1)[1])
+(Path({str(captures)!r})/str(os.getpid())).write_text(json.dumps(checkpoint))
+def emit(event): print(json.dumps(event),flush=True)
+emit({{"type":"thread.started","thread_id":"capacity-thread"}})
+emit({{"type":"turn.started"}})
+tasks=[p for p in checkpoint["in_flight"] if p["requires_terminal"]]
+ready=any(p["sender_agent_name"]=="lens" and p["body"].startswith("READY ") for p in checkpoint["in_flight"])
+if tasks and (ready or not checkpoint["awaiting_handoffs"]):
+    body=f"DONE target={target} attention_id={{tasks[0]['attention_id']}}" if ready else "REVIEW_READY target={review}"
+    args={{"room_name":{room!r},"body":body,"notify":["lens"],"declared_content_type":"text/plain"}}
+    result=subprocess.run([{str(binary)!r},"call","send"],input=json.dumps(args),text=True,capture_output=True,check=True)
+    emit({{"type":"item.completed","item":{{"type":"mcp_tool_call","server":"safeyolo-coord","tool":"send","status":"completed","arguments":args,"result":{{"structured_content":json.loads(result.stdout)}}}}}})
+emit({{"type":"turn.completed"}})
+''')
+    harness.chmod(0o755)
+    environment["SAFEYOLO_CODEX_BIN"] = str(harness)
+
+    def run(*extra):
+        return subprocess.run([str(binary), "supervise", "--config", str(config), "--state", str(state),
+                               "--once", *extra], env=environment, capture_output=True, text=True, timeout=15)
+
+    result = run("--confirm-fresh-identity")
+    assert result.returncode == 0, result.stderr
+    sent = agent_send(instance, f"TASK target={target} assignee=relay", room=room, sender="lens", notify=["relay"])
+    task_id = sent["attention_recipients"][0]["attention_id"]
+    result = run()
+    assert result.returncode == 0, result.stderr
+    retained = json.loads(state.read_text())
+    assert [p["attention_id"] for p in retained["in_flight"]] == [task_id]
+    handoff = retained["awaiting_handoffs"][0]
+    assert handoff["request_attention_id"]
+    for _ in range(15):
+        agent_send(instance, f"CONTEXT target={target}\nInformational update.", room=room, sender="lens", notify=["relay"])
+    response = agent_send(instance, f"READY target={review} attention_id={handoff['request_attention_id']}",
+                          room=room, sender="lens", notify=["relay", "lens"])
+    ready_id = next(p["attention_id"] for p in response["attention_recipients"] if p["agent_id"] == "ag-" + "a" * 32)
+    # Default page16 previously requested all sixteen new objects despite the
+    # retained TASK. This drives the actual UDS Agent API and NATS path.
+    result = run()
+    assert result.returncode == 0, result.stderr
+    halfway = json.loads(state.read_text())
+    assert halfway["in_flight"] == retained["in_flight"]
+    assert halfway["awaiting_handoffs"] == retained["awaiting_handoffs"]
+    assert halfway["safe_cursor"] > retained["safe_cursor"]
+    assert halfway["consecutive_failures"] == 0
+    assert ready_id not in halfway["recent_attention_ids"]
+    result = run()
+    assert result.returncode == 0, result.stderr
+    completed = json.loads(state.read_text())
+    assert completed["in_flight"] == completed["awaiting_handoffs"] == []
+    assert {task_id, ready_id} <= set(completed["recent_attention_ids"])
+    prompts = list(captures.iterdir())
+    assert max(len(json.loads(p.read_text())["in_flight"]) for p in prompts) == 16
+    assert run().returncode == 0
+    assert list(captures.iterdir()) == prompts
+    assert [m["body"] for m in history(instance, room=room) if m["body"].startswith("DONE ")] == [f"DONE target={target} attention_id={task_id}"]
+
+
 def test_local_jsonl_and_maintained_factory_wrapper(instance, tmp_path):
     event = json.dumps({"type": "item.completed", "item": {"type": "command_execution", "command": "printf marker", "exit_code": 0}})
     result = cli(instance, "watch", "--jsonl", "-", input=event + "\n")
