@@ -34,9 +34,15 @@ const MAX_PROVIDER_INFLIGHT: usize = 2;
 const READ_TIMEOUT: Duration = Duration::from_secs(1);
 static INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(test)]
+type BeforeProviderRead = Arc<dyn Fn(&str) + Send + Sync>;
+
 #[derive(Default)]
 pub(super) struct SnapshotReads {
     providers: Mutex<HashMap<String, usize>>,
+    // Pause the real state-read path at provider I/O in deterministic tests.
+    #[cfg(test)]
+    before_read: Mutex<Option<BeforeProviderRead>>,
 }
 
 struct ReadPermit {
@@ -106,8 +112,15 @@ impl SnapshotReads {
         for provider in providers {
             let directory = directory.to_owned();
             let name = provider.clone();
-            let Some(receiver) = self.start(&provider, move || read_snapshot(&directory, &name))
-            else {
+            #[cfg(test)]
+            let before_read = self.before_read.lock().unwrap().clone();
+            let Some(receiver) = self.start(&provider, move || {
+                #[cfg(test)]
+                if let Some(before_read) = before_read {
+                    before_read(&name);
+                }
+                read_snapshot(&directory, &name)
+            }) else {
                 continue;
             };
             pending.push(async move {

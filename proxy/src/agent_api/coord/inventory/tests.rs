@@ -51,6 +51,259 @@ fn member(state: &Value, id: &str) -> Value {
         .clone()
 }
 
+fn pause_provider(client: &CoordClient) -> (tokio::sync::oneshot::Receiver<()>, mpsc::Sender<()>) {
+    let (entered, started) = tokio::sync::oneshot::channel();
+    let entered = Mutex::new(Some(entered));
+    let (release, blocked) = mpsc::channel();
+    let blocked = Mutex::new(blocked);
+    *client.owner.snapshot_reads.before_read.lock().unwrap() = Some(Arc::new(move |provider| {
+        if provider == "rundeck" {
+            if let Some(entered) = entered.lock().unwrap().take() {
+                let _ = entered.send(());
+            }
+            blocked
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+        }
+    }));
+    (started, release)
+}
+
+#[tokio::test]
+async fn state_rechecks_authority_and_advertisements_after_paused_provider_io() {
+    for change in [
+        "caller_receive_revoked",
+        "caller_identity_replaced",
+        "peer_grant_revoked",
+        "capability_removed",
+        "resource_removed",
+        "holder_removed",
+        "capability_added",
+        "resource_added",
+    ] {
+        let root = fixture();
+        write(root.path(), &observation(now_ms()));
+        let client = Arc::new(CoordClient::new(
+            Some(root.path().join("policy.toml")),
+            Some(root.path().join("data/coord")),
+        ));
+        let conn = open_db(&root.path().join("data/coord/v0.db"), true).unwrap();
+        if change == "capability_added" {
+            conn.execute("DELETE FROM coord_capability_advertisements", [])
+                .unwrap();
+        } else if change == "resource_added" {
+            conn.execute("DELETE FROM coord_resource_advertisements", [])
+                .unwrap();
+        }
+        let (started, release) = pause_provider(&client);
+        let request = tokio::spawn({
+            let client = client.clone();
+            async move { room_state(&client, "shared", "agent", ALICE, None).await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), started)
+            .await
+            .unwrap()
+            .unwrap();
+        match change {
+            "caller_receive_revoked" => {
+                conn.execute(
+                    "UPDATE memberships SET permissions='send' WHERE principal_id=?1",
+                    [ALICE],
+                )
+                .unwrap();
+            }
+            "caller_identity_replaced" | "peer_grant_revoked" => {
+                let policy = root.path().join("policy.toml");
+                let source = fs::read_to_string(&policy).unwrap();
+                fs::write(
+                    &policy,
+                    if change == "caller_identity_replaced" {
+                        source.replace(ALICE, "ag-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+                    } else {
+                        source.replace("capability='acceptance_runner'", "capability='reader'")
+                    },
+                )
+                .unwrap();
+            }
+            "capability_removed" => {
+                conn.execute("DELETE FROM coord_capability_advertisements", [])
+                    .unwrap();
+            }
+            "resource_removed" => {
+                conn.execute("DELETE FROM coord_resource_advertisements", [])
+                    .unwrap();
+            }
+            "holder_removed" => {
+                conn.execute(
+                    "UPDATE memberships SET revoked_at=2 WHERE principal_id=?1",
+                    [BOB],
+                )
+                .unwrap();
+            }
+            "capability_added" => {
+                conn.execute("INSERT INTO coord_capability_advertisements VALUES('rm-inventory',?1,'rundeck:acceptance_runner','during-io',2)", [BOB]).unwrap();
+            }
+            "resource_added" => {
+                conn.execute("INSERT INTO coord_resource_advertisements VALUES('rm-inventory','rundeck','runner','during-io',2)", []).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        release.send(()).unwrap();
+        let result = request.await.unwrap();
+        client
+            .owner
+            .snapshot_reads
+            .before_read
+            .lock()
+            .unwrap()
+            .take();
+        match change {
+            "caller_receive_revoked" => assert!(matches!(result, Err(CoordError::Forbidden))),
+            "caller_identity_replaced" => assert!(matches!(result, Err(CoordError::NotFound))),
+            _ => {
+                let state = result.unwrap();
+                match change {
+                    "peer_grant_revoked" | "capability_removed" => {
+                        assert_eq!(member(&state, BOB)["verified"], json!([]))
+                    }
+                    "resource_removed" => assert_eq!(state["resource_leases"], json!([])),
+                    "holder_removed" | "resource_added" => {
+                        assert_eq!(state["resource_leases"][0]["state"], "unknown");
+                        assert!(state["resource_leases"][0]["holder_agent_id"].is_null());
+                    }
+                    "capability_added" => assert_eq!(
+                        member(&state, BOB)["verified"][0]["availability"],
+                        "unknown"
+                    ),
+                    _ => unreachable!(),
+                }
+                if matches!(change, "capability_added" | "resource_added") {
+                    let next = room_state(&client, "shared", "agent", ALICE, None)
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        member(&next, BOB)["verified"][0]["availability"],
+                        "available"
+                    );
+                    assert_eq!(next["resource_leases"][0]["holder_agent_id"], BOB);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn production_observation_timeout_retains_worker_permit_and_recovers() {
+    let root = fixture();
+    write(root.path(), &observation(now_ms()));
+    let client = Arc::new(CoordClient::new(
+        Some(root.path().join("policy.toml")),
+        Some(root.path().join("data/coord")),
+    ));
+    let (started, release) = pause_provider(&client);
+    let request = tokio::spawn({
+        let client = client.clone();
+        async move { room_state(&client, "shared", "agent", ALICE, None).await }
+    });
+    started.await.unwrap();
+    // The actual one-second observation wait leaves the event loop and the
+    // independent current-state reader usable while the provider is blocked.
+    assert_eq!(
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            read_current(&client, "shared", "agent", ALICE)
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .access
+        .room_name,
+        "shared"
+    );
+    let state = tokio::time::timeout(READ_TIMEOUT + Duration::from_secs(1), request)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        member(&state, BOB)["verified"][0]["availability"],
+        "unknown"
+    );
+    assert!(state["resource_leases"][0]["holder_agent_id"].is_null());
+    assert_eq!(
+        client
+            .owner
+            .snapshot_reads
+            .providers
+            .lock()
+            .unwrap()
+            .get("rundeck"),
+        Some(&1)
+    );
+    client
+        .owner
+        .snapshot_reads
+        .before_read
+        .lock()
+        .unwrap()
+        .take();
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while client
+            .owner
+            .snapshot_reads
+            .providers
+            .lock()
+            .unwrap()
+            .contains_key("rundeck")
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    write(root.path(), &observation(now_ms()));
+    let state = room_state(&client, "shared", "agent", ALICE, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        member(&state, BOB)["verified"][0]["availability"],
+        "available"
+    );
+    assert_eq!(state["resource_leases"][0]["holder_agent_id"], BOB);
+}
+
+#[test]
+fn lease_freshness_boundaries_hide_noncurrent_holders() {
+    let root = fixture();
+    let now = 1_000_000;
+    let initial = read(root.path());
+    for (observed, until, freshness, state) in [
+        (now - MAX_TTL_MS + 1, now + 1, "fresh", "held"),
+        (now - MAX_TTL_MS, now + 1, "unknown", "unknown"),
+        (now + 1, now + 2, "unknown", "unknown"),
+        (now, now, "unknown", "unknown"),
+        (now, now - 1, "unknown", "unknown"),
+        (now - 1000, now, "stale", "unknown"),
+    ] {
+        let mut value = observation(now);
+        value["leases"][0]["observed_at"] = json!(observed);
+        value["leases"][0]["valid_until"] = json!(until);
+        let evidence = BTreeMap::from([("rundeck".into(), serde_json::from_value(value).unwrap())]);
+        let result = project(read(root.path()), &initial, &evidence, now).unwrap();
+        let lease = &result["resource_leases"][0];
+        assert_eq!(lease["freshness"], freshness);
+        assert_eq!(lease["state"], state);
+        if state == "held" {
+            assert_eq!(lease["holder_agent_id"], BOB);
+        } else {
+            assert!(lease["holder_agent_id"].is_null());
+        }
+    }
+}
+
 #[tokio::test]
 async fn current_grant_advertisement_provider_intersection_never_serializes_private_fields() {
     let root = fixture();

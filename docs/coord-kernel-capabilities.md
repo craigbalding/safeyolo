@@ -394,24 +394,24 @@ coord inventory advertise-resource huddle rundeck acceptance_runner
 coord inventory unadvertise-resource huddle rundeck acceptance_runner
 ```
 
-Provider adapters receive only room ID, stable member IDs, advertised granted
-labels and advertised resource labels. Their raw payloads and errors never
-enter room state: coord allow-lists availability/lease fields, bounds the call
-and output, and changes missing, failed, malformed or stale evidence to
-`unknown`.
+Room state uses stable member IDs, advertised granted capability labels and
+advertised resource labels. Coord selects providers from those labels and
+allow-lists their availability and lease fields. It bounds reads and output.
+Raw provider payloads and errors never enter room state. Missing, failed,
+malformed or stale evidence becomes `unknown`.
 
-The native observation boundary is a host-local public snapshot. A trusted service integration
-atomically replaces a bounded public observation file at
+The native observation boundary is a host-local public snapshot. A trusted
+service integration atomically replaces a bounded public observation file at
 `~/.safeyolo/coord-providers/<provider>.json`. For a selected instance root,
 the directory is `<root>/coord-providers`. Coord resolves advertised provider
 names on each state read, including the first read after bootstrap or restart.
 No registration or background polling is required. The JSON object uses narrow
 `capabilities` and `leases` arrays and must not contain credentials or connection
 configuration. Each observation has integer Unix-millisecond `observed_at` and
-`valid_until` fields. Evidence is fresh only until `valid_until`, with at most
-five minutes between those timestamps. Coord
-never writes provider state. Missing, unreadable, oversized, malformed, stale,
-or removed snapshots produce `unknown`. The directory and files must remain
+`valid_until` fields. Fresh evidence requires `observed_at <= now < valid_until`,
+with at most five minutes between the timestamps. Coord never writes provider
+state. Missing, unreadable, oversized, malformed, stale or removed snapshots
+produce `unknown`. The directory and files must remain
 under trusted host/provider control; an agent-writable file is not authoritative
 provider evidence. Snapshot selection does not authenticate a provider. Agents
 cannot upload observations through Coord. The complete snapshot read runs

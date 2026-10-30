@@ -127,7 +127,17 @@ async fn native_inventory_uses_current_grants_and_fixture_provider_evidence_acro
     // snapshot still has no Rundeck binding, even if the file claims one.
     let policy_path = root.join("policy.toml");
     let original = fs::read_to_string(&policy_path).unwrap();
-    fs::write(&policy_path,format!("version='unsupported'\n{original}\n[agents.bob.services]\nrundeck='acceptance_runner'\n")).unwrap();
+    let rejected = format!(
+        "{}\n[agents.bob.services]\nrundeck='acceptance_runner'\n",
+        original.replace("enabled=false", "enabled='invalid'")
+    );
+    fs::write(&policy_path, &rejected).unwrap();
+    let check = host_cli(root, &["policy", "check", policy_path.to_str().unwrap()]).await;
+    assert!(!check.status.success());
+    assert!(String::from_utf8_lossy(&check.stderr).contains("expected a boolean"));
+    let active = admin(root, "/admin/policy/baseline", Method::GET, Value::Null).await;
+    assert_eq!(active["saved_matches_active"], false);
+    assert!(active["effective"]["agents"]["bob"]["services"].is_null());
     assert!(
         member(&state(&alice).await, BOB)["verified"]
             .as_array()
@@ -265,15 +275,32 @@ async fn native_inventory_uses_current_grants_and_fixture_provider_evidence_acro
         ],
     )
     .await;
-    stage0::crash(proxy).await;
-    coord_json(root, &["stop"]).await;
-    coord_json(root, &["start", "--binary", &binary]).await;
-    proxy = stage0::start_proxy(root).await;
-    assert_eq!(first, coord_json(root, &advertisement).await);
-    assert_eq!(
-        member(&state(&alice).await, BOB)["verified"][0]["availability"],
-        "available"
-    );
+    for evidence in ["fresh", "expired", "removed"] {
+        observe(root, Some(BOB), true, false);
+        stage0::crash(proxy).await;
+        coord_json(root, &["stop"]).await;
+        // Change only the controlled provider boundary while the consumer is
+        // stopped. Restart must not recover an earlier positive observation.
+        match evidence {
+            "expired" => observe(root, Some(BOB), true, true),
+            "removed" => fs::remove_file(root.join("coord-providers/rundeck.json")).unwrap(),
+            _ => (),
+        }
+        coord_json(root, &["start", "--binary", &binary]).await;
+        proxy = stage0::start_proxy(root).await;
+        assert_eq!(first, coord_json(root, &advertisement).await);
+        let restarted = state(&alice).await;
+        let capability = &member(&restarted, BOB)["verified"][0];
+        assert_eq!(capability["authorized"], true);
+        if evidence == "fresh" {
+            assert_eq!(capability["availability"], "available");
+            assert_eq!(restarted["resource_leases"][0]["holder_agent_id"], BOB);
+        } else {
+            assert_eq!(capability["availability"], "unknown");
+            assert_eq!(restarted["resource_leases"][0]["state"], "unknown");
+            assert!(restarted["resource_leases"][0]["holder_agent_id"].is_null());
+        }
+    }
     let audit = native_config::read(&root.join("config.toml"))
         .unwrap()
         .audit_log_path

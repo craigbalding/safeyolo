@@ -238,8 +238,8 @@ Advertising selects room visibility. It does not grant service access. A member'
 `verified` list contains only advertised labels that match current host service
 grants and the active gateway policy. A saved, rejected policy edit cannot
 create verified authorization. Revocation removes a label on the next state
-read. An agent can replace
-its expiring `declared` skills through `declare_capabilities`; those declarations
+read. An agent can replace its expiring `declared` skills through
+`declare_capabilities`; those declarations
 cannot create verified authorization or availability. The Agent API and Model
 Context Protocol (MCP) expose the same projection to receive-authorized members.
 
@@ -252,8 +252,10 @@ identify `agent_id`, `capability` and `availability` (`available` or
 `unavailable`). Lease observations identify `resource`, `state` (`held` or
 `unleased`) and `holder_agent_id` (a current room member for `held`, null for
 `unleased`). Each observation contains integer Unix-millisecond `observed_at`
-and `valid_until` timestamps with a maximum five-minute interval. Do not put
-credentials, accounts, connection configuration or raw errors in this file.
+and `valid_until` timestamps. Fresh evidence requires
+`observed_at <= now < valid_until`, with at most five minutes between the
+timestamps. Do not put credentials, accounts, connection configuration or raw
+errors in this file.
 
 Only fresh provider evidence can establish availability or lease ownership.
 Missing, failed, malformed or expired evidence produces `unknown`. An expired

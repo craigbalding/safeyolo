@@ -310,8 +310,9 @@ nodes:
       inventory::native_inventory_uses_current_grants_and_fixture_provider_evidence_across_restart
       with --ignored and the pinned NATS binary. It exercises actual service
       grant/revoke, authenticated room state, identity replacement and restart.
-      Its provider snapshots are fixture evidence; live provider integration
-      and the three-agent comparison remain separate required observations.
+      Its controlled provider snapshots prove the trusted observation boundary,
+      not a deployed external lease. Unsupported deployed observations remain
+      unknown. The actual three-agent comparison is a separate required observation.
     source: proxy/tests/native_coord.rs
     tool:
       obtain_from: "the trusted-base native tests and locked Cargo dependencies; the native NATS owner verifies its pinned archive and executable before launch"
@@ -323,9 +324,9 @@ nodes:
         - path: proxy/src/coord_rooms.rs
           sha256: 7b21dd57e4dde4f57e50a63738a5541ec0ca9c51f62c1338f0d3952e1430107a
         - path: proxy/tests/native_coord/inventory.rs
-          sha256: 49ba26b943da91651b1346a620bf0b66c67364142ddba6a59f0b213a49fe2cc1
+          sha256: c2faf29eb73ac726dcc0387209252240fc51a2c9a69b1a749546978c62585fb7
         - path: proxy/src/agent_api/coord/inventory.rs
-          sha256: 0092c1ad129d7a46f32cd3f7dab6ab423e4ceb6a54cf82897454499fb0a2273e
+          sha256: 78e3cd9a0f4e1d6eba6ba1fe897633d330e79618e772964ec9349afa44e7253a
         - path: proxy/src/coord_rooms/inventory.rs
           sha256: 043c13f0398038972f8cafdab35015fd0730953290b6dbc3760dd08db0804683
       setup: "Use the pinned Rust toolchain with curl/tar and an approved NATS acquisition route or the configured verified NATS executable. Tests allocate their own roots and endpoints; never use the operator's live Coord data."
