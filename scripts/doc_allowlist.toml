@@ -55,6 +55,7 @@ user_facing_docs = [
     "docs/agent-roles/independent-reviewer.md",
     "docs/agent-roles/issue-owner.md",
     "docs/codex-coord-supervisor.md",
+    "docs/harness-attention.md",
     "docs/coord-completion-notes.md",
     "docs/coord-operations.md",
     "docs/coord-mattermost.md",

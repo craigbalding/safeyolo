@@ -17,6 +17,9 @@ fn input() -> Result<Value, Error> {
 async fn run() -> Result<(), Error> {
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     match arguments.as_slice() {
+        [kind, rest @ ..] if kind == "codex-attention" => {
+            safeyolo_proxy::coord_codex_attention::run(rest).await?;
+        }
         [kind, help] if kind == "ssh-proxy" && help == "--help" => {
             println!(
                 "{}",
