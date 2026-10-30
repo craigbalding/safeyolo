@@ -7,7 +7,7 @@ import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from hypothesis import given, settings
@@ -107,7 +107,7 @@ def test_native_exact_work_target_requests(adapter):
     target = {"work_id": "work-example", "expected_version": 3, "expected_target_generation": 2,
               "target_ref": "opaque:branch?candidate=π", "operation_id": "target-change"}
     call("change_work_target", {"room_name": "backlog", **target})
-    assert calls[-1][0:2] == ("POST", "/api/coord/rooms/backlog/work")
+    assert calls[-1][0:2] == ("POST", "http://_safeyolo.proxy.internal/api/coord/rooms/backlog/work")
     assert calls[-1][2] == {"action": "change_target", **target}
     evidence = {"work_id": "work-example", "target_generation": 3, "kind": "acceptance",
                 "verdict": "reject", "summary": "Check this exact candidate", "evidence_refs": ["https://untrusted.invalid/ref"],
@@ -115,7 +115,10 @@ def test_native_exact_work_target_requests(adapter):
     call("attest_work", {"room_name": "backlog", **evidence})
     assert calls[-1][2] == {"action": "attest", **evidence}
     call("list_work_attestations", {"room_name": "backlog", "work_id": "work-example", "after": "att-previous", "limit": 2})
-    assert calls[-1][0:2] == ("GET", "/api/coord/rooms/backlog/work?work_id=work-example&attestations=true&limit=2&after=att-previous")
+    assert calls[-1][0] == "GET"
+    request = urlsplit(calls[-1][1])
+    assert request.path == "/api/coord/rooms/backlog/work"
+    assert parse_qs(request.query) == {"work_id": ["work-example"], "attestations": ["true"], "limit": ["2"], "after": ["att-previous"]}
 
 
 def test_native_send_defaults_and_exact_task_producer(adapter):
