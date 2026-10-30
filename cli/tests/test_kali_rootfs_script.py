@@ -16,6 +16,7 @@ KALI_BUILDER_TEST_HOST_TOOLS = (
     "sha256sum",
     "mount",
     "umount",
+    "python3",
 )
 
 
@@ -77,6 +78,9 @@ def test_linux_builder_keeps_pull_unprivileged_and_elevates_unpack(
     # The dependency check requires umoci on PATH. The sudo double exits before
     # invoking it, which also catches an accidental unprivileged call.
     _write_executable(fake_bin / "umoci", "#!/bin/sh\nexit 91\n")
+    # This regression exits at privileged unpack, before release verification.
+    # A GPG invocation here would cross the boundary the fixture owns.
+    _write_executable(fake_bin / "gpg", "#!/bin/sh\nexit 92\n")
 
     work_dir = tmp_path / "work"
     env = os.environ.copy()
@@ -186,7 +190,8 @@ def test_kali_staged_tree_is_verified_before_success() -> None:
     ]
 
     assert '_as_root chmod 0755 "$SAFEYOLO_ROOTFS_OUT_TREE"' in staging
-    assert '_as_root chown -R 100000:100000 "$SAFEYOLO_ROOTFS_OUT_TREE"' in staging
+    assert 'chown -R 100000:100000' not in staging
+    assert '[ "$OUTPUT_UID" != 0 ]' in staging
     assert "etc workspace safeyolo safeyolo-status home/agent" in staging
     assert "usr/local/share/ca-certificates/safeyolo.crt" in staging
     assert '_as_root stat -c %u "$SAFEYOLO_ROOTFS_OUT_TREE"' in staging
@@ -253,3 +258,43 @@ def test_unprivileged_tool_installs_get_only_minimal_build_devices() -> None:
     assert unprivileged_phase.index("git clone") < unprivileged_phase.index(
         "_remove_chroot_build_devices"
     )
+
+
+@pytest.mark.parametrize("exit_code,unmount_status,expected", [(0, 0, 0), (73, 0, 73), (0, 1, 1)])
+def test_cleanup_failure_prevents_success_and_recursive_scratch_chown(
+    tmp_path, exit_code, unmount_status, expected,
+):
+    """Exercise the actual EXIT cleanup body, including failed unmounts."""
+    source = KALI_BUILDER.read_text()
+    cleanup = source[source.index("_cleanup_build()") : source.index("# --- Pins.")]
+    work = tmp_path / "work"
+    work.mkdir()
+    device = work / "null"
+    device.touch()
+    calls = tmp_path / "calls"
+    script = tmp_path / "cleanup.sh"
+    script.write_text('''#!/bin/bash
+set -euo pipefail
+BUILDER_UID=12345
+BUILDER_GID=12345
+CHROOT_MOUNTS=("$SAFEYOLO_ROOTFS_WORK_DIR/proc" "$SAFEYOLO_ROOTFS_WORK_DIR/dev")
+BUILD_DEVICES=("$SAFEYOLO_ROOTFS_WORK_DIR/null")
+_as_root() {
+    printf '%s\\n' "$*" >> "$CALL_LOG"
+    case "$1" in
+        umount) return "$UNMOUNT_STATUS" ;;
+        rm) "$@" ;;
+        chown) return 0 ;;
+        *) return 90 ;;
+    esac
+}
+''' + cleanup + '\nexit "$BUILD_EXIT"\n')
+    result = subprocess.run(["bash", str(script)], capture_output=True, text=True,
+                            env={**os.environ, "SAFEYOLO_ROOTFS_WORK_DIR": str(work),
+                                 "CALL_LOG": str(calls), "UNMOUNT_STATUS": str(unmount_status),
+                                 "BUILD_EXIT": str(exit_code)})
+    assert result.returncode == expected, result.stderr
+    logged = calls.read_text().splitlines()
+    assert logged[:2] == [f"umount {work}/dev", f"umount {work}/proc"]
+    assert any(line.startswith("chown ") for line in logged) == (unmount_status == 0)
+    assert device.exists() == (unmount_status != 0)

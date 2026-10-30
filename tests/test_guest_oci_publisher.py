@@ -60,6 +60,8 @@ def archive(platform, source, destination):
     files = ["rootfs-tree", "cache-paths.txt"] if platform.startswith("linux/") else [
         "Image", "initramfs.cpio.gz", "rootfs-base.ext4",
     ]
+    if (source / "build-inputs.json").exists():
+        files.append("build-inputs.json")
     paths = [str(source / name) for name in files]
     for field, options in (("apparent_bytes", ["--apparent-size"]), ("allocated_bytes", [])):
         measured = run("sudo", "-n", shutil.which("du"), "-sc", "-B1", *options, "--", *paths)
@@ -287,7 +289,7 @@ def registry():
         thread.join()
 
 
-def publish(tmp_path, artifacts, publisher_tools, repository=None, version="guest-2026-10-12.1", compatibility="v1", revision=REVISION, from_layout=False):
+def publish(tmp_path, artifacts, publisher_tools, repository=None, version="guest-2026-10-12.1", compatibility="v1", revision=REVISION, from_layout=False, profile=None):
     oras, verifier = publisher_tools
     args = [str(ROOT / "scripts/publish_guest_oci.sh"),
             "--layout", str(tmp_path / f"layout-{version}"), "--version", version,
@@ -295,6 +297,8 @@ def publish(tmp_path, artifacts, publisher_tools, repository=None, version="gues
     args += ["--from-layout"] if from_layout else ["--artifacts", str(artifacts)]
     if repository:
         args += ["--publish", repository, "--plain-http"]
+    if profile:
+        args += ["--profile", profile]
     return run(*args, env={**os.environ, "ORAS": oras}, timeout=30)
 
 
@@ -319,6 +323,30 @@ def test_actual_oras_local_release_and_no_registry_writes(tmp_path, artifacts, p
         assert child["config"]["size"] == len(config)
         assert child["config"]["digest"] == "sha256:" + hashlib.sha256(config).hexdigest()
     assert not registry[4]
+
+
+def test_explicit_custom_profile_publishes_one_consumer_with_input_provenance(
+    tmp_path, built, publisher_tools, registry,
+):
+    inputs = {"profile": {"name": "kali-pentest"}, "architecture": "arm64",
+              "files": {"build.sh": {"sha256": "a" * 64}}}
+    (built / "build-inputs.json").write_text(json.dumps(inputs))
+    artifacts = tmp_path / "custom"
+    archive("linux/arm64", built, artifacts / "linux-arm64")
+    result = publish(tmp_path, artifacts, publisher_tools, registry[0], profile="kali-pentest")
+    assert result.returncode == 0, result.stderr
+    _, blobs, manifests, tags, _, _ = registry
+    index = json.loads(manifests[tags["guest-2026-10-12.1"]])
+    assert index["annotations"]["dev.safeyolo.guest.profile"] == "kali-pentest"
+    assert len(index["manifests"]) == 1
+    child = json.loads(manifests[index["manifests"][0]["digest"]])
+    assert child["annotations"]["dev.safeyolo.guest.build-inputs"] == "sha256:" + hashlib.sha256(
+        (built / "build-inputs.json").read_bytes()).hexdigest()
+    assert child["layers"][0]["digest"] in blobs
+    assert "compat-v1" not in tags
+    # Profile identity must be explicit on retained-layout publication too.
+    refused = publish(tmp_path, artifacts, publisher_tools, registry[0], from_layout=True)
+    assert refused.returncode != 0 and "does not match" in refused.stderr
 
 
 @pytest.mark.parametrize(("defect", "error"), [

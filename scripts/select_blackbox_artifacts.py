@@ -410,6 +410,8 @@ def staged_guest_candidates(compatibility: str, explicit: str | None) -> tuple[l
                 or value["artifactType"] != "application/vnd.safeyolo.guest.v1"):
             raise ValueError("guest index differs from the maintained OCI contract")
         annotations = value["annotations"]
+        if "dev.safeyolo.guest.profile" in annotations and explicit is None:
+            continue
         if annotations["dev.safeyolo.guest.compatibility"] != compatibility:
             if explicit:
                 raise ValueError("selected guest is incompatible with the host")

@@ -109,6 +109,32 @@ layered base. Build provenance and base compatibility do not relax the existing
 exact source/profile checks for host-shipped `safeyolo-guest`, `safeyolo-coord`
 or Mac helpers.
 
+### Explicit custom profiles
+
+A custom index and every child also carry the same nonempty
+`dev.safeyolo.guest.profile`, for example `kali-pentest`. Each child requires
+`dev.safeyolo.guest.build-inputs=sha256:<64 lowercase hex>`, the digest of its
+completed build's `build-inputs.json`. That record contains declared source
+hashes, base identity, architecture, output kind and frozen tool inputs.
+The archive producer includes the record in the opaque archive. The normal
+archive digest verifies all transported bytes.
+
+Custom indexes contain one or more of the supported consumer platforms.
+They need not contain every default-release platform. Duplicate or unknown
+platforms, incompatible generations and mismatched child profile identities
+are rejected. The maintained Kali profile supplies both Linux architectures
+and macOS arm64; its ARM64 distro build is reused for tree and ext4 exports.
+
+Prepare custom archives with `guest/archive-default.sh`, then invoke the same
+publisher with `--profile NAME`. Retained-layout publication also requires
+that explicit name. Custom publication does not update a compatibility tag.
+Stock compatibility-tag discovery and default promotion exclude custom profiles. Consumers
+select a custom index explicitly by immutable digest through the existing
+installer or guest upgrade command. The host compatibility requirement and
+normal ownership/ext4 contracts remain enforced. The
+[custom-rootfs guide](../contrib/ROOTFS_SCRIPT_GUIDE.md#cached-kali-builds)
+describes the local staged build and export path.
+
 ## Descriptor verification and selection
 
 Each index child, config and archive descriptor must carry the required media
@@ -133,7 +159,7 @@ content from another release into that operation.
 its pinned child descriptor. `validate_child` checks raw child hash/size,
 shared annotations, build-base, config descriptor and single archive descriptor.
 `GuestChild::validate_config` checks the config's raw identity/size and exact
-consumer platform. `validate_children` checks all children in
+consumer platform. `validate_children` checks all declared children in
 `ConsumerPlatform::ALL` order, including distinct Mac/Linux arm64 archive
 identities. `Descriptor::verify` checks a reader incrementally through EOF;
 `check_size` supports callers whose OCI client already verifies the hash.

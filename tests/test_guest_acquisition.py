@@ -51,14 +51,17 @@ def descriptor(data, media_type):
     return {"digest": digest(data), "size": len(data), "mediaType": media_type}
 
 
-def release(archive, version="guest-2026-10-12.1", compatibility="v1", edit_child=None, encode_config=None):
+def release(archive, version="guest-2026-10-12.1", compatibility="v1", edit_child=None, encode_config=None,
+            profile=None, platforms=(("darwin", "arm64"), ("linux", "amd64"), ("linux", "arm64"))):
     annotations = {"org.opencontainers.image.version": version,
                    "org.opencontainers.image.source": "https://github.com/craigbalding/safeyolo",
                    "org.opencontainers.image.revision": "a" * 40,
                    "dev.safeyolo.guest.compatibility": compatibility}
+    if profile:
+        annotations["dev.safeyolo.guest.profile"] = profile
     contents = {"blobs/" + digest(archive): archive}
     manifests = []
-    for os_name, architecture in (("darwin", "arm64"), ("linux", "amd64"), ("linux", "arm64")):
+    for os_name, architecture in platforms:
         platform = {"os": os_name, "architecture": architecture}
         config = encode_config(platform) if encode_config else json.dumps(platform).encode()
         contents["blobs/" + digest(config)] = config
@@ -66,6 +69,8 @@ def release(archive, version="guest-2026-10-12.1", compatibility="v1", edit_chil
                  "annotations": {**annotations, "dev.safeyolo.guest.build-base":
                                  "docker.io/library/debian@sha256:" + "b" * 64},
                  "config": descriptor(config, CONFIG), "layers": [descriptor(archive, ARCHIVE)]}
+        if profile:
+            child["annotations"]["dev.safeyolo.guest.build-inputs"] = digest(b"declared fixture inputs")
         if edit_child:
             edit_child(child)
         child_bytes = json.dumps(child).encode()
@@ -442,6 +447,30 @@ def test_explicit_first_acquisition_selects_each_index_without_discovery(
     assert result.stdout.strip() == json.loads(original)["assets"]
     assert len(requests) == before
     assert not (guest_store / "unused").exists()
+
+
+def test_custom_profile_requires_explicit_index_and_reuses_native_preparation(
+    native_cli, registry, package_info, tmp_path, guest_store,
+):
+    contents, requests, _faults, environment = registry
+    architecture = package_info.read_text().split("platform=linux-", 1)[1].splitlines()[0]
+    data = release(compressed_archive(child_owner=101000), profile="kali-pentest",
+                   platforms=(("linux", architecture),))
+    contents.update(data)
+    index = digest(data["manifests/compat-v1"])
+    contents["manifests/" + index] = data["manifests/compat-v1"]
+    refused = install(native_cli, tmp_path / "discovery", guest_store, environment, package_info)
+    assert refused.returncode != 0 and "explicit --index" in refused.stderr
+    first = install(native_cli, tmp_path / "explicit", guest_store, environment, package_info, "--index", index)
+    assert first.returncode == 0, first.stderr
+    tree = (tmp_path / "explicit/share/rootfs-tree").resolve()
+    owned_root_ids(tree)
+    assert (tree / "command").stat().st_uid == os.getuid()
+    before = len(requests)
+    second = install(native_cli, tmp_path / "reuse", guest_store, environment, package_info, "--index", index)
+    assert second.returncode == 0, second.stderr
+    assert (tmp_path / "reuse/share/rootfs-tree").resolve() == tree
+    assert not requests[before:]
 
 
 def test_guest_remap_failure_keeps_verified_archive_for_retry(native_cli, registry, package_info, tmp_path, guest_store):
