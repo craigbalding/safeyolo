@@ -1,8 +1,10 @@
 # Herdr phase-one native-agent spike
 
-This spike prepares one real two-agent session for
-[#572](https://github.com/craigbalding/safeyolo/issues/572). Execution is pending.
-Local wrapper and oracle tests do not establish a passed Herdr/Codex journey.
+This spike provides a host wrapper and a journey script for
+[#572](https://github.com/craigbalding/safeyolo/issues/572). The first execution
+failed in the pane observer before any smoke prompt. The corrected observer
+awaits refreshed preparation and another owned execution. Local wrapper and
+observer tests do not establish a passed Herdr/Codex journey.
 The whole issue remains open, with Size M and Medium uncertainty. Its other
 integration questions remain in the issue.
 
@@ -74,9 +76,12 @@ The preparation file records the exact installed paths, Herdr binary digest,
 both native agent/run identities, workspaces and 10 GiB reserve. It proves
 sandbox and tool preflight, not model input or output.
 
-On that guest, from the reviewed source checkout root, set `PREPARATION` to
-the transferred verified `native-preparation-20261031.json`. Set `OUTPUT` to a
-new absolute directory under the existing private
+On that guest, from the exact candidate source checkout root, set `PREPARATION`
+to Sylab's refreshed, verified preparation JSON. The first execution stopped
+both prepared sandboxes; their old preparation file cannot identify fresh
+ready inputs. Sylab refreshes only those owned sandbox generations and records
+their actual identities, reusing packages, authorized login, workspace and
+the working Coord ports. Set `OUTPUT` to a new absolute directory under the existing private
 `/home/agent/375-build-storage-d62/frontend572` workspace. Its parent must
 exist. The command starts coding commands and makes four model requests. It
 creates a private disposable Herdr server and stops the two owned sandboxes
@@ -116,8 +121,60 @@ It is proof tooling, not a source of Factory semantics. Login state and full
 rollouts remain private. The output directory is private too; transfer only
 `result.json` and a concise operator assessment to `/evidence/operator/572`
 through Sylab. Keep `server.log` and Herdr state private. A failure or cleanup
-fallback returns nonzero and retains partial observations. Startup questions
-or onboarding require inspection, not blind acceptance or a passed result.
+fallback returns nonzero and retains partial observations. Herdr protocol and
+response-shape failures retain a reason in `result.json` before cleanup.
+Startup questions or onboarding require inspection, not blind acceptance or a
+passed result.
+
+## First execution and observer repair
+
+Rundeck execution 12403 ran source
+`95c2dd07c8473067624be94611c6c66106dd9d13` against native runtime
+`377a54e06ebf0f6962f61ab8080a23fdfe6b1592` on 31 October 2026. It returned
+guest exit 1 after 8.176 seconds in the driver and 8.371 seconds in the outer
+command. Both native foreground launch identities were created.
+`Journey.read_pane` then raised `KeyError: text` before `ready` returned or
+`turn` ran. No smoke prompt was sent. Read-only diagnostic execution 12404
+found no new Codex rollout in either prepared home.
+
+Normal native stop reached stopped sandbox/command state and an absent terminal
+for both agents. Owned Herdr stop and socket absence also passed. The failed
+execution establishes an observer defect. It supplies no model journey,
+operator-usefulness conclusion, runtime-defect finding or product acceptance.
+The original sanitized result remains at
+`/evidence/operator/572/journey-95c2dd07-12403.json`, SHA-256
+`aa0a32fc6e2c4103caba9e466c39f89601fdb86e9fc65f997abbc90255396183`.
+Keep that execution when recording the next result.
+
+Herdr TUI 0.9.5 serializes pane output as
+`result.read.text`. Its tagged
+[response enum](https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/api/schema/response.rs#L162)
+contains a `read` member, and the
+[pane-read producer](https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/app/api/panes.rs#L1512)
+populates that member with `PaneReadResult`. The corrected consumer reads that
+member after `Herdr.call` removes the outer `result`. Malformed JSON, invalid
+response envelopes and malformed pane reads report the method and expected
+shape without copying terminal output into the result. Unexpected missing or
+mistyped fields in the other observer accesses also leave a failure reason.
+The release's ping, workspace-create, pane-split, agent-get and agent-focus
+producers match the other consumed fields.
+
+For a focused protocol check on a Linux host with the repository's locked test
+environment, set `HERDR_TEST_BINARY` to the absolute path of a verified official
+TUI 0.9.5 release binary for that host's architecture. From the source root, run:
+
+```sh
+uv run --frozen pytest -q tests/test_herdr_native.py
+```
+
+With that variable set, the test exercises the real Herdr server and pane reader,
+including metadata, name focus and the other consumed response structures.
+It starts no SafeYolo sandbox or model. Without the variable, only that live
+protocol control is skipped. The same control reproduced the original
+`KeyError` before the repair and passed afterward. The remaining controls
+exercise malformed replies and verify that a failed observer writes its reason
+through cleanup. These results support the observer repair; the real two-agent
+journey still requires Sylab's owned execution and normal Lens review.
 
 ## Findings and remaining questions
 

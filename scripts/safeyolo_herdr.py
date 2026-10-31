@@ -21,7 +21,7 @@ METADATA_SOURCE = "user:safeyolo"
 
 
 class HerdrError(RuntimeError):
-    """Herdr refused a host-side request."""
+    """A Herdr request failed or its response violated the protocol."""
 
 
 class Herdr:
@@ -35,10 +35,24 @@ class Herdr:
             connection.sendall((json.dumps({"id": "safeyolo", "method": method,
                                             "params": params or {}}) + "\n").encode())
             with connection.makefile("rb") as response:
-                reply = json.loads(response.readline())
+                raw = response.readline()
+        try:
+            reply = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise HerdrError(f"{method}: invalid JSON response") from error
+        if not isinstance(reply, dict):
+            raise HerdrError(f"{method}: expected response object")
+        if reply.get("id") != "safeyolo":
+            raise HerdrError(f"{method}: response id does not match request")
         if "error" in reply:
-            raise HerdrError(f"{method}: {reply['error'].get('code', 'unknown error')}")
-        return reply["result"]
+            error = reply["error"]
+            if not isinstance(error, dict) or not isinstance(error.get("code"), str):
+                raise HerdrError(f"{method}: expected error code string")
+            raise HerdrError(f"{method}: {error['code']}")
+        result = reply.get("result")
+        if not isinstance(result, dict):
+            raise HerdrError(f"{method}: expected result object")
+        return result
 
 
 def native_status(command: list[str], name: str) -> dict:

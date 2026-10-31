@@ -216,8 +216,13 @@ class Journey:
         return Path(self.preparation["route"]["root"]) / "agents" / name / "home/.codex/sessions"
 
     def read_pane(self, name: str) -> str:
-        return self.herdr.call("pane.read", {"pane_id": self.panes[name], "source": "recent",
-                                             "format": "text", "lines": 200})["text"]
+        result = self.herdr.call("pane.read", {"pane_id": self.panes[name], "source": "recent",
+                                               "format": "text", "lines": 200})
+        # Herdr v0.9.5 ResponseResult::PaneRead nests PaneReadResult under read.
+        read = result.get("read")
+        if not isinstance(read, dict) or not isinstance(read.get("text"), str):
+            raise HerdrError("pane.read: expected result.read.text string (Herdr 0.9.5)")
+        return read["text"]
 
     def snapshot(self, label: str) -> None:
         observations = self.result["observations"][label] = {}
@@ -397,6 +402,8 @@ def main() -> int:
     try:
         journey.exercise()
         completed = True
+    except (KeyError, TypeError) as error:
+        journey.result["failure"] = f"observer response shape failure ({type(error).__name__}): {error}"
     except (OSError, ValueError, subprocess.SubprocessError, HerdrError, JourneyError) as error:
         journey.result["failure"] = str(error) if isinstance(error, (HerdrError, JourneyError)) else type(error).__name__
     finally:

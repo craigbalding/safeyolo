@@ -1,7 +1,8 @@
-"""Focused host-wrapper and oracle controls; these never run a model or sandbox."""
+"""Host-wrapper and observer controls; these never run a model or SafeYolo sandbox."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -19,11 +20,14 @@ from scripts.accept_herdr_native import (
     JourneyError,
     check_continuity,
     check_initial,
+    main,
     prepared_agents,
     prompt_for,
     rollout_turn,
     turn_proof,
+    until,
 )
+from scripts.safeyolo_herdr import Herdr, HerdrError, report
 
 ROOT = Path(__file__).resolve().parents[1]
 STATUS = {"name": "first", "agent_id": "ag-first", "run_id": "run-first", "launch_id": None,
@@ -41,10 +45,11 @@ def wait_for(check):
 
 
 @pytest.fixture
-def herdr_socket(tmp_path):
+def herdr_socket(tmp_path, request):
     calls = []
     stop = threading.Event()
     path = tmp_path / "herdr.sock"
+    reply = getattr(request, "param", {"id": "safeyolo", "result": {}})
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
         listener.bind(str(path))
         listener.listen()
@@ -59,7 +64,7 @@ def herdr_socket(tmp_path):
                 with connection, connection.makefile("rb") as stream:
                     request = json.loads(stream.readline())
                     calls.append(request)
-                    connection.sendall(b'{"id":"safeyolo","result":{}}\n')
+                    connection.sendall(reply if isinstance(reply, bytes) else (json.dumps(reply) + "\n").encode())
 
         thread = threading.Thread(target=serve)
         thread.start()
@@ -106,6 +111,104 @@ else:
 ''')
     path.chmod(0o755)
     return path
+
+
+@pytest.fixture
+def preparation(tmp_path, native_cli):
+    second = dict(STATUS, name="second", agent_id="ag-second", run_id="run-second")
+    return {"route": {"cli": str(native_cli), "root": str(tmp_path), "native_source": "fixture"},
+            "herdr": {"path": "unused"}, "reserve_bytes": 0, "preflight": [
+                {"command": ["safeyolo", "agent", "status", item["name"]], "exit": 0,
+                 "stdout": json.dumps(item)} for item in (STATUS, second)]}
+
+
+def test_live_herdr_095_response_consumers(tmp_path, preparation, monkeypatch):
+    """Opt in with HERDR_TEST_BINARY pointing to the verified v0.9.5 release."""
+    binary = os.environ.get("HERDR_TEST_BINARY")
+    if not binary:
+        pytest.skip("set HERDR_TEST_BINARY for the real Herdr protocol control")
+    binary = Path(binary).resolve()
+    preparation["herdr"] = {"path": str(binary), "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}
+    statuses = prepared_agents(preparation)
+    monkeypatch.setattr("scripts.accept_herdr_native.native_status", lambda _command, name: statuses[name])
+    journey = Journey(preparation, tmp_path, 30)
+    try:
+        journey.prepare()
+        assert journey.result["herdr"] == {"version": "0.9.5", "protocol": 22}
+        workspace = journey.herdr.call("workspace.create", {"cwd": str(tmp_path), "focus": True})
+        pane = workspace["root_pane"]["pane_id"]
+        for index, name in enumerate(statuses):
+            if index:
+                pane = journey.herdr.call("pane.split", {"target_pane_id": pane, "direction": "right",
+                                                        "focus": True})["pane"]["pane_id"]
+            journey.panes[name] = pane
+            statuses[name] = dict(statuses[name], agent_state="running", launch_id=f"launch-{name}")
+            journey.live[name] = statuses[name]
+            report(journey.herdr, pane, name, statuses[name])
+            journey.herdr.call("agent.rename", {"target": pane, "name": name})
+            focused = journey.herdr.call("agent.focus", {"target": name})["agent"]
+            assert focused["focused"] and focused["pane_id"] == pane
+            journey.herdr.call("pane.send_input", {"pane_id": pane, "text": "printf 'HERDR_READ_READY\\n'",
+                                                   "keys": ["enter"]})
+            until(lambda name=name: "HERDR_READ_READY" in journey.read_pane(name), journey.deadline)
+        journey.snapshot("protocol_control")
+    finally:
+        journey.owned = []  # Only the disposable Herdr server was started; no native agents exist.
+        assert journey.cleanup()
+
+
+@pytest.mark.parametrize("herdr_socket, expected", [
+    (b'{"unfinished":\n', "invalid JSON response"),
+    ([], "expected response object"),
+    ({"id": "another-request", "result": {}}, "response id does not match"),
+    ({"id": "safeyolo", "result": []}, "expected result object"),
+    ({"id": "safeyolo", "error": []}, "expected error code string"),
+    ({"id": "safeyolo", "error": {"code": "pane_not_found", "message": "private details"}}, "pane_not_found"),
+], indirect=["herdr_socket"])
+def test_herdr_reports_method_and_protocol_failure_without_response_contents(herdr_socket, expected):
+    path, _calls = herdr_socket
+    with pytest.raises(HerdrError, match=f"pane.read: {expected}") as error:
+        Herdr(str(path)).call("pane.read", {"pane_id": "w1:p1"})
+    assert "private details" not in str(error.value)
+
+
+@pytest.mark.parametrize("herdr_socket, method, expected", [
+    ({"id": "safeyolo", "result": []}, "pane.read", "pane.read: expected result object"),
+    ({"id": "safeyolo", "result": {"type": "pane_read", "read": {"text": 17}}},
+     "pane.read", "pane.read: expected result.read.text string"),
+    ({"id": "safeyolo", "result": {"type": "agent_info", "agent": {}}},
+     "agent.get", "observer response shape failure (KeyError): 'pane_id'"),
+    ({"id": "safeyolo", "result": {"type": "agent_info", "agent": None}},
+     "agent.get", "observer response shape failure (TypeError)"),
+], indirect=["herdr_socket"])
+def test_journey_retains_protocol_failure_through_cleanup(tmp_path, preparation, herdr_socket,
+                                                        monkeypatch, method, expected):
+    path, _calls = herdr_socket
+    preparation_path = tmp_path / "preparation.json"
+    preparation_path.write_text(json.dumps(preparation))
+    output = tmp_path / "output"
+
+    def exercise(journey):
+        journey.herdr = Herdr(str(path))
+        journey.panes["first"] = "w1:p1"
+        if method == "pane.read":
+            journey.read_pane("first")
+        else:
+            journey.herdr.call(method)["agent"]["pane_id"]
+
+    def cleanup(journey):
+        assert expected in journey.result["failure"]
+        journey.result["cleanup"]["control_completed"] = True
+        return True
+
+    monkeypatch.setattr(Journey, "exercise", exercise)
+    monkeypatch.setattr(Journey, "cleanup", cleanup)
+    monkeypatch.setattr(sys, "argv", ["accept_herdr_native", "--preparation", str(preparation_path),
+                                      "--output", str(output)])
+    assert main() == 1
+    result = json.loads((output / "result.json").read_text())
+    assert result["passed"] is False and expected in result["failure"]
+    assert result["cleanup"]["control_completed"] is True and result["turns"] == {}
 
 
 @pytest.mark.parametrize("attach", [False, True])
