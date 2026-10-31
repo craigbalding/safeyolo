@@ -967,8 +967,11 @@ def test_gemini_canonical_restart_duplicates_and_operator_attribution(tmp_path, 
                 operator = instance.retained(sequence)
                 events = events_until(process, log, lambda event: event.get("method") == "safeyolo/attention/delivered", timeout=90)
                 assert events[-1]["params"]["stop_reason"] == "end_turn", events[-1]
-                assert len([event for event in events if event.get("method") == "safeyolo/attention/submitted"]) == 1, events
-                text = acp_reply(events)
+                submitted = [index for index, event in enumerate(events) if event.get("method") == "safeyolo/attention/submitted"]
+                assert len(submitted) == 1, events
+                # session/load streams old assistant replies too. Count only
+                # output after submission of this new operator event.
+                text = acp_reply(events[submitted[0] + 1:])
                 assert operator_nonce in text and "operator" in text, text
                 (tmp_path / "gemini-recovery-proof.json").write_text(json.dumps({"harness": "Gemini CLI 0.66.0", "model": GEMINI_MODEL,
                     "session_id": session, "unrecorded_input_recovered": accepted["envelope"]["msg_id"],
