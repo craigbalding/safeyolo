@@ -482,8 +482,9 @@ fn tls_updates_keep_the_connection_key_and_reject_raw_or_unbounded_content() {
 #[test]
 fn server_hello_schema_retains_status_and_rejects_raw_or_inconsistent_evidence() {
     let mut upstream = record(connection("S1", true));
-    let hello = json!({"legacy_version":771,"cipher_suite":4865,"extension_types":[43,51],
-        "extension_count":2,"truncated":false,"ja3s":"f4febc55ea12b31ae17cfb7e614afda8"});
+    let hello = json!({"legacy_version":771,"supported_version":772,"alpn":null,
+        "cipher_suite":4865,"extension_types":[43,51],"extension_count":2,"truncated":false,
+        "ja3s":"f4febc55ea12b31ae17cfb7e614afda8","ja4s":"t130200_1301_234ea6891581"});
     upstream["details"]["tls_server_hello"] =
         json!({"status":"complete","hello":hello,"hello_retry_request":null});
     assert!(parse_record(&upstream.to_string()).is_ok());
@@ -499,6 +500,34 @@ fn server_hello_schema_retains_status_and_rejects_raw_or_inconsistent_evidence()
             json!(vec![43; 65]),
         ),
         ("/details/tls_server_hello/hello/truncated", json!(true)),
+        (
+            "/details/tls_server_hello/hello/alpn",
+            json!("a".repeat(1021)),
+        ),
+        (
+            "/details/tls_server_hello/hello/supported_version",
+            json!(65536),
+        ),
+        (
+            "/details/tls_server_hello/hello/ja4s",
+            json!("not a fingerprint"),
+        ),
+        (
+            "/details/tls_server_hello/hello/ja4s",
+            json!("t120200_1301_234ea6891581"),
+        ),
+        (
+            "/details/tls_server_hello/hello/ja4s",
+            json!("t130200_1302_234ea6891581"),
+        ),
+        (
+            "/details/tls_server_hello/hello/ja4s",
+            json!("t130200_1301_234EA6891581"),
+        ),
+        (
+            "/details/tls_server_hello/hello/ja4s",
+            json!("t130200_1301_234ea689158é"),
+        ),
         (
             "/details/tls_server_hello/hello/ja3s",
             json!("not a digest"),
@@ -525,7 +554,7 @@ fn server_hello_schema_retains_status_and_rejects_raw_or_inconsistent_evidence()
             json!({"status":status,"hello":null,"hello_retry_request":hello});
         assert!(parse_record(&upstream.to_string()).is_ok());
     }
-    // Existing schema-v2 records can omit the new optional observation.
+    // A connection with no recorded ServerHello observation remains representable.
     upstream["details"]
         .as_object_mut()
         .unwrap()

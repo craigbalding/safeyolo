@@ -416,25 +416,54 @@ Its extension hash sorts non-GREASE extension types excluding SNI and ALPN,
 then appends signature algorithms in offered order. SHA-256 hash sections keep
 12 lowercase hex digits. Empty sorted lists produce twelve zeroes. Unknown
 versions use `00`. These values characterize client behavior; they are not
-cryptographic process or executable identities. JA4S remains out of scope pending
-applicable implementation and distribution rights.
+cryptographic process or executable identities.
 
 `tls_server_hello` records bytes read immediately below the origin TLS handshake,
 after any parent CONNECT. It contains `status`, `hello`, and
 `hello_retry_request`. Each hello contains the unsigned wire `legacy_version`,
-selected `cipher_suite`, ordered `extension_types`, `extension_count`,
-`truncated`, and `ja3s`. Extension summaries keep the first 64 types; the digest
-uses the complete list. JA3S is the MD5 digest of the decimal
+`supported_version` from the supported_versions extension when present, selected
+`cipher_suite`, `alpn` when present in that hello, ordered `extension_types`,
+`extension_count`, `truncated`, `ja3s`, and `ja4s`. The optional values are null
+when absent. Extension summaries keep the first 64 types; both fingerprints
+use the complete list. The selected ALPN is displayed with the same byte escaping
+as the client offers. Its protocol limit is 255 bytes, or at most 1,020 displayed
+bytes. `truncated` refers to the extension-type summary.
+
+JA3S is the MD5 digest of the decimal
 `legacy_version,cipher_suite,extension-types` tuple, with extension types joined
 by hyphens. An absent extension vector leaves the third segment empty.
 As in the [Salesforce JA3S implementation](https://github.com/salesforce/ja3/blob/502cc6395811c54743b0561419d61900a6df3ff7/python/ja3s.py),
 all server extension types participate in their wire order, including GREASE
 values. No upstream implementation source is imported.
 
+JA4S uses TLS over the observed origin stream (`t`), `supported_version` when
+present (otherwise `legacy_version`), the extension count saturated at 99,
+the selected plaintext ALPN code, the four-digit lowercase hexadecimal cipher,
+and the first 12 lowercase hexadecimal digits of SHA-256 over the ordered,
+comma-separated, four-digit lowercase hexadecimal extension types. The server
+list retains GREASE and is not sorted. An empty list produces twelve zeroes.
+Version codes match JA4, including `00` for an unknown version. As in the
+[FoxIO JA4S implementation](https://github.com/FoxIO-LLC/ja4/blob/c6469a7b0dbf8fe963810162429fbfd9d1acc4d5/rust/ja4/src/tls.rs),
+the ALPN code uses the first and last ASCII characters, doubles a single
+character, and substitutes `9` for a non-ASCII endpoint. An absent ALPN uses
+`00`. This is separate from the JA4 client hexadecimal fallback.
+
+JA4S is subject to [FoxIO License 1.1](../proxy/licenses/ja4s-FoxIO-1.1.txt),
+with its [JA4S notice](../proxy/licenses/ja4s-NOTICE.txt), alongside SafeYolo's
+MIT license. FoxIO restricts direct and indirect monetization, hosted or managed
+services for others, and maintenance, support or development services. These
+notices do not grant OEM or other commercial rights. Native bundles include the
+license and notice in `assets/licenses`; source releases retain `proxy/licenses`.
+
 The observer reassembles a ServerHello across records and read boundaries.
 Under [RFC 8446 section 4.1.3](https://www.rfc-editor.org/rfc/rfc8446#section-4.1.3),
 a TLS 1.3 ServerHello has wire `legacy_version: 771` (0x0303).
+The hello's supported_versions extension supplies `supported_version: 772`
+(0x0304), so JA4S uses `13` while JA3S retains the legacy version.
 The independently negotiated session version remains `TLSv1_3` (0x0304).
+TLS 1.3 sends its selected ALPN later in encrypted extensions. The ServerHello
+therefore has `alpn: null` and a JA4S ALPN code of `00`; the observer does not
+borrow ALPN from the negotiated session, client offers or parent handshake.
 The observer recognizes HelloRetryRequest by its specified random value, records
 it separately, and waits for the final ServerHello. A retry fingerprint does
 not substitute for the final server fingerprint. TLS 1.3 compatibility
@@ -447,7 +476,7 @@ success or certificate verification:
 |---|---|
 | `complete` | A complete final ServerHello was parsed. `hello` is present. |
 | `incomplete` | The stream ended or the handshake was dropped before a complete final hello. A parsed retry can remain. |
-| `invalid` | The observed record or handshake framing was malformed, or extension types were duplicated. |
+| `invalid` | The observed record, handshake, supported_versions or ALPN framing was malformed, or extension types were duplicated. |
 | `unavailable` | Non-handshake bytes prevented observation, such as an alert or opaque/encrypted record. |
 | `limit_exceeded` | A declared ServerHello exceeded its bounded observation size. |
 
@@ -526,11 +555,14 @@ checks the [RFC 1321 test vectors](https://www.rfc-editor.org/rfc/rfc1321).
 No reference implementation source or fingerprint dependency is imported.
 
 The ServerHello tests in `proxy/src/tls_identity/server/tests.rs` cover ordered
-tuples, fragmentation, coalescing, retries, summary limits and unavailable or
-invalid evidence. Owned TLS 1.2/1.3 endpoints exercise the production handshake
+tuples, the [published FoxIO JA4S vector](https://github.com/FoxIO-LLC/ja4/blob/c6469a7b0dbf8fe963810162429fbfd9d1acc4d5/technical_details/JA4S.png)
+(`t120400_c030_4e8089b08790`), selected versions, ALPN codes, fragmentation,
+coalescing, retries, summary limits and unavailable or invalid evidence.
+Owned TLS 1.2/1.3 endpoints exercise the production handshake
 path, including full and resumed sessions. A test-only endpoint tap supplies
-the emitted wire bytes to an independent field reader and OpenSSL MD5 oracle.
-The nested-parent fixture applies the same oracle to inner origin bytes,
+the emitted wire bytes to an independent field reader and OpenSSL MD5/SHA-256
+oracle for both server fingerprints. The nested-parent fixture applies the same
+oracle to inner origin bytes,
 including certificate-verification failure. These tests require OpenSSL in
 the test host's command path.
 

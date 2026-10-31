@@ -15,17 +15,37 @@ use tokio::{
 };
 
 fn body(cipher: u16, kinds: &[u16], retry: bool) -> Vec<u8> {
+    let extensions = kinds
+        .iter()
+        .map(|kind| {
+            (
+                *kind,
+                match kind {
+                    43 => &[3, 4][..],
+                    16 => &[0, 3, 2, b'h', b'2'][..],
+                    _ => &[][..],
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    body_with_extensions(cipher, &extensions, retry)
+}
+
+fn body_with_extensions(cipher: u16, extensions: &[(u16, &[u8])], retry: bool) -> Vec<u8> {
     let mut bytes = vec![3, 3];
     bytes.extend(if retry { RETRY_RANDOM } else { [0x58; 32] });
     bytes.push(0);
     bytes.extend(cipher.to_be_bytes());
     bytes.push(0);
-    if !kinds.is_empty() {
-        bytes.extend(((kinds.len() * 4) as u16).to_be_bytes());
-        for kind in kinds {
-            bytes.extend(kind.to_be_bytes());
-            bytes.extend([0, 0]);
+    if !extensions.is_empty() {
+        let mut vector = Vec::new();
+        for (kind, value) in extensions {
+            vector.extend(kind.to_be_bytes());
+            vector.extend((value.len() as u16).to_be_bytes());
+            vector.extend_from_slice(value);
         }
+        bytes.extend((vector.len() as u16).to_be_bytes());
+        bytes.extend(vector);
     }
     bytes
 }
@@ -52,6 +72,16 @@ fn ordered_wire_vectors_fragmentation_and_summary_limits() {
         (47, vec![], "5397c414a9ebeaff1bf18b70ca22eaa0"),
         (4865, vec![2570, 43, 51], "cb9736be102c470e595c61b5f74d967a"),
     ] {
+        let extension_text = kinds
+            .iter()
+            .map(|v| format!("{v:04x}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let hash = if kinds.is_empty() {
+            "000000000000".into()
+        } else {
+            independent_digest(&extension_text, "-sha256")[..12].to_owned()
+        };
         for record_split in [1, 2, 3, 4, 5, 17, 16384] {
             let bytes = wire(&body(cipher, &kinds, false), record_split);
             for read_split in [1, 2, 4, 5, 19, usize::MAX] {
@@ -65,6 +95,14 @@ fn ordered_wire_vectors_fragmentation_and_summary_limits() {
                 assert_eq!(hello.cipher_suite, cipher);
                 assert_eq!(hello.extension_types, kinds);
                 assert_eq!(hello.ja3s, expected);
+                assert_eq!(
+                    hello.ja4s,
+                    format!(
+                        "t{}{:02}00_{cipher:04x}_{hash}",
+                        if kinds.contains(&43) { "13" } else { "12" },
+                        kinds.len()
+                    )
+                );
                 assert!(hello.valid());
             }
         }
@@ -76,14 +114,111 @@ fn ordered_wire_vectors_fragmentation_and_summary_limits() {
     assert!(hello.truncated && hello.valid());
     assert_eq!(
         hello.ja3s,
-        independent_md5(&format!(
-            "771,4865,{}",
-            (0..100)
-                .map(|n| n.to_string())
-                .collect::<Vec<_>>()
-                .join("-")
-        ))
+        independent_digest(
+            &format!(
+                "771,4865,{}",
+                (0..100)
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join("-")
+            ),
+            "-md5"
+        )
     );
+    assert_eq!(
+        hello.ja4s,
+        format!(
+            "t1399h2_1301_{}",
+            &independent_digest(
+                &(0..100)
+                    .map(|v| format!("{v:04x}"))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                "-sha256"
+            )[..12]
+        )
+    );
+}
+
+#[test]
+fn ja4s_published_vector_and_selected_version_alpn() {
+    // FoxIO rust/ja4/src/tls.rs::test_server_stats_into_out at c6469a7b.
+    // The same vector is displayed in technical_details/JA4S.png.
+    let (hello, _) = parse(&body(0xc030, &[5, 23, 0xff01, 0], false)).unwrap();
+    assert_eq!(hello.ja4s, "t120400_c030_4e8089b08790");
+    assert_eq!(hello.supported_version, None);
+    assert_eq!(hello.alpn, None);
+    assert!(hello.valid());
+    for (version, code) in [
+        (0x0304_u16, "13"),
+        (0x0303, "12"),
+        (0x0302, "11"),
+        (0x0301, "10"),
+        (0x0300, "s3"),
+        (2, "s2"),
+        (0x7f1c, "00"),
+    ] {
+        for (protocol, expected) in [
+            (b"h2".as_slice(), "h2"),
+            (b"http/1.1", "h1"),
+            (b"x", "xx"),
+            (&[0xff, b'x'], "9x"),
+            (&[b'x', 0xff], "x9"),
+            (b"/", "//"),
+            (&[0], "\0\0"),
+        ] {
+            let mut alpn = ((protocol.len() + 1) as u16).to_be_bytes().to_vec();
+            alpn.push(protocol.len() as u8);
+            alpn.extend_from_slice(protocol);
+            let (hello, _) = parse(&body_with_extensions(
+                4865,
+                &[(43, &version.to_be_bytes()), (16, &alpn)],
+                false,
+            ))
+            .unwrap();
+            assert_eq!(hello.supported_version, Some(version));
+            assert_eq!(hello.alpn, Some(alpn_display(protocol)));
+            assert_eq!(
+                hello.ja4s,
+                format!(
+                    "t{code}02{expected}_1301_{}",
+                    &independent_digest("002b,0010", "-sha256")[..12]
+                )
+            );
+            assert!(hello.valid());
+        }
+    }
+    let mut alpn = vec![1, 0, 255];
+    alpn.extend([255; 255]);
+    let (hello, _) = parse(&body_with_extensions(4865, &[(16, &alpn)], false)).unwrap();
+    assert_eq!(hello.alpn.as_ref().unwrap().len(), 1020);
+    assert!(hello.ja4s.starts_with("t120199_") && hello.valid());
+}
+
+#[test]
+fn malformed_ja4s_inputs_cannot_emit_a_fingerprint() {
+    for (kind, value) in [
+        (43, vec![]),
+        (43, vec![3]),
+        (43, vec![3, 4, 0]),
+        (16, vec![]),
+        (16, vec![0, 0]),
+        (16, vec![0, 1, 0]),
+        (16, vec![0, 3, 2, b'h']),
+        (16, vec![0, 2, 1, b'h', 0]),
+        (16, vec![0, 4, 1, b'h', 1, b'2']),
+    ] {
+        let mut capture = Capture::default();
+        for bytes in wire(&body_with_extensions(4865, &[(kind, &value)], false), 3).chunks(2) {
+            capture.feed(bytes);
+        }
+        assert_eq!(
+            capture.observation.status,
+            Status::Invalid,
+            "{kind}: {value:?}"
+        );
+        assert!(capture.observation.hello.is_none() && capture.observation.valid());
+    }
 }
 
 #[test]
@@ -215,9 +350,9 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Tap<S> {
     }
 }
 
-fn independent_md5(text: &str) -> String {
+fn independent_digest(text: &str, algorithm: &str) -> String {
     let mut child = std::process::Command::new("openssl")
-        .args(["dgst", "-md5"])
+        .args(["dgst", algorithm])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -240,7 +375,7 @@ fn independent_md5(text: &str) -> String {
 
 /// Independent byte oracle: concatenate plaintext handshake records, walk their
 /// declared lengths and read the ServerHello fields by offsets. OpenSSL supplies
-/// MD5. It never calls the production parser, framing code or MD5 implementation.
+/// MD5 and SHA-256. It never calls the production parser, framing or hash helpers.
 pub(in crate::tls_identity) fn assert_wire(observation: &serde_json::Value, wire: &Wire) {
     let bytes = wire.lock().unwrap();
     let mut handshake = Vec::new();
@@ -268,10 +403,20 @@ pub(in crate::tls_identity) fn assert_wire(observation: &serde_json::Value, wire
             let cipher_pos = 35 + data[34] as usize;
             let cipher = u16::from_be_bytes([data[cipher_pos], data[cipher_pos + 1]]);
             let mut kinds = Vec::new();
+            let mut selected_version = None;
+            let mut selected_alpn = None;
             let mut ext = cipher_pos + 5;
             while ext < data.len() {
-                kinds.push(u16::from_be_bytes([data[ext], data[ext + 1]]));
-                ext += 4 + u16::from_be_bytes([data[ext + 2], data[ext + 3]]) as usize;
+                let kind = u16::from_be_bytes([data[ext], data[ext + 1]]);
+                let len = u16::from_be_bytes([data[ext + 2], data[ext + 3]]) as usize;
+                kinds.push(kind);
+                if kind == 43 {
+                    assert_eq!(len, 2);
+                    selected_version = Some(u16::from_be_bytes([data[ext + 4], data[ext + 5]]));
+                } else if kind == 16 {
+                    selected_alpn = Some(&data[ext + 7..ext + 4 + len]);
+                }
+                ext += 4 + len;
             }
             assert_eq!(ext, data.len());
             let is_retry = &data[2..34]
@@ -292,7 +437,41 @@ pub(in crate::tls_identity) fn assert_wire(observation: &serde_json::Value, wire
                     .collect::<Vec<_>>()
                     .join("-")
             );
-            assert_eq!(hello["ja3s"], independent_md5(&text));
+            assert_eq!(hello["ja3s"], independent_digest(&text, "-md5"));
+            assert_eq!(
+                hello["supported_version"],
+                serde_json::json!(selected_version)
+            );
+            assert_eq!(
+                hello["alpn"],
+                serde_json::json!(selected_alpn.map(|b| String::from_utf8(b.to_vec()).unwrap()))
+            );
+            let version = match selected_version.unwrap_or(version) {
+                0x0304 => "13",
+                0x0303 => "12",
+                other => panic!("unexpected endpoint version {other}"),
+            };
+            let alpn = selected_alpn.map_or_else(
+                || "00".into(),
+                |p| format!("{}{}", p[0] as char, p[p.len() - 1] as char),
+            );
+            let extensions = kinds
+                .iter()
+                .map(|kind| format!("{kind:04x}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let hash = if kinds.is_empty() {
+                "000000000000".into()
+            } else {
+                independent_digest(&extensions, "-sha256")[..12].to_owned()
+            };
+            assert_eq!(
+                hello["ja4s"],
+                format!(
+                    "t{version}{:02}{alpn}_{cipher:04x}_{hash}",
+                    kinds.len().min(99)
+                )
+            );
             found += 1;
             // TLS 1.2's later Finished record is encrypted even though its
             // content type remains handshake. Only the plaintext hellos are
@@ -472,6 +651,11 @@ async fn production_failed_and_incomplete_handshakes_preserve_only_observed_meta
         (vec![22, 3, 3, 0, 10, 2, 0, 0, 40, 3], "incomplete", false),
         (b"HTTP/1.1 500\r\n\r\n".to_vec(), "unavailable", false),
         (wire(&body(4865, &[43, 43], false), 13), "invalid", false),
+        (
+            wire(&body_with_extensions(4865, &[(43, &[])], false), 3),
+            "invalid",
+            false,
+        ),
         (retry, "incomplete", true),
     ] {
         let directory = tempfile::tempdir().unwrap();
@@ -520,6 +704,17 @@ async fn production_failed_and_incomplete_handshakes_preserve_only_observed_meta
         assert_eq!(hello["status"], expected);
         assert_eq!(hello["hello_retry_request"].is_object(), saw_retry);
         assert_eq!(hello["hello"].is_object(), expected == "complete");
+        if expected == "complete" {
+            assert_eq!(hello["hello"]["ja4s"], "t120000_c02b_000000000000");
+        }
+        if saw_retry {
+            assert!(
+                hello["hello_retry_request"]["ja4s"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("t130100_1301_")
+            );
+        }
         assert!(
             rows.iter()
                 .filter(|row| row["event"] == "network.connection")
