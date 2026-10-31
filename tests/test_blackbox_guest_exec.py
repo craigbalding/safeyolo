@@ -17,6 +17,15 @@ import pytest
 from tests.blackbox import guest_exec, installed_access, installed_lifecycle, installed_workloads
 
 
+@pytest.fixture
+def system_python_stub(tmp_path):
+    # Intercept only the distro interpreter boundary; leave ambient command
+    # lookup intact so PATH decoys can expose accidental mise/venv selection.
+    startup = tmp_path / 'system-python.sh'
+    startup.write_text('/usr/bin/python3() { "$PROBE_SYSTEM_PYTHON" "$@"; }\n')
+    return {'BASH_ENV': str(startup), 'PROBE_SYSTEM_PYTHON': str(tmp_path / 'tools/python3')}
+
+
 @pytest.mark.parametrize('user', ['agent', 'root'])
 def test_guest_dispatcher_uses_selected_native_cli_without_a_python_package(tmp_path, user):
     """An isolated test interpreter forwards literals to the selected native shell."""
@@ -99,12 +108,77 @@ def test_runner_readiness_and_both_isolation_invocations_reach_native_shell(tmp_
     assert shlex.split(calls[3][-1]) == ['exec', 'sudo', '-n', '/bin/bash', '-lc', 'printf literal']
 
 
+@pytest.mark.parametrize('mise_present', [False, True])
+@pytest.mark.parametrize('guest_root', [False, True], ids=['ordinary', 'root-login'])
+def test_preparation_and_isolation_callers_ignore_ambient_python_and_pytest(
+    tmp_path, mise_present, guest_root, system_python_stub
+):
+    """Preparation and both real runner commands select the same distro Python."""
+    tools = tmp_path / 'tools'
+    tools.mkdir()
+    record = tmp_path / 'system-calls'
+    python = tools / 'python3'
+    python.write_text(f'''#!{sys.executable}
+import json, sys
+with open({str(record)!r}, 'a') as output: output.write(json.dumps(sys.argv[1:]) + '\\n')
+if sys.argv[1] == '-c':
+    print('Python 3.13.5\\npip 25.1.1' if 'import sys, pip' in sys.argv[2] else
+          'pytest 9.0.3\\nhttpx 0.28.1\\npytest-timeout 2.4.0')
+elif sys.argv[1:3] == ['-m', 'pytest']:
+    print('pytest 9.0.3')
+else:
+    assert sys.argv[1:4] == ['-m', 'pip', 'install']
+''')
+    python.chmod(0o755)
+    mise, pentest = tmp_path / 'mise', tmp_path / 'pentest-venv'
+    for directory in (mise, pentest):
+        directory.mkdir()
+        for name in ('python3', 'pip', 'pytest'):
+            decoy = directory / name
+            decoy.write_text('#!/bin/sh\necho "ambient tool selected" >&2\nexit 61\n')
+            decoy.chmod(0o755)
+    ordinary = [str(mise)] if mise_present else []
+    login = [*ordinary, str(pentest)]
+    # These model the observed native nonlogin and root-login paths. The
+    # controlled transport unwraps sudo, without claiming real guest-root proof.
+    cli = tmp_path / 'native'
+    cli.write_text(f'''#!{sys.executable}
+import os, shlex, subprocess, sys
+command = sys.argv[-1]
+root = command.startswith('exec sudo -n /bin/bash -lc ')
+if root: command = shlex.split(command)[-1]
+command = command.replace('/workspace', {str(Path.cwd())!r})
+environment = dict(os.environ, PATH=os.pathsep.join({login!r} if root else {ordinary!r}) + ':/usr/bin:/bin')
+sys.exit(subprocess.run(['/bin/bash', '-c', command], env=environment).returncode)
+''')
+    cli.chmod(0o755)
+    environment = dict(os.environ, **system_python_stub, SCRIPT_DIR=str(Path('tests/blackbox').resolve()),
+                       INSTALLED_CLI=str(cli), AGENT_NAME='bbtest', PYTEST_FORWARD_SHELL='')
+    environment.pop('SAFEYOLO_GUEST_TEST_INPUTS', None)
+    guest_exec.prepare_guest_tests(str(cli), 'bbtest', env=environment)
+    lines = Path('tests/blackbox/run-tests.sh').read_text().splitlines()
+    index = next(i for i, line in enumerate(lines) if '"$SCRIPT_DIR/guest_exec.py"' in line and
+                 ('--user root -c' in line if guest_root else line.rstrip().endswith('"$AGENT_NAME" -c \\')))
+    invocation = '\n'.join(lines[index:index + 2])
+    result = subprocess.run(['/bin/bash', '-c', invocation], env=environment,
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = [json.loads(line) for line in record.read_text().splitlines()]
+    assert any(call[:3] == ['-m', 'pip', 'install'] for call in calls)
+    assert ['-m', 'pytest', '--version'] in calls
+    assert calls[-1][:2] == ['-m', 'pytest'] and '--timeout=60' in calls[-1]
+    assert ('test_root_containment.py' in calls[-1]) == guest_root
+    assert '--ignore=test_root_containment.py' in calls[-1] or guest_root
+    assert all(decoy.read_text().endswith('exit 61\n') for directory in (mise, pentest) for decoy in directory.iterdir())
+
+
 @pytest.mark.parametrize('installer,offline,pip_ready', [
     ('apt-get', False, False), ('apk', False, False), ('apt-get', True, False), ('apt-get', False, True),
 ])
 @pytest.mark.parametrize('failure', [None, 'package', 'pip', 'imports'])
 @pytest.mark.parametrize('ca', ['provided', 'absent'])
-def test_guest_test_setup_uses_lock_and_propagates_failures(tmp_path, failure, installer, offline, pip_ready, ca):
+def test_guest_test_setup_uses_lock_and_propagates_failures(tmp_path, failure, installer, offline, pip_ready, ca,
+                                                          system_python_stub):
     """Setup requires working tools, retains hashes and propagates install failures."""
     install_exit = 17 if failure == 'package' else 0
     pip_exit = 19 if failure == 'pip' else 0
@@ -148,6 +222,8 @@ if arguments[:1] == ['-c']:
     assert 'from pytest_timeout import pytest_configure' in arguments[1]
     print('pytest 9.0.3\\nhttpx 0.28.1\\npytest-timeout 2.4.0')
     sys.exit({import_exit})
+assert arguments == ['-m', 'pytest', '--version']
+print('pytest 9.0.3')
 ''')
     python.chmod(0o755)
     package_installer = tools / installer
@@ -168,13 +244,11 @@ if arguments[:1] == ['-c']:
     (tools / 'dpkg-deb').write_text(f'#!{sys.executable}\nimport json,sys\n'
                                    f'with open({str(record)!r}, "a") as out: out.write(json.dumps(["dpkg-deb", *sys.argv[1:]]) + "\\n")\n')
     (tools / 'dpkg-deb').chmod(0o755)
-    (tools / 'pytest').write_text('#!/bin/sh\nprintf "pytest 9.0.3\\n"\n')
-    (tools / 'pytest').chmod(0o755)
     (tools / 'sync').write_text(f'#!{sys.executable}\nimport json\n'
                                f'with open({str(record)!r}, "a") as out: out.write(json.dumps(["sync"]) + "\\n")\n')
     (tools / 'sync').chmod(0o755)
     arguments = [str(inputs)] if offline else []
-    environment = dict(os.environ, PATH=str(tools))
+    environment = dict(os.environ, PATH=str(tools), **system_python_stub)
     environment.pop('SSL_CERT_FILE', None)
     selected_ca = tmp_path / 'selected CA $literal.pem'
     if ca == 'provided':
@@ -220,7 +294,7 @@ if arguments[:1] == ['-c']:
 
 
 @pytest.mark.parametrize('ca', ['missing', 'directory'])
-def test_online_guest_setup_refuses_unreadable_selected_ca_before_apt(tmp_path, ca):
+def test_online_guest_setup_refuses_unreadable_selected_ca_before_apt(tmp_path, ca, system_python_stub):
     tools = tmp_path / 'tools'
     tools.mkdir()
     python = tools / 'python3'
@@ -234,7 +308,7 @@ def test_online_guest_setup_refuses_unreadable_selected_ca_before_apt(tmp_path, 
     if ca == 'directory':
         selected_ca.mkdir()
     result = subprocess.run(['/bin/bash', 'tests/blackbox/prepare-guest-tests.sh'],
-                            env=dict(os.environ, PATH=str(tools), SSL_CERT_FILE=str(selected_ca)),
+                            env=dict(os.environ, PATH=str(tools), SSL_CERT_FILE=str(selected_ca), **system_python_stub),
                             text=True, capture_output=True, timeout=10)
     assert result.returncode == 1
     assert 'TLS CA file is not readable' in result.stderr
@@ -260,7 +334,7 @@ def test_offline_guest_setup_refuses_missing_inputs_before_package_commands(tmp_
 
 
 @pytest.mark.parametrize('damage', ['python', 'pip', 'imports', 'launcher', 'wrong-version', 'sync', 'extractor'])
-def test_guest_setup_does_not_accept_empty_success_or_failed_flush(tmp_path, damage):
+def test_guest_setup_does_not_accept_empty_success_or_failed_flush(tmp_path, damage, system_python_stub):
     """A zero exit without tool output cannot make preparation succeed."""
     tools = tmp_path / 'tools'
     tools.mkdir()
@@ -283,15 +357,16 @@ if arguments[:1] == ['-c']:
         if {damage != 'pip'!r}: print('Python 3.13.5\\npip 25.1.1')
     elif {damage != 'imports'!r}:
         print('pytest 9.0.3\\nhttpx 0.28.1\\npytest-timeout 2.4.0')
+elif arguments == ['-m', 'pytest', '--version'] and {damage != 'launcher'!r}:
+    print('pytest ' + ('8.0.0' if {damage == 'wrong-version'!r} else '9.0.3'))
 ''')
-    (tools / 'pytest').write_text('' if damage == 'launcher' else
-                                 '#!/bin/sh\nprintf "pytest ' + ('8.0.0' if damage == 'wrong-version' else '9.0.3') + '\\n"\n')
     (tools / 'sync').write_text('#!/bin/sh\nexit 31\n' if damage == 'sync' else '#!/bin/sh\nexit 0\n')
     for executable in tools.iterdir():
         if not executable.is_symlink():
             executable.chmod(0o755)
     result = subprocess.run(['/bin/bash', 'tests/blackbox/prepare-guest-tests.sh', str(inputs)],
-                            env=dict(os.environ, PATH=str(tools)), capture_output=True, text=True, timeout=10)
+                            env=dict(os.environ, PATH=str(tools), **system_python_stub),
+                            capture_output=True, text=True, timeout=10)
     assert result.returncode == (37 if damage == 'extractor' else 31 if damage == 'sync' else 1), result.stdout
     expected = ('Python and pip' if damage in ('python', 'pip') else
                 'working imports' if damage == 'imports' else 'pytest launcher')
@@ -463,11 +538,12 @@ def test_workload_producer_preserves_root_identity_and_literal_arguments(monkeyp
     root_command = shlex.split(args[-1])
     assert root_command[:5] == ['exec', 'sudo', '-n', '/bin/bash', '-lc']
     request = shlex.split(root_command[-1])
-    assert request[:4] == ['cd', '/workspace', '&&', 'python3']
+    assert request[:4] == ['cd', '/workspace', '&&', '/usr/bin/python3']
     assert request[request.index('--marker') + 1] == literal
     for args in (installed_access.guest_command(cli, 'marker', 'systrap', literal, 'coord'),
                  installed_lifecycle.guest_command(cli, 'marker', 'tls', literal)):
         assert args[:-1] == [cli, '--root', '/selected-root', 'agent', 'shell', 'marker', '-c']
+        assert shlex.split(args[-1])[:4] == ['cd', '/workspace', '&&', '/usr/bin/python3']
         assert shlex.split(args[-1])[shlex.split(args[-1]).index('--marker') + 1] == literal
 
 

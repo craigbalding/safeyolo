@@ -51,6 +51,7 @@ def listener_probe(tmp_path, monkeypatch):
         if "status" in args:
             return SimpleNamespace(returncode=0, stdout=json.dumps(status), stderr="")
         assert args[-2] == "-c" and "test_host_listener_unreachable" in args[-1]
+        assert "/usr/bin/python3 -m pytest" in args[-1]
         assert "test_proxy_reachable" in args[-1]
         if failure.get("dead-after"):
             listener.close()
