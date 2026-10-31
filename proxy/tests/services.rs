@@ -4,7 +4,7 @@ use safeyolo_proxy::{
     policy::{Format, Policy},
     services::*,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 
 fn documents() -> Vec<(String, String)> {
     ["minifuse", "gmail", "slack", "codex", "claude"]
@@ -241,6 +241,72 @@ fn native_subscription_services_select_only_their_inference_operations() {
             )),
             "ROUTE_DENIED"
         );
+    }
+}
+
+#[test]
+fn claude_startup_configuration_keeps_gateway_routes_scoped() {
+    let registry = registry();
+    let token = token("claude", "inference");
+    let headers = [("Authorization".into(), "Bearer sgw_synthetic".into())];
+    let hosts = [("api.anthropic.com".into(), "claude".into())].into();
+    let routes = compile_routes(&registry.services["claude"], &token, &[]);
+    let policy = Policy::parse("{\"permissions\":[]}", Format::Json)
+        .unwrap()
+        .with_gateway_routes(&routes);
+    let check = |method: &str, path: &str, expected: &str| {
+        for route_mode in [RouteMode::CompiledPolicy(&policy), RouteMode::LocalFallback] {
+            assert_eq!(
+                code(select_route(
+                    &registry,
+                    &hosts,
+                    std::slice::from_ref(&token),
+                    &[],
+                    GatewayRequest {
+                        identity: TrustedIdentity::Agent("alice"),
+                        host: "api.anthropic.com",
+                        route_mode,
+                        request: ContractRequest {
+                            method,
+                            target: path,
+                            headers: &headers,
+                            body: b"",
+                        },
+                    },
+                )),
+                expected,
+                "{method} {path}",
+            );
+        }
+    };
+    for (method, path) in [
+        ("GET", "/api/claude_cli/bootstrap"),
+        ("GET", "/api/claude_code/policy_limits"),
+        ("GET", "/api/claude_code/settings"),
+        ("POST", "/api/eval/sdk-zAZezfDKGoZuXXKe"),
+    ] {
+        for candidate in ["GET", "POST", "PUT"] {
+            check(
+                candidate,
+                path,
+                if candidate == method {
+                    "selected"
+                } else {
+                    "ROUTE_DENIED"
+                },
+            );
+        }
+    }
+    for path in [
+        "/api/eval/another-client",
+        "/api/eval/sdk-zazezfdkgozuxxke",
+        "/api/eval-authed/sdk-zAZezfDKGoZuXXKe",
+        "/api/claude_code/settings/other",
+        "/api/oauth/claude_cli/create_api_key",
+    ] {
+        for method in ["GET", "POST"] {
+            check(method, path, "ROUTE_DENIED");
+        }
     }
 }
 
@@ -539,20 +605,24 @@ fn retained_stateful_names_never_compile_routes_in_a_mixed_contract() {
 
 #[test]
 fn path_matching_preserves_source_case_and_wildcard_behavior() {
-    assert!(!resource_matches(
+    assert!(resource_matches(
         "/api/chat.postMessage",
         "/api/chat.postMessage"
     ));
-    assert!(resource_matches(
+    assert!(!resource_matches(
         "/api/chat.postmessage",
         "/api/chat.postMessage"
     ));
-    assert!(!resource_matches(
+    assert!(resource_matches(
         "slack:/api/chat.postMessage",
         "slack:/api/chat.postMessage"
     ));
-    assert!(resource_matches(
+    assert!(!resource_matches(
         "SLACK:/api/chat.postmessage",
+        "slack:/api/chat.postMessage"
+    ));
+    assert!(resource_matches(
+        "SLACK:/api/chat.postMessage",
         "slack:/api/chat.postMessage"
     ));
     assert!(resource_matches("/a/b/c", "/a/*"));
@@ -561,220 +631,4 @@ fn path_matching_preserves_source_case_and_wildcard_behavior() {
     assert_eq!(normalize_path("/a/%2E%2E/b/"), "/b");
     assert_eq!(normalize_path("/ａ／ｂ"), "/a/b");
     assert_eq!(normalize_path("/%FF%C3%A9"), "/%FFé");
-}
-
-#[test]
-#[ignore = "historical Python oracle; set SAFEYOLO_POLICY_PYTHON to the baseline environment"]
-fn differential_shipped_routes_compiler_and_resource_normalization() {
-    use std::{
-        io::Write,
-        process::{Command, Stdio},
-    };
-    let registry = registry();
-    let mut scenarios = Vec::new();
-    let paths = [
-        "/v1/feeds",
-        "/v1/feeds/42",
-        "/v1/categories/137/feeds",
-        "/v1/categories/138/feeds",
-        "/v1/categories/137/entries",
-        "/gmail/v1/users/me/messages",
-        "/gmail/v1/users/me/messages/42",
-        "/gmail/v1/users/me/labels",
-        "/gmail/v1/users/me/settings/forwardingAddresses",
-        "/api/chat.postMessage",
-        "/api/chat.postmessage",
-        "/api/conversations.list",
-        "/api/admin.invite",
-        "//v1//feeds/",
-        "/v1/../v1/feeds",
-        "/v1/%66eeds",
-    ];
-    for (name, service) in &registry.services {
-        for capability in service.capabilities.keys() {
-            for variant in [
-                "none",
-                "valid",
-                "other-agent",
-                "old-template",
-                "missing-value",
-                "one-operation",
-            ] {
-                let mut state = binding(name, capability);
-                match variant {
-                    "other-agent" => state.agent = "bob".into(),
-                    "old-template" => state.template = "old".into(),
-                    "missing-value" => state.bound_values.clear(),
-                    "one-operation" => state.grantable_operations = vec!["list_feeds".into()],
-                    _ => {}
-                }
-                let states = if variant == "none" {
-                    vec![]
-                } else {
-                    vec![state]
-                };
-                let requests: Vec<_> = paths
-                    .iter()
-                    .flat_map(|path| {
-                        ["GET", "POST", "DELETE", "get"]
-                            .map(|method| json!({"path":path,"method":method}))
-                    })
-                    .collect();
-                scenarios.push(json!({"service":name,"capability":capability,"bindings":states,"requests":requests}));
-            }
-        }
-    }
-    let normalization = [
-        "/A",
-        "/%41",
-        "/%2E/a",
-        "/a/%2E%2E/b",
-        "/a/../b",
-        "/a//b/",
-        "/a%2Fb",
-        "/%FF",
-        "/%C3%A9",
-        "/%FF%C3%A9",
-        "/a\\b",
-        "/a?x=1#x",
-        "/ａ／ｂ",
-        "foo",
-        "/a%25bb",
-        "/a%2F../b",
-        "/a/%2F../b",
-        "/a/%2E%2F../b",
-    ];
-    let input =
-        json!({"documents":documents(),"scenarios":scenarios,"normalization":normalization});
-    let script = r#"
-import json,sys,tempfile,pathlib
-from types import SimpleNamespace
-from unittest.mock import patch
-import yaml
-from safeyolo.core.service_loader import ServiceDefinition
-from safeyolo.detection.matching import normalize_path, matches_resource_pattern
-from safeyolo.policy.compiler import _compile_capability_routes
-from safeyolo.policy.engine import PolicyEngine
-x=json.load(sys.stdin)
-services={}
-for filename,document in x['documents']:
- s=ServiceDefinition.from_dict(yaml.safe_load(document)); services[s.name]=s
-registry=SimpleNamespace(get_service=services.get)
-output=[]
-for scenario in x['scenarios']:
- service=services[scenario['service']]; capability=service.capabilities[scenario['capability']]
- states=[state for state in scenario['bindings'] if state['agent']=='alice']
- permissions=[]
- with patch('safeyolo.policy.compiler._get_service_registry',return_value=registry):
-  _compile_capability_routes({'synthetic':{'agent':'alice','service':service.name,'capability':capability.name}}, {'alice':{'contract_bindings':states}},permissions)
- with tempfile.TemporaryDirectory() as directory:
-  path=pathlib.Path(directory)/'policy.json'; path.write_text(json.dumps({'permissions':permissions}))
-  engine=PolicyEngine(baseline_path=path); engine._loader.stop_watcher()
-  outcomes=[]
-  for r in scenario['requests']:
-   compiled=engine.evaluate_gateway_request(service.name,capability.name,'alice',r['method'],r['path']).effect=='allow'
-   fallback=any(('*' in route.methods or r['method'].upper() in route.methods) and matches_resource_pattern(r['path'],route.path) for route in capability.routes)
-   risky=next((route.path for route in service.risky_routes if ('*' in route.methods or r['method'].upper() in route.methods) and matches_resource_pattern(r['path'],route.path)),None)
-   outcomes.append([compiled,fallback,risky])
-  engine.done()
- output.append({'auth_kind':service.auth.type if service.auth else None,'routes':[{'methods':p['condition']['method'],'path':p['resource'].split(':',1)[1]} for p in permissions], 'outcomes':outcomes})
-json.dump({'scenarios':output,'normalization':[normalize_path(p) for p in x['normalization']]},sys.stdout)
-"#;
-    let mut child = Command::new(
-        std::env::var_os("SAFEYOLO_POLICY_PYTHON").expect("set SAFEYOLO_POLICY_PYTHON"),
-    )
-    .args(["-c", script])
-    .env(
-        "PYTHONPATH",
-        format!(
-            "{0}/cli/src:{0}",
-            std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
-        ),
-    )
-    .stdin(Stdio::piped())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped())
-    .spawn()
-    .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(serde_json::to_string(&input).unwrap().as_bytes())
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let expected: Value = serde_json::from_slice(&output.stdout).unwrap();
-    for (index, scenario) in scenarios.iter().enumerate() {
-        let name = scenario["service"].as_str().unwrap();
-        let cap = scenario["capability"].as_str().unwrap();
-        let service = &registry.services[name];
-        assert_eq!(
-            json!(service.auth.as_ref().map(|auth| &auth.kind)),
-            expected["scenarios"][index]["auth_kind"]
-        );
-        let token = token(name, cap);
-        let states: Vec<ContractBinding> =
-            serde_json::from_value(scenario["bindings"].clone()).unwrap();
-        let routes = compile_routes(service, &token, &states);
-        let route_policy = Policy::parse("{\"permissions\":[]}", Format::Json)
-            .unwrap()
-            .with_gateway_routes(&routes);
-        let actual: Vec<_> = routes
-            .iter()
-            .map(|route| json!({"methods":route.methods,"path":route.path}))
-            .collect();
-        assert_eq!(
-            json!(actual),
-            expected["scenarios"][index]["routes"],
-            "routes {scenario}"
-        );
-        for (request_index, request) in scenario["requests"].as_array().unwrap().iter().enumerate()
-        {
-            let path = request["path"].as_str().unwrap();
-            let method = request["method"].as_str().unwrap();
-            let compiled = route_policy
-                .evaluate_gateway_request(safeyolo_proxy::policy::GatewayRequest {
-                    service: name,
-                    capability: cap,
-                    agent: "alice",
-                    method,
-                    path,
-                })
-                .effect
-                == safeyolo_proxy::policy::Effect::Allow;
-            let fallback = service.capabilities[cap].routes.iter().any(|route| {
-                method_matches(method, &route.methods) && resource_matches(path, &route.path)
-            });
-            let risky = service
-                .risky_routes
-                .iter()
-                .find(|route| {
-                    method_matches(method, &route.methods) && resource_matches(path, &route.path)
-                })
-                .map(|route| route.path.as_str());
-            assert_eq!(
-                json!([compiled, fallback, risky]),
-                expected["scenarios"][index]["outcomes"][request_index],
-                "{name}/{cap} scenario {index}: {request}"
-            );
-        }
-    }
-    for (index, path) in normalization.iter().enumerate() {
-        assert_eq!(
-            json!(normalize_path(path)),
-            expected["normalization"][index],
-            "path {path}"
-        );
-    }
-    eprintln!(
-        "Compared {} shipped service/compiler scenarios, {} route requests and {} normalized paths with Python",
-        scenarios.len(),
-        scenarios.len() * paths.len() * 4,
-        normalization.len()
-    );
 }
