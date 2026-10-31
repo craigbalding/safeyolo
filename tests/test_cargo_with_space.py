@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -46,12 +47,30 @@ def _linux_running_group_members(pgid: int) -> list[int]:
     return members
 
 
+@pytest.fixture
+def linux_child_subreaper() -> Iterator[None]:
+    if not sys.platform.startswith("linux"):
+        pytest.skip("controlling orphan adoption requires Linux prctl")
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    previous = ctypes.c_int()
+    # Keep adoption local to this test process; restore the caller's setting.
+    assert libc.prctl(37, ctypes.byref(previous), 0, 0, 0) == 0, os.strerror(ctypes.get_errno())
+    assert libc.prctl(36, 1, 0, 0, 0) == 0, os.strerror(ctypes.get_errno())
+    try:
+        yield
+    finally:
+        assert libc.prctl(36, previous.value, 0, 0, 0) == 0, os.strerror(ctypes.get_errno())
+
+
 def _fixture(tmp_path: Path, *, darwin: bool, with_setsid: bool) -> tuple[Path, Path]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _write_executable(bin_dir / "bash", "#!/bin/sh\nexec /bin/bash \"$@\"\n")
     _write_executable(bin_dir / "sh", "#!/bin/sh\nexec /bin/sh \"$@\"\n")
     (bin_dir / "awk").symlink_to("/usr/bin/awk")
+    (bin_dir / "ps").symlink_to(shutil.which("ps"))
     _write_executable(
         bin_dir / "dirname",
         "#!/bin/sh\nif [ \"$DF_EXPECT_BSD\" = 1 ] && [ \"$1\" = -- ]; then exit 2; fi\nif [ \"$DF_EXPECT_GNU\" = 1 ] && [ \"$1\" != -- ]; then exit 2; fi\nexec /usr/bin/dirname \"$@\"\n",
@@ -185,6 +204,121 @@ def test_cargo_failure_status_is_preserved(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 23, result.stderr
+
+
+@pytest.mark.parametrize("cargo_status", [0, 23])
+@pytest.mark.parametrize("query_fails", [False, True])
+def test_linux_finishes_with_unreaped_zombie_after_live_descendant(
+    tmp_path: Path, linux_child_subreaper: None, cargo_status: int, query_fails: bool
+) -> None:
+    real_setsid = shutil.which("setsid")
+    if real_setsid is None:
+        pytest.skip("setsid is required for the process-group regression")
+    bin_dir, _ = _fixture(tmp_path, darwin=False, with_setsid=False)
+    (bin_dir / "setsid").symlink_to(real_setsid)
+    cargo_file = tmp_path / "cargo-pids"
+    release_child = tmp_path / "release-child"
+    samples = tmp_path / "df-samples"
+    query_failure = tmp_path / "ps-failed"
+    if query_fails:
+        (bin_dir / "ps").unlink()
+        _write_executable(
+            bin_dir / "ps",
+            f"#!{sys.executable}\n"
+            "import os, sys\n"
+            f"if not os.path.exists({str(release_child)!r}):\n"
+            f"    open({str(query_failure)!r}, 'w').close()\n"
+            "    sys.exit(1)\n"
+            f"os.execv({shutil.which('ps')!r}, [{shutil.which('ps')!r}, *sys.argv[1:]])\n",
+        )
+    _write_executable(
+        bin_dir / "cargo",
+        f"#!{sys.executable}\n"
+        "import os, time\n"
+        "child = os.fork()\n"
+        "if child == 0:\n"
+        f"    while not os.path.exists({str(release_child)!r}): time.sleep(0.01)\n"
+        "    os._exit(0)\n"
+        f"with open({str(cargo_file) + '.tmp'!r}, 'w') as log: log.write(f'{{os.getpid()}}\\n{{child}}\\n')\n"
+        f"os.replace({str(cargo_file) + '.tmp'!r}, {str(cargo_file)!r})\n"
+        f"os._exit({cargo_status})\n",
+    )
+    _write_executable(
+        bin_dir / "df",
+        f"#!{sys.executable}\n"
+        f"with open({str(samples)!r}, 'a') as log: log.write('sample\\n')\n"
+        "print('Filesystem 1024-blocks Used Available Capacity Mounted on')\n"
+        f"print('/dev/fake 100000000 1 {11 * 1024 * 1024} 1% /')\n",
+    )
+    sentinel = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+    )
+    cargo_pid = child_pid = 0
+    stdout_file = tmp_path / "stdout"
+    stderr_file = tmp_path / "stderr"
+    with stdout_file.open("w") as stdout, stderr_file.open("w") as stderr:
+        process = subprocess.Popen(
+            [str(WRAPPER), "build"],
+            env={
+                "PATH": str(bin_dir),
+                "CARGO_TARGET_DIR": str(tmp_path),
+                "SAFEYOLO_CARGO_RESERVE_GIB": "10",
+                "SAFEYOLO_CARGO_SPACE_POLL_SECONDS": "1",
+                "SAFEYOLO_CARGO_HARD_STOP": "1",
+            },
+            start_new_session=True,
+            stdout=stdout,
+            stderr=stderr,
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while not cargo_file.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            cargo_pid, child_pid = map(int, cargo_file.read_text().splitlines())
+            deadline = time.monotonic() + 5
+            while _pid_exists(cargo_pid) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert not _pid_exists(cargo_pid), "Cargo leader was not reaped"
+            assert _linux_running_group_members(cargo_pid) == [child_pid]
+            child_stat = Path(f"/proc/{child_pid}/stat")
+            assert int(child_stat.read_text().rsplit(")", 1)[1].split()[1]) == os.getpid()
+
+            # Two further samples prove monitoring continues after leader exit.
+            sample_count = len(samples.read_text().splitlines())
+            deadline = time.monotonic() + 5
+            while len(samples.read_text().splitlines()) < sample_count + 2 and time.monotonic() < deadline:
+                assert process.poll() is None, "wrapper abandoned its live descendant"
+                time.sleep(0.02)
+            assert len(samples.read_text().splitlines()) >= sample_count + 2
+            assert _linux_running_group_members(cargo_pid) == [child_pid]
+            assert process.poll() is None
+            assert query_failure.exists() == query_fails
+
+            release_child.touch()
+            deadline = time.monotonic() + 5
+            while child_stat.read_text().rsplit(")", 1)[1].split()[0] != "Z" and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert child_stat.read_text().rsplit(")", 1)[1].split()[0] == "Z"
+            os.killpg(cargo_pid, 0)  # Presence alone still reports the dead group.
+            assert process.wait(timeout=4) == cargo_status, stderr_file.read_text()
+            assert child_stat.read_text().rsplit(")", 1)[1].split()[0] == "Z", "zombie was reaped early"
+            assert sentinel.poll() is None, "unrelated sentinel was signalled"
+            assert stdout_file.read_text() == ""
+            assert stderr_file.read_text() == ""
+        finally:
+            if cargo_pid == 0 and cargo_file.exists():
+                cargo_pid, child_pid = map(int, cargo_file.read_text().splitlines())
+            for pgid in (cargo_pid, process.pid):
+                if pgid:
+                    try:
+                        os.killpg(pgid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass  # This fixture group has already exited.
+            process.wait(timeout=5)
+            if child_pid:
+                assert os.waitpid(child_pid, 0)[0] == child_pid
+            sentinel.terminate()
+            sentinel.wait(timeout=5)
 
 
 @pytest.mark.parametrize("hard_stop", ["0", "1"])
