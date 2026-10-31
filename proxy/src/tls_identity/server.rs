@@ -14,16 +14,31 @@ const RETRY_RANDOM: [u8; 32] = [
 #[serde(deny_unknown_fields)]
 pub(crate) struct ServerHello {
     pub legacy_version: u16,
+    pub supported_version: Option<u16>,
+    pub alpn: Option<String>,
     pub cipher_suite: u16,
     pub extension_types: Vec<u16>,
     pub extension_count: usize,
     pub truncated: bool,
     pub ja3s: String,
+    pub ja4s: String,
 }
 
 impl ServerHello {
     fn valid(&self) -> bool {
         hex_hash(&self.ja3s, 32)
+            && self.alpn.as_ref().is_none_or(|s| s.len() <= 255 * 4)
+            && self.ja4s.is_ascii()
+            && self.ja4s.len() == 25
+            && self.ja4s.starts_with(&format!(
+                "t{}{:02}",
+                version_code(self.supported_version.unwrap_or(self.legacy_version)),
+                self.extension_count.min(99)
+            ))
+            && self.ja4s.as_bytes()[7] == b'_'
+            && self.ja4s[8..12] == format!("{:04x}", self.cipher_suite)
+            && self.ja4s.as_bytes()[12] == b'_'
+            && hex_hash(&self.ja4s[13..], 12)
             && self.extension_types.len() == self.extension_count.min(LIST_LIMIT)
             && self.extension_count <= u16::MAX as usize / 4
             && self.truncated == (self.extension_count > LIST_LIMIT)
@@ -60,6 +75,31 @@ impl ServerHelloObservation {
     }
 }
 
+/// JA4S follows FoxIO's ordered server-extension algorithm. JA4S is subject to
+/// FoxIO License 1.1, not SafeYolo's MIT license. See
+/// proxy/licenses/ja4s-FoxIO-1.1.txt and proxy/licenses/ja4s-NOTICE.txt.
+/// No upstream implementation source is copied.
+fn ja4s(version: u16, cipher: u16, extensions: &[u16], alpn: Option<&[u8]>) -> String {
+    // FoxIO's JA4S Rust/Python implementations use the first/last ASCII
+    // characters and replace non-ASCII endpoints with '9'. This differs from
+    // the JA4 client algorithm's hexadecimal fallback.
+    let alpn = alpn.filter(|bytes| !bytes.is_empty()).map_or_else(
+        || "00".to_owned(),
+        |bytes| {
+            [bytes[0], bytes[bytes.len() - 1]]
+                .into_iter()
+                .map(|b| if b.is_ascii() { b as char } else { '9' })
+                .collect::<String>()
+        },
+    );
+    format!(
+        "t{}{:02}{alpn}_{cipher:04x}_{}",
+        version_code(version),
+        extensions.len().min(99),
+        short_hash(extensions, &[])
+    )
+}
+
 /// JA3S is MD5 over decimal version,cipher,ordered-extension-types. Unlike
 /// JA3's client list helper, Salesforce's JA3S implementation retains all types.
 /// No implementation source is copied from Salesforce.
@@ -73,12 +113,33 @@ fn parse(body: &[u8]) -> Option<(ServerHello, bool)> {
     let cipher_suite = input.word()?;
     input.byte()?; // compression method is not part of JA3S
     let mut extensions = Vec::new();
+    let mut supported_version = None;
+    let mut alpn = None;
     let mut seen = [0_u64; 1024];
     if !input.0.is_empty() {
         let mut ext = Reader(input.vector16()?);
         while !ext.0.is_empty() {
             let kind = ext.word()?;
-            ext.vector16()?;
+            let bytes = ext.vector16()?;
+            match kind {
+                43 => {
+                    let mut value = Reader(bytes);
+                    supported_version = Some(value.word()?);
+                    if !value.0.is_empty() {
+                        return None;
+                    }
+                }
+                16 => {
+                    let mut value = Reader(bytes);
+                    let mut protocols = Reader(value.vector16()?);
+                    let selected = protocols.vector8()?;
+                    if selected.is_empty() || !protocols.0.is_empty() || !value.0.is_empty() {
+                        return None;
+                    }
+                    alpn = Some(selected);
+                }
+                _ => {}
+            }
             let (word, bit) = (kind as usize / 64, 1_u64 << (kind % 64));
             if seen[word] & bit != 0 {
                 return None;
@@ -99,7 +160,15 @@ fn parse(body: &[u8]) -> Option<(ServerHello, bool)> {
     Some((
         ServerHello {
             legacy_version,
+            supported_version,
+            alpn: alpn.map(alpn_display),
             cipher_suite,
+            ja4s: ja4s(
+                supported_version.unwrap_or(legacy_version),
+                cipher_suite,
+                &extensions,
+                alpn,
+            ),
             extension_count: extensions.len(),
             truncated: extensions.len() > LIST_LIMIT,
             extension_types: extensions.into_iter().take(LIST_LIMIT).collect(),
