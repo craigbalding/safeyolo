@@ -1,4 +1,4 @@
-name: Prepare default guest OCI release
+name: Prepare and publish guest OCI releases
 
 on:
   schedule:
@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       activity:
-        description: Build and stage, consider promotion, inspect a retained decision, attach smoke, or copy a transport fixture
+        description: Build and stage, promote, inspect, attach smoke, or publish a selected layout
         type: choice
-        options: [build-stage, promote, inspect, record-smoke, transport-fixture]
+        options: [build-stage, promote, inspect, record-smoke, transport-fixture, custom-profile]
         default: build-stage
       compatibility:
         description: Guest compatibility identifier (nightly uses v1)
@@ -36,6 +36,9 @@ on:
         type: string
       promotion_job:
         description: Actions promotion job ID whose retained decision is needed (inspect only)
+        type: string
+      custom_profile:
+        description: JSON with ordered layout_assets IDs, layout_sha256, index, source_revision, profile and per-platform archive/build_inputs digests
         type: string
 
 permissions:
@@ -365,3 +368,76 @@ jobs:
           path: |
             ${{ runner.temp }}/fixture/fixture.json
             ${{ runner.temp }}/fixture/publication
+
+  custom-profile:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.activity == 'custom-profile' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Retain the requested custom profile identities
+        shell: bash
+        env:
+          CUSTOM_PROFILE: ${{ inputs.custom_profile }}
+        run: |
+          printf '%s' "$CUSTOM_PROFILE" > "$RUNNER_TEMP/custom-profile-request.json"
+          jq -e '(.layout_assets | type == "array" and length > 0 and
+                   all(.[]; type == "string" and test("^[1-9][0-9]*$"))) and
+                 (.layout_sha256 | type == "string" and test("^[a-f0-9]{64}$"))' \
+            "$RUNNER_TEMP/custom-profile-request.json" > /dev/null
+      - name: Download the selected layout release assets in order
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          jq -r '.layout_assets[]' "$RUNNER_TEMP/custom-profile-request.json" > "$RUNNER_TEMP/custom-profile-assets.txt"
+          : > "$RUNNER_TEMP/custom-profile-layout.tar"
+          while IFS= read -r asset; do
+            gh api --header 'Accept: application/octet-stream' \
+              "repos/craigbalding/safeyolo/releases/assets/$asset" >> "$RUNNER_TEMP/custom-profile-layout.tar"
+          done < "$RUNNER_TEMP/custom-profile-assets.txt"
+      - run: |
+          scripts/install_oras.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Build the shared native OCI verifier
+        env:
+          CARGO_BUILD_JOBS: '1'
+          SAFEYOLO_BUILD_REVISION: ${{ github.sha }}
+        run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci
+      - name: Verify the selected custom layout before registry authentication
+        shell: bash
+        env:
+          COMPATIBILITY: ${{ inputs.compatibility }}
+        run: |
+          python3 scripts/verify_guest_profile.py --layout "$RUNNER_TEMP/custom-profile-layout" \
+            --layout-archive "$RUNNER_TEMP/custom-profile-layout.tar" \
+            --request "$RUNNER_TEMP/custom-profile-request.json" --compatibility "$COMPATIBILITY" \
+            --verifier proxy/target/release/examples/verify_guest_oci --output "$RUNNER_TEMP/custom-profile-selection.json"
+      - name: Publish the unchanged custom index and verify complete registry readback
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMPATIBILITY: ${{ inputs.compatibility }}
+        run: |
+          index=$(jq -er '.index.digest' "$RUNNER_TEMP/custom-profile-selection.json")
+          printf '%s' "$GH_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          scripts/publish_guest_by_digest.sh "$RUNNER_TEMP/custom-profile-layout" "$index" \
+            proxy/target/release/examples/verify_guest_oci ghcr.io/craigbalding/safeyolo-guest \
+            "$RUNNER_TEMP/custom-profile-publication" --compatibility "$COMPATIBILITY"
+          jq --arg repository ghcr.io/craigbalding/safeyolo-guest --arg publisher_revision "$GITHUB_SHA" \
+            '. + {repository: $repository, publisher_revision: $publisher_revision}' \
+            "$RUNNER_TEMP/custom-profile-selection.json" > "$RUNNER_TEMP/custom-profile-publication/result.json"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: guest-custom-profile-result
+          path: |
+            ${{ runner.temp }}/custom-profile-request.json
+            ${{ runner.temp }}/custom-profile-selection.json
+            ${{ runner.temp }}/custom-profile-publication/public-index.json
+            ${{ runner.temp }}/custom-profile-publication/result.json
+            ${{ runner.temp }}/custom-profile-publication/before-*
+            ${{ runner.temp }}/custom-profile-publication/after-*
+            ${{ runner.temp }}/bin/oras-inputs.json

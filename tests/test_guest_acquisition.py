@@ -51,14 +51,17 @@ def descriptor(data, media_type):
     return {"digest": digest(data), "size": len(data), "mediaType": media_type}
 
 
-def release(archive, version="guest-2026-10-12.1", compatibility="v1", edit_child=None, encode_config=None):
+def release(archive, version="guest-2026-10-12.1", compatibility="v1", edit_child=None, encode_config=None,
+            profile=None, platforms=(("darwin", "arm64"), ("linux", "amd64"), ("linux", "arm64"))):
     annotations = {"org.opencontainers.image.version": version,
                    "org.opencontainers.image.source": "https://github.com/craigbalding/safeyolo",
                    "org.opencontainers.image.revision": "a" * 40,
                    "dev.safeyolo.guest.compatibility": compatibility}
+    if profile:
+        annotations["dev.safeyolo.guest.profile"] = profile
     contents = {"blobs/" + digest(archive): archive}
     manifests = []
-    for os_name, architecture in (("darwin", "arm64"), ("linux", "amd64"), ("linux", "arm64")):
+    for os_name, architecture in platforms:
         platform = {"os": os_name, "architecture": architecture}
         config = encode_config(platform) if encode_config else json.dumps(platform).encode()
         contents["blobs/" + digest(config)] = config
@@ -66,6 +69,8 @@ def release(archive, version="guest-2026-10-12.1", compatibility="v1", edit_chil
                  "annotations": {**annotations, "dev.safeyolo.guest.build-base":
                                  "docker.io/library/debian@sha256:" + "b" * 64},
                  "config": descriptor(config, CONFIG), "layers": [descriptor(archive, ARCHIVE)]}
+        if profile:
+            child["annotations"]["dev.safeyolo.guest.build-inputs"] = digest(b"declared fixture inputs")
         if edit_child:
             edit_child(child)
         child_bytes = json.dumps(child).encode()
@@ -442,6 +447,30 @@ def test_explicit_first_acquisition_selects_each_index_without_discovery(
     assert result.stdout.strip() == json.loads(original)["assets"]
     assert len(requests) == before
     assert not (guest_store / "unused").exists()
+
+
+def test_custom_profile_requires_explicit_index_and_reuses_native_preparation(
+    native_cli, registry, package_info, tmp_path, guest_store,
+):
+    contents, requests, _faults, environment = registry
+    architecture = package_info.read_text().split("platform=linux-", 1)[1].splitlines()[0]
+    data = release(compressed_archive(child_owner=101000), profile="kali-pentest",
+                   platforms=(("linux", architecture),))
+    contents.update(data)
+    index = digest(data["manifests/compat-v1"])
+    contents["manifests/" + index] = data["manifests/compat-v1"]
+    refused = install(native_cli, tmp_path / "discovery", guest_store, environment, package_info)
+    assert refused.returncode != 0 and "explicit --index" in refused.stderr
+    first = install(native_cli, tmp_path / "explicit", guest_store, environment, package_info, "--index", index)
+    assert first.returncode == 0, first.stderr
+    tree = (tmp_path / "explicit/share/rootfs-tree").resolve()
+    owned_root_ids(tree)
+    assert (tree / "command").stat().st_uid == os.getuid()
+    before = len(requests)
+    second = install(native_cli, tmp_path / "reuse", guest_store, environment, package_info, "--index", index)
+    assert second.returncode == 0, second.stderr
+    assert (tmp_path / "reuse/share/rootfs-tree").resolve() == tree
+    assert not requests[before:]
 
 
 def test_guest_remap_failure_keeps_verified_archive_for_retry(native_cli, registry, package_info, tmp_path, guest_store):
@@ -1074,8 +1103,26 @@ def test_verified_bundle_installer_and_proxy_restart_retain_guest(native_cli, re
                    "SAFEYOLO_NATS_TEST_INSTANCE": "guest-acquisition-installed", "TERM": "xterm-256color"}
     installer = Path(bundle) / "install.sh"
     result = subprocess.run([str(installer), "--root", str(root), "--command-dir", str(root / "commands"), "--yes"],
-                            env=environment, capture_output=True, text=True, timeout=30)
+                            env=environment, input="", umask=0o077, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
+    mapping = tomllib.loads((root / "config.toml").read_text())["linux"]
+    assert Path(mapping["runsc"]) == root / "libexec/runsc"
+    # Installation under a private parent must grant mapped root access to
+    # the final runtime and companions without exposing identity or trust.
+    access = subprocess.run([
+        "sudo", "-n", "setpriv", f"--reuid={mapping['uid_base']}",
+        f"--regid={mapping['gid_base']}", "--clear-groups", "/usr/bin/python3", "-c",
+        "import os,sys; from pathlib import Path; root=Path(sys.argv[1]); "
+        "assert all(os.access(root / name, os.X_OK) for name in "
+        "('libexec', 'libexec/gvisor-bin')); "
+        "assert all(os.access(root / 'libexec' / name, os.R_OK | os.X_OK) for name in "
+        "('runsc', 'gvisor-bin/gvisor-sentry-prewarmer', 'gvisor-bin/gvisor_sentry', "
+        "'gvisor-bin/runsc-fd-parking')); "
+        "assert all(not os.access(root / name, os.R_OK) for name in "
+        "('config.toml', 'data/admin_token', 'data/agent_token', 'certs/mitmproxy-ca.pem'))",
+        str(root),
+    ], capture_output=True, text=True, timeout=10)
+    assert access.returncode == 0, access.stderr
     selection = (root / "share/guest-selection.json").read_bytes()
     preserved = {name: (root / name).read_bytes() for name in ("policy.toml", "data/instance_id", "data/admin_token", "data/agent_token")}
     config = root / "config.toml"
@@ -1100,8 +1147,9 @@ def test_verified_bundle_installer_and_proxy_restart_retain_guest(native_cli, re
         assert (root / "share/guest-selection.json").read_bytes() == selection
         assert all((root / name).read_bytes() == data for name, data in preserved.items())
         repeated = subprocess.run([str(installer), "--root", str(root), "--command-dir", str(root / "commands")],
-                                 env=environment, capture_output=True, text=True, timeout=10)
+                                 env=environment, input="", umask=0o077, capture_output=True, text=True, timeout=10)
         assert repeated.returncode == 0, repeated.stderr
+        assert "SafeYolo needs these host changes" not in repeated.stderr
         assert (root / "share/guest-selection.json").read_bytes() == selection
         assert len(requests) == before
         assert all((root / name).read_bytes() == data for name, data in preserved.items())

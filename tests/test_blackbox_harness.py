@@ -3244,6 +3244,122 @@ def test_cleanup_cannot_hide_a_live_owned_process_by_removing_its_pid_file(tmp_p
         process.wait(timeout=5)
 
 
+@pytest.fixture
+def continuity_provider_snapshot(tmp_path):
+    snapshot = tmp_path / "fixture.json"
+    lease = {"resource": "slot", "state": "held",
+             "holder_agent_id": "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+             "observed_at": 700_000, "valid_until": 1_000_000}
+    snapshot.write_text(json.dumps({"leases": [lease]}))
+    return snapshot, {"snapshot_sha256": continuity.sha(snapshot), "lease": {
+        **lease, "provider": "fixture", "freshness": "fresh", "provenance": "provider_owned_lease",
+    }}
+
+
+@pytest.mark.parametrize("window,changes,accepted", [
+    ((-2, -1), {}, True),
+    ((0, 1), {"state": "unknown", "holder_agent_id": None, "freshness": "stale"}, True),
+    ((-1, 0), {}, True),
+    ((-1, 0), {"state": "unknown", "holder_agent_id": None, "freshness": "stale"}, True),
+    ((-2, -1), {"state": "unknown", "holder_agent_id": None, "freshness": "unknown"}, False),
+    ((-2, -1), {"state": "unknown", "holder_agent_id": None, "freshness": "stale"}, False),
+    ((0, 1), {}, False),
+    ((0, 1), {"freshness": "stale"}, False),
+    ((-2, -1), {"holder_agent_id": "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, False),
+    ((-2, -1), {"provenance": "agent_declared"}, False),
+    ((-2, -1), {"observed_at": 700_001}, False),
+    ((-2, -1), {"valid_until": 1_000_001}, False),
+    ((-2, -1), {"resource": "other"}, False),
+])
+def test_continuity_provider_lease_preserves_ownership_and_expiry(
+    tmp_path, monkeypatch, continuity_provider_snapshot, window, changes, accepted
+):
+    """Check fixture assertions against the native projection contract; no installed consumer runs."""
+    snapshot, expected = continuity_provider_snapshot
+    response = expected["lease"] | changes | {"private": "omit from selected operands"}
+    monkeypatch.setattr(continuity, "json_request", lambda *args: (200, {"resource_leases": [response]}))
+    clock = iter((1_000_000 + offset) / 1000 for offset in window)
+    monkeypatch.setattr(continuity.time, "time", lambda: next(clock))
+    observations = []
+    output = tmp_path / "reports/installed-continuity.json"
+    arguments = ("native_return", tmp_path / "bob.sock", "synthetic-token", snapshot,
+                 expected, observations, output)
+    if accepted:
+        assert continuity.check_provider_lease(*arguments) == response
+    else:
+        with pytest.raises(AssertionError, match="native_return did not preserve provider-owned lease"):
+            continuity.check_provider_lease(*arguments)
+    report = json.loads(output.read_text())
+    assert report["result"] == "installed_native_continuity_incomplete"
+    assert report["provider_checks"] == observations
+    assert observations[0]["lease"] == ({key: value for key, value in response.items() if key != "private"}
+                                        if response["resource"] == "slot" else {})
+    assert observations[0]["expected"] == expected
+
+
+@pytest.mark.parametrize("status,body,changed_snapshot", [
+    (503, None, False), (200, {"resource_leases": []}, False), (200, None, True),
+])
+def test_continuity_provider_failure_retains_operands(
+    tmp_path, monkeypatch, continuity_provider_snapshot, status, body, changed_snapshot
+):
+    snapshot, expected = continuity_provider_snapshot
+    if changed_snapshot:
+        snapshot.write_text(snapshot.read_text() + "\n")
+        body = {"resource_leases": [expected["lease"]]}
+    monkeypatch.setattr(continuity, "json_request", lambda *args: (status, body))
+    monkeypatch.setattr(continuity.time, "time", lambda: 999)
+    output = tmp_path / "installed-continuity.json"
+    with pytest.raises(AssertionError, match="native_restart did not preserve provider-owned lease"):
+        continuity.check_provider_lease("native_restart", tmp_path / "bob.sock", "synthetic-token",
+                                         snapshot, expected, [], output)
+    observation, = json.loads(output.read_text())["provider_checks"]
+    assert observation["status"] == status
+    assert observation["snapshot_sha256"] == continuity.sha(snapshot)
+    assert (observation["snapshot_sha256"] == expected["snapshot_sha256"]) is not changed_snapshot
+    assert observation["lease"] == (expected["lease"] if changed_snapshot else {})
+
+
+def test_archive_caller_retains_both_provider_reads_when_stdout_is_cropped(
+    tmp_path, monkeypatch, continuity_provider_snapshot
+):
+    """Run the existing caller's failure path with controlled archive execution."""
+    from tests import test_guest_acquisition as acquisition
+
+    snapshot, expected = continuity_provider_snapshot
+    archive = tmp_path / "host.tar.gz"
+    archive.write_bytes(b"controlled archive boundary")
+    monkeypatch.setenv("SAFEYOLO_TEST_HOST_ARCHIVE", str(archive))
+    monkeypatch.setenv("SAFEYOLO_COORD_NATS_BINARY", str(tmp_path / "nats-server"))
+    monkeypatch.setattr(acquisition, "compressed_archive", lambda: b"controlled guest")
+    monkeypatch.setattr(continuity.time, "time", lambda: 999)
+    rows = iter([expected["lease"], expected["lease"] | {"holder_agent_id": "wrong-owner"}])
+    monkeypatch.setattr(continuity, "json_request", lambda *args: (200, {"resource_leases": [next(rows)]}))
+
+    def failed_archive(command, **kwargs):
+        assert command[0] == str(acquisition.REPO / "tests/blackbox/run-installed-package.sh")
+        output = Path(kwargs["env"]["SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"]) / "installed-continuity.json"
+        observations = []
+        continuity.check_provider_lease("native_restart", tmp_path / "bob.sock", "synthetic-token",
+                                         snapshot, expected, observations, output)
+        with pytest.raises(AssertionError, match="native_return did not preserve provider-owned lease"):
+            continuity.check_provider_lease("native_return", tmp_path / "bob.sock", "synthetic-token",
+                                             snapshot, expected, observations, output)
+        return subprocess.CompletedProcess(command, 1, "initial operands\n" + "x" * 7000, "return assertion failed")
+
+    monkeypatch.setattr(acquisition.subprocess, "run", failed_archive)
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    with pytest.raises(AssertionError, match="return assertion failed") as failure:
+        acquisition.test_host_archive_smoke_runs_normal_native_guest_acquisition(
+            ({}, [], {}, {}), caller, tmp_path / "guest-store")
+    assert "initial operands" not in str(failure.value)
+    report = json.loads((caller / "reports/installed-continuity.json").read_text())
+    assert [row["stage"] for row in report["provider_checks"]] == ["native_restart", "native_return"]
+    assert report["provider_checks"][0]["lease"] == expected["lease"]
+    assert report["provider_checks"][1]["lease"]["holder_agent_id"] == "wrong-owner"
+
+
 def test_continuity_keeps_nats_in_its_state_directory_with_a_valid_instance(tmp_path, monkeypatch):
     from safeyolo.coord import nats_runtime
 

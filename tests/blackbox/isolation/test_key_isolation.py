@@ -20,6 +20,7 @@ EXPECTED_SSH_HOST_PRIVATE_KEYS = frozenset(
     {
         Path("/etc/ssh/ssh_host_ecdsa_key"),
         Path("/etc/ssh/ssh_host_ed25519_key"),
+        Path("/etc/ssh/ssh_host_mldsa44_ed25519_key"),
         Path("/etc/ssh/ssh_host_rsa_key"),
     }
 )
@@ -192,7 +193,7 @@ class TestPrivateKeyAbsent:
 
         What: os.walk from / (skipping /proc, /sys, /dev, /run and
         third-party site-packages); inspect private-key markers and allow only
-        the three exact guest sshd host-key paths.
+        the listed exact guest sshd host-key paths.
         Why: The targeted tests above check known-critical paths.
         This is the catch-all: if any private key leaked to a surprising
         location (/tmp, /var/log, an agent workspace subdir), the

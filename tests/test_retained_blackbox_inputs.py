@@ -32,6 +32,18 @@ PLATFORM = "linux-arm64"
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_custom_profile_is_excluded_from_default_guest_promotion(monkeypatch):
+    value = json.loads(release(b"custom profile")["manifests/compat-v1"])
+    value["annotations"]["dev.safeyolo.guest.profile"] = "kali-pentest"
+    index = descriptor(json.dumps(value).encode(), "application/vnd.oci.image.index.v1+json")
+    monkeypatch.setattr(selector, "capture", lambda *_args: b'{"tags":["guest-2026-10-12.1"]}')
+    monkeypatch.setattr(selector, "manifest", lambda *_args: (index, value))
+    monkeypatch.setattr(selector, "staging_receipt", lambda *_args: None)
+    assert selector.staged_guest_candidates("v1", None) == ([], [])
+    # Explicit callers retain their ordinary staging checks.
+    assert selector.staged_guest_candidates("v1", index["digest"]) == ([], [index["digest"]])
+
+
 @pytest.fixture
 def retained(tmp_path, monkeypatch):
     now = datetime.now(UTC)
