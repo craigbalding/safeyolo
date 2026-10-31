@@ -23,6 +23,9 @@ async fn run() -> Result<(), Error> {
         [kind, rest @ ..] if kind == "acp-attention" => {
             safeyolo_proxy::coord_acp_attention::run(rest).await?;
         }
+        [kind, rest @ ..] if kind == "claude-attention" => {
+            safeyolo_proxy::coord_claude_attention::run(rest).await?;
+        }
         [kind, rest @ ..] if kind == "claude-channel" => {
             safeyolo_proxy::coord_tools::claude_channel(rest).await?;
         }
