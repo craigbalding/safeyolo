@@ -350,8 +350,11 @@ script/helper/assets, source modes or resolved input record changes the key.
 This is completed-build reuse; upstream package snapshots and intermediate
 build-stage resume are not provided.
 
-The runner copies declared files before hashing and executing them. The
-selected shell builder still owns command-scoped privilege and cleanup.
+The runner copies declared files before hashing and executing them.
+The profile's `script` must name a relative file in that staged snapshot;
+include the script itself or its containing directory in `files`.
+Absolute, escaping or unstaged script selections fail before cache lookup.
+The selected shell builder still owns command-scoped privilege and cleanup.
 Kali uses a clean chroot PATH and UTF-8 locale, configured proxy variables
 and a temporary copy of the build CA. It removes apt's temporary proc/sys/dev
 mounts before unprivileged installers, which receive only null/zero/random/

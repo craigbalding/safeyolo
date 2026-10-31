@@ -38,7 +38,7 @@ on:
         description: Actions promotion job ID whose retained decision is needed (inspect only)
         type: string
       custom_profile:
-        description: JSON with retained run_id/artifact_id, index, source_revision, profile and per-platform archive/build_inputs digests (custom-profile only)
+        description: JSON with ordered layout_assets IDs, layout_sha256, index, source_revision, profile and per-platform archive/build_inputs digests
         type: string
 
 permissions:
@@ -373,7 +373,6 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.activity == 'custom-profile' }}
     runs-on: ubuntu-24.04
     permissions:
-      actions: read
       contents: read
       packages: write
     steps:
@@ -384,16 +383,21 @@ jobs:
           CUSTOM_PROFILE: ${{ inputs.custom_profile }}
         run: |
           printf '%s' "$CUSTOM_PROFILE" > "$RUNNER_TEMP/custom-profile-request.json"
-          jq -e '(.run_id | type == "string" and test("^[1-9][0-9]*$")) and
-                 (.artifact_id | type == "string" and test("^[1-9][0-9]*$"))' \
+          jq -e '(.layout_assets | type == "array" and length > 0 and
+                   all(.[]; type == "string" and test("^[1-9][0-9]*$"))) and
+                 (.layout_sha256 | type == "string" and test("^[a-f0-9]{64}$"))' \
             "$RUNNER_TEMP/custom-profile-request.json" > /dev/null
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          artifact-ids: ${{ fromJSON(inputs.custom_profile).artifact_id }}
-          run-id: ${{ fromJSON(inputs.custom_profile).run_id }}
-          repository: craigbalding/safeyolo
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          path: ${{ runner.temp }}/custom-profile-layout
+      - name: Download the selected layout release assets in order
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          jq -r '.layout_assets[]' "$RUNNER_TEMP/custom-profile-request.json" > "$RUNNER_TEMP/custom-profile-assets.txt"
+          : > "$RUNNER_TEMP/custom-profile-layout.tar"
+          while IFS= read -r asset; do
+            gh api --header 'Accept: application/octet-stream' \
+              "repos/craigbalding/safeyolo/releases/assets/$asset" >> "$RUNNER_TEMP/custom-profile-layout.tar"
+          done < "$RUNNER_TEMP/custom-profile-assets.txt"
       - run: |
           scripts/install_oras.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
@@ -408,6 +412,7 @@ jobs:
           COMPATIBILITY: ${{ inputs.compatibility }}
         run: |
           python3 scripts/verify_guest_profile.py --layout "$RUNNER_TEMP/custom-profile-layout" \
+            --layout-archive "$RUNNER_TEMP/custom-profile-layout.tar" \
             --request "$RUNNER_TEMP/custom-profile-request.json" --compatibility "$COMPATIBILITY" \
             --verifier proxy/target/release/examples/verify_guest_oci --output "$RUNNER_TEMP/custom-profile-selection.json"
       - name: Publish the unchanged custom index and verify complete registry readback

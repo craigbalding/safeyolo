@@ -139,16 +139,28 @@ def clean_completed_work(stage: Path) -> None:
     shutil.rmtree(stage / "source")
 
 
+def staged_profile_script(source: Path, name: str, files: dict) -> Path:
+    """Select only a script whose staged bytes participate in the cache identity."""
+    relative = Path(name)
+    if relative.is_absolute():
+        raise ValueError("profile script must be relative to the staged source")
+    script = (source / relative).resolve()
+    if (not script.is_relative_to(source) or not script.is_file()
+            or "sha256" not in files["files"].get(str(script.relative_to(source)), {})):
+        raise ValueError("profile script must be a file in the staged, declared inputs")
+    return script
+
+
 def build(args: argparse.Namespace) -> dict:
     profile = json.loads(args.profile.read_text())
     cache = args.cache.resolve()
     cache.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix="build-", dir=cache))
     source = stage / "source"
-    source.mkdir()
     completed = False
     try:
         files = snapshot(args.source.resolve(), source, profile["files"])
+        script = staged_profile_script(source, profile["script"], files)
         frozen = frozen_inputs(args.guest_inputs, profile)
         if frozen is not None:
             (stage / "guest-inputs.json").write_bytes(encoded(frozen))
@@ -176,7 +188,7 @@ def build(args: argparse.Namespace) -> dict:
             output.mkdir()
             work.mkdir()
             environment = builder_environment(profile, stage, args.architecture, args.output_kind, frozen)
-            execute(source / profile["script"], environment)
+            execute(script, environment)
             check_output(output, args.output_kind)
             clean_completed_work(stage)
             if not (output / "cache-paths.txt").exists():

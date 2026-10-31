@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import textwrap
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -350,7 +351,50 @@ def test_explicit_custom_profile_publishes_one_consumer_with_input_provenance(
 
 
 @pytest.fixture
-def custom_publication(tmp_path, built, publisher_tools):
+def layout_release(tmp_path, monkeypatch):
+    """Keep the gh CLI boundary local while exercising the actual upload/download shells."""
+    assets = tmp_path / "release-assets"
+    assets.mkdir()
+    tools = tmp_path / "release-tools"
+    tools.mkdir()
+    gh = tools / "gh"
+    gh.write_text(f"#!{sys.executable}\n" + textwrap.dedent(f"""\
+        import json, shutil, sys
+        from pathlib import Path
+        root = Path({str(assets)!r})
+        args = sys.argv[1:]
+        with (root / 'calls.jsonl').open('a') as output:
+            output.write(json.dumps(args) + '\\n')
+        if args[:2] == ['release', 'create']:
+            assert '--prerelease' in args and '--latest=false' in args
+            assert args[args.index('--target') + 1] == {REVISION!r}
+            rows = []
+            for number, name in enumerate(args[3:args.index('--repo')], 100):
+                source = Path(name)
+                shutil.copyfile(source, root / str(number))
+                rows.append({{'id': number, 'name': source.name, 'state': 'uploaded'}})
+            (root / 'assets.json').write_text(json.dumps(rows))
+        elif args[:2] == ['release', 'view']:
+            assert args[-4:] == ['--json', 'databaseId', '--jq', '.databaseId']
+            print(123)
+        elif args[:3] == ['api', '--paginate', '--slurp']:
+            assert args[3] == 'repos/craigbalding/safeyolo/releases/123/assets?per_page=100'
+            print(json.dumps([json.loads((root / 'assets.json').read_bytes())]))
+        else:
+            assert args[:3] == ['api', '--header', 'Accept: application/octet-stream']
+            assert args[3].startswith('repos/craigbalding/safeyolo/releases/assets/')
+            name = args[3].rsplit('/', 1)[1]
+            if not (root / name).is_file():
+                sys.exit(1)
+            sys.stdout.buffer.write((root / name).read_bytes())
+        """))
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ["PATH"])
+    return assets
+
+
+@pytest.fixture
+def custom_publication(tmp_path, built, publisher_tools, layout_release):
     """Small consumer archives use the real archive/layout producers, without a distro build."""
     artifacts = tmp_path / "custom"
     selected = {}
@@ -366,8 +410,10 @@ def custom_publication(tmp_path, built, publisher_tools):
     assert prepared.returncode == 0, prepared.stderr
     layout = tmp_path / "layout-guest-2026-10-12.1"
     index = run(publisher_tools[0], "resolve", "--oci-layout", f"{layout}:guest-2026-10-12.1").stdout.strip()
-    layout.rename(tmp_path / "custom-profile-layout")
-    request = {"run_id": "123", "artifact_id": "456", "index": index,
+    transferred = run(str(ROOT / "scripts/upload_guest_profile_layout.sh"), str(layout), REVISION,
+                      "guest-layout-input", str(tmp_path / "layout-upload"), timeout=15)
+    assert transferred.returncode == 0, transferred.stderr
+    request = {**json.loads((tmp_path / "layout-upload/layout-upload.json").read_bytes()), "index": index,
                "source_revision": REVISION, "profile": "kali-pentest", "platforms": selected}
     return request
 
@@ -402,13 +448,23 @@ def test_custom_workflow_verifies_exact_selected_inputs_before_authentication(
         request["platforms"]["linux/amd64"]["archive" if defect == "archive" else "build_inputs"] = "sha256:" + "c" * 64
     elif defect == "platforms":
         del request["platforms"]["linux/amd64"]
-    elif defect == "blob":
-        digest = request["platforms"]["linux/amd64"]["archive"]
-        blob = tmp_path / "custom-profile-layout/blobs/sha256" / digest.removeprefix("sha256:")
-        blob.chmod(0o644)
-        blob.write_bytes(b"corrupt read")
     retained = custom_workflow_step(tmp_path, "Retain the requested custom profile identities", CUSTOM_PROFILE=json.dumps(request))
     assert retained.returncode == 0, retained.stderr
+    downloaded = custom_workflow_step(tmp_path, "Download the selected layout release assets in order", GH_TOKEN="local-test-only")
+    assert downloaded.returncode == 0, downloaded.stderr
+    if defect == "blob":
+        # Keep the transport digest valid while corrupting a referenced OCI blob.
+        transferred = tmp_path / "custom-profile-layout.tar"
+        with tarfile.open(transferred) as original:
+            members = [(member, original.extractfile(member).read() if member.isfile() else None)
+                       for member in original.getmembers()]
+        with tarfile.open(transferred, "w") as changed:
+            for member, contents in members:
+                if member.name.endswith(request["platforms"]["linux/amd64"]["archive"].removeprefix("sha256:")):
+                    contents = b"!" + contents[1:]
+                changed.addfile(member, io.BytesIO(contents) if contents is not None else None)
+        request["layout_sha256"] = hashlib.sha256(transferred.read_bytes()).hexdigest()
+        (tmp_path / "custom-profile-request.json").write_text(json.dumps(request))
     result = custom_workflow_step(tmp_path, "Verify the selected custom layout before registry authentication",
                                   COMPATIBILITY="wrong" if defect == "compatibility" else "v1")
     assert (result.returncode == 0) == (defect is None), result.stdout + result.stderr
@@ -430,6 +486,8 @@ def test_custom_workflow_publishes_same_bytes_and_requires_complete_readback(
     request = custom_publication
     assert custom_workflow_step(tmp_path, "Retain the requested custom profile identities",
                                 CUSTOM_PROFILE=json.dumps(request)).returncode == 0
+    downloaded = custom_workflow_step(tmp_path, "Download the selected layout release assets in order", GH_TOKEN="local-test-only")
+    assert downloaded.returncode == 0, downloaded.stderr
     verified = custom_workflow_step(tmp_path, "Verify the selected custom layout before registry authentication", COMPATIBILITY="v1")
     assert verified.returncode == 0, verified.stderr
     oras, _ = publisher_tools
@@ -482,13 +540,75 @@ def test_custom_workflow_publishes_same_bytes_and_requires_complete_readback(
         assert any(method == "PUT" and "/manifests/" in path for method, path in events)
 
 
-@pytest.mark.parametrize("field,value", [("run_id", ""), ("artifact_id", "1,2"), ("run_id", "$(touch injected)"),
-                                         ("artifact_id", 123), ("run_id", None)])
-def test_custom_workflow_requires_one_explicit_retained_artifact(tmp_path, field, value):
-    request = {"run_id": "123", "artifact_id": "456", field: value}
+@pytest.mark.parametrize("field,value", [("layout_assets", []), ("layout_assets", ["1,2"]),
+                                         ("layout_assets", ["$(touch injected)"]), ("layout_assets", [123]),
+                                         ("layout_assets", None), ("layout_sha256", "bad")])
+def test_custom_workflow_requires_explicit_asset_ids_and_transport_digest(tmp_path, field, value):
+    request = {"layout_assets": ["123"], "layout_sha256": "a" * 64, field: value}
     retained = custom_workflow_step(tmp_path, "Retain the requested custom profile identities", CUSTOM_PROFILE=json.dumps(request))
     assert retained.returncode != 0 and not (tmp_path / "injected").exists()
     assert json.loads((tmp_path / "custom-profile-request.json").read_bytes()) == request
+
+
+@pytest.mark.parametrize("defect", [None, "missing-asset", "corrupt-part", "wrong-digest", "reversed-parts"])
+def test_custom_layout_upload_download_preserves_bytes_and_extracts_the_layout_root(
+    tmp_path, custom_publication, custom_workflow_checkout, layout_release, defect,
+):
+    request = custom_publication
+    # Exercise ordered multi-asset reassembly without making a GiB-size fixture.
+    original = (layout_release / request["layout_assets"][0]).read_bytes()
+    middle = len(original) // 2
+    (layout_release / "201").write_bytes(original[:middle])
+    (layout_release / "202").write_bytes(original[middle:])
+    request["layout_assets"] = ["201", "202"]
+    if defect == "missing-asset":
+        (layout_release / "202").unlink()
+    elif defect == "corrupt-part":
+        (layout_release / "202").write_bytes(b"!" + original[middle + 1:])
+    elif defect == "wrong-digest":
+        request["layout_sha256"] = "c" * 64
+    elif defect == "reversed-parts":
+        request["layout_assets"].reverse()
+    retained = custom_workflow_step(tmp_path, "Retain the requested custom profile identities", CUSTOM_PROFILE=json.dumps(request))
+    assert retained.returncode == 0, retained.stderr
+    downloaded = custom_workflow_step(tmp_path, "Download the selected layout release assets in order", GH_TOKEN="local-test-only")
+    if defect == "missing-asset":
+        assert downloaded.returncode != 0 and not (tmp_path / "custom-profile-layout").exists()
+        return
+    assert downloaded.returncode == 0, downloaded.stderr
+    checked = custom_workflow_step(tmp_path, "Verify the selected custom layout before registry authentication", COMPATIBILITY="v1")
+    assert (checked.returncode == 0) == (defect is None), checked.stdout + checked.stderr
+    selection = tmp_path / "custom-profile-selection.json"
+    assert selection.exists() == (defect is None)
+    if defect is None:
+        assert (tmp_path / "custom-profile-layout.tar").read_bytes() == original
+        extracted = tmp_path / "custom-profile-layout"
+        expected = tmp_path / "layout-guest-2026-10-12.1"
+        assert sorted(path.name for path in extracted.iterdir()) == ["blobs", "index.json", "oci-layout"]
+        assert {str(path.relative_to(extracted)): path.read_bytes() for path in extracted.rglob("*") if path.is_file()} == {
+            str(path.relative_to(expected)): path.read_bytes() for path in expected.rglob("*")
+            if path.is_file() and path.relative_to(expected).parts[0] in {"blobs", "index.json", "oci-layout"}
+        }
+        assert json.loads(selection.read_bytes())["request"] == request
+    else:
+        assert "archive SHA-256 differs" in checked.stderr and not (tmp_path / "custom-profile-layout").exists()
+
+
+@pytest.mark.parametrize("member", ["../escaped", "escaping-link"])
+def test_custom_layout_extraction_cannot_write_outside_its_owned_root(tmp_path, member):
+    from scripts.verify_guest_profile import unpack_layout
+
+    archive = tmp_path / "unsafe.tar"
+    with tarfile.open(archive, "w") as stream:
+        entry = tarfile.TarInfo(member)
+        if member == "escaping-link":
+            entry.type = tarfile.SYMTYPE
+            entry.linkname = "../escaped"
+        stream.addfile(entry)
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    with pytest.raises(tarfile.FilterError):
+        unpack_layout(archive, digest, tmp_path / "layout")
+    assert not (tmp_path / "escaped").exists()
 
 
 @pytest.mark.parametrize(("defect", "error"), [

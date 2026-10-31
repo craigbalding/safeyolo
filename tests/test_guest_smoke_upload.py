@@ -168,15 +168,11 @@ def test_inspection_activity_is_read_only_and_retains_its_result():
 def test_custom_profile_activity_uses_only_the_selected_retained_layout():
     job = WORKFLOW["jobs"]["custom-profile"]
     assert "needs" not in job
-    assert job["permissions"] == {"contents": "read", "actions": "read", "packages": "write"}
+    assert job["permissions"] == {"contents": "read", "packages": "write"}
     assert WORKFLOW["concurrency"] == {"group": "default-guest-publication", "cancel-in-progress": False}
-    download = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/download-artifact@"))
-    assert download["with"] == {
-        "artifact-ids": "${{ fromJSON(inputs.custom_profile).artifact_id }}",
-        "run-id": "${{ fromJSON(inputs.custom_profile).run_id }}",
-        "repository": "craigbalding/safeyolo", "github-token": "${{ secrets.GITHUB_TOKEN }}",
-        "path": "${{ runner.temp }}/custom-profile-layout",
-    }
+    download = next(step for step in job["steps"] if step.get("name") == "Download the selected layout release assets in order")
+    assert download["env"] == {"GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}"}
+    assert download["shell"] == "bash" and "${{" not in download["run"]
     commands = "\n".join(step.get("run", "") for step in job["steps"])
     assert "prepare_guest_transport_fixture" not in commands and "build-all.sh" not in commands
     retained = next(step for step in job["steps"] if step.get("with", {}).get("name") == "guest-custom-profile-result")

@@ -132,6 +132,37 @@ def test_relative_builder_reads_use_the_staged_source_directory(profile):
     assert (Path(result["assets"]) / "rootfs-tree/etc/result").read_text() == "staged helper\n"
 
 
+@pytest.mark.parametrize("selection", ["absolute", "escaping", "undeclared", "directory"])
+def test_unstaged_script_selection_cannot_execute_or_return_a_cache_hit(profile, selection):
+    path, source, cache = profile
+    record = json.loads(path.read_text())
+    script = source / "build.sh"
+    if selection == "absolute":
+        record.update(script=str(script), files=["helper"])
+    elif selection == "escaping":
+        record.update(script="../../../source/build.sh", files=["helper"])
+    elif selection == "directory":
+        record["script"] = "."
+    else:
+        record["files"] = ["helper"]
+    path.write_text(json.dumps(record))
+    for text in (SCRIPT, SCRIPT + "\n# changed selected script\n"):
+        script.write_text(text)
+        result = subprocess.run(command(profile), capture_output=True, text=True, timeout=15)
+        assert result.returncode != 0 and "profile script must be" in result.stderr
+        assert not (path.parent / "calls").exists() and not list(cache.glob("*.json"))
+
+
+def test_changed_selected_script_builds_new_content_instead_of_hitting_the_old_output(profile):
+    first = build(profile)
+    script = profile[1] / "build.sh"
+    script.write_text(script.read_text().replace('cat "$(dirname "$0")/helper"', "printf 'changed-script\\n'"))
+    changed = build(profile)
+    assert changed["key"] != first["key"] and not changed["cache_hit"]
+    assert (Path(changed["assets"]) / "rootfs-tree/etc/result").read_text() == "changed-script\n"
+    assert (Path(first["assets"]) / "rootfs-tree/etc/result").read_text() == "staged helper\n"
+
+
 def test_implicit_source_parents_do_not_change_identity_with_caller_umask(profile):
     (profile[1] / "nested").mkdir()
     (profile[1] / "nested/input").write_text("input")

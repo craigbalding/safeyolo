@@ -138,7 +138,7 @@ describes the local staged build and export path.
 ### Publish a qualified custom layout through Actions
 
 The `custom-profile` activity in `guest-oci.yml` publishes an explicitly
-selected retained layout through the repository's `GITHUB_TOKEN` writer.
+selected layout through the repository's `GITHUB_TOKEN` writer.
 It does not run a distro build. It copies the unchanged index by digest and
 reads back every child, config and archive through the shared verifier.
 Existing version and compatibility tags retain their targets. Custom indexes
@@ -152,7 +152,7 @@ archive and build-input hashes from that qualification. Publication checks
 those identities; it does not establish boot, installed isolation or clean-host
 acceptance.
 
-On a Linux maintainer machine, use a source checkout, the maintained ORAS
+On a Linux maintainer machine, use Python 3.12+, a source checkout, the maintained ORAS
 publisher and a current shared native verifier that supports custom profiles.
 Set `ARTIFACTS` to the qualified archive directory and `LAYOUT` to an owned
 directory for the complete OCI layout. Set `PROFILE_SOURCE` to the full source
@@ -169,20 +169,37 @@ INDEX=$(oras resolve --oci-layout "$LAYOUT:$GUEST_VERSION")
 ```
 
 The command verifies the complete local layout and prints its immutable index
-digest. Retain that layout through the existing repository Actions artifact
-transfer, with `oci-layout`, `index.json` and `blobs/` at the artifact root.
-Use the actual producer run ID as `LAYOUT_RUN` and the exact artifact ID as
-`LAYOUT_ARTIFACT`. Do not substitute an artifact name or another run's layout.
+digest. Transfer the unchanged layout with the maintained upload helper below.
+The helper uses the operator's existing authenticated `gh` repository access.
+Set `INPUT_RELEASE` to a new input-transfer release tag, for example
+`guest-layout-` followed by the index's SHA-256 hex. Set `TRANSFER_DIR` to a new
+owned directory outside the checkout, with disk space for the complete layout.
+
+```sh
+scripts/upload_guest_profile_layout.sh "$LAYOUT" "$PROFILE_SOURCE" "$INPUT_RELEASE" "$TRANSFER_DIR"
+```
+
+The helper packs `oci-layout`, `index.json` and `blobs/` at the tar root and
+splits the stream into 1 GiB parts. [GitHub limits each release asset](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)
+to less than 2 GiB; splitting preserves larger complete layouts without changing their
+OCI bytes. The helper creates a prerelease at `PROFILE_SOURCE`, explicitly
+leaves Latest unchanged, uploads the parts with `gh release create`, and reads
+their numeric asset IDs through the release API. These assets supply input
+transport; OCI remains the guest catalogue. The resulting
+`TRANSFER_DIR/layout-upload.json` records the ordered asset IDs, combined tar
+SHA-256, source revision and release ID. No local GHCR credential is used.
+After an interrupted upload, inspect that release and its assets before another
+write. The helper does not replace existing assets or delete retained inputs.
 
 After this workflow change is on `master`, an authenticated repository operator
-can dispatch the writer. The following command uses Python 3 and `gh` from the
-same checkout. It sends the selected source/profile/index and hashes the
+can dispatch the writer. The following command uses Python and `gh` from the
+same checkout. It sends the upload identities, selected source/profile/index and hashes the
 qualified archive and build-input files. Check those hashes against the retained
 qualification before dispatch. Set `REQUEST_FILE` to an owned JSON file outside
 the checkout. No local GHCR login is required.
 
 ```sh
-export ARTIFACTS INDEX PROFILE_SOURCE PROFILE_NAME LAYOUT_RUN LAYOUT_ARTIFACT COMPATIBILITY
+export ARTIFACTS INDEX PROFILE_SOURCE PROFILE_NAME TRANSFER_DIR COMPATIBILITY
 python3 - <<'PY' > "$REQUEST_FILE"
 import hashlib
 import json
@@ -202,8 +219,9 @@ for name in ("darwin-arm64", "linux-amd64", "linux-arm64"):
             "archive": digest(directory / "guest.tar.zst"),
             "build_inputs": digest(directory / "build-inputs.json"),
         }
+transfer = json.loads((Path(os.environ["TRANSFER_DIR"]) / "layout-upload.json").read_bytes())
 print(json.dumps({
-    "run_id": os.environ["LAYOUT_RUN"], "artifact_id": os.environ["LAYOUT_ARTIFACT"],
+    **transfer,
     "index": os.environ["INDEX"], "source_revision": os.environ["PROFILE_SOURCE"],
     "profile": os.environ["PROFILE_NAME"], "platforms": platforms,
 }, indent=2))
@@ -219,6 +237,9 @@ gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
   -f custom_profile=@"$REQUEST_FILE"
 ```
 
+The writer downloads the exact asset IDs in order, checks the combined tar
+SHA-256, and extracts the layout into a new directory with Python's data-only
+tar filter. The extracted root contains `oci-layout`, `index.json` and `blobs/`.
 The writer refuses a mismatched source, profile, platform set, archive digest
 or build-input digest before registry login. The index digest binds all
 manifest and config bytes, including pinned base identities. The shared verifier
