@@ -1,17 +1,20 @@
 # Herdr phase-one native-agent spike
 
-This spike provides a host wrapper and a journey script for
-[#572](https://github.com/craigbalding/safeyolo/issues/572). The first execution
-failed in the pane observer before any smoke prompt. The corrected observer
-awaits refreshed preparation and another owned execution. Local wrapper and
-observer tests do not establish a passed Herdr/Codex journey.
+The phase-one journey for
+[#572](https://github.com/craigbalding/safeyolo/issues/572) passed on 31 October
+2026 in owned Rundeck execution 12426. Two separately sandboxed Codex agents
+accepted real input, called tools and answered through Herdr. Named navigation,
+detach/reattach, native identity continuity, conversation continuation and
+normal owned stop passed. This report records that journey and the earlier
+failures; independent Lens acceptance remains separate.
 The whole issue remains open, with Size M and Medium uncertainty. Its other
 integration questions remain in the issue.
 
-## Scope and expected operator workflow
+## Scope and demonstrated operator workflow
 
-Use Herdr **TUI 0.9.5** on the trusted Linux operator host. Start two existing,
-separately sandboxed native SafeYolo Codex agents in adjacent panes. Send one
+Use Herdr **terminal user interface (TUI) 0.9.5** on the trusted Linux operator
+host. Start two existing, separately sandboxed native SafeYolo Codex agents in
+adjacent panes. Send one
 harmless prompt to each agent. Focus each agent by name, detach the TUI with
 Ctrl+B, Q, then reattach and continue both conversations. Finally, stop both
 owned agents through SafeYolo and stop the disposable Herdr server.
@@ -24,8 +27,9 @@ a general compatibility layer to finish this spike.
 
 ## Trusted-host pane wrapper
 
-[The wrapper](../scripts/safeyolo_herdr.py) uses the installed native CLI. In a
-Herdr pane on the trusted host, supply an existing agent name, the installed
+[The wrapper](../scripts/safeyolo_herdr.py) uses the installed native command-line
+interface (CLI). In a Herdr pane on the trusted host, supply an existing agent
+name, the installed
 CLI's absolute path and its instance root. In this example, `demo` is an already
 configured agent, `/trusted/checkout` is this source checkout, and
 `/installed/safeyolo` is that instance's root. The command starts the coding
@@ -62,7 +66,7 @@ does not supply a native attach path for a foreground launch.
 
 [The journey script](../scripts/accept_herdr_native.py) uses Python 3.11 or newer
 on Sylab's owned Linux guest through the existing Rundeck route. It requires
-the verified preparation JSON, the complete existing Codex 0.164.0 packages and
+the verified preparation file, the complete existing Codex 0.164.0 packages and
 their authorized agent-local login state. Both prepared sandboxes must have
 their recorded identities and no coding command yet. A previous or uncertain
 run must be inspected before another execution. The script does not retry a
@@ -77,8 +81,8 @@ both native agent/run identities, workspaces and 10 GiB reserve. It proves
 sandbox and tool preflight, not model input or output.
 
 On that guest, from the exact candidate source checkout root, set `PREPARATION`
-to Sylab's refreshed, verified preparation JSON. The first execution stopped
-both prepared sandboxes; their old preparation file cannot identify fresh
+to Sylab's refreshed, verified preparation file. Each completed execution stopped
+both prepared sandboxes; a consumed preparation file cannot identify fresh
 ready inputs. Sylab refreshes only those owned sandbox generations and records
 their actual identities, reusing packages, authorized login, workspace and
 the working Coord ports. Set `OUTPUT` to a new absolute directory under the existing private
@@ -102,9 +106,9 @@ The oracle requires all of these observations:
   digest is absent from the input, so an echoed prompt or synthetic pane text
   cannot satisfy this check.
 - Focus-by-name selects each bound pane. Both names render in the actual TUI.
-  Ctrl+B, Q exits each of two PTY clients successfully. Native agent/run/launch
-  identities remain unchanged before detach, while detached, after reattach
-  and after continuation.
+  Ctrl+B, Q exits each of two pseudoterminal (PTY) clients successfully. Native
+  agent/run/launch identities remain unchanged before detach, while detached,
+  after reattach and after continuation.
 - After reattachment, each agent computes another answer using its previous
   token. The continuation does not resend the token. Its input and answer must
   occur in the same Codex session as its first turn.
@@ -126,7 +130,58 @@ response-shape failures retain a reason in `result.json` before cleanup.
 Startup questions or onboarding require inspection, not blind acceptance or a
 passed result.
 
-## First execution and observer repair
+## Observed result and exact bindings
+
+Execution 12426 ran the scripts at
+`b440ab4f63d90f4567653ae52a62e0c1238b1cc4` against the production native runtime
+`377a54e06ebf0f6962f61ab8080a23fdfe6b1592` on Ubuntu Linux with Kernel-based
+Virtual Machine (KVM), Herdr TUI 0.9.5/protocol 22 and Codex 0.164.0. The command
+below is a record: cleanup consumed its prepared sandbox generations, and its
+output directory exists. Inspect the retained result instead of replaying the
+command. From `/home/agent/375-build-storage-d62/frontend572/source-b440ab4f63d9`,
+Sylab ran:
+
+```sh
+/usr/bin/python3 -m scripts.accept_herdr_native \
+  --preparation /home/agent/375-build-storage-d62/frontend572/native-preparation-after12421.json \
+  --output /home/agent/375-build-storage-d62/frontend572/journey-b440ab4f-retained-login \
+  --timeout 1200
+```
+
+Guest exit was 0, with no timeout. The driver took 62.129 seconds; the outer
+command took 62.208 seconds, from 18:02:45 to 18:03:47 Coordinated Universal Time
+(UTC).
+Preparation, login repair and earlier attempts are outside those intervals.
+
+The sanitized result is `/evidence/operator/572/journey-b440ab4f-12426.json`,
+SHA-256 `4c3acd69764818ba5c5442a92ff488895de398d2325c8958d5ad8cc2578bd2e9`.
+It binds `/evidence/operator/572/native-preparation-after12421.json`, SHA-256
+`8d0c6c83a5c3234c7702d9dd89f8ffd6313df565bec8041cd3a2603e828094dd`, and both
+script hashes. The preparation binds the installed Herdr binary to SHA-256
+`14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d`.
+These bindings remain valid for a report-only commit; neither script changed.
+
+- Both `frontend572-a` and `frontend572-b` received first and continued prompts.
+  All four turns had real Codex tool calls, expected assistant answers, matching
+  fresh workspace receipts and answers visible in the corresponding panes.
+- Focus by name selected the bound panes, and both names rendered in both TUI
+  clients. Both Ctrl+B, Q detach operations exited 0. The recorded agent/run/launch
+  identities stayed unchanged before detach, while detached, after reattach and
+  after continuation. Native commands and runtimes remained running.
+- Each agent retained its original Codex session. Agent A used
+  `01a19321-01ea-7c60-99f0-32916cf7841a`; agent B used
+  `01a19320-fea1-7ff3-a4d0-370a85dd81ae`. Continuation used the previous token
+  without resending it.
+- Normal SafeYolo stop left both agents and runtimes stopped, with absent
+  terminals. Normal Herdr stop and control-socket absence passed.
+
+The result retains all five native snapshots, four turn results and cleanup
+identities. Full rollouts, login state, pane logs and Herdr state remain private.
+This is a short automated terminal journey, not a sustained coding or human
+usability study. It covers two agents on Ubuntu/KVM; it does not cover another
+platform, another Herdr frontend, server restart or semantic harness activity.
+
+## Earlier failures and corrected causes
 
 Rundeck execution 12403 ran source
 `95c2dd07c8473067624be94611c6c66106dd9d13` against native runtime
@@ -144,7 +199,7 @@ operator-usefulness conclusion, runtime-defect finding or product acceptance.
 The original sanitized result remains at
 `/evidence/operator/572/journey-95c2dd07-12403.json`, SHA-256
 `aa0a32fc6e2c4103caba9e466c39f89601fdb86e9fc65f997abbc90255396183`.
-Keep that execution when recording the next result.
+That execution remains a failed attempt.
 
 Herdr TUI 0.9.5 serializes pane output as
 `result.read.text`. Its tagged
@@ -173,8 +228,26 @@ It starts no SafeYolo sandbox or model. Without the variable, only that live
 protocol control is skipped. The same control reproduced the original
 `KeyError` before the repair and passed afterward. The remaining controls
 exercise malformed replies and verify that a failed observer writes its reason
-through cleanup. These results support the observer repair; the real two-agent
-journey still requires Sylab's owned execution and normal Lens review.
+through cleanup. These results support the observer repair. Execution 12426
+also exercised the corrected reader through the real two-agent journey.
+
+Execution 12408 used `b440ab4f` and reached actual pane output, but both Codex
+processes stayed at sign-in before any prompt or session. Ordinary guest login
+status reported logged in. Sylab stopped the verified driver after 474.718
+seconds (474.800 seconds outer); guest exit was 143. A targeted credential
+import corrected the copied login's missing proxy authorization. Execution
+12421 verified that authorization, then the provider returned `401 token_expired`.
+The driver was stopped after 216.820 seconds (216.891 seconds outer), again with
+guest exit 143 and no model turn. Both attempts passed normal native and Herdr
+cleanup. Their results remain failed at
+`/evidence/operator/572/journey-b440ab4f-12408.json` and
+`/evidence/operator/572/journey-b440ab4f-12421.json`.
+
+Sylab reused a newer authorized login from the same provisioned account in an
+owned stopped fixture, adopted it into the two owned homes and imported it for
+those agents. The successful preparation records that correction. Execution
+12426 verified the actual consumer afterward. No source change, native build,
+new sign-in or broader credential authority was needed.
 
 ## Findings and remaining questions
 
@@ -184,16 +257,28 @@ detach/reattach. Custom `agent.prompt` returned `agent_not_ready`; a blocked
 report returned `agent_blocked`. This spike therefore uses pane input on the
 trusted host. The separate native Herdr app/core is outside this TUI spike.
 
-The proposed immediate operator value is grouped terminals, names and stable
-native identity during navigation and reconnect. Actual usefulness remains to
-be observed. The minimum integration under test is one host wrapper plus
-Herdr's custom report/metadata and release calls. No runtime change has been
-identified. No evidence yet supports removing Lab, Coord, Factory, policy,
-approvals or evidence storage. Policy-mediated create/prompt/wait/stop remains
-an unanswered later-phase question. The prior schema comparison supports
-this version-bound experiment; broader upstream API stability is unproved.
+The demonstrated operator value is one grouped terminal view for two separately
+sandboxed conversations. Names select the correct pane, native identities help
+identify the running agents, and reconnect preserves both conversations without
+restarting the coding commands or resending their context. This can reduce
+separate terminal windows and manual navigation in a two-agent lab. The run
+does not measure productivity or establish usability at larger scale.
 
-After the real session, record the exact source candidate, consumed runtime,
-command, elapsed time, result and concrete navigation/usefulness limits in
-the issue and independent review. A preparation-only merge must leave #572
-open. Revisit sizing before expanding into another phase.
+The minimum observed integration is one trusted-host wrapper using native
+SafeYolo lifecycle/status commands and Herdr's custom report, metadata and
+release calls. Host pane input supplies prompting. No native runtime change or
+launcher plugin was required. The sign-in failures show why copied login state
+and a successful login-status check alone do not establish model readiness.
+
+No new guest policy capability was needed for this operator workflow. The run
+does not select policy-mediated create/prompt/wait/stop capabilities; those
+remain later-phase questions in #572. The demonstrated simplification is
+grouped terminal operation. No evidence supports removing Lab, Coord, Factory,
+policy, approvals or evidence storage. Herdr display state supplies no authority
+or completion semantics, and semantic harness activity remains unknown.
+
+The prior schema comparison and this live journey support a small integration
+bound to TUI 0.9.5/protocol 22. Broader upstream application programming interface
+(API) stability remains unproved.
+Keep #572 open with its original outcomes, Size M and Medium uncertainty.
+Reassess the bounded spike before selecting any later integration phase.
