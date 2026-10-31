@@ -277,8 +277,9 @@ script or create a Lima builder.
 On Linux, use an owned disk-backed scratch directory and the tree outputs
 shown above. The bundled Kali example requests command-scoped `sudo` for
 rootful `umoci unpack`, chrooted distro package installation, filesystem
-staging, and UID-100000 ownership for rootless gVisor. Downloads and
-orchestration remain unprivileged.
+staging, and output ownership. Its completed cache tree retains guest IDs;
+the export step prepares ownership for the selected Linux consumer.
+Downloads and orchestration remain unprivileged.
 
 ## Tooling cheat sheet, by approach
 
