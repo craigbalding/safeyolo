@@ -2,17 +2,34 @@
 
 import json
 import os
+import runpy
+import shutil
 import signal
 import struct
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "guest/build_profile.py"
+# These builders create ordinary host files, without Linux mounts or chroots.
+# Supply their empty mount table at the kernel boundary while running the real
+# cache, builder, signal and cleanup code on either host.
+PROFILE_RUNNER = """
+import runpy, sys
+from pathlib import Path
+from unittest.mock import patch
+read_text = Path.read_text
+def fixture_read_text(path, *args, **kwargs):
+    return "" if path == Path("/proc/self/mountinfo") else read_text(path, *args, **kwargs)
+runner = sys.argv.pop(1)
+with patch.object(Path, "read_text", fixture_read_text):
+    runpy.run_path(runner, run_name="__main__")
+"""
 SCRIPT = """#!/bin/bash
 set -euo pipefail
 echo build >> "$BUILD_LOG"
@@ -52,7 +69,7 @@ def profile(tmp_path):
 
 def command(profile, *extra):
     path, source, cache = profile
-    return [sys.executable, str(RUNNER), "--profile", str(path), "--source", str(source),
+    return [sys.executable, "-c", PROFILE_RUNNER, str(RUNNER), "--profile", str(path), "--source", str(source),
             "--cache", str(cache), "--architecture", "amd64", *extra]
 
 
@@ -60,6 +77,63 @@ def build(profile, *extra, env=None):
     result = subprocess.run(command(profile, *extra), capture_output=True, text=True, env=env, timeout=15)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
+
+
+@pytest.mark.parametrize("mount_at", ["stage", "nested", "elsewhere"])
+def test_completed_work_cleanup_refuses_build_mounts(tmp_path, mount_at):
+    stage = tmp_path / "build with spaces"
+    work, source = stage / "work", stage / "source"
+    work.mkdir(parents=True)
+    source.mkdir()
+    (work / "kept").write_text("builder scratch")
+    (source / "kept").write_text("staged source")
+    mount = {"stage": stage, "nested": work / "mounted tree", "elsewhere": tmp_path / "other"}[mount_at]
+    escaped = str(mount).replace(" ", r"\040")
+    mountinfo = f"1 0 0:1 / {escaped} rw - tmpfs tmpfs rw\n"
+    cleanup = runpy.run_path(str(RUNNER))["clean_completed_work"]
+    with patch.object(Path, "read_text", autospec=True, return_value=mountinfo) as read:
+        if mount_at == "elsewhere":
+            cleanup(stage)
+            assert not work.exists() and not source.exists()
+        else:
+            with pytest.raises(ValueError, match="profile left a build mount"):
+                cleanup(stage)
+            assert (work / "kept").is_file() and (source / "kept").is_file()
+    read.assert_called_once_with(Path("/proc/self/mountinfo"))
+
+
+@pytest.mark.parametrize("sudo_exit", [0, 73])
+def test_completed_work_cleanup_limits_root_fallback_and_propagates_failure(tmp_path, sudo_exit):
+    stage = tmp_path / "build"
+    work, source = stage / "work", stage / "source"
+    work.mkdir(parents=True)
+    source.mkdir()
+    cleanup = runpy.run_path(str(RUNNER))["clean_completed_work"]
+    rmtree = shutil.rmtree
+
+    def remove(path):
+        if path == work:
+            raise PermissionError("root-owned builder scratch")
+        rmtree(path)
+
+    def sudo(arguments, *, check):
+        assert check and arguments == ["sudo", "-n", "rm", "-rf", "--", str(work)]
+        if sudo_exit:
+            raise subprocess.CalledProcessError(sudo_exit, arguments)
+        rmtree(work)
+
+    with (patch.object(Path, "read_text", autospec=True, return_value=""),
+          patch.object(shutil, "rmtree", autospec=True, side_effect=remove),
+          patch.object(subprocess, "run", autospec=True, side_effect=sudo) as privileged):
+        if sudo_exit:
+            with pytest.raises(subprocess.CalledProcessError) as failure:
+                cleanup(stage)
+            assert failure.value.returncode == sudo_exit
+            assert work.is_dir() and source.is_dir()
+        else:
+            cleanup(stage)
+            assert not work.exists() and not source.exists()
+    privileged.assert_called_once()
 
 
 def test_reuses_completed_output_and_force_selects_fresh_output(profile):
@@ -73,6 +147,7 @@ def test_reuses_completed_output_and_force_selects_fresh_output(profile):
     assert calls.read_text().splitlines() == ["build", "build"]
     assert build(profile) == {**forced, "cache_hit": True}
     assert (Path(first["assets"]) / "rootfs-tree/etc/result").read_text() == "staged helper\n"
+    assert not list(profile[2].glob("build-*"))
 
 
 @pytest.mark.parametrize("changed", ["script", "helper", "mode", "base", "architecture", "output-kind", "frozen"])

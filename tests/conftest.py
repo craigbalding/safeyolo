@@ -21,6 +21,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests" / "referenc
 
 
 @pytest.fixture
+def system_python_stub(tmp_path):
+    # Intercept only the distro interpreter boundary; leave ambient command
+    # lookup intact so PATH decoys can expose accidental mise/venv selection.
+    startup = tmp_path / 'system-python.sh'
+    startup.write_text('/usr/bin/python3() { "$PROBE_SYSTEM_PYTHON" "$@"; }\n')
+    return {'BASH_ENV': str(startup), 'PROBE_SYSTEM_PYTHON': str(tmp_path / 'tools/python3')}
+
+
+@pytest.fixture
 def linux_workflow_stat():
     """Use real GNU stat for Ubuntu workflow assertions on either test host."""
     command = shutil.which("gstat") or shutil.which("stat")
