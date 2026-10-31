@@ -254,7 +254,7 @@ def registry():
                 if digest not in blobs:
                     return self.reply(404)
                 data = blobs[digest]
-                if faults["blob"] and self.command == "GET":
+                if (faults["blob"] is True or faults["blob"] == digest) and self.command == "GET":
                     data = b"!" + data[1:]
                 return self.reply(200, data, Content_Type="application/octet-stream", Docker_Content_Digest=digest)
             if "/manifests/" in path:
@@ -347,6 +347,148 @@ def test_explicit_custom_profile_publishes_one_consumer_with_input_provenance(
     # Profile identity must be explicit on retained-layout publication too.
     refused = publish(tmp_path, artifacts, publisher_tools, registry[0], from_layout=True)
     assert refused.returncode != 0 and "does not match" in refused.stderr
+
+
+@pytest.fixture
+def custom_publication(tmp_path, built, publisher_tools):
+    """Small consumer archives use the real archive/layout producers, without a distro build."""
+    artifacts = tmp_path / "custom"
+    selected = {}
+    for platform in ("darwin/arm64", "linux/amd64", "linux/arm64"):
+        inputs = {"profile": {"name": "kali-pentest"}, "architecture": platform.split("/")[1],
+                  "files": {"build.sh": {"sha256": "a" * 64}}}
+        (built / "build-inputs.json").write_text(json.dumps(inputs))
+        (built / "rootfs-tree/command").write_text(platform)
+        compressed = archive(platform, built, artifacts / platform.replace("/", "-"))
+        selected[platform] = {"archive": "sha256:" + hashlib.sha256(compressed.read_bytes()).hexdigest(),
+                              "build_inputs": "sha256:" + hashlib.sha256((built / "build-inputs.json").read_bytes()).hexdigest()}
+    prepared = publish(tmp_path, artifacts, publisher_tools, profile="kali-pentest")
+    assert prepared.returncode == 0, prepared.stderr
+    layout = tmp_path / "layout-guest-2026-10-12.1"
+    index = run(publisher_tools[0], "resolve", "--oci-layout", f"{layout}:guest-2026-10-12.1").stdout.strip()
+    layout.rename(tmp_path / "custom-profile-layout")
+    request = {"run_id": "123", "artifact_id": "456", "index": index,
+               "source_revision": REVISION, "profile": "kali-pentest", "platforms": selected}
+    return request
+
+
+def custom_workflow_step(tmp_path, name, **environment):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
+    step = next(step for step in workflow["jobs"]["custom-profile"]["steps"] if step.get("name") == name)
+    assert step["shell"] == "bash" and "${{" not in step["run"]
+    return run("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"],
+               cwd=tmp_path, env={**os.environ, "RUNNER_TEMP": str(tmp_path), **environment}, timeout=30)
+
+
+@pytest.fixture
+def custom_workflow_checkout(tmp_path, publisher_tools):
+    (tmp_path / "scripts").symlink_to(ROOT / "scripts", target_is_directory=True)
+    examples = tmp_path / "proxy/target/release/examples"
+    examples.mkdir(parents=True)
+    (examples / "verify_guest_oci").symlink_to(Path(publisher_tools[1]).resolve())
+
+
+@pytest.mark.parametrize("defect", [None, "source", "profile", "index", "archive", "build-inputs", "platforms", "blob", "compatibility"])
+def test_custom_workflow_verifies_exact_selected_inputs_before_authentication(
+    tmp_path, custom_publication, custom_workflow_checkout, defect,
+):
+    request = custom_publication
+    if defect in {"source", "profile", "index"}:
+        field, value = {"source": ("source_revision", "c" * 40),
+                        "profile": ("profile", "$(touch injected)"),
+                        "index": ("index", "sha256:" + "c" * 64)}[defect]
+        request[field] = value
+    elif defect in {"archive", "build-inputs"}:
+        request["platforms"]["linux/amd64"]["archive" if defect == "archive" else "build_inputs"] = "sha256:" + "c" * 64
+    elif defect == "platforms":
+        del request["platforms"]["linux/amd64"]
+    elif defect == "blob":
+        digest = request["platforms"]["linux/amd64"]["archive"]
+        blob = tmp_path / "custom-profile-layout/blobs/sha256" / digest.removeprefix("sha256:")
+        blob.chmod(0o644)
+        blob.write_bytes(b"corrupt read")
+    retained = custom_workflow_step(tmp_path, "Retain the requested custom profile identities", CUSTOM_PROFILE=json.dumps(request))
+    assert retained.returncode == 0, retained.stderr
+    result = custom_workflow_step(tmp_path, "Verify the selected custom layout before registry authentication",
+                                  COMPATIBILITY="wrong" if defect == "compatibility" else "v1")
+    assert (result.returncode == 0) == (defect is None), result.stdout + result.stderr
+    selection = tmp_path / "custom-profile-selection.json"
+    assert selection.exists() == (defect is None)
+    assert not (tmp_path / "injected").exists() and not (tmp_path / "custom-profile-publication").exists()
+    if defect is None:
+        selected = json.loads(selection.read_bytes())
+        assert selected["request"] == request
+        assert selected["index"]["digest"] == request["index"]
+        assert {platform: {"archive": row["archive"]["digest"], "build_inputs": row["build_inputs"]}
+                for platform, row in selected["platforms"].items()} == request["platforms"]
+
+
+@pytest.mark.parametrize("fault", [None, "archive", "index", "upload", "login"])
+def test_custom_workflow_publishes_same_bytes_and_requires_complete_readback(
+    tmp_path, custom_publication, custom_workflow_checkout, publisher_tools, registry, fault,
+):
+    request = custom_publication
+    assert custom_workflow_step(tmp_path, "Retain the requested custom profile identities",
+                                CUSTOM_PROFILE=json.dumps(request)).returncode == 0
+    verified = custom_workflow_step(tmp_path, "Verify the selected custom layout before registry authentication", COMPATIBILITY="v1")
+    assert verified.returncode == 0, verified.stderr
+    oras, _ = publisher_tools
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    wrapper = tools / "oras"
+    wrapper.write_text(f"#!{sys.executable}\nimport os, sys\n"
+                       f"repository = {registry[0]!r}\nargs = [arg.replace('ghcr.io/craigbalding/safeyolo-guest', repository) for arg in sys.argv[1:]]\n"
+                       f"if args[0] == 'login':\n    sys.stdin.read()\n    sys.exit({1 if fault == 'login' else 0})\n"
+                       "if args[0] == 'cp':\n    args += ['--to-plain-http' if '--from-oci-layout' in args else '--from-plain-http']\n"
+                       "else:\n    args += ['--plain-http']\n"
+                       f"os.execv({str(Path(oras).resolve())!r}, [{str(Path(oras).resolve())!r}, *args])\n")
+    wrapper.chmod(0o755)
+    _, blobs, manifests, tags, events, faults = registry
+    # Existing versions/channels must retain their original targets.
+    raw_index = (tmp_path / "custom-profile-layout/blobs/sha256" / request["index"].removeprefix("sha256:")).read_bytes()
+    manifests[request["index"]] = raw_index
+    tags["compat-v1"] = tags["guest-2026-10-11.1"] = request["index"]
+    before = dict(tags)
+    if fault == "archive":
+        faults["blob"] = request["platforms"]["linux/amd64"]["archive"]
+    elif fault in {"index", "upload"}:
+        faults[fault] = True
+    result = custom_workflow_step(tmp_path, "Publish the unchanged custom index and verify complete registry readback",
+                                  PATH=str(tools) + os.pathsep + os.environ["PATH"], ORAS=str(wrapper),
+                                  GH_TOKEN="local-test-only", GITHUB_ACTOR="controlled-operator", GITHUB_SHA="d" * 40,
+                                  COMPATIBILITY="v1")
+    assert (result.returncode == 0) == (fault is None), result.stdout + result.stderr
+    assert tags == before
+    assert all(path.rsplit("/", 1)[1].startswith("sha256:") for method, path in events
+               if method == "PUT" and "/manifests/" in path)
+    completed = tmp_path / "custom-profile-publication/result.json"
+    assert completed.exists() == (fault is None)
+    if fault is None:
+        report = json.loads(completed.read_bytes())
+        assert report["request"] == request and report["publisher_revision"] == "d" * 40
+        assert report["repository"] == "ghcr.io/craigbalding/safeyolo-guest"
+        assert (tmp_path / "custom-profile-publication/public-index.json").read_bytes() == manifests[request["index"]]
+        for platform, row in request["platforms"].items():
+            digest = row["archive"]
+            assert ("GET", f"/v2/guest/blobs/{digest}") in events
+            assert (tmp_path / "custom-profile-publication/readback/blobs/sha256" / digest.removeprefix("sha256:")).read_bytes() == blobs[digest]
+    elif fault == "login":
+        assert not events and not (tmp_path / "custom-profile-publication").exists()
+    elif fault == "archive":
+        assert ("GET", f"/v2/guest/blobs/{request['platforms']['linux/amd64']['archive']}") in events
+    elif fault == "index":
+        assert ("GET", f"/v2/guest/manifests/{request['index']}") in events
+    elif fault == "upload":
+        assert any(method == "PUT" and "/manifests/" in path for method, path in events)
+
+
+@pytest.mark.parametrize("field,value", [("run_id", ""), ("artifact_id", "1,2"), ("run_id", "$(touch injected)"),
+                                         ("artifact_id", 123), ("run_id", None)])
+def test_custom_workflow_requires_one_explicit_retained_artifact(tmp_path, field, value):
+    request = {"run_id": "123", "artifact_id": "456", field: value}
+    retained = custom_workflow_step(tmp_path, "Retain the requested custom profile identities", CUSTOM_PROFILE=json.dumps(request))
+    assert retained.returncode != 0 and not (tmp_path / "injected").exists()
+    assert json.loads((tmp_path / "custom-profile-request.json").read_bytes()) == request
 
 
 @pytest.mark.parametrize(("defect", "error"), [
