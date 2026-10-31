@@ -33,12 +33,17 @@ def _pid_exists(pid: int) -> bool:
     return True
 
 
-def _process_group_exists(pgid: int) -> bool:
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+def _linux_running_group_members(pgid: int) -> list[int]:
+    members = []
+    for stat_file in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            fields = stat_file.read_text().rsplit(")", 1)[1].split()
+        except FileNotFoundError:
+            continue  # The process exited during the scan.
+        # An adopted zombie cannot run or hold a compiler's output pipes open.
+        if int(fields[2]) == pgid and fields[0] not in {"Z", "X"}:
+            members.append(int(stat_file.parent.name))
+    return members
 
 
 def _fixture(tmp_path: Path, *, darwin: bool, with_setsid: bool) -> tuple[Path, Path]:
@@ -155,12 +160,124 @@ def test_dependency_target_root_honours_configuration_and_cleans_only_child(
     assert source.read_text() == "retain me\n"
 
 
-def test_linux_uses_dedicated_process_group_when_setsid_exists(tmp_path: Path) -> None:
+def test_linux_invokes_setsid_when_available(tmp_path: Path) -> None:
     result = _run_wrapper(tmp_path, darwin=False, with_setsid=True)
 
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "cargo.log").read_text() == "setsid-invoked\nbuild --locked\n"
     assert "setsid unavailable" not in result.stderr
+
+
+def test_cargo_failure_status_is_preserved(tmp_path: Path) -> None:
+    bin_dir, _ = _fixture(tmp_path, darwin=False, with_setsid=False)
+    _write_executable(bin_dir / "cargo", "#!/bin/sh\nexit 23\n")
+
+    result = subprocess.run(
+        [str(WRAPPER), "build"],
+        env={
+            "PATH": str(bin_dir),
+            "SAFEYOLO_CARGO_RESERVE_GIB": "0",
+            "SAFEYOLO_CARGO_SPACE_POLL_SECONDS": "1",
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 23, result.stderr
+
+
+@pytest.mark.parametrize("hard_stop", ["0", "1"])
+def test_linux_monitors_reserve_before_setsid_creates_group(
+    tmp_path: Path, hard_stop: str
+) -> None:
+    if not sys.platform.startswith("linux"):
+        pytest.skip("the regression exercises Linux process-group semantics")
+    real_setsid = shutil.which("setsid")
+    if real_setsid is None:
+        pytest.skip("setsid is required for the startup regression")
+
+    bin_dir, _ = _fixture(tmp_path, darwin=False, with_setsid=False)
+    start_gate = tmp_path / "start-session"
+    cargo_ready = tmp_path / "cargo-ready"
+    os.mkfifo(start_gate)
+    os.mkfifo(cargo_ready)
+    launcher_file = tmp_path / "launcher-pid"
+    cargo_file = tmp_path / "cargo-pids"
+    samples = tmp_path / "df-samples"
+    interrupted = tmp_path / "interrupted"
+    finished = tmp_path / "finished"
+    _write_executable(
+        bin_dir / "setsid",
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        f"open({str(launcher_file)!r}, 'w').write(str(os.getpid()))\n"
+        # Only a monitoring df invocation can release this launcher. The
+        # preflight df has completed, but no Cargo session can exist yet.
+        f"with open({str(start_gate)!r}) as gate: gate.read()\n"
+        f"os.execv({real_setsid!r}, [{real_setsid!r}, *sys.argv[1:]])\n",
+    )
+    _write_executable(
+        bin_dir / "cargo",
+        f"#!{sys.executable}\n"
+        "import os, signal, time\n"
+        "def interrupt(signum, frame):\n"
+        f"    open({str(interrupted)!r}, 'w').write('INT')\n"
+        "    raise SystemExit(130)\n"
+        "signal.signal(signal.SIGINT, interrupt)\n"
+        f"open({str(cargo_file)!r}, 'w').write(f'{{os.getpid()}}\\n{{os.getpgrp()}}\\n{{os.getsid(0)}}\\n')\n"
+        f"with open({str(cargo_ready)!r}, 'w') as ready: ready.write('ready')\n"
+        "time.sleep(1)\n"
+        f"open({str(finished)!r}, 'w').write('finished')\n",
+    )
+    _write_executable(
+        bin_dir / "df",
+        f"#!{sys.executable}\n"
+        "from pathlib import Path\n"
+        f"samples = Path({str(samples)!r})\n"
+        "available = 11 * 1024 * 1024\n"
+        "if samples.exists():\n"
+        f"    with open({str(start_gate)!r}, 'w'): pass\n"
+        f"    with open({str(cargo_ready)!r}) as ready: ready.read()\n"
+        "    available = 9 * 1024 * 1024\n"
+        "with samples.open('a') as log: log.write(f'{available}\\n')\n"
+        "print('Filesystem 1024-blocks Used Available Capacity Mounted on')\n"
+        "print(f'/dev/fake 100000000 1 {available} 1% /')\n",
+    )
+    process = subprocess.Popen(
+        [str(WRAPPER), "build"],
+        env={
+            "PATH": str(bin_dir),
+            "CARGO_TARGET_DIR": str(tmp_path),
+            "SAFEYOLO_CARGO_RESERVE_GIB": "10",
+            "SAFEYOLO_CARGO_SPACE_POLL_SECONDS": "1",
+            "SAFEYOLO_CARGO_HARD_STOP": hard_stop,
+        },
+        start_new_session=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=8)
+        assert stdout == ""
+        assert process.returncode == 75, stderr
+        assert samples.read_text().splitlines() == [str(11 * 1024 * 1024), str(9 * 1024 * 1024)]
+        cargo_pid, pgid, sid = map(int, cargo_file.read_text().splitlines())
+        assert cargo_pid == pgid == sid, "fake Cargo did not enter the real setsid session"
+        assert not _pid_exists(cargo_pid), "Cargo was not reaped"
+        assert interrupted.exists() == (hard_stop == "1")
+        assert finished.exists() == (hard_stop == "0")
+    finally:
+        groups = [process.pid]
+        if launcher_file.exists():
+            groups.append(int(launcher_file.read_text()))
+        for pgid in groups:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # This fixture group has already exited.
+        process.wait()
 
 
 def test_macos_runs_without_setsid_and_reports_stop_limitation(tmp_path: Path) -> None:
@@ -520,6 +637,9 @@ def test_linux_validator_timeout_kills_real_setsid_group_only(tmp_path: Path) ->
             kind="regression",
             environment={
                 "PATH": str(bin_dir),
+                # Runner copies the environment. A shell startup hook must not
+                # prepend tool shims ahead of these controlled fake commands.
+                "BASH_ENV": "__UNSET__",
                 "CARGO_TARGET_DIR": str(tmp_path / "missing" / "target"),
                 "SAFEYOLO_CARGO_RESERVE_GIB": "0",
                 "SAFEYOLO_CARGO_SPACE_POLL_SECONDS": "1",
@@ -531,15 +651,16 @@ def test_linux_validator_timeout_kills_real_setsid_group_only(tmp_path: Path) ->
         )
         assert result.returncode == 124
         assert report["commands"][0]["timed_out"] is True  # type: ignore[index]
-        cargo_pid, child_pid = (
+        cargo_pid, _ = (
             int(value) for value in cargo_pid_file.read_text().splitlines()
         )
         assert sentinel.poll() is None, "outer sentinel was signalled"
         deadline = time.monotonic() + 2
-        while _process_group_exists(cargo_pid) and time.monotonic() < deadline:
+        while _linux_running_group_members(cargo_pid) and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert not _process_group_exists(cargo_pid), "Cargo process group survived"
-        assert not _pid_exists(child_pid), "interrupt-ignoring child survived"
+        members = _linux_running_group_members(cargo_pid)
+        assert not members, f"Cargo group retains running processes: {members}"
+        assert not _pid_exists(cargo_pid), "Cargo leader was not reaped"
     finally:
         if cargo_pid:
             try:

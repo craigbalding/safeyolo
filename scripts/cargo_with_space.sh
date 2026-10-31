@@ -147,10 +147,9 @@ cargo_stop_grace_seconds=5
 
 cargo_target_alive() {
   if (( process_group )); then
-    # In setsid mode the process group is the owned Cargo target.  The leader
-    # may exit while a child still owns Cargo's output pipes, so probe the
-    # group instead of the leader PID.
-    kill -0 -- "-$cargo_pid" 2>/dev/null
+    # The launcher may be live before setsid creates its process group. After
+    # the leader exits, children may still own Cargo's output pipes.
+    kill -0 "$cargo_pid" 2>/dev/null || kill -0 -- "-$cargo_pid" 2>/dev/null
   else
     # Without setsid this is necessarily the narrower leader-only check.
     kill -0 "$cargo_pid" 2>/dev/null

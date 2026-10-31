@@ -144,7 +144,7 @@ jobs:
             BASE=HEAD~1
           fi
           git diff --name-only "$BASE" HEAD > "$RUNNER_TEMP/changed-paths"
-          if grep -Eq '^(proxy/|tests/proxy_contracts/test_(native_policy_cli|first_agent_launch)\.py$|scripts/rust_cache_command\.sh$|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$)' "$RUNNER_TEMP/changed-paths"; then
+          if grep -Eq '^(proxy/|tests/proxy_contracts/test_(native_policy_cli|first_agent_launch)\.py$|tests/test_proxy_rust_coord_fixture\.py$|scripts/(cargo_with_space|rust_cache_command)\.sh$|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$)' "$RUNNER_TEMP/changed-paths"; then
             echo 'rust=true' >> "$GITHUB_OUTPUT"
           elif [ "$?" -ne 1 ]; then
             echo 'ERROR: changed-path matcher failed' >&2
@@ -290,12 +290,18 @@ jobs:
             cli/tests/test_sockets.py \
             tests/test_blackbox_harness.py \
             tests/proxy_contracts/test_readiness.py \
-            tests/test_proxy_rust_coord_fixture.py \
             tests/test_proxy_rust_ci_events.py \
             tests/test_linux_share_mount_observations.py \
             tests/test_proxy_cutover_deletion_map.py \
             tests/test_blackbox_sinkhole.py::test_sinkhole_head_has_get_headers_no_body_and_control_observation \
             tests/test_workflow_action_pins.py
+
+      - name: Test current native Coord fixture boundaries
+        if: steps.changes.outputs.rust == 'true'
+        env:
+          SAFEYOLO_NATIVE_CLI: ${{ github.workspace }}/proxy/target/release/safeyolo
+          SAFEYOLO_RUST_PROXY: ${{ github.workspace }}/proxy/target/release/safeyolo-proxy
+        run: uv run --frozen pytest -q tests/test_proxy_rust_coord_fixture.py
 
       - name: Test guest command staging and bounded native recovery
         if: steps.changes.outputs.guest == 'true'
