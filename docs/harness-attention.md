@@ -224,13 +224,12 @@ The initialization response exposes these limits separately from tool discovery.
 The helper requires no additional Node runtime.
 
 The native client must also enable the channel feature and applicable
-organization policy. An inference-only service-gateway grant can permit model
-requests while denying native setup reads such as
-`GET /api/claude_cli/bootstrap`. Native Claude 2.1.303 reported that channels were
-unavailable under that configuration. A connected MCP server and successful
-model request do not establish channel registration. Keep the native consent
-and policy checks; the streaming integration uses its separate native input
-interface.
+organization policy. The Claude service catalogue permits the native client's
+exact bootstrap, policy, settings and feature-configuration requests alongside
+inference. Treat a failed setup request separately from a model request or an
+upstream feature decision. A connected MCP server and successful model request
+do not establish channel registration. Keep the native consent and policy
+checks; the streaming integration uses its separate native input interface.
 
 Claude supplies no channel delivery acknowledgment. The helper's stderr receipt
 reports `stdio_queued`, the attention ID and a cursor; it does not establish model

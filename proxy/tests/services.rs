@@ -245,6 +245,63 @@ fn native_subscription_services_select_only_their_inference_operations() {
 }
 
 #[test]
+fn claude_startup_configuration_keeps_gateway_routes_scoped() {
+    let registry = registry();
+    let token = token("claude", "inference");
+    let headers = [("Authorization".into(), "Bearer sgw_synthetic".into())];
+    for (method, path) in [
+        ("GET", "/api/claude_cli/bootstrap"),
+        ("GET", "/api/claude_code/policy_limits"),
+        ("GET", "/api/claude_code/settings"),
+        ("POST", "/api/eval/sdk-zAZezfDKGoZuXXKe"),
+    ] {
+        for candidate in ["GET", "POST", "PUT"] {
+            assert_eq!(
+                code(decision(
+                    &registry,
+                    &token,
+                    TrustedIdentity::Agent("alice"),
+                    "api.example",
+                    path,
+                    candidate,
+                    &headers,
+                    &[],
+                )),
+                if candidate == method {
+                    "selected"
+                } else {
+                    "ROUTE_DENIED"
+                },
+                "{candidate} {path}",
+            );
+        }
+    }
+    for path in [
+        "/api/eval/another-client",
+        "/api/eval-authed/sdk-zAZezfDKGoZuXXKe",
+        "/api/claude_code/settings/other",
+        "/api/oauth/claude_cli/create_api_key",
+    ] {
+        for method in ["GET", "POST"] {
+            assert_eq!(
+                code(decision(
+                    &registry,
+                    &token,
+                    TrustedIdentity::Agent("alice"),
+                    "api.example",
+                    path,
+                    method,
+                    &headers,
+                    &[],
+                )),
+                "ROUTE_DENIED",
+                "{method} {path}",
+            );
+        }
+    }
+}
+
+#[test]
 fn yaml_merge_keys_retain_binding_constraints_and_authored_precedence() {
     let source = r#"schema_version: 1
 name: example
