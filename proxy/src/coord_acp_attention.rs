@@ -130,10 +130,9 @@ pub async fn run(arguments: &[OsString]) -> Result<(), Error> {
                     // Only responses complete an open or an active prompt.
                     let response = value.get("id").is_some() && value.get("method").is_none();
                     if internal.as_ref().is_some_and(|(_,steer)| *steer) && value["method"] == "session/update"
-                        && value["params"]["sessionId"].as_str() == session.as_deref() {
-                        if let Some(text) = value["params"]["update"]["content"]["text"].as_str() {
-                            steer_acknowledged |= hermes_steer_acknowledged(text);
-                        }
+                        && value["params"]["sessionId"].as_str() == session.as_deref()
+                        && let Some(text) = value["params"]["update"]["content"]["text"].as_str() {
+                        steer_acknowledged |= hermes_steer_acknowledged(text);
                     }
                     if response && internal.as_ref().is_some_and(|(id,_)| value.get("id") == Some(id)) {
                         let (_,steer) = internal.take().unwrap();
@@ -151,14 +150,13 @@ pub async fn run(arguments: &[OsString]) -> Result<(), Error> {
                         page = Box::pin(next_page(client.clone(),cursor));
                     } else {
                         if response { active.remove(&value["id"].to_string()); }
-                        if let Some(requested_session) = response.then(|| opens.remove(&value["id"].to_string())).flatten() {
-                            if value["error"].is_null() {
-                                let id = value["result"]["sessionId"].as_str().map(str::to_owned).or(requested_session).ok_or("native open has no session ID")?;
-                                if session.is_none() { session = Some(id.clone()); }
-                                if session.as_deref()==Some(&id) {
-                                    loaded=true;
-                                    write_json(&mut frontend_output,&json!({"jsonrpc":"2.0","method":"safeyolo/attention/bound","params":{"session_id":id,"capabilities":{"context":false,"queue":true,"steer":harness==Harness::Hermes,"interrupt":true,"wake_idle":true,"attach_unrelated_tui":false},"requested_mode":format!("{requested:?}").to_lowercase(),"effective_mode":format!("{mode:?}").to_lowercase(),"confirmation":"observe native session updates and model replies separately"}})).await?;
-                                }
+                        if let Some(requested_session) = response.then(|| opens.remove(&value["id"].to_string())).flatten()
+                            && value["error"].is_null() {
+                            let id = value["result"]["sessionId"].as_str().map(str::to_owned).or(requested_session).ok_or("native open has no session ID")?;
+                            if session.is_none() { session = Some(id.clone()); }
+                            if session.as_deref()==Some(&id) {
+                                loaded=true;
+                                write_json(&mut frontend_output,&json!({"jsonrpc":"2.0","method":"safeyolo/attention/bound","params":{"session_id":id,"capabilities":{"context":false,"queue":true,"steer":harness==Harness::Hermes,"interrupt":true,"wake_idle":true,"attach_unrelated_tui":false},"requested_mode":format!("{requested:?}").to_lowercase(),"effective_mode":format!("{mode:?}").to_lowercase(),"confirmation":"observe native session updates and model replies separately"}})).await?;
                             }
                         }
                         write_json(&mut frontend_output,&value).await?;
@@ -188,7 +186,7 @@ pub async fn run(arguments: &[OsString]) -> Result<(), Error> {
                     if pending.is_none() { cursor=next; page=Box::pin(next_page(client.clone(),cursor)); }
                 }
             }
-            if receiving && pending.is_some() && internal.is_none() {
+            if receiving && internal.is_none() && let Some(pending_page) = &pending {
                 let session=session.as_ref().ok_or("missing bound session")?;
                 if !active.is_empty() && mode==Mode::Interrupt && !cancelled {
                     write_json(&mut native_input,&json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}})).await?;
@@ -196,12 +194,12 @@ pub async fn run(arguments: &[OsString]) -> Result<(), Error> {
                 }
                 if active.is_empty() || (mode==Mode::Steer && !cancelled) {
                     let steer=mode==Mode::Steer && !active.is_empty();
-                    let content=attributed_content(&pending.as_ref().unwrap()["objects"][0]);
+                    let content=attributed_content(&pending_page["objects"][0]);
                     let content=if steer {format!("/steer {content}")} else {content};
                     serial+=1;
                     let id=json!(format!("{request_prefix}{serial}"));
                     write_json(&mut native_input,&json!({"jsonrpc":"2.0","id":id,"method":"session/prompt","params":{"sessionId":session,"prompt":[{"type":"text","text":content}]}})).await?;
-                    write_json(&mut frontend_output,&json!({"jsonrpc":"2.0","method":"safeyolo/attention/submitted","params":{"attention_id":pending.as_ref().unwrap()["objects"][0]["edge"]["attention_id"],"safe_cursor":cursor,"confirmation":"native_request_sent"}})).await?;
+                    write_json(&mut frontend_output,&json!({"jsonrpc":"2.0","method":"safeyolo/attention/submitted","params":{"attention_id":pending_page["objects"][0]["edge"]["attention_id"],"safe_cursor":cursor,"confirmation":"native_request_sent"}})).await?;
                     internal=Some((id,steer));
                     steer_acknowledged=false;
                 }
