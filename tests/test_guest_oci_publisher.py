@@ -167,6 +167,53 @@ def test_archive_contains_finished_mac_files(tmp_path, built):
     assert output.stat().st_size < 8192
 
 
+def test_mac_profile_export_aligns_ext4_and_preserves_it_in_archive(tmp_path, built):
+    if sys.platform != "linux" or not all(shutil.which(tool) for tool in ("mkfs.ext4", "e2fsck", "debugfs")):
+        pytest.skip("Linux e2fsprogs is required for the real profile export")
+    (built / "build-inputs.json").write_text(json.dumps({"architecture": "arm64", "output_kind": "tree"}))
+    # Make the old sizing expression end within a disk sector on this filesystem.
+    command = built / "rootfs-tree/command"
+    tree_bytes = int(run("du", "-sx", "--apparent-size", "-B1", str(built / "rootfs-tree")).stdout.split()[0])
+    if (tree_bytes + tree_bytes // 4) % 512 == 0:
+        command.write_text(command.read_text() + "x")
+        tree_bytes += 1
+    minimum_bytes = tree_bytes + tree_bytes // 4 + 512 * 1024 * 1024
+    assert minimum_bytes % 512 != 0
+
+    exported = tmp_path / "exported"
+    result = run(str(ROOT / "guest/export-profile.sh"), "--build", str(built),
+                 "--platform", "darwin/arm64", "--output", str(exported), "--kernel-assets", str(built))
+    assert result.returncode == 0, result.stderr
+    image = exported / "rootfs-base.ext4"
+    assert image.stat().st_size % 512 == 0
+    with image.open("rb") as stream:
+        stream.seek(1024)
+        superblock = stream.read(1024)
+    assert struct.unpack_from("<H", superblock, 56)[0] == 0xEF53
+    block_bytes = 1024 << struct.unpack_from("<I", superblock, 24)[0]
+    block_count = struct.unpack_from("<I", superblock, 4)[0]
+    assert block_bytes == 4096
+    assert image.stat().st_size % block_bytes == 0
+    assert 0 < block_count * block_bytes <= image.stat().st_size
+    assert minimum_bytes <= image.stat().st_size < minimum_bytes + block_bytes
+    checked = run("e2fsck", "-fn", str(image))
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    content = run("debugfs", "-R", "cat /command", str(image))
+    assert content.returncode == 0 and content.stdout == command.read_text()
+
+    output = archive("darwin/arm64", exported, tmp_path / "archive")
+    extracted = tmp_path / "extracted"
+    extracted.mkdir()
+    assert run("tar", "--zstd", "--sparse", "-xf", str(output), "-C", str(extracted)).returncode == 0
+    assert sorted(path.name for path in extracted.iterdir()) == [
+        "Image", "build-inputs.json", "initramfs.cpio.gz", "rootfs-base.ext4",
+    ]
+    for name in ("Image", "initramfs.cpio.gz", "build-inputs.json", "rootfs-base.ext4"):
+        with (exported / name).open("rb") as before, (extracted / name).open("rb") as after:
+            assert hashlib.file_digest(before, "sha256").digest() == hashlib.file_digest(after, "sha256").digest()
+    assert (extracted / "rootfs-base.ext4").stat().st_size == image.stat().st_size
+
+
 def test_sparse_map_on_a_filesystem_reporting_holes(tmp_path, built):
     image = built / "rootfs-base.ext4"
     if image.stat().st_blocks * 512 >= image.stat().st_size // 4:

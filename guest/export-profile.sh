@@ -53,10 +53,12 @@ print(settings["uid_base"], settings["gid_base"])
         }
         cp -- "$kernel_assets/Image" "$kernel_assets/initramfs.cpio.gz" "$stage/"
         # Size from the successful tree plus ordinary filesystem overhead and
-        # free space. The artifact stays sparse; runtime uses a separate overlay.
+        # free space. Round up to a 4 KiB block, also aligning VZ's 512-byte
+        # disk sectors. The artifact stays sparse; runtime uses a separate overlay.
         bytes=$(sudo -n du -sx --apparent-size -B1 -- "$build/rootfs-tree" | cut -f1)
-        truncate -s "$((bytes + bytes / 4 + 512 * 1024 * 1024))" "$stage/rootfs-base.ext4"
-        sudo -n mkfs.ext4 -q -F -E lazy_itable_init=0 -d "$build/rootfs-tree" "$stage/rootfs-base.ext4"
+        bytes=$(((bytes + bytes / 4 + 512 * 1024 * 1024 + 4095) / 4096 * 4096))
+        truncate -s "$bytes" "$stage/rootfs-base.ext4"
+        sudo -n mkfs.ext4 -q -F -b 4096 -E lazy_itable_init=0 -d "$build/rootfs-tree" "$stage/rootfs-base.ext4"
         sudo -n chown "$(id -u):$(id -g)" "$stage/rootfs-base.ext4"
         ;;
     *) echo "Unsupported consumer platform: $platform" >&2; exit 64 ;;
