@@ -503,6 +503,7 @@ def test_overnight_compilation_prepares_shared_outputs_then_keeps_all_release_ta
     steps = {step.get("name"): step for step in job["steps"]}
     library = steps["Compile Rust library contract target"]
     binaries = steps["Compile Rust binary contract targets"]
+    integration = steps["Compile Rust agent API and native contract targets"]
     complete = steps["Compile Rust contract executables"]
     assert library["run"] == (
         "../scripts/cargo_with_space.sh test --release --locked "
@@ -512,10 +513,14 @@ def test_overnight_compilation_prepares_shared_outputs_then_keeps_all_release_ta
         "../scripts/cargo_with_space.sh test --release --locked "
         "--bins --test version --no-run --timings --verbose"
     )
+    assert integration["run"] == (
+        "../scripts/cargo_with_space.sh test --release --locked "
+        "--test 'agent_api*' --test 'native*' --no-run --timings --verbose"
+    )
     assert complete["run"] == (
         "../scripts/cargo_with_space.sh test --release --locked --no-run --timings --verbose"
     )
-    for step in (library, binaries, complete):
+    for step in (library, binaries, integration, complete):
         assert step["working-directory"] == "proxy"
         assert step["timeout-minutes"] == "${{ matrix.os == 'macos-latest' && 20 || 25 }}"
         assert step["env"] == {"SAFEYOLO_PYTHON": "${{ github.workspace }}/.venv/bin/python"}
@@ -524,6 +529,7 @@ def test_overnight_compilation_prepares_shared_outputs_then_keeps_all_release_ta
     ordered = [steps[name] for name in (
         "Compile production native executables", "Compile Rust library contract target",
         "Compile Rust binary contract targets",
+        "Compile Rust agent API and native contract targets",
         "Compile Rust contract executables", "Retain Rust compilation timings",
         "Start the native Coord fixture", "Test the Rust proxy",
     )]
