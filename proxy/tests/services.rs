@@ -249,6 +249,36 @@ fn claude_startup_configuration_keeps_gateway_routes_scoped() {
     let registry = registry();
     let token = token("claude", "inference");
     let headers = [("Authorization".into(), "Bearer sgw_synthetic".into())];
+    let hosts = [("api.anthropic.com".into(), "claude".into())].into();
+    let routes = compile_routes(&registry.services["claude"], &token, &[]);
+    let policy = Policy::parse("{\"permissions\":[]}", Format::Json)
+        .unwrap()
+        .with_gateway_routes(&routes);
+    let check = |method: &str, path: &str, expected: &str| {
+        for route_mode in [RouteMode::CompiledPolicy(&policy), RouteMode::LocalFallback] {
+            assert_eq!(
+                code(select_route(
+                    &registry,
+                    &hosts,
+                    std::slice::from_ref(&token),
+                    &[],
+                    GatewayRequest {
+                        identity: TrustedIdentity::Agent("alice"),
+                        host: "api.anthropic.com",
+                        route_mode,
+                        request: ContractRequest {
+                            method,
+                            target: path,
+                            headers: &headers,
+                            body: b"",
+                        },
+                    },
+                )),
+                expected,
+                "{method} {path}",
+            );
+        }
+    };
     for (method, path) in [
         ("GET", "/api/claude_cli/bootstrap"),
         ("GET", "/api/claude_code/policy_limits"),
@@ -256,23 +286,14 @@ fn claude_startup_configuration_keeps_gateway_routes_scoped() {
         ("POST", "/api/eval/sdk-zAZezfDKGoZuXXKe"),
     ] {
         for candidate in ["GET", "POST", "PUT"] {
-            assert_eq!(
-                code(decision(
-                    &registry,
-                    &token,
-                    TrustedIdentity::Agent("alice"),
-                    "api.example",
-                    path,
-                    candidate,
-                    &headers,
-                    &[],
-                )),
+            check(
+                candidate,
+                path,
                 if candidate == method {
                     "selected"
                 } else {
                     "ROUTE_DENIED"
                 },
-                "{candidate} {path}",
             );
         }
     }
@@ -284,20 +305,7 @@ fn claude_startup_configuration_keeps_gateway_routes_scoped() {
         "/api/oauth/claude_cli/create_api_key",
     ] {
         for method in ["GET", "POST"] {
-            assert_eq!(
-                code(decision(
-                    &registry,
-                    &token,
-                    TrustedIdentity::Agent("alice"),
-                    "api.example",
-                    path,
-                    method,
-                    &headers,
-                    &[],
-                )),
-                "ROUTE_DENIED",
-                "{method} {path}",
-            );
+            check(method, path, "ROUTE_DENIED");
         }
     }
 }
