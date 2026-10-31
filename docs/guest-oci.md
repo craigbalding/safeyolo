@@ -234,7 +234,7 @@ After the request matches the qualified inputs, dispatch it:
 ```sh
 gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
   -f activity=custom-profile -f compatibility="$COMPATIBILITY" \
-  -f custom_profile=@"$REQUEST_FILE"
+  -F custom_profile=@"$REQUEST_FILE"
 ```
 
 The writer downloads the exact asset IDs in order, checks the combined tar
