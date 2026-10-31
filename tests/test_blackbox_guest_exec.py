@@ -172,29 +172,33 @@ sys.exit(subprocess.run(['/bin/bash', '-c', command], env=environment).returncod
     assert all(decoy.read_text().endswith('exit 61\n') for directory in (mise, pentest) for decoy in directory.iterdir())
 
 
-@pytest.mark.parametrize('installer,offline,pip_ready', [
-    ('apt-get', False, False), ('apk', False, False), ('apt-get', True, False), ('apt-get', False, True),
+@pytest.mark.parametrize('installer,offline,pip_ready,ssh_ready', [
+    ('apt-get', False, False, True), ('apk', False, False, True),
+    ('apt-get', True, False, True), ('apt-get', False, True, True),
+    ('apt-get', False, True, False), ('apk', False, True, False), ('apt-get', True, True, False),
 ])
 @pytest.mark.parametrize('failure', [None, 'package', 'pip', 'imports'])
 @pytest.mark.parametrize('ca', ['provided', 'absent'])
-def test_guest_test_setup_uses_lock_and_propagates_failures(tmp_path, failure, installer, offline, pip_ready, ca,
+def test_guest_test_setup_uses_lock_and_propagates_failures(tmp_path, failure, installer, offline, pip_ready, ssh_ready, ca,
                                                           system_python_stub):
     """Setup requires working tools, retains hashes and propagates install failures."""
     install_exit = 17 if failure == 'package' else 0
     pip_exit = 19 if failure == 'pip' else 0
     import_exit = 23 if failure == 'imports' else 0
-    package_needed = offline or not pip_ready
+    package_needed = offline or not pip_ready or not ssh_ready
     tools = tmp_path / 'tools'
     tools.mkdir()
+    if ssh_ready:
+        (tools / 'ssh').symlink_to('/bin/true')
     for name in ('dirname', 'mktemp', 'install', 'rm'):
         (tools / name).symlink_to(shutil.which(name))
     record = tmp_path / 'calls'
     package_installed = tmp_path / 'package-installed'
     python = tools / 'python3'
     inputs = tmp_path / 'offline inputs $literal'
-    for name in ('debs/python.deb', 'wheels/pytest.whl'):
+    for name in ('debs/openssh-client.deb', 'debs/python.deb', 'wheels/pytest.whl'):
         path = inputs / name
-        path.parent.mkdir(parents=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
     python.write_text(f'''#!{sys.executable}
 import json, sys
@@ -236,9 +240,11 @@ print('pytest 9.0.3')
                                 f'    assert public_ca.stat().st_mode & 0o777 == 0o644\n'
                                 f'    assert public_ca != Path(os.environ["SSL_CERT_FILE"])\n'
                                 f'if {offline!r}: assert os.environ["DEBIAN_FRONTEND"] == "noninteractive"\n'
-                                f'if {install_exit} == 0:\n'
+                                f'if {install_exit} == 0 and ("install" in sys.argv or "add" in sys.argv):\n'
                                 f'    from pathlib import Path\n'
                                 f'    Path({str(package_installed)!r}).touch()\n'
+                                f'    client = Path({str(tools / "ssh")!r})\n'
+                                f'    if not client.exists(): client.symlink_to("/bin/true")\n'
                                 f'sys.exit({install_exit})\n')
     package_installer.chmod(0o755)
     (tools / 'dpkg-deb').write_text(f'#!{sys.executable}\nimport json,sys\n'
@@ -265,12 +271,16 @@ print('pytest 9.0.3')
         assert [call for call in calls if call[0] == 'apt-get'] == [[
             'apt-get', '-o', 'Dir::Etc::sourcelist=/dev/null', '-o', 'Dir::Etc::sourceparts=-',
             '-o', 'Dpkg::Use-Pty=0', '-y', '--no-install-recommends', '--reinstall', 'install',
+            str(inputs / 'debs/openssh-client.deb'),
             str(inputs / 'debs/python.deb'),
         ]]
         extracts = [call for call in calls if call[0] == 'dpkg-deb']
-        assert extracts == ([] if pip_ready else [['dpkg-deb', '--extract', str(inputs / 'debs/python.deb'), '/']])
+        assert extracts == ([] if pip_ready else [
+            ['dpkg-deb', '--extract', str(inputs / 'debs' / name), '/']
+            for name in ('openssh-client.deb', 'python.deb')
+        ])
         assert ['apt-get', 'update'] not in calls
-    elif pip_ready:
+    elif not package_needed:
         assert not any(call[0] in ('apt-get', 'apk') for call in calls)
     elif installer == 'apt-get':
         tls = []
@@ -282,9 +292,9 @@ print('pytest 9.0.3')
             assert selected_ca.stat().st_mode & 0o777 == 0o600
         assert ['apt-get', *tls, '-o', 'APT::Update::Error-Mode=any', 'update'] in calls
         if install_exit == 0:
-            assert ['apt-get', *tls, 'install', '-y', '--no-install-recommends', 'python3', 'python3-pip'] in calls
+            assert ['apt-get', *tls, 'install', '-y', '--no-install-recommends', 'python3', 'python3-pip', 'openssh-client'] in calls
     else:
-        assert ['apk', 'add', 'python3', 'py3-pip'] in calls
+        assert ['apk', 'add', 'python3', 'py3-pip', 'openssh-client'] in calls
     installs = [call for call in calls if call[:4] == ['python3', '-m', 'pip', 'install']]
     installed_packages = not package_needed or install_exit == 0
     assert bool(installs) == installed_packages
@@ -333,11 +343,13 @@ def test_offline_guest_setup_refuses_missing_inputs_before_package_commands(tmp_
     assert 'command not found' not in result.stderr
 
 
-@pytest.mark.parametrize('damage', ['python', 'pip', 'imports', 'launcher', 'wrong-version', 'sync', 'extractor'])
+@pytest.mark.parametrize('damage', ['python', 'pip', 'imports', 'launcher', 'wrong-version', 'sync', 'extractor', 'ssh'])
 def test_guest_setup_does_not_accept_empty_success_or_failed_flush(tmp_path, damage, system_python_stub):
     """A zero exit without tool output cannot make preparation succeed."""
     tools = tmp_path / 'tools'
     tools.mkdir()
+    if damage != 'ssh':
+        (tools / 'ssh').symlink_to('/bin/true')
     for name in ('dirname',):
         (tools / name).symlink_to(shutil.which(name))
     inputs = tmp_path / 'offline'
@@ -368,7 +380,8 @@ elif arguments == ['-m', 'pytest', '--version'] and {damage != 'launcher'!r}:
                             env=dict(os.environ, PATH=str(tools), **system_python_stub),
                             capture_output=True, text=True, timeout=10)
     assert result.returncode == (37 if damage == 'extractor' else 31 if damage == 'sync' else 1), result.stdout
-    expected = ('Python and pip' if damage in ('python', 'pip') else
+    expected = ('SSH client is missing' if damage == 'ssh' else
+                'Python and pip' if damage in ('python', 'pip') else
                 'working imports' if damage == 'imports' else 'pytest launcher')
     if damage not in ('sync', 'extractor'):
         assert expected in result.stderr, result.stderr
