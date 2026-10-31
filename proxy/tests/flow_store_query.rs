@@ -1,21 +1,21 @@
-//! Actual SQLite selections, compared with the shipped Python FlowStore.
+//! Current native SQLite selections over synthetic records and fixed expectations.
 //! Fixtures contain only synthetic data; authorization is an API caller concern.
 
 use safeyolo_proxy::circuits::CircuitValue;
 use safeyolo_proxy::flow_store::{BodyInput, ErrorKind, FlowRecord, FlowStore, Settings};
 use serde_json::{Value, json};
 
-fn source() -> Value {
-    serde_json::from_str(include_str!("flow_store_query_source.json")).unwrap()
+fn fixture() -> Value {
+    serde_json::from_str(include_str!("flow_store_query_cases.json")).unwrap()
 }
 
 #[test]
-fn five_query_methods_match_actual_source_rows_filters_order_and_errors() {
-    let source = source();
+fn five_query_methods_preserve_native_rows_filters_order_and_errors() {
+    let fixture = fixture();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("flows.db");
     let store = FlowStore::open(&path, Settings::default()).unwrap();
-    for record in source["records"].as_array().unwrap() {
+    for record in fixture["records"].as_array().unwrap() {
         let mut metadata = record.as_object().unwrap().clone();
         let request = metadata.shift_remove("request_body").unwrap();
         let response = metadata.shift_remove("response_body").unwrap();
@@ -31,8 +31,8 @@ fn five_query_methods_match_actual_source_rows_filters_order_and_errors() {
             .unwrap();
         assert!(!stored.response_fts_failed && !stored.request_fts_failed);
     }
-    // Query-only setup: tags and an authoritative v2 quarantined row. Ordinary
-    // record() intentionally backfills a missing legacy owner, just like source.
+    // Query-only setup: tags and an explicitly quarantined row. The records
+    // supplied to record() above all have explicit evidence owners.
     let connection = rusqlite::Connection::open(&path).unwrap();
     connection.execute("INSERT INTO flow_tags(flow_id,tag,value,created_at) VALUES(1,'review','',1000),(2,'review','one:two',1000)", []).unwrap();
     connection
@@ -40,11 +40,11 @@ fn five_query_methods_match_actual_source_rows_filters_order_and_errors() {
         .unwrap();
     drop(connection);
 
-    for case in source["cases"]
+    for case in fixture["cases"]
         .as_array()
         .unwrap()
         .iter()
-        .chain(source["typed_cases"].as_array().unwrap())
+        .chain(fixture["typed_cases"].as_array().unwrap())
     {
         let filters = if let Some(raw) = case["filters_json"].as_str() {
             CircuitValue::parse_json(raw).unwrap()
@@ -61,7 +61,7 @@ fn five_query_methods_match_actual_source_rows_filters_order_and_errors() {
             method => panic!("unknown fixture method {method}"),
         };
         let name = case["name"].as_str().unwrap();
-        match case["exception"].as_str() {
+        match case["error_kind"].as_str() {
             None => {
                 let output = result.unwrap_or_else(|error| panic!("{name}: {error:?}"));
                 // Compact rendering tests insertion order too; Value's ordinary
@@ -72,34 +72,30 @@ fn five_query_methods_match_actual_source_rows_filters_order_and_errors() {
                     "{name}"
                 );
             }
-            Some(exception) => {
+            Some(kind) => {
                 let error = result.expect_err(name);
-                let expected = match exception {
-                    "ValueError" => ErrorKind::Value,
-                    "TypeError" => ErrorKind::Type,
-                    "AttributeError" => ErrorKind::Attribute,
-                    "OverflowError" => ErrorKind::Overflow,
-                    "OperationalError" => ErrorKind::Operational,
-                    "ProgrammingError" => ErrorKind::Programming,
-                    "IntegrityError" => ErrorKind::Integrity,
-                    other => panic!("unmapped source exception {other}"),
+                let expected = match kind {
+                    "Value" => ErrorKind::Value,
+                    "Type" => ErrorKind::Type,
+                    "Attribute" => ErrorKind::Attribute,
+                    "Overflow" => ErrorKind::Overflow,
+                    "Operational" => ErrorKind::Operational,
+                    "Programming" => ErrorKind::Programming,
+                    "Integrity" => ErrorKind::Integrity,
+                    other => panic!("unmapped contract error kind {other}"),
                 };
                 assert_eq!(error.kind(), expected, "{name}");
-                // #873 adds one exact filter beyond the pinned Python source.
-                // Keep every other source validation byte under comparison.
-                let expected = case["validation"].as_str().map(|message| {
-                    message.replace(
-                        "request_header_contains, response_header_contains",
-                        "request_header_contains, request_id, response_header_contains",
-                    )
-                });
-                assert_eq!(error.validation_message(), expected.as_deref(), "{name}");
+                assert_eq!(
+                    error.validation_message(),
+                    case["validation"].as_str(),
+                    "{name}"
+                );
                 assert_eq!(error.to_string(), "flow query failed");
             }
         }
     }
-    assert_eq!(source["cases"].as_array().unwrap().len(), 32);
-    assert_eq!(source["typed_cases"].as_array().unwrap().len(), 10);
+    assert_eq!(fixture["cases"].as_array().unwrap().len(), 32);
+    assert_eq!(fixture["typed_cases"].as_array().unwrap().len(), 10);
     // Queries neither rewrite the authoritative owner nor repair unrelated
     // provenance; API direct-read authorization must inspect this NULL owner.
     let row = store.get_flow(8).unwrap().unwrap();
@@ -138,7 +134,7 @@ fn strict_normalization_does_not_become_lax_query_policy() {
             Some(message)
         );
     }
-    // Lax min() runs before SQLite parameter binding, as in source. This is an
+    // Lax min() runs before SQLite parameter binding. This is an
     // error-order control: eagerly binding agent_id would report Programming.
     assert_eq!(
         store
@@ -239,22 +235,4 @@ fn context_queries_keep_expect_and_ignore_search_only_request_id() {
             .validation_message(),
         Some("unknown facet filter(s): request_id")
     );
-}
-
-#[test]
-#[ignore = "requires the pinned source Python environment; no network"]
-fn actual_source_query_oracle_still_matches() {
-    let python = std::env::var_os("SAFEYOLO_POLICY_PYTHON")
-        .expect("set SAFEYOLO_POLICY_PYTHON to the historical comparator interpreter");
-    let source = std::env::var_os("SAFEYOLO_STATE_PYTHON_SOURCE")
-        .expect("set SAFEYOLO_STATE_PYTHON_SOURCE to the historical comparator checkout");
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let status = std::process::Command::new(python)
-        .arg(root.join("tests/flow_store_query_oracle.py"))
-        .arg("--check")
-        .arg(root.join("tests/flow_store_query_source.json"))
-        .env("SAFEYOLO_SOURCE_ROOT", source)
-        .status()
-        .unwrap();
-    assert!(status.success());
 }
