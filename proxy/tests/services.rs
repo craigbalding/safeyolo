@@ -4,7 +4,7 @@ use safeyolo_proxy::{
     policy::{Format, Policy},
     services::*,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 
 fn documents() -> Vec<(String, String)> {
     ["minifuse", "gmail", "slack", "codex", "claude"]
