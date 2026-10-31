@@ -768,12 +768,21 @@ print(json.dumps(asyncio.run(exercise())))
               f"native Coord did not read initial attention: {attention_status} {attention_page}")
         state_status, native_room_state = json_request(
             bob, "GET", "/api/coord/rooms/r638-rollback/state", agent_token)
-        lease = native_room_state.get("resource_leases", [{}])[0] if state_status == 200 else {}
+        leases = native_room_state.get("resource_leases", [])
+        provider_state = {"status": state_status, "resource_leases": leases,
+                          "snapshot_sha256": sha(provider_snapshot)}
+        print(json.dumps({"native_provider": provider_state}), flush=True)
+        lease = next((row for row in leases if row.get("provider") == "fixture" and
+                      row.get("resource") == "slot"), {})
         check(state_status == 200 and lease.get("provider") == "fixture" and
-              lease.get("resource") == "slot" and lease.get("state") == "unknown" and
+              lease.get("resource") == "slot" and lease.get("state") == "held" and
+              lease.get("holder_agent_id") == "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" and
+              lease.get("freshness") == "fresh" and
+              lease.get("observed_at") == observed_at and
+              lease.get("valid_until") == observed_at + 300_000 and
               lease.get("provenance") == "provider_owned_lease" and
-              sha(provider_snapshot) == provider_hash,
-              "native did not preserve external provider ownership and retained advertisement")
+              provider_state["snapshot_sha256"] == provider_hash,
+              f"native did not preserve external provider ownership and retained advertisement: {provider_state}")
         coord_send_status, coord_sent = json_request(
             alice, "POST", "/api/coord/rooms/r638-rollback/send", agent_token,
             {"body": "native-written-r638", "declared_content_type": "text/plain",
