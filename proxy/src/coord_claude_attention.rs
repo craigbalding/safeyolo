@@ -99,6 +99,7 @@ pub async fn run(arguments: &[OsString]) -> Result<(), Error> {
                             active = value["queued_turn_count"].as_u64().is_some_and(|count| count > 0);
                             if submitted.is_some() {
                                 receiving = false;
+                                submitted = None;
                                 write_json(&mut frontend_output, &json!({"jsonrpc":"2.0","method":"safeyolo/attention/rejected","params":{"safe_cursor":cursor,"native_result":value,"recovery":"matching native user replay was not observed; inspect native history before replay"}})).await?;
                             }
                         }
@@ -160,12 +161,14 @@ pub async fn run(arguments: &[OsString]) -> Result<(), Error> {
             }
         }
     }
-    if tokio::time::timeout(Duration::from_secs(10), child.wait())
-        .await
-        .is_err()
-    {
-        child.kill().await?;
-        child.wait().await?;
+    match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
+        Ok(status) => {
+            status?;
+        }
+        Err(_) => {
+            child.kill().await?;
+            child.wait().await?;
+        }
     }
     if result.is_err() {
         eprintln!(

@@ -5,9 +5,27 @@ The harness integration selects how an authorized event enters a conversation.
 Message text cannot select its own priority or delivery mode.
 
 The integrations below are opt-in. They do not change a running factory.
-The shared five-harness contract in [issue 373](https://github.com/craigbalding/safeyolo/issues/373)
-remains unfinished. A native receipt establishes input acceptance. Observe native
+The five-harness scope comes from [issue 373](https://github.com/craigbalding/safeyolo/issues/373).
+A native receipt establishes input acceptance. Observe native
 conversation events and a model response separately to establish application.
+
+The operator selects the mode. A peer message cannot change the mode or select
+degradation. These are the external-input capabilities of each integration;
+native controls sent by the frontend remain available.
+
+| Integration | Context without a turn | Queue and idle wake | Steer | Interrupt |
+|---|---|---|---|---|
+| Claude streaming JSON | No | Yes | No | No |
+| Codex App Server | Yes | Yes | Yes | Yes |
+| Pi extension | Yes | Yes | Yes | Yes |
+| Gemini ACP | No | Yes | No | Yes |
+| Hermes ACP | No | Yes | Yes | Yes |
+
+Each integration uses canonical Coord reads and attribution. Queued content
+remains in Coord or the native harness. The integrations keep no separate
+durable inbox. Recent attention-ID suppression is bounded to 128 entries;
+restart uses the saved native session and verified cursor. Inspect native
+history before repeating input whose application is uncertain.
 
 ## Codex App Server
 
@@ -129,7 +147,46 @@ while keeping the native connection.
 An unconfirmed Hermes steer may have become a native queued prompt. Inspect
 native history and canonical retention before repeating any uncertain input.
 
-## Claude Code channel
+## Claude Code streaming JSON
+
+Use the complete native Claude Code client with its normal configuration and
+authorized model access. A frontend that sends and reads Claude's native
+streaming JSON can select this command as its stdio process:
+
+```sh
+safeyolo-coord claude-attention --mode queue -- --model sonnet
+```
+
+The command launches `claude --print` with streaming JSON input and output,
+verbose events and user-message replay. `SAFEYOLO_CLAUDE_BIN` selects the
+complete executable or an authorized gateway launcher. This path needs no
+additional SDK package or Node runtime. Native user messages, controls, tools
+and permission replies pass through. Native authentication, configuration and
+permissions still apply. This connection owns its native session; it does not
+attach to an unrelated interactive terminal.
+
+Queue waits for the current native turn and queued frontend work to finish,
+then sends attributed user input. An idle process wakes without terminal input.
+This integration implements queue/wake only. Context-only, steer and interrupt
+modes fail before the native client launches. `--degrade-to queue` explicitly
+permits those requests to become queue/wake. The bound notification identifies
+the requested and effective modes and the selected native session.
+
+Pending means canonical resolution. Submitted means the native input was
+written. Delivered means Claude replayed the matching user-message UUID.
+This last receipt identifies recorded native input; inspect assistant events
+and the native `result` separately for model application or failure. A missing
+matching replay stops external ingress and preserves the cursor and native
+connection. A failed canonical read also stops ingress while keeping the
+native connection.
+
+Retain the delivered `next_cursor` with the native session ID. After restart,
+pass `--session ID --since CURSOR` to resume that session and recover later
+canonical input. An uncertain submission requires native-history inspection
+before replay. Closing this connection stops its owned native consumer and
+leaves the native session history available.
+
+## Claude Code channel preview
 
 Register the native helper as a Claude MCP server, using its absolute installed
 path in the normal MCP configuration:
@@ -153,9 +210,18 @@ The channel keeps the existing Coord tools and advertises `claude/channel` after
 MCP initialization. Canonical events enter through `notifications/claude/channel`
 with their source attribution. Native channels queue busy input. This path
 exposes no context-only, steer, interrupt or permission relay primitive. Actual
-idle wake still needs verification against an authorized pinned Claude client.
+channel application remains unverified against the pinned native client.
 The initialization response exposes these limits separately from tool discovery.
 The helper requires no additional Node runtime.
+
+The native client must also enable the channel feature and applicable
+organization policy. An inference-only service-gateway grant can permit model
+requests while denying native setup reads such as
+`GET /api/claude_cli/bootstrap`. Native Claude 2.1.303 reported that channels were
+unavailable under that configuration. A connected MCP server and successful
+model request do not establish channel registration. Keep the native consent
+and policy checks; the streaming integration uses its separate native input
+interface.
 
 Claude supplies no channel delivery acknowledgment. The helper's stderr receipt
 reports `stdio_queued`, the attention ID and a cursor; it does not establish model
@@ -172,7 +238,8 @@ current native production artifacts, the pinned NATS binary and an installed,
 authorized native client. The test creates an owned Coord instance and private
 session files below the chosen disk-backed pytest scratch root. Select a model
 explicitly through `SAFEYOLO_CODEX_ATTENTION_MODEL`, `SAFEYOLO_PI_ATTENTION_MODEL`,
-`SAFEYOLO_GEMINI_ATTENTION_MODEL` or `SAFEYOLO_HERMES_ATTENTION_MODEL`, then run
+`SAFEYOLO_GEMINI_ATTENTION_MODEL`, `SAFEYOLO_HERMES_ATTENTION_MODEL` or
+`SAFEYOLO_CLAUDE_ATTENTION_MODEL`, then run
 `tests/proxy_contracts/test_native_harness_attention.py` with pytest.
 Hermes also uses its normal `HERMES_HOME` profile and the native MCP extra for
 the controlled tool-boundary cases. Keep its login and session history private.
@@ -185,7 +252,10 @@ a session; the key remains in the child environment.
 
 The probe retains broker acceptance, native session events and the model's
 response separately. The probes cover idle wake, busy delivery, supported
-context-only, restart and attribution. Transport controls exercise the Claude
-MCP channel without claiming Claude model execution. These results do not
-establish the five-harness minimum.
+context-only, restart and attribution. The Claude streaming probe checks native
+2.1.303, preserves its version with `DISABLE_AUTOUPDATER=1`, and uses private
+session files. Select an authorized launcher with `SAFEYOLO_CLAUDE_BIN` when
+needed. Transport controls exercise the separate Claude MCP channel without
+claiming native channel application. Synthetic native controls test refusal
+and protocol handling; they do not substitute for the model probes.
 Unselected model probes skip without making inference requests.
