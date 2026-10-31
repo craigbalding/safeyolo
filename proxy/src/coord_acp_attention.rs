@@ -79,7 +79,10 @@ pub async fn run(arguments: &[OsString]) -> Result<(), Error> {
     let program = std::env::var_os(variable).unwrap_or_else(|| default.into());
     let mut command = tokio::process::Command::new(program);
     if harness == Harness::Gemini {
-        command.arg("--acp");
+        // The native launcher otherwise forks a second Node runtime for heap
+        // sizing. That runtime can outlive the stdio owner when a frontend
+        // closes during a permission request, defeating session restart.
+        command.arg("--acp").env("GEMINI_CLI_NO_RELAUNCH", "1");
     }
     let mut child = command
         .args(arguments.get(position + 1..).unwrap_or_default())

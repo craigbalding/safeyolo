@@ -105,6 +105,10 @@ uses its native `/steer` command and checks its active-turn acknowledgment.
 Native session updates and the resulting model response remain separate evidence.
 Hermes's own gateway retains its normal execution and session ownership.
 
+Gemini runs with `GEMINI_CLI_NO_RELAUNCH=1`. Its launcher does not fork a second
+Node runtime that can survive the stdio owner's shutdown during a permission
+request. Explicit heap settings in `NODE_OPTIONS` still apply.
+
 Standard Gemini ACP has no steer or context-only primitive. Hermes ACP has no
 context-only primitive. An unsupported mode fails before launching the client.
 `--degrade-to queue` explicitly permits those requests to become queue/wake;
@@ -167,11 +171,17 @@ From a repository checkout, use the existing locked Python test environment,
 current native production artifacts, the pinned NATS binary and an installed,
 authorized native client. The test creates an owned Coord instance and private
 session files below the chosen disk-backed pytest scratch root. Select a model
-explicitly through `SAFEYOLO_CODEX_ATTENTION_MODEL`, `SAFEYOLO_PI_ATTENTION_MODEL`
-or `SAFEYOLO_HERMES_ATTENTION_MODEL`, then run
+explicitly through `SAFEYOLO_CODEX_ATTENTION_MODEL`, `SAFEYOLO_PI_ATTENTION_MODEL`,
+`SAFEYOLO_GEMINI_ATTENTION_MODEL` or `SAFEYOLO_HERMES_ATTENTION_MODEL`, then run
 `tests/proxy_contracts/test_native_harness_attention.py` with pytest.
 Hermes also uses its normal `HERMES_HOME` profile and the native MCP extra for
 the controlled tool-boundary cases. Keep its login and session history private.
+Gemini can read an optional `SAFEYOLO_GEMINI_ATTENTION_KEY_FILE` into only its
+child's `GEMINI_API_KEY`. Keep the credential outside the checkout and public
+proof. Its disposable fixtures use the supported per-invocation `--skip-trust`
+flag, preserving global trust and the existing participant home.
+The Gemini frontend selects the native authentication method before reloading
+a session; the key remains in the child environment.
 
 The probe retains broker acceptance, native session events and the model's
 response separately. The probes cover idle wake, busy delivery, supported
