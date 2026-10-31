@@ -17,15 +17,6 @@ import pytest
 from tests.blackbox import guest_exec, installed_access, installed_lifecycle, installed_workloads
 
 
-@pytest.fixture
-def system_python_stub(tmp_path):
-    # Intercept only the distro interpreter boundary; leave ambient command
-    # lookup intact so PATH decoys can expose accidental mise/venv selection.
-    startup = tmp_path / 'system-python.sh'
-    startup.write_text('/usr/bin/python3() { "$PROBE_SYSTEM_PYTHON" "$@"; }\n')
-    return {'BASH_ENV': str(startup), 'PROBE_SYSTEM_PYTHON': str(tmp_path / 'tools/python3')}
-
-
 @pytest.mark.parametrize('user', ['agent', 'root'])
 def test_guest_dispatcher_uses_selected_native_cli_without_a_python_package(tmp_path, user):
     """An isolated test interpreter forwards literals to the selected native shell."""
@@ -189,7 +180,7 @@ def test_guest_test_setup_uses_lock_and_propagates_failures(tmp_path, failure, i
     tools = tmp_path / 'tools'
     tools.mkdir()
     if ssh_ready:
-        (tools / 'ssh').symlink_to('/bin/true')
+        (tools / 'ssh').symlink_to(shutil.which('true'))
     for name in ('dirname', 'mktemp', 'install', 'rm'):
         (tools / name).symlink_to(shutil.which(name))
     record = tmp_path / 'calls'
@@ -244,7 +235,7 @@ print('pytest 9.0.3')
                                 f'    from pathlib import Path\n'
                                 f'    Path({str(package_installed)!r}).touch()\n'
                                 f'    client = Path({str(tools / "ssh")!r})\n'
-                                f'    if not client.exists(): client.symlink_to("/bin/true")\n'
+                                f'    if not client.exists(): client.symlink_to({shutil.which("true")!r})\n'
                                 f'sys.exit({install_exit})\n')
     package_installer.chmod(0o755)
     (tools / 'dpkg-deb').write_text(f'#!{sys.executable}\nimport json,sys\n'
@@ -349,7 +340,7 @@ def test_guest_setup_does_not_accept_empty_success_or_failed_flush(tmp_path, dam
     tools = tmp_path / 'tools'
     tools.mkdir()
     if damage != 'ssh':
-        (tools / 'ssh').symlink_to('/bin/true')
+        (tools / 'ssh').symlink_to(shutil.which('true'))
     for name in ('dirname',):
         (tools / name).symlink_to(shutil.which(name))
     inputs = tmp_path / 'offline'
