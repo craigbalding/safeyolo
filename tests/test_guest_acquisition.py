@@ -1103,8 +1103,26 @@ def test_verified_bundle_installer_and_proxy_restart_retain_guest(native_cli, re
                    "SAFEYOLO_NATS_TEST_INSTANCE": "guest-acquisition-installed", "TERM": "xterm-256color"}
     installer = Path(bundle) / "install.sh"
     result = subprocess.run([str(installer), "--root", str(root), "--command-dir", str(root / "commands"), "--yes"],
-                            env=environment, capture_output=True, text=True, timeout=30)
+                            env=environment, input="", umask=0o077, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
+    mapping = tomllib.loads((root / "config.toml").read_text())["linux"]
+    assert Path(mapping["runsc"]) == root / "libexec/runsc"
+    # Installation under a private parent must grant mapped root access to
+    # the final runtime and companions without exposing identity or trust.
+    access = subprocess.run([
+        "sudo", "-n", "setpriv", f"--reuid={mapping['uid_base']}",
+        f"--regid={mapping['gid_base']}", "--clear-groups", "/usr/bin/python3", "-c",
+        "import os,sys; from pathlib import Path; root=Path(sys.argv[1]); "
+        "assert all(os.access(root / name, os.X_OK) for name in "
+        "('libexec', 'libexec/gvisor-bin')); "
+        "assert all(os.access(root / 'libexec' / name, os.R_OK | os.X_OK) for name in "
+        "('runsc', 'gvisor-bin/gvisor-sentry-prewarmer', 'gvisor-bin/gvisor_sentry', "
+        "'gvisor-bin/runsc-fd-parking')); "
+        "assert all(not os.access(root / name, os.R_OK) for name in "
+        "('config.toml', 'data/admin_token', 'data/agent_token', 'certs/mitmproxy-ca.pem'))",
+        str(root),
+    ], capture_output=True, text=True, timeout=10)
+    assert access.returncode == 0, access.stderr
     selection = (root / "share/guest-selection.json").read_bytes()
     preserved = {name: (root / name).read_bytes() for name in ("policy.toml", "data/instance_id", "data/admin_token", "data/agent_token")}
     config = root / "config.toml"
@@ -1129,8 +1147,9 @@ def test_verified_bundle_installer_and_proxy_restart_retain_guest(native_cli, re
         assert (root / "share/guest-selection.json").read_bytes() == selection
         assert all((root / name).read_bytes() == data for name, data in preserved.items())
         repeated = subprocess.run([str(installer), "--root", str(root), "--command-dir", str(root / "commands")],
-                                 env=environment, capture_output=True, text=True, timeout=10)
+                                 env=environment, input="", umask=0o077, capture_output=True, text=True, timeout=10)
         assert repeated.returncode == 0, repeated.stderr
+        assert "SafeYolo needs these host changes" not in repeated.stderr
         assert (root / "share/guest-selection.json").read_bytes() == selection
         assert len(requests) == before
         assert all((root / name).read_bytes() == data for name, data in preserved.items())

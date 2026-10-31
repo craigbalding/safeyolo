@@ -252,6 +252,9 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
         'if(!out)return 92;for(int i=1;i<argc;i++)fprintf(out,"%s\\n",argv[i]);fclose(out);}'
         'if(settings){FILE *out=fopen(settings,"w");if(!out)return 93;'
         'fprintf(out,"[linux]\\nhost_uid=1000\\nhost_gid=1000\\nuid_base=100000\\ngid_base=100000\\nrunsc=\\\"%s/libexec/runsc\\\"\\nrunsc_origin=\\\"bundled\\\"\\n",installed);fclose(out);}return 0;}'
+        'if(argc>4 && strcmp(argv[3],"host")==0 && strcmp(argv[4],"grant-runtime-access")==0){'
+        'char *grant=getenv("PACKAGE_RUNTIME_ACCESS_CLI");'
+        'if(grant){execv(grant,argv);return 99;}return 0;}'
     )
     launch_command = (
         'if(argc>4 && strcmp(argv[3],"agent")==0 && strcmp(argv[4],"launch")==0){'
@@ -1087,6 +1090,34 @@ def test_platform_install_stages_cache_paths_without_changing_prepared_tree(pack
         assert installed_caches.read_text() == cache_paths
     else:
         assert not installed_caches.exists()
+
+
+@pytest.mark.parametrize("grant_status", [0, 37])
+def test_installer_grants_final_runtime_access_before_publishing_config(package_inputs, tmp_path, grant_status):
+    bundle = build_bundle(package_inputs, tmp_path)
+    root = tmp_path / "private-instance"
+    marker = tmp_path / "granted-runtime"
+    grant = tmp_path / "grant-access"
+    grant.write_text(
+        f"#!{os.sys.executable}\nimport pathlib, sys, tomllib\n"
+        "config = pathlib.Path(sys.argv[2]) / 'config.toml'\n"
+        "runtime = pathlib.Path(tomllib.loads(config.read_text())['linux']['runsc'])\n"
+        "root = runtime.parent.parent\n"
+        "assert not (root / 'config.toml').exists()\n"
+        "assert all((runtime.parent / name).is_file() for name in "
+        "('runsc', 'gvisor-bin/gvisor-sentry-prewarmer', 'gvisor-bin/gvisor_sentry', "
+        "'gvisor-bin/runsc-fd-parking'))\n"
+        f"pathlib.Path({str(marker)!r}).write_text(str(runtime))\n"
+        f"raise SystemExit({grant_status})\n",
+    )
+    grant.chmod(0o700)
+    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"),
+                 env={**os.environ, "PACKAGE_RUNTIME_ACCESS_CLI": str(grant)}, input="", umask=0o077)
+    assert result.returncode == grant_status, result.stderr
+    assert marker.read_text() == str(root / "libexec/runsc")
+    assert (root / "libexec/runsc").is_file()
+    assert (root / "config.toml").exists() == (grant_status == 0)
+    assert (root / "commands/safeyolo").is_symlink() == (grant_status == 0)
 
 
 # Python saves CI debug metadata only; production uses the shell producer.
