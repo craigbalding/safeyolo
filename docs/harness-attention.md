@@ -12,6 +12,8 @@ conversation events and a model response separately to establish application.
 The operator selects the mode. A peer message cannot change the mode or select
 degradation. These are the external-input capabilities of each integration;
 native controls sent by the frontend remain available.
+Claude's streaming interface uses JavaScript Object Notation (JSON).
+Gemini and Hermes use the Agent Client Protocol (ACP).
 
 | Integration | Context without a turn | Queue and idle wake | Steer | Interrupt |
 |---|---|---|---|---|
@@ -76,7 +78,8 @@ Native acceptance does not establish that a model completed a successful turn.
 
 Use the complete Pi client and its already configured model access. Load
 [the Coord extension](../contrib/pi-coord-extension.ts) in an ordinary interactive
-session or RPC session. Enable external delivery with `--coord-attention`.
+session or remote procedure call (RPC) session. Enable external delivery with
+`--coord-attention`.
 The extension's send and history tools remain available without this flag.
 
 `--coord-attention-mode` selects `queue`, `steer`, `context` or `interrupt`.
@@ -101,7 +104,8 @@ Restart the receiver after resolving the error. Keep Pi session files private.
 ## Gemini and Hermes ACP
 
 Use the complete native client with its normal model configuration and authorized
-access. An ACP frontend can select either command as its stdio server:
+access. An ACP frontend can select either command as its standard input/output
+(stdio) server:
 
 ```sh
 safeyolo-coord acp-attention gemini --mode queue
@@ -131,7 +135,8 @@ Standard Gemini ACP has no steer or context-only primitive. Hermes ACP has no
 context-only primitive. An unsupported mode fails before launching the client.
 `--degrade-to queue` explicitly permits those requests to become queue/wake;
 the bound notification reports both requested and effective modes. Peer text
-cannot select fallback. This connection does not attach to an unrelated TUI.
+cannot select fallback. This connection does not attach to another interactive
+terminal.
 
 The bound notification reports this integration's capabilities. Pending means
 canonical resolution; submitted means a native request was written; delivered
@@ -150,7 +155,9 @@ native history and canonical retention before repeating any uncertain input.
 ## Claude Code streaming JSON
 
 Use the complete native Claude Code client with its normal configuration and
-authorized model access. A frontend that sends and reads Claude's native
+authorized model access. Claude documents this persistent interface as
+[streaming input](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode).
+A frontend that sends and reads Claude's native
 streaming JSON can select this command as its stdio process:
 
 ```sh
@@ -160,8 +167,9 @@ safeyolo-coord claude-attention --mode queue -- --model sonnet
 The command launches `claude --print` with streaming JSON input and output,
 verbose events and user-message replay. `SAFEYOLO_CLAUDE_BIN` selects the
 complete executable or an authorized gateway launcher. This path needs no
-additional SDK package or Node runtime. Native user messages, controls, tools
-and permission replies pass through. Native authentication, configuration and
+additional software development kit (SDK) package or Node runtime.
+Native user messages, controls, tools and permission replies pass through.
+Native authentication, configuration and
 permissions still apply. This connection owns its native session; it does not
 attach to an unrelated interactive terminal.
 
@@ -173,9 +181,10 @@ permits those requests to become queue/wake. The bound notification identifies
 the requested and effective modes and the selected native session.
 
 Pending means canonical resolution. Submitted means the native input was
-written. Delivered means Claude replayed the matching user-message UUID.
-This last receipt identifies recorded native input; inspect assistant events
-and the native `result` separately for model application or failure. A missing
+written. Delivered means Claude replayed the matching user-message universally
+unique identifier (UUID). This receipt identifies the echoed input. Inspect
+assistant events and the native `result` separately for model application or
+failure. A missing
 matching replay stops external ingress and preserves the cursor and native
 connection. A failed canonical read also stops ingress while keeping the
 native connection.
@@ -188,8 +197,8 @@ leaves the native session history available.
 
 ## Claude Code channel preview
 
-Register the native helper as a Claude MCP server, using its absolute installed
-path in the normal MCP configuration:
+Register the native helper as a Claude Model Context Protocol (MCP) server.
+Use its absolute installed path in the normal MCP configuration:
 
 ```json
 {
