@@ -1,7 +1,4 @@
 {
-  "source_sha256": "2dfa78c11eba2a4a29aed7b911bb3ed56515990e0528e97614534111ddb51ab0",
-  "python": "3.12.14",
-  "sqlite": "3.53.1",
   "records": [
     {
       "engagement_id": "owned-run",
@@ -41,7 +38,8 @@
       "ts_end": 1001,
       "duration_ms": 1,
       "request_id": "query-0",
-      "ts_start": 1000
+      "ts_start": 1000,
+      "connection_json": "{\"connect_request_id\":\"outer-owned\",\"target\":{\"logical_host\":\"alpha.invalid\",\"effective_ip\":\"::1\",\"selection_source\":\"operator_mapping\"}}"
     },
     {
       "engagement_id": "owned-run",
@@ -362,6 +360,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -403,6 +402,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "application/octet-stream",
           "is_websocket": 0,
@@ -444,6 +444,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": null,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -485,6 +486,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -526,6 +528,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -567,6 +570,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 503,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -608,6 +612,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 404,
           "reason": "missing",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -649,6 +654,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": "{\"connect_request_id\":\"outer-owned\",\"target\":{\"logical_host\":\"alpha.invalid\",\"effective_ip\":\"::1\",\"selection_source\":\"operator_mapping\"}}",
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -659,7 +665,7 @@
           "response_preview": "response alpha beta"
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -702,6 +708,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "application/octet-stream",
           "is_websocket": 0,
@@ -743,6 +750,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": null,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -784,6 +792,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 503,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -825,6 +834,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 404,
           "reason": "missing",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -866,6 +876,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": "{\"connect_request_id\":\"outer-owned\",\"target\":{\"logical_host\":\"alpha.invalid\",\"effective_ip\":\"::1\",\"selection_source\":\"operator_mapping\"}}",
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -876,7 +887,7 @@
           "response_preview": "response alpha beta"
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -887,7 +898,7 @@
         "agent_id": "bob"
       },
       "output": [],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -946,6 +957,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 503,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -956,7 +968,7 @@
           "response_preview": "response alpha beta"
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -1003,6 +1015,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 404,
           "reason": "missing",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -1013,7 +1026,7 @@
           "response_preview": "alpha quoted \"word\" host:name"
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -1057,6 +1070,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 404,
           "reason": "missing",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -1067,7 +1081,7 @@
           "response_preview": "alpha quoted \"word\" host:name"
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -1112,6 +1126,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 404,
           "reason": "missing",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -1153,6 +1168,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": "{\"connect_request_id\":\"outer-owned\",\"target\":{\"logical_host\":\"alpha.invalid\",\"effective_ip\":\"::1\",\"selection_source\":\"operator_mapping\"}}",
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -1163,7 +1179,7 @@
           "response_preview": "response alpha beta"
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -1207,6 +1223,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -1248,6 +1265,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "application/octet-stream",
           "is_websocket": 0,
@@ -1289,6 +1307,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -1330,6 +1349,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -1371,6 +1391,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": "{\"connect_request_id\":\"outer-owned\",\"target\":{\"logical_host\":\"alpha.invalid\",\"effective_ip\":\"::1\",\"selection_source\":\"operator_mapping\"}}",
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -1381,7 +1402,7 @@
           "response_preview": "response alpha beta"
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -1423,6 +1444,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": null,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -1433,7 +1455,7 @@
           "response_preview": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9..."
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -1444,8 +1466,8 @@
         "aa": 1
       },
       "output": null,
-      "exception": "ValueError",
-      "validation": "unknown filter(s): aa, zz; valid filters: agent_id, attribution_status, engagement_id, evidence_owner, expect, flow_state, from_ts, host, initiator, intent, limit, method, offset, path, path_contains, q, request_header_contains, response_header_contains, role, run, source_type, status_class, status_code, status_max, status_min, step, subject, suite, tag, test, test_agent, text_contains, to_ts, trusted_transport_identity"
+      "error_kind": "Value",
+      "validation": "unknown filter(s): aa, zz; valid filters: agent_id, attribution_status, engagement_id, evidence_owner, expect, flow_state, from_ts, host, initiator, intent, limit, method, offset, path, path_contains, q, request_header_contains, request_id, response_header_contains, role, run, source_type, status_class, status_code, status_max, status_min, step, subject, suite, tag, test, test_agent, text_contains, to_ts, trusted_transport_identity"
     },
     {
       "name": "bool_integer",
@@ -1454,7 +1476,7 @@
         "limit": true
       },
       "output": null,
-      "exception": "ValueError",
+      "error_kind": "Value",
       "validation": "limit must be an integer"
     },
     {
@@ -1464,7 +1486,7 @@
         "host": null
       },
       "output": null,
-      "exception": "ValueError",
+      "error_kind": "Value",
       "validation": "host must be a non-empty string"
     },
     {
@@ -1474,7 +1496,7 @@
         "offset": -1
       },
       "output": null,
-      "exception": "ValueError",
+      "error_kind": "Value",
       "validation": "offset must be at least 0"
     },
     {
@@ -1485,7 +1507,7 @@
         "status_max": 200
       },
       "output": null,
-      "exception": "ValueError",
+      "error_kind": "Value",
       "validation": "status_min must not exceed status_max"
     },
     {
@@ -1495,7 +1517,7 @@
         "offset": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
       },
       "output": null,
-      "exception": "OverflowError",
+      "error_kind": "Overflow",
       "validation": null
     },
     {
@@ -1559,7 +1581,7 @@
           ]
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -1584,7 +1606,7 @@
           ]
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -1594,7 +1616,7 @@
         "limit": "2"
       },
       "output": null,
-      "exception": "TypeError",
+      "error_kind": "Type",
       "validation": null
     },
     {
@@ -1663,7 +1685,7 @@
           }
         ]
       },
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -1673,7 +1695,7 @@
         "q": "alpha"
       },
       "output": null,
-      "exception": "ValueError",
+      "error_kind": "Value",
       "validation": "unknown facet filter(s): q"
     },
     {
@@ -1681,7 +1703,7 @@
       "method": "get_facets",
       "filters": "aa",
       "output": null,
-      "exception": "ValueError",
+      "error_kind": "Value",
       "validation": "unknown facet filter(s): a"
     },
     {
@@ -1691,7 +1713,7 @@
         "host"
       ],
       "output": null,
-      "exception": "ValueError",
+      "error_kind": "Value",
       "validation": "Search filters must be a JSON object"
     },
     {
@@ -1731,6 +1753,7 @@
           "path": "/items/two",
           "status_code": 503,
           "flow_state": "complete",
+          "connection_json": null,
           "snippet": "response <mark>alpha</mark> beta"
         },
         {
@@ -1759,6 +1782,7 @@
           "path": "/items/one",
           "status_code": 404,
           "flow_state": "complete",
+          "connection_json": null,
           "snippet": "<mark>alpha</mark> quoted \"word\" host:name"
         },
         {
@@ -1787,10 +1811,11 @@
           "path": "/items/one",
           "status_code": 200,
           "flow_state": "complete",
+          "connection_json": "{\"connect_request_id\":\"outer-owned\",\"target\":{\"logical_host\":\"alpha.invalid\",\"effective_ip\":\"::1\",\"selection_source\":\"operator_mapping\"}}",
           "snippet": "response <mark>alpha</mark> beta"
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -1830,10 +1855,11 @@
           "path": "/items/two",
           "status_code": 503,
           "flow_state": "complete",
+          "connection_json": null,
           "snippet": "<mark>request</mark> <mark>alpha</mark> beta"
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -1871,10 +1897,11 @@
           "path": "/items/one",
           "status_code": 404,
           "flow_state": "complete",
+          "connection_json": null,
           "snippet": "alpha quoted \"<mark>word</mark>\" <mark>host:name</mark>"
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -1884,7 +1911,7 @@
         "query": "alpha"
       },
       "output": [],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -1895,7 +1922,7 @@
         "engagement_id": "owned-run"
       },
       "output": [],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     },
     {
@@ -1908,7 +1935,7 @@
         "engagement_id": "owned-run"
       },
       "output": null,
-      "exception": "AttributeError",
+      "error_kind": "Attribute",
       "validation": null
     },
     {
@@ -1919,7 +1946,7 @@
         "engagement_id": "owned-run"
       },
       "output": null,
-      "exception": "OperationalError",
+      "error_kind": "Operational",
       "validation": null
     },
     {
@@ -1931,7 +1958,7 @@
         ]
       },
       "output": null,
-      "exception": "ProgrammingError",
+      "error_kind": "Programming",
       "validation": null
     },
     {
@@ -1941,7 +1968,7 @@
         "limit": 1.5
       },
       "output": null,
-      "exception": "IntegrityError",
+      "error_kind": "Integrity",
       "validation": null
     },
     {
@@ -1981,6 +2008,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -2022,6 +2050,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "application/octet-stream",
           "is_websocket": 0,
@@ -2063,6 +2092,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": null,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -2104,6 +2134,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -2145,6 +2176,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -2186,6 +2218,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 503,
           "reason": "OK",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -2227,6 +2260,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 404,
           "reason": "missing",
+          "connection_json": null,
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -2268,6 +2302,7 @@
           "full_url": "http://alpha.invalid/items/one?q=one",
           "status_code": 200,
           "reason": "OK",
+          "connection_json": "{\"connect_request_id\":\"outer-owned\",\"target\":{\"logical_host\":\"alpha.invalid\",\"effective_ip\":\"::1\",\"selection_source\":\"operator_mapping\"}}",
           "request_content_type": "text/plain",
           "response_content_type": "text/plain",
           "is_websocket": 0,
@@ -2278,7 +2313,7 @@
           "response_preview": "response alpha beta"
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null
     }
   ],
@@ -2347,7 +2382,7 @@
           ]
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null,
       "filters_json": "{\"unused\":{\"values\":[NaN,Infinity,-Infinity]}}"
     },
@@ -2415,7 +2450,7 @@
           ]
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null,
       "filters_json": "{\"limit\":Infinity}"
     },
@@ -2423,7 +2458,7 @@
       "name": "nan_limit_reaches_sqlite",
       "method": "get_endpoints",
       "output": null,
-      "exception": "IntegrityError",
+      "error_kind": "Integrity",
       "validation": null,
       "filters_json": "{\"limit\":NaN}"
     },
@@ -2491,7 +2526,7 @@
           ]
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null,
       "filters_json": "{\"from_ts\":-Infinity}"
     },
@@ -2499,7 +2534,7 @@
       "name": "nan_context_binds_null",
       "method": "get_endpoints",
       "output": [],
-      "exception": null,
+      "error_kind": null,
       "validation": null,
       "filters_json": "{\"agent_id\":NaN}"
     },
@@ -2507,7 +2542,7 @@
       "name": "strict_nan_integer",
       "method": "search_flows",
       "output": null,
-      "exception": "ValueError",
+      "error_kind": "Value",
       "validation": "status_code must be an integer",
       "filters_json": "{\"status_code\":NaN}"
     },
@@ -2515,7 +2550,7 @@
       "name": "strict_infinite_text",
       "method": "get_facets",
       "output": null,
-      "exception": "ValueError",
+      "error_kind": "Value",
       "validation": "host must be a non-empty string",
       "filters_json": "{\"host\":Infinity}"
     },
@@ -2523,7 +2558,7 @@
       "name": "nan_query_missing_engagement",
       "method": "search_bodies",
       "output": [],
-      "exception": null,
+      "error_kind": null,
       "validation": null,
       "filters_json": "{\"query\":NaN}"
     },
@@ -2531,7 +2566,7 @@
       "name": "nan_query_with_engagement",
       "method": "search_bodies",
       "output": null,
-      "exception": "AttributeError",
+      "error_kind": "Attribute",
       "validation": null,
       "filters_json": "{\"query\":NaN,\"engagement_id\":\"owned-run\"}"
     },
@@ -2565,6 +2600,7 @@
           "path": "/binary",
           "status_code": 200,
           "flow_state": "complete",
+          "connection_json": null,
           "snippet": "<mark>request</mark> <mark>alpha</mark> beta"
         },
         {
@@ -2593,6 +2629,7 @@
           "path": "/preview",
           "status_code": null,
           "flow_state": "complete",
+          "connection_json": null,
           "snippet": "<mark>request</mark> <mark>alpha</mark> beta"
         },
         {
@@ -2621,6 +2658,7 @@
           "path": "/items/two",
           "status_code": 503,
           "flow_state": "complete",
+          "connection_json": null,
           "snippet": "<mark>request</mark> <mark>alpha</mark> beta"
         },
         {
@@ -2649,6 +2687,7 @@
           "path": "/items/one",
           "status_code": 404,
           "flow_state": "complete",
+          "connection_json": null,
           "snippet": "<mark>request</mark> <mark>alpha</mark> beta"
         },
         {
@@ -2677,16 +2716,13 @@
           "path": "/items/one",
           "status_code": 200,
           "flow_state": "complete",
+          "connection_json": "{\"connect_request_id\":\"outer-owned\",\"target\":{\"logical_host\":\"alpha.invalid\",\"effective_ip\":\"::1\",\"selection_source\":\"operator_mapping\"}}",
           "snippet": "<mark>request</mark> <mark>alpha</mark> beta"
         }
       ],
-      "exception": null,
+      "error_kind": null,
       "validation": null,
       "filters_json": "{\"query\":\"request alpha\",\"engagement_id\":\"owned-run\",\"evidence_owner\":\"alice\",\"unused\":[NaN,Infinity]}"
     }
-  ],
-  "teardown": {
-    "store_closed": true,
-    "owned_directory_removed": true
-  }
+  ]
 }

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.94"
 publish = false
-license = "MIT"
+license-file = "../LICENSE"
 
 [dependencies]
 async-nats = { version = "0.47", default-features = false, features = ["jetstream", "ring", "nuid", "server_2_10", "server_2_11", "server_2_12"] }

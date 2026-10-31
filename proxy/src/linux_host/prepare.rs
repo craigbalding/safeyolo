@@ -1247,6 +1247,9 @@ pub(super) fn run(root: &Path, args: &[String]) -> Result<(), Error> {
                 ).into()
             })
         }
+        [operation, tree, builder_uid] if operation == "archive-profile-tree" => {
+            super::ownership::archive_profile_tree(Path::new(tree), builder_uid.parse()?)
+        }
         [operation, tree, uid, gid, host_uid, host_gid] if operation == "remap-rootfs" => {
             super::ownership::remap_tree(
                 Path::new(tree),

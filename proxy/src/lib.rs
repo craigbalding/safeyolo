@@ -65,6 +65,8 @@ pub mod lab;
 pub mod linux_host;
 #[cfg(target_os = "macos")]
 mod macos_mounts;
+#[cfg(any(target_os = "macos", test))]
+mod macos_share_warning;
 pub mod mattermost;
 pub mod observations;
 mod packet_capture;

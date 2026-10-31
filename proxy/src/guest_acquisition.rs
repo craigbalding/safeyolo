@@ -425,7 +425,10 @@ async fn resolve_guest(
         index_digest.unwrap_or(&digest),
         &package.compatibility,
     )?;
-    let manifest = index.manifest(package.platform).clone();
+    if index.annotations.profile.is_some() && index_digest.is_none() {
+        return Err("custom guest profiles require an explicit --index digest".into());
+    }
+    let manifest = index.manifest(package.platform)?.clone();
     let pinned: Reference = format!("{}@{}", package.repository, manifest.digest).parse()?;
     let cached_child = retained_manifest(store, &manifest.digest)?;
     let fetched_child = cached_child.is_none();
@@ -491,7 +494,7 @@ async fn acquire(
     mapping: crate::linux_host::Mapping,
 ) -> Result<GuestSelection, Error> {
     let (index, child) = resolve_guest(client, package, store, index_digest).await?;
-    let manifest = index.manifest(package.platform).clone();
+    let manifest = index.manifest(package.platform)?.clone();
     let pinned: Reference = format!("{}@{}", package.repository, manifest.digest).parse()?;
     let trees = store.join("trees/sha256");
     fs::create_dir_all(&trees)?;
@@ -803,7 +806,7 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
         let reference = format!(
             "{}@{}",
             package.repository,
-            index.manifest(package.platform).digest
+            index.manifest(package.platform)?.digest
         )
         .parse()?;
         let input = tokio::select! {
