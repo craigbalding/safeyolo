@@ -546,7 +546,7 @@ def test_claude_channel_canonical_submission_keeps_existing_tools(tmp_path, _bin
         client_token = tmp_path / "client-token"
         client_token.write_text((instance.root / "data/agent_token").read_text())
         environment = dict(os.environ, SAFEYOLO_COORD_SOCKET=instance.paths["relay"], SAFEYOLO_COORD_TOKEN_PATH=str(client_token))
-        arguments = [str(instance.root / "bin/safeyolo-coord"), "claude-channel"]
+        arguments = [str(instance.root / "bin/safeyolo-coord"), "claude-channel", "--mode", "steer"]
         with (tmp_path / "channel-stderr.log").open("w") as stderr, (tmp_path / "channel-rpc.jsonl").open("wb") as log:
             process = subprocess.Popen(arguments, cwd=tmp_path, env=environment, stdin=subprocess.PIPE,
                                        stdout=subprocess.PIPE, stderr=stderr, bufsize=0)
@@ -556,6 +556,9 @@ def test_claude_channel_canonical_submission_keeps_existing_tools(tmp_path, _bin
                 initialized = events_until(process, log, lambda event: event.get("id") == 1, timeout=10)
                 capabilities = initialized[-1]["result"]["capabilities"]["experimental"]
                 assert capabilities["claude/channel"] == {}
+                assert capabilities["safeyolo/attention"]["queue"] is False
+                assert capabilities["safeyolo/attention"]["steer"] is True
+                assert capabilities["safeyolo/attention"]["wake_idle"] is True
                 assert capabilities["safeyolo/attention"]["confirm_model_visible"] is False
                 assert "claude/channel/permission" not in capabilities
                 acp_send(process, "notifications/initialized", {})
@@ -587,6 +590,8 @@ def test_claude_channel_canonical_submission_keeps_existing_tools(tmp_path, _bin
     ["acp-attention", "gemini", "--mode", "context"],
     ["acp-attention", "hermes", "--mode", "context"],
     ["claude-channel", "--mode", "interrupt"],
+    ["claude-channel", "--mode", "queue"],
+    ["claude-channel", "--mode", "context"],
     ["claude-attention", "--mode", "context"],
     ["claude-attention", "--mode", "steer"],
     ["claude-attention", "--mode", "interrupt"],

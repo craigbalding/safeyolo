@@ -15,13 +15,14 @@ native controls sent by the frontend remain available.
 Claude's streaming interface uses JavaScript Object Notation (JSON).
 Gemini and Hermes use the Agent Client Protocol (ACP).
 
-| Integration | Context without a turn | Queue and idle wake | Steer | Interrupt |
-|---|---|---|---|---|
-| Claude streaming JSON | No | Yes | No | No |
-| Codex App Server | Yes | Yes | Yes | Yes |
-| Pi extension | Yes | Yes | Yes | Yes |
-| Gemini ACP | No | Yes | No | Yes |
-| Hermes ACP | No | Yes | Yes | Yes |
+| Integration | Context without a turn | Queue after current work | Idle wake | Steer | Interrupt |
+|---|---|---|---|---|---|
+| Claude streaming JSON | No | Yes | Yes | No | No |
+| Claude native channel | No | No | Yes | Yes | No |
+| Codex App Server | Yes | Yes | Yes | Yes | Yes |
+| Pi extension | Yes | Yes | Yes | Yes | Yes |
+| Gemini ACP | No | Yes | Yes | No | Yes |
+| Hermes ACP | No | Yes | Yes | Yes | Yes |
 
 Each integration uses canonical Coord reads and attribution. Queued content
 remains in Coord or the native harness. The integrations keep no separate
@@ -217,11 +218,21 @@ Organization policy and matching Anthropic authentication still apply. See the
 
 The channel keeps the existing Coord tools and advertises `claude/channel` after
 MCP initialization. Canonical events enter through `notifications/claude/channel`
-with their source attribution. Native channels queue busy input. This path
-exposes no context-only, steer, interrupt or permission relay primitive. Actual
-channel application remains unverified against the pinned native client.
-The initialization response exposes these limits separately from tool discovery.
-The helper requires no additional Node runtime.
+with their source attribution. On the pinned Claude Code 2.1.303 client, a channel
+event wakes an idle session without terminal input. During active work, Claude
+can absorb an event after the running tool completes, before the current turn
+finishes. This is safe-point steering, rather than queueing after current work.
+`--mode steer` explicitly selects this behavior; omission uses the same mode.
+Context-only, completion-boundary queue and interrupt requests are unsupported.
+The initialization response exposes these capabilities separately from tool
+discovery. No permission relay is declared. The helper requires no additional
+Node runtime.
+
+Use the native channel when attaching external events to an interactive session
+with these semantics. Use the streaming connection when events must wait until
+the current turn finishes. The native comparison demonstrated both idle wake
+and a busy event influencing the same turn. Channels therefore do not replace
+the streaming connection's completion-boundary queue behavior.
 
 The native client must also enable the channel feature and applicable
 organization policy. The Claude service catalogue permits the native client's
@@ -263,7 +274,9 @@ response separately. The probes cover idle wake, busy delivery, supported
 context-only, restart and attribution. The Claude streaming probe checks native
 2.1.303, preserves its version with `DISABLE_AUTOUPDATER=1`, and uses private
 session files. Select an authorized launcher with `SAFEYOLO_CLAUDE_BIN` when
-needed. Transport controls exercise the separate Claude MCP channel without
-claiming native channel application. Synthetic native controls test refusal
-and protocol handling; they do not substitute for the model probes.
+needed. Transport controls exercise the separate Claude MCP channel's capability
+report, canonical submission and refusal behavior. Native channel application
+requires the interactive setup and consent described above. Synthetic native
+controls test refusal and protocol handling; they do not substitute for the model
+probes.
 Unselected model probes skip without making inference requests.
