@@ -115,6 +115,10 @@ impl Fixture {
         fs::read_to_string(self.root.path().join("policy.toml")).unwrap()
     }
 
+    #[allow(
+        dead_code,
+        reason = "Only shared and delegated approval tests make audit unavailable."
+    )]
     pub(crate) fn make_audit_unavailable(&self) {
         let directory = self.root.path().join("unavailable-audit");
         fs::create_dir(&directory).unwrap();
