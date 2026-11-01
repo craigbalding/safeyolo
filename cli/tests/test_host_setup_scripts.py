@@ -2215,11 +2215,11 @@ def test_claude_managed_skill_conflicts_preserve_user_paths(tmp_path, skill_name
 
 
 @pytest.mark.parametrize("harness", [None, "codex", "claude"], ids=["default-codex", "explicit-codex", "claude"])
-def test_lab_runner_reaches_staged_harness_with_multiline_context(tmp_path, harness):
+def test_lab_runner_reaches_staged_harness_with_multiline_context(tmp_path, socket_dir, harness):
     selected = harness or "codex"
     setup = tmp_path / "native client"
     setup.mkdir()
-    home, command, env = _stage_native_client(setup, selected)
+    home, command, env = _stage_native_client(setup, selected, host_tools=("tmux",))
     prepared = subprocess.run([str(command), "--prepare"], env=env, capture_output=True, text=True)
     assert prepared.returncode == 0, prepared.stderr
     native = Path(env["TEST_NATIVE_ROOT"]) / ("bin/codex" if selected == "codex" else "claude")
@@ -2243,16 +2243,27 @@ def test_lab_runner_reaches_staged_harness_with_multiline_context(tmp_path, harn
     for key in ("TMUX", "TMUX_PANE"):
         env.pop(key, None)
     env["TERM"] = "xterm-256color"
-    socket = tmp_path / "controller.sock"
+    socket = socket_dir / "controller.sock"
     tmux = ["tmux", "-S", str(socket)]
-    subprocess.run([*tmux, "new-session", "-d", "-s", "controller", "-c", str(home),
-                    "/bin/bash --noprofile --norc"], env=env, check=True)
     runner = [str(LAB_CONTROLLER_SOURCE / "scripts/run-controller.sh"), "--startup-file", str(startup)]
-    if harness:
+    if selected == "claude":
+        # On either host, check the real shell hint and pass its harness choice
+        # to the runner. The guest launcher itself requires Linux /proc.
+        entry = home / ".local/bin/safeyolo-lab"
+        assert os.readlink(entry) == LAB_COMMAND_TARGET
+        entry.unlink()
+        entry.symlink_to(LAB_CONTROLLER_SOURCE / "scripts/safeyolo-lab")
+        shell = _lab_shell(home, ":", interactive=True)
+        assert shell.returncode == 0, shell.stderr
+        assert shell.stdout == "SafeYolo lab: run safeyolo-lab --harness claude\n"
+        runner += shlex.split(shell.stdout.removeprefix("SafeYolo lab: run "))[1:]
+    elif harness:
         runner += ["--harness", harness]
     runner += ["--", "--probe", "argument with spaces"]
     line = shlex.join(runner) + '; printf "%s" "$?" > "$HOME/runner-rc"'
     try:
+        subprocess.run([*tmux, "new-session", "-d", "-s", "controller", "-c", str(home),
+                        "/bin/bash --noprofile --norc"], env=env, check=True)
         subprocess.run([*tmux, "send-keys", "-t", "controller", "-l", "--", line], env=env, check=True)
         subprocess.run([*tmux, "send-keys", "-t", "controller", "Enter"], env=env, check=True)
         deadline = time.monotonic() + 10
@@ -2282,8 +2293,9 @@ def test_lab_runner_reaches_staged_harness_with_multiline_context(tmp_path, harn
         subprocess.run([*tmux, "kill-server"], env=env, capture_output=True, check=False)
 
 
-def test_claude_lab_hint_launches_native_context(tmp_path: Path) -> None:
-    home, command, env = _stage_native_client(tmp_path, "claude")
+@pytest.mark.skipif(os.uname().sysname != "Linux", reason="The guest Lab launcher validates Linux /proc process births")
+def test_claude_lab_hint_launches_guest_controller_with_native_context(tmp_path: Path, socket_dir: Path) -> None:
+    home, command, env = _stage_native_client(tmp_path, "claude", host_tools=("flock",))
     prepared = subprocess.run([str(command), "--prepare"], env=env, capture_output=True, text=True)
     assert prepared.returncode == 0, prepared.stderr
     # Map the guest's read-only /safeyolo mount to this checkout's skill.
@@ -2323,10 +2335,14 @@ def test_claude_lab_hint_launches_native_context(tmp_path: Path) -> None:
     tmux_wrapper.chmod(0o755)
     for key in ("TMUX", "TMUX_PANE"):
         env.pop(key, None)
-    env.update(PATH=f"{tools}:{entry.parent}:/usr/bin:/bin", TERM="xterm-256color",
+    # The guest helper uses HOME for its socket. Keep its path short while
+    # retaining the staged binaries and files on the pytest filesystem.
+    short_home = socket_dir / "home"
+    short_home.symlink_to(home, target_is_directory=True)
+    env.update(HOME=str(short_home), PATH=f"{tools}:{entry.parent}:/usr/bin:/bin", TERM="xterm-256color",
                SAFEYOLO_AGENT_NAME="hint-fixture")
     objective = 'Follow the Claude shell hint\nKeep $(touch forbidden) as data.'
-    tmux = [real_tmux, "-S", str(home / ".safeyolo/lab-tmux.sock")]
+    tmux = [real_tmux, "-S", str(short_home / ".safeyolo/lab-tmux.sock")]
     try:
         started = subprocess.run([*shlex.split(hint), "--objective", objective], env=env, cwd=home,
                                  capture_output=True, text=True, timeout=15)
@@ -3381,10 +3397,16 @@ def _stage_claude(tmp_path: Path, wrapper: str):
     return agent_home, fake_bin
 
 
-def _stage_native_client(tmp_path, harness, entry="ordinary"):
+def _stage_native_client(tmp_path, harness, entry="ordinary", *, host_tools=()):
     operator, home, tools = (tmp_path / name for name in ("operator", "agent", "bin"))
     operator.mkdir()
     tools.mkdir()
+    # Lab runs guest scripts on the test host. Expose only their real tools,
+    # keeping host clients and package managers outside the fixture PATH.
+    for name in host_tools:
+        executable = shutil.which(name)
+        assert executable, f"Install {name} to run the Lab host fixture"
+        (tools / name).symlink_to(executable)
     if entry == "supervised":
         _seed_adopted_codex_auth(home)
         _run_setup("codex-coord-host-setup.sh", operator, home, tmp_path,
