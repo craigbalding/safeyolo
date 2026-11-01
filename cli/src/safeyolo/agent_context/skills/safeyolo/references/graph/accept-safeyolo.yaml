@@ -505,7 +505,7 @@ nodes:
       obtain_from: "the safeyolo-lab-controller skill staged from the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/safeyolo-lab
-          sha256: 66622b5e2e34add24c4ed087d233032c882d34d016e1c539f0d1f36e28904597
+          sha256: 3c6d37bba4c0f06134f632a5590667aa5952a50b7f9a61ba041806fc9288976d
         - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/capture-evidence.sh
           sha256: 5983a28e4a9eb1c48197c64f8511f7e18cffef001a81690e4a9c8e61e2b96c9d
         - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/lab-snapshot.sh
