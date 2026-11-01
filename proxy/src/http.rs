@@ -1925,7 +1925,7 @@ where
         .join("agent_token");
         let policy = runtime
             .policy
-            .as_deref()
+            .as_ref()
             .map_or(PolicyState::Unavailable, PolicyState::Ready);
         let mut random = rand::random::<f64>;
         agent_api::respond_with_body_and_audit_id_with_plumb(

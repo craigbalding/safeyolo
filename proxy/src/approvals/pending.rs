@@ -1,7 +1,9 @@
 //! Host-owned pending requests. Audit events describe this authority; they do
 //! not create it. Policy and gateway stores still own every permission effect.
 
-use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt, path::PathBuf, time::Duration};
+use std::{
+    fs::OpenOptions, os::unix::fs::OpenOptionsExt, path::PathBuf, sync::Arc, time::Duration,
+};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -547,7 +549,7 @@ pub(crate) fn revision(policy: &Policy, action: &Value) -> Option<String> {
 /// Called at the reached enforcement hook, before publishing a pending response.
 pub(crate) async fn bind_network(
     writer: &Writer,
-    policy: &Policy,
+    policy: &Arc<Policy>,
     event: &mut Event,
     request: &crate::policy::NetworkRequest<'_>,
     scheme: &str,
@@ -591,7 +593,7 @@ pub(crate) async fn bind_network(
         credential_bindings: Default::default(),
     };
     let store = writer.approvals().clone();
-    let current_policy = policy.clone();
+    let current_policy = Arc::clone(policy);
     let request_id = event
         .request_id
         .clone()
@@ -609,7 +611,7 @@ pub(crate) async fn bind_network(
 pub(crate) async fn bind_credentials(
     run: Option<&crate::host_runs::AgentRun>,
     writer: &Writer,
-    policy: &Policy,
+    policy: &Arc<Policy>,
     events: &mut [Event],
     request: &crate::policy::NetworkRequest<'_>,
     scheme: &str,
@@ -682,7 +684,7 @@ pub(crate) async fn bind_credentials(
         credential_bindings: Default::default(),
     };
     let store = writer.approvals().clone();
-    let current_policy = policy.clone();
+    let current_policy = Arc::clone(policy);
     let record =
         tokio::task::spawn_blocking(move || store.submit(authority, &request_id, &current_policy))
             .await

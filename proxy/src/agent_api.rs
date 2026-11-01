@@ -17,6 +17,7 @@ use std::{
     io::Read,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
+    sync::Arc,
 };
 
 use serde_json::{Value, json};
@@ -114,9 +115,12 @@ pub struct Request<'a> {
 /// NoEngine does not distinguish a remote client from a corrupted local client;
 /// provider-specific status behavior remains a development compatibility gap.
 pub enum PolicyState<'a> {
-    Ready(&'a Policy),
+    /// Retain the selected generation when a route enters a blocking worker.
+    Ready(&'a Arc<Policy>),
     Unavailable,
-    NoEngine { healthy: bool },
+    NoEngine {
+        healthy: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1219,6 +1223,7 @@ mod tests {
         let policy = Policy::parse_at("{}", crate::policy::Format::Json, 1_000_000.)
             .unwrap()
             .with_baseline_path_for_test(valid_path);
+        let policy = Arc::new(policy);
         let positive = respond_read(
             request,
             &token,
@@ -1236,7 +1241,8 @@ mod tests {
             .join(OsString::from_vec(b"private-policy-\xff.json".to_vec()));
         assert!(invalid_path.to_str().is_none());
         assert!(!invalid_path.exists());
-        let policy = policy.with_baseline_path_for_test(invalid_path);
+        let policy =
+            Arc::new(Arc::unwrap_or_clone(policy).with_baseline_path_for_test(invalid_path));
         assert_eq!(policy.engine_stats(), Err(EngineStatsError::PathEncoding));
 
         for (method, authorization, status) in

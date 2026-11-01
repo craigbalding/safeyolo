@@ -1302,7 +1302,8 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         ));
     }
     if path == "/admin/approval-delegations" || path.starts_with("/admin/approval-delegations/") {
-        return approvals::delegations(request, &path, policy, task_state, service_audit).await;
+        return approvals::delegations(request, &path, policy_snapshot, task_state, service_audit)
+            .await;
     }
     if method == Method::GET && path == "/admin/approvals" {
         if let (Some(writer), Some(policy)) = (audit, policy_snapshot)
@@ -1353,7 +1354,15 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         ));
     }
     if path.starts_with("/admin/approvals/") {
-        return approvals::respond(request, &path, policy, audit, task_state, service_audit).await;
+        return approvals::respond(
+            request,
+            &path,
+            policy_snapshot,
+            audit,
+            task_state,
+            service_audit,
+        )
+        .await;
     }
     if method == Method::GET && path == "/admin/plumb/pending" {
         let Some(owner) = plumb else {
