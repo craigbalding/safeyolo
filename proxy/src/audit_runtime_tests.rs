@@ -250,7 +250,7 @@ fn logger_request(runtime: &Runtime, host: &str, size: impl FnOnce() -> u64) -> 
     runtime
         .request_logger
         .request(
-            runtime.policy.as_ref(),
+            runtime.policy.as_deref(),
             &mut exchange,
             &Request {
                 method: "GET",

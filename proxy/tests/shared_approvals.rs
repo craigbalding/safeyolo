@@ -11,25 +11,69 @@ mod shared_approval_fixture;
 mod test_owned_endpoint;
 use shared_approval_fixture::*;
 
+#[cfg(target_os = "linux")]
+fn resident_kib() -> u64 {
+    fs::read_to_string("/proc/self/status")
+        .unwrap()
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("VmRSS:")?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        })
+        .unwrap()
+}
+
+/// Compare empty canonical listings with the observed 92,276-host list shape.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore = "resource control: run alone with --ignored --exact --nocapture"]
+async fn empty_approval_listing_does_not_copy_large_policy_lists() {
+    for count in [0, 92_276] {
+        let hosts: String = (0..count)
+            .map(|index| format!("blocked-{index:05}.example.invalid\n"))
+            .collect();
+        let fixture = Fixture::new().await;
+        fs::write(fixture.root.path().join("blocked.txt"), &hosts).unwrap();
+        fs::write(
+            fixture.root.path().join("policy.toml"),
+            format!(
+                "{}\n[lists]\nblocked='blocked.txt'\n[hosts.'$blocked']\negress='deny'\n",
+                fixture.source()
+            ),
+        )
+        .unwrap();
+        let fixture = fixture.restart().await;
+        let before = resident_kib();
+        let mut samples = Vec::new();
+        for _ in 0..3 {
+            let start = std::time::Instant::now();
+            let listed = fixture.admin("GET", "/admin/approvals", None).await;
+            assert_eq!(listed.status, 200);
+            assert_eq!(listed.json()["approvals"], json!([]));
+            samples.push((resident_kib(), start.elapsed()));
+        }
+        println!(
+            "list hosts={count}, bytes={}, initial RSS KiB={before}, listing (RSS KiB, elapsed)={samples:?}",
+            hosts.len()
+        );
+        assert!(
+            samples
+                .iter()
+                .all(|(rss, _)| rss.saturating_sub(before) < 12 * 1024),
+            "empty listings retained at least 12 MiB above startup RSS"
+        );
+        fixture.stop().await;
+    }
+}
+
 /// Run alone to keep other tests' allocations out of the RSS measurement.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 #[ignore = "resource control: run alone with --ignored --exact --nocapture"]
 async fn listing_unrelated_audit_history_has_bounded_resident_growth() {
-    fn resident_kib() -> u64 {
-        fs::read_to_string("/proc/self/status")
-            .unwrap()
-            .lines()
-            .find_map(|line| {
-                line.strip_prefix("VmRSS:")?
-                    .split_whitespace()
-                    .next()?
-                    .parse()
-                    .ok()
-            })
-            .unwrap()
-    }
-
     let fixture = Fixture::new().await;
     assert_eq!(
         fixture.admin("GET", "/admin/approvals", None).await.json()["approvals"],

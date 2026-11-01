@@ -520,7 +520,7 @@ fn retain_active_grants(
     let current = state.read().map_err(|_| CoordError::Unavailable)?;
     let gateway = current
         .policy
-        .as_ref()
+        .as_deref()
         .and_then(crate::policy::Policy::gateway);
     inventory.capabilities.retain(|(id, label)| {
         let Some(agent) = inventory.configured.get(id) else {

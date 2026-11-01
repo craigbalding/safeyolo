@@ -404,7 +404,7 @@ pub(crate) struct Runtime {
     /// change an already-admitted session.
     passthrough: Arc<RwLock<tunnels::Passthrough>>,
     scanner: inspection::Scanner,
-    policy: Option<policy::Policy>,
+    policy: Option<Arc<policy::Policy>>,
     /// Lazy, process-owned vault and refresh flights. Only credential consumers
     /// load it; Runtime publication never reads or unlocks credential storage.
     gateway_vault: GatewayVault,
@@ -541,7 +541,7 @@ impl Runtime {
                     load(
                         path,
                         registry,
-                        previous.and_then(|runtime| runtime.policy.as_ref()),
+                        previous.and_then(|runtime| runtime.policy.as_deref()),
                         &audit,
                     )
                 })
@@ -616,8 +616,9 @@ impl Runtime {
                 && gateway_grants.is_some()
                 && previous.is_none()
             {
-                policy
-                    .observe_baseline_files(previous.and_then(|runtime| runtime.policy.as_ref()))?;
+                policy.observe_baseline_files(
+                    previous.and_then(|runtime| runtime.policy.as_deref()),
+                )?;
             }
             if let Some(timing) = credential_startup.as_mut() {
                 timing.record("grants");
@@ -813,7 +814,7 @@ impl Runtime {
                 certificate_authority,
                 passthrough,
                 scanner,
-                policy,
+                policy: policy.map(Arc::new),
                 gateway_vault,
                 credential_activation,
                 operator_modes,
@@ -926,7 +927,7 @@ fn prepare_policy_runtime(previous: &Runtime, policy: policy::Policy) -> Result<
         )?;
     }
     Ok(Runtime {
-        policy: Some(policy),
+        policy: Some(Arc::new(policy)),
         credential_guard: Some(credential_guard),
         gateway_grants,
         config,
@@ -1076,7 +1077,7 @@ fn native_policy_activation(
                     .unwrap_or_else(|| Arc::clone(current));
                 let mut runtime = previous.as_ref().clone();
                 if let Some(policy) = runtime.policy.as_mut() {
-                    policy
+                    Arc::make_mut(policy)
                         .observe_restored_native_file(list_mtime)
                         .map_err(|error| error.to_string())?;
                 }
@@ -1229,7 +1230,7 @@ pub(crate) fn activate_registered_task(
         .prepare_policy(&candidate)
         .map_err(|_| TaskPolicyActivationError::Invalid)?;
     let runtime = Arc::new(Runtime {
-        policy: Some(candidate),
+        policy: Some(Arc::new(candidate)),
         credential_guard: Some(credential_guard),
         ..current.as_ref().clone()
     });
@@ -1242,7 +1243,7 @@ pub(crate) fn activate_registered_task(
         .map_err(TaskPolicyActivationError::Registry)?;
     let permission_count = runtime
         .policy
-        .as_ref()
+        .as_deref()
         .and_then(policy::Policy::task_permissions_count)
         .unwrap_or(0);
     *current = runtime;
@@ -1282,7 +1283,7 @@ pub(crate) fn clear_registered_task(
         .prepare_policy(&candidate)
         .map_err(|_| TaskPolicyActivationError::Invalid)?;
     let runtime = Arc::new(Runtime {
-        policy: Some(candidate),
+        policy: Some(Arc::new(candidate)),
         credential_guard: Some(credential_guard),
         ..current.as_ref().clone()
     });
@@ -1935,7 +1936,7 @@ impl Proxy {
                     capture_address,
                     &mut service_files,
                 )?;
-                policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
+                policy_runtime::accepted(runtime.policy.as_deref(), &runtime.audit);
                 memory_runtime::running(&runtime);
                 Ok::<_, Error>((Arc::new(runtime), service_files))
             })
@@ -2276,7 +2277,7 @@ impl Proxy {
             runtime.configure_declarations()?;
             *current = runtime.clone();
         }
-        policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
+        policy_runtime::accepted(runtime.policy.as_deref(), &runtime.audit);
         Ok(())
     }
 
@@ -2355,7 +2356,7 @@ impl Proxy {
                 .await
                 .map_err(|_| "ingress binding accept task failed during stop")?;
         }
-        policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
+        policy_runtime::accepted(runtime.policy.as_deref(), &runtime.audit);
         self.service_check_at = service_files.as_ref().map(|_| tokio::time::Instant::now());
         self.service_files = service_files;
         if previous.config.policy_file != config.policy_file {

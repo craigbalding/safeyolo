@@ -1048,7 +1048,7 @@ fn canonical_test_context_events_and_submission_effects_match_source_hooks() {
             .runtime
             .test_context
             .prepare_request_current(
-                fixture.runtime.policy.as_ref(),
+                fixture.runtime.policy.as_deref(),
                 test_context::Request {
                     host: "owned.invalid",
                     prior_response: false,
