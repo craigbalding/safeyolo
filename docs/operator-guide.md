@@ -44,6 +44,65 @@ listing, cancellation, diagnostics and image rollout. For work that must be
 triggered while a guest is stopped, use the separate
 [trusted host recipe](coord-operations.md#schedule-an-operator-message).
 
+## Run a disposable sandbox job
+
+On the host, use the account that owns the installed instance and its prepared
+shared Trixie guest. Write a trusted job definition to `check.json`:
+
+```json
+{
+  "gate_id": "source-check",
+  "argv": ["/usr/bin/git", "-C", "/input", "diff", "--check"],
+  "timeout_seconds": 30,
+  "max_input_bytes": 104857600,
+  "max_input_entries": 10000,
+  "retain_bytes": 8192
+}
+```
+
+Select the candidate directory on the host, then run:
+
+```bash
+safeyolo job run check.json --input /absolute/path/to/candidate
+```
+
+The command prints JSON with observed exit, signal, timeout or interruption,
+input and rootfs digests, and full byte counts and hashes for both output
+streams. Retained output is bounded by `retain_bytes`. Exit zero with complete
+evidence returns CLI status zero; timeout returns 124. Observation, startup or
+cleanup failures cannot report success. A printed `PASS` is ordinary job output.
+The trusted caller decides how the observed result satisfies its gate.
+
+Inputs are copied without following symbolic links and mounted read-only at
+`/input`. `/work`, `/home/agent` and the rootfs upper are discarded after the
+job. No durable configured agent, persistent cache, coding harness, host script,
+Agent API token or Coord authority is supplied. Jobs run as UID/GID 1000 with
+cleared capabilities and `no_new_privs`. Set `"privilege": "guest-root"` only
+when the trusted definition needs guest root inside the sandbox.
+
+Network is disabled by default. For a credentialed gate, the operator first
+approves the stable principal through the existing Service Gateway commands.
+For example, with the `github` service loaded and a stored credential named
+`github-reader`:
+
+```bash
+safeyolo services authorize gate:source-check github --capability read_work --credential github-reader
+```
+
+Set `"network": true` in the trusted job definition and keep the proxy running.
+Each run receives a temporary listener on that proxy and inherits the saved
+`gate:source-check` policy. Service authorization alone does not bypass network,
+credential, contract or risky-route checks. Those controls use the stable gate
+principal; audit also records the transient `job-<run-id>` transport identity.
+The job receives proxy and CA settings plus `SAFEYOLO_GATEWAY_TOKENS`, a JSON map
+from service names to scoped gateway tokens. Provider credentials remain on the
+host. The profile still has no Agent API or Coord access.
+
+Closing the host delegation connection removes the temporary listener, including
+when the host caller disappears. Normal job teardown waits for this revocation
+before reporting success. A job never creates a saved gate grant. Existing
+operator grants remain available for the next run until revoked or expired.
+
 ## Open an agent desktop
 
 Use the host account and instance selected above. The proxy must be running.

@@ -42,7 +42,7 @@ pub(crate) struct Prepared {
     command_centre: Option<command_centre::Host>,
 }
 
-type EventTasks = Arc<AsyncMutex<JoinSet<()>>>;
+pub(crate) type EventTasks = Arc<AsyncMutex<JoinSet<()>>>;
 
 #[derive(Clone)]
 struct ConnectionAccess {
@@ -356,7 +356,7 @@ async fn drain_event_tasks(event_tasks: EventTasks) {
     }
 }
 
-async fn spawn_event_task<F>(event_tasks: &EventTasks, task: F)
+pub(crate) async fn spawn_event_task<F>(event_tasks: &EventTasks, task: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
@@ -454,6 +454,17 @@ async fn serve_connection(
                 return Ok::<_, admin_api::Error>(close_http_response(
                     admin_api::event_not_found().into_response(),
                 ));
+            }
+            if crate::jobs::network::route(request.uri().path()) {
+                return crate::jobs::network::serve(
+                    request,
+                    state,
+                    access.token.trim_matches(python_whitespace),
+                    event_stop,
+                    &event_tasks,
+                )
+                .await
+                .map(close_http_response_unless_upgrade);
             }
             let stats = || {
                 let runtime = runtime.clone();

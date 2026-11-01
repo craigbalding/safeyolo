@@ -57,6 +57,7 @@ impl Fixture {
 
     fn identity(&self) -> ConnectionIdentity {
         ConnectionIdentity {
+            authorization_principal: None,
             ingress_binding: None,
             run: None,
             agent_id: "alice".into(),

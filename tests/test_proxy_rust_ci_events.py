@@ -635,6 +635,84 @@ def test_existing_graph_integrity_check_runs_for_quick_cli_and_before_guest_comp
     assert "uv sync" not in check["run"]
 
 
+@pytest.mark.parametrize("failure", [None, "cleanup", "space", "df"])
+def test_quick_native_runner_preparation_preserves_cargo_admission(tmp_path, failure):
+    """Execute the hosted Bash steps with controlled SDK and disk capacity."""
+    job = rust_workflow()["jobs"]["focused-pr"]
+    steps = job["steps"]
+    prepare = next(step for step in steps if step.get("name") == "Free unused Android SDK space for native checks")
+    cache = next(step for step in steps if step.get("name") == "Restore Rust dependency cache")
+    lint = next(step for step in steps if step.get("name") == "Check Rust formatting and lint")
+    assert steps.index(prepare) < steps.index(cache) < steps.index(lint)
+    assert prepare["if"] == cache["if"]
+    assert "SAFEYOLO_CARGO_RESERVE_GIB" not in job["env"]
+    assert "SAFEYOLO_CARGO_RESERVE_GIB" not in lint.get("env", {})
+    assert "shell" not in prepare and "shell" not in lint
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    sdk = tmp_path / "android-sdk"
+    sdk.mkdir()
+    target = tmp_path / "proxy/target"
+    target.mkdir(parents=True)
+    dependency = target / "retained-dependency"
+    dependency.write_text("useful Rust cache")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy2(WORKFLOW.parents[2] / "scripts/cargo_with_space.sh", scripts)
+    sudo = commands / "sudo"
+    sudo.write_text(
+        f"#!{sys.executable}\n"
+        "import os, shutil, sys\n"
+        "assert sys.argv[1:] == ['-n', 'rm', '-rf', '--', '/usr/local/lib/android']\n"
+        "if os.environ['FIXTURE_FAILURE'] == 'cleanup':\n"
+        "    sys.exit(23)\n"
+        "shutil.rmtree(os.environ['FIXTURE_SDK'])\n"
+    )
+    df = commands / "df"
+    df.write_text(
+        '#!/bin/sh\n'
+        '[ "$FIXTURE_FAILURE" != df ] || exit 27\n'
+        'available=29360128\n'
+        'if [ -d "$FIXTURE_SDK" ]; then available=15868284; '
+        'elif [ "$FIXTURE_FAILURE" = space ]; then available=19660800; fi\n'
+        'printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n"\n'
+        'printf "fixture 73400320 0 %s 60%% /\\n" "$available"\n'
+    )
+    calls = tmp_path / "cargo-calls"
+    cargo = commands / "cargo"
+    cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$FIXTURE_CARGO_CALLS"\n')
+    for command in (sudo, df, cargo):
+        command.chmod(0o755)
+    env = dict(os.environ, PATH=f"{commands}:{os.environ['PATH']}", BASH_ENV=os.devnull,
+               FIXTURE_FAILURE=failure or "", FIXTURE_SDK=str(sdk), FIXTURE_CARGO_CALLS=str(calls),
+               CARGO_TARGET_DIR=str(target), SAFEYOLO_CARGO_SPACE_POLL_SECONDS="1")
+    env.pop("SAFEYOLO_CARGO_RESERVE_GIB", None)
+    # Unspecified Linux Actions steps run Bash -e, without pipefail or nounset.
+    preparation = subprocess.run(["bash", "-e", "-c", prepare["run"]], cwd=tmp_path,
+                                 capture_output=True, text=True, env=env, check=False)
+    if failure in {"cleanup", "df"}:
+        assert preparation.returncode == {"cleanup": 23, "df": 27}[failure]
+        assert sdk.is_dir()
+        assert not calls.exists()
+    else:
+        assert preparation.returncode == 0, preparation.stderr
+        assert not sdk.exists()
+        assert "15868284" in preparation.stdout
+        result = subprocess.run(["bash", "-e", "-c", lint["run"]], cwd=tmp_path / "proxy",
+                                capture_output=True, text=True, env=env, check=False)
+        if failure == "space":
+            assert result.returncode == 75, result.stderr
+            assert "below 20 GiB reserve" in result.stderr
+            assert not calls.exists()
+        else:
+            assert result.returncode == 0, result.stderr
+            assert "29360128" in result.stdout
+            assert calls.read_text().splitlines() == [
+                "fmt --all -- --check", "clippy --release --locked --all-targets -- -D warnings"
+            ]
+    assert dependency.read_text() == "useful Rust cache"
+
+
 def test_native_producers_and_consumers_share_the_existing_compatible_dependency_cache():
     """The pinned action's shared-key replaces its automatic per-job prefix."""
     shared = yaml.safe_load(WORKFLOW.with_name("guest-test-inputs.yml").read_text())

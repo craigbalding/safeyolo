@@ -991,12 +991,13 @@ fn parent_for_destination<'a>(
     identity: &ConnectionIdentity,
     destination: &Destination,
 ) -> Option<&'a crate::config::ParentProxy> {
+    let agent = identity
+        .authorization_principal
+        .as_ref()
+        .unwrap_or(&identity.agent_id);
     runtime.parent.as_ref().filter(|parent| {
         (runtime.config.parent_proxy_agents.is_empty()
-            || runtime
-                .config
-                .parent_proxy_agents
-                .contains(&identity.agent_id))
+            || runtime.config.parent_proxy_agents.contains(agent))
             && (parent.destination_hosts.is_empty()
                 || parent.destination_hosts.iter().any(|host| {
                     host.eq_ignore_ascii_case(
@@ -1914,7 +1915,9 @@ where
         client_ip: identity.source_id.as_deref(),
         request_id,
     };
-    let mut outcome = if runtime.config.agent_api_enabled {
+    let agent_api_enabled =
+        runtime.config.agent_api_enabled && identity.authorization_principal.is_none();
+    let mut outcome = if agent_api_enabled {
         let token_path = if runtime.config.native_product {
             runtime.config.data_dir()
         } else {
@@ -2570,7 +2573,7 @@ where
     B: HttpBody<Data = Bytes> + Unpin + Send + Sync + 'static,
     B::Error: std::error::Error + Send + Sync + 'static,
 {
-    if identity.run.as_ref().is_some_and(|run| {
+    if identity.current_agent_run().is_some_and(|run| {
         runtime
             .policy
             .as_ref()
@@ -3269,7 +3272,7 @@ where
             })
             .collect();
         let pending = crate::approvals::pending::bind_credentials(
-            identity.run.as_ref(),
+            identity.current_agent_run(),
             &runtime.audit,
             policy,
             &mut events,
@@ -3595,7 +3598,7 @@ where
                                     path: risky_path,
                                 },
                                 time::OffsetDateTime::now_utc(),
-                                identity.run.as_ref().map(|run| {
+                                identity.current_agent_run().map(|run| {
                                     (
                                         policy,
                                         run,
@@ -3680,7 +3683,7 @@ where
                             let pending = if risk.effect == crate::policy::Effect::Prompt {
                                 let pending = crate::approvals::pending::bind_risky(
                                     &runtime,
-                                    identity.run.as_ref(),
+                                    identity.current_agent_run(),
                                     &mut audit,
                                     crate::policy::NetworkRequest {
                                         agent: Some(agent),
@@ -4009,7 +4012,7 @@ where
             })
             .collect();
         let pending = crate::approvals::pending::bind_credentials(
-            identity.run.as_ref(),
+            identity.current_agent_run(),
             &runtime.audit,
             policy,
             &mut events,

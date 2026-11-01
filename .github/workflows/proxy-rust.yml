@@ -175,6 +175,14 @@ jobs:
             exit 2
           fi
 
+      - name: Free unused Android SDK space for native checks
+        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'
+        run: |
+          df -Pk .
+          # This job uses Rust, Python, Node and musl, but no Android tools.
+          sudo -n rm -rf -- /usr/local/lib/android
+          df -Pk .
+
       - name: Install the pinned Rust toolchain
         if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'
         working-directory: proxy
@@ -198,6 +206,7 @@ jobs:
         if: steps.changes.outputs.rust == 'true'
         working-directory: proxy
         run: |
+          df -Pk .
           ../scripts/cargo_with_space.sh fmt --all -- --check
           ../scripts/cargo_with_space.sh clippy --release --locked --all-targets -- -D warnings
 

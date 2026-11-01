@@ -87,6 +87,7 @@ mod http;
 pub mod http_content;
 pub mod ignored_host_logger;
 pub mod inspection;
+pub mod jobs;
 pub mod memory_monitor;
 mod memory_runtime;
 pub mod metrics;
@@ -308,6 +309,7 @@ impl CredentialActivation {
 #[derive(Clone)]
 pub(crate) struct ConnectionIdentity {
     agent_id: String,
+    authorization_principal: Option<String>,
     run: Option<host_runs::AgentRun>,
     connection_id: String,
     source_id: Option<String>,
@@ -322,11 +324,17 @@ impl ConnectionIdentity {
     }
 
     fn request_agent(&self) -> Option<&str> {
+        if let Some(principal) = &self.authorization_principal {
+            return Some(principal);
+        }
         let agent = self.agent_id.trim();
         (!agent.is_empty() && !matches!(agent, "unknown" | "default")).then_some(agent)
     }
 
     fn request_identity(&self) -> network_guard::Identity<'_> {
+        if let Some(principal) = &self.authorization_principal {
+            return network_guard::Identity::Resolved(principal);
+        }
         if let Some(run) = &self.run {
             return network_guard::Identity::Current(run);
         }
@@ -336,7 +344,27 @@ impl ConnectionIdentity {
         )
     }
 
+    fn current_agent_run(&self) -> Option<&host_runs::AgentRun> {
+        self.authorization_principal
+            .is_none()
+            .then_some(self.run.as_ref())
+            .flatten()
+    }
+
     fn audit_attribution(&self) -> audit::Attribution {
+        if let Some(principal) = &self.authorization_principal {
+            return audit::Attribution {
+                evidence_owner: Some(self.agent_id.clone()),
+                trusted_transport_identity: Some(self.agent_id.clone()),
+                initiator: Some(audit::Initiator::Unknown),
+                status: Some(audit::AttributionStatus::Delegated),
+                provenance: Some(
+                    json!({"transport_source":"uds", "job_run":self.run,
+                    "authorization_principal":principal})
+                    .into(),
+                ),
+            };
+        }
         let agent = self.request_agent();
         audit::Attribution {
             evidence_owner: agent.map(str::to_owned),
@@ -1599,6 +1627,17 @@ impl RunningListener {
         runtime: Arc<RwLock<Arc<Runtime>>>,
         ingress_peers: Arc<external_ingress::Peers>,
     ) -> Self {
+        Self::start_with_job(listener, socket, target, runtime, ingress_peers, None)
+    }
+
+    fn start_with_job(
+        listener: impl Into<Arc<UnixListener>>,
+        socket: SocketPath,
+        target: AgentListener,
+        runtime: Arc<RwLock<Arc<Runtime>>>,
+        ingress_peers: Arc<external_ingress::Peers>,
+        job: Option<jobs::network::Authority>,
+    ) -> Self {
         let listener = listener.into();
         let agent_id = target.agent_id.clone();
         let source_id = target.source_id();
@@ -1611,6 +1650,7 @@ impl RunningListener {
             ingress_peers,
             Arc::downgrade(&stop),
             receiver,
+            job,
         ));
         Self {
             listener,
@@ -1642,6 +1682,7 @@ async fn accept_agents(
     ingress_peers: Arc<external_ingress::Peers>,
     stop_signal: std::sync::Weak<watch::Sender<bool>>,
     mut stop: watch::Receiver<bool>,
+    job: Option<jobs::network::Authority>,
 ) {
     let mut connections = JoinSet::new();
     loop {
@@ -1658,9 +1699,10 @@ async fn accept_agents(
                     let identity = ConnectionIdentity {
                         ingress_binding: pending.as_ref().map(|peer| peer.binding.clone()),
                         agent_id: target.agent_id.clone(),
-                        run: runtime.read().ok().and_then(|runtime| {
+                        authorization_principal: job.as_ref().map(|job| job.principal.clone()),
+                        run: job.as_ref().map(|job| job.run.clone()).or_else(|| runtime.read().ok().and_then(|runtime| {
                             if external { None } else { runtime.policy.as_ref()?.agent_run(&target.agent_id) }
-                        }),
+                        })),
                         connection_id: format!("conn-{}", uuid::Uuid::new_v4().simple()),
                         source_id: if external { None } else { target.source_id() },
                     };
