@@ -54,6 +54,7 @@ capabilities:
 fn config(root: &Path) -> Config {
     Config {
         native_product: false,
+        ingress_bindings: vec![],
         native_settings: None,
         native_config_dir: None,
         native_config_path: None,
@@ -62,7 +63,6 @@ fn config(root: &Path) -> Config {
             socket_path: root.join("alice.sock"),
             source_id: None,
         }],
-        agent_map_file: String::new(),
         data_dir: Some(root.join("data")),
         policy_file: Some(root.join("policy.toml")),
         gateway_builtin_services_dir: Some(root.join("builtin")),
@@ -89,10 +89,11 @@ fn config(root: &Path) -> Config {
         readiness_file: root.join("ready.json"),
         reload_id: None,
         audit_log_path: Some(root.join("audit.jsonl")),
-        event_log: root.join("events.jsonl"),
+        retired_event_log: Default::default(),
         parent_proxy: None,
         parent_proxy_agents: Vec::new(),
         parent_proxy_hosts: Vec::new(),
+        target_ip_mappings: Vec::new(),
         upstream_ca_file: None,
         tls_ca_file: None,
         ignore_hosts: Vec::new(),

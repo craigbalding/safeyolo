@@ -335,7 +335,7 @@ def run(args) -> dict:
             failures.append(f"owned process cleanup inspection: {error}")
         remaining = []
         for pattern in ("agents/g7/vm.pid", "agents/g7/vm-control.sock", "data/vm-control/g7.sock", "data/shell-sockets/g7.sock",
-                        "data/ready.json", "data/sockets/*/proxy.sock", "data/coord/nats/process.json"):
+                        "data/ready.json", "data/sockets/*/proxy.sock", "agents/*/proxy/proxy.sock", "data/coord/nats/process.json"):
             remaining.extend(str(path) for path in root.glob(pattern))
         failures.extend(remaining)
         cleanup.update(owned_processes=processes, remaining_runtime_paths=remaining,

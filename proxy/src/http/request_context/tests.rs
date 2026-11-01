@@ -40,27 +40,34 @@ impl Fixture {
             "readiness_file":directory.path().join("ready"),
             "flow_store_enabled": false,
             "audit_log_path": directory.path().join("audit.jsonl"),
-            "event_log": if full_sink { std::path::PathBuf::from("/dev/full") }
-                else {directory.path().join("events.jsonl")},
             "test_context_block":block,
         }))
         .unwrap();
         let runtime =
             Arc::new(Runtime::new(config, "request-context-fixture", None, None).unwrap());
+        if full_sink {
+            runtime
+                .audit
+                .wait_for_drain(Duration::from_secs(2))
+                .unwrap();
+            runtime.audit.poison_for_test();
+        }
         Self { directory, runtime }
     }
 
     fn identity(&self) -> ConnectionIdentity {
         ConnectionIdentity {
+            ingress_binding: None,
+            run: None,
             agent_id: "alice".into(),
             connection_id: "owned-connection".into(),
             source_id: Some("owned-slot".into()),
-            reconciled: None,
         }
     }
 
     fn destination(&self) -> super::super::Destination {
         super::super::Destination {
+            selected_ip: None,
             host: "dial.invalid".into(),
             policy_host: "owned.invalid".into(),
             port: 8123,
@@ -98,10 +105,24 @@ impl Fixture {
     }
 
     fn events(&self) -> Vec<Value> {
-        std::fs::read_to_string(self.directory.path().join("events.jsonl"))
+        match self
+            .runtime
+            .audit
+            .wait_for_drain(std::time::Duration::from_secs(2))
+        {
+            Ok(true) => (),
+            Err(error) if error.kind() == crate::audit::ErrorKind::Poisoned => (),
+            other => panic!("audit snapshot did not drain: {other:?}"),
+        }
+        let path = self.directory.path().join("audit.jsonl");
+        if !path.exists() {
+            return Vec::new();
+        }
+        std::fs::read_to_string(path)
             .unwrap()
             .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|row| row["event"] == "security.test_context")
             .collect()
     }
 }
@@ -965,20 +986,20 @@ async fn postcheck_lookup_error_is_deferred_and_counts_only_at_validated_eom() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn sink_failure_marks_block_and_applied_response_without_rolling_back_counters() {
+async fn canonical_submission_failure_skips_terminal_counts_and_marks_evidence() {
     let fixture = Fixture::new(true, json!(["owned.invalid"]), true);
     let mut blocked = Request::builder().body(()).unwrap();
-    let Admission::Block(response) = fixture.prepare(&mut blocked).unwrap() else {
-        panic!("expected block")
-    };
-    assert_eq!(response.headers()["x-safeyolo-evidence-error"], "true");
-    assert_eq!(fixture.counts(), [1, 0, 1, 0, 0]);
+    assert!(matches!(
+        fixture.prepare(&mut blocked).unwrap(),
+        Admission::HookError
+    ));
+    assert_eq!(fixture.counts(), [1, 0, 0, 0, 0]);
     let mut peer = H1::new().await;
     let mut request = peer.request(0, Some(CLAIM), "identity").await;
     let context = pending(fixture.prepare(&mut request).unwrap());
     let (_, context) = context.buffer(request.into_body(), Some(0)).await.unwrap();
     assert!(context.evidence_failed());
-    assert_eq!(fixture.counts(), [2, 1, 1, 0, 0]);
+    assert_eq!(fixture.counts(), [2, 0, 0, 0, 0]);
 }
 
 #[test]
@@ -1142,6 +1163,22 @@ fn canonical_test_context_events_and_submission_effects_match_source_hooks() {
                 .collect();
         for event in &mut events {
             event.as_object_mut().unwrap().remove("ts");
+            // The retained Python source predates attribution on applied events.
+            // Assert the current trusted fields before comparing its other facts.
+            if event["details"]["phase"].is_string() {
+                let attribution = event["details"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("attribution");
+                assert_eq!(
+                    attribution,
+                    Some(json!({
+                        "evidence_owner":"alice", "trusted_transport_identity":"alice",
+                        "initiator":"unknown", "attribution_status":"resolved",
+                        "attribution_provenance":{"transport_source":"uds","uds_agent":"alice"}
+                    }))
+                );
+            }
         }
         let context_applied = errors.contains(&"response")
             || events

@@ -748,7 +748,7 @@ cleanup() {
     local section_exit=$? cleanup_failed=false
     trap - EXIT ERR
     set +e
-    # Stop processes only — leave state (logs, flows.sqlite3, agent_map,
+    # Stop processes only — leave state (logs, flows.sqlite3, agent records,
     # config) intact for post-mortem analysis of failures.
     echo ""
     echo "=== Cleanup ==="
@@ -818,6 +818,7 @@ PY_OWNER
                   "$SAFEYOLO_CONFIG_DIR"/data/ready.json \
                   "$SAFEYOLO_CONFIG_DIR"/data/proxy.pid \
                   "$SAFEYOLO_CONFIG_DIR"/data/sockets/*/proxy.sock \
+                  "$SAFEYOLO_CONFIG_DIR"/agents/*/proxy/proxy.sock \
                   "$SAFEYOLO_COORD_DATA_DIR"/nats/nats.pid.json; do
         if [ -e "$marker" ]; then
             echo "ERROR: owned cleanup left $marker" >&2
@@ -1214,8 +1215,8 @@ fi
 
 IDENTITY_RESULT=0
 if [ "$RUN_ISOLATION" = true ]; then
-    # Host-side identity validation — agent_map must have correct
-    # entries before in-VM tests rely on the identity chain.
+    # Host-side identity validation checks configured listeners before
+    # in-VM tests rely on their identity.
     echo "=== Agent Identity Tests (host-side, sandbox running) ==="
     echo ""
     cd "$SCRIPT_DIR/host"
@@ -1230,7 +1231,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     set +e
     python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" "$AGENT_NAME" -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} -v -rs --tb=short --timeout=60 --ignore=test_root_containment.py"
+        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 /usr/bin/python3 -m pytest${PYTEST_FORWARD_SHELL} -v -rs --tb=short --timeout=60 --ignore=test_root_containment.py"
     ISOLATION_RESULT=$?
     set -e
     echo ""
@@ -1239,7 +1240,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     set +e
     python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" "$AGENT_NAME" --user root -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} -v -rs --tb=short --timeout=60 test_root_containment.py test_key_isolation.py::TestPrivateKeyAbsent"
+        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 /usr/bin/python3 -m pytest${PYTEST_FORWARD_SHELL} -v -rs --tb=short --timeout=60 test_root_containment.py test_key_isolation.py::TestPrivateKeyAbsent"
     ROOT_ISOLATION_RESULT=$?
     set -e
     echo ""

@@ -12,12 +12,18 @@ pub struct Controls<'a> {
     pub gateway: Option<GatewayContext<'a>>,
     pub memory: Option<MemoryContext<'a>>,
     pub traces: Option<TraceContext<'a>>,
-    pub discovery: Option<&'a std::sync::Arc<crate::agent_discovery::AgentDiscovery>>,
+    pub agents: Option<AgentReportContext<'a>>,
     pub audit: Option<&'a std::sync::Arc<crate::audit::Writer>>,
     pub flows: Option<&'a std::sync::Arc<crate::flow_store::FlowStore>>,
     pub circuits: Option<CircuitContext<'a>>,
     pub declarations: Option<DeclarationContext<'a>>,
     pub coord: Option<CoordContext<'a>>,
+}
+
+/// Listener reports retain the existing global view after bearer authentication.
+pub struct AgentReportContext<'a> {
+    pub activity: &'a crate::agent_activity::AgentActivity,
+    pub listeners: &'a [crate::AgentListener],
 }
 
 /// Trace expiry samples wall time only when an authorized lookup is reached.
@@ -98,12 +104,13 @@ where
         body,
         source_request_id,
         None,
+        None,
     )
     .await
 }
 
-/// Internal production entry point that supplies the process-owned plumb
-/// mailbox without exposing that private owner type through `Controls`.
+/// Internal production entry point that supplies runtime approval checks and
+/// the plumb mailbox without exposing private owners through `Controls`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn respond_with_body_and_audit_id_with_plumb<'p, B>(
     request: Request<'_>,
@@ -115,6 +122,7 @@ pub(crate) async fn respond_with_body_and_audit_id_with_plumb<'p, B>(
     body: RequestBody<'_, B>,
     source_request_id: Option<&str>,
     plumb: Option<&crate::agent_api::plumb::PlumbOwner>,
+    state: Option<&crate::RuntimeState>,
 ) -> Result<Outcome<'p>, B::Error>
 where
     B: Body<Data = Bytes> + Unpin,
@@ -158,6 +166,7 @@ where
                 request,
                 controls.audit,
                 policy,
+                state,
                 id,
                 crate::policy::evidence::Read::Diagnostic,
             )
@@ -165,11 +174,11 @@ where
         }
         return Ok(explain::respond(request, controls.audit).await);
     }
-    if route(request).starts_with("/approvals/") {
+    if route(request) == "/approvals" || route(request).starts_with("/approvals/") {
         let PolicyState::Ready(policy) = &policy else {
             return Ok(response(503, json!({"error":"policy unavailable"})));
         };
-        return approvals::respond(request, controls.audit, policy, body).await;
+        return approvals::respond(request, controls.audit, policy, state, body).await;
     }
     if route(request) == "/trace" {
         return Ok(trace::respond(request, controls.traces));
@@ -232,7 +241,7 @@ where
         return plumb::respond(request, body, plumb, controls.audit.cloned()).await;
     }
     if route(request) == "/agents" {
-        return Ok(discovery::respond(request, controls.discovery, controls.audit).await);
+        return Ok(agents::respond(request, controls.agents));
     }
     if let Some(route) = flows::recognize(request) {
         return flows::respond(

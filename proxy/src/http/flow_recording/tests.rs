@@ -14,10 +14,11 @@ const LIMIT: Duration = Duration::from_secs(5);
 const ID: &str = "req-00000000000000000000000000000000";
 fn identity(agent: &str) -> ConnectionIdentity {
     ConnectionIdentity {
+        ingress_binding: None,
+        run: None,
         agent_id: agent.into(),
         connection_id: "owned-connection".into(),
         source_id: Some("192.0.2.20".into()),
-        reconciled: None,
     }
 }
 
@@ -76,6 +77,7 @@ fn context() -> AppliedContext {
 }
 fn destination(path: &str, port: u16) -> super::super::Destination {
     super::super::Destination {
+        selected_ip: None,
         host: "127.0.0.2".into(),
         policy_host: "127.0.0.2".into(),
         port,
@@ -258,7 +260,7 @@ fn record_builder_matches_fourteen_actual_source_projections() {
 fn config(directory: &Path, target_host: &str) -> Config {
     let policy = directory.join("policy.json");
     std::fs::write(&policy,json!({"permissions":[{"action":"network:request","resource":"*","effect":"allow"}],"addons":{"test_context":{"target_hosts":[target_host]},"flow_store":{"max_request_body_bytes":5,"max_response_body_bytes":6,"compress_bodies":false}}}).to_string()).unwrap();
-    serde_json::from_value(json!({"listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock"),"source_id":"192.0.2.20"},{"agent_id":"bob","socket_path":directory.join("bob.sock"),"source_id":"192.0.2.21"}],"policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),"audit_log_path":directory.join("audit.jsonl"),"event_log":directory.join("events"),"flow_store_enabled":true,"flow_store_db_path":directory.join("flows.sqlite3"),"test_context_block":true,"circuit_breaker_enabled":false})).unwrap()
+    serde_json::from_value(json!({"listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock"),"source_id":"192.0.2.20"},{"agent_id":"bob","socket_path":directory.join("bob.sock"),"source_id":"192.0.2.21"}],"policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),"audit_log_path":directory.join("audit.jsonl"),"flow_store_enabled":true,"flow_store_db_path":directory.join("flows.sqlite3"),"test_context_block":true,"circuit_breaker_enabled":false})).unwrap()
 }
 async fn send(
     path: &Path,
@@ -447,20 +449,30 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
         recorder.stats(),
         json!({"recorded":4,"errors":1,"skipped":1,"queue_dropped":0,"write_errors":0})
     );
-    let events: Vec<Value> = std::fs::read_to_string(directory.path().join("events"))
+    let events: Vec<Value> = std::fs::read_to_string(directory.path().join("audit.jsonl"))
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     let egress: Vec<_> = events
         .iter()
-        .filter(|event| event["event"] == "proxy.egress")
+        .filter(|event| event["event"] == "traffic.egress")
         .collect();
     assert_eq!(egress.len(), 7);
+    assert!(events.iter().all(|event| !matches!(
+        event["event"].as_str(),
+        Some("traffic.connection" | "traffic.connect_request")
+    )));
     assert!(
         egress
             .iter()
-            .all(|event| event["host"] == host && event["port"] == address.port())
+            .all(|event| event["details"].get("target").is_none()
+                && event["details"].get("stage").is_none())
+    );
+    assert!(
+        egress
+            .iter()
+            .all(|event| event["host"] == host && event["details"]["port"] == address.port())
     );
     assert!(runtime.policy.is_some());
 
@@ -468,6 +480,9 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
     let second = store.get_flow(2).unwrap().unwrap();
     let third = store.get_flow(3).unwrap().unwrap();
     let fourth = store.get_flow(4).unwrap().unwrap();
+    for ordinary in [&first, &second, &third, &fourth] {
+        assert!(ordinary["connection_json"].is_null());
+    }
     assert_eq!(first["evidence_owner"], "alice");
     assert_eq!(first["test_agent"], "declared-tool");
     assert_eq!(first["source_id"], "192.0.2.20");
@@ -876,19 +891,19 @@ async fn cancelled_buffered_request_before_driver_records_one_error() {
     drop(origin);
     assert!(!alice.exists() && !directory.path().join("ready").exists());
     assert!(!origin_contact);
-    let events: Vec<Value> = std::fs::read_to_string(directory.path().join("events"))
+    let events: Vec<Value> = std::fs::read_to_string(directory.path().join("audit.jsonl"))
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     let egress: Vec<_> = events
         .iter()
-        .filter(|event| event["event"] == "proxy.egress")
+        .filter(|event| event["event"] == "traffic.egress")
         .collect();
     assert_eq!(egress.len(), 1);
-    assert_eq!(egress[0]["route"], "parent");
+    assert_eq!(egress[0]["details"]["route"], "parent");
     assert_eq!(egress[0]["host"], origin_host);
-    assert_eq!(egress[0]["port"], origin_address.port());
+    assert_eq!(egress[0]["details"]["port"], origin_address.port());
     assert!(
         recorded.is_ok(),
         "cancelled applied request lost its recording terminal"
@@ -964,8 +979,8 @@ async fn circuit_response_exception_stops_later_hooks_but_keeps_wire_and_committ
         (
             "audit_failure",
             json!({"failure_threshold":1}),
-            false,
             true,
+            false,
             true,
         ),
     ] {
@@ -986,10 +1001,12 @@ async fn circuit_response_exception_stops_later_hooks_but_keeps_wire_and_committ
             let (mut stream, _) = timeout(LIMIT, listener.accept()).await.unwrap().unwrap();
             let request = origin_request(&mut stream).await;
             if fail_audit {
-                // Fail only response-phase writes to the owned diagnostic file.
-                // The failure cannot prevent admission or origin delivery.
-                *peer_runtime.events.lock().unwrap() =
-                    std::fs::File::open(&peer_runtime.config.event_log).unwrap();
+                // A synchronous canonical submission error cannot undo delivery.
+                peer_runtime
+                    .audit
+                    .wait_for_drain(Duration::from_secs(2))
+                    .unwrap();
+                peer_runtime.audit.poison_for_test();
             }
             stream
                 .write_all(
@@ -1048,7 +1065,24 @@ async fn circuit_response_exception_stops_later_hooks_but_keeps_wire_and_committ
         } else {
             assert!(snapshot["states"].as_object().unwrap().is_empty(), "{name}");
         }
-        let events: Vec<Value> = std::fs::read_to_string(directory.path().join("events"))
+        if fail_audit {
+            let counters = runtime
+                .circuits
+                .stats_document(
+                    true,
+                    crate::circuit_runtime::now(),
+                    &mut rand::random::<f64>,
+                )
+                .unwrap()
+                .value
+                .json()
+                .unwrap();
+            assert_eq!(
+                counters["opens_total"], 1,
+                "the failed submission retains the reached counter"
+            );
+        }
+        let events: Vec<Value> = std::fs::read_to_string(directory.path().join("audit.jsonl"))
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -1066,10 +1100,7 @@ async fn circuit_response_exception_stops_later_hooks_but_keeps_wire_and_committ
         );
         let circuit_events = events
             .iter()
-            .filter(|event| {
-                event["event"] == "proxy.circuit"
-                    && event["audit_intent"] == "ops.circuit_breaker.open"
-            })
+            .filter(|event| event["event"] == "ops.circuit_breaker.open")
             .count();
         assert_eq!(
             circuit_events,

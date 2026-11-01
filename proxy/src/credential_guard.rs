@@ -30,6 +30,7 @@ use std::{
 };
 use zeroize::Zeroizing;
 
+pub mod codex;
 pub(crate) mod ghcr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -295,6 +296,7 @@ pub struct CredentialGuard {
     snapshot: Arc<RwLock<Arc<Snapshot>>>,
     stats: Arc<Mutex<Stats>>,
     ghcr_tokens: Arc<Mutex<ghcr::Tokens>>,
+    codex_vault: Option<crate::credentials::Vault>,
 }
 impl CredentialGuard {
     /// The root owns loading/generating the existing HMAC key file. Its bytes
@@ -305,6 +307,7 @@ impl CredentialGuard {
             snapshot: Arc::new(RwLock::new(Arc::new(Snapshot::default()))),
             stats: Arc::new(Mutex::new(Stats::default())),
             ghcr_tokens: Arc::new(Mutex::new(ghcr::Tokens::default())),
+            codex_vault: None,
         }
     }
     pub fn stats(&self) -> Result<Stats> {
@@ -353,6 +356,7 @@ impl CredentialGuard {
                 } else {
                     self.ghcr_tokens.clone()
                 },
+                codex_vault: self.codex_vault.clone(),
             },
             report,
         ))
@@ -421,6 +425,7 @@ impl CredentialGuard {
                     Some(host),
                     match identity {
                         Identity::Resolved(agent) => Some(agent),
+                        Identity::Current(run) => Some(run.agent.as_str()),
                         _ => None,
                     },
                 )
@@ -471,6 +476,86 @@ impl CredentialGuard {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect()
+    }
+    /// Bind a vaulted reference to its current contents without serializing a
+    /// secret-bearing record or retaining plaintext in approval state.
+    pub(crate) fn approval_binding(&self, credential: &crate::credentials::Credential) -> String {
+        let reference = zeroize::Zeroizing::new(
+            serde_json::to_string(&credential.reference).expect("credential reference"),
+        );
+        let expires_at = credential
+            .expires_at
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(crate::approvals::pending::normalized_expiry);
+        let fields = [
+            Some(credential.name.as_str()),
+            Some(credential.credential_type.as_str()),
+            Some(credential.value.expose_secret()),
+            Some(reference.as_str()),
+            credential
+                .refresh_token
+                .as_ref()
+                .map(crate::credentials::Secret::expose_secret),
+            credential.token_url.as_deref(),
+            credential.client_id.as_deref(),
+            credential
+                .client_secret
+                .as_ref()
+                .map(crate::credentials::Secret::expose_secret),
+            expires_at.as_deref(),
+        ];
+        let subscription_fields = [
+            credential.subscription_client.map(|client| match client {
+                crate::credentials::SubscriptionClient::Codex => "codex",
+                crate::credentials::SubscriptionClient::Claude => "claude",
+            }),
+            credential.refresh_scope.as_deref(),
+            credential.chatgpt_account_id.as_deref(),
+        ];
+        // Records without subscription metadata retain their existing binding.
+        let subscription_fields = if subscription_fields.iter().any(Option::is_some) {
+            &subscription_fields[..]
+        } else {
+            &[]
+        };
+        let mut binding = hmac::Context::with_key(&self.key);
+        binding.update(b"safeyolo.pending-credential.v1");
+        for field in fields.iter().chain(subscription_fields) {
+            binding.update(&[u8::from(field.is_some())]);
+            if let Some(field) = field {
+                binding.update(&(field.len() as u64).to_be_bytes());
+                binding.update(field.as_bytes());
+            }
+        }
+        if let Some(codex) = &credential.codex {
+            binding.update(b"codex-authorization\0");
+            binding.update(&serde_json::to_vec(codex).expect("Codex scope"));
+        }
+        format!(
+            "hmac256:{}",
+            binding
+                .sign()
+                .as_ref()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        )
+    }
+
+    pub(crate) fn approval_resource(&self, target: &str) -> String {
+        let mut binding = hmac::Context::with_key(&self.key);
+        binding.update(b"safeyolo.pending-resource.v1");
+        binding.update(target.as_bytes());
+        format!(
+            "hmac256:{}",
+            binding
+                .sign()
+                .as_ref()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        )
     }
     fn detect(&self, snapshot: &Snapshot, headers: &[Header<'_>]) -> Result<Vec<Detection>> {
         let mut detections = Vec::<Detection>::new();
@@ -567,6 +652,17 @@ impl CredentialGuard {
         options: Options,
         now_ms: f64,
     ) -> Result<Outcome> {
+        self.enforce_inner(pdp, request, options, now_ms, None)
+    }
+
+    fn enforce_inner(
+        &self,
+        pdp: Pdp<'_>,
+        request: Request<'_>,
+        options: Options,
+        now_ms: f64,
+        refresh_credential: Option<(&str, bool)>,
+    ) -> Result<Outcome> {
         let mut output = Outcome {
             kind: OutcomeKind::Bypassed,
             response: None,
@@ -606,6 +702,7 @@ impl CredentialGuard {
         }
         let agent = match request.identity {
             Identity::Resolved(agent) => Some(agent),
+            Identity::Current(run) => Some(run.agent.as_str()),
             _ => None,
         };
         let project = agent.unwrap_or("default");
@@ -621,7 +718,22 @@ impl CredentialGuard {
             return Ok(output);
         }
         let snapshot = self.snapshot()?;
-        let detections = self.detect(&snapshot, request.headers)?;
+        let detections = if let Some((value, _)) = refresh_credential {
+            vec![Detection {
+                classified: String::new(),
+                value: Secret::new(value),
+                finding: Finding {
+                    rule: "unknown_secret".into(),
+                    credential_type: None,
+                    header: "refresh_token".into(),
+                    fingerprint: self.codex_refresh_fingerprint(value),
+                    confidence: "high",
+                    tier: 1,
+                },
+            }]
+        } else {
+            self.detect(&snapshot, request.headers)?
+        };
         if detections.is_empty() {
             output.kind = OutcomeKind::NoDetection;
             output.trace.push(trace(
@@ -661,12 +773,20 @@ impl CredentialGuard {
                 detection.value.expose_secret(),
                 now_ms,
             )?;
+            let observed_codex = refresh_credential.is_some_and(|(value, recognized)| {
+                recognized && value == detection.value.expose_secret()
+            }) || self.observed_codex_access(
+                &pdp,
+                &request,
+                &detection.finding.header,
+                detection.value.expose_secret(),
+            )?;
             let decision = evaluate(
                 &pdp,
                 &request,
                 &detection.finding,
                 now_ms,
-                observed_ghcr_pull,
+                observed_ghcr_pull || observed_codex,
             );
             let fingerprint = format!("hmac:{}", detection.finding.fingerprint);
             let expected = snapshot
@@ -679,6 +799,9 @@ impl CredentialGuard {
             let mut details = json!({"rule":detection.finding.rule,"location":format!("header:{}",detection.finding.header),"fingerprint":fingerprint,"confidence":detection.finding.confidence,"tier":detection.finding.tier,"project_id":project,"reason_codes":decision.codes,"method":request.method,"port":request.port,"connection_id":request.connection_id});
             if observed_ghcr_pull {
                 details["observed_anonymous_ghcr_pull"] = json!(true);
+            }
+            if observed_codex {
+                details["codex_authorized"] = json!(true);
             }
             // Bind new operator prompts to the policy's current identity. The
             // first-launch picker must not attribute an older agent's prompt
@@ -1107,7 +1230,7 @@ fn evaluate(
     request: &Request<'_>,
     finding: &Finding,
     now_ms: f64,
-    observed_ghcr_pull: bool,
+    recognized_credential: bool,
 ) -> Decision {
     let error = |reason: String, codes, legacy| Decision {
         effect: PdpEffect::Error,
@@ -1163,18 +1286,22 @@ fn evaluate(
         path,
         credential_hmac: Some(&finding.fingerprint),
     };
-    let Ok(credential) = (if observed_ghcr_pull {
-        policy.evaluate_observed_ghcr_pull(credential, now_ms)
-    } else {
-        policy.evaluate_credential(credential, now_ms)
-    }) else {
+    let Ok(credential) = policy.evaluate_credential_for_run(
+        credential,
+        now_ms,
+        recognized_credential,
+        request.identity.run(),
+    ) else {
         return failed();
     };
     let network = credential.effect == Effect::Allow;
     let decision = if network {
-        match policy.evaluate(
+        // Keep the transport's selected policy partition, including for external
+        // ingress with no sandbox run. A resolved name never supplies run authority.
+        let run = request.identity.run();
+        match policy.evaluate_for_run(
             NetworkRequest {
-                agent: None,
+                agent: request.identity.agent(),
                 host: request.host,
                 port: Some(request.port),
                 method: request.method,
@@ -1182,6 +1309,7 @@ fn evaluate(
             },
             now_ms,
             true,
+            run,
         ) {
             Ok(decision) => decision,
             Err(_) => return failed(),

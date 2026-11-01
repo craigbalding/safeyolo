@@ -84,7 +84,7 @@ async fn call_with_clock(
             gateway: None,
             memory: None,
             traces: store.map(|store| TraceContext { store, now }),
-            discovery: None,
+            agents: None,
             audit: None,
             flows: None,
             circuits: None,
@@ -274,12 +274,27 @@ async fn actual_source_api_cases_preserve_order_ownership_query_and_error_bytes(
                         "{} {operation}",
                         input["name"]
                     );
-                    assert_eq!(
-                        std::str::from_utf8(&outcome.response.body_bytes()).unwrap(),
-                        expected.body_text,
-                        "{} {operation}",
-                        input["name"]
-                    );
+                    let body = outcome.response.body_bytes();
+                    if expected.status == 200 {
+                        let mut actual: Value = serde_json::from_slice(&body).unwrap();
+                        let mut source: Value = serde_json::from_str(&expected.body_text).unwrap();
+                        // These source workflows contain only a few evaluated
+                        // steps. Native diagnostics must call them incomplete,
+                        // rather than infer absent controls from missing steps.
+                        assert_eq!(actual["incomplete"], true);
+                        assert_eq!(actual["not_loaded"], json!([]));
+                        actual.as_object_mut().unwrap().remove("incomplete");
+                        actual.as_object_mut().unwrap().remove("not_loaded");
+                        source.as_object_mut().unwrap().remove("not_loaded");
+                        assert_eq!(actual, source, "{} {operation}", input["name"]);
+                    } else {
+                        assert_eq!(
+                            std::str::from_utf8(&body).unwrap(),
+                            expected.body_text,
+                            "{} {operation}",
+                            input["name"]
+                        );
+                    }
                     calls += 1;
                 }
                 other => panic!("unhandled operation in API row: {other}"),

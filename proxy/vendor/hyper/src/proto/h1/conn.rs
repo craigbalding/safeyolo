@@ -81,6 +81,8 @@ where
                 response_status: None,
                 #[cfg(feature = "server")]
                 on_request_complete: None,
+                #[cfg(feature = "server")]
+                request_start: 0,
                 notify_read: false,
                 reading: Reading::Init,
                 writing: Writing::Init,
@@ -288,6 +290,8 @@ where
         if T::should_read_first() {
             self.state.on_request_complete = Some(crate::ext::register_request_completion(
                 &mut msg.head.extensions,
+                self.state.request_start,
+                self.io.read_position(),
             ));
         }
 
@@ -323,7 +327,9 @@ where
                     status,
                     &msg.head.headers,
                     msg.decode == DecodedLength::ZERO,
-                    msg.head.extensions.get::<crate::ext::OriginalHeaderFields>(),
+                    msg.head
+                        .extensions
+                        .get::<crate::ext::OriginalHeaderFields>(),
                     reason,
                 );
             }
@@ -347,7 +353,7 @@ where
             #[cfg(feature = "client")]
             self.state.complete_response();
             #[cfg(feature = "server")]
-            self.state.complete_request();
+            self.state.complete_request(self.io.read_position());
             if !T::should_read_first() {
                 self.try_keep_alive(cx);
             }
@@ -407,7 +413,12 @@ where
 
         let (reading, ret) = match &mut self.state.reading {
             Reading::Body(decoder) => {
-                match ready!(decoder.decode(cx, &mut self.io)) {
+                let decoded = decoder.decode(cx, &mut self.io);
+                #[cfg(feature = "server")]
+                if let Some(completion) = &self.state.on_request_complete {
+                    completion.advance(self.io.read_position());
+                }
+                match ready!(decoded) {
                     Ok(frame) => {
                         if frame.is_data() {
                             let slice = frame.data_ref().unwrap_or_else(|| unreachable!());
@@ -447,6 +458,14 @@ where
                     }
                     Err(e) => {
                         debug!("incoming body decode error: {}", e);
+                        #[cfg(feature = "server")]
+                        if e.get_ref()
+                            .is_some_and(|e| e.is::<super::decode::BodyParseError>())
+                        {
+                            if let Some(completion) = &self.state.on_request_complete {
+                                completion.body_parse_failed();
+                            }
+                        }
                         (Reading::Closed, Poll::Ready(Some(Err(e))))
                     }
                 }
@@ -474,7 +493,7 @@ where
         }
         #[cfg(feature = "server")]
         match reading {
-            Reading::KeepAlive => self.state.complete_request(),
+            Reading::KeepAlive => self.state.complete_request(self.io.read_position()),
             Reading::Closed => self.state.abort_request(),
             _ => (),
         }
@@ -1032,6 +1051,8 @@ struct State {
     response_status: Option<http::StatusCode>,
     #[cfg(feature = "server")]
     on_request_complete: Option<crate::ext::RequestCompletionProducer>,
+    #[cfg(feature = "server")]
+    request_start: u64,
     /// Set to true when the Dispatcher should poll read operations
     /// again. See the `maybe_notify` method for more.
     notify_read: bool,
@@ -1134,7 +1155,8 @@ impl KA {
 
 impl State {
     #[cfg(feature = "server")]
-    fn complete_request(&mut self) {
+    fn complete_request(&mut self, end: u64) {
+        self.request_start = end;
         if let Some(completion) = self.on_request_complete.take() {
             completion.complete();
         }

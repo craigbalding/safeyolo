@@ -199,7 +199,7 @@ def mcp_observation(output: str, room: str, marker: str, agent: str) -> dict:
 
 def coordination_journey(root: Path, primary: str, peer: str, commit: str, command) -> dict:
     """Observe the missing G2/G4 guest composition without repeating G5 or Factory."""
-    from tests.blackbox.installed_host_smoke import _agent_map, _process_executable, _process_start_token
+    from tests.blackbox.installed_host_smoke import _agent_listeners, _process_executable, _process_start_token
     from tests.blackbox.installed_ingress import runsc_identity
 
     native = "/home/agent/.safeyolo/safeyolo-coord"
@@ -240,7 +240,7 @@ def coordination_journey(root: Path, primary: str, peer: str, commit: str, comma
     for name in (primary, peer):
         state = json.loads(command("agent", "status", name))
         assert state["runtime_state"] == "running" and state["control_state"] == "ready", state
-        listener = next(row for row in _agent_map(root) if row["agent_id"] == name)
+        listener = next(row for row in _agent_listeners(root) if row["agent_id"] == name)
         bridge = runsc_identity(root, name, Path(listener["path"]), platform="systrap")
         versions = {binary: shell(name, binary + " --version").strip() for binary in
                     (native, "/safeyolo/safeyolo-guest")}

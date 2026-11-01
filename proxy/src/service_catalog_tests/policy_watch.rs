@@ -30,7 +30,7 @@ fn poll_policy(proxy: &Proxy) -> Poll<()> {
 
 fn policy_events(runtime: &Runtime) -> Vec<Value> {
     assert!(runtime.audit.wait_for_drain(LIMIT).unwrap());
-    std::fs::read_to_string(runtime.config.audit_log_path.as_ref().unwrap())
+    std::fs::read_to_string(runtime.audit.path())
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
@@ -853,9 +853,7 @@ async fn catalog_workflow() {
     std::fs::write(&bad_catalog, "schema_version: [").unwrap();
     std::fs::write(&ca, "owned invalid PEM").unwrap();
     std::fs::write(&inspection, "{ invalid inspection").unwrap();
-    let retained_log = fixture.directory.path().join("retained-events.jsonl");
-    std::fs::rename(&settings.event_log, &retained_log).unwrap();
-    std::fs::create_dir(&settings.event_log).unwrap();
+    settings.audit_log_path = Some(fixture.directory.path().join("unused-audit.jsonl"));
 
     write_policy(&path, &listed_policy(true), 1001);
     assert!(fixture.proxy.reload_policy_if_changed().await.unwrap());
@@ -875,7 +873,6 @@ async fn catalog_workflow() {
         initial.tls.as_ref().unwrap(),
         baseline.tls.as_ref().unwrap()
     ));
-    assert!(Arc::ptr_eq(&initial.events, &baseline.events));
     assert!(Arc::ptr_eq(&initial.audit, &baseline.audit));
     assert!(fixture.proxy.service_files == service_key);
     assert_eq!(fixture.proxy.service_check_at, service_deadline);
@@ -950,8 +947,7 @@ async fn catalog_workflow() {
     std::fs::remove_file(bad_catalog).unwrap();
     std::fs::write(&ca, pem).unwrap();
     write_json(&inspection, &json!({}));
-    std::fs::remove_dir(&settings.event_log).unwrap();
-    std::fs::rename(retained_log, &settings.event_log).unwrap();
+    assert!(!settings.audit_log_path.as_ref().unwrap().exists());
     write_policy(&path, &listed_policy(false), 1004);
     let deadline = fixture.proxy.policy_check_at;
     fixture.proxy.reload(settings.clone()).await.unwrap();

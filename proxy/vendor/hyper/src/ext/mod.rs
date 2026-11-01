@@ -78,7 +78,9 @@ mod request_completion;
 #[cfg(all(feature = "http1", feature = "server"))]
 pub(crate) use request_completion::{register_request_completion, RequestCompletionProducer};
 #[cfg(all(feature = "http1", feature = "server"))]
-pub use request_completion::{take_request_completion, RequestAborted, RequestCompletion};
+pub use request_completion::{
+    take_request_completion, RequestAborted, RequestByteRange, RequestCompletion,
+};
 
 #[cfg(feature = "http2")]
 /// Extension type representing the `:protocol` pseudo-header in HTTP/2.

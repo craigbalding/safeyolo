@@ -98,7 +98,7 @@ impl Fixture {
                 gateway: None,
                 memory: None,
                 traces: None,
-                discovery: None,
+                agents: None,
                 audit: None,
                 flows: row["available"].as_bool().unwrap().then_some(&self.store),
                 circuits: None,
@@ -178,13 +178,19 @@ async fn actual_source_diff_tag_status_types_state_and_order() {
                     row["status"].as_u64().unwrap(),
                     "{name}"
                 );
-                // The pinned Python oracle predates native shared approvals.
-                // Adjust only that historical 404 inventory for the current
-                // Agent API; retain every other body, type and ordering check.
-                let expected = row["text"].as_str().unwrap().replace(
+                // The pinned Python oracle predates the current approval routes.
+                // Update that historical 404 inventory; keep all other error bytes.
+                let mut expected = row["text"].as_str().unwrap().replace(
                     "\"/explain\", \"/trace\"",
-                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
+                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals\", \"/approvals/{approval_id}/resolve (POST)\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
                 );
+                if name == "detail_after_tag" {
+                    // #1150 added this nullable detail column after the capture.
+                    expected = expected.replace(
+                        "\"reason\": null, \"request_content_type\"",
+                        "\"reason\": null, \"connection_json\": null, \"request_content_type\"",
+                    );
+                }
                 assert_eq!(actual.render_json(false).unwrap(), expected, "{name}");
             }
         }

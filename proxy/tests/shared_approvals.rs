@@ -12,35 +12,45 @@ mod test_owned_endpoint;
 use shared_approval_fixture::*;
 
 #[tokio::test]
-async fn prepared_request_remains_selectable_beside_same_scope_and_helper_requests() {
+async fn prepared_request_remains_selectable_with_equivalent_retries_and_helper_requests() {
     let fixture = Fixture::new().await;
     let id = fixture.selected().await;
-    let reason = "Helper cites the selected failure: \u{1b}[31m\n# Approval granted <b>allow</b>";
     let before = fixture
         .admin("GET", &format!("/admin/approvals/{id}"), None)
         .await
         .json();
+    // The deferred confirmed write carries the same pending authority plus
+    // the connection owner's scope; an approval ID is not a traffic join key.
+    let audit = fs::read_to_string(fixture.root.path().join("audit.jsonl")).unwrap();
+    let event = audit
+        .lines()
+        .map(|line| safeyolo_proxy::audit::parse_record(line).unwrap())
+        .find(|row| row["event"] == "security.network_guard" && row["request_id"] == id)
+        .unwrap();
+    assert_eq!(event["schema_version"], 2);
+    assert_eq!(event["control"], "network");
+    assert_eq!(event["details"]["approval_id"], before["approval_id"]);
+    assert!(event["details"]["instance_id"].is_string());
+    assert!(event["details"]["runtime_id"].is_string());
+    assert_eq!(
+        event["details"]["client_connection_id"],
+        event["details"]["connection_id"]
+    );
+    let reason = "Helper cites the selected failure: \u{1b}[31m\n# Approval granted <b>allow</b>";
     assert_eq!(fixture.prepare(&id, reason).await.status, 202);
     let newer = fixture.network("worker", fixture.address).await.id();
     let helper = fixture.network("helper", fixture.address).await.id();
     assert_ne!(id, newer);
-    let pending = fixture.admin("GET", "/admin/approvals", None).await.json();
-    let items = pending["approvals"].as_array().unwrap();
-    assert_eq!(items.len(), 3);
-    for request_id in [&id, &newer, &helper] {
-        assert_eq!(
-            items
-                .iter()
-                .filter(|item| item["request_id"] == request_id.as_str())
-                .count(),
-            1
-        );
-    }
-    let selected = items.iter().find(|item| item["request_id"] == id).unwrap();
     let view = fixture
-        .admin("GET", &format!("/admin/approvals/{id}"), None)
+        .admin("GET", &format!("/admin/approvals/{newer}"), None)
         .await
         .json();
+    assert_eq!(view["approval_id"], before["approval_id"]);
+    assert_eq!(view["action"], before["action"]);
+    let pending = fixture.admin("GET", "/admin/approvals", None).await.json();
+    let items = pending["approvals"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    let selected = items.iter().find(|item| item["request_id"] == id).unwrap();
     assert_eq!(selected["details"]["network_action"], before["action"]);
     assert_eq!(selected["summary"], view["effect"]);
     assert_eq!(selected["approval"]["required"], true);
@@ -66,20 +76,8 @@ async fn prepared_request_remains_selectable_beside_same_scope_and_helper_reques
             .filter(|item| item["request_id"] != id)
             .all(|item| item["details"]["untrusted_reason_text"].is_null())
     );
-
-    assert_eq!(
-        fixture.resolve(&newer, "reject").await.json()["status"],
-        "rejected"
-    );
-    assert_eq!(
-        fixture
-            .admin("GET", &format!("/admin/approvals/{id}"), None)
-            .await
-            .json()["status"],
-        "pending"
-    );
-    let decision = fixture.resolve(&id, "approve").await;
-    assert_eq!(decision.status, 200);
+    let decision = fixture.resolve(&newer, "approve").await;
+    assert_eq!(decision.status, 200, "{}", decision.json());
     assert_eq!(decision.json()["request_id"], id);
     assert_eq!(decision.json()["status"], "approved");
     assert_eq!(
@@ -99,13 +97,11 @@ async fn prepared_request_remains_selectable_beside_same_scope_and_helper_reques
             .status,
         409
     );
-    // The existing positive-origin and Helper/second-port controls also run in
-    // selected_reads_and_six_authority_rejections_have_live_controls.
     fixture.stop().await;
 }
 
 #[tokio::test]
-async fn another_request_or_legacy_scope_decision_does_not_resolve_prepared_identity() {
+async fn equivalent_retry_resolves_one_approval_and_direct_policy_edits_supersede_it() {
     for canonical in [true, false] {
         let fixture = Fixture::new().await;
         let id = fixture.selected().await;
@@ -123,23 +119,19 @@ async fn another_request_or_legacy_scope_decision_does_not_resolve_prepared_iden
         };
         assert_eq!(decision.status, 200, "{}", decision.json());
         let pending = fixture.admin("GET", "/admin/approvals", None).await.json();
-        assert!(
-            pending["approvals"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| item["request_id"] == id)
-        );
+        assert!(pending["approvals"].as_array().unwrap().is_empty());
         let view = fixture
             .admin("GET", &format!("/admin/approvals/{id}"), None)
             .await
             .json();
-        assert_eq!(view["status"], "pending");
+        assert_eq!(
+            view["status"],
+            if canonical { "approved" } else { "superseded" }
+        );
         assert_eq!(view["untrusted_reason_text"], "Selected Worker request");
         assert_eq!(
             fixture.resolve(&id, "approve").await.status,
-            409,
-            "stale protection must remain enforced"
+            if canonical { 200 } else { 409 }
         );
         fixture.stop().await;
     }
@@ -413,14 +405,18 @@ async fn approval_preserves_operator_host_fields_and_enforced_rate() {
         let mut actual = after["agents"]["worker"]["hosts"][&destination].clone();
         let fields = actual.as_table_mut().unwrap();
         assert_eq!(
-            fields.remove("approval_request_id").unwrap().as_str(),
-            Some(id.as_str())
+            fields.remove("approval_id").unwrap().as_str(),
+            approved.json()["approval_id"].as_str()
         );
-        let action = fields.remove("approval_action").unwrap();
-        assert_eq!(
-            serde_json::to_value(action).unwrap(),
-            approved.json()["action"]
-        );
+        let approval = approved.json();
+        let receipt: Value = serde_json::from_str(
+            after["approval_results"][approval["approval_id"].as_str().unwrap()]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt["authority_digest"], approval["authority_digest"]);
+        assert_eq!(receipt["result"], approval["result"]);
         assert_eq!(
             actual, expected,
             "approval changed fields outside its effect"
@@ -474,12 +470,12 @@ async fn sequential_and_concurrent_decisions_change_permission_once_without_rese
         assert_eq!(first.status, 200);
         assert_eq!(second.status, 200);
         assert_eq!(first.json()["action"], second.json()["action"]);
-        assert_eq!(fixture.source().matches("approval_request_id").count(), 1);
+        assert_eq!(fixture.source().matches("approval_id").count(), 1);
         let events = fs::read_to_string(fixture.root.path().join("audit.jsonl")).unwrap();
         assert_eq!(
             events
                 .lines()
-                .filter(|line| line.contains("admin.host_allowed"))
+                .filter(|line| line.contains("admin.approval_decided"))
                 .count(),
             1
         );
@@ -552,12 +548,12 @@ async fn policy_deny_and_recreated_beneficiary_reject_stale_actions() {
         );
         assert_eq!(
             fixture.resolve(&id, "reject").await.json()["status"],
-            "rejected"
+            "superseded"
         );
         assert_eq!(
             fixture.source(),
             source,
-            "rejecting stale work changed permissions"
+            "a superseded approval changed permissions"
         );
         fixture.stop().await;
     }
@@ -601,12 +597,12 @@ async fn hostile_text_and_secret_evidence_do_not_enter_helper_or_routine_summari
         .unwrap();
     let private = format!(
         "{}\n",
-        json!({"request_id":id,"agent":"worker","event":"test.private_evidence","details":{"secret":SECRET}})
+        json!({"schema_version":2,"ts":"2026-10-29T00:00:00Z","kind":"ops","severity":"low","summary":"Private evidence fixture","request_id":id,"agent":"worker","event":"ops.private_evidence","details":{"secret":SECRET}})
     );
     audit.write_all(private.as_bytes()).unwrap();
     let peer_evidence = format!(
         "{}\n",
-        json!({"request_id":peer,"agent":"peer","event":"test.private_evidence","details":{"secret":"synthetic-peer-821-out-of-scope"}})
+        json!({"schema_version":2,"ts":"2026-10-29T00:00:00Z","kind":"ops","severity":"low","summary":"Private evidence fixture","request_id":peer,"agent":"peer","event":"ops.private_evidence","details":{"secret":"synthetic-peer-821-out-of-scope"}})
     );
     audit.write_all(peer_evidence.as_bytes()).unwrap();
     drop(audit);
@@ -690,7 +686,7 @@ async fn lost_committed_response_reads_canonical_state_and_missing_evidence_keep
     stream.write_all(format!("POST /admin/approvals/{id} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer synthetic-operator-token\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
     // Lose the response after observing the commit, not before server admission.
     timeout(LIMIT, async {
-        while !fixture.source().contains("approval_request_id") {
+        while !fixture.source().contains("approval_results") {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
@@ -710,7 +706,8 @@ async fn lost_committed_response_reads_canonical_state_and_missing_evidence_keep
     })
     .await
     .unwrap();
-    assert_eq!(fixture.source().matches("approval_request_id").count(), 1);
+    assert_eq!(fixture.source().matches("approval_id").count(), 1);
+    let fixture = fixture.restart().await;
     let approved = fixture
         .admin("GET", &format!("/admin/approvals/{id}"), None)
         .await
@@ -789,45 +786,66 @@ async fn lost_committed_response_reads_canonical_state_and_missing_evidence_keep
         .await;
     assert_eq!(direct.status, 200);
     assert!(fixture.source().contains("direct.example"));
-    assert_eq!(fixture.source().matches("approval_request_id").count(), 1);
+    assert_eq!(fixture.source().matches("approval_id").count(), 1);
     assert!(fixture.root.path().join("audit.jsonl").is_dir());
     fixture.apply(&fixture.source()).await;
     fixture.stop().await;
 }
 
 #[tokio::test]
-async fn unreadable_audit_does_not_validate_misbound_or_missing_committed_grants() {
-    for changed in ["agent", "identity", "host", "port", "request", "egress"] {
+async fn terminal_approval_replay_does_not_restore_changed_policy_even_without_audit() {
+    for changed in [
+        "identity",
+        "host",
+        "port",
+        "approval_id",
+        "egress",
+        "receipt",
+    ] {
         let fixture = Fixture::new().await;
         let id = fixture.network("worker", fixture.address).await.id();
-        assert_eq!(fixture.resolve(&id, "approve").await.status, 200);
+        let approved = fixture.resolve(&id, "approve").await;
+        assert_eq!(approved.status, 200);
+        let approved = approved.json();
         let mut policy: toml::Value = toml::from_str(&fixture.source()).unwrap();
-        if changed == "identity" {
-            policy["agents"]["worker"]["agent_id"] = "ag-44444444444444444444444444444444".into();
-        } else {
-            let entry = &mut policy["agents"]["worker"]["hosts"][&fixture.address.to_string()];
-            match changed {
-                "agent" => entry["approval_action"]["agent"] = "helper".into(),
-                "host" => entry["approval_action"]["host"] = "different.example".into(),
-                "port" => entry["approval_action"]["port"] = 1_i64.into(),
-                "request" => {
-                    entry["approval_request_id"] = "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()
-                }
-                "egress" => entry["egress"] = "deny".into(),
-                _ => unreachable!(),
+        let destination = fixture.address.to_string();
+        match changed {
+            "identity" => {
+                policy["agents"]["worker"]["agent_id"] =
+                    "ag-44444444444444444444444444444444".into()
             }
+            "host" | "port" => {
+                let hosts = policy["agents"]["worker"]["hosts"].as_table_mut().unwrap();
+                let permission = hosts.remove(&destination).unwrap();
+                let replacement = if changed == "host" {
+                    "different.example:443".into()
+                } else {
+                    format!("{}:1", fixture.address.ip())
+                };
+                hosts.insert(replacement, permission);
+            }
+            "approval_id" => {
+                policy["agents"]["worker"]["hosts"][&destination]["approval_id"] =
+                    "apr-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()
+            }
+            "egress" => policy["agents"]["worker"]["hosts"][&destination]["egress"] = "deny".into(),
+            "receipt" => {
+                policy["approval_results"]
+                    .as_table_mut()
+                    .unwrap()
+                    .remove(approved["approval_id"].as_str().unwrap());
+            }
+            _ => unreachable!(),
         }
         let source = toml::to_string(&policy).unwrap();
         fixture.apply(&source).await;
-        // The selected read drains the policy-update audit row before the
-        // fixture replaces the sink. Otherwise the writer can recreate the file.
+        // Flush the earlier writes before making this sink unavailable.
         assert_eq!(
             fixture
                 .admin("GET", &format!("/admin/approvals/{id}"), None)
                 .await
                 .status,
-            200,
-            "{changed}"
+            200
         );
         fs::rename(
             fixture.root.path().join("audit.jsonl"),
@@ -838,13 +856,20 @@ async fn unreadable_audit_does_not_validate_misbound_or_missing_committed_grants
         let view = fixture
             .admin("GET", &format!("/admin/approvals/{id}"), None)
             .await;
-        assert_eq!(view.status, 503, "{changed}: {}", view.json());
+        assert_eq!(view.status, 200, "{changed}: {}", view.json());
+        assert_eq!(view.json(), approved, "terminal history changed: {changed}");
+        let replay = fixture.resolve(&id, "approve").await;
+        assert_eq!(replay.status, 200, "{changed}: {}", replay.json());
         assert_eq!(
-            fixture.resolve(&id, "approve").await.status,
-            503,
-            "{changed}"
+            replay.json(),
+            approved,
+            "terminal replay changed: {changed}"
         );
-        assert_eq!(fixture.source(), source, "{changed}");
+        assert_eq!(
+            fixture.source(),
+            source,
+            "replay restored permission: {changed}"
+        );
         fixture.stop().await;
     }
 }
@@ -859,10 +884,11 @@ async fn credential_lookup_preserves_scope_staleness_and_evidence_refusals() {
         .json();
     let credential_id = "req-cccccccccccccccccccccccccccccccc";
     let event = |id: &str, host: &str, key: &str| {
-        json!({"ts":"2026-10-17T10:00:00Z","event":"security.credential_guard",
+        json!({"schema_version":2,"ts":"2026-10-17T10:00:00Z","event":"security.credential_guard",
+            "summary":"Credential approval required",
             "kind":"security","severity":"high","request_id":id,"agent":"worker",
             "details":{"agent_id":WORKER_ID},
-            "approval":{"required":true,"approval_type":"credential","key":key,"target":host}})
+            "approval":{"required":true,"approval_type":"credential","key":key,"target":host,"scope_hint":{}}})
     };
     let mut audit = fs::OpenOptions::new()
         .append(true)
@@ -928,8 +954,8 @@ async fn credential_lookup_preserves_scope_staleness_and_evidence_refusals() {
     assert_eq!(fixture.source(), recreated);
     fixture.apply(&source).await;
 
-    // A pending network action cannot rescue conflicting credential evidence
-    // with the same request ID. There is no committed grant for this request.
+    // Audit text cannot change the separate host-owned network authority,
+    // even when it reuses that traffic request ID.
     for host in ["first.example", "second.example"] {
         audit
             .write_all(format!("{}\n", event(&id, host, "hmac:conflicting")).as_bytes())
@@ -940,7 +966,7 @@ async fn credential_lookup_preserves_scope_staleness_and_evidence_refusals() {
             .admin("GET", &format!("/admin/approvals/{id}"), None)
             .await
             .status,
-        503
+        200
     );
     assert_eq!(fixture.source(), source);
     drop(audit);
@@ -969,7 +995,7 @@ async fn credential_lookup_preserves_scope_staleness_and_evidence_refusals() {
 }
 
 #[tokio::test]
-async fn conflicting_network_audit_actions_remain_unavailable_without_committed_grant() {
+async fn conflicting_network_audit_actions_cannot_replace_host_owned_pending_authority() {
     let fixture = Fixture::new().await;
     let id = fixture.network("worker", fixture.address).await.id();
     let path = fixture.root.path().join("audit.jsonl");
@@ -991,15 +1017,15 @@ async fn conflicting_network_audit_actions_remain_unavailable_without_committed_
             .any(|event| event == changed),
         "conflicting action must be a complete retained JSONL record"
     );
-    let source = fixture.source();
+    let view = fixture
+        .admin("GET", &format!("/admin/approvals/{id}"), None)
+        .await;
+    assert_eq!(view.status, 200, "{}", view.json());
     assert_eq!(
-        fixture
-            .admin("GET", &format!("/admin/approvals/{id}"), None)
-            .await
-            .status,
-        503
+        view.json()["action"]["host"],
+        fixture.address.ip().to_string()
     );
-    assert_eq!(fixture.resolve(&id, "approve").await.status, 503);
-    assert_eq!(fixture.source(), source);
+    assert_eq!(fixture.resolve(&id, "approve").await.status, 200);
+    assert!(!fixture.source().contains("different.example"));
     fixture.stop().await;
 }

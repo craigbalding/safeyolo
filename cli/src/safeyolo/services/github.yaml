@@ -1,0 +1,18 @@
+schema_version: 1
+name: github
+description: "GitHub issue and pull request metadata"
+default_host: api.github.com
+
+auth:
+  type: bearer
+  header: Authorization
+  scheme: Bearer
+
+capabilities:
+  read_work:
+    description: "Read individual issues and pull requests; no GitHub writes"
+    routes:
+      - methods: [GET]
+        path: "/repos/*/*/issues/*"
+      - methods: [GET]
+        path: "/repos/*/*/pulls/*"

@@ -1100,11 +1100,13 @@ fn differential_persisted_lifecycle_and_controlled_once_reuse() {
                         "/messages/../x",
                     ] {
                         let grant = Grant {
+                            delegated: None,
                             grant_id: "grt_synthetic".into(),
                             agent: "alice".into(),
                             service: "gmail".into(),
                             method: "DELETE".into(),
                             path: pattern.into(),
+                            literal_path: false,
                             scope: GrantScope::Once,
                             created: "2024-01-01T00:00:00Z".into(),
                             expires: "2024-01-01T01:00:00Z".into(),

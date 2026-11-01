@@ -196,7 +196,8 @@ def main():
         return rows
 
     def listeners():
-        live = [str(path) for path in root.glob("data/sockets/*/proxy.sock") if _socket_accepting(path)]
+        live = [str(path) for pattern in ("data/sockets/*/proxy.sock", "agents/*/proxy/proxy.sock")
+                for path in root.glob(pattern) if _socket_accepting(path)]
         for port in sorted(tracked_listeners):
             with socket.socket() as client:
                 client.settimeout(0.5)

@@ -137,14 +137,25 @@ async fn source_reset_bytes_audit_and_state() {
                     .unwrap_or_default()
                     .lines()
                     .map(|line| {
-                        let mut row: Value = serde_json::from_str(line).unwrap();
+                        let mut row = safeyolo_proxy::audit::parse_record(line).unwrap();
+                        assert_eq!(
+                            row.as_object_mut().unwrap().shift_remove("schema_version"),
+                            Some(json!(2))
+                        );
                         assert!(row.as_object_mut().unwrap().remove("ts").is_some());
                         row
                     })
                     .collect();
                 let expected: Vec<_> = events
                     .iter()
-                    .map(|event| event["canonical"].clone())
+                    .map(|event| {
+                        let mut payload = event["canonical"].clone();
+                        payload
+                            .as_object_mut()
+                            .unwrap()
+                            .shift_remove("schema_version");
+                        payload
+                    })
                     .collect();
                 assert_eq!(native, expected, "canonical {name}");
                 assert_eq!(

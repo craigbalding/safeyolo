@@ -75,8 +75,8 @@ def test_source_header_hygiene_reaches_owned_origin(proxy_backend, tmp_path):
             assert status == 403
             assert origin.accepts == before
         assert origin.accepts == len(origin.heads) == len(CASES)
-        assert len(proxy.events("proxy.egress")) == len(CASES)
-        events = proxy.events("proxy.request")
+        assert len(proxy.events("traffic.egress")) == len(CASES)
+        events = proxy.events("traffic.request_outcome")
         assert len(events) == len(CASES) + 1
-        assert [event["status"] for event in events] == [200] * len(CASES) + [403]
+        assert [event["details"]["status"] for event in events] == [200] * len(CASES) + [403]
         assert not proxy.readiness_file.exists()

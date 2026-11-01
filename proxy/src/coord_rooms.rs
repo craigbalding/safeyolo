@@ -14,6 +14,15 @@ use std::{
 
 const NATS_VERSION: &str = "2.14.5";
 pub(crate) mod brief;
+mod inventory;
+pub(crate) mod room_status;
+pub(crate) mod signals;
+mod signals_cli;
+pub(crate) mod work;
+mod work_cli;
+pub use inventory::HELP as INVENTORY_HELP;
+pub(crate) mod federation;
+mod membership;
 fn directory(root: &Path) -> Result<PathBuf, Error> {
     let config_path = if root == crate::host_platform::config_dir() {
         crate::host_platform::config_path()
@@ -60,10 +69,20 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
             format!("Coord schema {version} is not operational; expected version 5").into(),
         );
     }
+    transaction.execute_batch(include_str!("coord_work_schema.sql"))?;
+    transaction.execute_batch(include_str!("coord_signal_schema.sql"))?;
+    transaction.execute_batch(include_str!("coord_federation_schema.sql"))?;
     let stored: String = transaction.query_row("SELECT id FROM instance", [], |row| row.get(0))?;
     if stored != id.trim() {
         return Err("Coord identity differs from this SafeYolo instance; preserve the store and select its owning root".into());
     }
+    // The operation ledger is also the canonical immutable transition history.
+    transaction.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS coord_operations_immutable_update
+         BEFORE UPDATE ON coord_operations BEGIN SELECT RAISE(ABORT, 'coord operations are immutable'); END;
+         CREATE TRIGGER IF NOT EXISTS coord_operations_immutable_delete
+         BEFORE DELETE ON coord_operations BEGIN SELECT RAISE(ABORT, 'coord operations are immutable'); END;",
+    )?;
     transaction.commit()?;
     fs::set_permissions(data.join("v0.db"), fs::Permissions::from_mode(0o600))?;
     if !data.join("instance_id").exists() {
@@ -551,23 +570,30 @@ pub async fn create_room(root: &Path, name: &str) -> Result<Value, Error> {
     // Match the existing operator room-create command: the creating host
     // operator can send and receive. Register the room and its operator grant
     // together; a failed grant must not leave an unusable room behind.
-    let registered = (|| -> rusqlite::Result<()> {
+    let registered = (|| -> Result<(), Error> {
         let transaction = connection.transaction()?;
         transaction.execute(
             "INSERT INTO rooms(room_id,name,created_at) VALUES (?1,?2,?3)",
             params![id, name, now()],
         )?;
-        transaction.execute(
-            "INSERT INTO memberships(room_id,principal_kind,principal_id,permissions,granted_at) VALUES (?1,'operator','operator','send,receive',?2)",
-            params![id, now()],
+        membership::change(
+            &transaction,
+            &id,
+            "operator",
+            "operator",
+            &[],
+            false,
+            &uuid::Uuid::new_v4().simple().to_string(),
+            None,
         )?;
-        transaction.commit()
+        transaction.commit()?;
+        Ok(())
     })();
     if let Err(error) = registered {
         js.delete_stream(stream).await.map_err(|cleanup| {
             format!("room registration failed ({error}); owned stream cleanup failed ({cleanup})")
         })?;
-        return Err(error.into());
+        return Err(error);
     }
     Ok(json!({"room_id":id,"room_name":name}))
 }
@@ -578,6 +604,7 @@ pub fn grant(
     agent: &str,
     permissions: &[String],
     revoke: bool,
+    operation_id: Option<&str>,
 ) -> Result<Value, Error> {
     let config = crate::native_config::read(config)?;
     let root = config
@@ -594,18 +621,6 @@ pub fn grant(
         .and_then(|a| a.get("agent_id"))
         .and_then(toml_edit::Item::as_str)
         .ok_or("agent identity is not configured")?;
-    let mut permissions = permissions.to_vec();
-    if permissions.is_empty() {
-        permissions = vec!["send".into(), "receive".into()];
-    }
-    permissions.sort();
-    permissions.dedup();
-    if permissions
-        .iter()
-        .any(|p| !["send", "receive"].contains(&p.as_str()))
-    {
-        return Err("room permission must be send or receive".into());
-    }
     let mut connection = open(root)?;
     let transaction =
         connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -613,15 +628,19 @@ pub fn grant(
         transaction.query_row("SELECT room_id FROM rooms WHERE name=?1", [room], |r| {
             r.get(0)
         })?;
-    let latest:Option<i64>=transaction.query_row("SELECT MAX(granted_at) FROM memberships WHERE room_id=?1 AND principal_kind='agent' AND principal_id=?2",params![room_id,id],|r|r.get(0))?;
-    let active:Option<String>=transaction.query_row("SELECT permissions FROM memberships WHERE room_id=?1 AND principal_kind='agent' AND principal_id=?2 AND revoked_at IS NULL ORDER BY granted_at DESC LIMIT 1",params![room_id,id],|r|r.get(0)).optional()?;
-    if revoke {
-        transaction.execute("UPDATE memberships SET revoked_at=?3 WHERE room_id=?1 AND principal_kind='agent' AND principal_id=?2 AND revoked_at IS NULL",params![room_id,id,now()])?;
-    } else if active.as_deref() != Some(&permissions.join(",")) {
-        transaction.execute("INSERT INTO memberships(room_id,principal_kind,principal_id,permissions,granted_at) VALUES (?1,'agent',?2,?3,?4)",params![room_id,id,permissions.join(","),now().max(latest.unwrap_or(0)+1)])?;
-    }
+    let generated = uuid::Uuid::new_v4().simple().to_string();
+    let result = membership::change(
+        &transaction,
+        &room_id,
+        "agent",
+        id,
+        permissions,
+        revoke,
+        operation_id.unwrap_or(&generated),
+        None,
+    )?;
     transaction.commit()?;
-    Ok(json!({"room_id":room_id,"agent_id":id,"permissions":if revoke{vec![]}else{permissions}}))
+    Ok(result)
 }
 
 pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
@@ -651,11 +670,80 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
         return crate::coord_operator::run(config, arguments).await;
     }
     let root = config.parent().ok_or("instance root is missing")?;
+    if let [kind, options @ ..] = arguments
+        && kind == "catch-up"
+    {
+        return crate::coord_operator::catch_up::run(config, options).await;
+    }
+    if let [kind, options @ ..] = arguments
+        && kind == "status"
+        && !options.is_empty()
+    {
+        if options == ["--help"] {
+            println!("{}", room_status::HELP);
+            return Ok(());
+        }
+        let (room, json) = match options {
+            [room] => (room, false),
+            [room, flag] if flag == "--json" => (room, true),
+            _ => return Err(room_status::HELP.into()),
+        };
+        let state = crate::native_client::admin(
+            config,
+            &format!(
+                "/admin/coord/rooms/{}/state",
+                crate::coord_tools::segment(room)
+            ),
+            hyper::Method::GET,
+            Value::Null,
+            Duration::from_secs(5),
+        )
+        .await?;
+        if json {
+            print!("{}", crate::coord_operator::signals::json_text(&state)?);
+        } else {
+            print!("{}", room_status::render(&state));
+        }
+        return Ok(());
+    }
     let result = match arguments {
+        [kind, arguments @ ..] if kind == "federation" => federation::run(root, arguments).await?,
+        [kind, options @ ..] if kind == "work" && (options.is_empty() || options == ["--help"]) => {
+            println!("{}", work_cli::HELP);
+            return Ok(());
+        }
+        [kind, arguments @ ..] if kind == "work" => work_cli::run(root, arguments)?,
+        [kind, options @ ..]
+            if kind == "signal" && (options.is_empty() || options == ["--help"]) =>
+        {
+            println!("{}", signals_cli::HELP);
+            return Ok(());
+        }
+        [kind, arguments @ ..] if kind == "signal" => signals_cli::run(root, arguments)?,
+        [kind, room] if kind == "state" => {
+            let room =
+                percent_encoding::utf8_percent_encode(room, percent_encoding::NON_ALPHANUMERIC);
+            crate::native_client::admin(
+                config,
+                &format!("/admin/coord/rooms/{room}/state"),
+                hyper::Method::GET,
+                Value::Null,
+                Duration::from_secs(5),
+            )
+            .await?
+        }
+        [kind, options @ ..]
+            if kind == "inventory" && (options.is_empty() || options == ["--help"]) =>
+        {
+            println!("{}", inventory::HELP);
+            return Ok(());
+        }
+        [kind, arguments @ ..] if kind == "inventory" => inventory::run(root, arguments)?,
         [kind, options @ ..]
             if kind == "brief" && (options.is_empty() || options == ["--help"]) =>
         {
             println!("{}", crate::coord_operator::BRIEF_HELP);
+            println!("{}", signals_cli::HELP);
             return Ok(());
         }
         [kind, arguments @ ..] if kind == "brief" => {
@@ -711,19 +799,48 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
                 .collect::<Result<Vec<_>, _>>()?;
             json!({"rooms":rows})
         }
-        [kind, room, agent, permissions @ ..] if kind == "grant" => {
-            grant(config, room, agent, permissions, false)?
+        [kind, room, agent, options @ ..] if matches!(kind.as_str(), "grant" | "revoke") => {
+            let mut permissions = Vec::new();
+            let mut operation_id = None;
+            let mut options = options.iter();
+            while let Some(option) = options.next() {
+                if option == "--operation-id" {
+                    if operation_id.is_some() {
+                        return Err("duplicate --operation-id".into());
+                    }
+                    operation_id = Some(
+                        options
+                            .next()
+                            .ok_or("--operation-id requires a value")?
+                            .as_str(),
+                    );
+                } else if kind == "grant" && !option.starts_with('-') {
+                    permissions.push(option.clone());
+                } else {
+                    return Err(format!("unknown coord {kind} option: {option}").into());
+                }
+            }
+            grant(
+                config,
+                room,
+                agent,
+                &permissions,
+                kind == "revoke",
+                operation_id,
+            )?
         }
-        [kind, room, agent] if kind == "revoke" => grant(config, room, agent, &[], true)?,
         [help] if help == "--help" => {
             println!(
-                "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT\nInstance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports bind to 127.0.0.1. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
+                "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT [--operation-id ID]\nInstance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports bind to 127.0.0.1. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
             );
             println!("{}", crate::coord_operator::HELP);
             println!("{}", crate::coord_operator::BRIEF_HELP);
+            println!("{}", crate::coord_operator::catch_up::HELP);
+            println!("{}", room_status::HELP);
             println!("{}", crate::factory_proposals::HELP);
             println!("{}", crate::dispatch::request::HELP);
             println!("{}", crate::mattermost::HELP);
+            println!("{}", federation::HELP);
             return Ok(());
         }
         _ => return Err("usage: safeyolo coord --help".into()),
@@ -765,15 +882,23 @@ pub(crate) async fn ensure_factory_rooms(
                     .any(|permission| permission == *required)
             })
         }) {
-            let latest:Option<i64>=transaction.query_row("SELECT MAX(granted_at) FROM memberships WHERE room_id=?1 AND principal_kind='operator' AND principal_id='operator'",[&id],|row|row.get(0))?;
-            transaction.execute("INSERT INTO memberships(room_id,principal_kind,principal_id,permissions,granted_at) VALUES(?1,'operator','operator','receive,send',?2)",params![id,now().max(latest.unwrap_or(0)+1)])?;
+            membership::change(
+                &transaction,
+                &id,
+                "operator",
+                "operator",
+                &[],
+                false,
+                &uuid::Uuid::new_v4().simple().to_string(),
+                None,
+            )?;
         }
         transaction.commit()?;
         for agent in agents
             .iter()
             .filter(|agent| name == room || name == format!("{agent}-agent"))
         {
-            grant(config, &name, agent, &[], false)?;
+            grant(config, &name, agent, &[], false, None)?;
         }
     }
     Ok(())

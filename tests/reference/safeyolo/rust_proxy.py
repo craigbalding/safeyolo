@@ -275,7 +275,6 @@ def _default_native_config(config: dict) -> dict:
         "admin_api_token_file": str(data_dir / "admin_token"),
         "readiness_file": str(data_dir / "proxy-readiness.json"),
         "audit_log_path": str(logs_dir / "safeyolo.jsonl"),
-        "event_log": str(logs_dir / "native-events.jsonl"),
         "parent_proxy": proxy_options.get("upstream_proxy") or None,
         "upstream_ca_file": proxy_options.get("upstream_ca_cert") or None,
         "ignore_hosts": ignore_hosts,
@@ -490,7 +489,7 @@ def _check_control_paths(native: dict, config: Path, ready: Path, working_direct
     paths = [config, get_logs_dir() / "safeyolo.jsonl"]
     for field in (
         "policy_file", "agent_map_file", "admin_api_token_file", "tls_ca_file", "upstream_ca_file",
-        "circuit_state_file", "flow_store_db_path", "audit_log_path", "event_log",
+        "circuit_state_file", "flow_store_db_path", "audit_log_path",
     ):
         if isinstance(native.get(field), str) and native[field]:
             paths.append(Path(native[field]))

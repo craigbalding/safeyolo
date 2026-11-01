@@ -67,15 +67,15 @@ def launch_proxy(backend, directory, policy, **options):
         # Fixture exceptions propagate before these assertions. Shutdown cases
         # can already have stopped the child; inspect its retained events only.
         if backend == "rust":
-            requests = proxy.events("proxy.request")
+            requests = proxy.events("traffic.request_outcome")
             assert requests, "Fixture completed without request evidence"
             # Inner HTTP also applies circuits and test-context policy.
-            assert all(row.get("coverage") in {
+            assert all(row.get("details", {}).get("coverage") in {
                 "native_network_guard_only", "native_network_guard_circuits_and_test_context",
             } for row in requests)
-            native_ids = {row["request_id"] for row in proxy.events("proxy.network_guard")}
+            native_ids = {row["request_id"] for row in proxy.events("security.network_guard.evaluated")}
             for row in requests:
-                if row["status"] in {101, 403}:
+                if row["details"]["status"] in {101, 403}:
                     assert row["request_id"] in native_ids
 
 
@@ -522,12 +522,12 @@ def test_scanner_across_websocket_storage_transition(proxy_backend, tmp_path, tl
                     origin, direction=direction, payload=payload, compressed=compressed,
                     ping=ping, ca=public if tls else None,
                 )
-                before = len(proxy.events("proxy.websocket.message"))
+                before = len(proxy.events("traffic.websocket.message"))
                 proxied, origin_controls, client_controls = storage_exchange(
                     origin, direction=direction, payload=payload, compressed=compressed,
                     ping=ping, path=proxy.paths["alice"], ca=proxy_ca if tls else None,
                 )
-                events = proxy.events("proxy.websocket.message")[before:]
+                events = proxy.events("traffic.websocket.message")[before:]
 
             observations.append({
                 "case": name,
@@ -556,16 +556,16 @@ def test_scanner_across_websocket_storage_transition(proxy_backend, tmp_path, tl
                 for controls in senders:
                     assert (10, STORAGE_PING) in controls, name
             if proxy_backend == "rust":
-                target = [row for row in events if row["message_bytes"] == size
-                          and row["from_client"] == (direction == "request")]
+                target = [row for row in events if row["details"]["message_bytes"] == size
+                          and row["details"]["from_client"] == (direction == "request")]
                 assert len(target) == 1, (name, events)
-                assert target[0]["fragments"] == 2, (name, target)
-                assert target[0]["spilled"] == (size > 65536), (name, target)
-                assert target[0]["dropped"] is blocked, (name, target)
-                assert target[0]["inspection"]["outcome"] == outcome, (name, target)
-                assert target[0]["failure"] is None, (name, target)
+                assert target[0]["details"]["fragments"] == 2, (name, target)
+                assert target[0]["details"]["spilled"] == (size > 65536), (name, target)
+                assert target[0]["details"]["dropped"] is blocked, (name, target)
+                assert target[0]["details"]["inspection"]["outcome"] == outcome, (name, target)
+                assert target[0]["details"]["failure"] is None, (name, target)
                 if outcome != "no_match":
-                    assert target[0]["inspection"]["finding"]["rule_name"] == (
+                    assert target[0]["details"]["inspection"]["finding"]["rule_name"] == (
                         "storage-warning" if name == "deflate-warn" else "project-id"
                     ), (name, target)
     if proxy_backend == "python":
@@ -792,7 +792,7 @@ def test_denied_websocket_opens_no_origin_connection(proxy_backend, tmp_path, tl
                 assert response.split()[1] == "403"
             with pytest.raises(TimeoutError):
                 origin.accept()
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []
 
 
 @pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
@@ -869,12 +869,12 @@ def test_negotiated_websocket_messages_and_inspection(proxy_backend, tmp_path, t
                 assert headers["sec-websocket-protocol"] == ["fixture, another"]
             assert origin.handshakes.empty()
             if proxy_backend == "rust":
-                starts = proxy.events("proxy.websocket.start")
-                assert len(starts) == 1 and starts[0]["subprotocol"] == "another"
-                findings = [row for row in proxy.events("proxy.websocket.message")
-                            if (row["inspection"].get("finding") or {}).get("rule_name") == "project-id"]
+                starts = proxy.events("traffic.websocket.start")
+                assert len(starts) == 1 and starts[0]["details"]["subprotocol"] == "another"
+                findings = [row for row in proxy.events("traffic.websocket.message")
+                            if (row["details"]["inspection"].get("finding") or {}).get("rule_name") == "project-id"]
                 assert len(findings) == 2
-                assert {(row["from_client"], row["inspection"]["outcome"], row["dropped"])
+                assert {(row["details"]["from_client"], row["details"]["inspection"]["outcome"], row["details"]["dropped"])
                         for row in findings} == {
                             (True, "match_blocked" if mode == "block" else "match_logged",
                              mode == "block"),
@@ -952,7 +952,7 @@ def test_websocket_schemes_rejected_before_origin_contact(proxy_backend, tmp_pat
                 assert response.split()[1] == "400"
             with pytest.raises(TimeoutError):
                 origin.accept()
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []
 
 
 @pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
@@ -1162,11 +1162,11 @@ def test_shutdown_closes_open_websocket_peers(proxy_backend, tmp_path, tls):
                     # historical focused launcher does not emit WS evidence.
                     # This small-message exchange does not test cancellation
                     # while a CPU-intensive pattern scan is pending.
-                    ended = proxy.events("proxy.websocket.end")
+                    ended = proxy.events("traffic.websocket.end")
                     assert len(ended) == 1
                     assert ended[0]["agent"] == "alice"
-                    assert ended[0]["outcome"] == "shutdown"
-                    assert ended[0]["drained"] is True
+                    assert ended[0]["details"]["outcome"] == "shutdown"
+                    assert ended[0]["details"]["drained"] is True
 
 
 @pytest.fixture
@@ -1283,31 +1283,31 @@ def test_native_pending_fragment_disconnect(native_development_proxy, tmp_path, 
                     peak_spool_bytes = max(peak_spool_bytes, max(pending.values()))
                     peak_spool_count = max(peak_spool_count, len(pending))
                     all_pending.update(pending)
-                    assert proxy.events("proxy.websocket.message") == []
+                    assert proxy.events("traffic.websocket.message") == []
                     peer.stream.close()
                     observed, frame_count = origin.results.get(timeout=5)
                     assert observed[0] == 8
                     assert frame_count == 0, "Unfinished message data escaped to the origin"
                     frames.append(frame_count)
                     deadline = time.monotonic() + 3
-                    while len(proxy.events("proxy.websocket.end")) < len(frames):
+                    while len(proxy.events("traffic.websocket.end")) < len(frames):
                         assert time.monotonic() < deadline, "Disconnected WebSocket did not finish"
                         time.sleep(0.01)
                     assert proxy.process.poll() is None
                     assert pending.keys().isdisjoint(anonymous_files(proxy.process.pid))
-                    assert proxy.events("proxy.websocket.message") == []
+                    assert proxy.events("traffic.websocket.message") == []
 
             assert all_pending.isdisjoint(anonymous_files(proxy.process.pid))
-            ended = proxy.events("proxy.websocket.end")
+            ended = proxy.events("traffic.websocket.end")
             assert len(ended) == sessions
-            assert all(event["closed_by_client"] is True and event["drained"] is True for event in ended)
+            assert all(event["details"]["closed_by_client"] is True and event["details"]["drained"] is True for event in ended)
             (directory / "lifecycle.json").write_text(json.dumps({
                 "sessions": sessions,
                 "pending_spool_bytes_peak": peak_spool_bytes,
                 "pending_spool_count_peak": peak_spool_count,
                 "pending_spools_retained_after_batch": len(all_pending & anonymous_files(proxy.process.pid).keys()),
                 "origin_data_frames": frames,
-                "complete_message_events": len(proxy.events("proxy.websocket.message")),
+                "complete_message_events": len(proxy.events("traffic.websocket.message")),
                 "end": ended,
             }, indent=2) + "\n")
 
@@ -1377,7 +1377,7 @@ def test_repeated_compressed_fragment_cancellation_records_process_resources(pro
                         assert pending and max(pending.values()) >= spool_threshold, (
                             "compressed fragment never reached the native anonymous spool"
                         )
-                    assert proxy.events("proxy.websocket.message") == []
+                    assert proxy.events("traffic.websocket.message") == []
                     during = process_resources(proxy.process.pid)
                     assert peer.receive_control() == (10, ping_payload)
                     peer.close(code=1000, reason=b"cancelled incomplete")
@@ -1420,16 +1420,16 @@ def test_repeated_compressed_fragment_cancellation_records_process_resources(pro
             assert len(observations) == sessions
             assert all(item["origin"]["data_frames"] == 0 for item in observations)
             assert all(item["pending_spool_retained_after_close"] == 0 for item in observations)
-            assert proxy.events("proxy.websocket.message") == []
+            assert proxy.events("traffic.websocket.message") == []
             if proxy_backend == "rust":
                 deadline = time.monotonic() + 3
-                while len(proxy.events("proxy.websocket.end")) < sessions:
+                while len(proxy.events("traffic.websocket.end")) < sessions:
                     assert time.monotonic() < deadline, "Cancelled compressed WebSocket did not finish"
                     time.sleep(0.01)
-            ended = proxy.events("proxy.websocket.end")
+            ended = proxy.events("traffic.websocket.end")
             if proxy_backend == "rust":
                 assert len(ended) == sessions
-                assert all(event["closed_by_client"] is True and event["drained"] is True for event in ended)
+                assert all(event["details"]["closed_by_client"] is True and event["details"]["drained"] is True for event in ended)
                 provenance = json.loads((directory / "native-policy-provenance.json").read_text())
                 assert provenance == {
                     "backend": "rust",
@@ -1456,7 +1456,7 @@ def test_repeated_compressed_fragment_cancellation_records_process_resources(pro
                 "close_payload_hex": close_payload.hex(),
                 "origin_accepts": origin.accepts,
                 "origin_data_frames": [item["origin"]["data_frames"] for item in observations],
-                "complete_message_events": len(proxy.events("proxy.websocket.message")),
+                "complete_message_events": len(proxy.events("traffic.websocket.message")),
                 "websocket_end_events": ended,
                 "resources": {
                     "batch_before": batch_before,
@@ -1509,10 +1509,10 @@ action = "log"
                                if seconds - before.get(thread, 0) >= 0.15]
                     if running:
                         break
-                    assert proxy.events("proxy.websocket.message") == [], "VM specimen finished before cancellation"
+                    assert proxy.events("traffic.websocket.message") == [], "VM specimen finished before cancellation"
                     assert time.monotonic() < deadline, "No worker executed enough CPU to establish an active scan"
                     time.sleep(0.01)
-                assert proxy.events("proxy.websocket.message") == []
+                assert proxy.events("traffic.websocket.message") == []
                 running_cpu = {thread: current[thread] - before.get(thread, 0) for thread in running}
                 started = time.monotonic()
                 if trigger == "peer_close":
@@ -1532,7 +1532,7 @@ action = "log"
                     assert proxy.process.wait(timeout=3) == 0
                 else:
                     deadline = started + 3
-                    while not proxy.events("proxy.websocket.end"):
+                    while not proxy.events("traffic.websocket.end"):
                         assert time.monotonic() < deadline, "Cancelled scan kept the WebSocket alive"
                         time.sleep(0.01)
                     idle_start = thread_cpu_seconds(proxy.process.pid)
@@ -1543,18 +1543,18 @@ action = "log"
                         idle_cpu[thread] = idle_end.get(thread, 0) - idle_start.get(thread, 0)
                         assert idle_cpu[thread] <= 0.03, "VM worker kept executing"
                 assert time.monotonic() - started < 3
-                ended = proxy.events("proxy.websocket.end")
+                ended = proxy.events("traffic.websocket.end")
                 assert len(ended) == 1
-                assert ended[0]["outcome"] == trigger
-                assert ended[0]["drained"] is True
-                assert proxy.events("proxy.websocket.message") == []
+                assert ended[0]["details"]["outcome"] == trigger
+                assert ended[0]["details"]["drained"] is True
+                assert proxy.events("traffic.websocket.message") == []
                 (directory / "lifecycle.json").write_text(json.dumps({
                     "trigger": trigger,
                     "worker_cpu_seconds_before_cancel": running_cpu,
                     "worker_cpu_seconds_after_end_over_300ms": idle_cpu,
                     "cancel_and_verification_elapsed_ms": round((time.monotonic() - started) * 1000, 3),
                     "origin_data_frames": frames,
-                    "complete_message_events": len(proxy.events("proxy.websocket.message")),
+                    "complete_message_events": len(proxy.events("traffic.websocket.message")),
                     "process_returncode": proxy.process.poll(),
                     "end": ended[0],
                 }, indent=2) + "\n")

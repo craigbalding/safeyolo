@@ -31,7 +31,6 @@ fn config(directory: &Path, authority: &str, matched: bool, allowed: bool) -> Co
         "policy_file":directory.join("policy.json"),"data_dir":directory.join("data"),
         "readiness_file":directory.join("ready"),
         "audit_log_path":directory.join("audit.jsonl"),
-        "event_log":directory.join("events.jsonl"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("unused.sqlite3"),
         "circuit_breaker_enabled":false,"circuit_state_file":"",
         "ignore_hosts":if matched { vec![authority] } else { vec![] }
@@ -175,7 +174,7 @@ fn check(row: &Value, phase: &str, authority: &str, host: &str, port: u16, elaps
         details["error"] = json!(error);
     }
     let expected = json!({
-        "schema_version":1,"ts":timestamp,"event":format!("traffic.passthrough_{phase}"),
+        "schema_version":2,"ts":timestamp,"event":format!("traffic.passthrough_{phase}"),
         "kind":"traffic","severity":severity,
         "summary":format!("TLS passthrough {verb} {authority}"),
         "agent":"alice","addon":"ignored-host-logger","host":host,"details":details
@@ -330,9 +329,9 @@ async fn unmatched_opaque_and_policy_denial_do_not_create_logger_sessions() {
         } else {
             assert!(head.starts_with(b"HTTP/1.1 403"));
             assert!(
-                !records(directory.path(), "events.jsonl")
+                !records(directory.path(), "audit.jsonl")
                     .iter()
-                    .any(|row| row["event"] == "proxy.egress")
+                    .any(|row| row["event"] == "traffic.egress")
             );
         }
         drop(client);
@@ -444,10 +443,11 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
             .unwrap();
         let runtime = proxy.runtime.read().unwrap().clone();
         let identity = ConnectionIdentity {
+            ingress_binding: None,
+            run: None,
             agent_id: "alice".into(),
             connection_id: "owned-lifecycle-seam".into(),
             source_id: Some(SOURCE.into()),
-            reconciled: None,
         };
         let request = hyper::Request::builder()
             .method("CONNECT")
@@ -473,6 +473,7 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
             open_egress_for_flow(
                 &runtime,
                 &AllowedRequest {
+                    recording: None,
                     tasks: &crate::connection_tasks::ConnectionTasks::new(
                         tokio::sync::watch::channel(false).1,
                     ),
@@ -503,6 +504,7 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
         assert!(connected.observation.tcp_setup.is_some());
         assert!(connected.observation.tls_setup.is_none());
         let tunnel = super::Tunnel {
+            connect_request_id: "req-owned-connect".into(),
             destination: destination.clone(),
             upstream: tokio::sync::Mutex::new(Some(connected)),
             sessions: super::upstream_h2::Sessions::default(),
@@ -626,10 +628,11 @@ fn pending_guard_drop_or_explicit_error_consumes_terminal_ownership_once() {
         audit::Settings::default(),
     ));
     let identity = ConnectionIdentity {
+        ingress_binding: None,
+        run: None,
         agent_id: "alice".into(),
         connection_id: "owned-pending-seam".into(),
         source_id: Some(SOURCE.into()),
-        reconciled: None,
     };
     let selected = || SelectedDestination {
         host: HOST,

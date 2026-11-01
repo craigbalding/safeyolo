@@ -132,11 +132,27 @@ def save_debug(directory: Path) -> None:
         print("No usable debug runtime was produced by this CI job")
 
 
+def guest_download_receipt(archive: Path, download: Path) -> dict:
+    """Check that early acquisition uses the finished package's exact inputs."""
+    with tarfile.open(archive, "r:gz") as package, tarfile.open(download, "r:gz") as early:
+        members = [archive.name.removesuffix(".tar.gz") + "/" + path for path in ("bin/safeyolo", "package-info")]
+        if sorted(early.getnames()) != sorted(members):
+            raise ValueError("guest download package has unexpected files")
+        for member in members:
+            original = package.extractfile(member)
+            copied = early.extractfile(member)
+            if (original is None or copied is None or not early.getmember(member).isfile()
+                    or hashlib.file_digest(original, "sha256").digest() != hashlib.file_digest(copied, "sha256").digest()):
+                raise ValueError("guest download package differs from the host package")
+    return {"name": download.name, "sha256": sha256(download), "size": download.stat().st_size}
+
+
 def save_production(directory: Path) -> None:
     """Bind the finished archive to this Actions producer, without publishing it."""
     revision = commit()
     selected_platform = host_platform()
-    name = f"safeyolo-{selected_platform}-production.tar.gz"
+    name = output("bash", "-c", 'source "$1"; host_package_name "$2" production',
+                  "bash", str(ROOT / "scripts/native_package.sh"), selected_platform) + ".tar.gz"
     archive = directory / name
     with tarfile.open(archive, "r:gz") as package:
         stream = package.extractfile(name.removesuffix(".tar.gz") + "/package-info")
@@ -147,21 +163,32 @@ def save_production(directory: Path) -> None:
         "source_commit": revision, "profile": "production", "platform": selected_platform,
     }.items()):
         raise ValueError("archive source/profile/platform differs from this producer")
-    repository = os.environ["GITHUB_REPOSITORY"]
-    run_id = int(os.environ["GITHUB_RUN_ID"])
-    attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
-    workflow = os.environ["GITHUB_WORKFLOW_REF"].removeprefix(repository + "/").split("@", 1)[0]
     receipt = {
         "schema": "safeyolo.host-build/v1", "source_revision": revision,
         "platform": selected_platform, "profile": "production",
         "built_at": datetime.now(UTC).isoformat(),
-        "producer": {"repository": repository, "workflow": workflow,
-                     "run_id": run_id, "run_attempt": attempt,
-                     "job_key": os.environ["GITHUB_JOB"], "runner_name": os.environ["RUNNER_NAME"]},
+        "producer": actions_producer(),
         "archive": {"name": name, "sha256": sha256(archive), "size": archive.stat().st_size},
     }
-    (directory / "SHA256SUMS").write_text(f"{receipt['archive']['sha256']}  {name}\n")
+    download_name = name.removesuffix(".tar.gz") + "-guest-download.tar.gz"
+    download = directory / download_name
+    receipt["guest_download"] = guest_download_receipt(archive, download)
+    (directory / "SHA256SUMS").write_text("".join(
+        f"{item['sha256']}  {item['name']}\n" for item in (receipt["archive"], receipt["guest_download"])
+    ))
     (directory / "build.json").write_text(json.dumps(receipt, indent=2) + "\n")
+
+
+def actions_producer() -> dict:
+    """Identify the Actions attempt and job that produced these bytes."""
+    repository = os.environ["GITHUB_REPOSITORY"]
+    return {
+        "repository": repository,
+        "workflow": os.environ["GITHUB_WORKFLOW_REF"].removeprefix(repository + "/").split("@", 1)[0],
+        "run_id": int(os.environ["GITHUB_RUN_ID"]),
+        "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+        "job_key": os.environ["GITHUB_JOB"], "runner_name": os.environ["RUNNER_NAME"],
+    }
 
 
 def main() -> None:

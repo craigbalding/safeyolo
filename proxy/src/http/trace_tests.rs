@@ -12,7 +12,9 @@ use tokio::{
 use super::{PolicyRequest, decide, publish_credential_trace};
 use crate::{
     Config, ConnectionIdentity, Proxy, Runtime,
-    credential_guard::{CredentialGuard, Options as CredentialOptions, Pdp as CredentialPdp},
+    credential_guard::{
+        CredentialGuard, Options as CredentialOptions, Outcome, OutcomeKind, Pdp as CredentialPdp,
+    },
     network_guard::Identity,
     policy::{Format, Policy},
     trace::{Settings, TraceStore},
@@ -33,9 +35,7 @@ fn config(directory: &Path, effect: &str) -> Config {
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice", "source_id":"192.0.2.10", "socket_path":directory.join("alice.sock")},
             {"agent_id":"bob", "source_id":"192.0.2.11", "socket_path":directory.join("bob.sock")}],
-        "policy_file":directory.join("policy.json"), "data_dir":directory.join("data"), "readiness_file":directory.join("ready"),
-        "event_log":directory.join("events.jsonl"), "audit_log_path":directory.join("audit.jsonl"),
-        "agent_map_file":directory.join("missing-agent-map.json"),
+        "policy_file":directory.join("policy.json"), "data_dir":directory.join("data"), "readiness_file":directory.join("ready"), "audit_log_path":directory.join("audit.jsonl"),
         "flow_store_enabled":false, "flow_store_db_path":directory.join("unused.sqlite3"),
         "circuit_breaker_enabled":false, "circuit_state_file":""
     })).unwrap()
@@ -155,8 +155,21 @@ fn ordinary_step(report: &Value, outcome: &str, host: &str) {
         expected.extend([
             json!(["circuit-breaker", "request", "bypassed", "addon_disabled"]),
             json!(["credential-guard", "request", "evaluated", "no_detection"]),
+            json!([
+                "service-gateway",
+                "request",
+                "evaluated",
+                "not_a_gateway_request"
+            ]),
+            json!(["pattern-scanner", "request", "bypassed", "addon_disabled"]),
             json!(["test-context", "request", "evaluated", "not_target_host"]),
         ]);
+    } else {
+        expected.extend(
+            crate::trace::REQUEST_CONTROLS[1..]
+                .iter()
+                .map(|control| json!([control, "request", "bypassed", "prior_response"])),
+        );
     }
     expected.extend([
         json!(["circuit-breaker", "response", "bypassed", "addon_disabled"]),
@@ -169,19 +182,8 @@ fn ordinary_step(report: &Value, outcome: &str, host: &str) {
     assert_eq!(step["outcome"], outcome);
     assert_eq!(step["host"], host);
     assert!(step["duration_us"].as_u64().is_some());
-    let expected_not_loaded = if outcome == "blocked" {
-        json!([
-            {"addon":"service-gateway", "state":"not_loaded"},
-            {"addon":"credential-guard", "state":"not_loaded"},
-            {"addon":"pattern-scanner", "state":"not_loaded"}
-        ])
-    } else {
-        json!([
-            {"addon":"service-gateway", "state":"not_loaded"},
-            {"addon":"pattern-scanner", "state":"not_loaded"}
-        ])
-    };
-    assert_eq!(report["not_loaded"], expected_not_loaded);
+    assert_eq!(report["not_loaded"], json!([]));
+    assert_eq!(report["incomplete"], false);
     for absent in ["trace-secret-query", "forged", "owned-body", TOKEN] {
         assert!(!report.to_string().contains(absent));
     }
@@ -232,16 +234,17 @@ fn append_guard_trace(
     identity: Identity<'_>,
     prior_response: bool,
     block: bool,
-) -> Value {
+) -> (Outcome, Option<Value>) {
     let agent_id = match identity {
         Identity::Resolved(agent) => agent.to_owned(),
         _ => "unknown".to_owned(),
     };
     let identity_for_trace = ConnectionIdentity {
+        ingress_binding: None,
+        run: None,
         agent_id,
         connection_id: format!("trace-connection-{request_id}"),
         source_id: None,
-        reconciled: None,
     };
     let request = Arc::new(crate::request_trace::RequestTrace::new(
         store.clone(),
@@ -275,10 +278,10 @@ fn append_guard_trace(
         )
         .unwrap();
     publish_credential_trace(hook.as_ref(), &outcome.trace);
-    store
+    let report = store
         .get(request_id, Some(&identity_for_trace.agent_id), 1000.)
-        .unwrap()
-        .unwrap()
+        .unwrap();
+    (outcome, report)
 }
 
 #[test]
@@ -294,12 +297,18 @@ fn credential_trace_replays_each_intent_on_one_timer_and_keeps_bypasses_untimed(
         Identity::Resolved("alice"),
         false,
         true,
-    );
+    )
+    .1
+    .unwrap();
+    assert_eq!(allowed["agent_id"], "alice");
     assert_eq!(allowed["steps"].as_array().unwrap().len(), 1);
     assert_eq!(allowed["steps"][0]["state"], "evaluated");
     assert_eq!(allowed["steps"][0]["outcome"], "detected");
     assert_eq!(allowed["steps"][0]["details"]["detection_count"], 1);
     assert!(allowed["steps"][0]["duration_us"].as_u64().is_some());
+    for reader in [None, Some("bob"), Some("unknown")] {
+        assert!(store.get("trace-allowed", reader, 1000.).unwrap().is_none());
+    }
 
     let warned = append_guard_trace(
         &store,
@@ -309,7 +318,9 @@ fn credential_trace_replays_each_intent_on_one_timer_and_keeps_bypasses_untimed(
         Identity::Resolved("alice"),
         false,
         false,
-    );
+    )
+    .1
+    .unwrap();
     assert_eq!(
         warned["steps"]
             .as_array()
@@ -331,7 +342,9 @@ fn credential_trace_replays_each_intent_on_one_timer_and_keeps_bypasses_untimed(
         Identity::Resolved("alice"),
         false,
         true,
-    );
+    )
+    .1
+    .unwrap();
     assert_eq!(bypassed["steps"][0]["state"], "bypassed");
     assert_eq!(bypassed["steps"][0]["reason"], "policy_disabled");
     assert!(bypassed["steps"][0].get("duration_us").is_none());
@@ -344,12 +357,14 @@ fn credential_trace_replays_each_intent_on_one_timer_and_keeps_bypasses_untimed(
         Identity::Resolved("alice"),
         true,
         true,
-    );
+    )
+    .1
+    .unwrap();
     assert_eq!(prior["steps"][0]["state"], "bypassed");
     assert_eq!(prior["steps"][0]["reason"], "prior_response");
     assert!(prior["steps"][0].get("duration_us").is_none());
 
-    let conflict = append_guard_trace(
+    let (conflict, report) = append_guard_trace(
         &store,
         &guard,
         &trace_guard_policy("allow", true),
@@ -358,10 +373,22 @@ fn credential_trace_replays_each_intent_on_one_timer_and_keeps_bypasses_untimed(
         false,
         true,
     );
-    assert_eq!(conflict["steps"][0]["state"], "evaluated");
-    assert_eq!(conflict["steps"][0]["outcome"], "blocked");
-    assert_eq!(conflict["steps"][0]["details"]["status"], 403);
-    assert!(conflict["steps"][0]["duration_us"].as_u64().is_some());
+    assert_eq!(conflict.kind, OutcomeKind::Blocked);
+    assert_eq!(conflict.response.as_ref().unwrap().status, 403);
+    assert_eq!(conflict.metadata["block_reason"], "agent_identity_conflict");
+    assert_eq!(conflict.trace.len(), 1);
+    assert_eq!(conflict.trace[0].state, "evaluated");
+    assert_eq!(conflict.trace[0].outcome, Some("blocked"));
+    assert_eq!(conflict.trace[0].status, Some(403));
+    assert!(report.is_none());
+    for reader in [None, Some("alice"), Some("unknown")] {
+        assert!(
+            store
+                .get("trace-conflict", reader, 1000.)
+                .unwrap()
+                .is_none()
+        );
+    }
 }
 
 #[test]
@@ -373,10 +400,11 @@ fn credential_trace_store_failure_does_not_change_guard_outcome() {
     let guard = trace_guard();
     let policy = trace_guard_policy("allow", true);
     let identity = ConnectionIdentity {
+        ingress_binding: None,
+        run: None,
         agent_id: "alice".into(),
         connection_id: "trace-observation-failure".into(),
         source_id: None,
-        reconciled: None,
     };
     let request = Arc::new(crate::request_trace::RequestTrace::new(
         store,
@@ -583,16 +611,23 @@ async fn owned_workflow(directory: &Path) {
             json!(["network-guard", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "request", "bypassed", "addon_disabled"]),
             json!(["credential-guard", "request", "evaluated", "no_detection"]),
+            json!([
+                "service-gateway",
+                "request",
+                "evaluated",
+                "not_a_gateway_request"
+            ]),
+            json!(["pattern-scanner", "request", "bypassed", "addon_disabled"]),
             json!(["test-context", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "response", "bypassed", "addon_disabled"]),
             json!(["test-context", "response", "evaluated", "response_recorded"]),
         ]
     );
     assert_eq!(
-        applied["steps"][3]["details"],
+        applied["steps"][5]["details"],
         json!({"context_source":"header"})
     );
-    assert_eq!(applied["steps"][5]["details"], json!({"status_code":200}));
+    assert_eq!(applied["steps"][7]["details"], json!({"status_code":200}));
     let denied = fetch(directory, applied_origin, true).await;
     assert!(denied.starts_with(b"HTTP/1.1 428"));
     let denied = trace(directory, "alice", &request_id(&denied)).await.1;
@@ -602,12 +637,19 @@ async fn owned_workflow(directory: &Path) {
             json!(["network-guard", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "request", "bypassed", "addon_disabled"]),
             json!(["credential-guard", "request", "evaluated", "no_detection"]),
+            json!([
+                "service-gateway",
+                "request",
+                "evaluated",
+                "not_a_gateway_request"
+            ]),
             json!(["test-context", "request", "evaluated", "blocked"]),
+            json!(["pattern-scanner", "request", "bypassed", "prior_response"]),
             json!(["circuit-breaker", "response", "bypassed", "addon_disabled"]),
             json!(["test-context", "response", "evaluated", "not_applicable"]),
         ]
     );
-    assert_eq!(denied["steps"][3]["details"], json!({"status":428}));
+    assert_eq!(denied["steps"][4]["details"], json!({"status":428}));
 
     let local = exchange(directory, "alice", &format!(
         "GET http://_safeyolo.proxy.internal/health HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer {TOKEN}\r\nX-SafeYolo-Trace: 1\r\nConnection: close\r\n\r\n"
@@ -617,6 +659,12 @@ async fn owned_workflow(directory: &Path) {
     assert_eq!(
         steps(&local),
         vec![
+            json!(["network-guard", "request", "bypassed", "prior_response"]),
+            json!(["circuit-breaker", "request", "bypassed", "prior_response"]),
+            json!(["credential-guard", "request", "bypassed", "prior_response"]),
+            json!(["service-gateway", "request", "bypassed", "prior_response"]),
+            json!(["pattern-scanner", "request", "bypassed", "prior_response"]),
+            json!(["test-context", "request", "bypassed", "prior_response"]),
             json!(["circuit-breaker", "response", "bypassed", "addon_disabled"]),
             json!(["test-context", "response", "evaluated", "not_applicable"]),
         ]
@@ -635,10 +683,11 @@ async fn failed_network_audit_retains_only_reached_trace_steps() {
         let runtime = Runtime::new(config(directory.path(), effect), "owned", None, None).unwrap();
         runtime.audit.poison_for_test();
         let identity = ConnectionIdentity {
+            ingress_binding: None,
+            run: None,
             agent_id: "alice".into(),
             connection_id: "owned-connection".into(),
             source_id: None,
-            reconciled: None,
         };
         let request = PolicyRequest {
             agent_id: "alice",
@@ -704,10 +753,11 @@ async fn trace_store_failure_does_not_change_guard_decision_or_counts() {
             ..Settings::default()
         }));
         let identity = ConnectionIdentity {
+            ingress_binding: None,
+            run: None,
             agent_id: "alice".into(),
             connection_id: "owned-connection".into(),
             source_id: None,
-            reconciled: None,
         };
         let request = PolicyRequest {
             agent_id: "alice",

@@ -86,11 +86,10 @@ fn initialize(root: &Path, config: &Path) -> Result<(), Error> {
             .and_then(|name| name.to_str())
             .ok_or("config has no filename")?,
         &format!(
-            "{}\ntls_ca_file = \"certs/mitmproxy-ca.pem\"\nagent_map_file = \"data/agent_map.json\"\n",
+            "{}\ntls_ca_file = \"certs/mitmproxy-ca.pem\"\n",
             include_str!("../../config/native/config.toml")
         ),
     )?;
-    safeyolo_proxy::credentials::open(&root.join("data"))?;
     std::fs::create_dir_all(root.join("builtin-services"))?;
     std::fs::create_dir_all(root.join("services"))?;
     for (name, source) in [
@@ -105,6 +104,14 @@ fn initialize(root: &Path, config: &Path) -> Result<(), Error> {
         (
             "builtin-services/minifuse.yaml",
             include_str!("../../../cli/src/safeyolo/services/minifuse.yaml"),
+        ),
+        (
+            "builtin-services/codex.yaml",
+            include_str!("../../../cli/src/safeyolo/services/codex.yaml"),
+        ),
+        (
+            "builtin-services/claude.yaml",
+            include_str!("../../../cli/src/safeyolo/services/claude.yaml"),
         ),
     ] {
         write_new(name, source)?;
@@ -293,6 +300,32 @@ async fn run() -> Result<(), Error> {
     if arguments.first().is_some_and(|value| value == "guest") {
         return safeyolo_proxy::guest_acquisition::run(&root, &arguments[1..]).await;
     }
+    if arguments
+        .first()
+        .is_some_and(|value| value == "host-package")
+    {
+        return match &arguments[1..] {
+            [help] if help == "--help" => {
+                println!("{}", safeyolo_proxy::host_package::HELP);
+                Ok(())
+            }
+            [operation, archive] if operation == "gunzip" => {
+                safeyolo_proxy::host_package::gunzip(Path::new(archive))
+            }
+            [operation, input, save, archive, checksum, expected]
+                if operation == "gunzip" && save == "--save" && checksum == "--sha256" =>
+            {
+                safeyolo_proxy::host_package::save_gunzip(
+                    Path::new(input),
+                    Path::new(archive),
+                    expected
+                        .to_str()
+                        .ok_or("host archive SHA-256 must be text")?,
+                )
+            }
+            _ => Err(safeyolo_proxy::host_package::HELP.into()),
+        };
+    }
     if matches!(arguments.as_slice(), [coord, kind, ..] if coord == "coord" && (kind == "completion-notes" || kind == "proposals"))
     {
         return safeyolo_proxy::factory_proposals::run_operator(&config, &arguments[1..]).await;
@@ -305,6 +338,9 @@ async fn run() -> Result<(), Error> {
                 .map_err(|_| "command arguments must be UTF-8 text")
         })
         .collect::<Result<_, _>>()?;
+    if arguments.first().is_some_and(|value| value == "codex") {
+        return safeyolo_proxy::codex_package::run(&arguments[1..]).await;
+    }
     if arguments.first().is_some_and(|value| value == "host") {
         return safeyolo_proxy::linux_host::run(&root, &arguments[1..]);
     }
@@ -326,6 +362,9 @@ async fn run() -> Result<(), Error> {
     }
     if safeyolo_proxy::operator_commands::handles(&arguments) {
         return safeyolo_proxy::operator_commands::run(&config, &arguments).await;
+    }
+    if arguments.first().is_some_and(|arg| arg == "watch") {
+        return safeyolo_proxy::coord_operator::watch(&config, &arguments[1..]).await;
     }
     if arguments
         .first()
@@ -365,12 +404,13 @@ async fn run() -> Result<(), Error> {
             #[cfg(target_os = "linux")]
             println!("{}", safeyolo_proxy::linux_host::HELP);
             println!("{}", safeyolo_proxy::coord_operator::HELP);
+            println!("{}", safeyolo_proxy::coord_rooms::INVENTORY_HELP);
             println!("{}", safeyolo_proxy::factory_proposals::HELP);
             println!("{}", safeyolo_proxy::dispatch::request::HELP);
             println!("{}", safeyolo_proxy::dispatch::HELP);
             println!("{}", safeyolo_proxy::mattermost::HELP);
             println!(
-                "safeyolo [--root ROOT | --config FILE] init\nsafeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nsafeyolo [--root ROOT] mount --help\nsafeyolo [--root ROOT] coord start [--binary PATH]|stop|status\nsafeyolo [--root ROOT] coord room create NAME|list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send receive]|revoke ROOM AGENT\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status and doctor inspect each runtime and control dimension without changing state."
+                "safeyolo [--root ROOT | --config FILE] init\nsafeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nsafeyolo [--root ROOT] mount --help\nsafeyolo [--root ROOT] coord start [--binary PATH]|stop|status\nsafeyolo [--root ROOT] coord room create NAME|list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send receive page_operator]|revoke ROOM AGENT\nsafeyolo [--root ROOT] coord signal --help\nsafeyolo [--root ROOT] watch [--once] [--json] [--jsonl FILE]\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status and doctor inspect each runtime and control dimension without changing state."
             );
             println!(
                 "safeyolo [--root ROOT] agent recover NAME [--timeout SECONDS]\nsafeyolo guest-command stage HOME SHARE ASSETS CONTEXT_JSON\nRecovery requires an already booted guest with idle command supervision. Staging is for a stopped guest; the caller supplies this run's context."

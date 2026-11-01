@@ -1,5 +1,6 @@
 """Contract tests for SafeYolo's staged guest desktop launcher."""
 
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -20,8 +21,16 @@ def test_guest_desktop_shell_is_valid() -> None:
 
 
 def test_guest_desktop_reports_missing_rootfs_capabilities(tmp_path: Path) -> None:
+    # The test host may itself be a SafeYolo guest with a working helper at the
+    # production absolute path. Select an absent helper for this negative case.
+    launcher = tmp_path / "guest-desktop"
+    missing_helper = shlex.quote(str(tmp_path / "missing-guest-helper"))
+    launcher.write_text(LAUNCHER.read_text().replace(
+        "if ! /safeyolo/safeyolo-guest desktop-bridge check",
+        f"if ! {missing_helper} desktop-bridge check",
+    ))
     result = subprocess.run(
-        ["/bin/bash", str(LAUNCHER), "check"],
+        ["/bin/bash", str(launcher), "check"],
         env={"PATH": str(tmp_path), "HOME": str(tmp_path)},
         capture_output=True,
         text=True,

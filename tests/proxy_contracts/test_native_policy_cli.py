@@ -105,7 +105,7 @@ class NativeInstance:
 
 @contextmanager
 def native_instance(directory, source=DENY, *, services=False, parent_proxy=None, agent_api=False,
-                    capture=False, extra_config="", platform_assets=None, agent_map=None):
+                    capture=False, extra_config="", platform_assets=None, agent_addresses=None, service_sources=None):
     artifacts, guest_artifacts, profile = native_inputs()
     root = directory / "installed"
     try:
@@ -139,13 +139,8 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
         socket_parent = os.environ.get("SAFEYOLO_TEST_SOCKET_DIR")
         with tempfile.TemporaryDirectory(prefix="sy-native-", dir=socket_parent) as sockets:
             paths = {name: str(Path(sockets) / f"{name}.sock") for name in ("alice", "bob")}
-            if agent_map is not None:
-                from tests.blackbox.installed_host_smoke import _agent_map
-
-                (root / "data/agent_map.json").write_text(json.dumps({
-                    name: {"ip": ip} for name, ip in agent_map.items()
-                }))
-                paths = {row["agent_id"]: row["path"] for row in _agent_map(root)}
+            if agent_addresses is not None:
+                paths = {name: str(Path(sockets) / f"{name}.sock") for name in agent_addresses}
             configuration = (f'admin_port = 0\nflow_store_enabled = {str(capture).lower()}\n'
                              f'agent_api_enabled = {str(services or agent_api).lower()}\n')
             if parent_proxy:
@@ -154,6 +149,8 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
                 (root / "builtin-services").mkdir(exist_ok=True)
                 (root / "services").mkdir(exist_ok=True)
                 configuration += 'gateway_builtin_services_dir = "builtin-services"\ngateway_services_dir = "services"\n'
+            for name, content in (service_sources or {}).items():
+                (root / "services" / name).write_text(content)
             if services or agent_api:
                 agent_token = root / "data/agent_token"
                 agent_token.touch(mode=0o600)
@@ -161,7 +158,7 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
             configuration += extra_config
             for index, (name, path) in enumerate(paths.items(), 2):
                 configuration += (f'[[listeners]]\nagent_id = "{name}"\nsocket_path = {json.dumps(path)}\n'
-                                  f'source_id = {json.dumps(agent_map[name] if agent_map is not None else f"10.0.0.{index}")}\n')
+                                  f'source_id = {json.dumps(agent_addresses[name] if agent_addresses is not None else f"10.0.0.{index}")}\n')
             (root / "config.toml").write_text(configuration)
             environment = dict(os.environ, PATH=str(root / "bin"), SAFEYOLO_HOME=str(root),
                                SAFEYOLO_CONFIG_DIR=str(root),
@@ -244,9 +241,9 @@ def restarted_proxy(instance):
     stopped = instance.cli("stop")
     assert stopped.returncode == 0, stopped.stderr
     instance.process.wait(timeout=10)
-    started = instance.cli("start")
-    assert started.returncode == 0, started.stderr
     try:
+        started = instance.cli("start")
+        assert started.returncode == 0, started.stderr
         ready = json.loads((instance.root / "data/ready.json").read_text())
         assert ready["ready"] and ready["pid"] != original_pid
         instance.port = ready["admin_port"]
@@ -454,26 +451,22 @@ def test_installed_credential_approval_keeps_destination_scope(tmp_path):
         assert logs.returncode == 0, logs.stderr
         log_view = json.loads(logs.stdout)
         assert Path(log_view["file"]) == instance.root / "logs/audit.jsonl"
-        assert any(row["request_id"] == event["request_id"]
-                   and row["event"] == "security.credential_guard" for row in log_view["events"])
+        assert any(row["event"] == "security.credential_guard"
+                   and row["request_id"] == event["request_id"] for row in log_view["events"])
         assert CUSTOM_TOKEN not in logs.stdout
         pending = instance.admin("GET", "/admin/approvals")
-        approval = next(row for row in pending["approvals"] if row.get("request_id") == event["request_id"])
         fingerprint = event["details"]["fingerprint"]
-        assert approval["approval"]["key"] == fingerprint
+        # This listener has no durable agent ID. Its 428 and explicit
+        # fingerprint controls remain usable without assisted authority.
+        assert pending["approvals"] == []
         assert CUSTOM_TOKEN not in json.dumps(pending)
         approved = instance.cli("credentials", "approve", fingerprint, "--destination", "allowed.invalid")
         assert approved.returncode == 0, approved.stderr
         assert CUSTOM_TOKEN not in approved.stdout + approved.stderr
-        deadline = time.monotonic() + 4
-        while True:
-            shown = instance.show()
-            if shown["saved_matches_active"] and fingerprint in shown["effective"].get("hosts", {}).get("allowed.invalid", {}).get("allow", []):
-                break
-            assert time.monotonic() < deadline, shown
-            time.sleep(0.02)
-        assert shown["effective"]["hosts"]["allowed.invalid"]["allow"] == [fingerprint]
         custom_credential_request(instance, origins, "allowed.invalid", token=CUSTOM_TOKEN, rule="synthetic-fixture")
+        shown = instance.show()
+        assert shown["saved_matches_active"]
+        assert shown["effective"]["hosts"]["allowed.invalid"]["allow"] == [fingerprint]
         custom_credential_request(instance, origins, "forbidden.invalid", token=CUSTOM_TOKEN,
                                   status=428, rule="synthetic-fixture")
         another = CUSTOM_TOKEN + "-next"
@@ -644,7 +637,7 @@ rules = [{action="credential:use", resource="forbidden.invalid/*", effect="deny"
         for token in tokens:
             event = send(token, expected=428)
             pending = instance.admin("GET", "/admin/approvals")
-            assert any(row.get("request_id") == event["request_id"] for row in pending["approvals"])
+            assert pending["approvals"] == []  # No durable agent IDs in this fixture.
             assert all(secret not in json.dumps(pending) for secret in tokens)
             fingerprint = event["details"]["fingerprint"]
             fingerprints.append(fingerprint)
@@ -754,7 +747,6 @@ def test_installed_unknown_bearer_websocket_requires_exact_approval(tmp_path):
         fingerprint = upgrade(token, 428)
         approved = instance.cli("credentials", "approve", fingerprint, "--destination", "127.0.0.1")
         assert approved.returncode == 0, approved.stderr
-        instance.apply(instance.policy.read_text())
         upgrade(token, 101)
         upgrade(replacement, 428)
         denied = tomlkit.parse(instance.policy.read_text())
@@ -991,7 +983,8 @@ def test_installed_config_help_and_named_diagnostics(tmp_path):
         assert instance.show()["effective"]["agents"]["bob"]["folder"] == "private-operator-path"
 
 
-def test_native_listener_update_preserves_other_toml_settings():
+@pytest.mark.parametrize("stale_listener", [False, True])
+def test_native_listener_update_preserves_other_toml_settings(stale_listener):
     # Exercise the changed writer through its real Admin/reload call path. The
     # fake runsc only reports/stops fixture state; this is no guest lifecycle proof.
     with socket.socket() as port:
@@ -1003,6 +996,18 @@ def test_native_listener_update_preserves_other_toml_settings():
     with tempfile.TemporaryDirectory(prefix="sy-listeners-", dir=Path.home()) as directory, native_instance(
         Path(directory), source, extra_config=extra,
     ) as instance:
+        config = instance.root / "config.toml"
+        original = config.read_bytes()
+        before = json.loads((instance.root / "data/ready.json").read_text())
+        if stale_listener:
+            # A stale managed listener changes the saved projection. Custom
+            # ingress alone requires neither a write nor a reload.
+            document = tomlkit.parse(config.read_text())
+            document["listeners"].append({
+                "agent_id": "bob", "source_id": "10.0.0.3",
+                "socket_path": str(instance.root / "data/sockets/10.0.0.3_bob/proxy.sock"),
+            })
+            config.write_text(tomlkit.dumps(document))
         runner = instance.root / "bin/runsc"
         runner.write_text('''#!/bin/sh
 case "$3" in
@@ -1020,14 +1025,21 @@ esac
         (instance.root / "data/sockets/10.0.0.3_bob").mkdir(parents=True)
         stopped = instance.admin("POST", "/admin/agents/ag-11111111111111111111111111111111/stop")
         assert stopped["sandbox_state"] == "stopped"
-        saved = tomllib.loads((instance.root / "config.toml").read_text())
+        saved = tomllib.loads(config.read_text())
         assert saved["capture"] == {"max_request_body_bytes": 9, "queue_max": 7}
         assert saved["trace"] == {"ttl_s": 12}
         assert saved["command_centre"]["events_port"] == events_port
-        assert json.loads((instance.root / "data/ready.json").read_text())["reload_id"] == saved["reload_id"]
-        # Custom ingress remains intact; the other host-owned slot is added.
+        ready = json.loads((instance.root / "data/ready.json").read_text())
+        assert ready["pid"] == instance.process.pid
+        if stale_listener:
+            assert saved["reload_id"] != before.get("reload_id")
+            assert ready["reload_id"] == saved["reload_id"]
+        else:
+            assert config.read_bytes() == original
+            assert ready == before
+        # Custom ingress remains intact. The retired map cannot add another listener.
         assert {entry["socket_path"] for entry in saved["listeners"]} == {
-            *instance.paths.values(), str(instance.root / "data/sockets/10.0.0.3_bob/proxy.sock"),
+            *instance.paths.values(),
         }
         assert instance.cli("config", "check", str(instance.root / "config.toml")).returncode == 0
 
@@ -1054,8 +1066,13 @@ def test_installed_unlisted_destination_effects(tmp_path, effect, status):
     with origin_server() as origin, native_instance(
         tmp_path, parent_proxy=f"http://127.0.0.1:{origin.server_address[1]}",
     ) as instance:
-        instance.apply(f'[hosts]\n"*" = {{egress="{effect}"}}\n')
-        delivered(instance, origin, "unlisted.invalid:8123", status=status, pending=effect == "prompt")
+        source = f'[hosts]\n"*" = {{egress="{effect}"}}\n'
+        instance.apply(source)
+        delivered(instance, origin, "unlisted.invalid:8123", status=status)
+        if effect == "prompt":
+            assert instance.admin("GET", "/admin/approvals")["approvals"] == []
+            instance.apply(source + '\n[agents.alice]\nagent_id="ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n')
+            delivered(instance, origin, "unlisted.invalid:8123", status=428, pending=True)
 
 
 @pytest.mark.parametrize("global_effect,agent_effect,status", [("deny", "allow", 200), ("allow", "deny", 403)])
@@ -1117,7 +1134,7 @@ def test_installed_policy_overrides_coexist_with_degraded_host_identity_and_atta
             context = json.dumps({"agent_id": agent_id, "generation": run_id, "ip": "10.200.0.8"}).encode()
             (agent / "runtime.json").write_bytes(runtime)
             (agent / "config-share/host-launch-context.json").write_bytes(context)
-            # Startup must rebuild a corrupt derived map through the same host
+            # Startup must ignore a corrupt retired map and use the same host
             # enumeration, while keeping Alice/Bob's explicit listeners.
             (instance.root / "data/agent_map.json").write_text("corrupt")
             explicit = tomllib.loads((instance.root / "config.toml").read_text())["listeners"]
@@ -1129,13 +1146,13 @@ def test_installed_policy_overrides_coexist_with_degraded_host_identity_and_atta
                 observed = json.loads(status.stdout)
                 assert (observed["agent_id"], observed["run_id"], observed["runtime_state"]) == (agent_id, run_id, "degraded")
                 assert observed["proxy_attachment"]["state"] == "ready"
-                socket_path = instance.root / "data/sockets/10.200.0.8_marker/proxy.sock"
+                socket_path = instance.root / "agents/marker/proxy/proxy.sock"
                 assert socket_path.is_socket()
                 instance.paths["marker"] = str(socket_path)
                 listeners = tomllib.loads((instance.root / "config.toml").read_text())["listeners"]
                 assert all(entry in listeners for entry in explicit)
                 assert {"agent_id": "marker", "source_id": "10.200.0.8", "socket_path": str(socket_path)} in listeners
-                assert json.loads((instance.root / "data/agent_map.json").read_text())["marker"]["ip"] == "10.200.0.8"
+                assert (instance.root / "data/agent_map.json").read_text() == "corrupt"
                 delivered(instance, origin, "override.invalid:8123", status=200)
                 delivered(instance, origin, "override.invalid:8123", agent="bob", status=403)
                 delivered(instance, origin, "override.invalid:8123", agent="marker", status=403)

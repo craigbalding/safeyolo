@@ -156,6 +156,37 @@ fn write_marker(path: &Path, state: &str) -> Result<(), Error> {
     )
 }
 
+/// Copy an explicitly selected login without replacing agent state. Copying and
+/// adoption do not grant proxy authorization; a trusted host import is separate.
+pub(crate) fn copy_codex_login(home: &Path, source: &Path) -> Result<(), Error> {
+    directory(home)?;
+    let codex = home.join(".codex");
+    directory(&codex)?;
+    let destination = codex.join("auth.json");
+    if fs::symlink_metadata(&destination).is_ok() {
+        return Err(
+            "selected agent already has Codex authentication; select its existing login instead"
+                .into(),
+        );
+    }
+    let source = source.canonicalize()?;
+    let mut input = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(source)?;
+    if !input.metadata()?.is_file() {
+        return Err("Codex authentication input must be a regular file".into());
+    }
+    let mut temporary = tempfile::NamedTempFile::new_in(&codex)?;
+    temporary
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    std::io::copy(&mut input, &mut temporary)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist_noclobber(&destination)?;
+    codex_state(home, None, false, Some("adopt"))
+}
+
 /// This function inspects authentication metadata only. It never opens, copies,
 /// hashes or changes the mode of an auth file during setup or adoption.
 pub fn codex_state(

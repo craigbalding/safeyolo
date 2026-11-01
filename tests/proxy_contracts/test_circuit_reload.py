@@ -69,7 +69,7 @@ def assert_state(value, *, checks, opens, half_opens, recoveries, threshold, tim
 def observe(proxy, stage, **expected):
     value = circuits(proxy)
     assert_state(value, **expected)
-    with (proxy.event_log.parent / "circuit-reload.jsonl").open("a") as output:
+    with (proxy.audit_log.parent / "circuit-reload.jsonl").open("a") as output:
         output.write(json.dumps({"stage": stage, "pid": proxy.process.pid, "circuits": value}) + "\n")
     return value
 
@@ -77,9 +77,9 @@ def observe(proxy, stage, **expected):
 def assert_stopped(proxy, address, accepts):
     assert proxy.process.returncode == 0
     assert not proxy.readiness_file.exists()
-    egress = proxy.events("proxy.egress")
+    egress = proxy.events("traffic.egress")
     assert len(egress) == accepts
-    assert all((row["host"], row["port"]) == address for row in egress)
+    assert all((row["host"], row["details"]["port"]) == address for row in egress)
     # launch_proxy owns and removes each instance's complete socket directory.
     for path in proxy.paths.values():
         with socket.socket(socket.AF_UNIX) as closed:

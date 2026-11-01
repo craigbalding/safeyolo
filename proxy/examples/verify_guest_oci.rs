@@ -2,7 +2,7 @@
 
 use safeyolo_proxy::{
     Error,
-    guest_oci::{self, ConsumerPlatform, GuestIndex},
+    guest_oci::{self, GuestIndex},
 };
 use std::{
     fs::{self, File},
@@ -23,13 +23,13 @@ fn main() -> Result<(), Error> {
     let layout = Path::new(&args[0]);
     let bytes = fs::read(blob(layout, &args[1])?)?;
     let index = GuestIndex::parse(&bytes, &args[1], &args[2])?;
-    let manifests: Vec<_> = ConsumerPlatform::ALL
-        .iter()
+    let manifests: Vec<_> = index
+        .platforms()
         .map(|platform| {
-            fs::read(blob(layout, &index.manifest(*platform).digest)?).map_err(Error::from)
+            fs::read(blob(layout, &index.manifest(platform)?.digest)?).map_err(Error::from)
         })
         .collect::<Result<_, _>>()?;
-    let children = index.validate_children([&manifests[0], &manifests[1], &manifests[2]])?;
+    let children = index.validate_children(manifests.iter().map(Vec::as_slice))?;
     for child in children {
         child.validate_config(&fs::read(blob(layout, &child.config.digest)?)?)?;
         child
@@ -38,7 +38,7 @@ fn main() -> Result<(), Error> {
         let (os, architecture) = child.platform.os_architecture();
         println!(
             "verified {os}/{architecture} child={} archive={} size={}",
-            index.manifest(child.platform).digest,
+            index.manifest(child.platform)?.digest,
             child.archive.digest,
             child.archive.size
         );

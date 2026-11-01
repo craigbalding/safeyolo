@@ -71,6 +71,18 @@ the configured room, sender, message-type, brief, and handoff checks, and
 atomically checkpoints the result. Empty, brief-only, and irrelevant pages
 re-arm the wait without launching a harness.
 
+The configured `page_limit` is an upper bound (default 16). Each wait requests
+at most the free slots in the 16-object in-flight checkpoint. If the checkpoint
+is full, the supervisor continues the retained work before receiving another
+page. The turn can recover missing downstream information from canonical room
+history; that history read does not advance the attention cursor. Unconsumed
+attention remains available after the turn frees space. A completed turn that
+consumes informational objects counts as progress while remaining tasks are
+suspended on unanswered handoffs and there is no unresolved send or prior
+uncertainty. Informational consumption and empty waits do not clear uncertainty;
+canonical progress or terminal recovery can resolve it. If the turn makes no
+progress, the existing uncertainty and failure backoff apply.
+
 An actionable page launches the selected harness and creates one session.
 Later actionable pages resume that exact session while an inbound request or
 outbound handoff remains pending. Once both lists are empty, the supervisor
@@ -102,6 +114,20 @@ Codex and Pi expose the same canonical `send` operation through their tool inter
 outbound-send event before it evaluates a terminal response or records an
 outbound handoff. Downstream behavior does not depend on the selected harness.
 
+The canonical send receipt includes `attention_recipients`, with each recipient's
+agent ID and attention ID. The supervisor stores the downstream recipient's
+attention ID as `request_attention_id` in the awaiting handoff. A response must
+repeat that exact request ID, as well as the declared room, sender, target and
+response kind. A delayed response for an earlier request leaves newer requests
+pending, including requests for the same target.
+
+An older checkpoint or send receipt can lack `request_attention_id`. The
+supervisor preserves that handoff and its parent suspension, but no response
+can complete it automatically. Retained request text alone does not establish
+the missing ID. Preserve the checkpoint and reconcile the identity from
+canonical send evidence before resuming that work. Do not replay the send or
+guess an ID from a response.
+
 A failed wait or canonical-object resolution cannot advance the safe cursor.
 Harness exit code 0 and model text are not work-completion evidence.
 
@@ -121,20 +147,50 @@ room. Other agents can receive the retained stream when the operator grants
 them receive permission; receive permission does not let them send or steer
 the supervised agent.
 
-The supervisor also sends start, handled-error, trapped-signal, crash, and exit
+The supervisor also sends startup, invocation-start, handled-error, trapped-signal, crash, and exit
 events to this room. Harness stderr is retained as labelled stderr events. It
 does not emit idle or heartbeat messages. An abruptly killed supervisor cannot
 report its own death; runtime supervision is a separate concern.
 
 On the operator host, use the installed CLI. Replace `ROOT` with the
-selected instance root and `AGENT` with the supervised agent name. Render the
-retained stream and continue watching it with:
+selected instance root and `AGENT` with the configured supervised agent name.
+Open its activity view in an ordinary terminal or tmux pane on Linux or macOS:
 
 ```bash
-safeyolo --root ROOT coord watch AGENT-agent
+safeyolo --root ROOT agent watch AGENT
 ```
 
-The default view renders a concise mixed operator and agent timeline. Use
+The command selects the activity room from the staged supervisor configuration.
+It reads the existing supervisor checkpoint and follows that room's retained
+events. It does not read private Codex rollout files. The compact view shows
+turns, reasoning summaries, tool activity and completion. Coord send summaries
+include task or response headers, so `DONE` and `BLOCKED` remain distinct from
+the end of a model turn. Approval tool summaries show the approval reference,
+decision and returned status without dumping the approval payload.
+
+Lines marked `= observation:` describe the checkpoint. They show its phase,
+thread, pending task targets, pending handoffs and failure count. The command
+checks for changes once per second. It reports a replaced thread, missing or
+unreadable state, and malformed state. If the configured identity or activity
+room changes, it asks you to reattach after checking setup. It keeps following
+the originally selected room while the checkpoint is unavailable.
+
+A checkpoint does not prove that the supervisor is alive. The view marks a
+checkpoint stale when its age exceeds the configured wait, startup, work,
+completion-grace and maximum-backoff time bounds added together. Staleness is
+an observation, not a stop or recovery action. Use `agent diagnostics AGENT`
+to inspect the runtime. A supervisor restart emits a startup event. The room
+stream continues across bounded turns, supervisor restarts and thread changes.
+
+The named view uses compact rendering, credential redaction, 30 recent messages
+and a 600-character text limit by default. Use `--history`, `--since`,
+`--max-text`, `--once` or `--plain` to adjust the view. Long terminal rows keep
+the existing continuation gutter. Ctrl-C detaches the observer. Starting and
+stopping it does not start or stop the agent, send messages, consume attention,
+advance supervision cursors, or write a checkpoint or lock file.
+
+For direct room observation, use `safeyolo --root ROOT coord watch ROOM`.
+That command renders a mixed operator and agent timeline. Use
 `--raw` to show each message body without event summarization, or `--json` to emit canonical
 Coord messages as JSONL. The rendered view uses colour on a terminal; use
 `--no-color` or `NO_COLOR` for plain output. The default shows the complete
@@ -142,8 +198,7 @@ rendered content after canonical log-safe control-character handling; use
 `--redact` to hide common credential patterns. Raw mode makes terminal controls inert; JSON mode preserves the exact payload
 with JSON escaping. `--redact` changes display only. Use `--max-text` to opt in to a
 rendered event-text limit. The watcher also supports `--history`, `--once`, and
-`--show-unknown`. File selection, agent-home selection, and filesystem polling
-do not apply because this watcher reads one retained Coord room.
+`--show-unknown`. Direct room observation does not poll the agent's checkpoint.
 
 If NATS becomes unavailable, the watcher reports the lost connection and
 retries with bounded exponential backoff from the same cursor. It reports

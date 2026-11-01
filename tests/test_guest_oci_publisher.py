@@ -4,12 +4,14 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import shutil
 import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
+import textwrap
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -17,6 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import certifi
 import pytest
+import yaml
 
 from scripts import prepare_guest_transport_fixture
 
@@ -58,6 +61,8 @@ def archive(platform, source, destination):
     files = ["rootfs-tree", "cache-paths.txt"] if platform.startswith("linux/") else [
         "Image", "initramfs.cpio.gz", "rootfs-base.ext4",
     ]
+    if (source / "build-inputs.json").exists():
+        files.append("build-inputs.json")
     paths = [str(source / name) for name in files]
     for field, options in (("apparent_bytes", ["--apparent-size"]), ("allocated_bytes", [])):
         measured = run("sudo", "-n", shutil.which("du"), "-sc", "-B1", *options, "--", *paths)
@@ -162,6 +167,53 @@ def test_archive_contains_finished_mac_files(tmp_path, built):
     assert output.stat().st_size < 8192
 
 
+def test_mac_profile_export_aligns_ext4_and_preserves_it_in_archive(tmp_path, built):
+    if sys.platform != "linux" or not all(shutil.which(tool) for tool in ("mkfs.ext4", "e2fsck", "debugfs")):
+        pytest.skip("Linux e2fsprogs is required for the real profile export")
+    (built / "build-inputs.json").write_text(json.dumps({"architecture": "arm64", "output_kind": "tree"}))
+    # Make the old sizing expression end within a disk sector on this filesystem.
+    command = built / "rootfs-tree/command"
+    tree_bytes = int(run("du", "-sx", "--apparent-size", "-B1", str(built / "rootfs-tree")).stdout.split()[0])
+    if (tree_bytes + tree_bytes // 4) % 512 == 0:
+        command.write_text(command.read_text() + "x")
+        tree_bytes += 1
+    minimum_bytes = tree_bytes + tree_bytes // 4 + 512 * 1024 * 1024
+    assert minimum_bytes % 512 != 0
+
+    exported = tmp_path / "exported"
+    result = run(str(ROOT / "guest/export-profile.sh"), "--build", str(built),
+                 "--platform", "darwin/arm64", "--output", str(exported), "--kernel-assets", str(built))
+    assert result.returncode == 0, result.stderr
+    image = exported / "rootfs-base.ext4"
+    assert image.stat().st_size % 512 == 0
+    with image.open("rb") as stream:
+        stream.seek(1024)
+        superblock = stream.read(1024)
+    assert struct.unpack_from("<H", superblock, 56)[0] == 0xEF53
+    block_bytes = 1024 << struct.unpack_from("<I", superblock, 24)[0]
+    block_count = struct.unpack_from("<I", superblock, 4)[0]
+    assert block_bytes == 4096
+    assert image.stat().st_size % block_bytes == 0
+    assert 0 < block_count * block_bytes <= image.stat().st_size
+    assert minimum_bytes <= image.stat().st_size < minimum_bytes + block_bytes
+    checked = run("e2fsck", "-fn", str(image))
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    content = run("debugfs", "-R", "cat /command", str(image))
+    assert content.returncode == 0 and content.stdout == command.read_text()
+
+    output = archive("darwin/arm64", exported, tmp_path / "archive")
+    extracted = tmp_path / "extracted"
+    extracted.mkdir()
+    assert run("tar", "--zstd", "--sparse", "-xf", str(output), "-C", str(extracted)).returncode == 0
+    assert sorted(path.name for path in extracted.iterdir()) == [
+        "Image", "build-inputs.json", "initramfs.cpio.gz", "rootfs-base.ext4",
+    ]
+    for name in ("Image", "initramfs.cpio.gz", "build-inputs.json", "rootfs-base.ext4"):
+        with (exported / name).open("rb") as before, (extracted / name).open("rb") as after:
+            assert hashlib.file_digest(before, "sha256").digest() == hashlib.file_digest(after, "sha256").digest()
+    assert (extracted / "rootfs-base.ext4").stat().st_size == image.stat().st_size
+
+
 def test_sparse_map_on_a_filesystem_reporting_holes(tmp_path, built):
     image = built / "rootfs-base.ext4"
     if image.stat().st_blocks * 512 >= image.stat().st_size // 4:
@@ -250,7 +302,7 @@ def registry():
                 if digest not in blobs:
                     return self.reply(404)
                 data = blobs[digest]
-                if faults["blob"] and self.command == "GET":
+                if (faults["blob"] is True or faults["blob"] == digest) and self.command == "GET":
                     data = b"!" + data[1:]
                 return self.reply(200, data, Content_Type="application/octet-stream", Docker_Content_Digest=digest)
             if "/manifests/" in path:
@@ -285,13 +337,16 @@ def registry():
         thread.join()
 
 
-def publish(tmp_path, artifacts, publisher_tools, repository=None, version="guest-2026-10-12.1", compatibility="v1", revision=REVISION):
+def publish(tmp_path, artifacts, publisher_tools, repository=None, version="guest-2026-10-12.1", compatibility="v1", revision=REVISION, from_layout=False, profile=None):
     oras, verifier = publisher_tools
-    args = [str(ROOT / "scripts/publish_guest_oci.sh"), "--artifacts", str(artifacts),
+    args = [str(ROOT / "scripts/publish_guest_oci.sh"),
             "--layout", str(tmp_path / f"layout-{version}"), "--version", version,
             "--compatibility", compatibility, "--revision", revision, "--verifier", verifier]
+    args += ["--from-layout"] if from_layout else ["--artifacts", str(artifacts)]
     if repository:
         args += ["--publish", repository, "--plain-http"]
+    if profile:
+        args += ["--profile", profile]
     return run(*args, env={**os.environ, "ORAS": oras}, timeout=30)
 
 
@@ -299,14 +354,358 @@ def test_actual_oras_local_release_and_no_registry_writes(tmp_path, artifacts, p
     result = publish(tmp_path, artifacts, publisher_tools)
     assert result.returncode == 0, result.stderr
     assert all(f"verified {platform}" in result.stdout for platform in ("darwin/arm64", "linux/amd64", "linux/arm64"))
+    fetched = run(publisher_tools[0], "manifest", "fetch", "--oci-layout",
+                  f"{tmp_path / 'layout-guest-2026-10-12.1'}:guest-2026-10-12.1")
+    assert fetched.returncode == 0, fetched.stderr
+    index = json.loads(fetched.stdout)
+    assert {(child["platform"]["os"], child["platform"]["architecture"]) for child in index["manifests"]} == {
+        ("darwin", "arm64"), ("linux", "amd64"), ("linux", "arm64"),
+    }
+    blobs = tmp_path / "layout-guest-2026-10-12.1/blobs/sha256"
+    for descriptor in index["manifests"]:
+        child = json.loads((blobs / descriptor["digest"].removeprefix("sha256:")).read_bytes())
+        config = (blobs / child["config"]["digest"].removeprefix("sha256:")).read_bytes()
+        platform = descriptor["platform"]
+        assert config == json.dumps({"os": platform["os"], "architecture": platform["architecture"]},
+                                    separators=(",", ":")).encode()
+        assert child["config"]["size"] == len(config)
+        assert child["config"]["digest"] == "sha256:" + hashlib.sha256(config).hexdigest()
+    assert not registry[4]
+
+
+def test_explicit_custom_profile_publishes_one_consumer_with_input_provenance(
+    tmp_path, built, publisher_tools, registry,
+):
+    inputs = {"profile": {"name": "kali-pentest"}, "architecture": "arm64",
+              "files": {"build.sh": {"sha256": "a" * 64}}}
+    (built / "build-inputs.json").write_text(json.dumps(inputs))
+    artifacts = tmp_path / "custom"
+    archive("linux/arm64", built, artifacts / "linux-arm64")
+    result = publish(tmp_path, artifacts, publisher_tools, registry[0], profile="kali-pentest")
+    assert result.returncode == 0, result.stderr
+    _, blobs, manifests, tags, _, _ = registry
+    index = json.loads(manifests[tags["guest-2026-10-12.1"]])
+    assert index["annotations"]["dev.safeyolo.guest.profile"] == "kali-pentest"
+    assert len(index["manifests"]) == 1
+    child = json.loads(manifests[index["manifests"][0]["digest"]])
+    assert child["annotations"]["dev.safeyolo.guest.build-inputs"] == "sha256:" + hashlib.sha256(
+        (built / "build-inputs.json").read_bytes()).hexdigest()
+    assert child["layers"][0]["digest"] in blobs
+    assert "compat-v1" not in tags
+    # Profile identity must be explicit on retained-layout publication too.
+    refused = publish(tmp_path, artifacts, publisher_tools, registry[0], from_layout=True)
+    assert refused.returncode != 0 and "does not match" in refused.stderr
+
+
+@pytest.fixture
+def layout_release(tmp_path, monkeypatch):
+    """Keep the gh CLI boundary local while exercising the actual upload/download shells."""
+    assets = tmp_path / "release-assets"
+    assets.mkdir()
+    tools = tmp_path / "release-tools"
+    tools.mkdir()
+    gh = tools / "gh"
+    gh.write_text(f"#!{sys.executable}\n" + textwrap.dedent(f"""\
+        import json, shutil, sys
+        from pathlib import Path
+        root = Path({str(assets)!r})
+        args = sys.argv[1:]
+        with (root / 'calls.jsonl').open('a') as output:
+            output.write(json.dumps(args) + '\\n')
+        if args[:2] == ['release', 'create']:
+            assert '--prerelease' in args and '--latest=false' in args
+            assert args[args.index('--target') + 1] == {REVISION!r}
+            rows = []
+            for number, name in enumerate(args[3:args.index('--repo')], 100):
+                source = Path(name)
+                shutil.copyfile(source, root / str(number))
+                rows.append({{'id': number, 'name': source.name, 'state': 'uploaded'}})
+            (root / 'assets.json').write_text(json.dumps(rows))
+        elif args[:2] == ['release', 'view']:
+            assert args[-4:] == ['--json', 'databaseId', '--jq', '.databaseId']
+            print(123)
+        elif args[:3] == ['api', '--paginate', '--slurp']:
+            assert args[3] == 'repos/craigbalding/safeyolo/releases/123/assets?per_page=100'
+            print(json.dumps([json.loads((root / 'assets.json').read_bytes())]))
+        else:
+            assert args[:3] == ['api', '--header', 'Accept: application/octet-stream']
+            assert args[3].startswith('repos/craigbalding/safeyolo/releases/assets/')
+            name = args[3].rsplit('/', 1)[1]
+            if not (root / name).is_file():
+                sys.exit(1)
+            sys.stdout.buffer.write((root / name).read_bytes())
+        """))
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ["PATH"])
+    return assets
+
+
+@pytest.fixture
+def custom_publication(tmp_path, built, publisher_tools, layout_release):
+    """Small consumer archives use the real archive/layout producers, without a distro build."""
+    artifacts = tmp_path / "custom"
+    selected = {}
+    for platform in ("darwin/arm64", "linux/amd64", "linux/arm64"):
+        inputs = {"profile": {"name": "kali-pentest"}, "architecture": platform.split("/")[1],
+                  "files": {"build.sh": {"sha256": "a" * 64}}}
+        (built / "build-inputs.json").write_text(json.dumps(inputs))
+        (built / "rootfs-tree/command").write_text(platform)
+        compressed = archive(platform, built, artifacts / platform.replace("/", "-"))
+        selected[platform] = {"archive": "sha256:" + hashlib.sha256(compressed.read_bytes()).hexdigest(),
+                              "build_inputs": "sha256:" + hashlib.sha256((built / "build-inputs.json").read_bytes()).hexdigest()}
+    prepared = publish(tmp_path, artifacts, publisher_tools, profile="kali-pentest")
+    assert prepared.returncode == 0, prepared.stderr
+    layout = tmp_path / "layout-guest-2026-10-12.1"
+    index = run(publisher_tools[0], "resolve", "--oci-layout", f"{layout}:guest-2026-10-12.1").stdout.strip()
+    transferred = run(str(ROOT / "scripts/upload_guest_profile_layout.sh"), str(layout), REVISION,
+                      "guest-layout-input", str(tmp_path / "layout-upload"), timeout=15)
+    assert transferred.returncode == 0, transferred.stderr
+    request = {**json.loads((tmp_path / "layout-upload/layout-upload.json").read_bytes()), "index": index,
+               "source_revision": REVISION, "profile": "kali-pentest", "platforms": selected}
+    return request
+
+
+def custom_workflow_step(tmp_path, name, **environment):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
+    step = next(step for step in workflow["jobs"]["custom-profile"]["steps"] if step.get("name") == name)
+    assert step["shell"] == "bash" and "${{" not in step["run"]
+    return run("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"],
+               cwd=tmp_path, env={**os.environ, "RUNNER_TEMP": str(tmp_path), **environment}, timeout=30)
+
+
+@pytest.fixture
+def custom_workflow_checkout(tmp_path, publisher_tools):
+    (tmp_path / "scripts").symlink_to(ROOT / "scripts", target_is_directory=True)
+    examples = tmp_path / "proxy/target/release/examples"
+    examples.mkdir(parents=True)
+    (examples / "verify_guest_oci").symlink_to(Path(publisher_tools[1]).resolve())
+
+
+@pytest.mark.parametrize("defect", [None, "source", "profile", "index", "archive", "build-inputs", "platforms", "blob", "compatibility"])
+def test_custom_workflow_verifies_exact_selected_inputs_before_authentication(
+    tmp_path, custom_publication, custom_workflow_checkout, defect,
+):
+    request = custom_publication
+    if defect in {"source", "profile", "index"}:
+        field, value = {"source": ("source_revision", "c" * 40),
+                        "profile": ("profile", "$(touch injected)"),
+                        "index": ("index", "sha256:" + "c" * 64)}[defect]
+        request[field] = value
+    elif defect in {"archive", "build-inputs"}:
+        request["platforms"]["linux/amd64"]["archive" if defect == "archive" else "build_inputs"] = "sha256:" + "c" * 64
+    elif defect == "platforms":
+        del request["platforms"]["linux/amd64"]
+    retained = custom_workflow_step(tmp_path, "Retain the requested custom profile identities", CUSTOM_PROFILE=json.dumps(request))
+    assert retained.returncode == 0, retained.stderr
+    downloaded = custom_workflow_step(tmp_path, "Download the selected layout release assets in order", GH_TOKEN="local-test-only")
+    assert downloaded.returncode == 0, downloaded.stderr
+    if defect == "blob":
+        # Keep the transport digest valid while corrupting a referenced OCI blob.
+        transferred = tmp_path / "custom-profile-layout.tar"
+        with tarfile.open(transferred) as original:
+            members = [(member, original.extractfile(member).read() if member.isfile() else None)
+                       for member in original.getmembers()]
+        with tarfile.open(transferred, "w") as changed:
+            for member, contents in members:
+                if member.name.endswith(request["platforms"]["linux/amd64"]["archive"].removeprefix("sha256:")):
+                    contents = b"!" + contents[1:]
+                changed.addfile(member, io.BytesIO(contents) if contents is not None else None)
+        request["layout_sha256"] = hashlib.sha256(transferred.read_bytes()).hexdigest()
+        (tmp_path / "custom-profile-request.json").write_text(json.dumps(request))
+    result = custom_workflow_step(tmp_path, "Verify the selected custom layout before registry authentication",
+                                  COMPATIBILITY="wrong" if defect == "compatibility" else "v1")
+    assert (result.returncode == 0) == (defect is None), result.stdout + result.stderr
+    selection = tmp_path / "custom-profile-selection.json"
+    assert selection.exists() == (defect is None)
+    assert not (tmp_path / "injected").exists() and not (tmp_path / "custom-profile-publication").exists()
+    if defect is None:
+        selected = json.loads(selection.read_bytes())
+        assert selected["request"] == request
+        assert selected["index"]["digest"] == request["index"]
+        assert {platform: {"archive": row["archive"]["digest"], "build_inputs": row["build_inputs"]}
+                for platform, row in selected["platforms"].items()} == request["platforms"]
+
+
+@pytest.mark.parametrize("fault", [None, "archive", "index", "upload", "login"])
+def test_custom_workflow_publishes_same_bytes_and_requires_complete_readback(
+    tmp_path, custom_publication, custom_workflow_checkout, publisher_tools, registry, fault,
+):
+    request = custom_publication
+    assert custom_workflow_step(tmp_path, "Retain the requested custom profile identities",
+                                CUSTOM_PROFILE=json.dumps(request)).returncode == 0
+    downloaded = custom_workflow_step(tmp_path, "Download the selected layout release assets in order", GH_TOKEN="local-test-only")
+    assert downloaded.returncode == 0, downloaded.stderr
+    verified = custom_workflow_step(tmp_path, "Verify the selected custom layout before registry authentication", COMPATIBILITY="v1")
+    assert verified.returncode == 0, verified.stderr
+    oras, _ = publisher_tools
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    wrapper = tools / "oras"
+    wrapper.write_text(f"#!{sys.executable}\nimport os, sys\n"
+                       f"repository = {registry[0]!r}\nargs = [arg.replace('ghcr.io/craigbalding/safeyolo-guest', repository) for arg in sys.argv[1:]]\n"
+                       f"if args[0] == 'login':\n    sys.stdin.read()\n    sys.exit({1 if fault == 'login' else 0})\n"
+                       "if args[0] == 'cp':\n    args += ['--to-plain-http' if '--from-oci-layout' in args else '--from-plain-http']\n"
+                       "else:\n    args += ['--plain-http']\n"
+                       f"os.execv({str(Path(oras).resolve())!r}, [{str(Path(oras).resolve())!r}, *args])\n")
+    wrapper.chmod(0o755)
+    _, blobs, manifests, tags, events, faults = registry
+    # Existing versions/channels must retain their original targets.
+    raw_index = (tmp_path / "custom-profile-layout/blobs/sha256" / request["index"].removeprefix("sha256:")).read_bytes()
+    manifests[request["index"]] = raw_index
+    tags["compat-v1"] = tags["guest-2026-10-11.1"] = request["index"]
+    before = dict(tags)
+    if fault == "archive":
+        faults["blob"] = request["platforms"]["linux/amd64"]["archive"]
+    elif fault in {"index", "upload"}:
+        faults[fault] = True
+    result = custom_workflow_step(tmp_path, "Publish the unchanged custom index and verify complete registry readback",
+                                  PATH=str(tools) + os.pathsep + os.environ["PATH"], ORAS=str(wrapper),
+                                  GH_TOKEN="local-test-only", GITHUB_ACTOR="controlled-operator", GITHUB_SHA="d" * 40,
+                                  COMPATIBILITY="v1")
+    assert (result.returncode == 0) == (fault is None), result.stdout + result.stderr
+    assert tags == before
+    assert all(path.rsplit("/", 1)[1].startswith("sha256:") for method, path in events
+               if method == "PUT" and "/manifests/" in path)
+    completed = tmp_path / "custom-profile-publication/result.json"
+    assert completed.exists() == (fault is None)
+    if fault is None:
+        report = json.loads(completed.read_bytes())
+        assert report["request"] == request and report["publisher_revision"] == "d" * 40
+        assert report["repository"] == "ghcr.io/craigbalding/safeyolo-guest"
+        assert (tmp_path / "custom-profile-publication/public-index.json").read_bytes() == manifests[request["index"]]
+        for platform, row in request["platforms"].items():
+            digest = row["archive"]
+            assert ("GET", f"/v2/guest/blobs/{digest}") in events
+            assert (tmp_path / "custom-profile-publication/readback/blobs/sha256" / digest.removeprefix("sha256:")).read_bytes() == blobs[digest]
+    elif fault == "login":
+        assert not events and not (tmp_path / "custom-profile-publication").exists()
+    elif fault == "archive":
+        assert ("GET", f"/v2/guest/blobs/{request['platforms']['linux/amd64']['archive']}") in events
+    elif fault == "index":
+        assert ("GET", f"/v2/guest/manifests/{request['index']}") in events
+    elif fault == "upload":
+        assert any(method == "PUT" and "/manifests/" in path for method, path in events)
+
+
+@pytest.mark.parametrize("field,value", [("layout_assets", []), ("layout_assets", ["1,2"]),
+                                         ("layout_assets", ["$(touch injected)"]), ("layout_assets", [123]),
+                                         ("layout_assets", None), ("layout_sha256", "bad")])
+def test_custom_workflow_requires_explicit_asset_ids_and_transport_digest(tmp_path, field, value):
+    request = {"layout_assets": ["123"], "layout_sha256": "a" * 64, field: value}
+    retained = custom_workflow_step(tmp_path, "Retain the requested custom profile identities", CUSTOM_PROFILE=json.dumps(request))
+    assert retained.returncode != 0 and not (tmp_path / "injected").exists()
+    assert json.loads((tmp_path / "custom-profile-request.json").read_bytes()) == request
+
+
+@pytest.mark.parametrize("defect", [None, "missing-asset", "corrupt-part", "wrong-digest", "reversed-parts"])
+def test_custom_layout_upload_download_preserves_bytes_and_extracts_the_layout_root(
+    tmp_path, custom_publication, custom_workflow_checkout, layout_release, defect,
+):
+    request = custom_publication
+    # Exercise ordered multi-asset reassembly without making a GiB-size fixture.
+    original = (layout_release / request["layout_assets"][0]).read_bytes()
+    middle = len(original) // 2
+    (layout_release / "201").write_bytes(original[:middle])
+    (layout_release / "202").write_bytes(original[middle:])
+    request["layout_assets"] = ["201", "202"]
+    if defect == "missing-asset":
+        (layout_release / "202").unlink()
+    elif defect == "corrupt-part":
+        (layout_release / "202").write_bytes(b"!" + original[middle + 1:])
+    elif defect == "wrong-digest":
+        request["layout_sha256"] = "c" * 64
+    elif defect == "reversed-parts":
+        request["layout_assets"].reverse()
+    retained = custom_workflow_step(tmp_path, "Retain the requested custom profile identities", CUSTOM_PROFILE=json.dumps(request))
+    assert retained.returncode == 0, retained.stderr
+    downloaded = custom_workflow_step(tmp_path, "Download the selected layout release assets in order", GH_TOKEN="local-test-only")
+    if defect == "missing-asset":
+        assert downloaded.returncode != 0 and not (tmp_path / "custom-profile-layout").exists()
+        return
+    assert downloaded.returncode == 0, downloaded.stderr
+    checked = custom_workflow_step(tmp_path, "Verify the selected custom layout before registry authentication", COMPATIBILITY="v1")
+    assert (checked.returncode == 0) == (defect is None), checked.stdout + checked.stderr
+    selection = tmp_path / "custom-profile-selection.json"
+    assert selection.exists() == (defect is None)
+    if defect is None:
+        assert (tmp_path / "custom-profile-layout.tar").read_bytes() == original
+        extracted = tmp_path / "custom-profile-layout"
+        expected = tmp_path / "layout-guest-2026-10-12.1"
+        assert sorted(path.name for path in extracted.iterdir()) == ["blobs", "index.json", "oci-layout"]
+        assert {str(path.relative_to(extracted)): path.read_bytes() for path in extracted.rglob("*") if path.is_file()} == {
+            str(path.relative_to(expected)): path.read_bytes() for path in expected.rglob("*")
+            if path.is_file() and path.relative_to(expected).parts[0] in {"blobs", "index.json", "oci-layout"}
+        }
+        assert json.loads(selection.read_bytes())["request"] == request
+    else:
+        assert "archive SHA-256 differs" in checked.stderr and not (tmp_path / "custom-profile-layout").exists()
+
+
+@pytest.mark.parametrize("member", ["../escaped", "escaping-link"])
+def test_custom_layout_extraction_cannot_write_outside_its_owned_root(tmp_path, member):
+    from scripts.verify_guest_profile import unpack_layout
+
+    archive = tmp_path / "unsafe.tar"
+    with tarfile.open(archive, "w") as stream:
+        entry = tarfile.TarInfo(member)
+        if member == "escaping-link":
+            entry.type = tarfile.SYMTYPE
+            entry.linkname = "../escaped"
+        stream.addfile(entry)
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    with pytest.raises(tarfile.FilterError):
+        unpack_layout(archive, digest, tmp_path / "layout")
+    assert not (tmp_path / "escaped").exists()
+
+
+@pytest.mark.parametrize(("defect", "error"), [
+    ("missing-platform", "missing guest platform"),
+    ("missing-consumer", "missing linux/arm64 guest"),
+    ("unsupported-platform", "unsupported guest consumer platform"),
+    ("duplicate-platform", "duplicate guest consumer platform"),
+    ("wrong-platform", "guest config must contain only the selected consumer os and architecture"),
+])
+def test_invalid_index_platforms_refused_before_upload(tmp_path, artifacts, publisher_tools, registry, defect, error):
+    prepared = publish(tmp_path, artifacts, publisher_tools)
+    assert prepared.returncode == 0, prepared.stderr
+    oras, _ = publisher_tools
+    reference = f"{tmp_path / 'layout-guest-2026-10-12.1'}:guest-2026-10-12.1"
+    fetched = run(oras, "manifest", "fetch", "--oci-layout", reference)
+    assert fetched.returncode == 0, fetched.stderr
+    index = json.loads(fetched.stdout)
+    children = index["manifests"]
+    if defect == "missing-platform":
+        del children[0]["platform"]
+    elif defect == "missing-consumer":
+        children.pop()
+    elif defect == "unsupported-platform":
+        children[0]["platform"]["architecture"] = "ppc64le"
+    elif defect == "duplicate-platform":
+        children[1]["platform"] = children[0]["platform"]
+    elif defect == "wrong-platform":
+        children[0]["platform"], children[1]["platform"] = children[1]["platform"], children[0]["platform"]
+    invalid = tmp_path / "invalid-index.json"
+    invalid.write_text(json.dumps(index))
+    # ORAS records the changed index's true digest. Refusal must come from the
+    # platform checks, rather than an unrelated stale digest or length.
+    pushed = run(oras, "manifest", "push", "--oci-layout", reference, str(invalid))
+    assert pushed.returncode == 0, pushed.stderr
+    refused = publish(tmp_path, artifacts, publisher_tools, registry[0], from_layout=True)
+    assert refused.returncode != 0 and error in refused.stderr
     assert not registry[4]
 
 
 def test_actual_oras_publication_retry_versions_and_generations(tmp_path, artifacts, publisher_tools, registry):
     repository, _, manifests, tags, events, _ = registry
-    first = publish(tmp_path, artifacts, publisher_tools, repository)
+    prepared = publish(tmp_path, artifacts, publisher_tools)
+    assert prepared.returncode == 0, prepared.stderr
+    resolved = run(publisher_tools[0], "resolve", "--oci-layout",
+                   f"{tmp_path / 'layout-guest-2026-10-12.1'}:guest-2026-10-12.1")
+    assert resolved.returncode == 0, resolved.stderr
+    first = publish(tmp_path, artifacts, publisher_tools, repository, from_layout=True)
     assert first.returncode == 0, first.stderr
     g1 = tags["guest-2026-10-12.1"]
+    assert g1 == resolved.stdout.strip()
     assert "compat-v1" not in tags
     tags["compat-v1"] = g1
     first_events = list(events)
@@ -531,7 +930,7 @@ elif name=='rsync':
     assert "Docker references with both a tag and digest" in rejected.stderr
 
 
-def test_real_oras_receipt_attachment_discovery_and_inventory_retrieval(tmp_path, artifacts, publisher_tools, registry, monkeypatch):
+def test_real_oras_receipt_attachment_discovery_and_inventory_retrieval(tmp_path, artifacts, publisher_tools, registry, monkeypatch, capsys):
     from scripts import guest_release
     repository, _, _, tags, _, _ = registry
     prior = publish(tmp_path, artifacts, publisher_tools, repository, version="guest-2026-10-11.1")
@@ -611,11 +1010,81 @@ def test_real_oras_receipt_attachment_discovery_and_inventory_retrieval(tmp_path
     # Drive the real guard, registry content pull, native verifier and tag write.
     # Only the clock and trusted Actions/operator records are controlled here.
     promotion = SimpleNamespace(compatibility="v1", verifier=Path(publisher_tools[1]), work_directory=tmp_path)
-    monkeypatch.setattr(guest_release, "promotion_context", lambda: {"source_revision": REVISION, "publisher_version": "controlled"})
+    origin = {"repository": guest_release.selection.REPOSITORY, "workflow": guest_release.selection.GUEST_WORKFLOW,
+              "run_id": 321, "run_attempt": 3, "job_id": 654}
+    monkeypatch.setattr(guest_release, "promotion_context", lambda: {
+        "source_revision": REVISION, "publisher_version": "controlled", "producer": origin})
     monkeypatch.setattr(guest_release, "paused", lambda: False)
     monkeypatch.setattr(guest_release, "datetime", SimpleNamespace(now=lambda *args: now + timedelta(seconds=172799)))
     assert guest_release.promote(promotion)["decision"] == "held"
     assert tags["compat-v1"] == old_index
+    # Exercise the failed gate through the real CLI renderer and OCI reader.
+    # The failure precedes content verification; inspection needs no verifier.
+    monkeypatch.setattr(guest_release, "datetime", SimpleNamespace(now=lambda *args: now + timedelta(seconds=172800)))
+    failed_smoke = {"schema": "safeyolo.guest-smoke/v1", "index_digest": index["digest"],
+                    "platform": "linux-amd64", "result": "failed", "finished_at": now.isoformat(),
+                    "reason": "original failed attempt", "gate_url": "https://example.invalid/failed-run",
+                    "operator": "controlled-operator"}
+    guest_release.attach(index, guest_release.SMOKE, failed_smoke)
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr(sys, "argv", ["guest_release.py", "promote", "--verifier", "/absent-verifier",
+                                     "--work-directory", str(tmp_path)])
+    with pytest.raises(SystemExit) as stopped:
+        guest_release.main()
+    assert stopped.value.code == 2
+    output = capsys.readouterr().out
+    held = json.loads(output)
+    assert held["decision"] == "held" and held["failed_smoke"] == failed_smoke
+    assert held["old_index"] == old_index and held["index_digest"] == held["new_index"] == index["digest"]
+    assert summary.read_text() == "```json\n" + output + "```\n"
+    assert tags["compat-v1"] == old_index
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY")
+    monkeypatch.setattr(sys, "argv", ["guest_release.py", "inspect", "--reference", repository + "@" + index["digest"]])
+    guest_release.main()
+    recovered = json.loads(capsys.readouterr().out)
+    assert recovered["promotion"] == [held] and recovered["smoke"] == [failed_smoke]
+    assert recovered["index"] == index
+    # Execute the maintained workflow consumer, shell wrapper and real reader.
+    # Only Actions metadata/login and the disposable registry address are local.
+    tools = tmp_path / "inspection-tools"
+    tools.mkdir()
+    oras_wrapper = tools / "oras"
+    oras_wrapper.write_text("#!/bin/sh\nif [ \"$1\" = login ]; then cat >/dev/null; exit 0; fi\n"
+                            f"exec {shlex.quote(shutil.which(oras) or oras)} \"$@\" --plain-http\n")
+    oras_wrapper.chmod(0o755)
+    job = {"name": "promote", "id": origin["job_id"], "run_id": origin["run_id"],
+           "run_attempt": origin["run_attempt"], "html_url": "https://example.invalid/promotion-job"}
+    launcher = tools / "inspection-python"
+    launcher.write_text(f"#!{sys.executable}\nimport sys\nsys.path.insert(0, {str(ROOT)!r})\n"
+                        "from scripts import guest_release as release\n"
+                        f"release.selection.GUEST_REPOSITORY = {repository!r}\n"
+                        f"def gh(endpoint):\n    assert endpoint == 'actions/jobs/{origin['job_id']}'\n    return {job!r}\n"
+                        "release.selection.gh = gh\nsys.argv = sys.argv[1:]\nrelease.main()\n")
+    launcher.chmod(0o755)
+    inspection = tmp_path / "inspection-run"
+    inspection.mkdir()
+    workflow = yaml.safe_load((ROOT / ".github/workflows/guest-oci.yml").read_text())
+    step = next(step for step in workflow["jobs"]["inspect"]["steps"] if step.get("name") == "Read the retained promotion decision")
+    registry[4].clear()
+    inspected = run("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"], cwd=ROOT,
+                    env={**os.environ, "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+                         "SAFEYOLO_BUILD_PYTHON": str(launcher), "RUNNER_TEMP": str(inspection),
+                         "GITHUB_STEP_SUMMARY": str(inspection / "summary.md"), "GH_TOKEN": "test-only",
+                         "GITHUB_ACTOR": "controlled-operator", "PROMOTION_JOB": str(origin["job_id"])}, timeout=30)
+    assert inspected.returncode == 0, inspected.stderr
+    report_text = (inspection / "guest-inspection.json").read_text()
+    report = json.loads(report_text)
+    assert report["requested_promotion"] == origin and report["matches"] == [recovered]
+    assert (inspection / "summary.md").read_text() == "```json\n" + report_text + "```\n"
+    assert tags["compat-v1"] == old_index and all(method in {"GET", "HEAD"} for method, _ in registry[4])
+    for attachments in report["matches"][0]["attachments"].values():
+        for row in attachments:
+            assert row["manifest"] == json.loads(registry[2][row["attachment"]["digest"]])
+            assert row["manifest"]["subject"] == index
+            layer = next(layer for layer in row["manifest"]["layers"] if layer["mediaType"] == row["manifest"]["artifactType"])
+            assert row["receipt_text"].encode() == registry[1][layer["digest"]]
+            assert json.loads(row["receipt_text"]) == row["receipt"]
     for platform in guest_release.selection.PLATFORMS:
         smoke = {"schema": "safeyolo.guest-smoke/v1", "index_digest": index["digest"], "platform": platform,
                  "operator": "controlled-operator", "result": "passed", "finished_at": (now + timedelta(hours=1)).isoformat(),
@@ -633,7 +1102,7 @@ def test_real_oras_receipt_attachment_discovery_and_inventory_retrieval(tmp_path
     assert all(registry[1][key] == value for key, value in saved_blobs.items())
     assert all(registry[2][key] == value for key, value in saved_manifests.items())
     assert tags["guest-2026-10-11.1"] == old_index
-    assert {row["decision"] for row in guest_release.records(index, guest_release.DECISION)} == {"qualified", "promoted"}
+    assert {row["decision"] for row in guest_release.records(index, guest_release.DECISION)} == {"held", "qualified", "promoted"}
 
 
 

@@ -78,6 +78,41 @@ def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def check_provider_lease(stage: str, socket_path: Path, token: str, snapshot: Path,
+                         expected: dict, observations: list[dict], output: Path | None) -> dict:
+    started_at = int(time.time() * 1000)
+    status, room_state = json_request(
+        socket_path, "GET", "/api/coord/rooms/r638-rollback/state", token)
+    finished_at = int(time.time() * 1000)
+    leases = room_state.get("resource_leases", []) if isinstance(room_state, dict) else []
+    lease = next((row for row in leases
+                  if row.get("provider") == "fixture" and row.get("resource") == "slot"), {})
+    selected = {key: lease[key] for key in expected["lease"] if key in lease}
+    wanted = expected["lease"].copy()
+    # The native projection hides an expired holder, retaining the original
+    # timestamps and provenance. A read spanning expiry can return either side.
+    fresh = lease.get("freshness") == "fresh"
+    if fresh:
+        time_matches = started_at < wanted["valid_until"] and finished_at >= wanted["observed_at"]
+    else:
+        time_matches = finished_at >= wanted["valid_until"]
+        wanted.update(state="unknown", holder_agent_id=None, freshness="stale")
+    observation = {"stage": stage, "status": status, "lease": selected,
+                   "read_started_at": started_at, "read_finished_at": finished_at,
+                   "snapshot_sha256": sha(snapshot), "expected": expected}
+    observations.append(observation)
+    # Persist before checking: the archive caller retains only a stdout suffix.
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps({"result": "installed_native_continuity_incomplete",
+                                      "provider_checks": observations}, indent=2) + "\n")
+    print(json.dumps({"native_provider": observation}), flush=True)
+    check(status == 200 and selected == wanted and time_matches and
+          observation["snapshot_sha256"] == expected["snapshot_sha256"],
+          f"{stage} did not preserve provider-owned lease: {observation}")
+    return lease
+
+
 def private_file(path: Path) -> None:
     check(path.is_file() and path.stat().st_mode & 0o777 == 0o600,
           f"private state file missing or has changed mode: {path}")
@@ -223,6 +258,18 @@ def json_request(socket_path: Path, method: str, target: str, token: str,
     status, raw = request(socket_path, method, target, token=token,
                           body=json.dumps(payload).encode() if payload is not None else b"")
     return status, json.loads(raw) if raw else None
+
+
+def check_unapproved_port(socket_path: Path, host: str, origin: Origin, tls_origin: Origin) -> int:
+    """Probe a port outside both approved origin authorities without a listener."""
+    port = origin.server_port % 65535 + 1
+    while port in (origin.server_port, tls_origin.server_port):
+        port = port % 65535 + 1
+    before = (len(origin.seen), len(tls_origin.seen))
+    status, _ = request(socket_path, "GET", f"http://{host}:{port}/wrong-port")
+    check(status == 403 and (len(origin.seen), len(tls_origin.seen)) == before,
+          "scoped approval leaked to another port")
+    return status
 
 
 def run(command: list[str], env: dict, *, timeout: float = 25) -> str:
@@ -499,6 +546,7 @@ def main() -> None:
     if args.prepared_config is not None:
         copy_prepared_nats(args.prepared_config, root)
     stages: list[dict] = []
+    provider_checks: list[dict] = []
     active: Path | None = None
     nats_started = False
     origin = Origin((origin_bind, args.http_port))
@@ -670,6 +718,12 @@ print(json.dumps({'policy':'created'}))
             "observed_at": observed_at, "valid_until": observed_at + 300_000,
         }]}))
         provider_hash = sha(provider_snapshot)
+        provider_expected = {"snapshot_sha256": provider_hash, "lease": {
+            "provider": "fixture", "resource": "slot", "state": "held",
+            "holder_agent_id": "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "observed_at": observed_at, "valid_until": observed_at + 300_000,
+            "freshness": "fresh", "provenance": "provider_owned_lease",
+        }}
         print(json.dumps({"state": str(root), "installed_package": package_id}), flush=True)
         ensure_nats(args.cli, env, args.nats_client_port, args.nats_monitor_port)
         nats_started = True
@@ -754,14 +808,8 @@ print(json.dumps(asyncio.run(exercise())))
             bob, "GET", "/api/coord/attention/wait?since=0&limit=5&timeout=0.1", agent_token)
         check(attention_status == 200 and attention_page.get("edges"),
               f"native Coord did not read initial attention: {attention_status} {attention_page}")
-        state_status, native_room_state = json_request(
-            bob, "GET", "/api/coord/rooms/r638-rollback/state", agent_token)
-        lease = native_room_state.get("resource_leases", [{}])[0] if state_status == 200 else {}
-        check(state_status == 200 and lease.get("provider") == "fixture" and
-              lease.get("resource") == "slot" and lease.get("state") == "unknown" and
-              lease.get("provenance") == "provider_owned_lease" and
-              sha(provider_snapshot) == provider_hash,
-              "native did not preserve external provider ownership and retained advertisement")
+        check_provider_lease("native_restart", bob, agent_token, provider_snapshot,
+                             provider_expected, provider_checks, args.output)
         coord_send_status, coord_sent = json_request(
             alice, "POST", "/api/coord/rooms/r638-rollback/send", agent_token,
             {"body": "native-written-r638", "declared_content_type": "text/plain",
@@ -821,10 +869,7 @@ print(json.dumps(asyncio.run(exercise())))
         bob_status, _ = request(bob, "GET", f"http://{args.origin_host}:{origin.server_port}/bob")
         check(bob_status == 403 and len(origin.seen) == before,
               "Alice's scoped approval leaked to Bob")
-        wrong_port_status, _ = request(alice, "GET",
-                                       f"http://{args.origin_host}:{origin.server_port + 1}/wrong-port")
-        check(wrong_port_status == 403 and len(origin.seen) == before,
-              "scoped approval leaked to another port")
+        wrong_port_status = check_unapproved_port(alice, args.origin_host, origin, tls_origin)
         task_target = f"http://{args.origin_host}:{origin.server_port}/task-lifetime"
         task_headers = {"X-SafeYolo-Test-Context": "run=owned;agent=alice;test=R638"}
         policy_before_task = sha(root / "policy.toml")
@@ -1245,12 +1290,8 @@ print(json.dumps({'native_grant_read':True,
         check(status == 200 and [m.get("body") for m in returned_coord.get("messages", [])] == [
             "python-created-r638", "native-written-r638", "python-rollback-r638"],
               f"return Rust lost Coord history: {status} {returned_coord}")
-        state_status, returned_room_state = json_request(
-            bob, "GET", "/api/coord/rooms/r638-rollback/state", agent_token)
-        lease = returned_room_state.get("resource_leases", [{}])[0] if state_status == 200 else {}
-        check(state_status == 200 and lease.get("resource") == "slot" and
-              lease.get("state") == "unknown" and sha(provider_snapshot) == provider_hash,
-              "return Rust changed provider-owned lease or lost advertisement")
+        lease = check_provider_lease("native_return", bob, agent_token, provider_snapshot,
+                                     provider_expected, provider_checks, args.output)
         status, returned_plumb = json_request(
             alice, "GET", f"/plumb/conversations/{conversation_id}/messages", agent_token)
         check(status == 200 and [m.get("body") for m in returned_plumb.get("messages", [])] == [
@@ -1358,6 +1399,7 @@ print(json.dumps({'native_grant_read':True,
         "fixture_bindings": {"http": list(origin.server_address), "https": list(tls_origin.server_address),
                              "oauth": list(oauth.server_address), "authority": args.origin_host, "parent": parent},
         "state": str(root), "runtimes": stages, "agents_started": 0,
+        "provider_checks": provider_checks,
         "flow": {"id": flow_id, "request_body_bytes": len(b"owned-r638-request-needle"),
                  "response_body_bytes": len(BODY), "audit_correlated": True,
                  "replacement_tag_read": True},

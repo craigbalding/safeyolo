@@ -196,45 +196,31 @@ async fn fetch_response(
     headers: &[(&str, &str)],
     h2: bool,
 ) -> hyper::Response<Vec<u8>> {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(format!("https://{host}{path}"))
+        .header("host", host);
+    for (key, value) in headers {
+        request = request.header(*key, *value);
+    }
+    fetch_request(
+        socket,
+        ca,
+        request.body(Full::new(Bytes::new())).unwrap(),
+        h2,
+    )
+    .await
+}
+
+pub(super) async fn fetch_request(
+    socket: &std::path::Path,
+    ca: rustls::pki_types::CertificateDer<'static>,
+    request: Request<Full<Bytes>>,
+    h2: bool,
+) -> hyper::Response<Vec<u8>> {
     tokio::time::timeout(Duration::from_secs(30), async {
-        let mut stream = UnixStream::connect(socket).await.unwrap();
-        stream
-            .write_all(
-                format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n").as_bytes(),
-            )
-            .await
-            .unwrap();
-        let head = super::response_head(&mut stream).await;
-        assert!(head.starts_with(b"HTTP/1.1 200"), "CONNECT failed");
-        let mut roots = rustls::RootCertStore::empty();
-        roots.add(ca).unwrap();
-        let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-        tls.alpn_protocols = vec![if h2 {
-            b"h2".to_vec()
-        } else {
-            b"http/1.1".to_vec()
-        }];
-        let stream = tokio_rustls::TlsConnector::from(Arc::new(tls))
-            .connect(
-                rustls::pki_types::ServerName::try_from(host.to_owned()).unwrap(),
-                stream,
-            )
-            .await
-            .unwrap();
-        let mut request = Request::builder()
-            .method(method)
-            .uri(format!("https://{host}{path}"))
-            .header("host", host);
-        for (key, value) in headers {
-            request = request.header(*key, *value);
-        }
-        let request = request.body(Empty::<Bytes>::new()).unwrap();
+        let host = request.uri().host().unwrap().to_owned();
+        let stream = connect_tls(socket, ca, &host, h2).await;
         let (reply, connection) = if h2 {
             let (mut sender, connection) =
                 hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(stream))
@@ -261,7 +247,43 @@ async fn fetch_response(
         hyper::Response::from_parts(parts, bytes)
     })
     .await
-    .expect("GHCR response deadline")
+    .expect("owned HTTPS response deadline")
+}
+
+pub(super) async fn connect_tls(
+    socket: &std::path::Path,
+    ca: rustls::pki_types::CertificateDer<'static>,
+    host: &str,
+    h2: bool,
+) -> tokio_rustls::client::TlsStream<UnixStream> {
+    let mut stream = UnixStream::connect(socket).await.unwrap();
+    stream
+        .write_all(format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let head = super::response_head(&mut stream).await;
+    assert!(head.starts_with(b"HTTP/1.1 200"), "CONNECT failed");
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ca).unwrap();
+    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    tls.alpn_protocols = vec![if h2 {
+        b"h2".to_vec()
+    } else {
+        b"http/1.1".to_vec()
+    }];
+    tokio_rustls::TlsConnector::from(Arc::new(tls))
+        .connect(
+            rustls::pki_types::ServerName::try_from(host.to_owned()).unwrap(),
+            stream,
+        )
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -309,7 +331,8 @@ async fn repeated_public_pull_reuse_concurrency_replacement_and_restart() {
             policy_before
         );
         proxy.shutdown().await;
-        let events = std::fs::read_to_string(&fixture.config.event_log).unwrap();
+        let events =
+            std::fs::read_to_string(fixture.config.audit_log_path.as_ref().unwrap()).unwrap();
         let audit =
             std::fs::read_to_string(fixture.config.audit_log_path.as_ref().unwrap()).unwrap();
         assert!(
@@ -327,14 +350,23 @@ async fn repeated_public_pull_reuse_concurrency_replacement_and_restart() {
         let allowed: Vec<_> = events
             .lines()
             .map(|line| serde_json::from_str::<Value>(line).unwrap())
-            .filter(|row| row["event"] == "proxy.credential_guard" && row["outcome"] == "allowed")
+            .filter(|row| {
+                row["event"] == "security.credential_guard.evaluated"
+                    && row["details"]["outcome"] == "allowed"
+            })
             .collect();
         assert_eq!(allowed.len(), 8);
-        assert!(
-            allowed
-                .iter()
-                .all(|row| row["audit"][0]["details"]["observed_anonymous_ghcr_pull"] == true)
-        );
+        let canonical: Vec<Value> = audit
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .filter(|row: &Value| row["event"] == "security.credential_guard")
+            .collect();
+        assert!(allowed.iter().all(|observation| {
+            canonical.iter().any(|row| {
+                row["request_id"] == observation["request_id"]
+                    && row["details"]["observed_anonymous_ghcr_pull"] == true
+            })
+        }));
         // Restart over the same data/policy retains no token approval or cache.
         let proxy = Proxy::start(fixture.config.clone()).await.unwrap();
         let auth = format!("Bearer {second}");
@@ -542,7 +574,7 @@ async fn learned_tokens_keep_repeated_field_inspection_approvals_and_budgets() {
         assert_eq!(fixture.seen.lock().unwrap().len(), before + 2);
         proxy.shutdown().await;
         for path in [
-            &fixture.config.event_log,
+            fixture.config.audit_log_path.as_ref().unwrap(),
             fixture.config.audit_log_path.as_ref().unwrap(),
         ] {
             let text = std::fs::read_to_string(path).unwrap();
@@ -1044,7 +1076,7 @@ async fn live_public_manifest_and_small_blob() {
         .or_else(|_| std::env::var("HTTP_PROXY"))
         .ok()
         .filter(|value| !value.is_empty());
-    let event_log = config.event_log.clone();
+    let event_log = config.audit_log_path.as_ref().unwrap().clone();
     let audit_path = config.audit_log_path.clone().unwrap();
     let proxy = Proxy::start(config).await.unwrap();
     let repository = "craigbalding/safeyolo-guest";
@@ -1211,8 +1243,8 @@ async fn live_public_manifest_and_small_blob() {
     let observed = rows
         .iter()
         .filter(|row| {
-            row["event"] == "proxy.credential_guard"
-                && row["audit"][0]["details"]["observed_anonymous_ghcr_pull"] == true
+            row["event"] == "security.credential_guard"
+                && row["details"]["observed_anonymous_ghcr_pull"] == true
         })
         .count();
     assert!(
@@ -1221,7 +1253,7 @@ async fn live_public_manifest_and_small_blob() {
     );
     assert!(
         rows.iter()
-            .any(|row| row["event"] == "proxy.egress" && row["host"] == "ghcr.io")
+            .any(|row| row["event"] == "traffic.egress" && row["host"] == "ghcr.io")
     );
     println!(
         "live GHCR candidate: two distinct tokens, {manifest_reads} manifests, two blobs ({blob_bytes} bytes), {observed} observed-token decisions, zero approval events, zero pending approvals; source {}",

@@ -25,8 +25,7 @@ fn config(directory: &Path) -> Config {
     .unwrap();
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")}],
-        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
-        "event_log":directory.join("events.jsonl"),"audit_log_path":directory.join("audit.jsonl"),
+        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),"audit_log_path":directory.join("audit.jsonl"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("unused.sqlite3"),
         "circuit_breaker_enabled":false,"circuit_state_file":"",
     }))
@@ -189,7 +188,8 @@ fn authenticated_memory_reports_share_prior_observations_across_reload() {
     for path in ["alice.sock", "bob.sock", "ready", "unused.sqlite3"] {
         assert!(!directory.path().join(path).exists(), "{path}");
     }
-    for path in ["events.jsonl", "audit.jsonl"] {
+    {
+        let path = "audit.jsonl";
         assert!(
             !std::fs::read_to_string(directory.path().join(path))
                 .unwrap()

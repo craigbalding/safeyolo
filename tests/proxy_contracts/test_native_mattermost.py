@@ -3,8 +3,9 @@
 Reuse the owned native instance, pinned NATS and CONNECT parent. The controlled
 Mattermost REST server supplies protocol shapes and uncertain outcomes. Python
 is only the driver; the installed PATH contains native binaries and no Python.
-No live account, public tunnel, model or guest matrix is used. HTTP/CLI and
-readiness deadlines use the existing 5/15/10-second focused fixture bounds.
+No live account, public tunnel, model or guest matrix is used. Callback requests
+retain five seconds and HTTPS retains fifteen seconds. The one-shot CLI driver
+allows twenty seconds; large backlog recovery allows two minutes.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import copy
 import http.client
 import json
 import os
+import signal
 import socket
 import sqlite3
 import ssl
@@ -57,6 +59,14 @@ class Mattermost(ThreadingHTTPServer):
         self.fail_create = None
         self.fail_backend = False
         self.fail_patch = False
+        self.get_faults = {}
+        self.page_faults = {}
+        self.requests = []
+        self.timeout_release = threading.Event()
+        self.create_attempts = []
+        self.fail_create_channels = {}
+        self.clock = None
+        self.channels = {CHANNEL, "d" * 26}
         self.operator_verification_started = threading.Event()
         self.operator_verification_release = threading.Event()
         self.operator_verification_release.set()
@@ -69,7 +79,7 @@ class Mattermost(ThreadingHTTPServer):
 
     def add(self, *, user=HUMAN, channel=CHANNEL, root="", body="", **extra):
         with self.lock:
-            created = int(time.time() * 1000)
+            created = self.clock if self.clock is not None else int(time.time() * 1000)
             post = {"id": f"{len(self.posts) + 1:026d}", "user_id": user, "channel_id": channel,
                     "root_id": root, "message": body, "props": {}, "create_at": created,
                     "update_at": created, "edit_at": 0, "delete_at": 0, **extra}
@@ -87,11 +97,13 @@ class MattermostRequest(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
-    def respond(self, status, body):
+    def respond(self, status, body, *, retry_after=None):
         payload = json.dumps(body).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
+        if retry_after is not None:
+            self.send_header("Retry-After", retry_after)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -102,6 +114,29 @@ class MattermostRequest(BaseHTTPRequestHandler):
         payload = json.loads(self.rfile.read(length)) if length else None
         path = urlsplit(self.path)
         remote = self.server
+        query = parse_qs(path.query)
+        with remote.lock:
+            remote.requests.append((self.command, path.path, query, time.monotonic()))
+            fault = remote.get_faults.get(path.path) if self.command == "GET" else None
+            if self.command == "GET" and path.path.endswith("/posts"):
+                fault = remote.page_faults.get((path.path.split("/")[-2], int(query.get("page", [0])[0])), fault)
+        if callable(fault):
+            fault = fault()
+        if fault == "disconnect":
+            self.close_connection = True
+            self.connection.shutdown(socket.SHUT_RDWR)
+            return
+        if fault == "timeout":
+            self.send_response(200)
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            remote.timeout_release.wait(timeout=20)
+            self.close_connection = True
+            return
+        if fault is not None:
+            self.respond(fault, {"error": f"remote canary {TOKEN}"},
+                         retry_after="2" if fault == 429 else None)
+            return
         if (self.command == "GET" and path.path == f"/api/v4/users/{HUMAN}"
                 and not remote.operator_verification_release.is_set()):
             remote.operator_verification_started.set()
@@ -123,30 +158,44 @@ class MattermostRequest(BaseHTTPRequestHandler):
                 self.respond(200, {"id": BOT, "is_bot": True, "delete_at": 0})
             elif self.command == "GET" and path.path == f"/api/v4/users/{HUMAN}":
                 self.respond(200, remote.human)
-            elif self.command == "GET" and path.path == f"/api/v4/channels/{CHANNEL}":
-                self.respond(200, {"id": CHANNEL, "delete_at": 0})
-            elif self.command == "GET" and path.path == f"/api/v4/channels/{CHANNEL}/posts":
-                query = parse_qs(path.query)
-                posts = remote.posts
+            elif self.command == "GET" and path.path.startswith("/api/v4/channels/"):
+                channel = path.path.split("/")[4]
+                if channel not in remote.channels:
+                    self.respond(404, {"error": "channel unavailable"})
+                    return
+                if not path.path.endswith("/posts"):
+                    self.respond(200, {"id": channel, "delete_at": 0})
+                    return
+                posts = sorted((post for post in remote.posts if post["channel_id"] == channel
+                                and post["delete_at"] == 0),
+                               key=lambda post: (post["create_at"], post["id"]), reverse=True)
                 if "since" in query:
+                    assert not {"page", "per_page", "before", "after"}.intersection(query)
                     posts = [post for post in posts if post["update_at"] >= int(query["since"][0])]
+                    posts = posts[:1000]
                 else:
-                    posts = posts[-int(query.get("per_page", [200])[0]):]
+                    page = int(query.get("page", [0])[0])
+                    size = int(query.get("per_page", [60])[0])
+                    posts = posts[page * size:(page + 1) * size]
                 self.respond(200, {"order": [post["id"] for post in posts],
                                    "posts": {post["id"]: post for post in posts}})
             elif self.command == "POST" and path.path == "/api/v4/posts":
                 assert parse_qs(path.query) == {"silent": ["true"]}
                 assert set(payload) == {"channel_id", "message", "props"}
                 remote.creates += 1
-                if remote.fail_create == "absent":
+                remote.create_attempts.append(payload["channel_id"])
+                outcome = remote.fail_create_channels.get(payload["channel_id"], remote.fail_create)
+                if callable(outcome):
+                    outcome = outcome()
+                if outcome == "absent":
                     self.respond(500, {"error": f"not accepted {TOKEN}"})
                     return
                 post = remote.add(user=BOT, channel=payload["channel_id"], body=payload["message"],
                                   props=payload["props"])
-                if remote.fail_create == "duplicate":
+                if outcome == "duplicate":
                     remote.add(user=BOT, channel=payload["channel_id"], body=payload["message"],
                                props=payload["props"])
-                if remote.fail_create in {"lost", "duplicate"}:
+                if outcome in {"lost", "duplicate"}:
                     self.close_connection = True
                     self.connection.shutdown(socket.SHUT_RDWR)
                 else:
@@ -182,6 +231,10 @@ def exchange(native_coord_instance, tmp_path):
     threads = [threading.Thread(target=server.serve_forever, daemon=True) for server in (remote, parent)]
     for thread in threads:
         thread.start()
+    remote.parent = parent
+    remote.parent_threads = [threads[1]]
+    remote.parent_address = parent.server_address
+    remote.parent_handler = MappedRequest
     # Add the controlled peer to inherited CA trust. The fixture route is an
     # existing CONNECT parent and never grants direct external network access.
     trust = tmp_path / "trust.pem"
@@ -215,10 +268,13 @@ backfill=true
     try:
         yield instance, remote
     finally:
-        for server in (parent, remote):
+        remote.timeout_release.set()
+        for server in (remote.parent, remote):
+            if server is None:
+                continue
             server.shutdown()
             server.server_close()
-        for thread in threads:
+        for thread in [threads[0], *remote.parent_threads]:
             thread.join(timeout=5)
             assert not thread.is_alive()
 
@@ -227,7 +283,7 @@ def once(instance, *, check=False):
     arguments = ["coord", "mattermost", "check" if check else "run"]
     if not check:
         arguments.append("--once")
-    result = instance.cli(*arguments)
+    result = instance.cli(*arguments, timeout=20)
     assert TOKEN not in result.stdout + result.stderr
     return result
 
@@ -254,6 +310,22 @@ def daemon(instance):
             process.terminate()
         stdout, stderr = process.communicate(timeout=10)
         assert TOKEN.encode() not in stdout + stderr
+        process.captured = stdout + stderr
+
+
+def proxy_online(remote, online):
+    if not online:
+        remote.parent.shutdown()
+        remote.parent.server_close()
+        remote.parent_threads[-1].join(timeout=5)
+        assert not remote.parent_threads[-1].is_alive()
+        remote.parent = None
+    else:
+        remote.parent = Parent(None, None, host=remote.parent_address[0],
+                               port=remote.parent_address[1], request_handler=remote.parent_handler)
+        thread = threading.Thread(target=remote.parent.serve_forever, daemon=True)
+        remote.parent_threads.append(thread)
+        thread.start()
 
 
 def callback(instance, payload=None, *, raw=None, path="/safeyolo/mattermost/actions"):
@@ -291,6 +363,311 @@ def semantic_body():
                        "title": "Native review ready", "summary": "Approve this bounded fixture",
                        "reference": "PR #818", "details": ["Controlled protocol"],
                        "allowed_actions": ["approve", "reject", "revise"]})
+
+
+def failed_sync(instance):
+    health = healthy(instance)
+    if health and any(status["status"] != "connected" and status["last_error_category"]
+                      for status in [health["synchronization"]["identity"],
+                                     *health["synchronization"]["rooms"].values()]):
+        return health
+    return None
+
+
+def connected(instance):
+    health = healthy(instance)
+    return health and health["synchronization"]["status"] == "connected" and health
+
+
+def ledger(instance, statement):
+    with sqlite3.connect(instance.root / "mattermost.sqlite3") as db:
+        return db.execute(statement).fetchone()[0]
+
+
+@pytest.mark.parametrize("stage", ["startup", "poll"])
+@pytest.mark.parametrize("fault", [502, 429, 408, "connect", "timeout", "disconnect"])
+def test_native_foreground_recovers_verification_and_poll_failures(exchange, stage, fault):
+    instance, remote = exchange
+    agent_send(instance, "recover without restarting")
+    endpoint = "/api/v4/users/me" if stage == "startup" else f"/api/v4/channels/{CHANNEL}/posts"
+
+    def fail():
+        started = time.monotonic()
+        if fault == "connect":
+            proxy_online(remote, False)
+        else:
+            with remote.lock:
+                remote.get_faults[endpoint] = fault
+        return started
+
+    failure_started = fail() if stage == "startup" else None
+    with daemon(instance) as process:
+        if stage == "poll":
+            before = until(lambda: connected(instance))
+            root = remote.projected()[0]["id"]
+            failure_started = fail()
+            remote.add(root=root, body="reply held during outage")
+        health = until(lambda: failed_sync(instance), timeout=22)
+        assert process.poll() is None and health["listener"] == "healthy"
+        assert health["adapter"] in {"degraded", "retrying"}
+        statuses = [health["synchronization"]["identity"], *health["synchronization"]["rooms"].values()]
+        failed = next(status for status in statuses if status["status"] == "retrying" and status["last_error_category"])
+        assert failed["retry_in_ms"] > 0 and failed["retry_at"] > int(time.time() * 1000) - 100
+        assert failed["backlog_age_seconds"] >= 0
+        assert operator_requests(instance) == []
+        if stage == "poll":
+            assert health["synchronization"]["last_success_at"] >= before["synchronization"]["last_success_at"]
+            assert healthy(instance)["synchronization"]["last_success_at"] == health["synchronization"]["last_success_at"]
+        if fault == 429:
+            assert failed["retry_in_ms"] > 1500
+            # Keep the refusal in place through a second request to exercise
+            # Retry-After at the actual HTTP boundary, rather than just health.
+            attempts = until(lambda: (values if len(values := [r[3] for r in remote.requests
+                                                              if r[1] == endpoint and r[3] >= failure_started]) >= 2 else None), timeout=4)
+            assert attempts[1] - attempts[0] >= 1.9
+        if fault == "connect":
+            proxy_online(remote, True)
+        else:
+            with remote.lock:
+                remote.get_faults.clear()
+            remote.timeout_release.set()
+        recovered = until(lambda: connected(instance), timeout=10)
+        assert recovered["synchronization"]["last_success_at"] is not None
+        assert len(remote.projected()) == remote.creates == 1
+        if stage == "poll":
+            messages = until(lambda: operator_requests(instance))
+            assert len(messages) == 1 and json.loads(messages[0]["body"])["text"] == "reply held during outage"
+        assert process.poll() is None
+    assert process.returncode == 0
+    assert process.captured.count(b"Mattermost sync scope=") <= 10
+    assert once(instance).returncode == 0 and remote.creates == 1
+
+
+def test_native_outage_diagnostics_are_strict_and_stale_authority_cannot_accept(exchange):
+    instance, remote = exchange
+    agent_send(instance, semantic_body(), declared_content_type="text/plain")
+    remote.fail_backend = True
+    for check in (True, False):
+        failed = once(instance, check=check)
+        assert failed.returncode != 0 and "http_5xx" in failed.stderr
+    remote.fail_backend = False
+    with daemon(instance):
+        until(lambda: connected(instance))
+        post = remote.projected()[0]
+        payload = {"user_id": HUMAN, "channel_id": CHANNEL, "post_id": post["id"],
+                   "context": post["props"]["attachments"][0]["actions"][0]["integration"]["context"]}
+        remote.fail_backend = True
+        until(lambda: failed_sync(instance))
+        remote.add(root=post["id"], body="authorized only after recovery")
+        assert callback(instance, payload)[0] == 503
+        assert operator_requests(instance) == []
+        assert ledger(instance, "SELECT COUNT(*) FROM action_capability WHERE status='issued'") == 1
+        remote.fail_backend = False
+        until(lambda: connected(instance))
+        until(lambda: len(operator_requests(instance)) == 1)
+        assert callback(instance, payload)[0] == 200
+        assert callback(instance, payload)[0] == 409
+        assert len(operator_requests(instance)) == 2
+
+
+@pytest.mark.parametrize("shutdown_signal", [signal.SIGINT, signal.SIGTERM])
+def test_native_signal_interrupts_backoff_and_releases_listener_and_lease(exchange, shutdown_signal):
+    instance, remote = exchange
+    remote.get_faults["/api/v4/users/me"] = 429
+    with daemon(instance) as process:
+        until(lambda: failed_sync(instance))
+        # A concurrent diagnostic cannot acquire the live adapter's state lease.
+        assert "lease" in once(instance, check=True).stderr
+        started = time.monotonic()
+        process.send_signal(shutdown_signal)
+        process.wait(timeout=2)
+        assert time.monotonic() - started < 2 and process.returncode == 0
+    with socket.socket() as released:
+        # TIME_WAIT from a health connection does not imply a live listener.
+        released.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        released.bind(("127.0.0.1", instance.callback_port))
+    remote.get_faults.clear()
+    assert once(instance, check=True).returncode == 0
+    with daemon(instance):
+        until(lambda: connected(instance))
+
+
+@pytest.mark.parametrize("identity", ["deactivated", "different", "bot", "bot_identity", "ca"])
+def test_native_invalid_identity_or_transport_configuration_is_terminal(exchange, identity):
+    instance, remote = exchange
+    if identity == "deactivated":
+        remote.human["delete_at"] = 1
+    elif identity == "different":
+        remote.human["id"] = "x" * 26
+    elif identity == "bot":
+        remote.human["is_bot"] = True
+    elif identity == "bot_identity":
+        config = instance.root / "coord-mattermost.toml"
+        config.write_text(config.read_text().replace(f'bot_user_id="{BOT}"', f'bot_user_id="{"q" * 26}"'))
+    else:
+        instance.environment["SSL_CERT_FILE"] = str(instance.root / "missing-ca.pem")
+    with daemon(instance) as process:
+        until(lambda: process.poll() is not None)
+        assert process.returncode != 0 and operator_requests(instance) == []
+    expected = b"configuration" if identity == "ca" else b"active bot" if identity == "bot_identity" else b"active human"
+    assert expected in process.captured
+
+
+def test_native_authorization_outage_between_backlog_appends_retains_unsent_replies(exchange):
+    instance, remote = exchange
+    agent_send(instance, "batch authorization question")
+    assert once(instance).returncode == 0
+    root = remote.projected()[0]["id"]
+    for index in range(5):
+        remote.add(root=root, body=f"authorized reply {index}")
+
+    def unavailable_after_first_append():
+        return 502 if ledger(instance, "SELECT COUNT(*) FROM inbound_post WHERE status='sent'") >= 1 else None
+
+    remote.get_faults[f"/api/v4/users/{HUMAN}"] = unavailable_after_first_append
+    with daemon(instance) as process:
+        until(lambda: failed_sync(instance))
+        assert ledger(instance, "SELECT COUNT(*) FROM inbound_post WHERE status='sent'") == 1
+        assert ledger(instance, "SELECT COUNT(*) FROM inbound_post WHERE status='pending'") == 0
+        assert len(operator_requests(instance)) == 1 and process.poll() is None
+        remote.get_faults.clear()
+        until(lambda: connected(instance))
+        assert [json.loads(message["body"])["text"] for message in operator_requests(instance)] == [
+            f"authorized reply {index}" for index in range(5)]
+
+
+def second_mapping(instance):
+    for arguments in (("room", "create", "safe-room"), ("grant", "safe-room", "alice")):
+        result = instance.cli("coord", *arguments)
+        assert result.returncode == 0, result.stderr
+    with (instance.root / "coord-mattermost.toml").open("a") as config:
+        config.write(f'\n[[rooms]]\ncoord_room="safe-room"\nchannel_id="{"d" * 26}"\nbackfill=true\n')
+
+
+@pytest.mark.parametrize("failure", [502, 403, "lost", "absent", "duplicate"])
+def test_native_mapping_failure_or_reconciliation_keeps_safe_mapping_and_callback(exchange, failure):
+    instance, remote = exchange
+    second_mapping(instance)
+    agent_send(instance, "first mapping")
+    agent_send(instance, semantic_body(), room="safe-room", declared_content_type="text/plain")
+    if isinstance(failure, int):
+        remote.get_faults[f"/api/v4/channels/{CHANNEL}"] = failure
+    else:
+        remote.fail_create_channels[CHANNEL] = failure
+    with daemon(instance) as process:
+        until(lambda: len([p for p in remote.projected() if p["channel_id"] == "d" * 26]) == 1)
+        safe = next(post for post in remote.projected() if post["channel_id"] == "d" * 26)
+        payload = {"user_id": HUMAN, "channel_id": "d" * 26, "post_id": safe["id"],
+                   "context": safe["props"]["attachments"][0]["actions"][0]["integration"]["context"]}
+        if failure == "lost":
+            until(lambda: connected(instance))
+        else:
+            health = until(lambda: failed_sync(instance))
+            assert health["adapter"] == "degraded" and health["listener"] == "healthy"
+            if not isinstance(failure, int):
+                assert health["pending_projection_reconciliation"] == 1
+        assert callback(instance, payload)[0] == 200
+        remote.add(channel="d" * 26, root=safe["id"], body="independent safe reply")
+        until(lambda: len(history(instance, "safe-room")) == 3)
+        assert operator_requests(instance) == [] and process.poll() is None
+        if isinstance(failure, int):
+            attempts = len([r for r in remote.requests if r[1] == f"/api/v4/channels/{CHANNEL}"])
+            if failure == 403:
+                assert healthy(instance)["synchronization"]["rooms"][ROOM]["status"] == "blocked"
+                # Permanent permission failures do not loop as temporary outages.
+                agent_send(instance, "more safe traffic", room="safe-room")
+                until(lambda: len([p for p in remote.projected() if p["channel_id"] == "d" * 26]) == 2)
+                assert len([r for r in remote.requests if r[1] == f"/api/v4/channels/{CHANNEL}"]) == attempts
+        else:
+            assert remote.create_attempts.count(CHANNEL) == 1
+    with daemon(instance) as process:
+        until(lambda: healthy(instance))
+        assert callback(instance, payload)[0] == 409 and process.poll() is None
+        assert remote.create_attempts.count(CHANNEL) <= 1
+
+
+@pytest.mark.parametrize("deleted_page", [None, 0, 1])
+def test_native_paging_deletion_retains_cursor_and_recovers_after_restart(exchange, deleted_page):
+    instance, remote = exchange
+    remote.clock = int(time.time() * 1000) - 3600000
+    agent_send(instance, "paging deletion question")
+    assert once(instance).returncode == 0
+    assert once(instance).returncode == 0
+    root = remote.projected()[0]["id"]
+    baseline = ledger(instance, "SELECT inbound_since FROM room_state")
+    remote.clock = baseline + 1000
+    reply = remote.add(root=root, body="surviving oldest reply")
+    newer = []
+    for index in range(400):
+        remote.clock = reply["create_at"] + 6000 + index
+        newer.append(remote.add(user="u" * 26, body="ineligible newer post"))
+
+    if deleted_page is not None:
+        # Delete an already-read post just before offset 400 is fetched. The
+        # surviving reply shifts to 399; deleting on page 1 leaves page 0 intact.
+        def delete_read_post():
+            with remote.lock:
+                remote.page_faults.pop((CHANNEL, 2))
+                deleted_id = newer[350 if deleted_page == 0 else 150]["id"]
+                post = next(post for post in remote.posts if post["id"] == deleted_id)
+                post["delete_at"] = remote.clock
+        remote.page_faults[CHANNEL, 2] = delete_read_post
+
+    result = once(instance)
+    if deleted_page is None:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0 and "pages changed" in result.stderr
+        assert ledger(instance, "SELECT inbound_since FROM room_state") == baseline
+        assert operator_requests(instance) == []
+        assert next(post for post in remote.posts if post["id"] == reply["id"]) == reply
+    # A fresh daemon retries the retained interval and commits only after the
+    # stable traversal. A further restart must not append the reply again.
+    with daemon(instance):
+        until(lambda: connected(instance))
+    messages = operator_requests(instance)
+    assert [json.loads(message["body"])["text"] for message in messages] == [reply["message"]]
+    assert ledger(instance, "SELECT inbound_since FROM room_state") == remote.clock
+    assert once(instance).returncode == 0
+    assert operator_requests(instance) == messages and remote.creates == 1
+
+
+def test_native_long_outage_pages_equal_timestamps_partial_failure_and_restart(exchange):
+    instance, remote = exchange
+    remote.clock = int(time.time() * 1000) - 3600000
+    agent_send(instance, "long outage question")
+    assert once(instance).returncode == 0
+    assert once(instance).returncode == 0
+    root = remote.projected()[0]["id"]
+    baseline = ledger(instance, "SELECT inbound_since FROM room_state")
+    endpoint = f"/api/v4/channels/{CHANNEL}/posts"
+    remote.get_faults[endpoint] = 502
+    with daemon(instance):
+        until(lambda: failed_sync(instance))
+        for index in range(1205):
+            remote.clock = baseline + 1000 * (1 + index // 450)
+            remote.add(root=root, body=f"backlog {index}")
+        remote.page_faults[CHANNEL, 1] = 502
+        remote.get_faults.clear()
+        until(lambda: any(r[1] == endpoint and r[2].get("page") == ["1"] for r in remote.requests))
+        assert ledger(instance, "SELECT inbound_since FROM room_state") == baseline
+        assert operator_requests(instance) == []
+    # The interrupted interval is retried from its durable boundary on restart.
+    with daemon(instance):
+        until(lambda: failed_sync(instance))
+        assert ledger(instance, "SELECT inbound_since FROM room_state") == baseline
+        remote.page_faults.clear()
+        until(lambda: connected(instance), timeout=120)
+        assert ledger(instance, "SELECT COUNT(*) FROM inbound_post WHERE status='sent'") == 1205
+        remote.add(root=root, body="same timestamp after cursor commit")
+        until(lambda: ledger(instance, "SELECT COUNT(*) FROM inbound_post WHERE status='sent'") == 1206)
+    messages = operator_requests(instance)
+    assert [json.loads(message["body"])["text"] for message in messages] == [
+        *(f"backlog {index}" for index in range(1205)), "same timestamp after cursor commit"]
+    assert once(instance).returncode == 0
+    assert operator_requests(instance) == messages and remote.creates == 1
+    assert any(r[2].get("page") == ["6"] for r in remote.requests if r[1] == endpoint)
+    assert all("since" not in r[2] for r in remote.requests if r[1] == endpoint)
 
 
 def test_native_exchange_authority_restart_and_backend_isolation(exchange):
@@ -491,6 +868,29 @@ def test_native_uncertain_projection_reconciles_or_refuses_retry(exchange, outco
         assert remote.creates == 1
 
 
+def test_native_interrupted_projection_page_reconciles_without_reposting(exchange):
+    instance, remote = exchange
+    first = agent_send(instance, "first projection confirmed")["envelope"]
+    second = agent_send(instance, "second projection receipt withheld")["envelope"]
+    outcomes = iter((None, "lost"))
+    remote.fail_create = lambda: next(outcomes)
+    assert once(instance).returncode != 0
+    assert remote.creates == 2
+    assert ledger(instance, "SELECT coord_cursor FROM room_state") == "0"
+    assert ledger(instance, "SELECT COUNT(*) FROM outbound_projection WHERE status='sent'") == 1
+    assert ledger(instance, "SELECT COUNT(*) FROM outbound_projection WHERE status='pending'") == 1
+    remote.fail_create = None
+    assert once(instance).returncode == 0
+    second_sequence = next(message["sequence"] for message in history(instance)
+                           if message["msg_id"] == second["msg_id"])
+    assert ledger(instance, "SELECT coord_cursor FROM room_state") == str(second_sequence)
+    assert ledger(instance, "SELECT COUNT(*) FROM outbound_projection WHERE status='sent'") == 2
+    assert [post["props"]["safeyolo_coord"]["coord_msg_id"] for post in remote.projected()] == [
+        first["msg_id"], second["msg_id"]]
+    assert once(instance).returncode == 0
+    assert remote.creates == 2 and operator_requests(instance) == []
+
+
 def test_native_uncertain_coord_reply_never_replays_after_restart(exchange):
     instance, remote = exchange
     agent_send(instance, "question")
@@ -507,6 +907,21 @@ def test_native_uncertain_coord_reply_never_replays_after_restart(exchange):
     assert refused.returncode != 0 and "no automatic replay" in refused.stderr
     assert asyncio.run(stream_control(instance)) == before + 1
     assert len(operator_requests(instance)) == 1
+    with daemon(instance) as process:
+        health = until(lambda: failed_sync(instance))
+        assert health["pending_inbound_reconciliation"] == 1
+        assert health["synchronization"]["rooms"][ROOM]["status"] == "blocked"
+        agent_send(instance, "independent outward projection")
+        until(lambda: len(remote.projected()) == 2)
+        remote.add(root=remote.projected()[0]["id"], body="independent later reply")
+        until(lambda: len(operator_requests(instance)) == 2)
+        assert process.poll() is None
+    with daemon(instance):
+        health = until(lambda: failed_sync(instance))
+        assert health["pending_inbound_reconciliation"] == 1
+        messages = operator_requests(instance)
+        assert [json.loads(message["body"])["text"] for message in messages] == [
+            "unknown acceptance", "independent later reply"]
 
 
 def test_native_callback_wire_limits_and_untrusted_schema(exchange):

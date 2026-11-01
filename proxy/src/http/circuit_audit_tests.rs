@@ -24,8 +24,7 @@ fn config(directory: &Path) -> Config {
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")},
                      {"agent_id":"bob","socket_path":directory.join("bob.sock")}],
-        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
-        "event_log":directory.join("diagnostic.jsonl"),"audit_log_path":directory.join("audit.jsonl"),
+        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),"audit_log_path":directory.join("audit.jsonl"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("flows.sqlite3"),
         "circuit_breaker_enabled":true,"circuit_state_file":"",
     })).unwrap()
@@ -71,7 +70,13 @@ fn records(directory: &Path) -> Vec<Value> {
     std::fs::read_to_string(directory.join("audit.jsonl"))
         .unwrap_or_default()
         .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
+        .map(|line| crate::audit::parse_record(line).unwrap())
+        // Transport-history indications have separate producer coverage; these
+        // assertions compare the reached circuit/request hook publications.
+        .filter(|row| {
+            !(row["event"] == "security.indicator"
+                && row["details"]["sensor"] == "connection-history.v1")
+        })
         // Preserve all other producer events and their original order.
         .filter(|row: &Value| {
             !(row["addon"] == "memory-monitor"
@@ -79,6 +84,19 @@ fn records(directory: &Path) -> Vec<Value> {
                     row["event"].as_str(),
                     Some("ops.startup" | "ops.memory.conn_closed")
                 ))
+        })
+        .filter(|row| {
+            !matches!(
+                row["event"].as_str(),
+                Some(
+                    "network.connection"
+                        | "traffic.flow"
+                        | "traffic.request_outcome"
+                        | "traffic.egress"
+                        | "security.network_guard.evaluated"
+                        | "security.credential_guard.evaluated"
+                )
+            )
         })
         .collect()
 }
@@ -132,7 +150,7 @@ fn trace_steps(runtime: &Runtime, response: &[u8], agent: &str) -> Vec<Value> {
 
 fn check_open(event: &Value, host: &str) {
     assert_eq!(event["event"], "ops.circuit_breaker.open");
-    assert_eq!(event["schema_version"], 1);
+    assert_eq!(event["schema_version"], 2);
     assert_eq!(event["kind"], "ops");
     assert_eq!(event["severity"], "medium");
     assert_eq!(event["addon"], "circuit-breaker");
@@ -175,6 +193,13 @@ async fn response_open_and_next_denial_emit_once_with_stage_identity() {
             json!(["network-guard", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "request", "evaluated", "allowed"]),
             json!(["credential-guard", "request", "evaluated", "no_detection"]),
+            json!([
+                "service-gateway",
+                "request",
+                "evaluated",
+                "not_a_gateway_request"
+            ]),
+            json!(["pattern-scanner", "request", "bypassed", "addon_disabled"]),
             json!(["test-context", "request", "evaluated", "not_target_host"]),
             json!([
                 "circuit-breaker",
@@ -190,6 +215,10 @@ async fn response_open_and_next_denial_emit_once_with_stage_identity() {
         vec![
             json!(["network-guard", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "request", "evaluated", "blocked"]),
+            json!(["credential-guard", "request", "bypassed", "prior_response"]),
+            json!(["service-gateway", "request", "bypassed", "prior_response"]),
+            json!(["pattern-scanner", "request", "bypassed", "prior_response"]),
+            json!(["test-context", "request", "bypassed", "prior_response"]),
             json!(["circuit-breaker", "response", "evaluated", "prior_block"]),
             json!(["test-context", "response", "evaluated", "not_applicable"]),
         ]
@@ -246,20 +275,21 @@ async fn response_open_and_next_denial_emit_once_with_stage_identity() {
             "attribution_status":"resolved", "attribution_provenance":{"transport_source":"uds","uds_agent":"bob"},
         })
     );
-    let diagnostics: Vec<Value> =
-        std::fs::read_to_string(directory.path().join("diagnostic.jsonl"))
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
+    let diagnostics: Vec<Value> = std::fs::read_to_string(directory.path().join("audit.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
     let request = diagnostics
         .iter()
-        .find(|row| row["event"] == "proxy.request" && row["request_id"] == security["request_id"])
+        .find(|row| {
+            row["event"] == "traffic.request_outcome" && row["request_id"] == security["request_id"]
+        })
         .unwrap();
     assert!(security["details"]["connection_id"].is_string());
     assert_eq!(
         security["details"]["connection_id"],
-        request["connection_id"]
+        request["details"]["connection_id"]
     );
     assert!(!serde_json::to_string(&rows).unwrap().contains("forged"));
 }
@@ -311,6 +341,13 @@ async fn early_response_open_omits_unreached_source_correlation() {
             json!(["network-guard", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "request", "evaluated", "allowed"]),
             json!(["credential-guard", "request", "evaluated", "no_detection"]),
+            json!([
+                "service-gateway",
+                "request",
+                "evaluated",
+                "not_a_gateway_request"
+            ]),
+            json!(["pattern-scanner", "request", "bypassed", "addon_disabled"]),
             json!([
                 "circuit-breaker",
                 "response",
@@ -380,6 +417,13 @@ async fn synchronous_response_audit_error_preserves_partial_state_and_skips_chil
             json!(["network-guard", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "request", "evaluated", "allowed"]),
             json!(["credential-guard", "request", "evaluated", "no_detection"]),
+            json!([
+                "service-gateway",
+                "request",
+                "evaluated",
+                "not_a_gateway_request"
+            ]),
+            json!(["pattern-scanner", "request", "bypassed", "addon_disabled"]),
             json!(["test-context", "request", "evaluated", "not_target_host"]),
             json!(["circuit-breaker", "response", "error", "AuditError"]),
         ]

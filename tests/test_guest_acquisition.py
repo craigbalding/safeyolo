@@ -10,12 +10,14 @@ import io
 import json
 import os
 import shutil
+import signal
 import socket
 import ssl
 import subprocess
 import tarfile
 import tempfile
 import threading
+import time
 import tomllib
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -49,21 +51,26 @@ def descriptor(data, media_type):
     return {"digest": digest(data), "size": len(data), "mediaType": media_type}
 
 
-def release(archive, version="guest-2026-10-12.1", compatibility="v1", edit_child=None):
+def release(archive, version="guest-2026-10-12.1", compatibility="v1", edit_child=None, encode_config=None,
+            profile=None, platforms=(("darwin", "arm64"), ("linux", "amd64"), ("linux", "arm64"))):
     annotations = {"org.opencontainers.image.version": version,
                    "org.opencontainers.image.source": "https://github.com/craigbalding/safeyolo",
                    "org.opencontainers.image.revision": "a" * 40,
                    "dev.safeyolo.guest.compatibility": compatibility}
+    if profile:
+        annotations["dev.safeyolo.guest.profile"] = profile
     contents = {"blobs/" + digest(archive): archive}
     manifests = []
-    for os_name, architecture in (("darwin", "arm64"), ("linux", "amd64"), ("linux", "arm64")):
+    for os_name, architecture in platforms:
         platform = {"os": os_name, "architecture": architecture}
-        config = json.dumps(platform).encode()
+        config = encode_config(platform) if encode_config else json.dumps(platform).encode()
         contents["blobs/" + digest(config)] = config
         child = {"schemaVersion": 2, "mediaType": MANIFEST, "artifactType": "application/vnd.safeyolo.guest.v1",
                  "annotations": {**annotations, "dev.safeyolo.guest.build-base":
                                  "docker.io/library/debian@sha256:" + "b" * 64},
                  "config": descriptor(config, CONFIG), "layers": [descriptor(archive, ARCHIVE)]}
+        if profile:
+            child["annotations"]["dev.safeyolo.guest.build-inputs"] = digest(b"declared fixture inputs")
         if edit_child:
             edit_child(child)
         child_bytes = json.dumps(child).encode()
@@ -75,7 +82,8 @@ def release(archive, version="guest-2026-10-12.1", compatibility="v1", edit_chil
     return contents
 
 
-def compressed_archive(extra=(), content=b"guest bytes", owner=100000, missing_cache=False, child_owner=None):
+def compressed_archive(extra=(), content=b"guest bytes", owner=100000, missing_cache=False, child_owner=None,
+                       command_pax_headers=None):
     """Use tar's real wire formats, including malicious link and path entries."""
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w", format=tarfile.PAX_FORMAT) as archive:
@@ -91,6 +99,8 @@ def compressed_archive(extra=(), content=b"guest bytes", owner=100000, missing_c
             entry.uid = entry.gid = owner
             if name == "rootfs-tree/command" and child_owner is not None:
                 entry.uid = entry.gid = child_owner
+            if name == "rootfs-tree/command" and command_pax_headers:
+                entry.pax_headers = command_pax_headers
             entry.mode = 0o644 if name == "cache-paths.txt" else (0o751 if kind in (tarfile.DIRTYPE, tarfile.REGTYPE) else 0o777)
             entry.size = len(data) if kind == tarfile.REGTYPE else 0
             archive.addfile(entry, io.BytesIO(data) if entry.size else None)
@@ -128,7 +138,8 @@ def registry(tmp_path):
     cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
             .public_key(key.public_key()).serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=1))
-            .add_extension(x509.SubjectAlternativeName([x509.DNSName("ghcr.io"), x509.DNSName("github.com")]), False)
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName(host) for host in
+                           ("ghcr.io", "github.com", "api.github.com")]), False)
             .sign(key, hashes.SHA256()))
     pem = tmp_path / "registry.pem"
     pem.touch(mode=0o600)
@@ -139,7 +150,7 @@ def registry(tmp_path):
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(pem)
     contents, requests = {}, []
-    faults = {"partial": None, "advance": None, "pause": None,
+    faults = {"partial": None, "advance": None, "pause": None, "written": {},
               "entered": threading.Event(), "resume": threading.Event()}
 
     class RegistryRequest(BaseHTTPRequestHandler):
@@ -152,7 +163,7 @@ def registry(tmp_path):
             path = urlsplit(self.path).path
             requests.append(path)
             assert not self.headers.get("Authorization", "").startswith("Basic ")
-            if path.endswith("/releases/latest") and faults.get("host_release"):
+            if path == "/craigbalding/safeyolo/releases/latest" and faults.get("host_release"):
                 self.send_response(302)
                 self.send_header("Location", f'https://github.com/craigbalding/safeyolo/releases/tag/{faults["host_release"]}')
                 self.send_header("Content-Length", "0")
@@ -174,6 +185,9 @@ def registry(tmp_path):
                 self.send_error(404)
                 return
             self.send_response(200)
+            if key is not None and key == faults.get("gzip"):
+                assert "gzip" in self.headers.get("Accept-Encoding", "")
+                self.send_header("Content-Encoding", "gzip")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Docker-Content-Digest", digest(data))
             self.send_header("Connection", "close")
@@ -185,7 +199,15 @@ def registry(tmp_path):
                 faults["entered"].set()
                 faults["resume"].wait(timeout=10)
             try:
+                if key is not None and key == faults.get("pause_after"):
+                    self.wfile.write(data[:len(data) // 2])
+                    self.wfile.flush()
+                    faults["entered"].set()
+                    faults["resume"].wait(timeout=10)
+                    data = data[len(data) // 2:]
                 self.wfile.write(data[:len(data) // 2] if key == faults["partial"] else data)
+                if key in faults["written"]:
+                    faults["written"][key].set()
             except (BrokenPipeError, ConnectionResetError):
                 # The native client closes deliberate digest/size refusals early.
                 pass
@@ -196,7 +218,7 @@ def registry(tmp_path):
 
     class RegistryParent(Request):
         def _peer(self, host, port, *, tls_origin):
-            assert tls_origin and host in ("ghcr.io", "github.com") and port == 443
+            assert tls_origin and host in ("ghcr.io", "github.com", "api.github.com") and port == 443
             return socket.create_connection(server.server_address, timeout=5), False
 
     parent = Parent(None, None, request_handler=RegistryParent)
@@ -259,6 +281,89 @@ def package_info(tmp_path):
     path.write_text(f"source_commit={'a' * 40}\nprofile=debug\nplatform=linux-{architecture}\nminimum_runtime=2.34\n"
                     f"guest_compatibility=v1\nguest_repository={REPOSITORY}\nguest_discovery_tag=compat-v1\n")
     return path
+
+
+@pytest.mark.parametrize("encoding", ["publisher", "whitespace", "reordered", "escaped"])
+def test_native_acquisition_omits_only_publisher_identical_config(
+    native_cli, registry, package_info, tmp_path, guest_store, encoding,
+):
+    contents, requests, _faults, environment = registry
+
+    def encode_config(platform):
+        if encoding == "whitespace":
+            return json.dumps(platform, indent=2).encode()
+        if encoding == "reordered":
+            platform = dict(reversed(platform.items()))
+        data = json.dumps(platform, separators=(",", ":")).encode()
+        return data.replace(b"linux", br"l\u0069nux") if encoding == "escaped" else data
+
+    archive = compressed_archive()
+    data = release(archive, encode_config=encode_config)
+    architecture = package_info.read_text().split("platform=linux-", 1)[1].splitlines()[0]
+    index = json.loads(data["manifests/compat-v1"])
+    selected = next(child for child in index["manifests"] if child["platform"] == {
+        "os": "linux", "architecture": architecture,
+    })
+    child = json.loads(data["manifests/" + selected["digest"]])
+    config_path = "blobs/" + child["config"]["digest"]
+    if encoding == "publisher":
+        # A missing endpoint makes an accidental config request fail acquisition.
+        del data[config_path]
+    contents.update(data)
+    root = tmp_path / "installed"
+    result = install(native_cli, root, guest_store, environment, package_info)
+    assert result.returncode == 0, result.stderr
+    selection = json.loads((root / "share/guest-selection.json").read_bytes())
+    assert selection["index"]["digest"] == digest(data["manifests/compat-v1"])
+    assert selection["manifest"]["digest"] == selected["digest"]
+    assert selection["archive"] == {"digest": digest(archive), "size": len(archive)}
+    assert selection["platform"] == f"linux/{architecture}"
+    expected = ["manifests/compat-v1", "manifests/" + selected["digest"]]
+    if encoding != "publisher":
+        expected.append(config_path)
+    expected.append("blobs/" + digest(archive))
+    assert [path.removeprefix(PREFIX) for path in requests if path.startswith(PREFIX)] == expected
+
+
+@pytest.mark.parametrize("fault", ["size", "hash", "partial", "wrong-platform", "extra-field", "malformed"])
+def test_native_acquisition_refuses_invalid_config_before_archive(
+    native_cli, registry, package_info, tmp_path, guest_store, fault,
+):
+    contents, requests, faults, environment = registry
+
+    def encode_config(platform):
+        if fault == "wrong-platform":
+            platform = {**platform, "os": "darwin"}
+        if fault == "extra-field":
+            platform = {**platform, "extra": True}
+        if fault in ("hash", "partial"):
+            return json.dumps(platform, indent=2).encode()
+        data = json.dumps(platform, separators=(",", ":")).encode()
+        return data[:-1] if fault == "malformed" else data
+
+    archive = compressed_archive()
+    edit_child = (lambda child: child["config"].update(size=child["config"]["size"] + 1)) if fault == "size" else None
+    data = release(archive, encode_config=encode_config, edit_child=edit_child)
+    index = json.loads(data["manifests/compat-v1"])
+    architecture = "amd64" if os.uname().machine == "x86_64" else "arm64"
+    selected = next(child for child in index["manifests"] if child["platform"] == {
+        "os": "linux", "architecture": architecture,
+    })
+    child = json.loads(data["manifests/" + selected["digest"]])
+    config_path = "blobs/" + child["config"]["digest"]
+    if fault == "hash":
+        data[config_path] = b"!" + data[config_path][1:]
+    if fault == "partial":
+        faults["partial"] = config_path
+    contents.update(data)
+    root = tmp_path / "refused"
+    result = install(native_cli, root, guest_store, environment, package_info)
+    assert result.returncode != 0
+    assert any("/blobs/" in path for path in requests), "unmatched local bytes must use remote validation"
+    assert PREFIX + "blobs/" + digest(archive) not in requests
+    assert not (root / "share").exists()
+    assert not (root / "config.toml").exists()
+    assert not (guest_store / "trees").exists()
 
 
 @pytest.mark.parametrize("prepared_host", [False, True])
@@ -344,6 +449,97 @@ def test_explicit_first_acquisition_selects_each_index_without_discovery(
     assert not (guest_store / "unused").exists()
 
 
+def test_custom_profile_requires_explicit_index_and_reuses_native_preparation(
+    native_cli, registry, package_info, tmp_path, guest_store,
+):
+    contents, requests, _faults, environment = registry
+    architecture = package_info.read_text().split("platform=linux-", 1)[1].splitlines()[0]
+    data = release(compressed_archive(child_owner=101000), profile="kali-pentest",
+                   platforms=(("linux", architecture),))
+    contents.update(data)
+    index = digest(data["manifests/compat-v1"])
+    contents["manifests/" + index] = data["manifests/compat-v1"]
+    refused = install(native_cli, tmp_path / "discovery", guest_store, environment, package_info)
+    assert refused.returncode != 0 and "explicit --index" in refused.stderr
+    first = install(native_cli, tmp_path / "explicit", guest_store, environment, package_info, "--index", index)
+    assert first.returncode == 0, first.stderr
+    tree = (tmp_path / "explicit/share/rootfs-tree").resolve()
+    owned_root_ids(tree)
+    assert (tree / "command").stat().st_uid == os.getuid()
+    before = len(requests)
+    second = install(native_cli, tmp_path / "reuse", guest_store, environment, package_info, "--index", index)
+    assert second.returncode == 0, second.stderr
+    assert (tmp_path / "reuse/share/rootfs-tree").resolve() == tree
+    assert not requests[before:]
+
+
+def test_guest_remap_failure_keeps_verified_archive_for_retry(native_cli, registry, package_info, tmp_path, guest_store):
+    contents, requests, _faults, environment = registry
+    archive = compressed_archive()
+    contents.update(release(archive))
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    sudo = shutil.which("sudo")
+    assert sudo
+    wrapper = tools / "sudo"
+    wrapper.write_text('#!/bin/sh\n'
+                       'if [ "$1" = -- ] && [ "$3" = host ] && [ "$4" = remap-rootfs ]; then\n'
+                       '  echo "fixture ownership preparation denied" >&2\n  exit 77\nfi\n'
+                       f'exec "{sudo}" "$@"\n')
+    wrapper.chmod(0o755)
+    root = tmp_path / "first"
+    denied = install(native_cli, root, guest_store,
+                     {**environment, "PATH": f"{tools}:{os.environ['PATH']}"}, package_info)
+    assert denied.returncode != 0 and "fixture ownership preparation denied" in denied.stderr
+    assert not (root / "share/guest-selection.json").exists()
+    assert not list((guest_store / "trees/sha256").iterdir())
+    blob = guest_store / "blobs/sha256" / digest(archive).removeprefix("sha256:")
+    assert blob.read_bytes() == archive
+    retried = install(native_cli, root, guest_store, environment, package_info)
+    assert retried.returncode == 0, retried.stderr
+    assert (root / "share/guest-selection.json").is_file()
+    assert requests.count(PREFIX + "blobs/" + digest(archive)) == 1
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_linux_extraction_preserves_metadata_across_tar_records(
+        native_cli, registry, package_info, tmp_path, guest_store, cached):
+    contents, requests, _faults, environment = registry
+    # Cross several 128 KiB records and end inside a tar block.
+    payload = hashlib.shake_256(b"guest extraction metadata").digest(384 * 1024 + 7)
+    archive = compressed_archive(
+        extra=[("host-state", tarfile.REGTYPE, b"unselected", "")], content=payload,
+        command_pax_headers={
+            "SCHILY.xattr.user.safeyolo.fixture": "guest metadata",
+            "SCHILY.acl.access": "user::rwx,user:101000:r--,group::r-x,group:101234:--x,mask::r-x,other::--x",
+        })
+    contents.update(release(archive))
+    if cached:
+        downloaded = subprocess.run(
+            [str(native_cli), "guest", "download", "--package-info", str(package_info),
+             "--store", str(guest_store)], env=environment, capture_output=True, text=True, timeout=30)
+        assert downloaded.returncode == 0, downloaded.stderr
+    root = tmp_path / "installed"
+    result = install(native_cli, root, guest_store, environment, package_info)
+    assert result.returncode == 0, result.stderr
+    tree = root / "share/rootfs-tree"
+    uid_base, gid_base = owned_root_ids(tree)
+    command = tree / "command"
+    assert (command.stat().st_uid, command.stat().st_gid) == (uid_base, gid_base)
+    assert command.stat().st_mode & 0o777 == 0o751
+    assert command.read_bytes() == payload  # The remapped named-user ACL grants this read.
+    assert os.getxattr(command, "user.safeyolo.fixture") == b"guest metadata"
+    acl = subprocess.check_output(["getfacl", "-ncp", str(command)], text=True).splitlines()
+    assert f"user:{os.getuid()}:r--" in acl
+    assert f"group:{gid_base + 1234}:--x" in acl
+    assert (tree / "hard").stat().st_ino == command.stat().st_ino
+    assert (tree / "symbolic").readlink() == Path("command")
+    assert (root / "share/cache-paths.txt").read_bytes() == b"/var/cache/apt\n"
+    assert not (tree.resolve().parent / "host-state").exists()
+    assert not list(guest_store.rglob("extract-*"))
+    assert requests.count(PREFIX + "blobs/" + digest(archive)) == 1
+
+
 def test_native_selection_pins_one_index_and_keeps_existing_installation(native_cli, registry, package_info, tmp_path, guest_store):
     contents, requests, faults, environment = registry
     first = release(compressed_archive(child_owner=101000))
@@ -393,8 +589,12 @@ def test_native_selection_pins_one_index_and_keeps_existing_installation(native_
     assert all("/blobs/" not in path for path in requests[before:])
 
 
-@pytest.mark.parametrize("pinned", [False, True], ids=["discovery", "index"])
-@pytest.mark.parametrize("fault", ["partial", "hash", "size", "compatibility", "missing-platform", "ambiguous-platform", "manifest-hash", "manifest-size", "zstd", "tar", "ownership", "child-owner", "missing-cache"])
+@pytest.mark.parametrize("fault,pinned", [
+    (fault, pinned)
+    for fault in ("partial", "hash", "size", "compatibility", "missing-platform", "ambiguous-platform", "manifest-hash", "manifest-size", "zstd", "tar", "ownership", "child-owner", "missing-cache")
+    for pinned in (False, True, "download")
+    if pinned != "download" or fault in ("partial", "hash", "size", "compatibility", "missing-platform", "ambiguous-platform", "manifest-hash", "manifest-size")
+])
 def test_native_acquisition_refuses_before_activation(native_cli, registry, package_info, tmp_path, fault, guest_store, pinned):
     contents, _requests, faults, environment = registry
     archive = compressed_archive(owner=0 if fault == "ownership" else 100000, missing_cache=fault == "missing-cache", child_owner=0 if fault == "child-owner" else None)
@@ -427,12 +627,16 @@ def test_native_acquisition_refuses_before_activation(native_cli, registry, pack
         data[key] = b"!" + archive[1:]
     contents.update(data)
     arguments = []
-    if pinned:
+    if pinned is True:
         index = digest(data["manifests/compat-v1"])
         contents["manifests/" + index] = data["manifests/compat-v1"]
         arguments = ["--index", index]
     root, store = tmp_path / "refused", guest_store
-    result = install(native_cli, root, store, environment, package_info, *arguments)
+    if pinned == "download":
+        result = subprocess.run([str(native_cli), "guest", "download", "--package-info", str(package_info), "--store", str(store)],
+                                env=environment, capture_output=True, text=True, timeout=30)
+    else:
+        result = install(native_cli, root, store, environment, package_info, *arguments)
     assert result.returncode != 0
     assert "panic" not in result.stderr.lower()
     assert not (root / "share").exists()
@@ -442,6 +646,354 @@ def test_native_acquisition_refuses_before_activation(native_cli, registry, pack
     assert not trees.exists() or not list(trees.iterdir())
     blobs = store / "blobs/sha256"
     assert not blobs.exists() or all(len(path.name) == 64 for path in blobs.iterdir())
+
+
+@pytest.mark.parametrize("publisher_encoding", [True, False])
+@pytest.mark.parametrize("prepare", [False, True])
+def test_guest_download_pins_index_and_reuses_verified_inputs(
+        native_cli, registry, package_info, tmp_path, guest_store, publisher_encoding, prepare):
+    contents, requests, _faults, environment = registry
+    archive = compressed_archive()
+    data = release(archive, encode_config=(lambda value: json.dumps(value, separators=(",", ":")).encode()) if publisher_encoding else None)
+    index = digest(data["manifests/compat-v1"])
+    contents.update(data)
+    contents["manifests/" + index] = data["manifests/compat-v1"]
+    root = tmp_path / "not-an-instance"
+    downloaded = subprocess.run([str(native_cli), "--root", str(root), "guest", "download", "--package-info", str(package_info), "--store", str(guest_store), *(["--prepare"] if prepare else [])],
+                                env=environment, capture_output=True, text=True, timeout=30)
+    assert downloaded.returncode == 0, downloaded.stderr
+    assert downloaded.stdout.strip() == index
+    assert not root.exists()
+    prepared_inode = None
+    if prepare:
+        tree, = (guest_store / "trees/sha256").iterdir()
+        owned_root_ids(tree / "rootfs-tree")
+        prepared_inode = (tree / "rootfs-tree").stat().st_ino
+    else:
+        assert not (guest_store / "trees").exists()
+    assert (guest_store / "blobs/sha256" / digest(archive).removeprefix("sha256:")).read_bytes() == archive
+    contents.update(release(compressed_archive(content=b"new compatible guest")))
+    before = list(requests)
+    acquired = install(native_cli, root, guest_store, environment, package_info, "--index", index)
+    assert acquired.returncode == 0, acquired.stderr
+    assert requests == before, "the pinned handoff must not resolve metadata or transfer blobs again"
+    selection = json.loads((root / "share/guest-selection.json").read_bytes())
+    assert selection["index"]["digest"] == index
+    assert selection["archive"]["digest"] == digest(archive)
+    if prepare:
+        assert (root / "share/rootfs-tree").stat().st_ino == prepared_inode
+
+
+@pytest.mark.parametrize("part", ["index", "manifest", "config", "archive"])
+@pytest.mark.parametrize("damage", ["missing", "hash", "size", "mismatched"])
+def test_pinned_handoff_revalidates_retained_content(
+        native_cli, registry, package_info, tmp_path, guest_store, part, damage):
+    contents, requests, _faults, environment = registry
+    archive = compressed_archive()
+    data = release(archive)
+    index_bytes = data["manifests/compat-v1"]
+    index = digest(index_bytes)
+    contents.update(data)
+    contents["manifests/" + index] = index_bytes
+    downloaded = subprocess.run(
+        [str(native_cli), "guest", "download", "--prepare", "--package-info", str(package_info),
+         "--store", str(guest_store)], env=environment, capture_output=True, text=True, timeout=30)
+    assert downloaded.returncode == 0, downloaded.stderr
+    architecture = package_info.read_text().split("platform=linux-", 1)[1].splitlines()[0]
+    selected = next(child for child in json.loads(index_bytes)["manifests"]
+                    if child["platform"] == {"os": "linux", "architecture": architecture})
+    manifest_bytes = data["manifests/" + selected["digest"]]
+    child = json.loads(manifest_bytes)
+    identities = {"index": index, "manifest": selected["digest"],
+                  "config": child["config"]["digest"], "archive": digest(archive)}
+    path = guest_store / "blobs/sha256" / identities[part].removeprefix("sha256:")
+    original = path.read_bytes()
+    if damage == "missing":
+        path.unlink()
+    elif damage == "hash":
+        path.write_bytes(b"!" + original[1:])
+    elif damage == "size":
+        path.write_bytes(original + b" ")
+    else:
+        # Valid content for a different release/platform is still not the
+        # content named by this path and its parent descriptor.
+        replacement = release(compressed_archive(content=b"different guest"), version="guest-2026-10-12.2")
+        other_index = json.loads(replacement["manifests/compat-v1"])
+        other_manifest = replacement["manifests/" + other_index["manifests"][0]["digest"]]
+        other_child = json.loads(other_manifest)
+        path.write_bytes({"index": replacement["manifests/compat-v1"], "manifest": other_manifest,
+                          "config": replacement["blobs/" + other_child["config"]["digest"]],
+                          "archive": compressed_archive(content=b"different guest")}[part])
+    root = tmp_path / "installed"
+    before = list(requests)
+    result = install(native_cli, root, guest_store, environment, package_info, "--index", index)
+    if damage == "missing":
+        assert result.returncode == 0, result.stderr
+        endpoint = "manifests/" if part in ("index", "manifest") else "blobs/"
+        assert [request for request in requests[len(before):] if request.startswith(PREFIX)] == [
+            PREFIX + endpoint + identities[part]]
+        assert path.read_bytes() == original
+    else:
+        assert result.returncode != 0
+        assert "mismatch" in result.stderr
+        assert requests == before
+        assert not (root / "share").exists()
+        assert not (root / "config.toml").exists()
+        assert not (root / "prepared-selection.json").exists()
+    assert not list((guest_store / "trees").rglob("extract-*"))
+
+
+def test_download_metadata_keeps_discovery_fresh_and_checks_package_compatibility(
+        native_cli, registry, package_info, tmp_path, guest_store):
+    contents, requests, _faults, environment = registry
+    data = release(compressed_archive())
+    index = digest(data["manifests/compat-v1"])
+    contents.update(data)
+    downloaded = subprocess.run(
+        [str(native_cli), "guest", "download", "--package-info", str(package_info), "--store", str(guest_store)],
+        env=environment, capture_output=True, text=True, timeout=30)
+    assert downloaded.returncode == 0, downloaded.stderr
+    contents.update(release(compressed_archive(content=b"new compatible guest"), version="guest-2026-10-12.2"))
+    root = tmp_path / "installed"
+    result = install(native_cli, root, guest_store, environment, package_info)
+    assert result.returncode == 0, result.stderr
+    selection = json.loads((root / "share/guest-selection.json").read_bytes())
+    assert selection["index"]["digest"] != index
+    assert selection["version"] == "guest-2026-10-12.2"
+    assert requests.count(PREFIX + "manifests/compat-v1") == 2
+    package_info.write_text(package_info.read_text().replace("=v1", "=v2").replace("=compat-v1", "=compat-v2"))
+    before = list(requests)
+    refused_root = tmp_path / "incompatible"
+    refused = install(native_cli, refused_root, guest_store, environment, package_info, "--index", index)
+    assert refused.returncode != 0 and "compatibility does not match" in refused.stderr
+    assert requests == before
+    assert not (refused_root / "share").exists()
+
+
+@pytest.mark.parametrize("fault", ["mapping", "extraction", "remap", "cleanup"])
+def test_early_preparation_defers_unavailable_setup_and_reports_cleanup_failure(
+        native_cli, registry, package_info, tmp_path, guest_store, fault):
+    contents, requests, _faults, environment = registry
+    archive = compressed_archive()
+    data = release(archive)
+    contents.update(data)
+    index = digest(data["manifests/compat-v1"])
+    contents["manifests/" + index] = data["manifests/compat-v1"]
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    if fault == "mapping":
+        wrapper = tools / "getent"
+        wrapper.write_text("#!/bin/sh\nexit 2\n")
+    else:
+        wrapper = tools / "sudo"
+        wrapper.write_text(
+            '#!/bin/sh\nif [ "$1" = -n ]; then\n'
+            + ('if [ "$2" = tar ]; then exit 77; fi\n' if fault == "extraction" else
+               'if [ "${4:-}" = host ] && [ "${5:-}" = remap-rootfs ]; then exit 77; fi\n')
+            + ('if [ "$2" = rm ]; then exit 78; fi\n' if fault == "cleanup" else '')
+            + f'fi\nexec "{shutil.which("sudo")}" "$@"\n')
+    wrapper.chmod(0o755)
+    root = tmp_path / "not-an-instance"
+    downloaded = subprocess.run(
+        [str(native_cli), "--root", str(root), "guest", "download", "--prepare",
+         "--package-info", str(package_info), "--store", str(guest_store)],
+        env={**environment, "PATH": f"{tools}:{os.environ['PATH']}"},
+        capture_output=True, text=True, timeout=30)
+    assert not root.exists()
+    assert (guest_store / "blobs/sha256" / digest(archive).removeprefix("sha256:")).read_bytes() == archive
+    if fault == "cleanup":
+        assert downloaded.returncode != 0 and "staging cleanup failed" in downloaded.stderr
+        return
+    assert downloaded.returncode == 0 and downloaded.stdout.strip() == index, downloaded.stderr
+    assert "after host consent" in downloaded.stderr
+    assert not list((guest_store / "trees").rglob("extract-*"))
+    before = list(requests)
+    acquired = install(native_cli, root, guest_store, environment, package_info, "--index", index)
+    assert acquired.returncode == 0, acquired.stderr
+    owned_root_ids(root / "share/rootfs-tree")
+    assert not any("/blobs/" in path or path.endswith("compat-v1") for path in requests[len(before):])
+
+
+@pytest.mark.parametrize("interruption", [signal.SIGINT, signal.SIGTERM])
+def test_guest_download_interruption_removes_partial_blob_and_allows_retry(
+        native_cli, registry, package_info, tmp_path, guest_store, interruption):
+    contents, _requests, faults, environment = registry
+    archive = compressed_archive()
+    contents.update(release(archive))
+    faults["pause"] = "blobs/" + digest(archive)
+    command = [str(native_cli), "guest", "download", "--package-info", str(package_info), "--store", str(guest_store)]
+    process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert faults["entered"].wait(timeout=10)
+        process.send_signal(interruption)
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode != 0 and "interrupted" in stderr, (stdout, stderr)
+        assert not (guest_store / "trees").exists()
+        assert all(len(path.name) == 64 for path in (guest_store / "blobs/sha256").iterdir())
+    finally:
+        faults["resume"].set()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+    faults["pause"] = None
+    retry = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=30)
+    assert retry.returncode == 0, retry.stderr
+
+
+@pytest.mark.parametrize("setting", [None, "0", "1"])
+def test_guest_download_timing_is_opt_in(native_cli, registry, package_info, guest_store, setting):
+    contents, _requests, _faults, environment = registry
+    archive = compressed_archive()
+    contents.update(release(archive))
+    environment = {key: value for key, value in environment.items() if key != "SAFEYOLO_GUEST_DOWNLOAD_TIMING"}
+    if setting is not None:
+        environment["SAFEYOLO_GUEST_DOWNLOAD_TIMING"] = setting
+    command = [str(native_cli), "guest", "download", "--package-info", str(package_info), "--store", str(guest_store)]
+    result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == digest(contents["manifests/compat-v1"])
+    prefix = "SafeYolo: guest download timing "
+    summaries = [json.loads(line.removeprefix(prefix)) for line in result.stderr.splitlines() if line.startswith(prefix)]
+    if setting != "1":
+        assert not summaries, result.stderr
+        return
+    summary, = summaries
+    assert summary["bytes"] == len(archive) and summary["chunks"] > 0
+    assert not summary["cache_hit"] and summary["archive_verified"]
+    assert summary["request_setup_s"] <= summary["first_chunk_at_s"] <= summary["last_chunk_at_s"]
+    assert summary["last_chunk_at_s"] <= summary["eof_at_s"] <= summary["elapsed_s"]
+    for key in ("stream_try_next_s", "compressed_write_s", "compressed_flush_s", "compressed_sync_s"):
+        assert 0 <= summary[key] <= summary["elapsed_s"]
+    assert summary["decoder_status"] == "not_requested"
+    assert summary["decoder_enqueue_s"] is None and summary["decoder_finish_s"] is None
+    # A failed diagnostic write must not change acquisition's result.
+    with open("/dev/full", "w") as unavailable_stderr:
+        cached = subprocess.run(command, env=environment, stdout=subprocess.PIPE, stderr=unavailable_stderr,
+                                text=True, timeout=30)
+    assert cached.returncode == 0 and cached.stdout == result.stdout
+
+
+@pytest.mark.parametrize("fault", ["none", "hash", "partial", "interrupt", "extract-interrupt"])
+def test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes(
+        native_cli, registry, package_info, tmp_path, guest_store, fault):
+    contents, requests, faults, environment = registry
+    # Enough output to flush a decoded batch before the registry pauses.
+    payload = hashlib.shake_256(b"guest download overlap fixture").digest(3 * 1024 * 1024)
+    archive = compressed_archive(content=payload)
+    key = "blobs/" + digest(archive)
+    contents.update(release(archive))
+    if fault == "hash":
+        contents[key] = archive[:-1] + bytes([archive[-1] ^ 1])
+    elif fault == "partial":
+        faults["partial"] = key
+    faults["pause_after"] = key
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    extraction = tmp_path / "privileged-extraction"
+    release_extraction = tmp_path / "release-extraction"
+    sudo = tools / "sudo"
+    sudo.write_text('#!/bin/sh\nif [ "$2" = tar ]; then\n'
+                    f'if [ -f /dev/stdin ]; then echo file > "{extraction}"; '
+                    f'else echo pipe > "{extraction}"; fi\n'
+                    + (f'while [ ! -f "{release_extraction}" ]; do sleep 0.01; done\n'
+                       if fault == "extract-interrupt" else '')
+                    + 'fi\n'
+                    f'exec "{shutil.which("sudo")}" "$@"\n')
+    sudo.chmod(0o755)
+    environment = {**environment, "PATH": f"{tools}:{environment['PATH']}", "SAFEYOLO_GUEST_DOWNLOAD_TIMING": "1"}
+    root = tmp_path / "not-an-instance"
+    command = [str(native_cli), "--root", str(root), "guest", "download", "--prepare",
+               "--package-info", str(package_info), "--store", str(guest_store)]
+    process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert faults["entered"].wait(timeout=10)
+        deadline = time.monotonic() + 5
+        while True:
+            # Observe the actual anonymous decoded file in the native process.
+            # No production diagnostic or extraction is needed to signal it.
+            decoded = False
+            for fd in Path(f"/proc/{process.pid}/fd").iterdir():
+                try:
+                    target = str(fd.readlink())
+                    if target.startswith(f"{guest_store}/") and target.endswith(" (deleted)"):
+                        decoded |= fd.stat().st_size > 0
+                except FileNotFoundError:
+                    continue  # The async filesystem operation closed a descriptor.
+            if decoded:
+                break
+            assert process.poll() is None and time.monotonic() < deadline, "download did not decode before EOF"
+            time.sleep(0.01)
+        assert not extraction.exists() and not root.exists()
+        assert not (guest_store / "blobs/sha256" / digest(archive).removeprefix("sha256:")).exists()
+        assert not (guest_store / "trees").exists()
+        if fault == "interrupt":
+            process.send_signal(signal.SIGTERM)
+        else:
+            faults["resume"].set()
+        if fault == "extract-interrupt":
+            deadline = time.monotonic() + 5
+            while not extraction.exists():
+                assert process.poll() is None and time.monotonic() < deadline
+                time.sleep(0.01)
+            assert extraction.read_text() == "file\n"
+            process.send_signal(signal.SIGTERM)
+            # Cancellation must wait until the child stops using its stage.
+            with pytest.raises(subprocess.TimeoutExpired):
+                process.wait(timeout=0.2)
+            release_extraction.touch()
+        stdout, stderr = process.communicate(timeout=10)
+        prefix = "SafeYolo: guest download timing "
+        summary, = [json.loads(line.removeprefix(prefix)) for line in stderr.splitlines() if line.startswith(prefix)]
+        assert summary["chunks"] > 0 and summary["bytes"] > 0
+        assert summary["stream_try_next_s"] > 0 and summary["decoder_enqueue_s"] > 0
+        assert summary["archive_verified"] == (fault in ("none", "extract-interrupt"))
+        if summary["archive_verified"]:
+            assert summary["bytes"] == len(archive)
+            assert summary["first_chunk_at_s"] <= summary["last_chunk_at_s"] <= summary["eof_at_s"]
+            assert summary["compressed_flush_s"] >= 0 and summary["compressed_sync_s"] >= 0
+            assert summary["decoder_finish_s"] >= 0 and summary["decoder_status"] == "complete"
+        else:
+            assert summary["eof_at_s"] is None and summary["decoder_finish_s"] is None
+        if fault == "none":
+            assert process.returncode == 0, (stdout, stderr)
+        else:
+            assert process.returncode != 0, (stdout, stderr)
+            assert extraction.exists() == (fault == "extract-interrupt")
+            if fault == "extract-interrupt":
+                assert not list((guest_store / "trees/sha256").iterdir())
+            else:
+                assert not (guest_store / "trees").exists()
+            assert all(len(path.name) == 64 for path in (guest_store / "blobs/sha256").iterdir())
+    finally:
+        faults["resume"].set()
+        release_extraction.touch()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+    contents[key] = archive
+    faults["partial"] = faults["pause_after"] = None
+    if fault == "extract-interrupt":
+        # Reuse the verified compressed blob after cancellation; no decoded
+        # temporary file remains, so the existing streaming fallback is used.
+        extraction.unlink()
+    retried = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=30)
+    assert retried.returncode == 0, retried.stderr
+    summary, = [json.loads(line.removeprefix(prefix)) for line in retried.stderr.splitlines() if line.startswith(prefix)]
+    assert summary["archive_verified"]
+    assert summary["cache_hit"] == (fault in ("none", "extract-interrupt"))
+    tree, = (guest_store / "trees/sha256").iterdir()
+    assert extraction.exists()
+    expected_stdin = "pipe\n" if fault == "extract-interrupt" else "file\n"
+    assert extraction.read_text() == expected_stdin
+    assert subprocess.check_output(["sudo", "-n", "cat", "--", str(tree / "rootfs-tree/command")]) == payload
+    owned_root_ids(tree / "rootfs-tree")
+    inode = tree.stat().st_ino
+    before = len(requests)
+    reused = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=30)
+    assert reused.returncode == 0, reused.stderr
+    assert tree.stat().st_ino == inode and not root.exists()
+    assert not any("/blobs/" in path for path in requests[before:])
+    assert not list(guest_store.rglob("extract-*"))
 
 
 def test_first_acquisition_rejects_wrong_index_digest(native_cli, registry, package_info, tmp_path, guest_store):
@@ -502,7 +1054,8 @@ def test_pinned_acquisition_preserves_nonfresh_roots(
 @settings(max_examples=24, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(kind=st.sampled_from(["parent", "symlink", "hardlink"]),
        name=st.text(alphabet="abcXYZ09 _-\né", min_size=1, max_size=12))
-def test_generated_archive_paths_cannot_escape_staging(native_cli, registry, package_info, tmp_path, guest_store, kind, name):
+@pytest.mark.parametrize("prepare", [False, True])
+def test_generated_archive_paths_cannot_escape_staging(native_cli, registry, package_info, tmp_path, guest_store, kind, name, prepare):
     contents, _requests, _faults, environment = registry
     canary = tmp_path / "canary"
     canary.write_bytes(b"preserved host bytes")
@@ -516,6 +1069,12 @@ def test_generated_archive_paths_cannot_escape_staging(native_cli, registry, pac
     contents.clear()
     contents.update(release(compressed_archive(extra)))
     root, store = tmp_path / "generated", guest_store
+    if prepare:
+        prepared = subprocess.run(
+            [str(native_cli), "guest", "download", "--prepare", "--package-info", str(package_info),
+             "--store", str(store)], env=environment, capture_output=True, text=True, timeout=30)
+        assert prepared.returncode == 0, prepared.stderr
+        assert not list((store / "trees/sha256").iterdir())
     result = install(native_cli, root, store, environment, package_info)
     assert result.returncode != 0, result.stdout
     assert canary.read_bytes() == b"preserved host bytes"
@@ -544,8 +1103,26 @@ def test_verified_bundle_installer_and_proxy_restart_retain_guest(native_cli, re
                    "SAFEYOLO_NATS_TEST_INSTANCE": "guest-acquisition-installed", "TERM": "xterm-256color"}
     installer = Path(bundle) / "install.sh"
     result = subprocess.run([str(installer), "--root", str(root), "--command-dir", str(root / "commands"), "--yes"],
-                            env=environment, capture_output=True, text=True, timeout=30)
+                            env=environment, input="", umask=0o077, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
+    mapping = tomllib.loads((root / "config.toml").read_text())["linux"]
+    assert Path(mapping["runsc"]) == root / "libexec/runsc"
+    # Installation under a private parent must grant mapped root access to
+    # the final runtime and companions without exposing identity or trust.
+    access = subprocess.run([
+        "sudo", "-n", "setpriv", f"--reuid={mapping['uid_base']}",
+        f"--regid={mapping['gid_base']}", "--clear-groups", "/usr/bin/python3", "-c",
+        "import os,sys; from pathlib import Path; root=Path(sys.argv[1]); "
+        "assert all(os.access(root / name, os.X_OK) for name in "
+        "('libexec', 'libexec/gvisor-bin')); "
+        "assert all(os.access(root / 'libexec' / name, os.R_OK | os.X_OK) for name in "
+        "('runsc', 'gvisor-bin/gvisor-sentry-prewarmer', 'gvisor-bin/gvisor_sentry', "
+        "'gvisor-bin/runsc-fd-parking')); "
+        "assert all(not os.access(root / name, os.R_OK) for name in "
+        "('config.toml', 'data/admin_token', 'data/agent_token', 'certs/mitmproxy-ca.pem'))",
+        str(root),
+    ], capture_output=True, text=True, timeout=10)
+    assert access.returncode == 0, access.stderr
     selection = (root / "share/guest-selection.json").read_bytes()
     preserved = {name: (root / name).read_bytes() for name in ("policy.toml", "data/instance_id", "data/admin_token", "data/agent_token")}
     config = root / "config.toml"
@@ -570,8 +1147,9 @@ def test_verified_bundle_installer_and_proxy_restart_retain_guest(native_cli, re
         assert (root / "share/guest-selection.json").read_bytes() == selection
         assert all((root / name).read_bytes() == data for name, data in preserved.items())
         repeated = subprocess.run([str(installer), "--root", str(root), "--command-dir", str(root / "commands")],
-                                 env=environment, capture_output=True, text=True, timeout=10)
+                                 env=environment, input="", umask=0o077, capture_output=True, text=True, timeout=10)
         assert repeated.returncode == 0, repeated.stderr
+        assert "SafeYolo needs these host changes" not in repeated.stderr
         assert (root / "share/guest-selection.json").read_bytes() == selection
         assert len(requests) == before
         assert all((root / name).read_bytes() == data for name, data in preserved.items())

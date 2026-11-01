@@ -1,0 +1,25 @@
+schema_version: 1
+name: claude
+description: "Claude Code inference using a host-held Claude subscription"
+default_host: api.anthropic.com
+
+auth:
+  type: bearer
+  refresh_on_401: true
+
+capabilities:
+  inference:
+    description: "Use Claude inference and read native client startup configuration"
+    routes:
+      - methods: [POST]
+        path: /v1/messages
+      - methods: [POST]
+        path: /v1/messages/count_tokens
+      - methods: [GET]
+        path: /api/claude_cli/bootstrap
+      - methods: [GET]
+        path: /api/claude_code/policy_limits
+      - methods: [GET]
+        path: /api/claude_code/settings
+      - methods: [POST]
+        path: /api/eval/sdk-zAZezfDKGoZuXXKe

@@ -902,6 +902,22 @@ impl<W: AsyncWrite + Unpin> Writer<W> {
             deflater: None,
         }
     }
+    /// Send one borrowed binary frame without copying the capture buffer.
+    pub(crate) async fn binary(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
+        if self.compression.is_some() {
+            return Err("binary stream requires uncompressed frames".into());
+        }
+        self.frame(
+            FrameHeader {
+                opcode: OpCode::Data(Data::Binary),
+                is_final: true,
+                ..FrameHeader::default()
+            },
+            bytes.len() as u64,
+            &mut bytes,
+        )
+        .await
+    }
     /// Sending only allowed messages keeps the outgoing dictionary independent
     /// from received/dropped messages, including context-takeover connections.
     pub async fn message(&mut self, message: Message) -> Result<(), Error> {

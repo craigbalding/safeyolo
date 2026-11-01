@@ -9,7 +9,8 @@ Existing shell builders and guest support files remain usable.
 The default builder resolves the current official Debian Trixie index and
 freezes each architecture manifest by digest for that build. Its `DEBIAN_IMAGE` override remains available for
 contributor builds. Only a digest-pinned registry input emits `build-base.txt`
-for default-guest OCI publication; custom profiles keep their existing contract.
+for default-guest OCI publication. Kali records both its declared pinned input
+and the architecture manifest actually unpacked.
 Use a digest-only Docker reference for a pinned override: skopeo 1.18.0 rejects
 references that combine a tag and digest.
 
@@ -45,26 +46,40 @@ chooses outputs and owns their temporary work directory and cleanup:
 | Variable | Meaning |
 |---|---|
 | `SAFEYOLO_AGENT_NAME` | Name of the agent for which you prepare the image. |
-| `SAFEYOLO_ROOTFS_OUT_EXT4` | Absolute path where the script must write the **ext4** image (set when the host running SafeYolo is macOS). Not set on Linux. |
-| `SAFEYOLO_ROOTFS_OUT_TREE` | Absolute path where the script must populate the **unpacked rootfs tree** as a directory (set when the host is Linux). gVisor reads it as OCI root.path. Not set on macOS. |
+| `SAFEYOLO_ROOTFS_OUT_EXT4` | Absolute path where the script must write the **ext4** image for the macOS VZ runtime. The build runs on Linux, including a Linux builder VM on macOS. |
+| `SAFEYOLO_ROOTFS_OUT_TREE` | Absolute path where the script must populate the **unpacked rootfs tree** for Linux gVisor. gVisor reads it as OCI root.path. |
 | `SAFEYOLO_ROOTFS_WORK_DIR` | An empty disk-backed scratch directory owned by this build; clean it after the command finishes. |
-| `SAFEYOLO_GUEST_SRC_DIR` | Absolute path to SafeYolo's guest support files: the source checkout's `guest/` directory with matching guest support. Contains `safeyolo-guest-init`, `safeyolo-sudo`, and `install-guest-common.sh`. |
+| `SAFEYOLO_GUEST_SRC_DIR` | Absolute path to the source checkout's `guest/` directory. Contains `rootfs/safeyolo-guest-init`, `rootfs/safeyolo-sudo`, and `install-guest-common.sh`. |
 | `SAFEYOLO_TARGET_ARCH` | `arm64` or `amd64`. Your script must pull or build binaries for this arch. |
+| `SAFEYOLO_ROOTFS_BASE` | The profile runner's declared pinned registry input, without `docker://`. Kali uses this value ahead of its direct-shell `KALI_IMAGE` override. |
 | `SAFEYOLO_ROOTFS_OUT_CACHE_PATHS` | Absolute path of a host-side file where the script declares per-distro package cache dirs (one absolute in-rootfs path per line, e.g. `/var/cache/apt`). SafeYolo bind-mounts each path to a persistent per-agent dir so runtime `apt install` / `apk add` doesn't re-download on restart. Write an empty file if the distro has no cache worth persisting. |
 
 Exactly one output variable is set for each invocation:
 
-- On macOS, `SAFEYOLO_ROOTFS_OUT_EXT4` names the ext4 image to create.
-- On Linux, `SAFEYOLO_ROOTFS_OUT_TREE` names the unpacked directory tree to
+- For macOS VZ, `SAFEYOLO_ROOTFS_OUT_EXT4` names the ext4 image to create.
+- For Linux gVisor, `SAFEYOLO_ROOTFS_OUT_TREE` names the unpacked directory tree to
   populate.
 
 Handle both branches if the script supports both host platforms. Always create
 `SAFEYOLO_ROOTFS_OUT_CACHE_PATHS`; write an empty file when no package cache
 should persist.
 
-For example, from the trusted source checkout on Linux, prepare an Alpine
-tree for a fresh installation. Select the architecture for the actual
-runtime and keep host inputs separate from agent-writable files:
+Both Alpine examples select Alpine 3.22 and its matching `main` and `community`
+repositories. Do not upgrade a 3.20 tree by adding newer repositories.
+The minimal variant supplies the common developer tools. The browser variant
+also includes Chromium and the desktop packages.
+
+For example, from the trusted source checkout on a matching-architecture Linux
+builder, prepare an Alpine tree for a fresh installation. Install `skopeo`,
+`umoci`, curl, tar and coreutils first. The builder uses sudo for unpacking,
+chroot package installation and output ownership. The Alpine builders pass
+configured `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy`, `NO_PROXY`
+and `no_proxy` values to APK explicitly, so build-host sudo can reset its
+ordinary environment. If the build environment sets
+`SSL_CERT_FILE` to a readable certificate file, the Alpine builders use a
+temporary copy for HTTPS package downloads. They remove the copy before
+packaging and on package-install failure. Select the architecture for
+the actual runtime and keep host inputs separate from agent-writable files:
 
 ```sh
 work=$(mktemp -d "$HOME/rootfs-build.XXXXXX")
@@ -82,8 +97,10 @@ On failure, retain stderr and the build inputs; resolve the cause before retryin
 privileged commands in the foreground and use an EXIT trap for owned mounts.
 The builder must return zero and produce the expected nonempty image/tree.
 Supply `--platform-assets "$work/platform"` to the installer. The
-existing Linux boot owner requires sandbox-root UID 100000 ownership and
-host-traversable bind targets; the maintained builders perform that preparation.
+Linux boot owner requires the installation's selected subordinate UID/GID
+mapping and host-traversable bind targets. The Alpine examples emit the
+canonical 100000 mapping. Kali's reusable workflow below preserves original
+guest IDs until export, then uses the shared ownership preparation code.
 Do not replace a tree in use by a running sandbox.
 
 For a per-agent custom tree, prepare `ROOT/agents/NAME/rootfs` while that agent
@@ -127,8 +144,11 @@ must meet these requirements:
 1. **`/usr/local/bin/safeyolo-guest-init`** — SafeYolo's boot orchestrator
    executes this file as process ID 1. On macOS, the initramfs reaches it through
    `switch_root`. On Linux, the OCI entrypoint executes it directly.
-2. **A userland that runs on Linux 6.12** — glibc ≥ 2.17 or musl; any
-   modern distro from 2018 onwards is fine.
+2. **Compatible guest executables** — boot stages `safeyolo-guest`;
+   first-party host setups stage `safeyolo-coord` in the agent home. Current
+   source builds link both guest helpers statically with musl. Earlier
+   glibc-built helpers do not automatically load on Alpine. Test the installed
+   guest executables as well as the image's shell and packages.
 3. **The right architecture** — use `$SAFEYOLO_TARGET_ARCH` to pull the
    matching image or bootstrap the right package set.
 4. **These runtime packages**, which SafeYolo's boot scripts rely on:
@@ -136,7 +156,7 @@ must meet these requirements:
    - `socat` 1.8+ (used by `guest-proxy-forwarder` and
      `guest-shell-bridge`; the 1.8 release added `VSOCK-LISTEN` /
      `VSOCK-CONNECT`, which these pumps require on macOS. Debian trixie,
-     Alpine 3.20+, Fedora 40+, Arch, and RHEL 9 all ship ≥ 1.8.)
+     Alpine 3.22, Fedora 40+, Arch, and RHEL 9 all ship ≥ 1.8.)
    - `openssh-server` (sshd — entrypoint for `safeyolo agent shell`)
    - `ca-certificates` (trust store — SafeYolo's man-in-the-middle certificate
      authority (CA) certificate is appended at
@@ -149,6 +169,10 @@ must meet these requirements:
    - `setpriv` and `prlimit` from `util-linux` (the SafeYolo sudo shim uses
      the agent's existing namespace capabilities on rootless Linux gVisor;
      PID 1 uses `prlimit` to set the open-file limit on its numeric process)
+
+   Alpine 3.22 splits these tools into separate packages. Install `setpriv`
+   for `/bin/setpriv` and `util-linux-misc` for `prlimit`. BusyBox's
+   `setpriv` lacks the UID and GID options that the sudo shim needs.
 
    Additional project tools can be installed in the guest. Boot,
    control, terminal, Coord and diagnostics do not require a Python package.
@@ -217,13 +241,19 @@ direct user rule is what makes the capability work in pre-existing shells.
 
 ## Minimal example
 
-See `contrib/alpine-minimal/build-alpine-rootfs.sh` — ~60 lines, pulls an
+See `contrib/alpine-minimal/build-alpine-rootfs.sh`. It pulls an
 Alpine OCI image with `skopeo`, unpacks with `umoci`, adds the same small
 agent-facing toolkit as the default base with `apk add`, calls
 `install_safeyolo_guest_common`, packs to the
 requested format. The Kali pentest example
 (`contrib/kali-pentest/build-kali-rootfs.sh`) follows the same shape with
 more packages.
+
+Both Alpine examples accept an `ALPINE_IMAGE` override. On the Linux builder,
+set it to `oci:/absolute/path/to/layout:tag` to reuse an acquired Alpine 3.22
+image for the selected architecture. Skopeo copies that input instead of
+pulling the default registry tag. Package installation still uses the image's
+Alpine repositories.
 
 ## Building on macOS (Lima)
 
@@ -247,8 +277,9 @@ script or create a Lima builder.
 On Linux, use an owned disk-backed scratch directory and the tree outputs
 shown above. The bundled Kali example requests command-scoped `sudo` for
 rootful `umoci unpack`, chrooted distro package installation, filesystem
-staging, and UID-100000 ownership for rootless gVisor. Downloads and
-orchestration remain unprivileged.
+staging, and output ownership. Its completed cache tree retains guest IDs;
+the export step prepares ownership for the selected Linux consumer.
+Downloads and orchestration remain unprivileged.
 
 ## Tooling cheat sheet, by approach
 
@@ -291,6 +322,104 @@ versions, and git commit hashes so two builds produce byte-comparable
 rootfs.
 
 ## Reusing a built custom rootfs
+
+### Cached Kali builds
+
+On an owned Linux builder, run these commands from the source checkout as
+your ordinary account. Install skopeo, umoci, curl, Python 3.11+, GnuPG,
+unzip, tar, and coreutils first. The selected architecture needs native
+execution or configured binfmt support. Keep the existing proxy and CA
+environment. Use disk-backed storage with room for the Kali base, package
+installation, completed output and later exports.
+
+Resolve mise once into a frozen record, then build the declared profile:
+
+```sh
+python3 guest/resolve_inputs.py resolve --tools mise --output "$HOME/kali-inputs.json"
+python3 guest/build_profile.py --profile contrib/kali-pentest/profile.json \
+  --architecture amd64 --guest-inputs "$HOME/kali-inputs.json" \
+  --cache "$HOME/kali-profiles" > "$HOME/kali-build.json"
+```
+
+The result records `key`, `assets` and `cache_hit`. Repeat the second command
+with the same inputs: `cache_hit` becomes `true`, and apt, image acquisition
+and third-party installers do not run. `--force` performs a fresh build and
+selects it only after success. Previous successful paths remain usable by
+their readers. Changing the declared profile, architecture, output kind,
+script/helper/assets, source modes or resolved input record changes the key.
+This is completed-build reuse; upstream package snapshots and intermediate
+build-stage resume are not provided.
+
+The runner copies declared files before hashing and executing them.
+The profile's `script` must name a relative file in that staged snapshot;
+include the script itself or its containing directory in `files`.
+Absolute, escaping or unstaged script selections fail before cache lookup.
+The selected shell builder still owns command-scoped privilege and cleanup.
+Kali uses a clean chroot PATH and UTF-8 locale, configured proxy variables
+and a temporary copy of the build CA. It removes apt's temporary proc/sys/dev
+mounts before unprivileged installers, which receive only null/zero/random/
+urandom device binds. It removes those binds, placeholders and the build CA
+before output. Signals run the same exit cleanup. An unmount or cleanup
+failure prevents cache admission and leaves the unpublished work path in
+stderr for diagnosis. Verify mounts are gone before removing failed work.
+A chroot remains build plumbing, not isolation.
+
+### Export and install
+
+The completed Kali cache tree retains original guest ownership. Export a new
+consumer directory instead of changing the cached tree. On Linux, use a
+`safeyolo` executable built from this source revision. Set `SAFEYOLO_CLI` to
+its absolute path. Set `HOST_BUNDLE` to a verified unpacked host package for
+the consumer platform and compatible guest generation.
+Host preparation explains its host changes and requests narrowly scoped
+sudo; it writes the actual allocation for your account. Run on the consumer
+host with the completed tree available:
+
+```sh
+KALI_BUILD=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assets"])' "$HOME/kali-build.json")
+"$SAFEYOLO_CLI" --root "$HOME/kali-instance" host prepare \
+  --package-root "$HOST_BUNDLE" --installed-root "$HOME/kali-instance" \
+  --write-settings "$HOME/kali-host.toml"
+guest/export-profile.sh --build "$KALI_BUILD" --platform linux/amd64 \
+  --output "$HOME/kali-platform" --native-cli "$SAFEYOLO_CLI" \
+  --host-settings "$HOME/kali-host.toml"
+./scripts/install_native.sh --bundle "$HOST_BUNDLE" --root "$HOME/kali-instance" \
+  --platform-assets "$HOME/kali-platform"
+```
+
+Ownership preparation preserves distinct guest users, modes, links, access
+control lists (ACLs) and extended attributes. Export without `--host-settings`
+to obtain the canonical Linux archive mapping for publication. The OCI
+installer remaps that archive to each consuming account's actual allocation.
+Keep publication exports separate from exports already mapped to one host.
+
+For Linux arm64, use `--architecture arm64` in the build command and
+`--platform linux/arm64` in export. For macOS arm64, reuse that successful
+arm64 tree on the Linux builder. Install e2fsprogs and export with
+`--platform darwin/arm64 --kernel-assets DIRECTORY`; `DIRECTORY` must contain
+qualified matching `Image` and `initramfs.cpio.gz`. Export creates a sparse
+ext4 image with original guest IDs. Transfer the finished directory with
+metadata-preserving tools, then use `--platform-assets` on the Mac. Tart or
+a Linux builder can prepare inputs; VZ execution needs a physical Mac.
+
+### Publish and select explicitly
+
+Use the existing [OCI archive and publisher](../docs/guest-oci.md) with
+`--profile kali-pentest`. Archive each canonical consumer export with
+`guest/archive-default.sh` into its `linux-amd64`, `linux-arm64` or
+`darwin-arm64` directory. The publisher records the profile, actual pinned
+base and build-input digest. The archive also carries `build-inputs.json`.
+Kali supports all three consumers; another custom profile can publish only
+its declared supported consumers. Default guest releases still require all
+three.
+
+Publication requires the existing repository's authorized GHCR writer.
+Keep the verified layout, immutable index digest and successful outputs.
+Select that digest explicitly with the bundle installer’s
+`--guest-index sha256:DIGEST`, or use `guest upgrade --index sha256:DIGEST`
+for an installed instance. The host package must require the profile's
+compatibility identifier. Neither path invokes the distro builder.
+Stock guest discovery and promotion exclude custom profiles.
 
 Prepared immutable platform assets can be shared by several fresh installations. Linux installations link the same prepared tree and keep each
 agent's writable overlay, home, workspace, credentials and caches independent.

@@ -21,6 +21,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 ATTENTION = "attn-" + "a" * 32
+REQUEST_ATTENTION = f"attn-{16:032x}"
 TARGET = "https://example.test/issues/818"
 TASK = f"TASK target={TARGET} assignee=forge\n\nDeliver the assigned work."
 EDGE = {"attention_id": ATTENTION, "room_id": "rm-backlog", "kind": "message", "object_id": "msg-task", "revision_or_sequence": 42, "membership_granted_at": 1}
@@ -41,7 +42,9 @@ class CoordFixture:
         self.requests = []
         self.agent_name = "forge"
         self.unknown_send = False
+        self.include_attention_recipients = True
         self.page = {"edges": [EDGE], "next_cursor": 7}
+        self.backlog = None
         self.bad_object = False
         self.objects = {ATTENTION: {"edge": EDGE, "object": OBJECT}}
         owner = self
@@ -56,7 +59,14 @@ class CoordFixture:
                 if path == "/health":
                     result = {"agent_api": "ok"}
                 elif path == "/api/coord/attention/wait":
-                    result = owner.page
+                    if owner.backlog is None:
+                        result = owner.page
+                    else:
+                        query = parse_qs(urlsplit(self.path).query)
+                        since, limit = int(query["since"][0]), int(query["limit"][0])
+                        pending = [(cursor, edge) for cursor, edge in owner.backlog if cursor > since][:limit]
+                        result = {"edges": [edge for _, edge in pending],
+                                  "next_cursor": pending[-1][0] if pending else since}
                 elif path.startswith("/api/coord/attention/") and path.endswith("/object"):
                     if owner.bad_object:
                         return self.reply(403, {"error": "membership revoked"})
@@ -88,7 +98,10 @@ class CoordFixture:
                     owner.messages.append({**envelope, "attention_intent": intent})
                     if owner.unknown_send:
                         return self.reply(503, {"error": "receipt unavailable", "send_outcome": "unknown"})
-                    return self.reply(200, {"envelope": envelope, "sequence": envelope["sequence"], "attention_intent": {"mode": intent["mode"]}, "attention_status": "ready"})
+                    receipt = {"envelope": envelope, "sequence": envelope["sequence"], "attention_intent": {"mode": intent["mode"]}, "attention_status": "ready"}
+                    if owner.include_attention_recipients:
+                        receipt["attention_recipients"] = [{"agent_id": agent_id, "attention_id": f"attn-{owner.sends * 16 + index:032x}"} for index, agent_id in enumerate(intent["agent_ids"])]
+                    return self.reply(200, receipt)
                 self.reply(404, {"error": "missing fixture route"})
 
             def reply(self, status, value):
@@ -183,12 +196,16 @@ result=subprocess.run([{str(binary)!r},"call","send"],input=json.dumps(args),cap
             source += '''print(json.dumps({"type":"tool_execution_start","toolCallId":"send-1","toolName":"send","args":args}),flush=True)
 if result.returncode==0:
     print(json.dumps({"type":"tool_execution_end","toolCallId":"send-1","toolName":"send","isError":False,"result":{"details":json.loads(result.stdout)}}),flush=True)
+else:
+    print(json.dumps({"type":"tool_execution_end","toolCallId":"send-1","toolName":"send","isError":True,"result":{"content":[{"type":"text","text":result.stderr}]}}),flush=True)
 '''
         else:
             source += '''if result.returncode==0:
     print(json.dumps({"type":"item.completed","item":{"type":"mcp_tool_call","server":"safeyolo-coord","tool":"send","status":"completed","arguments":args,"result":{"structured_content":json.loads(result.stdout)}}}),flush=True)
+else:
+    print(json.dumps({"type":"item.completed","item":{"type":"mcp_tool_call","server":"safeyolo-coord","tool":"send","status":"failed","arguments":args,"error":{"message":result.stderr}}}),flush=True)
 '''
-        source += '''else:
+        source += '''if result.returncode!=0:
     print(result.stderr,file=sys.stderr)
 '''
     source += f'print(json.dumps({{"type": {"agent_end" if pi else "turn.completed"!r}}}),flush=True)\n'
@@ -494,9 +511,14 @@ def test_model_narration_and_process_success_do_not_complete_work(binary, fixtur
 
 
 @pytest.mark.parametrize("role", ["owner", "reviewer"])
-def test_canonical_history_recovers_terminal_lost_after_send(binary, fixture, role):
+@pytest.mark.parametrize("pi", [False, True])
+def test_canonical_history_recovers_terminal_lost_after_send(binary, fixture, role, pi):
     coord, _env, config, state, harness, capture = fixture
     factory_configuration(config)
+    if pi:
+        settings = json.loads(config.read_text())
+        settings["harness"] = "pi"
+        config.write_text(json.dumps(settings))
     if role == "reviewer":
         settings = json.loads(config.read_text())
         settings["agent_name"] = "lens"
@@ -508,18 +530,19 @@ def test_canonical_history_recovers_terminal_lost_after_send(binary, fixture, ro
             "body": awaiting_review()["body"],
         }
     coord.unknown_send = True
-    harness_script(harness, binary, capture)
+    harness_script(harness, binary, capture, pi=pi)
     if role == "reviewer":
         target = awaiting_review()["correlation"]["target"]
         harness.write_text(harness.read_text()
                            .replace(f"DONE target={TARGET} attention_id={ATTENTION}", f"READY target={target} attention_id={ATTENTION}")
                            .replace('"notify":["relay"]', '"notify":["relay","forge"]'))
-    result = run(binary, fixture)
+    harness_args = ["--provider", "fixture", "--model", "fixture"] if pi else []
+    result = run(binary, fixture, *harness_args)
     assert result.returncode == 0, result.stderr
     assert "send outcome unknown" in result.stderr
     assert coord.sends == 1
     assert json.loads(state.read_text())["in_flight"] == []
-    assert run(binary, fixture).returncode == 0
+    assert run(binary, fixture, *harness_args).returncode == 0
     assert coord.sends == 1
 
 
@@ -624,7 +647,14 @@ def test_factory_rejects_an_other_room_even_for_an_exact_handoff(binary, fixture
 
 def awaiting_review():
     target = "https://example.test/pull/818/commits/" + "a" * 40
-    return {"room_name": "backlog", "request": "REVIEW_READY", "recipient_agent": "lens", "body": f"REVIEW_READY target={target}", "correlation": {"target": target}}
+    return {"room_name": "backlog", "request": "REVIEW_READY", "recipient_agent": "lens", "body": f"REVIEW_READY target={target}", "correlation": {"target": target}, "request_attention_id": REQUEST_ATTENTION}
+
+
+def response_page(coord, kind, target, request_attention_id, *, sequence=49, sender="lens"):
+    response_id = f"attn-{sequence:032x}"
+    edge = {**EDGE, "attention_id": response_id, "object_id": f"msg-response-{sequence}", "revision_or_sequence": sequence}
+    coord.page = {"edges": [edge], "next_cursor": sequence}
+    coord.objects[response_id] = {"edge": edge, "object": {**OBJECT, "msg_id": edge["object_id"], "sequence": sequence, "sender_agent_name": sender, "sender_agent_id": "ag-" + sender, "body": f"{kind} target={target} attention_id={request_attention_id}"}}
 
 
 def prepare_response(binary, fixture, kind, target):
@@ -635,10 +665,7 @@ def prepare_response(binary, fixture, kind, target):
     saved["awaiting_handoffs"] = [awaiting_review()]
     saved["phase"] = "accepted"
     subprocess.run([str(binary), "write-state", str(state)], input=json.dumps(saved), text=True, check=True)
-    response_id = "attn-" + "b" * 32
-    edge = {**EDGE, "attention_id": response_id, "object_id": "msg-review", "revision_or_sequence": 49}
-    coord.page = {"edges": [edge], "next_cursor": 8}
-    coord.objects[response_id] = {"edge": edge, "object": {**OBJECT, "msg_id": "msg-review", "sequence": 49, "sender_agent_name": "lens", "sender_agent_id": "ag-lens", "body": f"{kind} target={target} attention_id={response_id}"}}
+    response_page(coord, kind, target, REQUEST_ATTENTION)
     harness_script(harness, binary, capture, terminal=False)
     return state, capture
 
@@ -662,6 +689,115 @@ def test_factory_admits_every_reviewer_to_owner_response(binary, fixture, kind):
     assert response["requires_terminal"] is False
 
 
+@pytest.mark.parametrize("request_kind", ["TASK", "REVIEW_READY"])
+@pytest.mark.parametrize("pi", [False, True])
+def test_factory_old_response_cannot_consume_new_same_target_request(binary, fixture, request_kind, pi):
+    coord, _, config, state, harness, capture = fixture
+    factory_configuration(config)
+    settings = json.loads(config.read_text())
+    if request_kind == "TASK":
+        settings["agent_name"] = "relay"
+        settings["factory"]["role"] = "coordinator"
+        coord.agent_name = "relay"
+        coord.objects[ATTENTION]["object"] = {**OBJECT, "sender_kind": "operator", "sender_agent_name": None, "sender_agent_id": None, "body": "Deliver the bounded fix."}
+    if pi:
+        settings["harness"] = "pi"
+    harness_args = ["--provider", "fixture", "--model", "fixture"] if pi else []
+    config.write_text(json.dumps(settings))
+    target = TARGET if request_kind == "TASK" else awaiting_review()["correlation"]["target"]
+    recipient = "forge" if request_kind == "TASK" else "lens"
+    kind = "DONE" if request_kind == "TASK" else "READY"
+    body = TASK if request_kind == "TASK" else awaiting_review()["body"]
+    harness_script(harness, binary, capture, pi=pi)
+    harness.write_text(harness.read_text().replace(repr(f"DONE target={TARGET} attention_id={ATTENTION}"), repr(body)).replace('"notify":["relay"]', f'"notify":["{recipient}"]'))
+    result = run(binary, fixture, *harness_args)
+    assert result.returncode == 0, result.stderr
+    old_request = json.loads(state.read_text())["awaiting_handoffs"][0]
+    assert old_request["request_attention_id"] == REQUEST_ATTENTION
+
+    # The first request completes; the same turn sends a new request with the
+    # same room, worker, target and response kind, but a different receipt ID.
+    response_page(coord, kind, target, old_request["request_attention_id"], sender=recipient)
+    result = run(binary, fixture, *harness_args)
+    assert result.returncode == 0, result.stderr
+    new_request = json.loads(state.read_text())["awaiting_handoffs"][0]
+    assert new_request["request_attention_id"] == f"attn-{32:032x}"
+    assert new_request["correlation"] == old_request["correlation"]
+    assert coord.sends == 2
+
+    # A new attention edge carries the duplicated old reply after restart.
+    # It cannot consume the newer request or release its suspended parent.
+    response_page(coord, kind, target, old_request["request_attention_id"], sequence=50, sender=recipient)
+    harness_script(harness, binary, capture, terminal=False, pi=pi)
+    result = run(binary, fixture, *harness_args)
+    # Consuming the stale reply makes progress without settling the TASK or
+    # its newer handoff.
+    assert result.returncode == 0, result.stderr
+    saved = json.loads(state.read_text())
+    assert saved["awaiting_handoffs"] == [new_request]
+    if request_kind == "REVIEW_READY":
+        assert saved["in_flight"][0]["attention_id"] == ATTENTION
+    assert len([m for m in coord.messages if not m["body"].startswith("PROTOCOL_WARNING ")]) == 2
+
+    response_page(coord, kind, target, new_request["request_attention_id"], sequence=51, sender=recipient)
+    harness_script(harness, binary, capture, terminal=request_kind == "REVIEW_READY", pi=pi)
+    result = run(binary, fixture, *harness_args)
+    assert result.returncode == 0, result.stderr
+    saved = json.loads(state.read_text())
+    assert saved["awaiting_handoffs"] == []
+    assert saved["in_flight"] == []
+    assert len([m for m in coord.messages if not m["body"].startswith("PROTOCOL_WARNING ")]) == (3 if request_kind == "REVIEW_READY" else 2)
+
+
+def test_factory_legacy_handoff_cannot_consume_a_reply_or_hide_a_new_request(binary, fixture):
+    coord, _, _, state, harness, capture = fixture
+    review = awaiting_review()
+    prepare_response(binary, fixture, "READY", review["correlation"]["target"])
+    saved = json.loads(state.read_text())
+    legacy = saved["awaiting_handoffs"][0]
+    del legacy["request_attention_id"]
+    legacy["parent_attention_id"] = ATTENTION
+    state.write_text(json.dumps(saved))  # A checkpoint from before this repair.
+    harness_script(harness, binary, capture)
+    harness.write_text(harness.read_text().replace(f"DONE target={TARGET} attention_id={ATTENTION}", review["body"]).replace('"notify":["relay"]', '"notify":["lens"]'))
+    result = run(binary, fixture)
+    assert result.returncode == 0, result.stderr
+    saved = json.loads(state.read_text())
+    review["request_attention_id"] = f"attn-{32:032x}"
+    assert saved["awaiting_handoffs"] == [legacy, review]
+    assert saved["in_flight"][0]["attention_id"] == ATTENTION
+
+    response_page(coord, "READY", review["correlation"]["target"], review["request_attention_id"], sequence=50)
+    harness_script(harness, binary, capture, terminal=False)
+    result = run(binary, fixture)
+    assert result.returncode == 0, result.stderr
+    saved = json.loads(state.read_text())
+    assert saved["awaiting_handoffs"] == [legacy]
+    assert saved["in_flight"][0]["attention_id"] == ATTENTION
+    assert len([m for m in coord.messages if m["body"].startswith("REVIEW_READY ")]) == 1
+
+
+def test_factory_receipt_without_request_identity_stays_pending_after_restart(binary, fixture):
+    coord, _, config, state, harness, capture = fixture
+    factory_configuration(config)
+    coord.include_attention_recipients = False
+    review = awaiting_review()
+    harness_script(harness, binary, capture)
+    harness.write_text(harness.read_text().replace(f"DONE target={TARGET} attention_id={ATTENTION}", review["body"]).replace('"notify":["relay"]', '"notify":["lens"]'))
+    assert run(binary, fixture).returncode == 0
+    saved = json.loads(state.read_text())
+    assert "request_attention_id" not in saved["awaiting_handoffs"][0]
+    pending = saved["awaiting_handoffs"]
+    response_page(coord, "READY", review["correlation"]["target"], REQUEST_ATTENTION)
+    harness_script(harness, binary, capture, terminal=False)
+    result = run(binary, fixture)
+    assert result.returncode == 0, result.stderr
+    saved = json.loads(state.read_text())
+    assert saved["awaiting_handoffs"] == pending
+    assert saved["in_flight"][0]["attention_id"] == ATTENTION
+    assert len([m for m in coord.messages if m["body"].startswith("REVIEW_READY ")]) == 1
+
+
 def test_factory_handoff_survives_restart_then_terminal_is_deduplicated(binary, fixture):
     coord, _, config, state, harness, capture = fixture
     factory_configuration(config)
@@ -674,10 +810,7 @@ def test_factory_handoff_survives_restart_then_terminal_is_deduplicated(binary, 
     assert saved["awaiting_handoffs"] == [review]
     assert saved["in_flight"][0]["attention_id"] == ATTENTION
     assert saved["thread_id"] == "fixture-thread"
-    response_id = "attn-" + "b" * 32
-    edge = {**EDGE, "attention_id": response_id, "object_id": "msg-review", "revision_or_sequence": 49}
-    coord.page = {"edges": [edge], "next_cursor": 8}
-    coord.objects[response_id] = {"edge": edge, "object": {**OBJECT, "msg_id": "msg-review", "sequence": 49, "sender_agent_name": "lens", "sender_agent_id": "ag-lens", "body": f'READY target={review["correlation"]["target"]} attention_id={response_id}'}}
+    response_page(coord, "READY", review["correlation"]["target"], REQUEST_ATTENTION)
     harness_script(harness, binary, capture)
     assert run(binary, fixture).returncode == 0
     saved = json.loads(state.read_text())
@@ -686,10 +819,261 @@ def test_factory_handoff_survives_restart_then_terminal_is_deduplicated(binary, 
     assert ATTENTION in saved["recent_attention_ids"]
     assert any("resume" in json.loads(path.read_text()) for path in capture.glob("argv-*"))
     count = len(list(capture.glob("prompt-*")))
-    coord.page = {"edges": [EDGE], "next_cursor": 8}
+    coord.page = {"edges": [EDGE], "next_cursor": 49}
     assert run(binary, fixture).returncode == 0
     assert len(list(capture.glob("prompt-*"))) == count == 2
     assert coord.sends == 2
+
+
+def retained_tasks(binary, fixture, count):
+    coord, _, _, state, harness, capture = fixture
+    review = awaiting_review()
+    prepare_response(binary, fixture, "READY", review["correlation"]["target"])
+    saved = json.loads(state.read_text())
+    task = saved["in_flight"][0]
+    saved["in_flight"] += [{**task, "attention_id": f"attn-{1000 + i:032x}",
+                            "sequence": 100 + i} for i in range(count - 1)]
+    saved["safe_cursor"] = 7
+    saved["phase"] = "accepted"
+    subprocess.run([str(binary), "write-state", str(state)], input=json.dumps(saved), text=True, check=True)
+    harness_script(harness, binary, capture, terminal=False)
+    return coord, state, harness, capture, saved
+
+
+def capacity_harness(harness, binary, *, recover_history=False):
+    # The full-checkpoint continuation uses the existing canonical history
+    # recovery path. It does not receive or acknowledge new attention.
+    source = harness.read_text()
+    action = f'''
+checkpoint=json.loads(prompt.split("Supervisor checkpoint:\\n",1)[1])
+objects=checkpoint["in_flight"]
+if {recover_history!r}:
+    args={{"room_name":"backlog","since_sequence":42,"limit":100}}
+    result=subprocess.run([{str(binary)!r},"call","read_room"],input=json.dumps(args),capture_output=True,text=True,check=True)
+    objects=json.loads(result.stdout)["messages"]
+ready=any(p.get("sender_agent_name")=="lens" and p["body"]=={f'READY target={awaiting_review()["correlation"]["target"]} attention_id={REQUEST_ATTENTION}'!r} for p in objects)
+if ready:
+    for task in checkpoint["in_flight"]:
+        if not task["requires_terminal"]: continue
+        args={{"room_name":"backlog","body":f"DONE target={TARGET} attention_id={{task['attention_id']}}","notify":["relay"]}}
+        result=subprocess.run([{str(binary)!r},"call","send"],input=json.dumps(args),capture_output=True,text=True,check=True)
+        print(json.dumps({{"type":"item.completed","item":{{"type":"mcp_tool_call","server":"safeyolo-coord","tool":"send","status":"completed","arguments":args,"result":{{"structured_content":json.loads(result.stdout)}}}}}}),flush=True)
+'''
+    completed = 'print(json.dumps({"type": \'turn.completed\'}),flush=True)'
+    assert completed in source
+    harness.write_text(source.replace(completed, action + "\n" + completed))
+
+
+@pytest.mark.parametrize("count,page_limit", [(1, 16), (14, 16), (15, 16), (1, 1), (1, 8), (13, 2)])
+def test_retained_tasks_admit_backlog_within_free_capacity(binary, fixture, count, page_limit):
+    coord, state, harness, capture, original = retained_tasks(binary, fixture, count)
+    config = fixture[2]
+    settings = json.loads(config.read_text())
+    settings["page_limit"] = page_limit
+    config.write_text(json.dumps(settings))
+    capacity_harness(harness, binary)
+    ready = coord.page["edges"][0]
+    # Sixteen new objects reproduce the real page16 failure, with ordinary
+    # informational updates before READY.
+    edges = []
+    for i in range(15):
+        sequence = 200 + i
+        edge = {**EDGE, "attention_id": f"attn-{sequence:032x}",
+                "object_id": f"msg-info-{i}", "revision_or_sequence": sequence}
+        coord.objects[edge["attention_id"]] = {"edge": edge, "object": {
+            **OBJECT, "msg_id": edge["object_id"], "sequence": sequence,
+            "body": f"CONTEXT target={TARGET}\nCurrent information."}}
+        edges.append(edge)
+    edges.append(ready)
+    coord.backlog = list(enumerate(edges, 8))
+    for _ in range(16):
+        result = run(binary, fixture, confirm_fresh_identity=False)
+        assert result.returncode == 0, result.stderr
+        saved = json.loads(state.read_text())
+        assert len(saved["in_flight"]) <= 16
+        assert saved["consecutive_failures"] == 0
+        if saved["safe_cursor"] == 23:
+            break
+        assert saved["in_flight"] == original["in_flight"]
+        assert saved["awaiting_handoffs"] == original["awaiting_handoffs"]
+        assert coord.sends == 0
+    else:
+        pytest.fail("the bounded backlog did not finish")
+    waits = [parse_qs(urlsplit(path).query) for method, path in coord.requests
+             if method == "GET" and urlsplit(path).path == "/api/coord/attention/wait"]
+    assert all(int(q["limit"][0]) == min(page_limit, 16 - count) for q in waits)
+    assert saved["in_flight"] == saved["awaiting_handoffs"] == []
+    assert all(p["attention_id"] in saved["recent_attention_ids"] for p in original["in_flight"])
+    assert len([m for m in coord.messages if m["body"].startswith("DONE ")]) == count
+    prompts = len(list(capture.glob("prompt-*")))
+    assert run(binary, fixture, confirm_fresh_identity=False).returncode == 0
+    assert len(list(capture.glob("prompt-*"))) == prompts
+    assert coord.sends == count
+
+
+def test_duplicate_attention_preserves_capacity_and_handoff(binary, fixture):
+    coord, state, _, capture, original = retained_tasks(binary, fixture, 15)
+    coord.page = {"edges": [EDGE], "next_cursor": 8}
+    assert run(binary, fixture, confirm_fresh_identity=False).returncode == 0
+    saved = json.loads(state.read_text())
+    assert saved["safe_cursor"] == 8
+    assert saved["in_flight"] == original["in_flight"]
+    assert saved["awaiting_handoffs"] == original["awaiting_handoffs"]
+    assert not list(capture.iterdir())
+    assert coord.sends == 0
+
+
+def test_full_suspended_checkpoint_continues_before_receiving(binary, fixture):
+    coord, state, harness, capture, original = retained_tasks(binary, fixture, 16)
+    ready = coord.page["edges"][0]
+    coord.messages.append(coord.objects[ready["attention_id"]]["object"])
+    capacity_harness(harness, binary, recover_history=True)
+    result = run(binary, fixture, confirm_fresh_identity=False)
+    assert result.returncode == 0, result.stderr
+    saved = json.loads(state.read_text())
+    assert saved["in_flight"] == []
+    assert saved["awaiting_handoffs"] == original["awaiting_handoffs"]
+    assert saved["safe_cursor"] == original["safe_cursor"]
+    assert not any("/attention/" in path for _, path in coord.requests)
+    assert any("/messages?" in path for _, path in coord.requests)
+    assert len(prompt_checkpoint(capture)["in_flight"]) == 16
+    assert coord.sends == 16
+    # After restart the unchanged attention cursor still delivers READY. The
+    # handoff is settled only when that response is admitted and checkpointed.
+    assert run(binary, fixture, confirm_fresh_identity=False).returncode == 0
+    saved = json.loads(state.read_text())
+    assert saved["in_flight"] == saved["awaiting_handoffs"] == []
+    assert saved["safe_cursor"] == 49
+    assert coord.sends == 16
+    coord.page = {"edges": [EDGE], "next_cursor": 50}
+    assert run(binary, fixture, confirm_fresh_identity=False).returncode == 0
+    assert coord.sends == 16
+
+
+def test_full_checkpoint_without_progress_retains_uncertainty_and_backoff(binary, fixture):
+    coord, state, _, capture, original = retained_tasks(binary, fixture, 16)
+    result = run(binary, fixture, confirm_fresh_identity=False)
+    assert result.returncode != 0 and "incomplete or uncertain" in result.stderr
+    saved = json.loads(state.read_text())
+    for field in ("in_flight", "awaiting_handoffs", "safe_cursor", "recent_attention_ids"):
+        assert saved[field] == original[field]
+    assert saved["phase"] == "uncertain"
+    assert saved["consecutive_failures"] == 1
+    assert not any("/attention/" in path for _, path in coord.requests)
+    assert coord.sends == 0
+    _, env, config, _, _, _ = fixture
+    settings = json.loads(config.read_text())
+    settings.update(backoff_initial_seconds=1, backoff_max_seconds=1)
+    config.write_text(json.dumps(settings))
+    previous = set(capture.glob("prompt-*"))
+    process = subprocess.Popen([str(binary), "supervise", "--config", str(config), "--state", str(state)],
+                               env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        until(lambda: len(set(capture.glob("prompt-*")) - previous) >= 2)
+        times = sorted(p.stat().st_mtime for p in set(capture.glob("prompt-*")) - previous)
+        assert times[1] - times[0] >= 0.9
+        assert not any("/attention/" in path for _, path in coord.requests)
+        assert coord.sends == 0
+    finally:
+        process.terminate()
+        process.communicate(timeout=5)
+
+
+def test_information_does_not_mask_an_uncertain_send_for_ready_work(binary, fixture):
+    coord, state, harness, capture, original = retained_tasks(binary, fixture, 1)
+    saved = json.loads(state.read_text())
+    saved["awaiting_handoffs"] = []
+    info_id = f"attn-{2000:032x}"
+    saved["in_flight"].append({**saved["in_flight"][0], "attention_id": info_id,
+                              "requires_terminal": False, "body": f"CONTEXT target={TARGET}"})
+    subprocess.run([str(binary), "write-state", str(state)], input=json.dumps(saved), text=True, check=True)
+    coord.unknown_send = True
+    harness_script(harness, binary, capture)
+    harness.write_text(harness.read_text().replace('"notify":["relay"]', '"notify":["mallory"]'))
+    result = run(binary, fixture, confirm_fresh_identity=False)
+    assert result.returncode != 0
+    saved = json.loads(state.read_text())
+    assert saved["in_flight"] == original["in_flight"]
+    assert info_id in saved["recent_attention_ids"]
+    assert saved["phase"] == "uncertain"
+    assert saved["consecutive_failures"] == 1
+    harness_script(harness, binary, capture, terminal=False)
+    assert run(binary, fixture, confirm_fresh_identity=False).returncode != 0
+    assert coord.sends == 1
+
+
+@pytest.mark.parametrize("pi", [False, True])
+@pytest.mark.parametrize("outcome", ["none", "receipt", "unknown", "missing_receipt"])
+def test_information_preserves_unresolved_send_with_suspended_parent(binary, fixture, pi, outcome):
+    coord, state, harness, capture, original = retained_tasks(binary, fixture, 1)
+    config = fixture[2]
+    settings = json.loads(config.read_text())
+    settings["harness"] = "pi" if pi else "codex"
+    config.write_text(json.dumps(settings))
+    saved = json.loads(state.read_text())
+    info_id = f"attn-{2000:032x}"
+    saved["in_flight"].append({**saved["in_flight"][0], "attention_id": info_id,
+                              "requires_terminal": False, "body": f"CONTEXT target={TARGET}"})
+    subprocess.run([str(binary), "write-state", str(state)], input=json.dumps(saved), text=True, check=True)
+    coord.page = {"edges": [], "next_cursor": saved["safe_cursor"]}
+    coord.unknown_send = outcome == "unknown"
+    harness_script(harness, binary, capture, pi=pi, terminal=outcome != "none")
+    target = "https://example.test/pull/818/commits/" + "b" * 40
+    source = harness.read_text().replace(f"DONE target={TARGET} attention_id={ATTENTION}",
+                                         f"REVIEW_READY target={target}").replace('"notify":["relay"]', '"notify":["lens"]')
+    if outcome == "missing_receipt":
+        source = source.replace("json.loads(result.stdout)", "{}")
+    harness.write_text(source)
+    harness_args = ["--provider", "fixture", "--model", "fixture"] if pi else []
+    result = run(binary, fixture, *harness_args, confirm_fresh_identity=False)
+    saved = json.loads(state.read_text())
+    uncertain = outcome in {"unknown", "missing_receipt"}
+    assert (result.returncode != 0) == uncertain, result.stderr
+    assert saved["phase"] == ("uncertain" if uncertain else "accepted")
+    assert saved["consecutive_failures"] == int(uncertain)
+    assert saved["in_flight"] == original["in_flight"]
+    assert saved["safe_cursor"] == original["safe_cursor"]
+    assert info_id in saved["recent_attention_ids"]
+    assert saved["awaiting_handoffs"][0] == original["awaiting_handoffs"][0]
+    assert len(saved["awaiting_handoffs"]) == (2 if outcome == "receipt" else 1)
+    assert coord.sends == (0 if outcome == "none" else 1)
+    if outcome == "unknown":
+        assert "send outcome unknown" in result.stderr
+    # Restart cannot repeat the uncertain send or clear its failure state just
+    # because there is no new attention. Another informational turn cannot
+    # establish its missing canonical effect either.
+    if uncertain:
+        harness_script(harness, binary, capture, pi=pi, terminal=False)
+        assert run(binary, fixture, *harness_args, confirm_fresh_identity=False).returncode != 0
+        restarted = json.loads(state.read_text())
+        assert restarted["phase"] == "uncertain"
+        assert restarted["consecutive_failures"] >= saved["consecutive_failures"]
+        assert restarted["awaiting_handoffs"] == saved["awaiting_handoffs"]
+        assert len(list(capture.glob("prompt-*"))) == 1
+        restarted["in_flight"].append({**saved["in_flight"][0], "attention_id": f"attn-{2001:032x}",
+                                      "requires_terminal": False, "body": f"CONTEXT target={TARGET}"})
+        subprocess.run([str(binary), "write-state", str(state)], input=json.dumps(restarted), text=True, check=True)
+        assert run(binary, fixture, *harness_args, confirm_fresh_identity=False).returncode != 0
+        restarted = json.loads(state.read_text())
+        assert restarted["phase"] == "uncertain"
+        assert restarted["consecutive_failures"] > saved["consecutive_failures"]
+        assert restarted["in_flight"] == original["in_flight"]
+        assert restarted["awaiting_handoffs"] == saved["awaiting_handoffs"]
+        assert coord.sends == 1
+
+
+def test_oversized_receive_retains_tasks_handoffs_and_cursor(binary, fixture):
+    coord, state, _, capture, original = retained_tasks(binary, fixture, 15)
+    # A server that violates the effective receive limit must fail before
+    # any object or cursor is admitted, even though config allows page16.
+    coord.page["edges"] = [EDGE, coord.page["edges"][0]]
+    result = run(binary, fixture, confirm_fresh_identity=False)
+    assert result.returncode != 0 and "exceeds requested limit" in result.stderr
+    saved = json.loads(state.read_text())
+    for field in ("in_flight", "awaiting_handoffs", "safe_cursor", "recent_attention_ids"):
+        assert saved[field] == original[field]
+    assert not list(capture.iterdir())
+    assert coord.sends == 0
 
 
 def test_factory_concurrent_handoffs_are_checkpointed_together(binary, fixture):

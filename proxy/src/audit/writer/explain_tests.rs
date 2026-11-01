@@ -6,7 +6,7 @@ fn freshness_observation_failure_still_reads_retained_events() {
     let path = directory.path().join("audit.jsonl");
     fs::write(
         &path,
-        br#"{"request_id":"owned","agent":"alice","event":"available"}"#,
+        br#"{"schema_version":2,"ts":"2026-10-29T00:00:00Z","request_id":"owned","agent":"alice","event":"traffic.available","kind":"traffic","severity":"low","summary":"Available retained event","details":{}}"#,
     )
     .unwrap();
     let writer = Writer::new(path, Settings::default());
@@ -17,7 +17,7 @@ fn freshness_observation_failure_still_reads_retained_events() {
     assert!(writer.pending_count().is_err());
     let mut report = writer.explain("owned", "alice").unwrap();
     let value: Value = serde_json::from_str(&report.render_json(false).unwrap()).unwrap();
-    assert_eq!(value["status"], "complete");
+    assert_eq!(value["status"], "error");
     assert_eq!(value["events"].as_array().unwrap().len(), 1);
     crate::audit::wipe(&mut report);
 }

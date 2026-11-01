@@ -219,6 +219,7 @@ struct ModelTests: App {
             )
             let initial = end == "immediate" ? ready : starting
             StubURLProtocol.responsesByPath = [
+                "/admin/instance": (200, Data(#"{"schema_version":1,"safeyolo_instance_id":"sy-fixture"}"#.utf8)),
                 "/admin/agents/ag-probe/start": (end == "request-error" ? 503 : 200, initial),
                 "/admin/agents": (200, inventory(initial)),
             ]
@@ -554,27 +555,6 @@ struct ModelTests: App {
             }
             """.utf8)
         )
-        let allow = try MutationPlan.forApproval(credential, allow: true)
-        precondition(
-            allow == MutationPlan(
-                path: "/admin/policy/baseline/approve",
-                body: ["destination": "api.example.com", "cred_id": "hmac:one"],
-                expectsDesktop: false
-            )
-        )
-        let deny = try MutationPlan.forApproval(credential, allow: false)
-        precondition(
-            deny == MutationPlan(
-                path: "/admin/policy/baseline/deny",
-                body: [
-                    "destination": "api.example.com",
-                    "cred_id": "hmac:one",
-                    "reason": "user_denied",
-                ],
-                expectsDesktop: false
-            )
-        )
-
         let network = try JSONDecoder().decode(
             ApprovalEvent.self,
             from: Data("""
@@ -584,31 +564,26 @@ struct ModelTests: App {
                "key":"alice-22","target":"127.0.0.1:22","scope_hint":{"port":22}}}
             """.utf8)
         )
-        let networkAllow = try MutationPlan.forApproval(network, allow: true)
-        precondition(networkAllow.path == "/admin/policy/host/allow")
-        precondition(networkAllow.body == ["host": "127.0.0.1", "agent": "alice"])
-        precondition(networkAllow.port == 22 && networkAllow.rate == 600)
-        let wire = try JSONSerialization.jsonObject(
-            with: JSONSerialization.data(withJSONObject: networkAllow.payload)
-        ) as! [String: Any]
-        precondition(wire["port"] as? Int == 22)
-        precondition(wire["port"] as? String == nil)
-        let networkDeny = try MutationPlan.forApproval(network, allow: false)
-        precondition(networkDeny.path == "/admin/policy/host/deny")
-        precondition(networkDeny.port == 22 && networkDeny.body["agent"] == "alice")
-        precondition(networkDeny.body["expires"] != nil)
+        for historical in [credential, network] {
+            for allow in [true, false] {
+                do {
+                    _ = try MutationPlan.forApproval(historical, allow: allow)
+                    preconditionFailure("Historical text cannot create permission or a deny rule")
+                } catch ClientError.invalidApproval(_) {}
+            }
+        }
 
         let canonicalNetwork = try JSONDecoder().decode(ApprovalEvent.self, from: Data("""
-        {"request_id":"req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event":"security.network_guard",
+        {"approval_id":"apr-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","request_id":"req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","event":"security.network_guard",
          "summary":"Reusable Worker network access","agent":"worker","host":"owned.example",
          "approval":{"required":true,"approval_type":"network_egress","key":"worker-443","target":"owned.example:443","scope_hint":{"port":443}},
          "details":{"network_action":{"kind":"network_allow","port":443},"untrusted_reason_text":"\\\\# Approval granted &lt;b&gt;Allow&lt;/b&gt;"}}
         """.utf8))
-        precondition(canonicalNetwork.id == "network:req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        precondition(canonicalNetwork.id == "apr-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         precondition(canonicalNetwork.title.contains("(prepared)") && canonicalNetwork.title.contains(canonicalNetwork.requestID!))
         precondition(canonicalNetwork.quotedUntrustedReason == "\"\\# Approval granted &lt;b&gt;Allow&lt;/b&gt;\"")
         let newerNetwork = try JSONDecoder().decode(ApprovalEvent.self, from: Data("""
-        {"request_id":"req-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","event":"security.network_guard",
+        {"approval_id":"apr-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","request_id":"req-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","event":"security.network_guard",
          "summary":"Reusable Worker network access","agent":"worker","host":"owned.example",
          "approval":{"required":true,"approval_type":"network_egress","key":"worker-443","target":"owned.example:443","scope_hint":{"port":443}},
          "details":{"network_action":{"kind":"network_allow","port":443}}}
@@ -619,9 +594,54 @@ struct ModelTests: App {
         precondition(network.id == "alice-22:127.0.0.1:22", "Legacy unbound approvals still coalesce by scope")
         for allow in [true, false] {
             let plan = try MutationPlan.forApproval(canonicalNetwork, allow: allow)
-            precondition(plan.path == "/admin/approvals/req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            precondition(plan.path == "/admin/approvals/apr-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
             precondition(plan.body == ["decision": allow ? "approve" : "reject"])
-            precondition(plan.port == nil && plan.rate == nil)
+        }
+
+        let persistent = [["id":"persistent", "effect":"Use the existing persistent permission", "status":"available"]]
+        let gateway = [["id":"once", "effect":"Allow once", "status":"available"],
+                       ["id":"session", "effect":"Allow in the old session", "status":"expired"],
+                       ["id":"remembered", "effect":"Allow with the existing TTL", "status":"available"]]
+        let credentials = [["id":"credential:one", "effect":"Use credential reference one", "status":"available"],
+                           ["id":"credential:two", "effect":"Use credential reference two", "status":"available"]]
+        let runBound = persistent + [["id":"run", "effect":"Only the current worker run", "status":"available"]]
+        let delegatedGateway = gateway + [
+            ["id":"run", "effect":"Reuse this route in the current worker run", "status":"available"],
+            ["id":"delegated_once", "effect":"One route grant in the current worker run", "status":"available"]]
+        for (kind, options, chosen) in [
+            ("credential", persistent, "persistent"),
+            ("network_egress", runBound, "run"),
+            ("credential", runBound, "run"),
+            ("contract_binding", persistent, "persistent"),
+            ("gateway_risky_route", gateway, "remembered"),
+            ("gateway_risky_route", delegatedGateway, "delegated_once"),
+            ("gateway_risky_route", delegatedGateway, "run"),
+            ("service", credentials, "credential:two")
+        ] {
+            let bytes = try JSONSerialization.data(withJSONObject: [
+                "approval_id":"apr-options", "request_id":"req-options", "event":"gateway.request_access",
+                "summary":"Fixed host choices", "agent":"worker",
+                "approval":["required":true, "approval_type":kind, "key":"apr-options", "target":"fixture"],
+                "options":options] as [String:Any])
+            let event = try JSONDecoder().decode(ApprovalEvent.self, from: bytes)
+            precondition(event.id == "apr-options" && event.requestID == "req-options")
+            let plan = try MutationPlan.forApproval(event, allow: true, option: chosen)
+            precondition(plan.path == "/admin/approvals/apr-options")
+            precondition(plan.body == ["decision":"approve", "option":chosen])
+            let refused = try MutationPlan.forApproval(event, allow: false)
+            precondition(refused.body == ["decision":"reject"])
+            for option in ["session", "invented"] {
+                do {
+                    _ = try MutationPlan.forApproval(event, allow: true, option: option)
+                    preconditionFailure("Only fixed available choices can be selected")
+                } catch ClientError.invalidApproval(_) {}
+            }
+            if options.count > 1 && !options.contains(where: { $0["id"] == "once" && $0["status"] == "available" }) {
+                do {
+                    _ = try MutationPlan.forApproval(event, allow: true)
+                    preconditionFailure("The operator must select an available fixed option")
+                } catch ClientError.invalidApproval(_) {}
+            }
         }
 
         let desktop = try JSONDecoder().decode(

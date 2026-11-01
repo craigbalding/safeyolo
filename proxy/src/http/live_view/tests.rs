@@ -40,7 +40,6 @@ impl Fixture {
             "listeners":[], "policy_file":policy, "data_dir":directory.path().join("data"),
             "readiness_file":directory.path().join("ready"),
             "audit_log_path":directory.path().join("audit.jsonl"),
-            "event_log":directory.path().join("events.jsonl"),
             "flow_store_enabled":false,
         }))
         .unwrap();
@@ -55,10 +54,11 @@ impl Fixture {
 
     fn identity(&self) -> ConnectionIdentity {
         ConnectionIdentity {
+            ingress_binding: None,
+            run: None,
             agent_id: "alice".into(),
             connection_id: "owned-connection".into(),
             source_id: None,
-            reconciled: None,
         }
     }
 

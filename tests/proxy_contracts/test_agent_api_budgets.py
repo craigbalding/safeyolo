@@ -40,13 +40,13 @@ effect = "deny"
 
 def read_budgets(proxy, parent, expected, *, agent="alice"):
     """Keep exact field order and prove this local read adds no parent contact."""
-    before = parent.accepts, len(proxy.events("proxy.egress"))
+    before = parent.accepts, len(proxy.events("traffic.egress"))
     forged = "bob" if agent == "alice" else "alice"
     result = api_request(proxy, f"/budgets?agent={forged}&agent_id={forged}", agent=agent,
                          headers={"X-SafeYolo-Agent": forged})
     assert_api_response(result, 200, expected)
     assert result[2] == json.dumps(expected).encode()
-    assert (parent.accepts, len(proxy.events("proxy.egress"))) == before
+    assert (parent.accepts, len(proxy.events("traffic.egress"))) == before
     return result[2]
 
 
@@ -61,7 +61,7 @@ def test_agent_api_budgets_empty_schema_is_shared(proxy_backend, tmp_path):
             for agent in ("alice", "bob"):
                 read_budgets(proxy, parent, EMPTY, agent=agent)
             assert parent.accepts == 0 and parent.requests == []
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []
 
 
 @pytest.mark.parametrize("method,status,body", [
@@ -85,23 +85,23 @@ def test_agent_api_budgets_preview_and_denial_do_not_charge(proxy_backend, tmp_p
                         "agent": agent, "effect": effect, "reason": "",
                     })
                 read_budgets(proxy, parent, EMPTY, agent=agent)
-            assert parent.accepts == 0 and proxy.events("proxy.egress") == []
+            assert parent.accepts == 0 and proxy.events("traffic.egress") == []
             for host, status, expected in (
                 ("denied.invalid", 403, EMPTY), ("alpha.invalid", 200, ALPHA),
                 ("denied.invalid", 403, ALPHA), ("alpha.invalid", 200, ALPHA),
                 ("alpha.invalid", 429, ALPHA),
             ):
-                before = parent.accepts, len(proxy.events("proxy.egress"))
+                before = parent.accepts, len(proxy.events("traffic.egress"))
                 result = send_request(proxy.paths["alice"], f"http://{host}/budget-metadata")
                 if status == 200:
                     assert result[0] == 200 and result[2] == b"hello"
                     assert parent.accepts == before[0] + 1
                 else:
                     assert_rejection(*result, status, host)
-                    assert (parent.accepts, len(proxy.events("proxy.egress"))) == before
+                    assert (parent.accepts, len(proxy.events("traffic.egress"))) == before
                 for agent in ("alice", "bob"):
                     read_budgets(proxy, parent, expected, agent=agent)
-            assert parent.accepts == 2 and len(proxy.events("proxy.egress")) == 2
+            assert parent.accepts == 2 and len(proxy.events("traffic.egress")) == 2
             assert len(parent.requests) == 2
             assert_no_refill(started)
 
@@ -127,7 +127,7 @@ def test_agent_api_budgets_retained_counter_uses_last_valid_rule(proxy_backend, 
             read_budgets(proxy, parent, HIDDEN_ALPHA, agent="bob")
             replace_policy(proxy, proxy_backend, directory, BUDGET_POLICY)
             read_budgets(proxy, parent, ALPHA)
-            assert parent.accepts == 1 and len(proxy.events("proxy.egress")) == 1
+            assert parent.accepts == 1 and len(proxy.events("traffic.egress")) == 1
             assert_no_refill(started)
 
 
@@ -159,7 +159,7 @@ budget = 1
                 assert result[0] == 200 and result[2] == b"hello"
             first = read_budgets(proxy, parent, expected)
             assert read_budgets(proxy, parent, expected, agent="bob") == first
-            assert parent.accepts == 2 and len(proxy.events("proxy.egress")) == 2
+            assert parent.accepts == 2 and len(proxy.events("traffic.egress")) == 2
             assert_no_refill(started)
 
 
@@ -185,5 +185,5 @@ observed = 2001-02-03
             result = send_request(proxy.paths["bob"], "http://alpha.invalid/after-temporal-reads")
             assert result[0] == 200 and result[2] == b"hello"
             read_budgets(proxy, parent, ALPHA, agent="bob")
-            assert parent.accepts == 2 and len(proxy.events("proxy.egress")) == 2
+            assert parent.accepts == 2 and len(proxy.events("traffic.egress")) == 2
             assert_no_refill(started)

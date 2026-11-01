@@ -42,6 +42,13 @@ pub(crate) fn name_control_fields(value: &mut Value) {
         if fields.get("reason").and_then(Value::as_str) == Some("addon_disabled") {
             fields.insert("reason".into(), json!("control_disabled"));
         }
+        if let Some(responder) = fields
+            .get_mut("details")
+            .and_then(|details| details.get_mut("preempted_by"))
+            && let Some(name) = responder.as_str()
+        {
+            *responder = json!(control_label(name));
+        }
         if let Some(audit) = fields.get_mut("audit") {
             name_control_fields(audit);
         }
@@ -280,7 +287,10 @@ impl Controls {
 pub(super) struct Snapshot {
     source: Zeroizing<String>,
     pub(super) authored: Value,
+    timestamps: super::TimestampPaths,
     pub(crate) controls: Controls,
+    pub(crate) delegations: std::collections::BTreeMap<String, super::delegation::Delegation>,
+    pub(crate) identity_root: std::path::PathBuf,
 }
 
 impl Drop for Snapshot {
@@ -343,6 +353,17 @@ impl Policy {
         registry: Option<Arc<crate::services::Registry>>,
         now_ms: f64,
     ) -> Result<Self> {
+        Self::native_source_with_expired_hosts(source, path, registry, now_ms, None)
+            .map(|(policy, _)| policy)
+    }
+
+    pub(crate) fn native_source_with_expired_hosts(
+        source: &str,
+        path: &Path,
+        registry: Option<Arc<crate::services::Registry>>,
+        now_ms: f64,
+        previous: Option<&Self>,
+    ) -> Result<(Self, super::ExpiredHosts)> {
         let (mut authored, mut timestamps) = super::parse_toml_with_timestamps(source)?;
         validate_authoring(&authored)?;
         let controls: Controls = serde_json::from_value(
@@ -368,7 +389,7 @@ impl Policy {
             ));
         }
         let expired = super::expired_host_entries(&authored, now_ms)?;
-        for (agent, host) in expired {
+        for (agent, host) in &expired {
             let hosts = match agent.as_deref() {
                 Some(agent) => authored
                     .get_mut("agents")
@@ -377,11 +398,12 @@ impl Policy {
                 None => authored.get_mut("hosts"),
             };
             if let Some(hosts) = hosts.and_then(Value::as_object_mut) {
-                hosts.shift_remove(&host);
+                hosts.shift_remove(host);
             }
         }
         let mut fields = authored.as_object().expect("TOML root is a table").clone();
         fields.shift_remove("controls");
+        fields.shift_remove("approval_delegations");
         // Approval receipts belong to the saved host permission. They are not
         // evaluator fields; keep the authoritative authored copy for outcome
         // reconciliation while compiling only existing egress/rate inputs.
@@ -392,11 +414,24 @@ impl Policy {
                         if let Some(host) = host.as_object_mut() {
                             host.shift_remove("approval_request_id");
                             host.shift_remove("approval_action");
+                            host.shift_remove("approval_id");
+                            host.shift_remove("credential_approval_ids");
                         }
                     }
                 }
             }
         }
+        if let Some(hosts) = fields.get_mut("hosts").and_then(Value::as_object_mut) {
+            for host in hosts.values_mut() {
+                if let Some(host) = host.as_object_mut() {
+                    host.shift_remove("approval_id");
+                    host.shift_remove("credential_approval_ids");
+                }
+            }
+        }
+        // Approval receipts accompany committed policy effects. They are not
+        // permissions and must not enter the compiled baseline.
+        fields.shift_remove("approval_results");
         let logging: Logging =
             serde_json::from_value(fields.shift_remove("logging").unwrap_or_else(|| json!({})))
                 .map_err(|error| invalid(format!("logging: {error}")))?;
@@ -415,7 +450,18 @@ impl Policy {
             "pattern_scanner": {"enabled": controls.patterns.enabled, "builtin_sets": controls.patterns.builtin_sets},
             "request_logger": {"quiet_hosts": logging.quiet_hosts},
         }));
+        let authored_timestamps = timestamps.clone();
         let fields = super::normalize_toml(fields, &mut timestamps)?;
+        let gateway_policy =
+            previous
+                .filter(|_| fields.contains_key("hosts"))
+                .and_then(|previous| {
+                    previous.gateway_policy_to_retain(
+                        &authored,
+                        &authored_timestamps,
+                        registry.as_ref(),
+                    )
+                });
         let mut policy = Self::from_document(
             ParsedPolicy {
                 document: fields,
@@ -424,27 +470,88 @@ impl Policy {
             path.parent(),
             registry,
             false,
+            gateway_policy,
         )?;
         policy.native = Some(Snapshot {
+            identity_root: path.parent().unwrap_or(Path::new(".")).to_owned(),
+            delegations: super::delegation::parse(&authored)?,
             source: Zeroizing::new(source.to_owned()),
             authored,
+            timestamps: authored_timestamps,
             controls,
         });
         policy.baseline_path = Some(path.to_owned());
-        Ok(policy)
+        Ok((policy, expired))
     }
 
     pub(crate) fn reload_native_source(&self, source: &str, path: &Path) -> Result<Self> {
-        let mut replacement = Self::native_source(
+        let (mut replacement, _) = Self::native_source_with_expired_hosts(
             source,
             path,
             self.gateway().and_then(|gateway| gateway.registry()),
             super::current_time_ms(),
+            Some(self),
         )?;
         replacement.budgets = self.budgets.clone();
         replacement.evaluations = self.evaluations.clone();
         replacement.task = self.task.clone();
+        if let Some(native) = &self.native {
+            replacement.set_identity_root(native.identity_root.clone());
+        }
         Ok(replacement)
+    }
+
+    /// Credential/network approvals publish new rules without replacing an
+    /// unchanged service credential. Gateway scope or catalogue changes still
+    /// compile a fresh snapshot, and startup has no prior tokens to retain.
+    fn gateway_policy_to_retain(
+        &self,
+        authored: &Value,
+        timestamps: &super::TimestampPaths,
+        registry: Option<&Arc<crate::services::Registry>>,
+    ) -> Option<&Self> {
+        let previous = self.native.as_ref()?;
+        if previous.authored.get("hosts").is_none()
+            && previous.authored.get("permissions").is_some()
+        {
+            return None;
+        }
+        let gateway = self.gateway.as_ref()?;
+        match (gateway.registry().as_ref(), registry) {
+            (Some(old), Some(new)) if Arc::ptr_eq(old, new) => {}
+            (None, None) => {}
+            _ => return None,
+        }
+        let same = |path: &[&str]| {
+            path.iter()
+                .try_fold(&previous.authored, |value, key| value.get(*key))
+                == path.iter().try_fold(authored, |value, key| value.get(*key))
+                && previous.timestamps.projected(path) == timestamps.projected(path)
+        };
+        if !same(&["services"]) || !same(&["gateway"]) {
+            return None;
+        }
+        let empty = serde_json::Map::new();
+        let old_agents = previous.authored["agents"].as_object().unwrap_or(&empty);
+        let agents = authored["agents"].as_object().unwrap_or(&empty);
+        if !old_agents.keys().eq(agents.keys()) {
+            return None;
+        }
+        for agent in agents.keys() {
+            for field in ["agent_id", "services", "contract_bindings"] {
+                if !same(&["agents", agent, field]) {
+                    return None;
+                }
+            }
+        }
+        for document in [&previous.authored, authored] {
+            for (host, config) in document["hosts"].as_object().unwrap_or(&empty) {
+                if config.get("service").is_some() && !same(&["hosts", host, "service"]) {
+                    return None;
+                }
+            }
+        }
+        Some(self)
     }
 
     pub(crate) fn native_controls(&self) -> Option<&Controls> {
@@ -455,6 +562,23 @@ impl Policy {
         self.budgets = previous.budgets.clone();
         self.evaluations = previous.evaluations.clone();
         self.task = previous.task.clone();
+        if let Some(native) = &previous.native {
+            self.set_identity_root(native.identity_root.clone());
+        }
+    }
+
+    pub(crate) fn set_identity_root(&mut self, root: std::path::PathBuf) {
+        if let Some(native) = self.native.as_mut() {
+            native.identity_root = root;
+        }
+    }
+
+    pub fn agent_run(&self, name: &str) -> Option<crate::host_runs::AgentRun> {
+        crate::host_runs::authority(
+            &self.native.as_ref()?.identity_root,
+            name,
+            self.evidence_agent_id(name)?,
+        )
     }
 
     pub(crate) fn set_native_source(&mut self, source: String) {
@@ -571,6 +695,8 @@ impl Policy {
 }
 
 fn validate_authoring(document: &Value) -> Result<()> {
+    super::delegation::parse(document)?;
+    super::delegation::validate_grants(document)?;
     let fields = document
         .as_object()
         .ok_or_else(|| invalid("policy must be a table"))?;
@@ -908,6 +1034,122 @@ hosts=["quiet.invalid"]
         for field in ["context", "details", "body"] {
             assert_eq!(value[field], raw);
         }
+    }
+
+    #[test]
+    fn native_gateway_tokens_follow_service_scope_and_named_list_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("policy.toml");
+        let list = directory.path().join("destinations.txt");
+        std::fs::write(&list, "old.invalid\n").unwrap();
+        let definition = "schema_version: 1\nname: demo\ndefault_host: old.invalid\ncapabilities:\n  reader:\n    routes: [{methods: [GET], path: /read}]\n  writer:\n    routes: [{methods: [POST], path: /write}]\n";
+        let registry = Arc::new(
+            crate::services::Registry::from_sources(
+                &[("demo.yaml".into(), definition.into())],
+                &[],
+            )
+            .unwrap(),
+        );
+        let source = r#"
+[lists]
+destinations='destinations.txt'
+[hosts.'$destinations']
+service='demo'
+egress='allow'
+[agents.alice]
+agent_id='ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+[agents.alice.services.demo]
+capability='reader'
+token='provider'
+account='agent'
+"#;
+        let policy = Policy::native_source(source, &path, Some(registry.clone()), 0.).unwrap();
+        let token = policy.gateway().unwrap().canonical_gateway()["agent_env"]["alice"]["demo"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let rules = format!("{source}\n[agents.alice.hosts.'other.invalid']\negress='deny'\n");
+        let edited = policy.reload_native_source(&rules, &path).unwrap();
+        assert!(
+            edited.gateway().unwrap().canonical_gateway()["agent_env"]["alice"]["demo"].as_str()
+                == Some(&token)
+        );
+        assert!(
+            edited.baseline.as_ref().unwrap().value["gateway"]
+                == *edited.gateway().unwrap().canonical_gateway()
+        );
+        for changed in [
+            source.replace("token='provider'", "token='replacement'"),
+            source.replace("capability='reader'", "capability='writer'"),
+            source.replace("account='agent'", "account='other'"),
+            source.replace(
+                "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            source.replace("service='demo'", "service='other'"),
+            format!(
+                "{source}\n[[agents.alice.contract_bindings]]\nservice='demo'\ncapability='reader'\ntemplate='read.v1'\nbound_values={{project='alpha'}}\n"
+            ),
+        ] {
+            let changed = policy.reload_native_source(&changed, &path).unwrap();
+            assert!(
+                changed.gateway().unwrap().canonical_gateway()["agent_env"]["alice"]["demo"]
+                    .as_str()
+                    != Some(&token)
+            );
+        }
+        // A TOML datetime and a quoted timestamp can have the same JSON text.
+        // Reusing the string binding must not hide the changed source type.
+        let quoted = source.replace("account='agent'", "account='2026-01-01T00:00:00Z'");
+        let quoted = policy.reload_native_source(&quoted, &path).unwrap();
+        let typed = source.replace("account='agent'", "account=2026-01-01T00:00:00Z");
+        let typed = quoted.reload_native_source(&typed, &path).unwrap();
+        assert!(
+            quoted.gateway().unwrap().canonical_gateway()["agent_env"]["alice"]["demo"]
+                != typed.gateway().unwrap().canonical_gateway()["agent_env"]["alice"]["demo"]
+        );
+        std::fs::write(&list, "new.invalid\n").unwrap();
+        let changed = policy.reload_native_source(source, &path).unwrap();
+        let gateway = changed.gateway().unwrap().canonical_gateway();
+        assert!(gateway["agent_env"]["alice"]["demo"].as_str() != Some(&token));
+        assert_eq!(gateway["host_map"]["new.invalid"], "demo");
+        assert!(gateway["host_map"].get("old.invalid").is_none());
+        let revoked = policy.reload_native_source(&source.replace("[agents.alice.services.demo]\ncapability='reader'\ntoken='provider'\naccount='agent'", ""), &path).unwrap();
+        assert!(
+            revoked.gateway().unwrap().canonical_gateway()["token_map"]
+                .as_object()
+                .unwrap()
+                .is_empty()
+        );
+        let restored = revoked.reload_native_source(source, &path).unwrap();
+        assert!(
+            restored.gateway().unwrap().canonical_gateway()["agent_env"]["alice"]["demo"].as_str()
+                != Some(&token)
+        );
+        let catalog = Arc::new(
+            crate::services::Registry::from_sources(
+                &[("demo.yaml".into(), definition.replace("/read", "/updated"))],
+                &[],
+            )
+            .unwrap(),
+        );
+        let (changed, _) = Policy::native_source_with_expired_hosts(
+            source,
+            &path,
+            Some(catalog),
+            0.,
+            Some(&restored),
+        )
+        .unwrap();
+        assert!(
+            restored.gateway().unwrap().canonical_gateway()["agent_env"]["alice"]["demo"]
+                != changed.gateway().unwrap().canonical_gateway()["agent_env"]["alice"]["demo"]
+        );
+        let restarted = Policy::native_source(source, &path, Some(registry), 0.).unwrap();
+        assert!(
+            restarted.gateway().unwrap().canonical_gateway()["agent_env"]["alice"]["demo"].as_str()
+                != Some(&token)
+        );
     }
 
     #[test]

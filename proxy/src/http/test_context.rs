@@ -127,8 +127,7 @@ impl Provenance {
     }
 
     /// The caller consumes its single-use request application before this call.
-    /// Ok reports completed canonical submission; true marks a separate
-    /// diagnostic write failure. Content or synchronous submission errors leave
+    /// Ok reports completed canonical submission. Content or synchronous submission errors leave
     /// metadata installed but skip the allowed counter.
     pub(super) fn apply_request(
         &self,
@@ -136,7 +135,7 @@ impl Provenance {
         content: Option<&[u8]>,
         encoding: Result<&[u8], ContentError>,
         started: f64,
-    ) -> Result<bool, HookError> {
+    ) -> Result<(), HookError> {
         *self.applied.lock().unwrap_or_else(|e| e.into_inner()) = Some(Applied {
             context: context.clone(),
             started,
@@ -171,17 +170,9 @@ impl Provenance {
         event.agent = self.identity.request_agent().map(str::to_owned);
         event.request_id = Some(self.request_id.clone());
         event.attribution = Some(self.identity.audit_attribution());
-        event.details = details.clone().into();
+        event.details = details.into();
         self.runtime.audit.emit(event)?;
-        Ok(self
-            .runtime
-            .record(json!({
-                "event": "security.test_context", "kind": "security", "severity": "low",
-                "addon": "test-context", "host": self.host,
-                "agent": self.identity.request_agent(), "request_id": self.request_id,
-                "summary": summary, "details": details,
-            }))
-            .is_err())
+        Ok(())
     }
 
     /// Source warn/block audits resolve attribution from this request's trusted
@@ -191,7 +182,7 @@ impl Provenance {
         reason: Reason,
         blocked: bool,
         port: u16,
-    ) -> Result<bool, HookError> {
+    ) -> Result<(), HookError> {
         let reason_name = match reason {
             Reason::MissingContext => "missing_context",
             Reason::MalformedContext => "malformed_context",
@@ -232,31 +223,10 @@ impl Provenance {
         event.agent = self.identity.request_agent().map(str::to_owned);
         event.request_id = Some(self.request_id.clone());
         let attribution = self.identity.audit_attribution();
-        event.attribution = Some(attribution.clone());
-        event.details = details.clone().into();
-        let attribution_provenance = attribution
-            .provenance
-            .as_ref()
-            .and_then(|value| value.render_json(false).ok())
-            .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok())
-            .unwrap_or_else(|| json!({}));
+        event.attribution = Some(attribution);
+        event.details = details.into();
         self.runtime.audit.emit(event)?;
-        Ok(self
-            .runtime
-            .record(json!({
-                "event": "security.test_context", "kind": "security",
-                "severity": if optional { "medium" } else { "high" },
-                "addon": "test-context", "decision": if blocked { "deny" } else { "warn" },
-                "summary": summary, "host": self.host, "request_id": self.request_id,
-                "agent": self.identity.request_agent(),
-                "evidence_owner": attribution.evidence_owner,
-                "trusted_transport_identity": attribution.trusted_transport_identity,
-                "initiator": "unknown",
-                "attribution_status": attribution.status.map(audit::AttributionStatus::as_str),
-                "attribution_provenance": attribution_provenance,
-                "details": details,
-            }))
-            .is_err())
+        Ok(())
     }
 
     fn response(
@@ -264,11 +234,11 @@ impl Provenance {
         head: &Head,
         content: Option<&[u8]>,
         now: f64,
-    ) -> Result<(bool, ResponseOutcome), HookError> {
+    ) -> Result<ResponseOutcome, HookError> {
         let (context, started) = {
             let applied = self.applied.lock().unwrap_or_else(|e| e.into_inner());
             let Some(applied) = applied.as_ref() else {
-                return Ok((false, ResponseOutcome::NotApplicable));
+                return Ok(ResponseOutcome::NotApplicable);
             };
             (applied.context.clone(), applied.started)
         };
@@ -306,19 +276,9 @@ impl Provenance {
         event.agent = self.identity.request_agent().map(str::to_owned);
         event.request_id = Some(self.request_id.clone());
         event.attribution = Some(self.identity.audit_attribution());
-        event.details = details.clone().into();
+        event.details = details.into();
         self.runtime.audit.emit(event)?;
-        Ok((
-            self.runtime
-                .record(json!({
-                    "event": "security.test_context", "kind": "security", "severity": "low",
-                    "addon": "test-context", "host": self.host,
-                    "agent": self.identity.request_agent(), "request_id": self.request_id,
-                    "summary": summary, "details": details,
-                }))
-                .is_err(),
-            ResponseOutcome::Recorded,
-        ))
+        Ok(ResponseOutcome::Recorded)
     }
 }
 
@@ -338,6 +298,7 @@ struct Head {
     encoding: Zeroizing<Vec<u8>>,
     content_type: Zeroizing<Vec<u8>>,
     end_stream_at_head: bool,
+    prompt_content: crate::prompt_injection::Content,
 }
 
 pub(super) fn combined(
@@ -512,6 +473,7 @@ impl ResponseCapture {
                 encoding,
                 content_type,
                 end_stream_at_head,
+                prompt_content: crate::prompt_injection::Content::from_headers(headers),
             })
         })();
         match result {
@@ -592,7 +554,7 @@ impl ResponseCapture {
 
     /// Called once after successful upstream completion or local construction,
     /// before CircuitBreaker. Preserve this same buffer for later consumers.
-    pub(super) fn memory_response(&self) {
+    pub(super) fn completed_content(&self) {
         let Some(traffic) = &self.traffic else {
             return;
         };
@@ -604,6 +566,15 @@ impl ResponseCapture {
         let Some(capture) = capture else {
             return;
         };
+        if !capture.failed
+            && let Some(head) = &capture.head
+        {
+            traffic.prompt_content(
+                crate::security_indicators::Direction::Response,
+                head.prompt_content,
+                capture.body.content(),
+            );
+        }
         if !capture.failed
             && !capture.memory_streamed
             && !capture.body.is_streamed()
@@ -671,11 +642,12 @@ impl ResponseCapture {
         let provenance = self
             .provenance
             .as_ref()
-            .map_or(Ok((false, ResponseOutcome::NotApplicable)), |provenance| {
+            .map_or(Ok(ResponseOutcome::NotApplicable), |provenance| {
                 provenance.response(&head, content, crate::circuit_runtime::now())
             });
         match provenance {
-            Ok((mut failed, outcome)) => {
+            Ok(outcome) => {
+                let mut failed = false;
                 if let Some(hook) = &hook {
                     match outcome {
                         ResponseOutcome::NotApplicable => hook.evaluated("not_applicable", None),
@@ -786,7 +758,7 @@ mod tests {
     use super::*;
     use crate::test_context::{Context, ContextSource};
     use serde_json::Value;
-    use std::sync::RwLock;
+    use std::{sync::RwLock, time::Duration};
     use tempfile::TempDir;
 
     struct Fixture {
@@ -795,25 +767,24 @@ mod tests {
     }
 
     impl Fixture {
-        fn new(read_only_event_log: bool) -> Self {
+        fn new(failed_audit: bool) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let policy = directory.path().join("policy.json");
-            let event_log = directory.path().join("events.jsonl");
             std::fs::write(&policy, "{}").unwrap();
             let config = serde_json::from_value(json!({
                 "listeners": [], "policy_file": policy, "data_dir": directory.path().join("data"),
                 "readiness_file": directory.path().join("ready"),
                 "flow_store_enabled": false,
                 "audit_log_path": directory.path().join("audit.jsonl"),
-                "event_log": event_log.clone(),
             }))
             .unwrap();
-            let mut runtime = Runtime::new(config, "capture-fixture", None, None).unwrap();
-            if read_only_event_log {
-                // Fail only the completed-response evidence write. The owned
-                // log opens normally, then this read-only handle makes the
-                // real writer fail on both Linux and macOS.
-                runtime.events = Arc::new(Mutex::new(std::fs::File::open(event_log).unwrap()));
+            let runtime = Runtime::new(config, "capture-fixture", None, None).unwrap();
+            if failed_audit {
+                runtime
+                    .audit
+                    .wait_for_drain(Duration::from_secs(2))
+                    .unwrap();
+                runtime.audit.poison_for_test();
             }
             Self {
                 directory,
@@ -829,10 +800,11 @@ mod tests {
             Arc::new(Provenance::new(
                 self.state.read().unwrap().clone(),
                 ConnectionIdentity {
+                    ingress_binding: None,
+                    run: None,
                     agent_id: "alice".into(),
                     connection_id: "connection".into(),
                     source_id: None,
-                    reconciled: None,
                 },
                 "request".into(),
                 method.into(),
@@ -861,11 +833,26 @@ mod tests {
         }
 
         fn events(&self) -> Vec<Value> {
-            std::fs::read_to_string(self.directory.path().join("events.jsonl"))
+            match self
+                .state
+                .read()
+                .unwrap()
+                .audit
+                .wait_for_drain(std::time::Duration::from_secs(2))
+            {
+                Ok(true) => (),
+                Err(error) if error.kind() == crate::audit::ErrorKind::Poisoned => (),
+                other => panic!("audit snapshot did not drain: {other:?}"),
+            }
+            let path = self.directory.path().join("audit.jsonl");
+            if !path.exists() {
+                return Vec::new();
+            }
+            std::fs::read_to_string(path)
                 .unwrap()
                 .lines()
-                .map(|line| serde_json::from_str(line).unwrap())
-                .filter(|event: &Value| event["event"] == "security.test_context")
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .filter(|row| row["event"] == "security.test_context")
                 .collect()
         }
 
@@ -932,9 +919,9 @@ mod tests {
         assert!(!early.finish(true));
         assert!(fixture.events().is_empty());
         assert!(
-            !provenance
+            provenance
                 .apply_request(context(), Some(b"request"), Ok(b""), 100.)
-                .unwrap()
+                .is_ok()
         );
         let aborted = fixture.capture(provenance.clone(), &[], false);
         aborted.data(b"partial");
@@ -1068,7 +1055,7 @@ mod tests {
         assert!(
             provenance
                 .apply_request(context(), Some(b"body"), Ok(b""), 100.)
-                .unwrap()
+                .is_err()
         );
         let capture = fixture.capture(provenance, &[], true);
         assert!(

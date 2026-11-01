@@ -421,6 +421,14 @@ where
         crate::poll_fn(move |cx| self.poll_accept(cx)).await
     }
 
+    /// Observe local stream parser failures without changing request admission.
+    pub fn set_stream_parse_error_observer(
+        &mut self,
+        observer: crate::ext::StreamParseErrorObserver,
+    ) {
+        self.connection.set_stream_parse_error_observer(observer);
+    }
+
     #[doc(hidden)]
     pub fn poll_accept(
         &mut self,

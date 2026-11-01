@@ -13,6 +13,10 @@ mod ownership;
 #[cfg(target_os = "linux")]
 #[path = "linux_host/prepare.rs"]
 mod prepare;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use prepare::TestNamespaceProfile;
+#[cfg(target_os = "linux")]
+pub(crate) use prepare::namespace_command;
 #[cfg(target_os = "linux")]
 #[path = "linux_host/runsc.rs"]
 mod runsc;
@@ -20,7 +24,7 @@ mod runsc;
 #[path = "linux_host/shares.rs"]
 pub(crate) mod shares;
 
-pub const HELP: &str = "safeyolo [--root ROOT] host prepare [--system-runsc PATH] [--yes]\nCheck and prepare the Ubuntu host for rootless agents.\nReuse valid subordinate UID/GID ranges. Allocate missing ranges through shadow's locked allocator.\nInstall only missing host tools. Load a separate AppArmor profile for this installation when required.\nExplain host changes before asking for consent and sudo. --yes accepts the explained changes.\nThe agent and proxy continue to run as your host account. Repeat preserves existing instances.\n--system-runsc selects a complete tested system payload; the bundled runtime remains unchanged.";
+pub const HELP: &str = "safeyolo [--root ROOT] host prepare [--system-runsc PATH] [--yes]\nCheck and prepare the Ubuntu or Alpine host for rootless agents.\nReuse valid subordinate UID/GID ranges. Allocate missing ranges through shadow's locked allocator.\nInstall only missing host tools. Prepare an installation-scoped namespace entry and AppArmor profiles when required.\nExplain host changes before asking for consent and sudo. --yes accepts the explained changes.\nThe agent and proxy continue to run as your host account. Repeat preserves existing instances.\n--system-runsc selects a complete tested system payload; the bundled runtime remains unchanged.";
 
 pub const ID_COUNT: u32 = 65536;
 pub const ARCHIVE_BASE: u32 = 100000;
@@ -170,6 +174,56 @@ pub(crate) fn selected_mapping() -> Result<Mapping, Error> {
     };
     validate_current_mapping(mapping)?;
     Ok(mapping)
+}
+
+/// The caller holds the agent setup lock and has verified that its backend stopped.
+#[cfg(target_os = "linux")]
+pub(crate) async fn remove_scheduler_spool(directory: &Path) -> Result<(), Error> {
+    let spool = directory.join("overlay/var/spool/cron");
+    match fs::remove_dir_all(&spool) {
+        Ok(()) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+        Err(error) => return Err(error.into()),
+    }
+    let mapping = selected_mapping()?;
+    let mut command = tokio::process::Command::from(namespace_command(
+        &crate::host_platform::config_dir(),
+        "unshare",
+    )?);
+    // Namespace root is the operator. Map its allocated subordinate IDs too,
+    // so DAC and sticky-directory checks can remove root/daemon-owned queues.
+    // The comma syntax also works with the older supported util-linux tools.
+    command.args([
+        "--map-root-user".to_owned(),
+        format!("--map-users={},1,{ID_COUNT}", mapping.uid_base),
+        format!("--map-groups={},1,{ID_COUNT}", mapping.gid_base),
+        "--".to_owned(),
+    ]);
+    remove_scheduler_spool_in(&spool, command).await
+}
+
+#[cfg(target_os = "linux")]
+async fn remove_scheduler_spool_in(
+    spool: &Path,
+    mut command: tokio::process::Command,
+) -> Result<(), Error> {
+    // rm does not follow job-directory symlinks. Never elevate deletion of the
+    // agent home, workspace, overlay parent, or another agent's files.
+    let output = command
+        .args(["rm", "-rf", "--"])
+        .arg(spool)
+        .output()
+        .await?;
+    if !output.status.success() {
+        return Err(format!(
+            "cannot remove stopped guest scheduler spool {}: {}",
+            spool.display(),
+            String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(2048)])
+        )
+        .into());
+    }
+    Ok(())
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -365,7 +419,7 @@ fn host_ranges(file: &str, owner: &str, uid: u32) -> Result<Vec<Allocation>, Err
 }
 
 #[cfg(target_os = "linux")]
-fn current_mapping() -> Result<Mapping, Error> {
+pub(crate) fn current_mapping() -> Result<Mapping, Error> {
     let uid = unsafe { libc::getuid() };
     let owner = login(uid)?;
     let uid_ranges = host_ranges("/etc/subuid", &owner, uid)?;
@@ -426,12 +480,130 @@ pub fn run(root: &Path, args: &[String]) -> Result<(), Error> {
 }
 #[cfg(not(target_os = "linux"))]
 pub fn run(_root: &Path, _args: &[String]) -> Result<(), Error> {
-    Err("host preparation is for supported Ubuntu Linux hosts".into())
+    Err("host preparation is for supported Ubuntu and Alpine Linux hosts".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn scheduler_spool_cleanup_handles_distinct_owners_and_preserves_peer_files() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+        assert_ne!(unsafe { libc::geteuid() }, 0, "run as the operator account");
+        let fixture = tempfile::tempdir().unwrap();
+        let mapping = current_mapping().unwrap();
+        let entry = fixture.path().join("host/namespace-entry");
+        fs::create_dir(entry.parent().unwrap()).unwrap();
+        fs::write(&entry, prepare::NAMESPACE_ENTRY).unwrap();
+        fs::set_permissions(&entry, fs::Permissions::from_mode(0o755)).unwrap();
+        let _profile = TestNamespaceProfile::load(&entry);
+        let alice = fixture.path().join("alice");
+        let spool = alice.join("overlay/var/spool/cron");
+        let peer = fixture.path().join("bob");
+        fs::create_dir_all(&peer).unwrap();
+        let marker = peer.join("job");
+        fs::write(&marker, "peer queue").unwrap();
+        fs::set_permissions(&marker, fs::Permissions::from_mode(0o600)).unwrap();
+        let before = marker.metadata().unwrap();
+        for (name, owner, mode) in [
+            (
+                "crontabs",
+                format!("{}:{}", mapping.uid_base, mapping.gid_base),
+                "1730",
+            ),
+            (
+                "atjobs",
+                format!("{}:{}", mapping.uid_base + 1, mapping.gid_base + 1),
+                "1770",
+            ),
+            (
+                "atspool",
+                format!("{}:{}", mapping.uid_base + 1, mapping.gid_base + 1),
+                "1770",
+            ),
+        ] {
+            let directory = spool.join(name);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("job"), "owned queue").unwrap();
+            fs::set_permissions(directory.join("job"), fs::Permissions::from_mode(0o600)).unwrap();
+            symlink(&peer, directory.join("peer-link")).unwrap();
+            for args in [["chown", owner.as_str()], ["chmod", mode]] {
+                assert!(
+                    std::process::Command::new("sudo")
+                        .arg("-n")
+                        .args(args)
+                        .arg(&directory)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+        }
+        fs::set_permissions(&spool, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            std::process::Command::new("sudo")
+                .args([
+                    "-n",
+                    "chown",
+                    &format!("{}:{}", mapping.uid_base, mapping.gid_base)
+                ])
+                .arg(&spool)
+                .status()
+                .unwrap()
+                .success()
+        );
+        // The actual cleanup caller must remove mapped root/daemon owners.
+        // Sudo prepares only the fixture's ownership; deletion is rootless.
+        assert_eq!(
+            fs::remove_dir_all(alice.join("overlay"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        let owners = ["crontabs", "atjobs", "atspool"].map(|name| {
+            let metadata = spool.join(name).metadata().unwrap();
+            (metadata.uid(), metadata.gid(), metadata.mode() & 0o7777)
+        });
+        assert_eq!(
+            owners,
+            [
+                (mapping.uid_base, mapping.gid_base, 0o1730),
+                (mapping.uid_base + 1, mapping.gid_base + 1, 0o1770),
+                (mapping.uid_base + 1, mapping.gid_base + 1, 0o1770),
+            ]
+        );
+        assert!(
+            remove_scheduler_spool_in(&spool, tokio::process::Command::new("false"))
+                .await
+                .is_err()
+        );
+        for (name, expected) in ["crontabs", "atjobs", "atspool"].into_iter().zip(owners) {
+            let metadata = spool.join(name).metadata().unwrap();
+            assert_eq!(
+                (metadata.uid(), metadata.gid(), metadata.mode() & 0o7777),
+                expected
+            );
+        }
+        crate::host_platform::in_instance(fixture.path().to_owned(), async {
+            remove_scheduler_spool(&alice).await.unwrap();
+        })
+        .await;
+        assert!(!spool.exists());
+        fs::remove_dir_all(alice.join("overlay")).unwrap();
+        let after = marker.metadata().unwrap();
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "peer queue");
+        assert_eq!(
+            (before.uid(), before.gid(), before.mode(), before.ino()),
+            (after.uid(), after.gid(), after.mode(), after.ino())
+        );
+        // The next boot can create an empty spool at the reset location.
+        fs::create_dir_all(&spool).unwrap();
+        assert_eq!(fs::read_dir(&spool).unwrap().count(), 0);
+    }
+
     #[test]
     fn allocation_selection_keeps_distinct_bases_and_skips_the_occupied_fixed_range() {
         let u = allocations("other:100000:65536\nalice:300000:65536\n", "subuid").unwrap();

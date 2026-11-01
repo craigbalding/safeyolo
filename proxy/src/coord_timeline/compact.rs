@@ -91,7 +91,7 @@ fn identifier(value: &Value) -> String {
     }
 }
 
-fn clean(display: &Display, text: &str, redact: bool) -> String {
+pub(super) fn clean(display: &Display, text: &str, redact: bool) -> String {
     clean_limit(text, display.max_text, redact)
 }
 
@@ -142,7 +142,7 @@ fn oversize_event(display: &Display, e: &Value) -> Option<(&'static str, String)
             .filter(|s| !s.is_empty() && s.len() <= 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
             .unwrap_or("?")
     );
-    let (label, text) = event(&bounded, true)?;
+    let (label, text) = event(&bounded, display.show_unknown)?;
     let (detail, marker) = text.rsplit_once(" [middle snipped;")?;
     let marker = format!(" [middle snipped;{marker}");
     let limit = display
@@ -258,6 +258,11 @@ fn receipt(item: &Value) -> String {
             }
             if let Some(n) = v.get("brief").and_then(|b| b["revision"].as_u64()) {
                 parts.push(format!("brief={n}"));
+            }
+        }
+        "read_approval" | "resolve_approval" => {
+            if let Some(status) = v.get("status").and_then(Value::as_str) {
+                parts.push(format!("approval_status={status}"));
             }
         }
         _ => {}

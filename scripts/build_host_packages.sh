@@ -27,13 +27,31 @@ done
 [[ -z $output || -z $directory ]] || { package_error 'choose --output or --directory'; exit 2; }
 [[ $profile =~ ^(production|debug)$ ]] || { package_error 'profile must be production or debug'; exit 2; }
 platform=$(host_platform)
+runtime= libc=glibc
+if [[ $platform == linux-* ]]; then
+  runtime=$(linux_runtime)
+  libc=${runtime%% *}
+fi
 revision=$(git -C "$repository" rev-parse HEAD)
 [[ -z $(git -C "$repository" status --porcelain --untracked-files=all) ]] || { package_error 'use a clean committed source checkout'; exit 1; }
 [[ ${SAFEYOLO_BUILD_REVISION:-$revision} == "$revision" ]] || { package_error 'build revision differs from this source'; exit 1; }
 if [[ -z $artifacts ]]; then
   options=() target_profile=debug
   if [[ $profile == production ]]; then options+=(--release); target_profile=release; fi
-  (cd "$repository"; SAFEYOLO_BUILD_REVISION=$revision CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-1} scripts/cargo_with_space.sh build \
+  host_environment=()
+  if [[ $libc == musl ]]; then
+    # Host preparation loads shadow's allocator. Keep this host build dynamic;
+    # the separately built guest helpers retain their static musl target.
+    host_flags=(-C target-feature=-crt-static)
+    if [[ ${CARGO_ENCODED_RUSTFLAGS+x} == x ]]; then
+      encoded_flags=${CARGO_ENCODED_RUSTFLAGS}
+      for flag in "${host_flags[@]}"; do encoded_flags+=${encoded_flags:+$'\x1f'}$flag; done
+      host_environment+=("CARGO_ENCODED_RUSTFLAGS=$encoded_flags")
+    else
+      host_environment+=("RUSTFLAGS=${RUSTFLAGS:-} ${host_flags[*]}")
+    fi
+  fi
+  (cd "$repository"; env "${host_environment[@]}" SAFEYOLO_BUILD_REVISION=$revision CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-1} scripts/cargo_with_space.sh build \
     --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-proxy --bin safeyolo-coord ${options[@]+"${options[@]}"})
   artifacts=${CARGO_TARGET_DIR:-$repository/proxy/target}/${CARGO_BUILD_TARGET:+$CARGO_BUILD_TARGET/}$target_profile
 fi
@@ -51,7 +69,7 @@ if [[ $platform == darwin-arm64 ]]; then
   for binary in safeyolo-vm safeyolo-vm.build-info.json vsock-term vsock-term.version vsock-term.sha256; do require_file "$vm_artifacts/$binary"; done
   [[ -d $vm_artifacts/safeyolo-vm.dSYM ]] || { package_error 'VM helper debug symbols are missing'; exit 1; }
 fi
-name=safeyolo-$platform-$profile
+name=$(host_package_name "$platform" "$profile")
 temporary=
 if [[ -n $output ]]; then
   mkdir -p "$output"
@@ -65,9 +83,20 @@ for binary in safeyolo safeyolo-proxy safeyolo-coord; do cp "$artifacts/$binary"
 cp "$runtime_artifacts/tmux" "$directory/libexec/"
 if [[ $platform == linux-* ]]; then
   "$repository/scripts/acquire_runsc.sh" "$directory/gvisor-runtime"
+  # SafeYolo uses neither cloud checkpoint storage nor the metrics server.
+  # Omit their executables from both profiles; keep the upstream cache intact.
+  rm -f -- "$directory/gvisor-runtime/gvisor-bin/checkpointgofer" \
+    "$directory/gvisor-runtime/gvisor-bin/runsc-metric-server"
   cp -R "$directory/gvisor-runtime/"* "$directory/libexec/"
   rm -rf "$directory/gvisor-runtime"
   chmod 0755 "$directory/libexec" "$directory/libexec/gvisor-bin"
+  if [[ $profile == production ]]; then
+    # Remove source-level debug data only from packaging copies. Keep the
+    # original upstream cache and debug bundles intact for debugging.
+    while IFS= read -r binary; do
+      objcopy --remove-section='.debug*' --remove-section='.zdebug*' "$directory/libexec/$binary"
+    done < <(runsc_files)
+  fi
 fi
 cp "$repository/scripts/tmux_runtime.sh" "$directory/bin/tmux"
 cp "$repository/scripts/watch_backlog_factory.sh" "$directory/bin/watch-backlog-factory"
@@ -93,7 +122,7 @@ else
   dependencies=$(ldd "$runtime_artifacts/tmux")
   [[ $dependencies != *'not found'* ]] || { package_error "tmux library is missing: $dependencies"; exit 1; }
   while IFS= read -r library; do
-    case "${library##*/}" in libc.so.*|libm.so.*|libpthread.so.*|librt.so.*|libdl.so.*|ld-linux*) continue;; esac
+    case "${library##*/}" in libc.so.*|libc.musl-*|libm.so.*|libpthread.so.*|librt.so.*|libdl.so.*|ld-linux*) continue;; esac
     libraries+=("$library")
   done < <(printf '%s\n' "$dependencies" | awk '$2=="=>" && $3 ~ /^\// {print $3}')
 fi
@@ -166,10 +195,13 @@ if [[ $platform == darwin-arm64 ]]; then
     minimum_versions+=("$value")
   done
   minimum=$(printf '%s\n' "${minimum_versions[@]}" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+elif [[ $libc == musl ]]; then
+  minimum=${runtime#* }
 else
   minimum=$(readelf --version-info "$directory/bin/"{safeyolo,safeyolo-proxy,safeyolo-coord} "${runtime_binaries[@]}" | sed -n 's/.*Name: GLIBC_\([0-9.]*\).*/\1/p' | sort -V | tail -1)
 fi
 printf 'source_commit=%s\nprofile=%s\nplatform=%s\nminimum_runtime=%s\nguest_compatibility=v1\nguest_repository=ghcr.io/craigbalding/safeyolo-guest\nguest_discovery_tag=compat-v1\n' "$revision" "$profile" "$platform" "$minimum" > "$directory/package-info"
+if [[ $libc == musl ]]; then printf 'libc=musl\n' >> "$directory/package-info"; fi
 if [[ $platform == linux-* ]]; then
   printf 'runsc_version=release-20261005.0\nrunsc_source=https://github.com/google/gvisor/releases/tag/release-20261005.0\nrunsc_origin=bundled\n' >> "$directory/package-info"
 fi
@@ -177,6 +209,10 @@ fi
 verify_native_package "$directory"
 if [[ -n $output ]]; then
   tar -czf "$output/$name.tar.gz" -C "$temporary" "$name"
+  # The same CLI and discovery metadata can acquire guest bytes before the
+  # complete host archive arrives. No guest selection is frozen at build time.
+  tar -czf "$output/$name-guest-download.tar.gz" -C "$temporary" \
+    "$name/bin/safeyolo" "$name/package-info"
   # The public bootstrap stays bound to the release that supplies this package.
   # Publishing this file follows the existing host-release procedure.
   sed "s/^release=$/release=host-$revision/" \

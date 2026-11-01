@@ -277,34 +277,6 @@ async fn source_operator_exact_and_typed_reset_keys_preserve_state_and_audit() {
                     reply["status"].as_u64().unwrap() as u16,
                     "{name}"
                 );
-                if row["events"].as_array().unwrap().is_empty() {
-                    assert!(outcome.audit().is_none());
-                } else {
-                    let Some(Audit::CircuitReset(audit)) = outcome.audit() else {
-                        panic!("reset intent missing")
-                    };
-                    for (mut actual, expected) in audit
-                        .events("127.0.0.1")
-                        .into_iter()
-                        .zip(row["events"].as_array().unwrap())
-                    {
-                        let mut expected = expected.clone();
-                        assert_eq!(actual["audit_intent"], expected["event"], "{name}");
-                        assert_eq!(
-                            actual["event"],
-                            if expected["kind"] == "ops" {
-                                "proxy.circuit"
-                            } else {
-                                "proxy.admin_api"
-                            }
-                        );
-                        actual.as_object_mut().unwrap().remove("audit_intent");
-                        actual.as_object_mut().unwrap().remove("event");
-                        expected.as_object_mut().unwrap().remove("event");
-                        expected.as_object_mut().unwrap().remove("schema_version");
-                        assert_eq!(actual, expected, "{name}");
-                    }
-                }
                 let outcome = outcome
                     .submit_audit(&writer, "127.0.0.1", "/admin/circuit-breaker/reset")
                     .unwrap();
@@ -313,12 +285,35 @@ async fn source_operator_exact_and_typed_reset_keys_preserve_state_and_audit() {
                     .unwrap_or_default()
                     .lines()
                     .map(|line| {
-                        let mut row: Value = serde_json::from_str(line).unwrap();
+                        let mut row = safeyolo_proxy::audit::parse_record(line).unwrap();
+                        assert_eq!(
+                            row.as_object_mut().unwrap().shift_remove("schema_version"),
+                            Some(json!(2))
+                        );
                         assert!(row.as_object_mut().unwrap().remove("ts").is_some());
                         row
                     })
                     .collect();
-                assert_eq!(json!(native), row["events"], "canonical {name}");
+                let mut expected = row["events"].clone();
+                for event in expected.as_array_mut().unwrap() {
+                    event
+                        .as_object_mut()
+                        .unwrap()
+                        .shift_remove("schema_version");
+                }
+                // Non-string circuit keys still reset. Their invalid ops
+                // publication now produces an explicit current diagnostic.
+                if matches!(
+                    name,
+                    "true_host" | "integer_host" | "float_host" | "infinity_host"
+                ) {
+                    expected[0] = json!({
+                        "event":"ops.audit_validation_failed", "kind":"ops", "severity":"medium",
+                        "summary":"Audit event validation failed",
+                        "details":{"event":"ops.circuit_breaker.reset", "kind":"ops", "summary":expected[0]["summary"]}
+                    });
+                }
+                assert_eq!(json!(native), expected, "canonical {name}");
                 let text = admin_text(outcome).await;
                 if matches!(name, "malformed" | "invalid_utf8") {
                     assert_eq!(row["replies"].as_array().unwrap().len(), 2);

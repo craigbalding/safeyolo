@@ -2,7 +2,7 @@
 //! File order, per-file tail and read/freshness failures follow AgentAPI.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fmt,
     fs::{self, File},
     io::{Read, Write},
@@ -12,23 +12,20 @@ use std::{
 
 use num_bigint::BigInt;
 use serde_json::{Value, json};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use super::{Writer, wipe, writer};
-use crate::{circuits::CircuitValue, policy::python_whitespace};
+use crate::circuits::CircuitValue;
 
 const MAX_LINES: usize = 10_000;
 const DRAIN: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExplainErrorKind {
-    Attribute,
     UnicodeDecode,
     Value,
     Permission,
     Io,
-    /// Existing JSON scalar representation cannot express this source value.
-    Compatibility,
 }
 
 /// Errors contain neither paths nor retained event data.
@@ -43,12 +40,10 @@ impl ExplainError {
 impl fmt::Display for ExplainError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self.0 {
-            ExplainErrorKind::Attribute => "audit record is not an object",
             ExplainErrorKind::UnicodeDecode => "audit file text decoding failed",
             ExplainErrorKind::Value => "audit lookup value cannot be converted",
             ExplainErrorKind::Permission => "audit file metadata permission denied",
             ExplainErrorKind::Io => "audit file metadata unavailable",
-            ExplainErrorKind::Compatibility => "audit JSON scalar representation unavailable",
         })
     }
 }
@@ -81,7 +76,16 @@ pub(super) fn explain(
     });
     let files = retained(current, backups)?;
     let mut scan = scan_scoped(&files, request_id, Some(agent))?;
-    let status = if scan.read_error {
+    if !scan.related_ids.is_empty() {
+        let ids = std::iter::once(request_id)
+            .chain(scan.related_ids.iter().map(|id| id.as_str()))
+            .collect::<HashSet<_>>();
+        let mut linked = scan_requests(&files, &ids, Some(agent), None)?;
+        linked.read_error |= scan.read_error;
+        linked.incomplete |= scan.incomplete;
+        scan = linked;
+    }
+    let status = if scan.read_error || freshness.is_err() {
         "error"
     } else if pending {
         "pending"
@@ -161,18 +165,37 @@ struct Scan {
     events: CircuitValue,
     incomplete: bool,
     read_error: bool,
+    related_ids: HashSet<String>,
 }
 impl Drop for Scan {
     fn drop(&mut self) {
         wipe(&mut self.events);
+        for mut id in self.related_ids.drain() {
+            id.zeroize();
+        }
     }
 }
 
 fn scan_scoped(files: &[PathBuf], request_id: &str, agent: Option<&str>) -> Result<Scan> {
+    scan_requests(
+        files,
+        &HashSet::from([request_id]),
+        agent,
+        agent.map(|_| request_id),
+    )
+}
+
+fn scan_requests(
+    files: &[PathBuf],
+    request_ids: &HashSet<&str>,
+    agent: Option<&str>,
+    find_connect_links: Option<&str>,
+) -> Result<Scan> {
     let mut result = Scan {
         events: CircuitValue::Array(Vec::new()),
         incomplete: false,
         read_error: false,
+        related_ids: HashSet::new(),
     };
     for path in files {
         let (lines, incomplete) = match tail_file(path) {
@@ -189,31 +212,39 @@ fn scan_scoped(files: &[PathBuf], request_id: &str, agent: Option<&str>) -> Resu
         result.incomplete |= incomplete;
         for line in lines {
             // tail_file validates every input byte, including discarded lines.
-            let text = std::str::from_utf8(&line)
-                .expect("validated audit text")
-                .trim_matches(python_whitespace);
-            if text.is_empty() {
+            let text = std::str::from_utf8(&line).expect("validated audit text");
+            if text.trim().is_empty() {
                 continue;
             }
-            let mut entry = match CircuitValue::parse_api_json(text) {
-                Ok(entry) => entry,
-                Err(error) => {
-                    use crate::circuits::ErrorKind;
-                    match error.kind() {
-                        ErrorKind::Invalid => continue, // json.JSONDecodeError
-                        ErrorKind::Value => return Err(ExplainError(ExplainErrorKind::Value)),
-                        _ => return Err(ExplainError(ExplainErrorKind::Compatibility)),
-                    }
-                }
-            };
-            let Some(object) = entry.as_object() else {
-                wipe(&mut entry);
-                return Err(ExplainError(ExplainErrorKind::Attribute));
-            };
+            let mut entry = CircuitValue::from(
+                super::parse_record(text).map_err(|_| ExplainError(ExplainErrorKind::Value))?,
+            );
+            let object = entry.as_object().expect("validated current audit envelope");
             let matches = |key, expected: &str| matches!(object.get(key), Some(CircuitValue::Other(Value::String(value))) if value == expected);
-            if matches("request_id", request_id)
-                && agent.is_none_or(|agent| matches("agent", agent))
+            let owned = agent.is_none_or(|agent| matches("agent", agent));
+            if owned
+                && let Some(query) = find_connect_links
+                && matches("event", "traffic.connect_request")
+                && let Some(details) = object.get("details").and_then(CircuitValue::as_object)
+                && let Some(CircuitValue::Other(Value::String(parent))) =
+                    details.get("connect_request_id")
+                && let Some(CircuitValue::Other(Value::String(child))) = object.get("request_id")
             {
+                let related = if child == query {
+                    Some(parent)
+                } else if parent == query {
+                    Some(child)
+                } else {
+                    None
+                };
+                if let Some(related) = related {
+                    result.related_ids.insert(related.clone());
+                }
+            }
+            let selected = object.get("request_id").is_some_and(|id| {
+                matches!(id, CircuitValue::Other(Value::String(id)) if request_ids.contains(id.as_str()))
+            });
+            if owned && selected {
                 let CircuitValue::Array(events) = &mut result.events else {
                     unreachable!()
                 };

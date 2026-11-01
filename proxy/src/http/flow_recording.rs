@@ -42,6 +42,7 @@ struct Record {
     head: Option<Head>,
     error: Option<Zeroizing<String>>,
     metadata_encoding_error: bool,
+    connect_request_id: Option<String>,
 }
 
 impl Drop for Record {
@@ -62,9 +63,8 @@ pub(super) struct Recording {
     identity: ConnectionIdentity,
     request_id: String,
     enabled_exchange: bool,
-    discovery: Option<Arc<crate::agent_discovery::AgentDiscovery>>,
-    audit: Option<Arc<crate::audit::Writer>>,
     state: Mutex<State>,
+    connections: Mutex<Option<crate::connection_events::Flow>>,
 }
 
 /// The service future owns this guard until a connection driver takes over.
@@ -78,54 +78,31 @@ impl Drop for PendingRecording {
 }
 
 impl Recording {
-    #[cfg(test)]
     pub(super) fn new(
         recorder: Arc<FlowRecorder>,
         identity: ConnectionIdentity,
         request_id: String,
         enabled_exchange: bool,
     ) -> Arc<Self> {
-        Self::new_inner(recorder, identity, request_id, enabled_exchange, None, None)
-    }
-
-    pub(super) fn new_with_discovery(
-        recorder: Arc<FlowRecorder>,
-        identity: ConnectionIdentity,
-        request_id: String,
-        enabled_exchange: bool,
-        discovery: Arc<crate::agent_discovery::AgentDiscovery>,
-        audit: Arc<crate::audit::Writer>,
-    ) -> Arc<Self> {
-        Self::new_inner(
-            recorder,
-            identity,
-            request_id,
-            enabled_exchange,
-            Some(discovery),
-            Some(audit),
-        )
-    }
-
-    fn new_inner(
-        recorder: Arc<FlowRecorder>,
-        identity: ConnectionIdentity,
-        request_id: String,
-        enabled_exchange: bool,
-        discovery: Option<Arc<crate::agent_discovery::AgentDiscovery>>,
-        audit: Option<Arc<crate::audit::Writer>>,
-    ) -> Arc<Self> {
         Arc::new(Self {
             recorder,
             identity,
             request_id,
             enabled_exchange,
-            discovery,
-            audit,
+            connections: Mutex::new(None),
             state: Mutex::new(State {
                 record: Some(Record::default()),
                 deferred: false,
             }),
         })
+    }
+
+    pub(super) fn observe_connections(&self, runtime: &crate::Runtime) {
+        *self
+            .connections
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            crate::connection_events::Flow::new(runtime, &self.identity, &self.request_id);
     }
 
     /// The HTTP owner calls this before capture for a recognized probe host.
@@ -227,6 +204,12 @@ impl Recording {
                 String::new()
             }
         };
+        let connection = record.metadata.remove("connection_json").or_else(|| {
+            destination.selected_ip.as_ref().map(|_| {
+                python_json::encode(&json!({"target": super::selected_ip::facts(destination)}))
+                    .into()
+            })
+        });
         record.metadata = object(json!({
             "scheme": destination.scheme, "host": host, "port": destination.port,
             "method": request.method().as_str(), "path": destination.path.split('?').next().unwrap_or(""),
@@ -234,6 +217,62 @@ impl Recording {
             "request_content_type": content_type, "is_websocket": websocket,
             "request_headers_json": headers_json(&pairs, None, redact_header),
         }));
+        if let Some(connection) = connection {
+            record.metadata.insert("connection_json".into(), connection);
+        }
+    }
+
+    pub(super) fn target(
+        &self,
+        destination: &super::Destination,
+        connect_request_id: Option<&str>,
+    ) {
+        if destination.selected_ip.is_none() {
+            return;
+        }
+        if let Some(record) = self
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .record
+            .as_mut()
+        {
+            record.connect_request_id = connect_request_id.map(str::to_owned);
+            record.metadata.insert("connection_json".into(), python_json::encode(&json!({
+                "target": super::selected_ip::facts(destination), "connect_request_id": connect_request_id,
+            })).into());
+        }
+    }
+
+    pub(super) fn connection(
+        &self,
+        observation: &crate::traffic_view::UpstreamConnectionObservation,
+    ) {
+        if let Some(flow) = self
+            .connections
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_mut()
+        {
+            flow.server_connection_id = Some(observation.id.to_string());
+        }
+        if observation.target.is_null() {
+            return;
+        }
+        if let Some(record) = self
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .record
+            .as_mut()
+        {
+            let mut connection = observation.snapshot();
+            connection["connect_request_id"] = json!(record.connect_request_id);
+            record.metadata.insert(
+                "connection_json".into(),
+                python_json::encode(&connection).into(),
+            );
+        }
     }
 
     /// Metadata precedes source snippet decoding, including a decoding error.
@@ -431,58 +470,6 @@ impl Recording {
         if self.identity.audit_attribution().evidence_owner.is_none() {
             return Ok(None);
         }
-        if let (Some(snapshot), Some(discovery), Some(writer)) = (
-            self.identity.reconciled_snapshot(),
-            self.discovery.as_ref(),
-            self.audit.as_ref(),
-        ) && let Ok(Some(current)) =
-            discovery.detect_late_change(&snapshot, self.identity.source_id.as_deref(), writer)
-        {
-            let status = if current.status == crate::agent_discovery::IdentityStatus::Conflict
-                || (snapshot.status == crate::agent_discovery::IdentityStatus::Resolved
-                    && current.status == crate::agent_discovery::IdentityStatus::Resolved
-                    && snapshot.agent != current.agent)
-            {
-                audit::AttributionStatus::Conflict
-            } else {
-                audit::AttributionStatus::Unavailable
-            };
-            let current_attribution = current.audit_attribution();
-            let provenance = current_attribution
-                .provenance
-                .as_ref()
-                .and_then(|value| value.render_json(false).ok())
-                .and_then(|value| serde_json::from_str::<Value>(&value).ok())
-                .unwrap_or_else(|| json!({}));
-            let mut event = audit::Event::new(
-                "security.agent_identity_late_change",
-                audit::Kind::Security,
-                audit::Severity::Critical,
-                "Trusted agent identity changed after request attribution",
-            );
-            event.addon = Some("identity".into());
-            event.decision = Some(audit::Decision::Log);
-            event.request_id = Some(self.request_id.clone());
-            event.attribution = Some(audit::Attribution {
-                evidence_owner: None,
-                trusted_transport_identity: None,
-                initiator: Some(audit::Initiator::Unknown),
-                status: Some(status),
-                provenance: current_attribution.provenance,
-            });
-            event.details = json!({
-                "quarantined": true,
-                "snapshot_status": snapshot.status_name(),
-                "current_status": current.status_name(),
-                "attribution_provenance": provenance,
-            })
-            .into();
-            let _ = writer.emit(event);
-            // A late source change is an intentional quarantine. Keep the
-            // original immutable snapshot for traces/live evidence while
-            // preventing this record from entering an agent partition.
-            return Ok(None);
-        }
         if let Some(error) = record.failure {
             return Err(error);
         }
@@ -538,9 +525,10 @@ impl Recording {
             "request_id": self.request_id, "ts_start": ts_start, "ts_end": ts_end,
             "duration_ms": ts_end - ts_start, "engagement_id": agent, "agent_id": agent,
             "evidence_owner": evidence_owner, "trusted_transport_identity": trusted_transport_identity,
-            "initiator": "unknown", "attribution_status": attribution_status,
+            "initiator": attribution.initiator.map(audit::Initiator::as_str), "attribution_status": attribution_status,
             "attribution_provenance_json": python_json::encode(&provenance_json),
-            "source_id": self.identity.source_id.as_deref().unwrap_or("unknown"), "source_type": null,
+            "source_id": self.identity.ingress_binding.as_deref().or(self.identity.source_id.as_deref()).unwrap_or("unknown"),
+            "source_type": self.identity.ingress_binding.as_ref().map(|_| "external"),
             "flow_state": if success { "completed" } else { "error" },
             "status_code": record.head.as_ref().map(|head| head.status.as_u16()),
             "reason": if !success { record.error.as_deref().map(|v| v.to_string()) } else {

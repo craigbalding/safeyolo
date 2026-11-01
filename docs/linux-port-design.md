@@ -5,12 +5,15 @@
 > gVisor reads the unpacked directory at
 > `~/.safeyolo/share/rootfs-tree/` directly as its Open Container Initiative
 > (OCI) `root.path`. By default, `--overlay2=root:dir=<path>` stores a
-> per-agent, file-backed writable upper. `--ephemeral` selects a memory-backed
-> upper instead. The macOS Virtualization framework (VZ) path still uses an
+> per-agent, temporary file-backed tmpfs upper. Rootfs writes disappear on stop.
+> `rootfs_overlay = "memory"` selects a memory-backed upper instead. Persistent
+> home, cache and default-mode scheduler spool binds are separate. The macOS
+> Virtualization framework (VZ) path still uses an
 > ext4 rootfs image. See [Architecture](ARCHITECTURE.md),
 > [the guest build guide](../guest/README.md), and the current platform source
-> for authoritative behavior. The EROFS sections below remain unchanged as a
-> historical design record.
+> for authoritative behavior. For current root, home and workspace capacity,
+> see [runtime storage](microvm-architecture.md#persistence). The EROFS sections
+> below remain unchanged as a historical design record.
 
 ## Context
 

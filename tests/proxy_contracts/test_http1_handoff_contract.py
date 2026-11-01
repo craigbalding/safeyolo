@@ -252,7 +252,7 @@ def _retain_evidence(name, proxy, origin, **details):
     destination = os.environ.get("SAFEYOLO_H1_HANDOFF_EVIDENCE")
     if not destination:
         return
-    config = proxy.event_log.parent / "proxy.json"
+    config = proxy.audit_log.parent / "proxy.json"
     payload = {
         "schema": 1,
         "test_commit": subprocess.check_output(
@@ -267,8 +267,8 @@ def _retain_evidence(name, proxy, origin, **details):
             "cancel_result": origin.cancel_result,
         },
         "proxy_events": {
-            "request": proxy.events("proxy.request"),
-            "egress": proxy.events("proxy.egress"),
+            "request": proxy.events("traffic.request_outcome"),
+            "egress": proxy.events("traffic.egress"),
         },
         "details": details,
         "fixture_config": json.loads(config.read_text()),

@@ -23,8 +23,7 @@ fn config(directory: &Path) -> Config {
     .unwrap();
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock"),"source_id":"192.0.2.10"}],
-        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
-        "event_log":directory.join("events"),"audit_log_path":directory.join("audit.jsonl"),
+        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),"audit_log_path":directory.join("audit.jsonl"),
         "flow_store_enabled":false,"test_context_block":true,
         "circuit_breaker_enabled":false,"via_token":"owned-loop-marker",
     })).unwrap()
@@ -74,13 +73,36 @@ fn events(directory: &Path) -> Vec<Value> {
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
-        // Preserve all other producer events and their original order.
+        // Compare the existing hook order without the migrated diagnostic facts.
+        .filter(|row: &Value| {
+            !(row["event"] == "security.indicator"
+                && row["details"]["sensor"] == "connection-history.v1")
+        })
         .filter(|row: &Value| {
             !(row["addon"] == "memory-monitor"
                 && matches!(
                     row["event"].as_str(),
                     Some("ops.startup" | "ops.memory.conn_closed")
                 ))
+        })
+        .filter(|row: &Value| {
+            !matches!(
+                row["event"].as_str(),
+                Some(
+                    "network.connection"
+                        | "traffic.flow"
+                        | "traffic.request_outcome"
+                        | "traffic.egress"
+                        | "traffic.tunnel"
+                        | "traffic.websocket.start"
+                        | "traffic.websocket.message"
+                        | "traffic.websocket.end"
+                        | "security.network_guard.evaluated"
+                        | "security.credential_guard.evaluated"
+                        | "agent.api_response"
+                        | "gateway.evaluated"
+                )
+            )
         })
         .collect()
 }

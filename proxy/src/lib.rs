@@ -5,17 +5,24 @@
 pub mod admin_api;
 mod admin_listener;
 pub mod admin_shield;
+pub mod agent_activity;
 pub mod agent_api;
-pub mod agent_discovery;
+mod agent_watch;
 pub mod approvals;
 pub mod audit;
 mod circuit_runtime;
 pub mod circuits;
+pub mod codex_package;
 mod command_centre;
 mod completion_notes;
 mod config;
+mod connection_events;
 mod connection_tasks;
 pub mod contracts;
+pub mod coord_acp_attention;
+mod coord_attention;
+pub mod coord_claude_attention;
+pub mod coord_codex_attention;
 pub mod coord_operator;
 pub mod coord_rooms;
 pub mod coord_setup;
@@ -34,6 +41,7 @@ pub(crate) mod desktop_present;
 mod desktop_preview;
 pub(crate) mod desktop_session;
 pub mod dispatch;
+pub mod external_ingress;
 pub mod factory;
 pub mod factory_proposals;
 mod flow_recorder;
@@ -48,6 +56,7 @@ pub mod guest_oci;
 mod host_agents;
 mod host_boot;
 pub mod host_commands;
+mod host_doctor;
 mod host_events;
 mod host_launch;
 mod host_lifecycle;
@@ -57,7 +66,11 @@ pub mod lab;
 pub mod linux_host;
 #[cfg(target_os = "macos")]
 mod macos_mounts;
+#[cfg(any(target_os = "macos", test))]
+mod macos_share_warning;
 pub mod mattermost;
+pub mod observations;
+mod packet_capture;
 
 /// Run the bounded PID-1/shared-home diagnostic without guest SSH.
 pub fn recover_guest_probe(
@@ -68,6 +81,7 @@ pub fn recover_guest_probe(
     host_lifecycle::recover_guest_probe(root, name, timeout)
 }
 pub mod host_names;
+pub mod host_package;
 mod host_platform;
 mod http;
 pub mod http_content;
@@ -86,6 +100,7 @@ pub mod operator_commands;
 mod operator_stats;
 pub mod policy;
 mod policy_runtime;
+mod prompt_injection;
 mod provider_stream;
 mod python_json;
 mod python_text;
@@ -93,16 +108,20 @@ pub mod repo_map;
 mod request_headers;
 mod request_logger;
 mod request_trace;
+mod security_indicators;
 #[cfg(test)]
 mod service_catalog_tests;
 pub mod services;
 pub mod ssh_proxy;
+pub mod startup_timings;
+pub mod subscription_login;
 mod tailnet;
 pub mod tasks;
 pub mod test_context;
 #[cfg(test)]
 pub(crate) mod test_owned_endpoint;
 pub mod tls;
+mod tls_identity;
 pub mod trace;
 pub(crate) mod traffic_view;
 #[cfg(test)]
@@ -115,7 +134,6 @@ pub use config::{AgentListener, Config, Inspection, PlumbConfig};
 
 use std::{
     collections::HashMap,
-    fs::{File, OpenOptions},
     io::Write,
     os::unix::fs::{FileTypeExt, MetadataExt},
     os::unix::io::AsRawFd,
@@ -132,10 +150,13 @@ use hyper_util::rt::TokioIo;
 use ring::digest::{SHA256, digest};
 use serde_json::{Value, json};
 use tokio::{
-    net::{UnixListener, UnixStream},
+    net::UnixListener,
     sync::watch,
     task::{JoinHandle, JoinSet},
 };
+
+#[cfg(test)]
+use tokio::net::UnixStream;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub(crate) type RuntimeState = Arc<RwLock<Arc<Runtime>>>;
@@ -287,83 +308,88 @@ impl CredentialActivation {
 #[derive(Clone)]
 pub(crate) struct ConnectionIdentity {
     agent_id: String,
+    run: Option<host_runs::AgentRun>,
     connection_id: String,
     source_id: Option<String>,
-    /// The immutable request-boundary reconciliation, when this identity is
-    /// being consumed by request hooks. Listener accept identities leave this
-    /// empty and are reconciled once for each request.
-    reconciled: Option<Arc<agent_discovery::ReconciledIdentity>>,
+    ingress_binding: Option<String>,
 }
 
 impl ConnectionIdentity {
-    fn request_agent(&self) -> Option<&str> {
-        self.reconciled
-            .as_deref()
-            .map(|identity| identity.agent.as_deref())
-            .unwrap_or(Some(&self.agent_id))
-            .filter(|agent| !agent.is_empty())
+    fn ingress(&self) -> String {
+        self.ingress_binding
+            .as_ref()
+            .map_or_else(|| "agent-uds".into(), |name| format!("switchboard/{name}"))
     }
 
-    /// Preserve the accepted listener label for diagnostic records. This is
-    /// transport provenance only; scoped consumers use `request_agent`, which
-    /// remains empty for unavailable or conflicting snapshots.
-    fn transport_agent(&self) -> Option<&str> {
-        self.reconciled
-            .as_deref()
-            .and_then(|identity| identity.uds_agent.as_deref())
-            .or_else(|| {
-                self.reconciled
-                    .as_deref()
-                    .filter(|identity| {
-                        identity.status == agent_discovery::IdentityStatus::Unavailable
-                    })
-                    .map(|_| self.agent_id.as_str())
-            })
-            .or_else(|| self.reconciled.is_none().then_some(self.agent_id.as_str()))
-            .filter(|agent| !agent.is_empty())
+    fn request_agent(&self) -> Option<&str> {
+        let agent = self.agent_id.trim();
+        (!agent.is_empty() && !matches!(agent, "unknown" | "default")).then_some(agent)
     }
 
     fn request_identity(&self) -> network_guard::Identity<'_> {
-        match self.reconciled.as_deref() {
-            Some(identity) => match identity.status {
-                agent_discovery::IdentityStatus::Resolved => network_guard::Identity::Resolved(
-                    identity.agent.as_deref().expect("resolved identity owner"),
-                ),
-                agent_discovery::IdentityStatus::Conflict => network_guard::Identity::Conflict,
-                agent_discovery::IdentityStatus::Unavailable => {
-                    network_guard::Identity::Unavailable
-                }
-            },
-            None => network_guard::Identity::Resolved(&self.agent_id),
+        if let Some(run) = &self.run {
+            return network_guard::Identity::Current(run);
         }
-    }
-
-    fn with_reconciled(mut self, identity: agent_discovery::ReconciledIdentity) -> Self {
-        self.reconciled = Some(Arc::new(identity));
-        self
-    }
-
-    fn reconciled_snapshot(&self) -> Option<Arc<agent_discovery::ReconciledIdentity>> {
-        self.reconciled.clone()
+        self.request_agent().map_or(
+            network_guard::Identity::Unavailable,
+            network_guard::Identity::Resolved,
+        )
     }
 
     fn audit_attribution(&self) -> audit::Attribution {
-        if let Some(identity) = self.reconciled.as_deref() {
-            return identity.audit_attribution();
-        }
+        let agent = self.request_agent();
         audit::Attribution {
-            evidence_owner: Some(self.agent_id.clone()),
-            trusted_transport_identity: Some(self.agent_id.clone()),
-            initiator: Some(audit::Initiator::Unknown),
-            status: Some(audit::AttributionStatus::Resolved),
+            evidence_owner: agent.map(str::to_owned),
+            trusted_transport_identity: agent.map(str::to_owned),
+            initiator: Some(if self.ingress_binding.is_some() {
+                audit::Initiator::External
+            } else {
+                audit::Initiator::Unknown
+            }),
+            status: Some(if agent.is_some() {
+                audit::AttributionStatus::Resolved
+            } else {
+                audit::AttributionStatus::Unavailable
+            }),
             provenance: Some(
-                serde_json::json!({
-                    "transport_source": "uds",
-                    "uds_agent": self.agent_id.chars().take(128).collect::<String>(),
-                })
+                match (agent, self.ingress_binding.as_ref()) {
+                    (Some(agent), Some(binding)) => serde_json::json!({
+                        "transport_source": "uds", "ingress_transport": "tcp", "ingress": self.ingress(),
+                        "uds_agent": agent,
+                        "binding": binding, "selected_agent": agent,
+                    }),
+                    (Some(agent), None) => serde_json::json!({
+                        "transport_source": "uds",
+                        "uds_agent": agent.chars().take(128).collect::<String>(),
+                    }),
+                    (None, _) => serde_json::json!({"reason":"no_trusted_identity"}),
+                }
                 .into(),
             ),
         }
+    }
+
+    /// Correlate request observations with the accepted listener identity.
+    /// The connection ID is transport-owned, never supplied by request headers.
+    fn request_event(
+        &self,
+        name: &str,
+        kind: audit::Kind,
+        request_id: &str,
+        summary: impl Into<String>,
+        mut details: Value,
+    ) -> audit::Event {
+        let mut event = audit::Event::new(name, kind, audit::Severity::Low, summary);
+        event.agent = self.request_agent().map(str::to_owned);
+        event.request_id = Some(request_id.to_owned());
+        event.host = details
+            .get("host")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        event.attribution = Some(self.audit_attribution());
+        details["connection_id"] = json!(self.connection_id);
+        event.details = details.into();
+        event
     }
 }
 
@@ -379,18 +405,11 @@ pub(crate) struct Runtime {
     passthrough: Arc<RwLock<tunnels::Passthrough>>,
     scanner: inspection::Scanner,
     policy: Option<policy::Policy>,
-    /// The encrypted credential snapshot is retained across policy reloads;
-    /// gateway selection consumes only the authorized vault reference.
-    vault: Option<credentials::Vault>,
-    /// One process-owned refresh coordinator shares flights across requests.
-    /// Its vault clone is the same state used for credential injection.
-    oauth: Option<oauth::OAuthRefresh>,
+    /// Lazy, process-owned vault and refresh flights. Only credential consumers
+    /// load it; Runtime publication never reads or unlocks credential storage.
+    gateway_vault: GatewayVault,
     credential_activation: CredentialActivation,
     operator_modes: Arc<OperatorModes>,
-    /// Durable identity of the loaded vault. The key fingerprint is only used
-    /// to decide whether a reload may retain the existing Vault/coordinator;
-    /// it is never included in Runtime diagnostics.
-    vault_identity: Option<VaultIdentity>,
     /// One process-owned store for contract bindings and risky grants. Clones
     /// share reservations; reloads reconcile its durable view before publish.
     gateway_grants: Option<grants::Store>,
@@ -407,8 +426,10 @@ pub(crate) struct Runtime {
     flow_recorder: Arc<flow_recorder::FlowRecorder>,
     traffic_view: Arc<traffic_view::TrafficView>,
     audit: Arc<audit::Writer>,
+    connection_events: Option<Arc<connection_events::ConnectionEvents>>,
+    prompt_exposure: Arc<prompt_injection::Exposure>,
     request_logger: Arc<request_logger::RequestLogger>,
-    agent_discovery: Arc<agent_discovery::AgentDiscovery>,
+    agent_activity: Arc<agent_activity::AgentActivity>,
     metrics: Arc<metrics::Metrics>,
     traces: Arc<trace::TraceStore>,
     memory_monitor: Arc<memory_monitor::MemoryMonitor>,
@@ -417,7 +438,6 @@ pub(crate) struct Runtime {
     /// transport, namespace, and cleanup remain stable.
     pub(crate) coord: Arc<agent_api::CoordClient>,
     via_token: String,
-    events: Arc<Mutex<File>>,
     instance_id: String,
 }
 
@@ -435,6 +455,7 @@ impl Runtime {
             previous,
             admin_address,
             None,
+            None,
             &mut None,
         )
     }
@@ -445,18 +466,35 @@ impl Runtime {
         previous: Option<&Runtime>,
         admin_address: Option<std::net::SocketAddr>,
         event_address: Option<std::net::SocketAddr>,
+        capture_address: Option<admin_shield::BoundTcpEndpoint>,
         service_files: &mut Option<services::CatalogMetadata>,
     ) -> Result<Self, Error> {
+        let mut startup = previous
+            .is_none()
+            .then(|| startup_timings::StartupTimings::new("runtime"));
         config.validate()?;
         let mut admin_shield = admin_shield::AdminShield::new(
             config.admin_port.unwrap_or(9090),
             &config.admin_shield_extra_ports,
         )?;
+        if let Some(previous) = previous {
+            admin_shield.retain_ingress_endpoints(&previous.admin_shield);
+        }
         if let Some(bound) = admin_address {
             admin_shield.protect_bound_port(bound);
         }
         if let Some(bound) = event_address {
             admin_shield.protect_bound_port(bound);
+        }
+        let capture_address = previous.map_or(capture_address, |runtime| {
+            runtime
+                .connection_events
+                .as_ref()
+                .and_then(|events| events.observations.capture.get())
+                .and_then(|capture| capture.tcp_endpoint)
+        });
+        if let Some(bound) = capture_address {
+            admin_shield.protect_capture_endpoint(bound);
         }
         let tasks = previous
             .map(|runtime| runtime.tasks.clone())
@@ -485,7 +523,8 @@ impl Runtime {
                         None => audit::Settings::from_env()?,
                     },
                 )
-                .with_named_controls(config.native_product),
+                .with_named_controls(config.native_product)
+                .with_approvals(config.data_dir().join("approvals.sqlite3")),
             ),
         };
         let result = (|| {
@@ -507,6 +546,14 @@ impl Runtime {
                     )
                 })
                 .transpose()?;
+            if let Some(policy) = policy.as_mut() {
+                policy.set_identity_root(
+                    config
+                        .native_config_dir
+                        .clone()
+                        .unwrap_or_else(host_platform::config_dir),
+                );
+            }
             if let Some(controls) = policy.as_ref().and_then(policy::Policy::native_controls) {
                 controls.configure(&mut config);
             }
@@ -521,48 +568,28 @@ impl Runtime {
                     .map_err(|error| Box::new(error) as Error)?;
                 *policy = candidate;
             }
-            // A reload with the same vault path and key material must retain
-            // the old state object: its OAuth flight table is part of the
-            // process-owned attempt domain. A changed key/path starts a fresh
-            // domain; an invalid replacement is therefore unavailable rather
-            // than silently sharing the old coordinator.
-            let vault_material = gateway_vault_material(&config);
-            let retained = previous.and_then(|runtime| {
-                vault_material
-                    .as_ref()
-                    .filter(|material| runtime.vault_identity.as_ref() == Some(&material.identity))
-                    .map(|_| runtime)
-            });
-            let loaded = if retained.is_some() {
-                None
-            } else {
-                load_gateway_vault(vault_material.as_ref())?
-            };
-            let (vault, oauth, vault_identity) = if let Some(runtime) = retained {
-                (
-                    runtime.vault.clone(),
-                    runtime.oauth.clone(),
-                    runtime.vault_identity.clone(),
-                )
-            } else if let Some(loaded) = loaded {
-                let oauth = Some(oauth::OAuthRefresh::new(loaded.vault.clone()));
-                (Some(loaded.vault), oauth, Some(loaded.identity))
-            } else {
-                (None, None, None)
-            };
+            if let Some(timing) = startup.as_mut() {
+                timing.record("policy");
+            }
+            let mut credential_startup = previous
+                .is_none()
+                .then(|| startup_timings::StartupTimings::new("credential_preparation"));
             let credential_activation = previous
                 .map(|runtime| runtime.credential_activation.clone())
                 .unwrap_or_default();
+            let data_dir = config.data_dir();
+            let gateway_vault = previous
+                .filter(|runtime| runtime.gateway_vault.data_dir == data_dir)
+                .map(|runtime| runtime.gateway_vault.clone())
+                .unwrap_or_else(|| GatewayVault {
+                    data_dir,
+                    loaded: Arc::new(Mutex::new(None)),
+                    activation: credential_activation.clone(),
+                });
             let operator_modes = previous
                 .filter(|_| !config.native_product)
                 .map(|runtime| runtime.operator_modes.clone())
                 .unwrap_or_else(|| Arc::new(OperatorModes::from_config(&config)));
-            if let Some(vault) = vault.as_ref() {
-                let metadata = vault.metadata()?;
-                credential_activation
-                    .activate(credentials::ActivationPhase::Candidate, &metadata)
-                    .map_err(|_| "vault credential activation unavailable")?;
-            }
             let gateway_grants = if let Some(previous_store) = previous
                 .filter(|runtime| runtime.config.policy_file == config.policy_file)
                 .and_then(|runtime| runtime.gateway_grants.as_ref())
@@ -592,6 +619,9 @@ impl Runtime {
                 policy
                     .observe_baseline_files(previous.and_then(|runtime| runtime.policy.as_ref()))?;
             }
+            if let Some(timing) = credential_startup.as_mut() {
+                timing.record("grants");
+            }
             // CredentialGuard is a native generation owned by the same Runtime
             // publication as the accepted Policy. Reuse the key on ordinary
             // reloads; an empty environment key deliberately retries loading
@@ -613,6 +643,9 @@ impl Runtime {
                 } else {
                     None
                 };
+                if let Some(timing) = credential_startup.as_mut() {
+                    timing.record("hmac_key");
+                }
                 let seed = previous_guard
                     .cloned()
                     .unwrap_or_else(|| credential_guard::CredentialGuard::new(&[]));
@@ -631,6 +664,12 @@ impl Runtime {
                     previous.is_none_or(|runtime| runtime.credential_key_empty),
                 )
             };
+            if let Some(timing) = credential_startup.as_mut() {
+                timing.record("guard");
+            }
+            if let Some(timing) = startup.as_mut() {
+                timing.record("credentials");
+            }
             let network_guard = previous
                 .map(|runtime| runtime.network_guard.clone())
                 .unwrap_or_default();
@@ -643,9 +682,9 @@ impl Runtime {
             let request_logger = previous
                 .map(|runtime| runtime.request_logger.clone())
                 .unwrap_or_default();
-            let agent_discovery = previous
-                .map(|runtime| runtime.agent_discovery.clone())
-                .unwrap_or_else(|| Arc::new(agent_discovery::AgentDiscovery::new()));
+            let agent_activity = previous
+                .map(|runtime| runtime.agent_activity.clone())
+                .unwrap_or_default();
             let metrics = previous
                 .map(|runtime| runtime.metrics.clone())
                 .unwrap_or_else(|| Arc::new(metrics::Metrics::new(circuit_runtime::now)));
@@ -665,19 +704,25 @@ impl Runtime {
                 .unwrap_or_else(|| Arc::new(memory_monitor::MemoryMonitor::new()));
             let coord = previous
                 .map(|runtime| {
-                    Arc::new(agent_api::CoordClient::with_owner(
-                        runtime.coord.owner(),
-                        config.policy_file.clone(),
-                    ))
+                    Arc::new(
+                        agent_api::CoordClient::with_owner(
+                            runtime.coord.owner(),
+                            config.policy_file.clone(),
+                        )
+                        .with_provider_directory(config.native_config_dir.as_deref()),
+                    )
                 })
                 .unwrap_or_else(|| {
-                    Arc::new(agent_api::CoordClient::new(
-                        config.policy_file.clone(),
-                        config
-                            .native_config_dir
-                            .as_ref()
-                            .map(|_| config.data_dir().join("coord")),
-                    ))
+                    Arc::new(
+                        agent_api::CoordClient::new(
+                            config.policy_file.clone(),
+                            config
+                                .native_config_dir
+                                .as_ref()
+                                .map(|_| config.data_dir().join("coord")),
+                        )
+                        .with_provider_directory(config.native_config_dir.as_deref()),
+                    )
                 });
             let flow_recorder = match previous {
                 Some(runtime) => runtime.flow_recorder.clone(),
@@ -699,6 +744,9 @@ impl Runtime {
                         config.flow_pruner_max_body_bytes,
                     ))
                 });
+            if let Some(timing) = startup.as_mut() {
+                timing.record("flow_store");
+            }
             let scanner = inspection::Scanner::default();
             if config.native_product {
                 if let Some(policy) = &policy {
@@ -722,6 +770,9 @@ impl Runtime {
                 let document = policy::parse_document(&source, format)?;
                 scanner.load_policy_config(&Value::Object(document))?;
             }
+            if let Some(timing) = startup.as_mut() {
+                timing.record("inspection");
+            }
             let passthrough = Arc::new(RwLock::new(tunnels::Passthrough::new(
                 &config.ignore_hosts,
                 &std::env::var("SAFEYOLO_IGNORE_CIDRS").unwrap_or_default(),
@@ -741,14 +792,20 @@ impl Runtime {
             } else {
                 None
             };
-            let mut startup_transitions = Vec::new();
             if previous.is_none()
                 && let Some(path) = circuit_runtime::state_path(&config)
             {
                 match circuits.load_file(path, circuit_runtime::now(), &mut rand::random::<f64>) {
-                    Ok(outcome) => startup_transitions = outcome.events,
+                    Ok(outcome) => {
+                        for transition in outcome.events {
+                            audit.emit(transition.audit_event(None, None))?;
+                        }
+                    }
                     Err(_) => eprintln!("Circuit state load failed"),
                 }
+            }
+            if let Some(timing) = startup.as_mut() {
+                timing.record("tls_and_circuits");
             }
             let runtime = Self {
                 parent,
@@ -757,11 +814,9 @@ impl Runtime {
                 passthrough,
                 scanner,
                 policy,
-                vault,
-                oauth,
+                gateway_vault,
                 credential_activation,
                 operator_modes,
-                vault_identity,
                 gateway_grants,
                 credential_guard,
                 credential_key_empty,
@@ -776,8 +831,21 @@ impl Runtime {
                 flow_recorder,
                 traffic_view,
                 audit: audit.clone(),
+                connection_events: match previous {
+                    Some(previous) => previous.connection_events.clone(),
+                    None => connection_events::ConnectionEvents::new(
+                        &config,
+                        default_via,
+                        audit.clone(),
+                        &metrics,
+                    ),
+                },
+                prompt_exposure: previous.map_or_else(
+                    || Arc::new(prompt_injection::Exposure::default()),
+                    |previous| previous.prompt_exposure.clone(),
+                ),
                 request_logger,
-                agent_discovery,
+                agent_activity,
                 metrics,
                 traces,
                 memory_monitor,
@@ -786,35 +854,16 @@ impl Runtime {
                     .via_token
                     .clone()
                     .unwrap_or_else(|| default_via.to_owned()),
-                events: Arc::new(Mutex::new(
-                    OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&config.event_log)?,
-                )),
                 config,
                 instance_id: default_via.to_owned(),
             };
-            if circuit_runtime::record_transitions(&runtime, &startup_transitions, None) {
-                eprintln!("Circuit startup evidence write failed");
-            }
             if previous.is_none() {
                 runtime.configure_declarations()?;
             }
-            if !runtime
-                .agent_discovery
-                .matches_path(&runtime.config.agent_map_file)?
-                && let Err(error) = runtime
-                    .agent_discovery
-                    .configure(&runtime.config.agent_map_file, &runtime.audit)
-            {
-                // The source addon dispatcher logs configuration exceptions and
-                // keeps running. Reporting metadata is not a startup requirement.
-                let _ = writeln!(
-                    std::io::stderr().lock(),
-                    "Agent discovery configuration failed: {error}"
-                );
+            if let Some(timing) = startup.as_mut() {
+                timing.record("declarations");
             }
+
             Ok(runtime)
         })();
         // Catalog errors can start the writer before a Runtime exists. Drain
@@ -843,20 +892,6 @@ impl Runtime {
             }
             None => self.test_context.configure_declarations(None, options)?,
         }
-        Ok(())
-    }
-
-    fn record(&self, mut event: Value) -> Result<(), Error> {
-        if self.config.native_product {
-            policy::native::name_control_fields(&mut event);
-        }
-        self.record_bytes(serde_json::to_vec(&event)?)
-    }
-
-    fn record_bytes(&self, mut bytes: Vec<u8>) -> Result<(), Error> {
-        bytes.push(b'\n');
-        let mut events = self.events.lock().map_err(|_| "event log lock poisoned")?;
-        events.write_all(&bytes)?;
         Ok(())
     }
 }
@@ -979,21 +1014,21 @@ pub(crate) fn edit_native_policy<T>(
     }
 }
 
-/// Service edits publish through the same store/file/runtime transaction as
-/// policy apply, preserving grants, current counters, and exact rollback.
-pub(crate) fn edit_service_policy(
+/// Document edits use the policy apply transaction, preserving grants,
+/// current counters, and exact rollback.
+pub(crate) fn edit_native_policy_document<T>(
     state: &RuntimeState,
-    edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), approvals::ApprovalError>,
-) -> Result<(), Error> {
+    edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<T, approvals::ApprovalError>,
+) -> Result<T, Error> {
     edit_native_policy(state, false, |source| {
         let (mut document, context) =
             policy::parse_toml_for_edit(source).map_err(|error| approvals::ApprovalError {
                 kind: approvals::ErrorKind::Invalid,
                 message: error.to_string(),
             })?;
-        edit(&mut document)?;
+        let result = edit(&mut document)?;
         Ok((
-            (),
+            result,
             policy::restore_large_toml_integers(&document.to_string(), &context),
         ))
     })
@@ -1276,8 +1311,7 @@ struct VaultMaterial {
     passphrase: credentials::Secret,
 }
 
-fn gateway_vault_material(config: &Config) -> Option<VaultMaterial> {
-    let data_dir = config.data_dir();
+fn gateway_vault_material(data_dir: &Path) -> Option<VaultMaterial> {
     let vault_path = data_dir.join("credentials.enc");
     let key_path = data_dir.join("credentials.key");
     let passphrase = zeroize::Zeroizing::new(std::fs::read_to_string(&key_path).ok()?);
@@ -1297,36 +1331,112 @@ fn gateway_vault_material(config: &Config) -> Option<VaultMaterial> {
     })
 }
 
+#[derive(Clone)]
 struct LoadedGatewayVault {
     vault: credentials::Vault,
+    oauth: oauth::OAuthRefresh,
     identity: VaultIdentity,
 }
 
-/// Load the fresh native credential material when both files are
-/// present. The passphrase is process-local configuration and is never copied
-/// into Runtime diagnostics. A missing or unusable vault leaves the gateway
-/// unavailable so a selected request fails closed at the injection boundary.
-fn load_gateway_vault(
-    material: Option<&VaultMaterial>,
-) -> Result<Option<LoadedGatewayVault>, Error> {
-    let Some(material) = material else {
-        return Ok(None);
-    };
-    if !material.identity.vault_path.exists() {
-        return Ok(None);
-    }
-    match credentials::Vault::unlock(&material.identity.vault_path, &material.passphrase) {
-        Ok(vault) => Ok(Some(LoadedGatewayVault {
-            vault,
-            identity: material.identity.clone(),
-        })),
-        Err(error) => {
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "Gateway vault unavailable: {error}"
-            );
-            Ok(None)
+#[derive(Clone)]
+struct GatewayVault {
+    data_dir: PathBuf,
+    loaded: Arc<Mutex<Option<LoadedGatewayVault>>>,
+    activation: CredentialActivation,
+}
+
+impl GatewayVault {
+    /// Blocking credential boundary. Serialize the first unlock and retain the
+    /// same Vault/OAuth owner across reloads. Recheck key identity on each use;
+    /// a missing or invalid replacement never falls back to the prior key.
+    fn load(&self) -> Result<Option<LoadedGatewayVault>, Error> {
+        let mut loaded = self
+            .loaded
+            .lock()
+            .map_err(|_| "credential storage unavailable")?;
+        let Some(material) = gateway_vault_material(&self.data_dir)
+            .filter(|material| material.identity.vault_path.is_file())
+        else {
+            *loaded = None;
+            return Ok(None);
+        };
+        if loaded
+            .as_ref()
+            .is_some_and(|old| old.identity == material.identity)
+        {
+            return Ok(loaded.clone());
         }
+        *loaded = None;
+        if material.passphrase.expose_secret() == credentials::PASSPHRASE_KEY_MARKER {
+            return Ok(None);
+        }
+        let vault = match credentials::Vault::unlock_native(
+            material.identity.vault_path.clone(),
+            &material.passphrase,
+            false,
+        ) {
+            Ok(vault) => vault,
+            Err(error) => {
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "Gateway vault unavailable: {error}"
+                );
+                return Ok(None);
+            }
+        };
+        self.activation
+            .activate(credentials::ActivationPhase::Candidate, &vault.metadata()?)
+            .map_err(|_| "vault credential activation unavailable")?;
+        *loaded = Some(LoadedGatewayVault {
+            oauth: oauth::OAuthRefresh::new(vault.clone()),
+            vault,
+            identity: material.identity,
+        });
+        Ok(loaded.clone())
+    }
+
+    fn unlock(&self, passphrase: &credentials::Secret) -> Result<(), Error> {
+        let mut loaded = self
+            .loaded
+            .lock()
+            .map_err(|_| "credential storage unavailable")?;
+        let material = gateway_vault_material(&self.data_dir)
+            .filter(|material| {
+                material.passphrase.expose_secret() == credentials::PASSPHRASE_KEY_MARKER
+            })
+            .ok_or("passphrase storage is not selected")?;
+        let vault = credentials::Vault::unlock_existing(&material.identity.vault_path, passphrase)?;
+        self.activation
+            .activate(credentials::ActivationPhase::Candidate, &vault.metadata()?)
+            .map_err(|_| "vault credential activation unavailable")?;
+        // Do not replace a live OAuth refresh owner on a repeated unlock.
+        if loaded
+            .as_ref()
+            .is_none_or(|old| old.identity != material.identity || old.vault.reload().is_err())
+        {
+            *loaded = Some(LoadedGatewayVault {
+                oauth: oauth::OAuthRefresh::new(vault.clone()),
+                vault,
+                identity: material.identity,
+            });
+        }
+        Ok(())
+    }
+
+    fn lock(&self) -> Result<(), Error> {
+        if credentials::storage(&self.data_dir)? != Some(credentials::Storage::Passphrase) {
+            return Err("passphrase storage is not selected".into());
+        }
+        *self
+            .loaded
+            .lock()
+            .map_err(|_| "credential storage unavailable")? = None;
+        Ok(())
+    }
+
+    async fn load_async(&self) -> Result<Option<LoadedGatewayVault>, Error> {
+        let owner = self.clone();
+        tokio::task::spawn_blocking(move || owner.load()).await?
     }
 }
 
@@ -1484,18 +1594,20 @@ impl RunningListener {
     fn start(
         listener: impl Into<Arc<UnixListener>>,
         socket: SocketPath,
-        agent_id: String,
-        source_id: Option<String>,
+        target: AgentListener,
         runtime: Arc<RwLock<Arc<Runtime>>>,
+        ingress_peers: Arc<external_ingress::Peers>,
     ) -> Self {
         let listener = listener.into();
+        let agent_id = target.agent_id.clone();
+        let source_id = target.source_id();
         let (stop, receiver) = watch::channel(false);
         let stop = Arc::new(stop);
         let task = tokio::spawn(accept_agents(
             listener.clone(),
-            agent_id.clone(),
-            source_id.clone(),
+            target,
             runtime,
+            ingress_peers,
             Arc::downgrade(&stop),
             receiver,
         ));
@@ -1524,9 +1636,9 @@ impl RunningListener {
 
 async fn accept_agents(
     listener: Arc<UnixListener>,
-    agent_id: String,
-    source_id: Option<String>,
+    target: AgentListener,
     runtime: Arc<RwLock<Arc<Runtime>>>,
+    ingress_peers: Arc<external_ingress::Peers>,
     stop_signal: std::sync::Weak<watch::Sender<bool>>,
     mut stop: watch::Receiver<bool>,
 ) {
@@ -1537,18 +1649,39 @@ async fn accept_agents(
             _ = stop.changed() => break,
             accepted = listener.accept() => match accepted {
                 Ok((socket, _)) => {
-                    let identity = ConnectionIdentity {
-                        agent_id: agent_id.clone(),
-                        connection_id: format!("conn-{}", uuid::Uuid::new_v4().simple()),
-                        source_id: source_id.clone(),
-                        reconciled: None,
+                    let pending = match ingress_peers.claim(&socket, &target) {
+                        Ok(pending) => pending,
+                        Err(error) => { eprintln!("external UDS ingress rejected: {error}"); continue; }
                     };
+                    let external = pending.is_some();
+                    let identity = ConnectionIdentity {
+                        ingress_binding: pending.as_ref().map(|peer| peer.binding.clone()),
+                        agent_id: target.agent_id.clone(),
+                        run: runtime.read().ok().and_then(|runtime| {
+                            if external { None } else { runtime.policy.as_ref()?.agent_run(&target.agent_id) }
+                        }),
+                        connection_id: format!("conn-{}", uuid::Uuid::new_v4().simple()),
+                        source_id: if external { None } else { target.source_id() },
+                    };
+                    let connection = runtime.read().ok().and_then(|runtime| {
+                        runtime.connection_events.as_ref().map(|events| match pending.as_ref() {
+                            Some(peer) => events.tcp_ingress(&identity, peer.local, peer.remote),
+                            None => events.ingress(&identity, &socket),
+                        })
+                    });
+                    if let Some(peer) = pending && peer.accepted.send(connection.clone()).is_err() { continue; }
                     // Register before spawning so even an unpolled canceled
                     // task owns cleanup. One guard spans all inner upgrades.
                     let memory = match runtime.read() {
-                        Ok(runtime) => Some(memory_runtime::Client::new(&runtime, &identity.connection_id)),
+                        Ok(runtime) => Some(memory_runtime::Client::new(
+                            &runtime,
+                            &identity.connection_id,
+                        )),
                         Err(_) => {
-                            let _ = writeln!(std::io::stderr().lock(), "Memory monitor runtime unavailable");
+                            let _ = writeln!(
+                                std::io::stderr().lock(),
+                                "Memory monitor runtime unavailable"
+                            );
                             None
                         }
                     };
@@ -1557,13 +1690,36 @@ async fn accept_agents(
                     connections.spawn(async move {
                         let _memory = memory;
                         let tasks = connection_tasks::ConnectionTasks::new(connection_stop.clone());
+                        if let Some(connection) = &connection {
+                            let _ = tasks.ingress.set(connection.clone());
+                        }
                         let disconnect_monitor = monitor_agent_disconnect(&socket, &tasks);
                         let driver_tasks = tasks.clone();
-                        tasks.run(serve_connection(socket, identity, connection_runtime, connection_stop, driver_tasks)).await;
+                        let stream = connection_events::observe(Box::new(socket), connection.clone());
+                        let driver_connection = connection.clone();
+                        tasks
+                            .run(async move {
+                                let result = serve_connection(
+                                    stream,
+                                    identity,
+                                    connection_runtime,
+                                    connection_stop,
+                                    driver_tasks,
+                                )
+                                .await;
+                                if let Err(error) = &result
+                                    && let Some(connection) = driver_connection
+                                {
+                                    connection.http_error(error.as_ref());
+                                }
+                                result
+                            })
+                            .await;
                         if let Some(disconnect_monitor) = disconnect_monitor {
                             disconnect_monitor.abort();
                             let _ = disconnect_monitor.await;
                         }
+                        drop(connection);
                     });
                 }
                 Err(error) => {
@@ -1632,7 +1788,7 @@ fn poll_agent_disconnect(descriptor: libc::c_int) -> std::io::Result<bool> {
 }
 
 fn monitor_agent_disconnect(
-    socket: &UnixStream,
+    socket: &impl AsRawFd,
     tasks: &Arc<connection_tasks::ConnectionTasks>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     let descriptor = unsafe { libc::dup(socket.as_raw_fd()) };
@@ -1685,7 +1841,7 @@ fn monitor_agent_disconnect(
 }
 
 async fn serve_connection(
-    socket: UnixStream,
+    socket: tunnels::BoxStream,
     identity: ConnectionIdentity,
     runtime: Arc<RwLock<Arc<Runtime>>>,
     mut stop: watch::Receiver<bool>,
@@ -1729,21 +1885,32 @@ type PreparedListeners = HashMap<PathBuf, (Arc<UnixListener>, SocketPath)>;
 pub struct Proxy {
     runtime: Arc<RwLock<Arc<Runtime>>>,
     listeners: HashMap<PathBuf, RunningListener>,
+    ingress_bindings: HashMap<String, external_ingress::Running>,
+    ingress_peers: Arc<external_ingress::Peers>,
     admin: Option<admin_listener::Running>,
+    capture: Option<packet_capture::Running>,
     command_centre_share: Option<command_centre::Publication>,
     draining: Vec<JoinHandle<()>>,
     default_via: String,
     readiness_file: PathBuf,
     circuit_snapshots: Option<circuit_runtime::Snapshots>,
+    coord_delivery: Option<agent_api::coord::outbox::Delivery>,
     service_files: Option<services::CatalogMetadata>,
     service_check_at: Option<tokio::time::Instant>,
     policy_check_at: Option<tokio::time::Instant>,
 }
 
 impl Proxy {
-    pub async fn start(config: Config) -> Result<Self, Error> {
+    pub async fn start(mut config: Config) -> Result<Self, Error> {
+        let mut startup = startup_timings::StartupTimings::new("proxy");
         config.validate()?;
+        let capture_tcp = packet_capture::bind_tcp(&mut config).await;
+        let capture_address = capture_tcp
+            .as_ref()
+            .and_then(|listener| listener.as_ref().ok())
+            .map(|listener| listener.endpoint);
         let prepared_admin = admin_listener::Prepared::bind(&config).await?;
+        startup.record("validation_admin_bind");
         let admin_address = prepared_admin
             .as_ref()
             .map(admin_listener::Prepared::address);
@@ -1765,6 +1932,7 @@ impl Proxy {
                     None,
                     admin_address,
                     event_address,
+                    capture_address,
                     &mut service_files,
                 )?;
                 policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
@@ -1773,15 +1941,20 @@ impl Proxy {
             })
             .await??
         };
+        startup.record("runtime_load");
         let mut proxy = Self {
             runtime: Arc::new(RwLock::new(runtime)),
             listeners: HashMap::new(),
+            ingress_bindings: HashMap::new(),
+            ingress_peers: Arc::default(),
             admin: None,
+            capture: None,
             command_centre_share: None,
             draining: Vec::new(),
             default_via,
             readiness_file: config.readiness_file.clone(),
             circuit_snapshots: None,
+            coord_delivery: None,
             service_check_at: service_files.as_ref().map(|_| tokio::time::Instant::now()),
             service_files,
             policy_check_at: config
@@ -1792,7 +1965,18 @@ impl Proxy {
         // A readiness marker is useful only after all configured sockets have bound.
         // Keep the prepared operator socket locally owned until agent binds succeed.
         let additions = proxy.prepare_listeners(&config)?;
+        let ingress = external_ingress::prepare(&proxy.ingress_bindings, &config)?;
+        {
+            let current = proxy
+                .runtime
+                .read()
+                .map_err(|_| "runtime write lock poisoned")?;
+            current
+                .admin_shield
+                .protect_ingress_endpoints(external_ingress::endpoints(&ingress)?);
+        }
         proxy.commit_listeners(&config, additions);
+        proxy.commit_ingress(&config, ingress);
         {
             let runtime = proxy
                 .runtime
@@ -1806,6 +1990,14 @@ impl Proxy {
                 runtime.config.plumb.default_ttl_seconds,
             );
         }
+        proxy.capture = packet_capture::Running::start(
+            &proxy
+                .runtime
+                .read()
+                .map_err(|_| "runtime read lock poisoned")?
+                .clone(),
+            capture_tcp,
+        );
         proxy.admin = prepared_admin.map(|listener| listener.start(proxy.runtime.clone()));
         if let (Some(host), Some(admin), Some(events)) =
             (command_centre.as_ref(), admin_address, event_address)
@@ -1818,6 +2010,17 @@ impl Proxy {
             proxy.circuit_snapshots =
                 Some(circuit_runtime::Snapshots::start(proxy.runtime.clone())?);
         }
+        startup.record("listeners_readiness");
+        {
+            let runtime = proxy
+                .runtime
+                .read()
+                .map_err(|_| "runtime read lock poisoned")?;
+            proxy.coord_delivery = agent_api::coord::outbox::Delivery::start(
+                runtime.coord.clone(),
+                runtime.audit.clone(),
+            );
+        }
         Ok(proxy)
     }
 
@@ -1829,6 +2032,14 @@ impl Proxy {
             "ready": true, "pid": std::process::id(), "backend": "rust-m2",
             "instance_id": self.default_via, "listeners": self.listeners.len(),
         });
+        marker["ingress_bindings"] = external_ingress::status(
+            &self.ingress_bindings,
+            &self
+                .runtime
+                .read()
+                .map_err(|_| "runtime read lock poisoned")?
+                .config,
+        );
         if let Some(reload_id) = &self
             .runtime
             .read()
@@ -1837,6 +2048,13 @@ impl Proxy {
             .reload_id
         {
             marker["reload_id"] = Value::from(reload_id.clone());
+        }
+        if let Some(address) = self
+            .capture
+            .as_ref()
+            .and_then(|running| running.capture.tcp_endpoint)
+        {
+            marker["capture_tcp_address"] = json!(address.address);
         }
         if let Some(listener) = &self.admin {
             marker["admin_port"] = Value::from(listener.address().port());
@@ -1904,9 +2122,9 @@ impl Proxy {
                     RunningListener::start(
                         listener,
                         socket,
-                        entry.agent_id.clone(),
-                        entry.source_id(),
+                        entry.clone(),
                         self.runtime.clone(),
+                        self.ingress_peers.clone(),
                     ),
                 );
             }
@@ -2077,12 +2295,16 @@ impl Proxy {
             self.admin
                 .as_ref()
                 .and_then(admin_listener::Running::event_address),
+            None,
             &mut service_files,
         )?);
         let additions = self.prepare_listeners(&config)?;
+        let ingress = external_ingress::prepare(&self.ingress_bindings, &config)?;
+        let ingress_endpoints = external_ingress::endpoints(&ingress)?;
         if self.circuit_snapshots.is_none() && circuit_runtime::state_path(&config).is_some() {
             self.circuit_snapshots = Some(circuit_runtime::Snapshots::start(self.runtime.clone())?);
         }
+        let released;
         {
             // Completion, admission and snapshots all retain this same lock
             // through their state operation. Publish the selected file's state
@@ -2115,7 +2337,11 @@ impl Proxy {
                 .configure(config.flow_pruner_max, config.flow_pruner_max_body_bytes);
             // No fallible preparation remains before topology/runtime publication.
             clear_readiness(&self.readiness_file, &self.default_via);
+            runtime
+                .admin_shield
+                .protect_ingress_endpoints(ingress_endpoints);
             self.commit_listeners(&config, additions);
+            released = self.commit_ingress(&config, ingress);
             runtime.plumb.configure_limits(
                 runtime.config.plumb.max_participants,
                 runtime.config.plumb.max_message_bytes,
@@ -2123,6 +2349,11 @@ impl Proxy {
                 runtime.config.plumb.default_ttl_seconds,
             );
             *current = runtime.clone();
+        }
+        for stopped in released {
+            stopped
+                .await
+                .map_err(|_| "ingress binding accept task failed during stop")?;
         }
         policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
         self.service_check_at = service_files.as_ref().map(|_| tokio::time::Instant::now());
@@ -2179,10 +2410,17 @@ impl Proxy {
         for (_, listener) in self.listeners.drain() {
             self.draining.push(listener.stop());
         }
+        for (_, binding) in self.ingress_bindings.drain() {
+            let (task, _) = binding.stop();
+            self.draining.push(task);
+        }
         for task in self.draining.drain(..) {
             if let Err(error) = task.await {
                 eprintln!("listener shutdown failed: {error}");
             }
+        }
+        if let Some(capture) = self.capture.take() {
+            capture.stop().await;
         }
         service_mutations.drain().await;
         plumb.drain().await;
@@ -2193,6 +2431,9 @@ impl Proxy {
             .coord
             .clone();
         coord.shutdown().await;
+        if let Some(delivery) = self.coord_delivery.take() {
+            delivery.stop().await;
+        }
         let recorder = self
             .runtime
             .read()
@@ -2234,6 +2475,9 @@ impl Drop for Proxy {
         desktop_present::abort();
         for (_, listener) in self.listeners.drain() {
             drop(listener.stop());
+        }
+        for (_, binding) in self.ingress_bindings.drain() {
+            drop(binding.stop());
         }
     }
 }

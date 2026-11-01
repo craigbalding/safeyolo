@@ -41,7 +41,7 @@ def prepare_native_instance(source: Path, root: Path) -> None:
     """Create fresh native state and reuse the prepared immutable inputs."""
     subprocess.run([str(source / "bin/safeyolo"), "--root", str(root), "init"],
                    check=True, timeout=10)
-    for name in ("bin", "assets", "lib", "libexec", "share"):
+    for name in ("bin", "assets", "lib", "libexec", "share", "host"):
         if not (source / name).exists():
             continue
         target = root / name
@@ -136,7 +136,7 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
         # Native stop retains the inactive proxy identity receipt. The owned
         # process snapshot above checks that it stopped even if the file goes.
         "agents/*/container.pid", "agents/*/vm.pid",
-        "data/ready.json", "data/proxy.pid", "data/sockets/*/proxy.sock",
+        "data/ready.json", "data/proxy.pid", "data/sockets/*/proxy.sock", "agents/*/proxy/proxy.sock",
         "data/coord/nats/process.json", "sinkhole.pid", "native-parent.pid",
     ):
         failures.extend(str(path) for path in root.glob(pattern))

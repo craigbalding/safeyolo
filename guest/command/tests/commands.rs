@@ -1023,10 +1023,14 @@ fn observed_exec_preserves_non_utf8_paths_arguments_and_script_fallback() {
         .directory
         .path()
         .join(OsString::from_vec(b"records-\xff".to_vec()));
-    let executable = guest
+    let executable_directory = guest
         .directory
         .path()
-        .join(OsString::from_vec(b"printf-\xff".to_vec()));
+        .join(OsString::from_vec(b"bin-\xff".to_vec()));
+    fs::create_dir(&executable_directory).unwrap();
+    // Multicall implementations dispatch by basename; keep printf while
+    // exercising a non-UTF8 executable path.
+    let executable = executable_directory.join("printf");
     std::os::unix::fs::symlink("/bin/printf", &executable).unwrap();
     let output = guest
         .command()
@@ -1044,6 +1048,10 @@ fn observed_exec_preserves_non_utf8_paths_arguments_and_script_fallback() {
     assert_eq!(output.stdout, [0x80]);
 
     fs::remove_file(&executable).unwrap();
+    let executable = guest
+        .directory
+        .path()
+        .join(OsString::from_vec(b"printf-\xff".to_vec()));
     fs::write(&executable, b"printf '%s' \"$1\"\n").unwrap();
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
     let output = guest

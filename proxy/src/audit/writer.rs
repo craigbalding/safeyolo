@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::{
     collections::VecDeque,
     fs::{self, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, mpsc},
     thread::JoinHandle,
@@ -78,8 +78,12 @@ pub enum Submission {
 }
 
 enum Item {
-    Record(Record, Option<oneshot::Sender<bool>>),
+    Record(Record, Option<Receipt>),
     Stop,
+}
+struct Receipt {
+    send: oneshot::Sender<bool>,
+    durable: bool,
 }
 #[derive(Default)]
 struct Pending {
@@ -111,7 +115,7 @@ impl Queue {
         pending.inflight -= count;
         self.changed.notify_all();
     }
-    fn next(&self) -> Option<(Vec<Record>, Vec<oneshot::Sender<bool>>, bool)> {
+    fn next(&self) -> Option<(Vec<Record>, Vec<Receipt>, bool)> {
         let mut pending = self.pending.lock().ok()?;
         while pending.items.is_empty() {
             if pending.closed {
@@ -152,6 +156,8 @@ struct Worker {
 /// One process owner should retain this writer across Runtime reloads. Creation
 /// is inert; file access and the worker start on the first emission only.
 pub struct Writer {
+    approvals: crate::approvals::pending::Store,
+    approvals_enabled: bool,
     named_controls: bool,
     path: PathBuf,
     settings: Settings,
@@ -185,6 +191,10 @@ impl Writer {
 
     pub fn new(path: PathBuf, settings: Settings) -> Self {
         Self {
+            approvals: crate::approvals::pending::Store::new(
+                path.with_extension("approvals.sqlite3"),
+            ),
+            approvals_enabled: false,
             named_controls: false,
             path,
             queue: Arc::new(Queue {
@@ -200,6 +210,25 @@ impl Writer {
     pub(crate) fn with_named_controls(mut self, enabled: bool) -> Self {
         self.named_controls = enabled;
         self
+    }
+    pub(crate) fn with_approvals(mut self, path: PathBuf) -> Self {
+        self.approvals = crate::approvals::pending::Store::new(path);
+        // An unavailable approval store must block new decisions, without
+        // changing requests already permitted by the existing policy.
+        if self.approvals.initialize().is_err() {
+            eprintln!(
+                "Pending approval state unavailable; new approval requests and decisions will fail closed."
+            );
+        }
+        self.approvals_enabled = true;
+        self
+    }
+
+    pub(crate) fn approvals(&self) -> &crate::approvals::pending::Store {
+        &self.approvals
+    }
+    pub(crate) fn approvals_enabled(&self) -> bool {
+        self.approvals_enabled
     }
     #[cfg(test)]
     pub(crate) fn poison_for_test(&self) {
@@ -220,9 +249,36 @@ impl Writer {
     /// This does not promise fsync or make unrelated emissions synchronous.
     pub async fn emit_confirmed(&self, event: Event) -> Result<()> {
         let (send, receipt) = oneshot::channel();
-        match self.enqueue(event, OffsetDateTime::now_utc(), Some(send))? {
+        match self.enqueue(
+            event,
+            OffsetDateTime::now_utc(),
+            Some(Receipt {
+                send,
+                durable: false,
+            }),
+        )? {
             Submission::Queued => {}
             Submission::QueueFull | Submission::Stopped => return Err(Error(ErrorKind::Io)),
+        }
+        match tokio::time::timeout(Duration::from_secs(5), receipt).await {
+            Ok(Ok(true)) => Ok(()),
+            _ => Err(Error(ErrorKind::Io)),
+        }
+    }
+    /// Deliver a staged current-format record without changing its ID or time.
+    /// A receipt follows file and directory sync, including rotated names.
+    pub(crate) async fn deliver_coord(&self, line: &str) -> Result<()> {
+        let record = Record::from_json(line)?;
+        let (send, receipt) = oneshot::channel();
+        match self.enqueue_record(
+            record,
+            Some(Receipt {
+                send,
+                durable: true,
+            }),
+        )? {
+            Submission::Queued => {}
+            _ => return Err(Error(ErrorKind::Io)),
         }
         match tokio::time::timeout(Duration::from_secs(5), receipt).await {
             Ok(Ok(true)) => Ok(()),
@@ -233,9 +289,11 @@ impl Writer {
         &self,
         event: Event,
         at: OffsetDateTime,
-        receipt: Option<oneshot::Sender<bool>>,
+        receipt: Option<Receipt>,
     ) -> Result<Submission> {
-        let mut record = event.record(at);
+        self.enqueue_record(event.record(at), receipt)
+    }
+    fn enqueue_record(&self, mut record: Record, receipt: Option<Receipt>) -> Result<Submission> {
         if self.named_controls {
             record.name_control();
         }
@@ -254,9 +312,10 @@ impl Writer {
                     let mut healthy = true;
                     while let Some((batch, receipts, stop)) = queue.next() {
                         let reservation = ActiveBatch(&queue, batch.len());
-                        let write = flush(&path, &settings, &batch);
+                        let durable = receipts.iter().any(|receipt| receipt.durable);
+                        let write = flush_batch(&path, &settings, &batch, durable);
                         for receipt in receipts {
-                            let _ = receipt.send(matches!(write, Ok(true)));
+                            let _ = receipt.send.send(matches!(write, Ok(true)));
                         }
                         drop(reservation);
                         healthy &= write.is_ok();
@@ -452,7 +511,11 @@ pub(super) fn backup(path: &Path, index: &BigInt) -> PathBuf {
         path.with_extension(format!("jsonl.{index}"))
     }
 }
+#[cfg(test)]
 fn append(path: &Path, settings: &Settings, batch: &[Record]) -> Result<()> {
+    append_batch(path, settings, batch, false)
+}
+fn append_batch(path: &Path, settings: &Settings, batch: &[Record], durable: bool) -> Result<()> {
     if batch.is_empty() {
         return Ok(());
     }
@@ -462,6 +525,13 @@ fn append(path: &Path, settings: &Settings, batch: &[Record]) -> Result<()> {
     {
         fs::create_dir_all(parent).map_err(|_| Error(ErrorKind::Io))?;
     }
+    // Host commands share this sink with the proxy. Serialize tail recovery,
+    // rotation and append through the existing host file-lock primitive.
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    let _lock = crate::host_platform::lock_host_state(Path::new(&lock_path))
+        .map_err(|_| Error(ErrorKind::Io))?;
+    recover_incomplete_tail(path)?;
     rotate(path, settings).map_err(|_| Error(ErrorKind::Io))?;
     let mut lines = Zeroizing::new(String::new());
     for record in batch {
@@ -476,10 +546,74 @@ fn append(path: &Path, settings: &Settings, batch: &[Record]) -> Result<()> {
     let written = file
         .write_all(lines.as_bytes())
         .map_err(|_| Error(ErrorKind::Io));
+    let synced = if durable {
+        sync_coord_append(&file, path, fs::File::sync_all).map_err(|_| Error(ErrorKind::Io))
+    } else {
+        Ok(())
+    };
     // Python's context manager explicitly closes, with close failure taking
     // precedence over a write failure. Closing does not imply fsync.
     close(file)?;
-    written
+    written.and(synced)
+}
+
+fn recover_incomplete_tail(path: &Path) -> Result<()> {
+    let mut file = match OpenOptions::new().read(true).write(true).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(Error(ErrorKind::Io)),
+    };
+    let recovered = (|| -> io::Result<()> {
+        let length = file.metadata()?.len();
+        if length == 0 {
+            return Ok(());
+        }
+        file.seek(SeekFrom::End(-1))?;
+        let mut last = [0];
+        file.read_exact(&mut last)?;
+        if last[0] == b'\n' {
+            return Ok(());
+        }
+        let mut end = length;
+        let mut buffer = [0; 8192];
+        let complete = loop {
+            let start = end.saturating_sub(buffer.len() as u64);
+            let used = (end - start) as usize;
+            file.seek(SeekFrom::Start(start))?;
+            file.read_exact(&mut buffer[..used])?;
+            if let Some(index) = buffer[..used].iter().rposition(|byte| *byte == b'\n') {
+                break start + index as u64 + 1;
+            }
+            if start == 0 {
+                break 0;
+            }
+            end = start;
+        };
+        // The writer always emits a final newline. A trailing fragment was
+        // never a completed record; pending Coord rows reproduce their bytes.
+        file.set_len(complete)?;
+        file.sync_all()
+    })();
+    close(file)?;
+    recovered.map_err(|_| Error(ErrorKind::Io))
+}
+
+fn sync_coord_append(
+    file: &fs::File,
+    path: &Path,
+    mut sync: impl FnMut(&fs::File) -> io::Result<()>,
+) -> io::Result<()> {
+    sync(file)?;
+    // Sync ancestors on retries too: a previous failed sync may have left
+    // an existing directory whose entry is not yet durable.
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    for directory in fs::canonicalize(parent)?.ancestors() {
+        sync(&fs::File::open(directory)?)?;
+    }
+    Ok(())
 }
 #[cfg(unix)]
 pub(super) fn close(file: std::fs::File) -> Result<()> {
@@ -491,8 +625,8 @@ pub(super) fn close(file: std::fs::File) -> Result<()> {
         Err(Error(ErrorKind::Io))
     }
 }
-fn flush(path: &Path, settings: &Settings, batch: &[Record]) -> Result<bool> {
-    if let Err(error) = append(path, settings, batch) {
+fn flush_batch(path: &Path, settings: &Settings, batch: &[Record], durable: bool) -> Result<bool> {
+    if let Err(error) = append_batch(path, settings, batch, durable) {
         writeln!(
             io::stderr().lock(),
             "[safeyolo] audit writer flush failed ({} entries): {error}",

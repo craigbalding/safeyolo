@@ -1,4 +1,4 @@
-"""Regression coverage for the Python-owned Rust Coord workflow fixture."""
+"""Regression coverage for the native Rust Coord workflow fixture."""
 
 from __future__ import annotations
 
@@ -35,15 +35,16 @@ def wait_for_path(path: Path, process: subprocess.Popen[str]) -> None:
 
 
 @pytest.fixture
-def running_coord_fixture(tmp_path: Path):
+def running_coord_fixture(tmp_path: Path, _binary_cache: Path):
     """Start the one fixture that the ordinary Rust workflow starts."""
     root = tmp_path / "coord-fixture"
     ready_path = root / "fixture.ready"
     environment = os.environ.copy()
     environment.update(
         {
-            "SAFEYOLO_COORD_DATA_DIR": str(root),
+            "SAFEYOLO_COORD_FIXTURE_ROOT": str(root),
             "SAFEYOLO_NATS_TEST_INSTANCE": f"proxy-rust-{secrets.token_hex(8)}",
+            "SAFEYOLO_COORD_NATS_BINARY": str(_binary_cache),
         }
     )
     process = subprocess.Popen(
@@ -59,8 +60,8 @@ def running_coord_fixture(tmp_path: Path):
         stderr=subprocess.PIPE,
         text=True,
     )
-    wait_for_path(ready_path, process)
     try:
+        wait_for_path(ready_path, process)
         yield root, environment, process
     finally:
         teardown = subprocess.run(
@@ -82,28 +83,27 @@ def running_coord_fixture(tmp_path: Path):
         assert teardown.returncode == 0, teardown.stderr
         assert process.returncode == 0, stdout + stderr
         assert (root / "fixture.stopped").is_file()
-        assert not (root / "nats" / "nats.pid.json").exists()
+        assert not (root / "data/coord/nats/process.json").exists()
 
 
-def test_fixture_creates_the_shared_nats_and_python_state(running_coord_fixture) -> None:
-    """One fixture supplies the retained inputs for both Rust Coord targets."""
+def test_fixture_creates_current_native_state(running_coord_fixture, _binary_cache: Path) -> None:
+    """The shared shutdown fixture uses native bootstrap, create and grant."""
     root, environment, process = running_coord_fixture
-    fixture = json.loads((root / "fixture.json").read_text(encoding="utf-8"))
-    assert fixture["room_name"] == "coord-rollback-room"
-    assert fixture["agent_id"] == "ag-11111111111111111111111111111111"
+    coord = root / "data/coord"
+    fixture = json.loads((coord / "fixture.json").read_text(encoding="utf-8"))
     assert fixture["shutdown_room_name"] == "coord-shutdown-room"
     assert fixture["shutdown_agent_id"] == "ag-alice"
     assert fixture["room_id"].startswith("rm-")
     assert fixture["nats_version"] == "2.14.5"
-    assert len(fixture["nats_binary_sha256"]) == 64
-    assert (root / "nats" / "creds").is_file()
-    endpoints = json.loads((root / "nats" / "test-endpoints.json").read_text(encoding="utf-8"))
-    assert endpoints["test_instance"] == environment["SAFEYOLO_NATS_TEST_INSTANCE"]
+    assert fixture["nats_binary_sha256"] == sha256(_binary_cache.read_bytes()).hexdigest()
+    assert Path(fixture["nats_binary"]).read_bytes() == _binary_cache.read_bytes()
+    assert (coord / "nats/creds").is_file()
+    endpoints = json.loads((coord / "nats/test-endpoints.json").read_text(encoding="utf-8"))
+    assert endpoints["pid"] == fixture["nats_pid"]
     assert endpoints["client_port"] != 4222
     assert endpoints["monitor_port"] != 8222
 
-    with sqlite3.connect(root / "v0.db") as connection:
-        rollback = connection.execute("SELECT room_id FROM rooms WHERE name = ?", (fixture["room_name"],)).fetchone()
+    with sqlite3.connect(coord / "v0.db") as connection:
         shutdown = connection.execute(
             """SELECT r.room_id, m.permissions
                FROM rooms AS r
@@ -112,80 +112,49 @@ def test_fixture_creates_the_shared_nats_and_python_state(running_coord_fixture)
                  AND m.principal_id = ? AND m.revoked_at IS NULL""",
             (fixture["shutdown_room_name"], fixture["shutdown_agent_id"]),
         ).fetchone()
-    assert rollback is not None
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+        instance = connection.execute("SELECT id FROM instance").fetchone()
+        pending = connection.execute(
+            "SELECT COUNT(*) FROM coord_outbox WHERE destination='audit-jsonl' AND delivered_at IS NULL"
+        ).fetchone()[0]
     assert shutdown == (fixture["room_id"], "receive")
-
-    # Use a second Python process with the fixture environment. The real Rust
-    # test performs this intermediate mutation through its native route.
-    native_declaration = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from proxy.tests.coord_fixture import coord_modules; "
-            "api, _, _ = coord_modules(); "
-            "api.declare_capabilities("
-            "'coord-rollback-room', 'ag-11111111111111111111111111111111', "
-            "['rust:native', 'rust:shared'], ttl_seconds=900)",
-        ],
-        cwd=REPOSITORY_ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=15,
-    )
-    assert native_declaration.returncode == 0, native_declaration.stderr
-    native_hash = sha256((root / "v0.db").read_bytes()).hexdigest()
-    (root / "native-written.json").write_text(
-        json.dumps(
-            {
-                "capabilities": ["rust:native", "rust:shared"],
-                "db_sha256": native_hash,
-            }
-        ),
-        encoding="utf-8",
-    )
-    update_path = root / "python-updated.json"
-    wait_for_path(update_path, process)
-    update = json.loads(update_path.read_text(encoding="utf-8"))
-    assert update["capabilities"] == ["python:final", "python:shared"]
-    assert update["native_generation"]["capabilities"] == [
-        "rust:native",
-        "rust:shared",
-    ]
-    assert update["native_generation"]["db_sha256"] == native_hash
-    assert len(update["db_sha256"]) == 64
+    assert instance == (fixture["instance_id"],)
+    assert {"coord_signals", "coord_signal_revisions", "coord_work"} <= tables
+    assert pending == 0
+    audit = [json.loads(line) for line in (root / "logs/audit.jsonl").read_text().splitlines()]
+    grants = [row for row in audit if row["event"] == "coord.membership_granted"]
+    assert len(grants) == 2
+    assert grants[1]["details"]["operation_id"] == "proxy-rust-fixture-shutdown-grant"
+    assert not (root / "data/ready.json").exists()
+    assert process.poll() is None
+    assert not (root / "native-written.json").exists()
 
 
 def test_teardown_waits_for_the_fixture_owner(running_coord_fixture, monkeypatch: pytest.MonkeyPatch) -> None:
     """A second process requests shutdown without stopping the owner's child."""
-    from safeyolo.coord import nats_runtime
-
     root, environment, process = running_coord_fixture
-    monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(root))
+    monkeypatch.setenv("SAFEYOLO_COORD_FIXTURE_ROOT", str(root))
     monkeypatch.setenv("SAFEYOLO_NATS_TEST_INSTANCE", environment["SAFEYOLO_NATS_TEST_INSTANCE"])
 
-    def reject_cross_process_stop() -> None:
+    def reject_cross_process_stop(*_arguments) -> None:
         pytest.fail("teardown stopped the fixture owner's NATS child")
 
-    monkeypatch.setattr(nats_runtime, "stop_server", reject_cross_process_stop)
+    monkeypatch.setattr(coord_fixture, "native", reject_cross_process_stop)
     coord_fixture.stop_fixture(root)
     assert process.wait(timeout=15) == 0
     assert (root / "fixture.stopped").is_file()
-    assert not (root / "nats" / "nats.pid.json").exists()
+    assert not (root / "data/coord/nats/process.json").exists()
 
 
 def test_teardown_reports_a_missing_owner_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A missing owner receipt triggers bounded verified cleanup, not success."""
-    from safeyolo.coord import nats_runtime
-
     root = tmp_path / "owner-exited"
     root.mkdir()
-    monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(root))
+    monkeypatch.setenv("SAFEYOLO_COORD_FIXTURE_ROOT", str(root))
     monkeypatch.setenv("SAFEYOLO_NATS_TEST_INSTANCE", f"proxy-rust-{secrets.token_hex(8)}")
     monkeypatch.setattr(coord_fixture, "FIXTURE_STOP_TIMEOUT_S", 0.0)
     cleanup_calls: list[bool] = []
-    monkeypatch.setattr(nats_runtime, "stop_server", lambda: cleanup_calls.append(True))
+    monkeypatch.setattr(coord_fixture, "native", lambda *_arguments: cleanup_calls.append(True))
 
     with pytest.raises(TimeoutError, match="fixture owner did not confirm NATS shutdown"):
         coord_fixture.stop_fixture(root)
@@ -198,7 +167,7 @@ def test_fixture_rejects_an_unowned_nats_environment(tmp_path: Path) -> None:
     """The helper must fail before it can touch a default Coord directory."""
     root = tmp_path / "unowned-coord-fixture"
     environment = os.environ.copy()
-    environment["SAFEYOLO_COORD_DATA_DIR"] = str(root)
+    environment["SAFEYOLO_COORD_FIXTURE_ROOT"] = str(root)
     environment.pop("SAFEYOLO_NATS_TEST_INSTANCE", None)
     result = subprocess.run(
         [sys.executable, str(FIXTURE)],
@@ -223,7 +192,7 @@ def test_fixture_rejects_stale_fixture_state(tmp_path: Path) -> None:
     environment = os.environ.copy()
     environment.update(
         {
-            "SAFEYOLO_COORD_DATA_DIR": str(root),
+            "SAFEYOLO_COORD_FIXTURE_ROOT": str(root),
             "SAFEYOLO_NATS_TEST_INSTANCE": "proxy-rust-fixture",
         }
     )
@@ -239,7 +208,7 @@ def test_fixture_rejects_stale_fixture_state(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "fixture directory must be empty before setup" in result.stderr
     assert stale_marker.read_text(encoding="utf-8") == "stale\n"
-    assert not (root / "nats" / "nats.pid.json").exists()
+    assert not (root / "data/coord/nats/process.json").exists()
 
 
 def test_fixture_refuses_an_operator_home_coord_directory(tmp_path: Path) -> None:
@@ -250,7 +219,7 @@ def test_fixture_refuses_an_operator_home_coord_directory(tmp_path: Path) -> Non
     environment.update(
         {
             "HOME": str(home),
-            "SAFEYOLO_COORD_DATA_DIR": str(root),
+            "SAFEYOLO_COORD_FIXTURE_ROOT": str(root),
             "SAFEYOLO_NATS_TEST_INSTANCE": "proxy-rust-fixture",
         }
     )
@@ -268,37 +237,64 @@ def test_fixture_refuses_an_operator_home_coord_directory(tmp_path: Path) -> Non
     assert not root.exists()
 
 
-def test_fixture_rejects_a_mismatched_native_generation(tmp_path: Path) -> None:
-    """A malformed cross-version handoff fails rather than weakening the witness."""
-    root = tmp_path / "mismatched-coord-fixture"
-    ready_path = root / "fixture.ready"
+def test_fixture_rejects_a_tampered_shared_binary(tmp_path: Path) -> None:
+    """The shared executable must pass the runtime's pinned checksum check."""
+    root = tmp_path / "tampered-coord-fixture"
+    marker = tmp_path / "executed"
+    binary = tmp_path / "nats-server"
+    binary.write_text('#!/bin/sh\ntouch "$SAFEYOLO_TEST_BINARY_MARKER"\n', encoding="utf-8")
+    binary.chmod(0o755)
     environment = os.environ.copy()
     environment.update(
         {
-            "SAFEYOLO_COORD_DATA_DIR": str(root),
+            "SAFEYOLO_COORD_FIXTURE_ROOT": str(root),
             "SAFEYOLO_NATS_TEST_INSTANCE": f"proxy-rust-{secrets.token_hex(8)}",
+            "SAFEYOLO_COORD_NATS_BINARY": str(binary),
+            "SAFEYOLO_TEST_BINARY_MARKER": str(marker),
         }
     )
-    process = subprocess.Popen(
-        [sys.executable, str(FIXTURE), "--ready-file", str(ready_path)],
+    result = subprocess.run(
+        [sys.executable, str(FIXTURE)],
         cwd=REPOSITORY_ROOT,
         env=environment,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
+        check=False,
+        timeout=15,
     )
-    wait_for_path(ready_path, process)
-    (root / "native-written.json").write_text(json.dumps({"capabilities": ["wrong:fixture"]}), encoding="utf-8")
-    process.wait(timeout=15)
-    stdout, stderr = process.communicate(timeout=1)
-    assert process.returncode != 0, stdout + stderr
-    assert "unexpected capabilities" in stderr
+    assert result.returncode != 0
+    assert "reviewed platform pin" in result.stderr
+    assert not marker.exists()
+    assert not (root / "fixture.ready").exists()
     assert (root / "fixture.stopped").is_file()
-    assert not (root / "nats" / "nats.pid.json").exists()
+    assert not (root / "data/coord/nats/process.json").exists()
+
+
+
+def test_fixture_reports_setup_proxy_failure_and_cleans_nats(tmp_path: Path, _binary_cache: Path) -> None:
+    """A failed audit-delivery owner leaves its diagnostics and stops NATS."""
+    root = tmp_path / "failed-setup-proxy"
+    proxy = tmp_path / "failed-proxy"
+    proxy.write_text("#!/bin/sh\nprintf 'setup proxy refused\\n' >&2\nexit 7\n", encoding="utf-8")
+    proxy.chmod(0o755)
+    result = subprocess.run(
+        [sys.executable, str(FIXTURE)], cwd=REPOSITORY_ROOT,
+        env={**os.environ, "SAFEYOLO_COORD_FIXTURE_ROOT": str(root),
+             "SAFEYOLO_NATS_TEST_INSTANCE": "failed-setup-proxy",
+             "SAFEYOLO_COORD_NATS_BINARY": str(_binary_cache), "SAFEYOLO_RUST_PROXY": str(proxy)},
+        capture_output=True, text=True, check=False, timeout=15,
+    )
+    assert result.returncode != 0
+    assert "setup audit delivery failed (exit=7)" in result.stderr
+    assert "setup proxy refused" in result.stderr
+    assert (root / "setup-proxy.log").read_text() == "setup proxy refused\n"
+    assert (root / "fixture.stopped").is_file()
+    assert not (root / "fixture.ready").exists()
+    assert not (root / "data/coord/nats/process.json").exists()
 
 
 def test_runner_exposes_the_fixture_only_to_coord_test_binaries(tmp_path: Path) -> None:
-    """The ordinary suite keeps its own Coord state outside the two witnesses."""
+    """The ordinary suite keeps its own Coord state outside the shutdown tests."""
     probe = tmp_path / "probe"
     probe.write_text(
         '#!/bin/sh\nprintf \'%s\\n%s\\n\' "${SAFEYOLO_COORD_DATA_DIR-}" "${SAFEYOLO_NATS_TEST_INSTANCE-}"\n',
@@ -315,7 +311,7 @@ def test_runner_exposes_the_fixture_only_to_coord_test_binaries(tmp_path: Path) 
         }
     )
 
-    coord_probe = tmp_path / "coord_state_cross_version-probe"
+    coord_probe = tmp_path / "coord_wait_shutdown-probe"
     probe.rename(coord_probe)
     coord_result = subprocess.run(
         [str(RUNNER), str(coord_probe)],
@@ -361,9 +357,9 @@ def test_runner_exposes_the_fixture_only_to_coord_test_binaries(tmp_path: Path) 
 def test_rust_workflow_orders_fixture_setup_and_teardown() -> None:
     """Both matrix platforms run Rust tests between owned fixture steps."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    setup = workflow.index("- name: Start the Python-owned Coord fixture")
+    setup = workflow.index("- name: Start the native Coord fixture")
     test = workflow.index("- name: Test the Rust proxy")
-    teardown = workflow.index("- name: Stop the Python-owned Coord fixture")
+    teardown = workflow.index("- name: Stop the native Coord fixture")
     assert setup < test < teardown
     setup_block = workflow[setup:test]
     assert "if: matrix.os == 'ubuntu-latest'" not in setup_block
@@ -394,9 +390,9 @@ def test_rust_workflow_exposes_production_inputs_and_restores_their_dependency_f
     workflow = WORKFLOW.read_text(encoding="utf-8")
     compile_production = workflow.index("- name: Compile production native executables")
     compile_tests = workflow.index("- name: Compile Rust contract executables")
-    setup = workflow.index("- name: Start the Python-owned Coord fixture")
+    setup = workflow.index("- name: Start the native Coord fixture")
     test = workflow.index("- name: Test the Rust proxy")
-    teardown = workflow.index("- name: Stop the Python-owned Coord fixture")
+    teardown = workflow.index("- name: Stop the native Coord fixture")
     assert compile_production < compile_tests < setup < test < teardown
     assert "build --release --locked --bins" in workflow[compile_production:compile_tests]
     assert "test --release --locked --no-run" in workflow[compile_tests:setup]
@@ -410,8 +406,9 @@ def test_rust_workflow_exposes_production_inputs_and_restores_their_dependency_f
     assert 'verify_native_artifacts "$SAFEYOLO_NATIVE_ARTIFACTS" guest/command/target/release production' in production_block
 
 
-def test_cargo_uses_coord_runner_with_the_producers_implicit_host_target(tmp_path):
+def test_cargo_uses_coord_runner_with_the_producers_implicit_host_target(tmp_path, monkeypatch):
     """Observe actual Cargo test outputs and runner isolation without --target."""
+    monkeypatch.setenv("SAFEYOLO_CARGO_RESERVE_GIB", "1024")
     (tmp_path / "tests").mkdir()
     (tmp_path / "Cargo.toml").write_text(
         '[package]\nname="coord-runner-probe"\nversion="0.1.0"\nedition="2024"\n',
@@ -419,7 +416,7 @@ def test_cargo_uses_coord_runner_with_the_producers_implicit_host_target(tmp_pat
     (tmp_path / "Cargo.lock").write_text(
         'version=4\n[[package]]\nname="coord-runner-probe"\nversion="0.1.0"\n',
     )
-    (tmp_path / "tests/coord_state_cross_version.rs").write_text(
+    (tmp_path / "tests/coord_wait_shutdown.rs").write_text(
         '#[test]\nfn fixture_reaches_coord() {\n'
         'assert_eq!(std::env::var("SAFEYOLO_COORD_DATA_DIR").unwrap(), "owned-fixture");\n'
         'assert_eq!(std::env::var("SAFEYOLO_NATS_TEST_INSTANCE").unwrap(), "owned-instance");\n}\n',
@@ -432,6 +429,8 @@ def test_cargo_uses_coord_runner_with_the_producers_implicit_host_target(tmp_pat
     version = subprocess.check_output(["rustc", "-vV"], text=True)
     target = next(line.removeprefix("host: ") for line in version.splitlines() if line.startswith("host: "))
     environment = {**os.environ, "CARGO_TARGET_DIR": str(tmp_path / "target"),
+                   # This tiny dependency-free crate must not inherit a product build's reserve.
+                   "SAFEYOLO_CARGO_RESERVE_GIB": "1",
                    "SAFEYOLO_PROXY_COORD_DATA_DIR": "owned-fixture",
                    "SAFEYOLO_PROXY_NATS_TEST_INSTANCE": "owned-instance",
                    f"CARGO_TARGET_{target.upper().replace('-', '_')}_RUNNER": str(RUNNER)}

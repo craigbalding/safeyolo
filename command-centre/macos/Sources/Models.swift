@@ -244,6 +244,12 @@ struct SecurityObservation: Hashable, Identifiable {
 }
 
 struct ApprovalEvent: Decodable, Hashable, Identifiable {
+    struct Option: Decodable, Hashable, Identifiable {
+        let id: String
+        let effect: String
+        let status: String?
+        var available: Bool { status == nil || status == "available" }
+    }
     struct Request: Decodable, Hashable {
         struct Scope: Decodable, Hashable {
             let agentID: String?
@@ -286,6 +292,8 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
         }
     }
 
+    let approvalID: String?
+    let options: [Option]?
     let eventID: String?
     let requestID: String?
     let event: String
@@ -296,6 +304,8 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
     let details: Details?
 
     enum CodingKeys: String, CodingKey {
+        case approvalID = "approval_id"
+        case options
         case eventID = "event_id"
         case requestID = "request_id"
         case event
@@ -306,7 +316,12 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
         case details
     }
 
+    var outcomeID: String? {
+        approvalID ?? (details?.networkAction?.kind == "network_allow" ? requestID : nil)
+    }
+
     var id: String {
+        if let approvalID { return approvalID }
         if details?.networkAction?.kind == "network_allow", let requestID {
             return "network:\(requestID)"
         }
@@ -351,39 +366,29 @@ struct MutationPlan: Equatable {
     let path: String
     let body: [String: String]
     let expectsDesktop: Bool
-    var port: Int? = nil
-    var rate: Int? = nil
+    var payload: [String: Any] { body.mapValues { $0 as Any } }
 
-    var payload: [String: Any] {
-        var result = body.mapValues { $0 as Any }
-        if let port { result["port"] = port }
-        if let rate { result["rate"] = rate }
-        return result
-    }
-
-    static func forApproval(_ event: ApprovalEvent, allow: Bool) throws -> MutationPlan {
-        if event.approval.approvalType == "network_egress" {
-            if event.details?.networkAction?.kind == "network_allow" {
-                guard let requestID = event.requestID, let encodedID = encodePathComponent(requestID) else {
-                    throw ClientError.invalidApproval("Network approval is missing its canonical request ID")
+    static func forApproval(_ event: ApprovalEvent, allow: Bool, option: String? = nil) throws -> MutationPlan {
+        if let approvalID = event.approvalID {
+            guard let encodedID = encodePathComponent(approvalID) else {
+                throw ClientError.invalidApproval("Approval ID is unavailable")
+            }
+            var body = ["decision": allow ? "approve" : "reject"]
+            if allow {
+                let options = event.options ?? []
+                if let option {
+                    guard options.contains(where: { $0.id == option && $0.available }) else {
+                        throw ClientError.invalidApproval("Select an available option from this approval")
+                    }
+                    body["option"] = option
+                } else if options.count > 1 && !options.contains(where: { $0.id == "once" && $0.available }) {
+                    throw ClientError.invalidApproval("Select one of this approval's fixed options")
                 }
-                return MutationPlan(path: "/admin/approvals/\(encodedID)",
-                    body: ["decision": allow ? "approve" : "reject"], expectsDesktop: false)
             }
-            guard let host = event.host, !host.isEmpty,
-                  let port = event.approval.scopeHint?.port, (1...65535).contains(port)
-            else {
-                throw ClientError.invalidApproval("Network approval is missing host or destination port")
-            }
-            var body = ["host": host]
-            if let agent = event.agent, !agent.isEmpty { body["agent"] = agent }
-            if !allow {
-                body["expires"] = ISO8601DateFormatter().string(from: Date().addingTimeInterval(86400))
-            }
-            return MutationPlan(
-                path: allow ? "/admin/policy/host/allow" : "/admin/policy/host/deny",
-                body: body, expectsDesktop: false, port: port, rate: allow ? 600 : nil
-            )
+            return MutationPlan(path: "/admin/approvals/\(encodedID)", body: body, expectsDesktop: false)
+        }
+        if ["network_egress", "credential"].contains(event.approval.approvalType) {
+            throw ClientError.invalidApproval("Historical approval is read-only. Make a new request or use explicit policy controls.")
         }
         if event.approval.approvalType == "desktop_present", allow {
             guard let agentID = event.approval.scopeHint?.agentID,
@@ -398,8 +403,7 @@ struct MutationPlan: Equatable {
             )
         }
 
-        guard event.approval.approvalType == "credential" ||
-              event.approval.approvalType == "desktop_present"
+        guard event.approval.approvalType == "desktop_present"
         else {
             throw ClientError.invalidApproval(
                 "Commander does not handle \(event.approval.approvalType)"
@@ -425,19 +429,22 @@ struct MutationPlan: Equatable {
     }
 }
 
-struct NetworkApprovalResolution: Decodable, Equatable {
+struct ApprovalResolution: Decodable, Equatable {
+    let approvalID: String?
     let requestID: String
     let status: String
     let effect: String
     let untrustedReasonText: String?
 
     enum CodingKeys: String, CodingKey {
+        case approvalID = "approval_id"
         case requestID = "request_id"
         case status, effect
         case untrustedReasonText = "untrusted_reason_text"
     }
 
-    var terminal: Bool { ["approved", "rejected"].contains(status) }
+    var id: String { approvalID ?? requestID }
+    var terminal: Bool { ["approved", "rejected", "expired", "superseded"].contains(status) }
     var display: String { "\(status.capitalized). \(effect)" }
     var quotedUntrustedReason: String? { untrustedReasonText.map { "\"\($0)\"" } }
 }
@@ -462,6 +469,7 @@ enum WebMITMOpenError: LocalizedError {
 enum ClientError: LocalizedError {
     case invalidURL(String)
     case invalidResponse
+    case connectionUnavailable
     case requestFailed(Int, String)
     case invalidApproval(String)
     case instanceMismatch(expected: String, actual: String)
@@ -472,6 +480,8 @@ enum ClientError: LocalizedError {
             return "Invalid URL: \(value)"
         case .invalidResponse:
             return "SafeYolo returned an invalid response"
+        case .connectionUnavailable:
+            return "The selected SafeYolo instance could not be verified. Reconnect that instance and retry."
         case .requestFailed(let status, let message):
             return "SafeYolo returned HTTP \(status): \(message)"
         case .invalidApproval(let message):

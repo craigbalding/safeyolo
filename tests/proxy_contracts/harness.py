@@ -37,14 +37,14 @@ def read_events(path):
 @dataclass
 class RunningProxy:
     paths: dict[str, str]
-    event_log: Path
+    audit_log: Path
     process: subprocess.Popen
     readiness_file: Path
     # Kept for historical resource comparisons; current native runs have no child adapter.
     policy_process: subprocess.Popen | None = None
 
     def events(self, kind):
-        return [row for row in read_events(self.event_log) if row["event"] == kind]
+        return [row for row in read_events(self.audit_log) if row["event"] == kind]
 
 
 @contextmanager
@@ -118,13 +118,14 @@ def wait_ready(process, paths, log, *, readiness_file=None, expected_backend=Non
 @contextmanager
 def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_proxy_agents=None,
                  parent_proxy_hosts=None, tls=False, upstream_ca=None,
+                 target_ip_mappings=None,
                  ignore_hosts=(), eager_connect=False, inspection=None, native_policy=False,
                  audit_passthrough=False,
                  network_guard_enabled=None, network_guard_block=None, network_guard_homoglyph=None,
                  agent_api=False, agent_api_token=b"fixture-agent-api-token-one", policy_format="toml",
                  admin_port=None, admin_api_token_file=None,
                  circuit_breaker_enabled=None, circuit_state_file=None,
-                 agent_map=None, stream_large_bodies=None, credential_head_decision=False,
+                 agent_addresses=None, stream_large_bodies=None, credential_head_decision=False,
                  flow_store_enabled=False, via_token=None,
                  test_context_block=None,
                  gateway_services_dir=None, gateway_builtin_services_dir=None,
@@ -141,23 +142,17 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
     # Darwin's default temp root leaves too little sun_path for reloaded listeners.
     socket_root = os.environ.get("SAFEYOLO_TEST_SOCKET_DIR") or ("/tmp" if sys.platform == "darwin" else None)
     with tempfile.TemporaryDirectory(prefix="sy-contract-", dir=socket_root) as sockets, ExitStack() as stack:
-        if agent_map is None:
+        if agent_addresses is None:
             paths = {name: str(Path(sockets) / f"10.0.0.{index}_{name}" / "proxy.sock")
                      for index, name in enumerate(agents, 2)}
         else:
-            from safeyolo.sockets import path_for
-
-            if not isinstance(agent_map, dict) or not all(
+            if not isinstance(agent_addresses, dict) or not all(
                 isinstance(name, str) and isinstance(ip, str)
-                for name, ip in agent_map.items()
+                for name, ip in agent_addresses.items()
             ):
-                raise ValueError("agent_map must map agent names to IPv4 strings")
-            data_dir = directory / "data"
-            data_dir.mkdir(parents=True, exist_ok=True)
-            (data_dir / "agent_map.json").write_text(
-                json.dumps({name: {"ip": ip} for name, ip in agent_map.items()})
-            )
-            paths = {name: str(path_for(name, ip)) for name, ip in agent_map.items()}
+                raise ValueError("agent_addresses must map agent names to IPv4 strings")
+            paths = {name: str(Path(sockets) / f"{ip}_{name}" / "proxy.sock")
+                     for name, ip in agent_addresses.items()}
         config = {
             "listeners": [{"agent_id": name, "socket_path": path} for name, path in paths.items()],
             # Native policy startup creates its process-owned credential HMAC
@@ -166,7 +161,6 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
             # back to the host's /safeyolo/data path.
             "readiness_file": str(directory / "ready"),
             "audit_log_path": str(directory / "audit.jsonl"),
-            "event_log": str(directory / "events.jsonl"),
             # Keep native policy/evidence state inside this fixture. The Rust
             # default (/safeyolo/data) is unavailable in ordinary runs.
             "data_dir": str(directory / "data"),
@@ -174,8 +168,6 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
             "flow_store_db_path": str(directory / "flows.sqlite3"),
         }
         Path(config["data_dir"]).mkdir(parents=True, exist_ok=True)
-        if agent_map is not None:
-            config["agent_map_file"] = str(directory / "data" / "agent_map.json")
         if inspection is not None:
             config["inspection"] = {"policy_file": str(policy), **inspection}
         for name, value in (("network_guard_enabled", network_guard_enabled),
@@ -205,7 +197,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
         env = os.environ.copy()
         env["SAFEYOLO_LOG_PATH"] = str(directory / "audit.jsonl")
         if agent_api:
-            api_data = directory / "api-data"
+            api_data = Path(config["data_dir"]) if native_product else directory / "api-data"
             api_data.mkdir(exist_ok=True)
             if agent_api_token is not None:
                 token_file = api_data / "agent_token"
@@ -223,6 +215,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
             config["parent_proxy_agents"] = list(parent_proxy_agents)
         if parent_proxy_hosts is not None:
             config["parent_proxy_hosts"] = list(parent_proxy_hosts)
+        if target_ip_mappings is not None:
+            config["target_ip_mappings"] = target_ip_mappings
         config["ignore_hosts"] = list(ignore_hosts)
         config["agent_api_enabled"] = agent_api
         config["policy_file"] = str(policy)
@@ -267,7 +261,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
             readiness_file=readiness,
             expected_backend="rust-m2",
         )
-        yield RunningProxy(paths, Path(config["event_log"]), process, readiness)
+        yield RunningProxy(paths, Path(config["audit_log_path"]), process, readiness)
 
 
 def connection(path):

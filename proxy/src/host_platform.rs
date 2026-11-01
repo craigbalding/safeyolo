@@ -334,6 +334,11 @@ pub(crate) fn vm_process_token(name: &str, pid: i32) -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) fn vm_process_token_in(root: &std::path::Path, name: &str, pid: i32) -> Option<String> {
+    vm_process_token_detail_in(root, name, pid).ok()
+}
+
+#[cfg(target_os = "macos")]
 fn vz_diagnostic_path(path: &std::path::Path) -> String {
     let escaped = format!("{path:?}");
     if escaped.chars().count() <= 512 {
@@ -348,10 +353,17 @@ fn vz_diagnostic_path(path: &std::path::Path) -> String {
 
 #[cfg(target_os = "macos")]
 fn vm_process_token_detail(name: &str, pid: i32) -> Result<String, String> {
-    let executable = config_dir().join("bin/safeyolo-vm");
-    let control = config_dir()
-        .join("data/vm-control")
-        .join(format!("{name}.sock"));
+    vm_process_token_detail_in(&config_dir(), name, pid)
+}
+
+#[cfg(target_os = "macos")]
+fn vm_process_token_detail_in(
+    root: &std::path::Path,
+    name: &str,
+    pid: i32,
+) -> Result<String, String> {
+    let executable = root.join("bin/safeyolo-vm");
+    let control = root.join("data/vm-control").join(format!("{name}.sock"));
     let expected = format!(
         "expected_executable={} expected_control_argument={}",
         vz_diagnostic_path(&executable),
@@ -363,8 +375,7 @@ fn vm_process_token_detail(name: &str, pid: i32) -> Result<String, String> {
     // Keep the same PID/birth and private control-argument checks for that file.
     let mut arguments = macos_process_arguments_detail(pid, &executable);
     if arguments.is_err()
-        && let Ok(binaries) =
-            crate::guest_acquisition::retained_host_binaries(&config_dir(), "safeyolo-vm")
+        && let Ok(binaries) = crate::guest_acquisition::retained_host_binaries(root, "safeyolo-vm")
     {
         for binary in binaries.into_iter().skip(1) {
             if let Ok(retained) = macos_process_arguments_detail(pid, &binary) {
@@ -493,15 +504,37 @@ pub(crate) fn with_config<T>(path: PathBuf, work: impl FnOnce() -> T) -> T {
     INSTANCE_ROOT.sync_scope(root, || INSTANCE_CONFIG.sync_scope(path, work))
 }
 
-pub(crate) fn agent_map_path() -> io::Result<PathBuf> {
-    let path = config_path();
-    if path.is_file() {
-        let config = crate::native_config::read(&path).map_err(io::Error::other)?;
-        if !config.agent_map_file.is_empty() {
-            return Ok(config.agent_map_file.into());
-        }
+/// Only this directory is mounted into the Linux guest's proxy share.
+pub(crate) fn agent_proxy_dir(name: &str) -> PathBuf {
+    config_dir().join("agents").join(name).join("proxy")
+}
+
+pub(crate) fn agent_proxy_listener(name: &str, ip: &str) -> crate::AgentListener {
+    crate::AgentListener {
+        agent_id: name.into(),
+        source_id: Some(ip.into()),
+        socket_path: agent_proxy_dir(name).join("proxy.sock"),
     }
-    Ok(config_dir().join("data/agent_map.json"))
+}
+
+pub(crate) fn is_managed_agent_listener(listener: &crate::AgentListener) -> bool {
+    let path = &listener.socket_path;
+    if path == &agent_proxy_dir(&listener.agent_id).join("proxy.sock") {
+        return true;
+    }
+    // Keep a running guest's older read-only proxy mount usable until stop.
+    // New starts use the agent directory; no directory scan supplies identity.
+    path.file_name().is_some_and(|name| name == "proxy.sock")
+        && path.parent().and_then(std::path::Path::parent)
+            == Some(config_dir().join("data/sockets").as_path())
+        && path
+            .parent()
+            .and_then(std::path::Path::file_name)
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.split_once('_'))
+            .is_some_and(|(ip, name)| {
+                ip.parse::<std::net::Ipv4Addr>().is_ok() && valid_agent_name(name)
+            })
 }
 
 pub(crate) fn lock_host_state(path: &std::path::Path) -> io::Result<std::fs::File> {
@@ -765,7 +798,7 @@ pub(crate) fn backend_pid(name: &str) -> Option<u32> {
 }
 
 #[cfg(target_os = "linux")]
-fn is_runsc_boot(command: &[u8], id: &str, root: &std::path::Path) -> bool {
+pub(crate) fn is_runsc_boot(command: &[u8], id: &str, root: &std::path::Path) -> bool {
     let fields = command.split(|b| *b == 0).collect::<Vec<_>>();
     let root = root.as_os_str().as_bytes();
     // gVisor serializes sentry argv as runsc-sandbox and --root=PATH.
@@ -941,40 +974,11 @@ fn scoped_runsc_create(name: &str, memory_mb: u64) -> io::Result<Command> {
 #[cfg(target_os = "linux")]
 async fn start_userns(name: &str) -> io::Result<u32> {
     let mapping = crate::linux_host::selected_mapping().map_err(io::Error::other)?;
-    let settings = crate::native_config::host_settings().map_err(io::Error::other)?;
-    let restricts =
-        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-            .is_ok_and(|value| value.trim() == "1");
-    // The recursive failed-start fixture exercises both launch commands without
-    // changing its host's AppArmor policy. Production always uses the sysctl.
-    #[cfg(test)]
-    let restricts = match std::env::var("SAFEYOLO_TEST_FAILED_START_LAUNCH").as_deref() {
-        Ok("direct") => false,
-        Ok("apparmor" | "missing-aa-exec") => true,
-        _ => restricts,
-    };
-    let mut holder = if restricts {
-        let mut command = Command::new("aa-exec");
-        command.args([
-            "-p",
-            settings
-                .linux
-                .as_ref()
-                .and_then(|s| s.apparmor_profile.as_deref())
-                .unwrap_or("safeyolo-runsc"),
-            "--",
-            "unshare",
-            "-Un",
-            "tail",
-            "-f",
-            "/dev/null",
-        ]);
-        command
-    } else {
-        let mut command = Command::new("unshare");
-        command.args(["-Un", "tail", "-f", "/dev/null"]);
-        command
-    };
+    let mut holder = Command::from(crate::linux_host::namespace_command(
+        &config_dir(),
+        "unshare",
+    )?);
+    holder.args(["-Un", "tail", "-f", "/dev/null"]);
     unsafe {
         holder.as_std_mut().pre_exec(|| {
             if libc::setsid() < 0 {
@@ -1450,6 +1454,36 @@ pub(crate) async fn spawn_guest_command_with_output(
     .spawn()
 }
 
+pub(crate) async fn check_stop_sandbox(name: &str) -> io::Result<()> {
+    if !valid_agent_name(name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid agent name",
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if userns_pid(name).is_none() {
+            crate::host_runs::verified_stop_backend(name).map_err(io::Error::other)?;
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let pid = vz_stop_pid(name).await?;
+        match vm_process_token_detail(name, pid) {
+            Ok(_) => Ok(()),
+            Err(_) if crate::host_runs::process_is_absent(pid) => Ok(()),
+            Err(detail) => Err(io::Error::other(format!(
+                "VM PID does not identify this agent's helper; {detail}; {}",
+                vz_process_absence_detail(pid)
+            ))),
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    Err(unavailable())
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -1760,6 +1794,32 @@ async fn spawn_macos_guest_command(
 }
 
 #[cfg(target_os = "macos")]
+async fn vz_stop_pid(name: &str) -> io::Result<i32> {
+    // The private socket independently identifies this agent's helper when
+    // the saved PID projection is missing or stale.
+    let control = crate::host_runs::control(name, serde_json::json!({"operation":"status"}))
+        .await
+        .ok();
+    let controlled = control
+        .as_ref()
+        .filter(|value| value["agent"] == name)
+        .and_then(|value| value["pid"].as_i64())
+        .and_then(|pid| i32::try_from(pid).ok());
+    let saved = std::fs::read_to_string(config_dir().join("agents").join(name).join("vm.pid"))
+        .ok()
+        .and_then(|value| value.trim().parse::<i32>().ok());
+    let saved = saved.filter(|pid| {
+        vm_process_token(name, *pid).is_some_and(|token| {
+            std::fs::read_to_string(config_dir().join("agents").join(name).join("vm.token"))
+                .is_ok_and(|saved| saved.trim() == token)
+        })
+    });
+    controlled.or(saved).ok_or(io::Error::other(
+        "VZ helper identity is missing; inspect agent diagnostics",
+    ))
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
     if !valid_agent_name(name) {
         return Err(io::Error::new(
@@ -1774,28 +1834,7 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
     let mut first_wait_mismatch = None;
     let result = async {
         let path = config_dir().join("agents").join(name).join("vm.pid");
-        // The private socket independently identifies this agent's helper when
-        // the saved PID projection is missing or stale.
-        let control = crate::host_runs::control(name, serde_json::json!({"operation":"status"}))
-            .await
-            .ok();
-        let controlled = control
-            .as_ref()
-            .filter(|value| value["agent"] == name)
-            .and_then(|value| value["pid"].as_i64())
-            .and_then(|pid| i32::try_from(pid).ok());
-        let saved = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|value| value.trim().parse::<i32>().ok());
-        let saved = saved.filter(|pid| {
-            vm_process_token(name, *pid).is_some_and(|token| {
-                std::fs::read_to_string(config_dir().join("agents").join(name).join("vm.token"))
-                    .is_ok_and(|saved| saved.trim() == token)
-            })
-        });
-        let pid = controlled.or(saved).ok_or(io::Error::other(
-            "VZ helper identity is missing; inspect agent diagnostics",
-        ))?;
+        let pid = vz_stop_pid(name).await?;
         helper_pid = Some(pid);
         let token = vm_process_token_detail(name, pid);
         let token = match token {
@@ -2061,7 +2100,7 @@ fn vz_boot_inputs(
 #[cfg(target_os = "macos")]
 pub(crate) fn spawn_vz_helper(
     name: &str,
-    ip: &str,
+    _ip: &str,
     memory_mb: u64,
     ephemeral: bool,
 ) -> io::Result<tokio::process::Child> {
@@ -2114,9 +2153,7 @@ pub(crate) fn spawn_vz_helper(
         let _ = std::fs::remove_file(status_dir.join(marker));
     }
     std::fs::write(share.join("per-run-go"), b"")?;
-    let proxy = config
-        .join("data/sockets")
-        .join(format!("{ip}_{name}/proxy.sock"));
+    let proxy = agent_proxy_dir(name).join("proxy.sock");
     let runner = std::env::var_os("SAFEYOLO_VZ_TEST_RUNNER");
     let runner_timeout = std::env::var_os("SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS");
     let host_package = launch_context
@@ -2385,116 +2422,9 @@ pub(crate) async fn start_sandbox(
     Err(unavailable())
 }
 
-/// Reconstruct the existing attachment projection from host-owned run records
-/// and retained agent listeners. Unknown bindings remain until backend proof
-/// authorizes removal; this is not a second runtime store.
-pub(crate) fn agent_map_from_runs() -> io::Result<serde_json::Map<String, serde_json::Value>> {
-    use serde_json::json;
-    let config = crate::native_config::read(&config_path()).map_err(io::Error::other)?;
-    let root = config_dir();
-    let sockets = root.join("data/sockets");
-    let mut map = serde_json::Map::new();
-    for agent in crate::host_agents::list().map_err(io::Error::other)? {
-        for listener in &config.listeners {
-            if listener.agent_id == agent.name
-                && let Some(ip) = listener
-                    .source_id
-                    .as_deref()
-                    .filter(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
-            {
-                let expected = sockets
-                    .join(format!("{ip}_{}", agent.name))
-                    .join("proxy.sock");
-                if listener.socket_path == expected {
-                    map.insert(agent.name.clone(), json!({"ip":ip,"socket":expected}));
-                }
-            }
-        }
-        if let Ok(Some(run)) = crate::host_runs::read(&agent.name) {
-            let ip = run["ip"]
-                .as_str()
-                .filter(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok());
-            if run["agent_id"] == agent.id
-                && run["state"] != "stopped"
-                && crate::host_runs::id(&agent.name).ok().as_deref()
-                    == run["run_id"]
-                        .as_str()
-                        .map(|id| format!("safeyolo-{id}"))
-                        .as_deref()
-                && let Some(ip) = ip
-            {
-                map.insert(agent.name.clone(), json!({"ip":ip,"socket":sockets.join(format!("{ip}_{}",agent.name)).join("proxy.sock")}));
-            }
-        }
-    }
-    Ok(map)
-}
-
-pub(crate) fn update_agent_map(name: &str, ip: Option<&str>) -> io::Result<()> {
-    if !valid_agent_name(name) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "invalid agent name",
-        ));
-    }
-    let path = agent_map_path()?;
-    let _lock = lock_host_state(&path.with_file_name("agent_map.lock"))?;
-    let mut map = match std::fs::read(&path) {
-        Ok(content) => {
-            serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&content)
-                .or_else(|_| agent_map_from_runs())?
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => agent_map_from_runs()?,
-        Err(error) => return Err(error),
-    };
-    if let Some(ip) = ip {
-        if ip.parse::<std::net::Ipv4Addr>().is_err() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid agent IP",
-            ));
-        }
-        let directory = config_dir()
-            .join("data/sockets")
-            .join(format!("{ip}_{name}"));
-        std::fs::create_dir_all(&directory)?;
-        let socket = directory.join("proxy.sock");
-        let started = time::OffsetDateTime::now_utc()
-            .format(&time::format_description::well_known::Rfc3339)
-            .map_err(io::Error::other)?;
-        let started = map
-            .get(name)
-            .and_then(|entry| entry.get("started"))
-            .cloned()
-            .unwrap_or_else(|| started.into());
-        map.insert(
-            name.to_owned(),
-            serde_json::json!({"ip":ip,"started":started,"socket":socket}),
-        );
-    } else {
-        map.remove(name);
-    }
-    std::fs::create_dir_all(
-        path.parent()
-            .ok_or(io::Error::other("agent map has no parent"))?,
-    )?;
-    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
-    serde_json::to_writer_pretty(&mut temporary, &map)?;
-    use std::io::Write;
-    temporary.write_all(b"\n")?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(&path)?;
-    std::fs::File::open(
-        path.parent()
-            .ok_or(io::Error::other("agent map has no parent"))?,
-    )?
-    .sync_all()?;
-    Ok(())
-}
-
 #[cfg(all(test, target_os = "linux"))]
 #[path = "../tests/support/owned_run.rs"]
-mod guest_command_test_run;
+pub(crate) mod guest_command_test_run;
 
 #[cfg(test)]
 mod tests {
@@ -2807,6 +2737,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         in_config(temp.path().join("config.toml"), async {
             let mut child = spawn_vz_stop_test_helper(temp.path(), None).await;
+            check_stop_sandbox("alice").await.unwrap();
             let (stopped, exited) = tokio::join!(stop_sandbox("alice"), child.wait());
             stopped.unwrap();
             assert!(exited.unwrap().success());
@@ -2926,7 +2857,7 @@ mod tests {
                                 hyper::service::service_fn(|request| async {
                                     let response = crate::admin_api::respond_with_context(request, "owned-test-token", crate::admin_api::OperatorContext {
                                         tasks: &tasks, policy: None, circuits: None, stats: None, view: None, policy_path: None, instance_id: None,
-                                        command_centre: Some(&host), operator_modes: None, agent_discovery: None, listeners: &[], audit: None,
+                                        command_centre: Some(&host), operator_modes: None, agent_activity: None, listeners: &[], audit: None,
                                         client_ip: None, passthrough: None, service_audit: None, plumb: None, task_state: None,
                                     }).await.unwrap();
                                     assert_eq!(response.status(), hyper::StatusCode::INTERNAL_SERVER_ERROR);
@@ -3012,7 +2943,7 @@ mod tests {
             let share = directory.join("config-share");
             std::fs::create_dir_all(&share).unwrap();
             std::fs::create_dir(root.join("bin")).unwrap();
-            // Restricted PATH cases omit the mapper or aa-exec, but still
+            // Restricted PATH cases omit the mapper or namespace entry, but still
             // need account lookup before reaching the intended failure.
             std::os::unix::fs::symlink("/usr/bin/getent", root.join("bin/getent")).unwrap();
             std::fs::write(share.join("guest-init"), b"fixture").unwrap();
@@ -3042,18 +2973,6 @@ mod tests {
                 ),
                 ("ip", "#!/bin/sh\nexit 0\n".to_owned()),
                 ("systemctl", "#!/bin/sh\nexit 1\n".to_owned()),
-                (
-                    "aa-exec",
-                    format!(
-                        r#"#!/bin/sh
-[ "$1" = -p ] && [ "$2" = safeyolo-runsc ] && [ "$3" = -- ] && [ "$4" = unshare ] || exit 2
-printf '%s\n' "$@" > '{}/fixture-aa-exec'
-shift 3
-exec "$@"
-"#,
-                        directory.display()
-                    ),
-                ),
                 (
                     "unshare",
                     format!(
@@ -3098,9 +3017,6 @@ esac
                     ),
                 ),
             ] {
-                if name == "aa-exec" && launch == "missing-aa-exec" {
-                    continue;
-                }
                 let path = root.join("bin").join(name);
                 std::fs::write(&path, script).unwrap();
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -3141,7 +3057,7 @@ esac
                     .or_else(|_| std::fs::read(directory.join("runtime.json"))).unwrap();
                 let run: serde_json::Value = serde_json::from_slice(&record).unwrap();
                 assert_eq!(std::fs::read_to_string(directory.join("fixture-acl")).unwrap(), "prepared");
-                if launch == "missing-aa-exec" {
+                if launch == "missing-entry" {
                     assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
                     assert!(!directory.join("fixture-holder.pid").exists());
                     assert!(!directory.join("fixture-holder.json").exists());
@@ -3181,10 +3097,10 @@ esac
                         .is_ok_and(|value| value.trim() == "1"),
                     _ => panic!("unknown launch fixture: {launch}"),
                 };
-                assert_eq!(directory.join("fixture-aa-exec").exists(), apparmor);
+                assert_eq!(directory.join("fixture-namespace-entry").exists(), apparmor);
                 if apparmor {
-                    assert_eq!(std::fs::read_to_string(directory.join("fixture-aa-exec")).unwrap(),
-                        "-p\nsafeyolo-runsc\n--\nunshare\n-Un\ntail\n-f\n/dev/null\n");
+                    assert_eq!(std::fs::read_to_string(directory.join("fixture-namespace-entry")).unwrap(),
+                        "unshare\n-Un\ntail\n-f\n/dev/null\n");
                 }
                 if stop == "missing-mapper" {
                     assert!(error.contains("No such file or directory"), "{error}");
@@ -3239,17 +3155,49 @@ esac
             ("apparmor", "succeeded"),
             ("apparmor", "failed"),
             ("apparmor", "missing-mapper"),
-            ("missing-aa-exec", "succeeded"),
+            ("missing-entry", "succeeded"),
         ] {
             let root = tempfile::tempdir().unwrap();
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
+            // Prepare profiles before restricting the child's PATH to omit the
+            // mapper: loading and removing the fixture profile still need sudo.
+            let _profile = if launch != "missing-entry" {
+                std::fs::create_dir(root.path().join("host")).unwrap();
+                let entry = root.path().join("host/namespace-entry");
+                std::fs::write(&entry, format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}/fixture-namespace-entry'\nexec \"$@\"\n",
+                    root.path().join("agents/alice").display(),
+                )).unwrap();
+                std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o755)).unwrap();
+                (launch != "direct").then(|| crate::linux_host::TestNamespaceProfile::load(&entry))
+            } else {
+                None
+            };
+            // A direct launch needs an allowed parent on restricted hosts.
+            // The native and apparmor rows still enter from an unconfined parent.
+            let direct_entry = root.path().join("direct-entry");
+            let _direct_profile = if launch == "direct" {
+                std::fs::write(&direct_entry, b"#!/bin/sh\nexec \"$@\"\n").unwrap();
+                std::fs::set_permissions(&direct_entry, std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
+                Some(crate::linux_host::TestNamespaceProfile::load(&direct_entry))
+            } else {
+                None
+            };
+            let mut runner = if launch == "direct" {
+                let mut runner = std::process::Command::new(&direct_entry);
+                runner.arg(std::env::current_exe().unwrap());
+                runner
+            } else {
+                std::process::Command::new(std::env::current_exe().unwrap())
+            };
+            let output = runner
                 .args(["--exact", TEST, "--nocapture"])
                 .env("SAFEYOLO_TEST_FAILED_START_ROOT", root.path())
                 .env("SAFEYOLO_TEST_FAILED_START_STOP", stop)
                 .env("SAFEYOLO_TEST_FAILED_START_LAUNCH", launch)
                 .env(
                     "PATH",
-                    if stop == "missing-mapper" || launch == "missing-aa-exec" {
+                    if stop == "missing-mapper" || launch == "missing-entry" {
                         root.path().join("bin").display().to_string()
                     } else {
                         format!("{}:/usr/bin:/bin", root.path().join("bin").display())

@@ -49,13 +49,13 @@ RELOADED_CONFIG["policy_hash"] = "sha256:16e3ee46e6a12191"
 
 def read_config(proxy, parent, expected, *, agent="alice", status=200):
     """Retain exact four-field JSON order and prove no local API egress."""
-    before = parent.accepts, len(proxy.events("proxy.egress"))
+    before = parent.accepts, len(proxy.events("traffic.egress"))
     forged = "bob" if agent == "alice" else "alice"
     path = "/config" if agent == "alice" else f"/config///?agent={forged}&unused=%FF"
     result = api_request(proxy, path, agent=agent, headers={"X-SafeYolo-Agent": forged})
     assert_api_response(result, status, expected)
     assert result[2] == json.dumps(expected).encode()
-    assert (parent.accepts, len(proxy.events("proxy.egress"))) == before
+    assert (parent.accepts, len(proxy.events("traffic.egress"))) == before
     return result[2]
 
 
@@ -68,7 +68,7 @@ def test_agent_api_config_fields_and_hash_are_shared(proxy_backend, tmp_path, so
             first = read_config(proxy, parent, expected)
             assert read_config(proxy, parent, expected, agent="bob") == first
             assert parent.accepts == 0 and parent.requests == []
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []
 
 
 @pytest.mark.parametrize("method,status,body", [
@@ -92,7 +92,7 @@ def test_agent_api_config_reload_changes_fields_and_hash_then_retains_last_valid
             replace_policy(proxy, proxy_backend, directory, '{"permissions":false}', valid=False)
             assert read_config(proxy, parent, RELOADED_CONFIG) == changed
             assert parent.accepts == 0 and parent.requests == []
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []
 
 
 def test_agent_api_config_hash_includes_unprojected_iam_permissions(proxy_backend, tmp_path):
@@ -107,13 +107,13 @@ def test_agent_api_config_hash_includes_unprojected_iam_permissions(proxy_backen
             read_config(proxy, parent, allow_config)
             result = send_request(proxy.paths["alice"], "http://alpha.invalid/hash-metadata")
             assert result[0] == 200 and result[2] == b"hello"
-            assert parent.accepts == 1 and len(proxy.events("proxy.egress")) == 1
+            assert parent.accepts == 1 and len(proxy.events("traffic.egress")) == 1
             permission["effect"] = "deny"
             replace_policy(proxy, proxy_backend, directory, json.dumps(source))
             read_config(proxy, parent, deny_config, agent="bob")
             result = send_request(proxy.paths["bob"], "http://alpha.invalid/hash-metadata")
             assert_rejection(*result, 403, "alpha.invalid")
-            assert parent.accepts == 1 and len(proxy.events("proxy.egress")) == 1
+            assert parent.accepts == 1 and len(proxy.events("traffic.egress")) == 1
             for field in ("credential_rules", "scan_patterns", "addons"):
                 assert allow_config[field] == deny_config[field]
             assert allow_config["policy_hash"] != deny_config["policy_hash"]
@@ -146,4 +146,4 @@ def test_agent_api_config_only_serializes_projected_temporal_values(proxy_backen
                 for agent in ("alice", "bob"):
                     read_config(proxy, parent, recovered, agent=agent)
             assert parent.accepts == 0 and parent.requests == []
-            assert proxy.events("proxy.egress") == []
+            assert proxy.events("traffic.egress") == []

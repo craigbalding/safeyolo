@@ -23,10 +23,10 @@ use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
+mod agents;
 mod approvals;
 pub(crate) mod coord;
 mod declarations;
-mod discovery;
 mod explain;
 mod flows;
 mod gateway;
@@ -38,8 +38,8 @@ pub use memory::MemoryContext;
 
 pub(crate) use declarations::respond_with_body_and_audit_id_with_plumb;
 pub use declarations::{
-    BodyObservation, Controls, DeclarationContext, RequestBody, TraceContext, respond_with_body,
-    respond_with_body_and_audit_id,
+    AgentReportContext, BodyObservation, Controls, DeclarationContext, RequestBody, TraceContext,
+    respond_with_body, respond_with_body_and_audit_id,
 };
 pub use explain::ExplainFailure;
 pub use flows::FlowFailure;
@@ -62,6 +62,8 @@ const ENDPOINTS: &[&str] = &[
     "/config",
     "/explain",
     "/approvals/{request_id}",
+    "/approvals",
+    "/approvals/{approval_id}/resolve (POST)",
     "/approvals/{request_id}/prepare (POST)",
     "/trace",
     "/memory",
@@ -140,7 +142,7 @@ pub enum Failure {
     ContentDecoding(crate::http_content::ContentError),
     FlowReporting(FlowFailure),
     ExplainReporting(ExplainFailure),
-    DiscoveryReporting(crate::agent_discovery::ErrorKind),
+    AgentReporting,
     MemoryReporting(crate::memory_monitor::ErrorKind),
     TraceReporting(crate::trace::ErrorKind),
     GatewayReporting(crate::services::ServiceViewError),
@@ -290,7 +292,7 @@ impl AuditIntent {
             ),
             AuditKind::CoordPublishOutcomeUnknown => (
                 "coord.publish_outcome_unknown",
-                Kind::Security,
+                Kind::Coord,
                 Severity::High,
                 "agent-api",
                 Some(Decision::Deny),
@@ -381,8 +383,8 @@ pub struct Outcome<'a> {
     pub response: Response<'a>,
     pub audit: Option<AuditIntent>,
     /// The process-owned handler already attempted this canonical audit. The
-    /// intent remains attached so the diagnostic `proxy.agent_api` record can
-    /// retain its audit and failure markers without submitting a second event.
+    /// intent remains attached so `agent.api_response` can retain its event
+    /// name and failure markers without submitting a second copy of the intent.
     pub audit_owned: bool,
     pub blocked_by: &'static str,
     pub handler_owned: bool,
@@ -459,6 +461,7 @@ impl Outcome<'_> {
 fn agent(identity: Identity<'_>) -> Option<&str> {
     match identity {
         Identity::Resolved(value) => Some(value),
+        Identity::Current(run) => Some(&run.agent),
         _ => None,
     }
 }

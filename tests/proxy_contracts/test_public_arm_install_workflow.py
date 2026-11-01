@@ -40,7 +40,8 @@ def run_script(script, env):
 def test_public_mode_selects_one_arm_job_and_keeps_old_mode():
     dispatch = WORKFLOW['on']['workflow_dispatch']['inputs']['mode']
     assert dispatch['default'] == 'retained'
-    assert dispatch['options'] == ['retained', 'draft-offline', 'public-install']
+    assert dispatch['options'] == ['retained', 'draft-offline', 'public-install',
+                                   'clean-public-install', 'installed-update']
     assert WORKFLOW['jobs']['retained']['if'] == "github.event_name == 'workflow_dispatch' && inputs.mode == 'retained'"
     guest = WORKFLOW['on']['workflow_dispatch']['inputs']['guest']
     assert guest['default'] == 'original-g1'
@@ -239,16 +240,19 @@ def test_current_download_and_installer_refusal_keep_source_binding_and_reached_
     monkeypatch.setenv('DOWNLOAD_EXIT', '37' if fault == 'transport' else '0')
     assert module.main() == 1
     record = json.loads((work / 'private/result.json').read_text())
-    assert record['native_source'] == WORKFLOW['env']['HOST_REVISION'] == module.SOURCE
-    assert record['expected_host_package']['sha256'] == WORKFLOW['env']['HOST_SHA256']
-    assert record['expected_host_package']['bytes'] == int(WORKFLOW['env']['HOST_BYTES'])
+    source = 'c94e991682e021b1f6bddc01a83722bcf36b36db'
+    assert record['native_source'] == source
+    assert record['expected_host_package'] == {
+        'source': source, 'machine': 'aarch64', 'bytes': 177934638,
+        'sha256': '97e565ab9a6ab194fb2ac512296f834204a81166fefd125d64f0a658d6875eba',
+    }
     assert (work / 'download-args').read_text().splitlines() == module.DOWNLOAD[1:]
     assert module.DOWNLOAD[-1] == f'https://raw.githubusercontent.com/craigbalding/safeyolo/{module.BOOTSTRAP}/install.sh'
     download = record['product_commands'][0]
     assert download['exit'] == (37 if fault == 'transport' else 0)
     assert len(record['product_commands']) == (1 if fault == 'transport' else 2)
     if fault == 'installer':
-        assert module.LAUNCH == ['bash', 'install-safeyolo.sh', '--release', 'host-' + module.SOURCE,
+        assert module.LAUNCH == ['bash', 'install-safeyolo.sh', '--release', 'host-' + source,
                                  '--launch', '.', '--name', 'first', '--harness', 'claude', '--launcher', 'tmux-window']
         assert (work / 'installer-args').read_text().splitlines() == module.LAUNCH[2:]
         cold = record['product_commands'][1]
@@ -332,6 +336,8 @@ def metadata_inputs(tmp_path):
     (tree / 'bash-link').symlink_to('usr/bin/bash')
     (assets / 'cache-paths.txt').write_text('/cache\n')
     (share / 'cache-paths.txt').write_text('/cache\n')
+    # Match the installer's cache-copy mode even after a private observer run.
+    (share / 'cache-paths.txt').chmod(0o644)
     (share / 'rootfs-tree').symlink_to(tree)
     actual = observer.observe(root, assets)
     assert actual['installed_rootfs_metadata']['type'] == stat.S_IFLNK

@@ -45,7 +45,6 @@ SCHEMA = 1
 COMMAND_TIMEOUT = 20.0
 OUTPUT_LIMIT = 4_096
 JSON_LIMIT = 4 * 1024 * 1024
-AGENT_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 class SmokeError(RuntimeError):
@@ -76,8 +75,9 @@ def _run(
     env: dict[str, str] | None = None,
     cwd: Path | None = None,
     timeout: float = COMMAND_TIMEOUT,
+    stdout_limit: int | None = OUTPUT_LIMIT,
 ) -> subprocess.CompletedProcess[str]:
-    """Run one bounded command without a shell and cap retained output."""
+    """Run a bounded command without a shell; optionally retain whole stdout."""
     try:
         result = subprocess.run(
             command,
@@ -95,7 +95,7 @@ def _run(
     return subprocess.CompletedProcess(
         result.args,
         result.returncode,
-        (result.stdout or "")[-OUTPUT_LIMIT:],
+        (result.stdout or "")[-stdout_limit:] if stdout_limit is not None else (result.stdout or ""),
         (result.stderr or "")[-OUTPUT_LIMIT:],
     )
 
@@ -244,7 +244,7 @@ def _native_config(path: Path, cwd: Path) -> dict[str, Any]:
         for key, default in (("policy_file", "policy.toml"), ("readiness_file", "data/ready.json"),
                              ("admin_api_token_file", "data/admin_token"), ("flow_store_db_path", "logs/flows.sqlite3"),
                              ("circuit_state_file", "data/circuits.json"),
-                             ("audit_log_path", "logs/audit.jsonl"), ("event_log", "logs/events.jsonl")):
+                             ("audit_log_path", "logs/audit.jsonl")):
             native[key] = str(_absolute_path(native.get(key, default), cwd))
         native.setdefault("listeners", [])
         for key in ("upstream_ca_file", "tls_ca_file", "gateway_services_dir", "gateway_builtin_services_dir"):
@@ -578,28 +578,37 @@ def _authenticated_runtime_identity(
     return {"status": "authenticated", "instance_id": value["instance_id"], "schema_version": 1}
 
 
-def _agent_map(config_dir: Path) -> list[dict[str, Any]]:
-    """Derive trusted listener paths from the existing agent map identity."""
-    path = config_dir / "data" / "agent_map.json"
-    if not path.exists():
-        return []
-    value = _read_json(path, "agent map")
+def _agent_listeners(config_dir: Path, *, native: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Read listener-owned identity from the instance's native configuration."""
+    path = config_dir / "config.toml"
+    if native is None:
+        if not path.exists():
+            return []
+        native = _native_config(path, config_dir)
     listeners = []
-    sockets_dir = config_dir / "data" / "sockets"
-    for name, entry in value.items():
-        if not isinstance(name, str) or AGENT_NAME.fullmatch(name) is None:
-            raise SmokeError(f"agent map has an invalid agent name: {name!r}")
-        if not isinstance(entry, dict) or not isinstance(entry.get("ip"), str):
-            raise SmokeError(f"agent map entry has no IPv4 identity: {name}")
-        try:
-            ipaddress.IPv4Address(entry["ip"])
-        except ipaddress.AddressValueError as exc:
-            raise SmokeError(f"agent map entry has an invalid IPv4 identity: {name}") from exc
-        expected = sockets_dir / f"{entry['ip']}_{name}" / "proxy.sock"
-        declared = entry.get("socket")
-        if declared is not None and _absolute_path(declared, config_dir) != expected:
-            raise SmokeError(f"agent map socket disagrees with derived identity: {name}")
-        listeners.append({"agent_id": name, "ip": entry["ip"], "path": str(expected)})
+    for entry in native["listeners"]:
+        ip = entry.get("source_id")
+        if ip is not None and not isinstance(ip, str):
+            raise SmokeError("native Rust configuration listener has an invalid source_id")
+        if ip is None:
+            # Explicit development listeners may use the older conventional
+            # path instead of a source_id. Match the native listener fallback.
+            socket_path = Path(entry["socket_path"])
+            address, separator, name = socket_path.parent.name.partition("_")
+            if (socket_path.name == "proxy.sock" and separator
+                    and re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", name.removesuffix("\n"))):
+                try:
+                    ip = str(ipaddress.IPv4Address(address))
+                except ipaddress.AddressValueError:
+                    # An arbitrary configured path has no implied source IP.
+                    pass
+        if ip is not None:
+            try:
+                ipaddress.ip_address(ip)
+            except ValueError:
+                # An opaque declaration slot is not an IP address.
+                ip = None
+        listeners.append({"agent_id": entry["agent_id"], "ip": ip, "path": entry["socket_path"]})
     return listeners
 
 
@@ -671,7 +680,8 @@ def _substrate_identity(config_dir: Path) -> dict[str, Any]:
         cli = config_dir / "bin/safeyolo"
         if cli.is_file():
             try:
-                inspection = _run([str(cli), "--root", str(config_dir), "doctor"], timeout=15)
+                # Active per-agent pipeline traces exceed the diagnostic tail.
+                inspection = _run([str(cli), "--root", str(config_dir), "doctor"], timeout=15, stdout_limit=None)
                 if inspection.returncode:
                     raise SmokeError(f"doctor exited {inspection.returncode}")
                 doctor = json.loads(inspection.stdout)
@@ -811,13 +821,13 @@ def _discover(args: argparse.Namespace, *, require_running: bool = False) -> tup
             require_authenticated_identity=args.mode == "attached",
         )
         report["guest_ingress"] = {
-            "agents": _agent_map(config_dir),
+            "agents": _agent_listeners(config_dir, native=native),
             "scope": "host-driven UDS only; guest isolation is unverified",
         }
         if require_running:
             agents = report["guest_ingress"]["agents"]
             if not agents:
-                raise SmokeError("agent map has no registered guest ingress listener")
+                raise SmokeError("native configuration has no guest ingress listener")
             selected = next((item for item in agents if item["agent_id"] == args.agent), None) if args.agent else agents[0]
             if selected is None:
                 raise SmokeError(f"requested guest ingress agent is not registered: {args.agent}")

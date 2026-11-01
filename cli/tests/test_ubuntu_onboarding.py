@@ -1,4 +1,8 @@
-"""Focused observer checks; no SafeYolo product, external network, VM or provider is run."""
+"""Focused observer checks; no SafeYolo product, external network, VM or provider is run.
+
+Cold-setup checks retain the exact 621b launcher fixture used by that published
+diagnostic. New default launchers do not change its source pin or past evidence.
+"""
 
 import errno
 import http.server
@@ -26,6 +30,29 @@ spec = importlib.util.spec_from_file_location("observer", Path(__file__).resolve
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
+# Selected screen markers from the retained b6d Codex 0.163.0 resumption.
+CODEX_0163_SCREEN = "\n".join([
+    "  >_ OpenAI Codex (v0.163.0)",
+    "     /workspace",
+    "› Ask Codex to do anything",
+    "  GPT-6.1-Sol default · /workspace",
+    "  ? for shortcuts                                     ⚠ 2 warnings · f2 to view",
+]).encode()
+# The 9158 screen retained the same placeholder during account/read bootstrap.
+CODEX_0163_LOADING_SCREEN = CODEX_0163_SCREEN.replace(b"GPT-6.1-Sol default", b"loading")
+
+
+def _cold_setup_bash():
+    # These guest-wrapper fixtures need the Bash clock used by the observer;
+    # macOS's system Bash predates EPOCHREALTIME.
+    for bash in (shutil.which("bash"), "/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/bin/bash"):
+        if bash and Path(bash).is_file():
+            result = subprocess.run([bash, "-c", '[[ ${EPOCHREALTIME:-} =~ ^[0-9]+[.][0-9]+$ ]]'],
+                                    capture_output=True, timeout=5)
+            if result.returncode == 0:
+                return bash
+    raise AssertionError("Cold-setup fixture needs an existing Bash with EPOCHREALTIME")
+
 
 class ObserverChecks(unittest.TestCase):
     def setUp(self):
@@ -44,6 +71,224 @@ class ObserverChecks(unittest.TestCase):
         m.cli.write_text('#!/bin/sh\nprintf "observer-test-version\\n"\n')
         m.cli.chmod(0o755)
         (m.project / "onboarding-fixture.txt").write_text("SAFEYOLO_ONBOARDING_FIXTURE\n")
+
+    def test_cold_setup_wrappers_preserve_real_command_success_repair_and_failure(self):
+        bash = _cold_setup_bash()
+        source = Path(__file__).resolve().parents[2] / "cli/tests/fixtures/claude-host-setup-621b.sh"
+        command = source.read_text().split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0]
+        tools = m.private / "tools"
+        tools.mkdir()
+        mise = tools / "mise"
+        mise.write_text('''#!/bin/bash
+case "$1 $2" in
+  'settings get') exit 0;;
+  'latest --installed') echo 2.1.235;;
+  'latest '*) echo 2.1.235;;
+  'use -g')
+    if [[ $3 == --force ]]; then
+      [[ $STUB_CASE != fail ]] || exit 31
+      [[ $STUB_CASE == repair ]] || touch "$HOME/installed"
+    fi;;
+  'where '*) echo "$HOME/install";;
+  'exec '*) touch "$HOME/installed";;
+esac
+''')
+        claude = tools / "claude"
+        claude.write_text('#!/bin/bash\n[[ -f $HOME/installed ]] || exit 9\necho "2.1.235 (Claude Code)"\n')
+        for tool in [mise, claude]:
+            tool.chmod(0o755)
+        for case in ["success", "repair", "fail"]:
+            with self.subTest(case=case):
+                observed = []
+                for instrument in [False, True]:
+                    home = m.private / f"{case}-{instrument}"
+                    (home / "install/node_modules/@anthropic-ai/claude-code").mkdir(parents=True)
+                    (home / "install/node_modules/@anthropic-ai/claude-code/install.cjs").touch()
+                    script = home / ".safeyolo-command"
+                    script.write_text(command)
+                    if instrument:
+                        m.instrument_cold_setup(script)
+                    result = subprocess.run([bash, script, "--version"], capture_output=True, text=True, timeout=10,
+                        env={**os.environ, "HOME": str(home), "PATH": str(tools) + ":/usr/bin:/bin", "STUB_CASE": case})
+                    observed.append((result.returncode, result.stdout, result.stderr))
+                    if instrument:
+                        events = (home / ".safeyolo-cold-setup.tsv").read_text()
+                        self.assertIn("node-configure-install\tend\t", events)
+                        self.assertIn("claude-configure-install\tend\t", events)
+                        if case == "fail":
+                            self.assertTrue(events.rstrip().endswith("\t31"))
+                            self.assertNotIn("claude-postinstall", events)
+                        elif case == "repair":
+                            self.assertIn("claude-postinstall\tend\t", events)
+                self.assertEqual(observed[0], observed[1])
+                self.assertEqual(observed[1][0], 31 if case == "fail" else 0)
+
+    def test_cold_setup_wrappers_preserve_overlap_wait_status_and_repair(self):
+        bash = _cold_setup_bash()
+        source = Path(__file__).resolve().parents[2] / "cli/tests/fixtures/claude-host-setup-621b.sh"
+        self.assertEqual(m.digest(source), m.COLD_SETUP_SCRIPT_SHA256)
+        command = source.read_text().split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0]
+        tools = m.private / "tools"
+        tools.mkdir()
+        mise = tools / "mise"
+        mise.write_text('''#!/bin/bash
+case "$1 $2" in
+  'settings get')
+    case "$3" in npm.package_manager) echo auto;; npm.shell_out|raw) echo false;; esac;;
+  'config ls'|'ls --installed') exit 0;;
+  'latest --installed'|'latest '*) echo 2.1.235;;
+  'install node@22')
+    echo "$$" > "$HOME/node-pid"
+    touch "$HOME/node-started"
+    for ((i=0; i<500; i++)); do
+      [[ ! -f $HOME/release-node ]] || break
+      sleep 0.01
+    done
+    [[ -f $HOME/claude-finished && -f $HOME/release-node ]] || exit 90
+    touch "$HOME/node-finished"
+    [[ $STUB_CASE != node-fail ]] || exit 32;;
+  'install --force')
+    for ((i=0; i<500; i++)); do
+      [[ ! -f $HOME/node-started ]] || break
+      sleep 0.01
+    done
+    [[ -f $HOME/node-started ]] || exit 91
+    [[ $STUB_CASE != success ]] || touch "$HOME/installed"
+    touch "$HOME/claude-finished"
+    [[ $STUB_CASE != claude-fail ]] || exit 31;;
+  'use -g')
+    [[ -f $HOME/node-finished && -f $HOME/claude-finished ]] || exit 92
+    touch "$HOME/configured";;
+  'where '*) echo "$HOME/install";;
+  'exec '*) touch "$HOME/installed" "$HOME/repaired";;
+esac
+''')
+        claude = tools / "claude"
+        claude.write_text('#!/bin/bash\n[[ -f $HOME/installed ]] || exit 9\necho "2.1.235 (Claude Code)"\n')
+        for tool in [mise, claude]:
+            tool.chmod(0o755)
+        for case in ["success", "repair", "node-fail", "claude-fail"]:
+            with self.subTest(case=case):
+                observed = []
+                for instrument in [False, True]:
+                    home = m.private / f"{case}-{instrument}"
+                    (home / "install/node_modules/@anthropic-ai/claude-code").mkdir(parents=True)
+                    (home / "install/node_modules/@anthropic-ai/claude-code/install.cjs").touch()
+                    script = home / ".safeyolo-command"
+                    script.write_text(command)
+                    if instrument:
+                        m.instrument_cold_setup(script)
+                    process = subprocess.Popen([bash, script, "--version"], stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, text=True,
+                        env={**os.environ, "HOME": str(home), "PATH": str(tools) + ":/usr/bin:/bin", "STUB_CASE": case})
+                    try:
+                        deadline = time.monotonic() + 3
+                        while not (home / "claude-finished").exists() and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        self.assertTrue((home / "claude-finished").exists())
+                        self.assertIsNone(process.poll(), "The owned Node acquisition must finish before exit")
+                        self.assertFalse((home / "configured").exists())
+                        self.assertFalse((home / "repaired").exists())
+                    finally:
+                        (home / "release-node").touch()
+                        stdout, stderr = process.communicate(timeout=4)
+                    observed.append((process.returncode, stdout, stderr))
+                    self.assertTrue((home / "node-finished").exists())
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(int((home / "node-pid").read_text()), 0)
+                    failed = case.endswith("fail")
+                    self.assertEqual((home / "configured").exists(), not failed)
+                    self.assertEqual((home / "repaired").exists(), case == "repair")
+                    if instrument:
+                        events = [line.split("\t") for line in (home / ".safeyolo-cold-setup.tsv").read_text().splitlines()]
+                        stamps = {(label, event): float(epoch) for label, event, epoch, status in events}
+                        statuses = {label: int(status) for label, event, epoch, status in events if event == "end"}
+                        self.assertLess(stamps["claude-acquire-install", "start"], stamps["node-acquire-install", "end"])
+                        self.assertLess(stamps["node-acquire-install", "start"], stamps["claude-acquire-install", "end"])
+                        self.assertEqual(statuses["node-acquire-install"], 32 if case == "node-fail" else 0)
+                        self.assertEqual(statuses["claude-acquire-install"], 31 if case == "claude-fail" else 0)
+                        self.assertEqual(statuses["node-acquisition-wait"], statuses["node-acquire-install"])
+                        self.assertEqual(sum(label == "tools-configure" and event == "end"
+                                             for label, event, epoch, status in events), 0 if failed else 1)
+                self.assertEqual(observed[0], observed[1])
+                self.assertEqual(observed[1][0], {"node-fail": 32, "claude-fail": 31}.get(case, 0))
+
+    def test_cold_setup_stops_at_the_first_failed_command(self):
+        from types import SimpleNamespace
+
+        def failed(label, args, timeout, private_output=False):
+            self.assertTrue(private_output)
+            row = {"label": label, **m.stamp(), "exit": 22, "ended": m.stamp()}
+            m.x["observations"].append(row)
+            return row
+
+        with patch.object(m, "observe", autospec=True, side_effect=failed) as run:
+            m.cold_setup_run(SimpleNamespace(cold_seconds=900), m.COLD_SETUP_PACKAGE)
+        run.assert_called_once()
+        self.assertEqual(m.x["diagnostic_failure"]["step"], "bootstrap-download")
+        self.assertEqual(m.x["diagnostic_failure"]["exit"], 22)
+        self.assertEqual(m.x["bootstrap_source"], m.COLD_SETUP_PACKAGE["source"])
+        self.assertEqual(run.call_args.args[1][-1],
+            "https://github.com/craigbalding/safeyolo/releases/download/host-"
+            + m.COLD_SETUP_PACKAGE["source"] + "/install-safeyolo.sh")
+        self.assertEqual(m.x["expected_guest"], m.COLD_SETUP_GUEST)
+
+    def test_cold_setup_rejects_changed_bootstrap_before_package_execution(self):
+        from types import SimpleNamespace
+
+        (m.project / "install-safeyolo.sh").write_text("unexpected release bytes")
+        with patch.object(m, "observe", autospec=True, return_value={"exit": 0, **m.stamp(), "ended": m.stamp()}) as run:
+            with self.assertRaisesRegex(ValueError, "Released bootstrap differs"):
+                m.cold_setup_run(SimpleNamespace(cold_seconds=900), m.COLD_SETUP_PACKAGE)
+        run.assert_called_once()
+
+    def test_cold_setup_rejects_unobserved_wait_route_without_rewriting_command(self):
+        source = Path(__file__).resolve().parents[2] / "cli/tests/fixtures/claude-host-setup-621b.sh"
+        command = source.read_text().split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0]
+        script = m.private / "command"
+        changed = command.replace('wait "$sy_node_pid"', "wait")
+        script.write_text(changed)
+        with self.assertRaisesRegex(ValueError, "node-acquisition-wait"):
+            m.instrument_cold_setup(script)
+        self.assertEqual(script.read_text(), changed)
+
+    def test_cold_setup_selects_new_package_before_existing_installation_refusal(self):
+        home = Path(self.scratch.name) / "home"
+        root = home / ".safeyolo"
+        root.mkdir(parents=True)
+        sentinel = root / "policy.toml"
+        sentinel.write_text("existing policy")
+        result = self.observer_cli(home, "--cold-setup-only")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        record = json.loads((home / "observation/result.json").read_text())
+        self.assertEqual(record["expected_host_package"], m.COLD_SETUP_PACKAGE)
+        self.assertEqual(record["native_source"], m.COLD_SETUP_PACKAGE["source"])
+        self.assertEqual(record["product_commands"], [])
+        self.assertEqual(sentinel.read_text(), "existing policy")
+
+    def test_cold_setup_retains_incomplete_tool_intervals_without_private_output(self):
+        home = m.root / "agents/first/home"
+        home.mkdir(parents=True)
+        (home / ".safeyolo-cold-setup.tsv").write_text(
+            "node-acquire-install\tstart\t1792689000.000001\t\n"
+            "node-acquire-install\tend\t1792689002.100002\t0\n"
+            "claude-acquire-install\tstart\t1792689002.200003\t\n")
+        (m.private / "harness-cold-setup.stderr").write_text("PRIVATE_AUTH_SENTINEL")
+        (m.private / "harness-cold-setup.stdout").write_text("2.1.306 (Claude Code)\n")
+        (m.private / "guest-mise-version.stdout").write_text("2026.10.13 linux-arm64 (build metadata)\n")
+        m.cold_setup_operands()
+        self.assertEqual(len(m.x["cold_setup_tool_events"]), 3)
+        self.assertIsNone(m.x["cold_setup_tool_events"][-1]["exit"])
+        self.assertEqual(m.x["mise_version"], "2026.10.13")
+        self.assertEqual(m.x["claude_version"], "2.1.306")
+        self.assertNotIn("PRIVATE_AUTH_SENTINEL", m.out.read_text())
+        self.assertNotIn("build metadata", m.out.read_text())
+        (m.private / "harness-cold-setup.stdout").write_text("PRIVATE_AUTH_SENTINEL")
+        (m.private / "guest-mise-version.stdout").write_text("PRIVATE_AUTH_SENTINEL")
+        m.cold_setup_operands()
+        self.assertIsNone(m.x["mise_version"])
+        self.assertIsNone(m.x["claude_version"])
+        self.assertNotIn("PRIVATE_AUTH_SENTINEL", m.out.read_text())
 
     def canonical_task(self, error=None):
         # Operator7955 recovered these four redacted producer records from
@@ -77,6 +322,108 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual(m.x["counts"]["required_reading_words"], len(m.SIGNED_OUT_PROSE.split()))
         self.assertNotIn("cold_total_to_first_task_seconds", m.x["timings"])
         self.assertIn("do not measure human", m.x["timings"]["wait_limit"])
+
+    def test_acquisition_samples_survive_staging_cleanup_and_keep_overlapping_growth(self):
+        m.archive = m.private / "cache/safeyolo-linux-arm64-production.tar.gz"
+        stage = m.archive.parent / "acquire.test"
+        stage.mkdir(parents=True)
+        blobs = m.store / "blobs/sha256"
+        blobs.mkdir(parents=True)
+        host = stage / m.archive.name
+        auxiliary = stage / "guest-download.tar.gz"
+        guest = blobs / ".tmpguest"
+        for path in [host, auxiliary, guest]:
+            path.write_bytes(b"start")
+        m.sample_files("cold")
+        for path in [host, auxiliary, guest]:
+            path.write_bytes(b"completed payload")
+        m.sample_files("cold")
+        committed = blobs / m.digest(guest)
+        guest.rename(committed)
+        m.sample_files("cold")
+        host.rename(m.archive)
+        shutil.rmtree(stage)
+        m.sample_files("cold")
+        m.acquisition_accounting()
+        saved = json.loads(m.out.read_text())
+        # Raw evidence is already durable, even if a later product assertion fails.
+        self.assertEqual(len(saved["acquisition_files"]), 3)
+        self.assertTrue(all(row.get("first_absent") for row in saved["acquisition_files"].values()))
+        self.assertEqual({row["kind"] for row in m.x["acquisition"]["overlaps"]},
+                         {"guest-transfer", "auxiliary-transfer"})
+        self.assertTrue(all(row["observed_growth_span_overlap_seconds"] > 0
+                            for row in m.x["acquisition"]["overlaps"]))
+        facts = m.x["acquisition"]["committed_files"]
+        self.assertEqual([row["boundary"] for row in facts],
+                         ["blobs/" + committed.name, "host-archive-verified"])
+        self.assertEqual(facts[0]["inode"], next(row["inode"] for row in saved["acquisition_files"].values()
+                                               if row["kind"] == "guest-transfer"))
+
+    def test_missing_acquisition_samples_do_not_establish_serial_transfer_or_readiness(self):
+        m.acquisition_accounting()
+        self.assertEqual(m.x["acquisition"]["overlaps"], [])
+        self.assertIn("does not prove serial", m.x["acquisition"]["limits"])
+        m.signed_out_accounting()
+        self.assertIsNone(m.x["timings"]["cold_product_to_input_ready_seconds"])
+
+    def test_input_accounting_includes_required_preparation_and_leaves_unknown_waits(self):
+        m.x.update(product_commands=[{"at": "2026-10-23T00:00:10+00:00", "monotonic": 10},
+                                    {"phase": "cold", "input_ready": {"at": "2026-10-23T00:00:30+00:00", "monotonic": 30}}],
+            preparation={"commands": [{"role": "required-user", "started_at": "2026-10-23T00:00:00+00:00"}],
+                         "decisions": [], "required_reading": [{"text": "Required preparation", "seen_at": "2026-10-23T00:00:00+00:00"}]})
+        m.signed_out_accounting()
+        self.assertEqual(m.x["counts"]["total_required_user_commands_to_input"], 3)
+        self.assertEqual(m.x["counts"]["required_reading_words"], 2)
+        self.assertEqual(m.x["timings"]["cold_product_to_input_ready_seconds"], 20)
+        self.assertEqual(m.x["timings"]["cold_total_to_input_ready_seconds"], 30)
+        self.assertIsNone(m.x["timings"]["human_reading_seconds"])
+        self.assertIsNone(m.x["timings"]["provider_wait_seconds"])
+        m.x["preparation"]["commands"][0]["started_at"] = None
+        m.signed_out_accounting()
+        self.assertIsNone(m.x["timings"]["cold_total_to_input_ready_seconds"])
+
+    def test_codex_input_detection_rejects_signin_trust_failures_and_banner_only(self):
+        with patch.object(m, "HARNESS", "codex"):
+            for screen in [CODEX_0163_SCREEN,
+                           "OpenAI Codex (v0.163.0)\nmodel: gpt-6\ndirectory: /workspace\n› ".encode()]:
+                with self.subTest(screen=screen):
+                    self.assertEqual(m.login_label(screen), ["Codex input display"])
+                    for invalid in [b"OpenAI Codex v0.163.0", screen.replace("›".encode(), b""),
+                                    screen.replace(b"OpenAI Codex", b"unrelated banner"),
+                                    *(screen + text for text in [b"Sign in", b"Log in", b"Trust this workspace?",
+                                                                 b"Trust the directory?", b"Error: request failed", b"Reconnecting...",
+                                                                 b"account/read failed during TUI bootstrap: workspace routing discovery failed"])]:
+                        self.assertEqual(m.login_label(invalid), [])
+            self.assertEqual(m.login_label(CODEX_0163_LOADING_SCREEN), [])
+
+    def test_prepared_codex_baseline_accepts_only_owned_adopted_auth_without_reading_it(self):
+        codex = m.root / "agents/first/home/.codex"
+        codex.mkdir(parents=True)
+        auth = codex / "auth.json"
+        auth.write_text("not read by the observer")
+        auth.chmod(0o600)
+        marker = codex / ".safeyolo-provenance.json"
+        marker.write_text(json.dumps({"state": "agent-local"}))
+        marker.chmod(0o600)
+        original = Path.read_text
+        def no_auth_read(path, *args, **kwargs):
+            self.assertNotEqual(path, auth)
+            return original(path, *args, **kwargs)
+        with patch.object(Path, "read_text", no_auth_read):
+            self.assertTrue(m.codex_auth_only_root())
+        extra = m.root / "agents/first/home/.mise"
+        extra.mkdir()
+        self.assertFalse(m.codex_auth_only_root())
+        extra.rmdir()
+        auth.chmod(0o644)
+        self.assertFalse(m.codex_auth_only_root())
+        auth.chmod(0o600)
+        marker.write_text(json.dumps({"state": "legacy-unknown"}))
+        self.assertFalse(m.codex_auth_only_root())
+        marker.write_text(json.dumps({"state": "agent-local"}))
+        auth.rename(codex / "original")
+        auth.symlink_to(codex / "original")
+        self.assertFalse(m.codex_auth_only_root())
 
     def test_canonical_submission_write_result_and_file_must_match_in_order(self):
         rows, body = self.canonical_task()
@@ -198,40 +545,44 @@ class ObserverChecks(unittest.TestCase):
                 {"event": "traffic.response", "host": "api.anthropic.com", "request_id": "req-1", "ts": "last",
                  "details": {"ms": 3000, "status": 200, "private": "PRIVATE_HEADER"}},
                 {"event": "traffic.request", "host": "mcp-proxy.anthropic.com", "request_id": "req-2", "ts": "open"}]
-        (logs / "events.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+        (logs / "audit.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
         observed = m.provider_intervals()
         self.assertEqual(observed["responses"][0]["recorded_duration_ms"], 3000)
         self.assertEqual(observed["requests_without_response"], {"req-2": "open"})
         self.assertNotIn("PRIVATE_", json.dumps(observed))
 
     def test_connected_main_accepts_existing_host_auth_and_binds_the_public_package(self):
-        home = Path(self.scratch.name) / "normal-host"
-        (home / ".claude").mkdir(parents=True)
-        for path in [home / ".claude.json", home / ".claude/.credentials.json"]:
-            path.write_text("PRIVATE_AUTH_SENTINEL")
-        preparation = home / "preparation.json"
-        preparation.write_text(json.dumps({"required_user_commands_complete": True,
-            "required_user_reading_complete": True, "commands": [], "required_reading": [], "decisions": []}))
-        original = os.uname()
-        uname = os.uname_result((*original[:4], "x86_64"))
-        environment = {key: value for key, value in os.environ.items() if not key.startswith("SAFEYOLO_")
-                       and key not in ["GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]}
-        argv = [m.__file__, "--host", original.nodename, "--platform", "linux-amd64", "--connected",
-                "--preparation", str(preparation), "--observation-dir", str(home / "private")]
-        with patch.object(sys, "argv", argv), patch.object(m.Path, "home", autospec=True, return_value=home), \
-             patch.object(m.os, "uname", autospec=True, return_value=uname), patch.dict(os.environ, environment, clear=True), \
-             patch.object(sys.stdin, "isatty", autospec=True, return_value=True), patch.object(sys.stdout, "isatty", autospec=True, return_value=True), \
-             patch.object(m, "processes", autospec=True, return_value=[]), patch.object(m, "listeners", autospec=True, return_value=[]), \
-             patch.object(m, "connected_run", autospec=True, side_effect=ValueError("controlled stop before product execution")) as run:
-            self.assertEqual(m.main(), 1)
-        run.assert_called_once()
-        record = json.loads((home / "private/result.json").read_text())
-        self.assertNotIn("baseline_unavailable", record)
-        self.assertEqual(record["native_source"], m.CONNECTED_SOURCE)
-        self.assertEqual(record["expected_host_package"]["bytes"], 191260514)
-        self.assertEqual(record["product_commands"], [])
-        self.assertEqual((home / ".claude/.credentials.json").read_text(), "PRIVATE_AUTH_SENTINEL")
-        self.assertNotIn("PRIVATE_AUTH_SENTINEL", json.dumps(record))
+        for platform, machine, expected in [("linux-amd64", "x86_64", m.CONNECTED_PACKAGE),
+                                            ("linux-arm64", "aarch64", m.PACKAGES["linux-arm64"])]:
+            with self.subTest(platform=platform):
+                home = Path(self.scratch.name) / platform
+                (home / ".claude").mkdir(parents=True)
+                for path in [home / ".claude.json", home / ".claude/.credentials.json"]:
+                    path.write_text("PRIVATE_AUTH_SENTINEL")
+                preparation = home / "preparation.json"
+                preparation.write_text(json.dumps({"required_user_commands_complete": True,
+                    "required_user_reading_complete": True, "commands": [], "required_reading": [], "decisions": []}))
+                original = os.uname()
+                uname = os.uname_result((*original[:4], machine))
+                environment = {key: value for key, value in os.environ.items() if not key.startswith("SAFEYOLO_")
+                               and key not in ["GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]}
+                argv = [m.__file__, "--host", original.nodename, "--platform", platform, "--connected",
+                        "--preparation", str(preparation), "--observation-dir", str(home / "private")]
+                with patch.object(sys, "argv", argv), patch.object(m.Path, "home", autospec=True, return_value=home), \
+                     patch.object(m.os, "uname", autospec=True, return_value=uname), patch.dict(os.environ, environment, clear=True), \
+                     patch.object(sys.stdin, "isatty", autospec=True, return_value=True), patch.object(sys.stdout, "isatty", autospec=True, return_value=True), \
+                     patch.object(m, "processes", autospec=True, return_value=[]), patch.object(m, "listeners", autospec=True, return_value=[]), \
+                     patch.object(m, "connected_run", autospec=True, side_effect=ValueError("controlled stop before product execution")) as run:
+                    self.assertEqual(m.main(), 1)
+                run.assert_called_once()
+                self.assertIn("host-" + expected["source"], m.LAUNCH)
+                record = json.loads((home / "private/result.json").read_text())
+                self.assertNotIn("baseline_unavailable", record)
+                self.assertEqual(record["native_source"], expected["source"])
+                self.assertEqual(record["expected_host_package"], expected)
+                self.assertEqual(record["product_commands"], [])
+                self.assertEqual((home / ".claude/.credentials.json").read_text(), "PRIVATE_AUTH_SENTINEL")
+                self.assertNotIn("PRIVATE_AUTH_SENTINEL", json.dumps(record))
 
     def test_foreground_public_approval_input_retains_the_displayed_scope_without_secret_text(self):
         seen = m.stamp()
@@ -263,16 +614,20 @@ class ObserverChecks(unittest.TestCase):
         (m.project / "install-safeyolo.sh").write_text("# controlled bootstrap input\n")
         (m.project / "index.html").write_text("controlled first file")
         m.archive.write_bytes(b"controlled package")
-        package = {"bytes": m.archive.stat().st_size, "sha256": m.digest(m.archive)}
-        (m.root / "package-info").write_text(f"source_commit={m.CONNECTED_SOURCE}\nprofile=production\nplatform=linux-amd64\n")
+        package = {"source": m.PACKAGES["linux-arm64"]["source"],
+                   "bytes": m.archive.stat().st_size, "sha256": m.digest(m.archive)}
+        (m.root / "package-info").write_text(f"source_commit={package['source']}\nprofile=production\nplatform=linux-arm64\n")
         required = m.PUBLIC_STATE + m.PRIVATE_STATE + ["agents/first/home/.claude/.credentials.json"]
         before = dict.fromkeys(required, "same")
         before["agents/first/home/.claude.json"] = "old usage metadata"
-        for change, expected in [("usage", True), ("policy", False), ("authentication missing", False)]:
+        for change, expected in [("usage", True), ("policy", False), ("authentication missing", False),
+                                 ("wrong package source", False)]:
             with self.subTest(change=change):
                 m.x.update(observation_outcome="partial", product_commands=[], observations=[], required_reading=[], interactions=[],
                            preparation={"required_reading": []})
                 after = {**before, "agents/first/home/.claude.json": "new usage metadata"}
+                if change == "wrong package source":
+                    (m.root / "package-info").write_text(f"source_commit={m.CONNECTED_SOURCE}\nprofile=production\nplatform=linux-arm64\n")
                 if change == "policy":
                     after["policy.toml"] = "different"
                 if change == "authentication missing":
@@ -284,9 +639,11 @@ class ObserverChecks(unittest.TestCase):
                         "task": {"conversations": [{"file": "same-session.jsonl"}]}}
                     return {"connected_ready": m.stamp(), "ordinary_q": m.stamp(), "exit_code": 0,
                             "discovery_exit": 0, "version_exit": 0}, before if phase == "cold" else after
-                with patch.object(m, "entered", autospec=True, side_effect=enter), \
+                with patch.object(m, "entered", autospec=True, side_effect=enter) as entered, \
                      patch.object(m, "observe", autospec=True, return_value={"exit": 0}):
-                    m.connected_run(m.argparse.Namespace(platform="linux-amd64"), package)
+                    m.connected_run(m.argparse.Namespace(platform="linux-arm64", cold_seconds=1800), package)
+                self.assertEqual(entered.call_args_list[0].args, ("cold", 1800))
+                self.assertEqual(entered.call_args_list[1].args, ("warm", 180))
                 self.assertEqual(m.x["observation_outcome"] != "partial", expected)
                 self.assertFalse(m.x["selected_state_equality"]["agents/first/home/.claude.json"]["equal"])
 
@@ -515,7 +872,7 @@ class ObserverChecks(unittest.TestCase):
     def test_network_response_and_local_event_correlation_keep_raw_diagnostics_private(self):
         logs = m.root / "logs"
         logs.mkdir()
-        for name in ("events.jsonl", "proxy.log"):
+        for name in ("audit.jsonl", "proxy.log"):
             (logs / name).touch()
         request_id = "req-" + "1" * 32
 
@@ -528,10 +885,13 @@ class ObserverChecks(unittest.TestCase):
                 self.send_header("X-Blocked-By", "PRIVATE_HEADER_SENTINEL")
                 self.end_headers()
                 self.wfile.write(b"PRIVATE_BODY_SENTINEL")
-                with (logs / "events.jsonl").open("a") as stream:
+                with (logs / "audit.jsonl").open("a") as stream:
                     for identifier in ("req-" + "2" * 32, request_id):
-                        stream.write(json.dumps({"event": "proxy.request", "host": "httpbin.org", "status": 502,
-                            "request_id": identifier, "decision": self.decision, "private": "PRIVATE_EVENT_SENTINEL"}) + "\n")
+                        stream.write(json.dumps({"event": "traffic.request_outcome", "host": "httpbin.org",
+                            "request_id": identifier,
+                            **({"decision": self.decision} if self.decision == "allow" else {}),
+                            "details": {"status": 502, "decision": self.decision,
+                                        "private": "PRIVATE_EVENT_SENTINEL"}}) + "\n")
                 with (logs / "proxy.log").open("a") as stream:
                     stream.write(f"request {request_id} failed: PRIVATE_ERROR_SENTINEL\n")
             def log_message(self, *_args):
@@ -552,7 +912,7 @@ class ObserverChecks(unittest.TestCase):
                     self.assertEqual(row["response"]["request_id"], request_id)
                     self.assertTrue(row["response"]["blocked_by_header_present"])
                     self.assertNotIn("blocked_by_header", row["response"])
-                    self.assertEqual(row["proxy_logs"]["events.jsonl"]["matches"],
+                    self.assertEqual(row["proxy_logs"]["audit.jsonl"]["matches"],
                         [{"request_id": request_id, "correlation": "request-id", "status": 502, "decision": decision}])
                     self.assertEqual(row["proxy_logs"]["proxy.log"]["matches"][0]["stage"], "request-failed")
                     self.assertNotIn("PRIVATE_", json.dumps(row))
@@ -567,7 +927,7 @@ class ObserverChecks(unittest.TestCase):
     def test_network_missing_response_and_identity_error_remain_distinct_from_success(self):
         logs = m.root / "logs"
         logs.mkdir()
-        (logs / "events.jsonl").touch()
+        (logs / "audit.jsonl").touch()
         proxy_log = logs / "proxy.log"
         proxy_log.touch()
         identifier = "req-" + "3" * 32
@@ -819,6 +1179,76 @@ class ObserverChecks(unittest.TestCase):
             "--platform", "linux-arm64", "--observation-dir", str(home / "observation"), *args],
             cwd=home, env={**os.environ, "HOME": str(home)}, capture_output=True, text=True, timeout=10)
 
+    def test_cold_allowance_keeps_elapsed_bootstrap_warm_clock_and_saved_partial_result(self):
+        for selected, allowance, harness, usable in [
+                (None, 900, "claude", False), (1800, 1800, "claude", False), (5, 5, "claude", False),
+                (None, 900, "codex", False), (None, 900, "codex", True)]:
+            with self.subTest(selected=selected, harness=harness, usable=usable):
+                home = Path(self.scratch.name) / f"allowance-{selected}-{harness}-{usable}"
+                home.mkdir()
+                clock = [100.0]
+
+                def observe(label, command, *args, **kwargs):
+                    row = {"exit": 0, "monotonic": clock[0]}
+                    if label == "bootstrap-download":
+                        (m.project / "install-safeyolo.sh").write_text("controlled download")
+                        clock[0] += 12
+                    row["ended"] = {"monotonic": clock[0]}
+                    return row
+
+                def entered(phase, seconds):
+                    m.x["before-return" if phase == "cold" else "after-reentry"] = {}
+                    row = {"monotonic": clock[0], "ended": {"monotonic": clock[0]}, "ordinary_q": True, "exit_code": 0}
+                    if harness == "codex":
+                        row["client_display"] = {"monotonic": clock[0]}
+                        if usable:
+                            row["input_ready"] = row["client_display"]
+                    return row, {}
+
+                argv = [m.__file__, "--host", os.uname().nodename, "--platform", "linux-arm64",
+                        "--observation-dir", str(home / "observation"), "--execution-mode", "qemu-tcg"]
+                if selected is not None:
+                    argv += ["--cold-seconds", str(selected)]
+                environment = {key: value for key, value in os.environ.items() if not key.startswith("SAFEYOLO_")
+                               and key not in ["GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]}
+                uname = os.uname_result((*os.uname()[:4], "aarch64"))
+                with patch.object(m, "HARNESS", harness), \
+                     patch.object(sys, "argv", argv), patch.object(m.Path, "home", autospec=True, return_value=home), \
+                     patch.object(m.os, "uname", autospec=True, return_value=uname), \
+                     patch.dict(os.environ, environment, clear=True), patch.object(m.time, "monotonic", autospec=True, side_effect=lambda: clock[0]), \
+                     patch.object(m, "observe", autospec=True, side_effect=observe), \
+                     patch.object(m, "entered", autospec=True, side_effect=entered) as enter, \
+                     patch.object(m, "guest", autospec=True, return_value={}), \
+                     patch.object(m, "live_record", autospec=True, return_value={}), \
+                     patch.object(m, "processes", autospec=True, return_value=[]), \
+                     patch.object(m, "cleanup", autospec=True) as cleanup:
+                    self.assertEqual(m.main(), 1)
+                self.assertEqual(enter.call_args_list[0].args, ("cold", max(1, allowance - 12)))
+                if harness == "codex" and not usable:
+                    self.assertEqual(enter.call_count, 1)
+                else:
+                    self.assertEqual(enter.call_args_list[1].args, ("warm", 180))
+                cleanup.assert_called_once()
+                result = json.loads((home / "observation/result.json").read_text())
+                self.assertEqual(result["cold_allowance_seconds"], allowance)
+                self.assertEqual(result["execution_mode"], "qemu-tcg")
+                self.assertEqual(result["timings"]["bootstrap_seconds"], 12)
+                if usable:
+                    self.assertEqual(result["timings"]["cold_readiness_seconds"], 12)
+                else:
+                    self.assertIsNone(result["timings"]["cold_readiness_seconds"])
+                self.assertEqual(result["observation_outcome"], "partial")
+                self.assertIn("ended", result)
+
+    def test_invalid_cold_allowance_stops_before_observer_or_product_mutation(self):
+        home = Path(self.scratch.name)
+        for value in ["0", "-1", "1.5"]:
+            with self.subTest(value=value):
+                result = self.observer_cli(home, "--cold-seconds", value)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("--cold-seconds", result.stderr)
+                self.assertFalse((home / "observation").exists())
+
     def test_arm_binding_and_existing_installation_refusal_precede_product_commands(self):
         home = Path(self.scratch.name) / "home"
         root = home / ".safeyolo"
@@ -829,8 +1259,10 @@ class ObserverChecks(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stderr)
         record = json.loads((home / "observation/result.json").read_text())
         self.assertEqual(record["expected_host_package"]["machine"], "aarch64")
-        self.assertEqual(record["expected_host_package"]["bytes"], 176869006)
-        self.assertEqual(record["expected_host_package"]["sha256"], "eab9b709b3e4c6b536614eeb6b422d12c2b55826149085f78c326b31637922af")
+        self.assertEqual(record["expected_host_package"], m.PACKAGES["linux-arm64"])
+        self.assertEqual(record["native_source"], m.PACKAGES["linux-arm64"]["source"])
+        self.assertEqual(record["cold_allowance_seconds"], 900)
+        self.assertEqual(record["execution_mode"], "unknown")
         self.assertEqual(record["product_commands"], [])
         self.assertEqual(sentinel.read_text(), "existing policy")
         cleanup = self.observer_cli(home, "--cleanup-only")
@@ -865,6 +1297,7 @@ class ObserverChecks(unittest.TestCase):
         private = home / "observation"
         (home / "239-onboarding-project").mkdir()
         record = {"owns_product_attempt": True, "platform": "linux-arm64", "observations": [],
+                  "cold_allowance_seconds": 1800, "execution_mode": "qemu-tcg",
                   "baseline": {"hostname": os.uname().nodename, "uid": os.getuid()},
                   "fixture_preparation": {"project": str(home / "239-onboarding-project")}}
         (private / "result.json").write_text(json.dumps(record))
@@ -875,6 +1308,8 @@ class ObserverChecks(unittest.TestCase):
         self.assertIn(cleanup.returncode, (0, 1), cleanup.stderr)
         self.assertEqual(len(calls.read_text().splitlines()), 6)
         self.assertIn("cleanup_rechecked", observed)
+        self.assertEqual(observed["cold_allowance_seconds"], 1800)
+        self.assertEqual(observed["execution_mode"], "qemu-tcg")
         if not observed["cleanup_verified"]:
             self.assertEqual(cleanup.returncode, 1)
         else:
@@ -986,7 +1421,7 @@ class ObserverChecks(unittest.TestCase):
                 process.wait(timeout=3)
                 process.stdout.close()
 
-    def run_console(self, message, seconds, phase="warm", theme=False, capture_error=False, descendant=False):
+    def run_console(self, message, seconds, phase="warm", theme=False, capture_error=False, descendant=False, client_exit=None):
         stub = m.project / "console.py"
         display_choice = ("print('Starting or resuming claude.',flush=True)\n"
             "print('Choose the text style that looks best with your terminal\\r\\n> 1. Dark mode',flush=True)\n"
@@ -1000,18 +1435,34 @@ class ObserverChecks(unittest.TestCase):
         descendant_start = ("import json,subprocess\n"
             f"helper=subprocess.Popen([sys.executable,'-c',{helper!r}],stdout=subprocess.PIPE)\n"
             f"open({str(m.project / 'descendant.json')!r},'w').write(helper.stdout.readline().decode())\n") if descendant else ""
-        stub.write_text("import os,sys,tty\ntty.setraw(0)\n" + descendant_start + display_choice +
+        exit_setup = ("import signal,select\nexited=False\n"
+            "def fail(*_):\n global exited\n exited=True\n"
+            "signal.signal(signal.SIGUSR1,fail)\n"
+            f"open({str(m.project / 'client-pid')!r},'w').write(str(os.getpid()))\n") if client_exit else ""
+        wait_for_detach = ("while b'\\x02d' not in pending and not exited:\n"
+            " if select.select([0],[],[],0.02)[0]:pending+=os.read(0,100)\n"
+            "if exited:\n"
+            " print('account/read failed during TUI bootstrap: workspace routing discovery failed (code -32603)',flush=True)\n"
+            " print('Harness session: \\\"exited\\\". Sandbox: \\\"running\\\". Exit status: 1.',flush=True)\n"
+            f" open({str(m.project / 'client-at-host')!r},'w').write('exited1')\n") if client_exit else "while b'\\x02d' not in pending:pending+=os.read(0,100)\n"
+        stub.write_text("import os,sys,tty\ntty.setraw(0)\n" + exit_setup + descendant_start + display_choice +
             f"print({message!r},flush=True)\n"
-            "pending=b''\n"
-            "while b'\\x02d' not in pending:pending+=os.read(0,100)\n"
+            "pending=b''\n" + wait_for_detach +
             "print('SafeYolo host> ',end='',flush=True)\n"
             "pending=b''\n"
-            "while b'q\\n' not in pending:pending+=os.read(0,100)\n")
+            "while b'q\\n' not in pending:pending+=os.read(0,100)\n"
+            f"open({str(m.project / 'host-input')!r},'wb').write(pending)\n")
         def record_capture(phase, start_marker=False):
             row = m.x["product_commands"][-1]
             self.assertIsNotNone(m.birth(row["console_pid"]))
             self.assertNotIn("viewer_detach", row)
             m.x[phase] = {"captured_before_detach": True}
+            if client_exit == "during-witness":
+                os.kill(int((m.project / "client-pid").read_text()), signal.SIGUSR1)
+                deadline = time.monotonic() + 2
+                while not (m.project / "client-at-host").exists() and time.monotonic() < deadline:
+                    select.select([], [], [], 0.01)
+                self.assertTrue((m.project / "client-at-host").exists())
             if descendant:
                 child = json.loads((m.project / "descendant.json").read_text())
                 child["birth"] = m.birth(child["pid"])
@@ -1049,6 +1500,12 @@ class ObserverChecks(unittest.TestCase):
         errors = [("coding-agent observation timed out", "coding-agent-observation-timeout"),
                   ("coding-agent observation failed", "coding-agent-observation-failed"),
                   ("coding-agent observation is unverified", "coding-agent-observation-unverified"),
+                  ("guest did not reach per-run startup", "guest-startup-unready"),
+                  ("guest did not reach per-run startup; sandbox cleanup failed: " + private_text,
+                   "guest-startup-unready"),
+                  ("runsc did not identify its backend", "runsc-backend-unidentified"),
+                  ("runsc create failed: " + private_text, "runsc-create-failed"),
+                  ("runsc start failed: " + private_text, "runsc-start-failed"),
                   (private_text, "unknown")]
         with patch.object(m, "launch_record", autospec=True, return_value={"launch_id": launch_id, "command": private_text}):
             for message, category in errors:
@@ -1074,6 +1531,29 @@ class ObserverChecks(unittest.TestCase):
                 m.record_launch_result(row, output)
                 self.assertEqual(row["launch_result"]["failure_phase"], "unknown")
                 self.assertEqual(row["launch_result"]["error_category"], "unknown")
+
+    def test_native_startup_failure_without_a_launch_is_saved_before_runtime_queries(self):
+        private_text = "PRIVATE_NATIVE_STARTUP_DETAIL"
+        message = ("Starting or resuming claude.\n"
+                   "safeyolo: First-agent sandbox/harness startup failed: guest did not reach per-run startup. "
+                   "Saved agent state is retained. " + private_text)
+        stub = m.project / "native-startup.py"
+        stub.write_text(f"print({message!r},flush=True);raise SystemExit(1)")
+        def witness(*args, **kwargs):
+            saved = json.loads(m.out.read_text())["product_commands"][-1]["launch_result"]
+            self.assertEqual(saved["failure_phase"], "sandbox-harness-start")
+            self.assertEqual(saved["error_category"], "guest-startup-unready")
+            self.assertEqual(saved["identity_status"], "unavailable")
+            self.assertIsNone(saved["launch_id"])
+            self.assertNotIn(private_text, m.out.read_text())
+            return {}
+        with patch.object(m, "LAUNCH", [sys.executable, str(stub)]), \
+             patch.object(m, "witness", autospec=True, side_effect=witness), \
+             patch.dict(os.environ, {"PATH": str(m.cli.parent) + ":" + os.environ["PATH"]}):
+            row, _ = m.entered("cold", 2)
+        self.assertEqual(row["command_exit"], 1)
+        self.assertEqual(row["discovery_exit"], 0)
+        self.assertEqual(row["version_exit"], 0)
 
     def test_real_failed_launch_is_saved_before_witness_and_cleanup(self):
         launch_id = "launch-" + "b" * 32
@@ -1298,19 +1778,43 @@ class ObserverChecks(unittest.TestCase):
                 os.waitpid(pid, 0)
 
     def test_observer_intervention_stays_visible_on_zero_exit(self):
+        self.check_finite_term_response(gapped=False)
+
+    def test_observer_intervention_stays_visible_on_zero_exit_with_gapped_output(self):
+        self.check_finite_term_response(gapped=True)
+
+    def check_finite_term_response(self, gapped):
         private_text = "PRIVATE_SHUTDOWN_TERMINAL_CANARY"
-        code = ("import os,signal\n"
+        write = " while data:data=data[os.write(1,data):]\n"
+        if gapped:
+            write = (" while data:\n"
+                     "  chunk,data=data[:4096],data[4096:]\n"
+                     "  while chunk:chunk=chunk[os.write(1,chunk):]\n"
+                     "  time.sleep(0.002)\n")
+        code = ("import os,signal,time\n"
                 "def stop(*_):\n"
                 f" data=({private_text!r}+'\\n').encode()*4096\n"
-                " while data:data=data[os.write(1,data):]\n"
+                + write +
                 " os._exit(0)\n"
                 "signal.signal(signal.SIGTERM,stop)\n"
                 "print('Sign in',flush=True)\n"
                 "signal.pause()\n")
         stub = m.project / "shutdown.py"
         stub.write_text(code)
+        group, read = m.console_group, os.read
+
+        def slow_group(pid):
+            members = group(pid)
+            # Preserve real ownership scans, but make per-read scans too slow
+            # to drain the finite TERM response before the existing deadline.
+            time.sleep(0.05)
+            return members
+
         with patch.object(m, "LAUNCH", ["exec", sys.executable, str(stub)]), \
-             patch.object(m, "witness", autospec=True, side_effect=ValueError("capture failed")):
+             patch.object(m, "witness", autospec=True, side_effect=ValueError("capture failed")), \
+             patch.object(m, "console_group", autospec=True, side_effect=slow_group), \
+             patch.object(m.os, "read", autospec=True,
+                          side_effect=lambda fd, count: read(fd, min(count, 1024))):
             with self.assertRaisesRegex(ValueError, "capture failed"):
                 m.entered("warm", 2)
         row = m.x["product_commands"][-1]
@@ -1337,6 +1841,121 @@ class ObserverChecks(unittest.TestCase):
         self.assertNotIn("readiness_unclassified_at_deadline", row)
         self.assertTrue(m.x["after-reentry"]["captured_before_detach"])
         self.assertIn("ordinary_q", row)
+
+    def test_codex_readiness_uses_attached_pane_and_never_stale_host_output(self):
+        screen = CODEX_0163_SCREEN.decode()
+        with patch.object(m, "HARNESS", "codex"), \
+             patch.object(m, "pane_screen", autospec=True,
+                          return_value={"matching_live_visible_pane": False}):
+            row = self.run_console(screen, 0.2)
+        self.assertNotIn("input_ready", row)
+        with patch.object(m, "HARNESS", "codex"), \
+             patch.object(m, "pane_screen", autospec=True,
+                          return_value={"matching_live_visible_pane": True, "labels": ["Codex input display"]}), \
+             patch.object(m, "guest", autospec=True, return_value={"exit": 0, "stdout": "1234\n"}):
+            row = self.run_console("no new prompt", 2)
+        self.assertEqual(row["input_ready"]["source"], "attached-pane-screen")
+        self.assertNotIn("signed_out_label", row)
+        self.assertIn("ordinary_q", row)
+
+    def test_codex_screen_without_native_guest_process_is_not_input_ready(self):
+        with patch.object(m, "HARNESS", "codex"), \
+             patch.object(m, "pane_screen", autospec=True,
+                          return_value={"matching_live_visible_pane": True, "labels": ["Codex input display"]}), \
+             patch.object(m, "guest", autospec=True, return_value={"exit": 1, "stdout": ""}):
+            row = self.run_console("retained screen", 0.2)
+        self.assertNotIn("input_ready", row)
+        self.assertEqual(row["codex_process"]["exit"], 1)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Native client observation reads Linux /proc")
+    def test_codex_process_observation_accepts_native_install_locations(self):
+        home = m.project / "process-home"
+        bash = shutil.which("bash")
+
+        def guest(label, code, deadline):
+            result = subprocess.run(["bash", "-c", code], env={**os.environ, "HOME": str(home)},
+                                    capture_output=True, text=True, timeout=5)
+            return {"exit": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
+
+        for location, accepted in [
+            (".mise/installs/aqua-openai-codex/9.9.9/bin/codex", True),
+            (".mise/installs/github-openai-codex/9.9.9/bin/codex", True),
+            (".safeyolo/codex-package/payload/bin/codex", True),
+            (".mise/installs/unrelated-openai-codex/9.9.9/bin/codex", False),
+            (".safeyolo/codex-package/bin/codex", False),
+        ]:
+            with self.subTest(location=location):
+                binary = home / location
+                binary.parent.mkdir(parents=True)
+                shutil.copy2(bash, binary)
+                # Renamed multicall sleep binaries can exit before observation.
+                # Bash builtins announce readiness, then wait for owned pipe input.
+                client = subprocess.Popen([str(binary), "-c", "printf 'ready\\n'; read -r"],
+                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE, text=True)
+                row = {"fixture_source": bash, "fixture_pid": client.pid}
+                try:
+                    readable = select.select([client.stdout], [], [], 3)[0]
+                    row["fixture_ready"] = client.stdout.readline() if readable else None
+                    with patch.object(m, "guest", autospec=True, side_effect=guest):
+                        observed = m.codex_input_process("cold", row)
+                    row["fixture_exit"] = client.poll()
+                    row["fixture_executable"] = os.path.realpath(f"/proc/{client.pid}/exe")
+                finally:
+                    client.terminate()
+                    row["fixture_stdout"], row["fixture_stderr"] = client.communicate(timeout=3)
+                self.assertEqual(row["fixture_ready"], "ready\n", row)
+                self.assertIsNone(row["fixture_exit"], row)
+                self.assertEqual(row["fixture_executable"], str(binary.resolve()), row)
+                self.assertEqual(observed, accepted, row)
+                if accepted:
+                    self.assertEqual(row["codex_process"]["stdout"], f"{client.pid}\n", row)
+                stopped_row = {}
+                with patch.object(m, "guest", autospec=True, side_effect=guest):
+                    self.assertFalse(m.codex_input_process("cold", stopped_row), stopped_row)
+
+    def check_codex_client_failure_return(self, loading):
+        screen = CODEX_0163_LOADING_SCREEN if loading else CODEX_0163_SCREEN
+        signalled = False
+
+        def current_pane(phase):
+            nonlocal signalled
+            if (m.project / "client-at-host").exists():
+                return {"matching_live_visible_pane": False, "selection": {"state": "exited"}}
+            pid = m.project / "client-pid"
+            if not pid.exists():
+                return {"matching_live_visible_pane": False}
+            labels = m.login_label(screen)
+            if loading and not signalled:
+                # Preserve the actual order: loading is visible, then the
+                # account/read failure returns the client to host controls.
+                os.kill(int(pid.read_text()), signal.SIGUSR1)
+                signalled = True
+            return {"matching_live_visible_pane": True, "labels": labels}
+
+        with patch.object(m, "HARNESS", "codex"), \
+             patch.object(m, "pane_screen", autospec=True, side_effect=current_pane), \
+             patch.object(m, "guest", autospec=True, return_value={"exit": 0, "stdout": "1234\n"}):
+            row = self.run_console(screen.decode(), 3, phase="cold",
+                                   client_exit="before-witness" if loading else "during-witness")
+        self.assertNotIn("input_ready", row)
+        self.assertNotIn("readiness_unclassified_at_deadline", row)
+        self.assertNotIn("viewer_detach", row)
+        self.assertEqual(row["return_path"], "host-controls-after-client-exit")
+        self.assertEqual(row["harness_return"]["exit_code"], 1)
+        self.assertEqual(row["harness_return"]["agent_state"], "exited")
+        self.assertEqual(row["command_exit"], 0)  # q succeeds after the client failure.
+        self.assertEqual((m.project / "host-input").read_bytes(), b"q\n")
+        self.assertNotIn("observer_terminated_viewer", row)
+        self.assertTrue(row["console_reaped"])
+        m.signed_out_accounting()
+        self.assertIsNone(m.x["timings"]["cold_product_to_input_ready_seconds"])
+
+    def test_codex_9158_loading_then_account_read_failure_keeps_readiness_null(self):
+        self.check_codex_client_failure_return(loading=True)
+
+    def test_codex_exit_during_witness_returns_through_host_controls_without_detach(self):
+        self.check_codex_client_failure_return(loading=False)
 
     def test_real_pty_early_exit_is_captured_and_reaped(self):
         with patch.object(m, "LAUNCH", [sys.executable, "-c", "raise SystemExit(3)"]), \

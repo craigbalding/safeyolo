@@ -151,34 +151,20 @@ full admin access leaks to anyone with shell on the host.
 
 ### `tests/blackbox/host/identity/test_agent_identity.py`
 
-#### TestAgentMap — Agent identity is registered in agent_map.json after start.
+#### TestAgentListener — Host-owned Unix domain sockets supply each agent's request identity.
 
-**Threat:** Every request the proxy sees is attributed to an agent by
-looking up the client IP in agent_map.json. If an agent is not
-registered, service_discovery can't name it and downstream addons
-(flow_recorder, network_guard scoping) fall back to 'unknown' —
-cross-agent isolation collapses.
+**Threat:** A missing or shared listener can break guest egress or attribute
+requests to the wrong agent. Policy and evidence need the correct identity.
 
-- **`test_agent_map_has_entry`** — agent_map.json contains an entry for the running agent.
-  - *Probe:* Reads ~/.safeyolo/data/agent_map.json and asserts the
-agent name is a key.
-  - *Consequence if unasserted:* Without the entry, service_discovery can't map the
-agent's PROXY-v2 attribution IP back to a name.
-- **`test_agent_map_has_attribution_ip`** — Attribution IP is in the 10.200.0.0/16 range.
-  - *Probe:* Reads the agent's entry and asserts the 'ip' field
-starts with '10.200.'.
-  - *Consequence if unasserted:* The attribution IP range is load-bearing — the PROXY-v2
-parser and service_discovery both assume this prefix. An IP
-outside the range indicates network_guard isolation was
-misconfigured and traffic would be unattributable.
-- **`test_agent_map_has_socket`** — Per-agent proxy socket referenced in the entry exists on disk.
-  - *Probe:* Reads the 'socket' field and asserts the path is a
-live Unix domain socket (Path.is_socket()).
-  - *Consequence if unasserted:* The per-agent UDS (bound by mitmproxy's
-UnixInstance) is the only egress path for the agent. A missing or
-stale socket means every agent request fails with ENOENT —
-effectively a denial of service, not a security issue, but a strong
-signal that the identity chain is broken.
+- **`test_agent_listener_has_entry`** — The running agent has a configured listener.
+  - *Probe:* Read the host's native listener configuration and find the agent.
+  - *Consequence if unasserted:* Listener ownership determines policy and evidence attribution.
+- **`test_agent_listener_has_attribution_ip`** — The managed listener retains its attribution IP.
+  - *Probe:* Check the listener source address is in 10.200.0.0/16.
+  - *Consequence if unasserted:* Host lifecycle operations reserve this range for managed agents.
+- **`test_agent_listener_has_socket`** — The configured proxy socket is present.
+  - *Probe:* Check that the configured listener path is a Unix domain socket.
+  - *Consequence if unasserted:* Each guest needs its host-owned socket for proxy egress.
 
 #### TestRootlessUidMapping — Linux sandbox identities map to non-root host identities.
 
@@ -407,7 +393,7 @@ Tests the content, not the name.
 - **`test_full_filesystem_scan_for_private_keys`** — Whole-filesystem scan finds no unexpected private-key material.
   - *Probe:* os.walk from / (skipping /proc, /sys, /dev, /run and
 third-party site-packages); inspect private-key markers and allow only
-the three exact guest sshd host-key paths.
+the listed exact guest sshd host-key paths.
   - *Consequence if unasserted:* The targeted tests above check known-critical paths.
 This is the catch-all: if any private key leaked to a surprising
 location (/tmp, /var/log, an agent workspace subdir), the
@@ -669,7 +655,7 @@ host memory, and eBPF remain unavailable regardless of guest uid.
 
 - **`test_expected_uid`** — Agent process runs as uid 1000.
   - *Probe:* os.getuid() == 1000.
-  - *Consequence if unasserted:* The attribution chain (service_discovery, bind-mount
+  - *Consequence if unasserted:* The attribution chain (listener ownership, bind-mount
 ownership, userns mapping) all assume uid 1000 inside the
 sandbox. A different uid means ownership mismatches and
 identity confusion.
@@ -774,8 +760,9 @@ mechanism (which varies between gVisor and VZ).
 
 - **`test_dev_whitelist`** — Every /dev entry is on the expected whitelist.
   - *Probe:* Enumerate /dev; compare against the expected set
-(plus prefixed exceptions for microVMs); assert no
-unexpected entries.
+(plus prefixed exceptions for microVMs). If /dev/log exists,
+verify it is a guest-root-owned socket. Assert no unexpected
+entries.
   - *Consequence if unasserted:* Novel device entries are attack surface. This test is
 deliberately allowlist-based rather than blocklist-based —
 if the runtime adds a new device, the test fails until a

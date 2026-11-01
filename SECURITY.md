@@ -74,7 +74,7 @@ Service capabilities scope what an agent can do within a service. Risky routes (
 
 ### Auditability
 
-Behind the scenes, every request gets a unique ID. Every security decision — credential detection, policy evaluation, gateway enforcement — is logged to structured JSONL with the reasoning: what was detected, where it was going, what the policy said, and what happened. The `watch` command gives operators a real-time view of all decisions.
+Behind the scenes, every request gets a unique ID. Every security decision — credential detection, policy evaluation, gateway enforcement — is logged to structured JSONL with the reasoning: what was detected, where it was going, what the policy said, and what happened. Use `logs` to read retained events. Use `approvals` or `inspect` for current approval requests. Use `watch` for pending Coord signals.
 
 ## Enforcement Layers
 
@@ -94,12 +94,20 @@ private VLAN, or same-host loopback. The gateway does not verify that transport
 claim. Every HTTP injection under this flag emits a
 `gateway.http_injection_allowed` audit event.
 
-Coding-harness authentication is outside this vault guarantee. The bundled
+The opt-in [coding-client gateway integration](docs/coding-client-gateway.md)
+uses host-held subscription records and guest-held scoped service tokens.
+The guide records the tested client versions, subscription limits and platform.
+The existing client-held authentication paths below remain outside this vault
+guarantee. The bundled
 Claude Code host script can deliberately copy selected subscription state into
-the persistent agent home. The Codex host scripts do not copy host credentials:
-an operator must run `codex login` inside each agent and explicitly adopt the
-resulting agent-local credential. Operators must treat `--host-script` as an
-explicit decision to share the files that the selected script copies.
+the persistent agent home. The Codex host scripts do not copy host credentials.
+An operator must deliberately provision or create the agent-local login and
+explicitly adopt that state. An operator can separately authorize an
+explicitly selected Codex subscription login with `credentials import-codex`.
+The encrypted vault retains that authorization, bound to the agent, and keyed
+digests of verified replacements. The guest still holds the client login.
+Adoption metadata grants no proxy authority. Operators must treat `--host-script`
+as an explicit decision to share the files that the selected script copies.
 
 **Network and transport controls.**
 Agents have no direct internet access. Each sandbox has no external network
@@ -107,13 +115,24 @@ interface. Its only egress path is a host-owned, per-agent Unix domain socket
 that routes through SafeYolo. No host firewall rule participates in this
 boundary.
 
-The host owns the socket directory named `<ip>_<agent>`. The CLI uses the agent
-map to configure each managed Rust listener with its socket path, agent
-identity, and source address. When the listener accepts a connection, it
-assigns the configured agent identity to that connection. The agent cannot
-choose another agent's socket path. On Linux, a synthetic loopback address
-supplies the `<ip>` attribution value. It is not an external interface or a
-direct egress path.
+The host creates each managed proxy socket at
+`~/.safeyolo/agents/<agent-name>/proxy/proxy.sock`. The native listener
+configuration binds that socket to the agent name and source address. When the
+listener accepts a connection, it fixes those values for the connection.
+Request headers, guest metadata and IP claims cannot select another owner.
+The proxy does not read an agent map to establish or reconcile identity.
+Linux mounts only the agent's dedicated proxy directory into the sandbox.
+On Linux, a synthetic loopback address supplies attribution. It is not an
+external interface or a direct egress path. Existing explicit operator
+listeners keep their configured paths.
+
+An operator can also configure a named external TCP ingress for one existing
+listener's policy and evidence partition. The native proxy fixes that owner
+at accept and records external binding provenance. External bytes carry no
+sandbox run or source-slot authority. The operator chooses the TCP exposure;
+the ingress does not authenticate external clients. The existing operator-port
+shield prevents proxy egress from entering these listeners. See the
+[prototype's identity and lifecycle limits](docs/networking-vsock-uds.md#operator-bound-external-ingress-prototype).
 
 For a resolved service-gateway token, SafeYolo rejects a path spelling if
 service route normalization changes it. This includes dot segments, encoded
@@ -137,7 +156,7 @@ As a safety net, the credential guard detects credentials in request headers via
 | **Non-HTTP exfiltration** | DNS is resolved by SafeYolo (no direct DNS from the sandbox) and raw sockets are unavailable, blocking most non-HTTP channels. Exotic covert channels (e.g. steganography in allowed HTTP traffic) are not addressed. |
 | **Host compromise** | If an attacker controls your host or `~/.safeyolo/`, all bets are off. |
 | **Credential guard in URL paths** | `/api/sk-proj-abc123/resource` — rare pattern, not currently scanned by the credential guard. |
-| **Credential guard in query/body** | The credential guard scans request headers, not URL query parameters or request bodies. The proxy has no options to enable these scans. |
+| **Credential guard in query/body** | The credential guard scans request headers. It also checks the JSON refresh credential at the supported Codex HTTPS token endpoint. Other request bodies and URL query parameters remain outside credential scanning. |
 
 ## Reporting Security Issues
 

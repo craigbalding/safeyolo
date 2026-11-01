@@ -29,7 +29,7 @@ fn config(directory: &Path, quiet: bool) -> Config {
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")},
                      {"agent_id":"bob","socket_path":directory.join("bob.sock")}],
         "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
-        "audit_log_path":directory.join("audit.jsonl"),"event_log":directory.join("events"),
+        "audit_log_path":directory.join("audit.jsonl"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("flows.sqlite3"),
         "circuit_breaker_enabled":false,"circuit_state_file":""
     }))
@@ -52,6 +52,30 @@ fn records(directory: &Path) -> Vec<Value> {
         .unwrap_or_default()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
+        // Keep the legacy hook projection separate from connection history.
+        .filter(|row: &Value| {
+            !(row["event"] == "security.indicator"
+                && row["details"]["sensor"] == "connection-history.v1")
+        })
+        .filter(|row: &Value| {
+            !matches!(
+                row["event"].as_str(),
+                Some(
+                    "network.connection"
+                        | "traffic.flow"
+                        | "traffic.request_outcome"
+                        | "traffic.egress"
+                        | "traffic.tunnel"
+                        | "traffic.websocket.start"
+                        | "traffic.websocket.message"
+                        | "traffic.websocket.end"
+                        | "security.network_guard.evaluated"
+                        | "security.credential_guard.evaluated"
+                        | "agent.api_response"
+                        | "gateway.evaluated"
+                )
+            )
+        })
         .collect()
 }
 fn cleanup(directory: &Path) {
@@ -60,20 +84,20 @@ fn cleanup(directory: &Path) {
     }
 }
 fn owned_egress(directory: &Path, host: &str, port: u16, expected: usize) {
-    let events: Vec<Value> = std::fs::read_to_string(directory.join("events"))
+    let events: Vec<Value> = std::fs::read_to_string(directory.join("audit.jsonl"))
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     let egress: Vec<_> = events
         .iter()
-        .filter(|row| row["event"] == "proxy.egress")
+        .filter(|row| row["event"] == "traffic.egress")
         .collect();
     assert_eq!(egress.len(), expected);
     assert!(
         egress
             .iter()
-            .all(|row| row["host"] == host && row["port"] == port)
+            .all(|row| row["host"] == host && row["details"]["port"] == port)
     );
     assert!(
         !events
@@ -165,7 +189,7 @@ fn check_event(
 ) {
     let timestamp = row["ts"].as_str().unwrap();
     time::OffsetDateTime::parse(timestamp, &time::format_description::well_known::Rfc3339).unwrap();
-    let mut expected = json!({"schema_version":1,"ts":timestamp,
+    let mut expected = json!({"schema_version":2,"ts":timestamp,
         "event":if response {"traffic.response"} else {"traffic.request"},
         "kind":"traffic","severity":"low",
         "summary":format!("{} {host}{path}",if response {"200"} else {"POST"})});
@@ -633,6 +657,340 @@ async fn canceled_response_and_real_dial_error_never_fabricate_response_events()
     owned_egress(directory.path(), &host, port, 2);
 }
 
+fn owned_h2_tls(
+    directory: &Path,
+    host: &str,
+    configuration: &mut Config,
+) -> (
+    rustls::ServerConfig,
+    tokio_rustls::TlsConnector,
+    String,
+    String,
+) {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::default();
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+    let ca = params.self_signed(&key).unwrap();
+    let ca_path = directory.join("interception-ca.pem");
+    std::fs::write(&ca_path, format!("{}{}", key.serialize_pem(), ca.pem())).unwrap();
+    configuration.tls_ca_file = Some(ca_path);
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec![host.to_owned()]).unwrap();
+    let upstream_path = directory.join("upstream-ca.pem");
+    std::fs::write(&upstream_path, cert.pem()).unwrap();
+    configuration.upstream_ca_file = Some(upstream_path);
+    let hash = |bytes: &[u8]| {
+        ring::digest::digest(&ring::digest::SHA256, bytes)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let expected_cert_hash = hash(cert.der());
+    let expected_spki_hash = hash(&rcgen::PublicKeyData::subject_public_key_info(&signing_key));
+    let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert.der().clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    tls.alpn_protocols = vec![b"h2".to_vec()];
+    let server = tls;
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ca.der().clone()).unwrap();
+    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    tls.alpn_protocols = vec![b"h2".to_vec()];
+    (
+        server,
+        tokio_rustls::TlsConnector::from(Arc::new(tls)),
+        expected_cert_hash,
+        expected_spki_hash,
+    )
+}
+
+#[tokio::test]
+async fn h2_stream_parser_failures_preserve_a_healthy_tunnel() {
+    use crate::observations::{ConsumerKind, Direction, Layer, Limits, Point, Record, State};
+
+    fn frame(kind: u8, flags: u8, id: u32, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = (payload.len() as u32).to_be_bytes()[1..].to_vec();
+        bytes.extend([kind, flags]);
+        bytes.extend(id.to_be_bytes());
+        bytes.extend(payload);
+        bytes
+    }
+    async fn read_frame<S: AsyncRead + Unpin>(client: &mut S) -> (u8, u8, u32, Vec<u8>) {
+        let mut head = [0; 9];
+        timeout(LIMIT, client.read_exact(&mut head))
+            .await
+            .unwrap()
+            .unwrap();
+        let length = u32::from_be_bytes([0, head[0], head[1], head[2]]) as usize;
+        let id = u32::from_be_bytes(head[5..9].try_into().unwrap()) & 0x7fff_ffff;
+        let mut payload = vec![0; length];
+        timeout(LIMIT, client.read_exact(&mut payload))
+            .await
+            .unwrap()
+            .unwrap();
+        (head[3], head[4], id, payload)
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let (origin, address) = listener().await;
+    let host = if address.is_ipv4() {
+        address.ip().to_string()
+    } else {
+        "localhost".into()
+    };
+    let authority = format!("{host}:{}", address.port());
+    let mut configuration = config(directory.path(), false);
+    let (tls, connector, _, _) = owned_h2_tls(directory.path(), &host, &mut configuration);
+    let origin_completions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let completed = origin_completions.clone();
+    let (stop_origin, mut origin_stopped) = tokio::sync::oneshot::channel();
+    let peer = tokio::spawn(async move {
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
+        let mut connections = tokio::task::JoinSet::new();
+        let mut accepted = 0;
+        // Reset streams can cancel upstream initialization during TLS. Keep
+        // the listener owned until the independent healthy exchange finishes.
+        loop {
+            tokio::select! {
+                _ = &mut origin_stopped => break,
+                result = origin.accept() => {
+                    let (stream, _) = result.unwrap();
+                    accepted += 1;
+                    let connection = accepted;
+                    let acceptor = acceptor.clone();
+                    let completed = completed.clone();
+                    connections.spawn(async move {
+                        let stream = match acceptor.accept(stream).await {
+                            Ok(stream) => stream,
+                            Err(error) => {
+                                println!("origin connection {connection}: TLS error {error:?}");
+                                assert!(matches!(error.kind(),
+                                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::UnexpectedEof
+                                ), "unexpected origin TLS error: {error:?}");
+                                return;
+                            }
+                        };
+                        println!("origin connection {connection}: TLS complete");
+                        hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                            .serve_connection(
+                                TokioIo::new(stream),
+                                service_fn(move |request: Request<Incoming>| {
+                                    let completed = completed.clone();
+                                    async move {
+                                        assert_eq!(request.method(), "GET");
+                                        // Reset uploads must not count as completed requests.
+                                        let body = request.into_body().collect().await?.to_bytes();
+                                        assert!(body.is_empty());
+                                        completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        Ok::<_, hyper::Error>(Response::new(Full::new(Bytes::from_static(b"ok"))))
+                                    }
+                                }),
+                            )
+                            .await
+                            .unwrap();
+                        println!("origin connection {connection}: HTTP/2 owner joined");
+                    });
+                }
+                result = connections.join_next(), if !connections.is_empty() => {
+                    result.unwrap().unwrap();
+                }
+            }
+        }
+        while let Some(result) = connections.join_next().await {
+            result.unwrap();
+        }
+        println!(
+            "origin listener retained through healthy exchange; joined {accepted} connections"
+        );
+    });
+    let proxy = Proxy::start(configuration).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let observations = &runtime.connection_events.as_ref().unwrap().observations;
+    let mut consumer = observations.subscribe(ConsumerKind::Metrics, Limits::default());
+    let mut client = UnixStream::connect(directory.path().join("alice.sock"))
+        .await
+        .unwrap();
+    client
+        .write_all(format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    assert!(read_head(&mut client).await.starts_with(b"HTTP/1.1 200"));
+    let mut client = connector
+        .connect(
+            rustls::pki_types::ServerName::try_from(host).unwrap(),
+            client,
+        )
+        .await
+        .unwrap();
+    assert_eq!(client.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+    client
+        .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+        .await
+        .unwrap();
+    client.write_all(&frame(4, 0, 0, &[])).await.unwrap();
+    assert!(authority.len() < 127);
+    let mut head = vec![0x82, 0x87, 0x84, 0x01, authority.len() as u8];
+    head.extend(authority.as_bytes());
+    let mut observed = Vec::new();
+
+    // Two heads fail before service admission. A third request is admitted,
+    // then fails the native DATA content-length check. None may complete.
+    for (id, length, end_at_head) in [(1, b'1', true), (3, b'x', true), (5, b'1', false)] {
+        let mut malformed = head.clone();
+        malformed.extend([0x0f, 0x0d, 0x01, length]);
+        client
+            .write_all(&frame(1, if end_at_head { 5 } else { 4 }, id, &malformed))
+            .await
+            .unwrap();
+        if !end_at_head {
+            loop {
+                let record = timeout(LIMIT, consumer.recv()).await.unwrap().unwrap();
+                let Record::Observation(record) = record.as_ref() else {
+                    panic!("canonical loss")
+                };
+                observed.push(record.clone());
+                if record.state == State::ParsedHead && record.protocol_stream_id == Some(id) {
+                    break;
+                }
+            }
+            client.write_all(&frame(0, 1, id, b"xx")).await.unwrap();
+        }
+        loop {
+            let (kind, flags, stream, payload) = read_frame(&mut client).await;
+            assert_ne!(kind, 7, "unexpected GOAWAY");
+            if kind == 4 && flags == 0 {
+                client.write_all(&frame(4, 1, 0, &[])).await.unwrap();
+            }
+            if kind == 3 && stream == id {
+                assert_eq!(payload, 1u32.to_be_bytes());
+                break;
+            }
+        }
+    }
+
+    // The same PROTOCOL_ERROR reason from the peer is an abort, not a local
+    // parser rejection. Wait for admission before resetting this upload.
+    let mut pending = head.clone();
+    pending.extend([0x0f, 0x0d, 0x01, b'1']);
+    client.write_all(&frame(1, 4, 7, &pending)).await.unwrap();
+    loop {
+        let record = timeout(LIMIT, consumer.recv()).await.unwrap().unwrap();
+        let Record::Observation(record) = record.as_ref() else {
+            panic!("canonical loss")
+        };
+        observed.push(record.clone());
+        if record.state == State::ParsedHead && record.protocol_stream_id == Some(7) {
+            break;
+        }
+    }
+    client
+        .write_all(&frame(3, 0, 7, &1u32.to_be_bytes()))
+        .await
+        .unwrap();
+    client.write_all(&frame(1, 5, 9, &head)).await.unwrap();
+    let mut body = Vec::new();
+    loop {
+        let (kind, flags, id, payload) = read_frame(&mut client).await;
+        assert_ne!(kind, 7, "unexpected GOAWAY");
+        if kind == 0 && id == 9 {
+            body.extend(payload);
+        }
+        if id == 9 && flags & 1 != 0 {
+            break;
+        }
+    }
+    assert_eq!(body, b"ok");
+    client.shutdown().await.unwrap();
+    drop(client);
+    stop_origin.send(()).unwrap();
+    timeout(LIMIT, peer).await.unwrap().unwrap();
+    assert_eq!(
+        origin_completions.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    proxy.shutdown().await;
+    let through = observations.next_sequence() - 1;
+    while observed.last().is_none_or(|o| o.id.sequence < through) {
+        let record = timeout(LIMIT, consumer.recv()).await.unwrap().unwrap();
+        let Record::Observation(record) = record.as_ref() else {
+            panic!("canonical loss")
+        };
+        observed.push(record.clone());
+    }
+    assert!(
+        observed
+            .iter()
+            .all(|o| o.payload.is_none() && o.captured_length == 0)
+    );
+    let failures: Vec<_> = observed
+        .iter()
+        .filter(|o| o.state == State::ParseError)
+        .collect();
+    assert_eq!(
+        failures
+            .iter()
+            .map(|o| o.protocol_stream_id)
+            .collect::<Vec<_>>(),
+        vec![Some(1), Some(3), Some(5)]
+    );
+    assert!(failures.iter().all(|o| o.point == Point::RequestParser
+        && o.layer == Layer::ProtocolMessage
+        && o.direction == Direction::ToProxy));
+    assert!(
+        !observed
+            .iter()
+            .any(|o| matches!(o.protocol_stream_id, Some(1 | 3)) && o.state == State::ParsedHead)
+    );
+    assert_eq!(
+        observed
+            .iter()
+            .filter(|o| o.state == State::Complete && o.layer == Layer::ApplicationContent)
+            .map(|o| o.protocol_stream_id)
+            .collect::<Vec<_>>(),
+        vec![None, Some(9)]
+    );
+    assert!(
+        observed
+            .iter()
+            .any(|o| o.protocol_stream_id == Some(7) && o.state == State::Dropped)
+    );
+    let metrics = observations.counters.json()["behaviour"].clone();
+    let total = |name: &str| {
+        metrics["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s[name].as_u64().unwrap())
+            .sum::<u64>()
+    };
+    assert_eq!(total("protocol_parse_failures_total"), 3);
+    assert_eq!(total("application_messages_total"), 2);
+    assert!(
+        metrics["observation_loss_total"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v == 0)
+    );
+    cleanup(directory.path());
+}
+
 #[tokio::test]
 async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     let directory = tempfile::tempdir().unwrap();
@@ -669,31 +1027,8 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
         .to_string(),
     )
     .unwrap();
-    let key = rcgen::KeyPair::generate().unwrap();
-    let mut params = rcgen::CertificateParams::default();
-    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
-    let ca = params.self_signed(&key).unwrap();
-    let ca_path = directory.path().join("interception-ca.pem");
-    std::fs::write(&ca_path, format!("{}{}", key.serialize_pem(), ca.pem())).unwrap();
-    configuration.tls_ca_file = Some(ca_path);
-    let rcgen::CertifiedKey { cert, signing_key } =
-        rcgen::generate_simple_self_signed(vec![host.clone()]).unwrap();
-    let upstream_path = directory.path().join("upstream-ca.pem");
-    std::fs::write(&upstream_path, cert.pem()).unwrap();
-    configuration.upstream_ca_file = Some(upstream_path);
-    let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_no_client_auth()
-    .with_single_cert(
-        vec![cert.der().clone()],
-        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
-    )
-    .unwrap();
-    tls.alpn_protocols = vec![b"h2".to_vec()];
+    let (tls, connector, expected_cert_hash, expected_spki_hash) =
+        owned_h2_tls(directory.path(), &host, &mut configuration);
     let peer = tokio::spawn(async move {
         let (stream, _) = origin.accept().await.unwrap();
         let stream = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
@@ -701,18 +1036,23 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
             .await
             .unwrap();
         assert_eq!(stream.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+        let multiplex = Arc::new(tokio::sync::Barrier::new(3));
         hyper::server::conn::http2::Builder::new(TokioExecutor::new())
             .serve_connection(
                 TokioIo::new(stream),
-                service_fn(|request: Request<Incoming>| async move {
-                    assert_eq!(request.version(), hyper::Version::HTTP_2);
-                    assert_eq!(
-                        request.into_body().collect().await.unwrap().to_bytes(),
-                        Bytes::from_static(b"request body")
-                    );
-                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(
-                        b"response body",
-                    ))))
+                service_fn(move |request: Request<Incoming>| {
+                    let multiplex = multiplex.clone();
+                    async move {
+                        assert_eq!(request.version(), hyper::Version::HTTP_2);
+                        assert_eq!(
+                            request.into_body().collect().await.unwrap().to_bytes(),
+                            Bytes::from_static(b"request body")
+                        );
+                        multiplex.wait().await;
+                        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(
+                            b"response body",
+                        ))))
+                    }
                 }),
             )
             .await
@@ -720,6 +1060,16 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     });
     let mut proxy = Proxy::start(configuration.clone()).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
+    let observations = runtime
+        .connection_events
+        .as_ref()
+        .unwrap()
+        .observations
+        .clone();
+    let mut consumer = observations.subscribe(
+        crate::observations::ConsumerKind::Metrics,
+        crate::observations::Limits::default(),
+    );
     let mut client = UnixStream::connect(directory.path().join("alice.sock"))
         .await
         .unwrap();
@@ -728,17 +1078,7 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
         .await
         .unwrap();
     assert!(read_head(&mut client).await.starts_with(b"HTTP/1.1 200"));
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(ca.der().clone()).unwrap();
-    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_root_certificates(roots)
-    .with_no_client_auth();
-    tls.alpn_protocols = vec![b"h2".to_vec()];
-    let client = tokio_rustls::TlsConnector::from(Arc::new(tls))
+    let client = connector
         .connect(
             rustls::pki_types::ServerName::try_from(host.clone()).unwrap(),
             client,
@@ -750,21 +1090,28 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
             .await
             .unwrap();
     let driver = tokio::spawn(connection);
-    let request = Request::builder()
-        .method("POST")
-        .uri(format!("https://{authority}/h2?private=query"))
-        .header("Authorization", "Bearer key-h2")
-        .body(Full::new(Bytes::from_static(b"request body")))
-        .unwrap();
-    let reply = timeout(LIMIT, sender.send_request(request))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(reply.status(), 200);
-    assert_eq!(
-        reply.into_body().collect().await.unwrap().to_bytes(),
-        Bytes::from_static(b"response body")
-    );
+    let requests = (0..3).map(|_| {
+        let mut sender = sender.clone();
+        let authority = &authority;
+        async move {
+            let request = Request::builder()
+                .method("POST")
+                .uri(format!("https://{authority}/h2?private=query"))
+                .header("Authorization", "Bearer key-h2")
+                .body(Full::new(Bytes::from_static(b"request body")))
+                .unwrap();
+            let reply = timeout(LIMIT, sender.send_request(request))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(reply.status(), 200);
+            assert_eq!(
+                reply.into_body().collect().await.unwrap().to_bytes(),
+                Bytes::from_static(b"response body")
+            );
+        }
+    });
+    futures_util::future::join_all(requests).await;
 
     // Reload the policy while the owned H2 tunnel remains alive. The next H2
     // stream is denied by credential policy before a second origin accept or
@@ -809,27 +1156,207 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     timeout(LIMIT, driver).await.unwrap().unwrap().unwrap();
     timeout(LIMIT, peer).await.unwrap().unwrap();
     proxy.shutdown().await;
+    let through = observations.next_sequence() - 1;
+    let mut observed = Vec::new();
+    loop {
+        let record = timeout(LIMIT, consumer.recv()).await.unwrap().unwrap();
+        match record.as_ref() {
+            crate::observations::Record::Observation(record) => {
+                let sequence = record.id.sequence;
+                observed.push(record.clone());
+                if sequence == through {
+                    break;
+                }
+            }
+            crate::observations::Record::Gap(_) => panic!("unexpected loss in bounded TLS fixture"),
+        }
+    }
+    use crate::observations::{Direction, Layer, Point, State};
+    let clear: Vec<_> = observed
+        .iter()
+        .filter(|o| {
+            o.point == Point::ClientTls
+                && o.state == State::Chunk
+                && o.direction == Direction::ToProxy
+        })
+        .collect();
+    assert!(!clear.is_empty());
+    for chunk in clear {
+        let parent = chunk.input_span.as_ref().unwrap();
+        assert_eq!(parent.layer, Layer::TransportStream);
+        assert!(!parent.parser_consumed);
+        assert!(
+            observed
+                .iter()
+                .any(|o| o.id == parent.observed_through && o.point == Point::AgentUds)
+        );
+    }
+    let heads: Vec<_> = observed
+        .iter()
+        .filter(|o| o.state == State::ParsedHead && o.protocol_stream_id.is_some())
+        .collect();
+    assert_eq!(heads.len(), 4);
+    let stream_ids: std::collections::HashSet<_> = heads
+        .iter()
+        .map(|o| o.protocol_stream_id.unwrap())
+        .collect();
+    assert_eq!(stream_ids.len(), 4);
+    for head in heads {
+        let input = head.input_span.as_ref().unwrap();
+        assert_eq!(input.layer, Layer::TlsCleartext);
+        assert_eq!(input.point, Point::ClientTls);
+        assert!(observed.iter().any(|o| o.id == input.observed_through));
+    }
+    let h2_completions = observed
+        .iter()
+        .filter(|o| o.state == State::Complete && o.protocol_stream_id.is_some())
+        .count();
+    assert!(h2_completions >= 3);
+    let behaviour = observations.counters.json()["behaviour"].clone();
+    let unavailable: u64 = behaviour["series"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            row["chunks_per_application_message_unavailable_total"]
+                .as_u64()
+                .unwrap()
+        })
+        .sum();
+    assert_eq!(unavailable, h2_completions as u64);
+    assert_eq!(
+        behaviour["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["application_messages_total"].as_u64().unwrap())
+            .sum::<u64>(),
+        (h2_completions + 1) as u64,
+        "parsed CONNECT and completed HTTP/2 requests"
+    );
+    assert!(observed.iter().all(|o| o.captured_length == 0));
+    let encoded = serde_json::to_string(&observed).unwrap();
+    for content in ["request body", "response body", "key-h2", "private=query"] {
+        assert!(!encoded.contains(content));
+    }
     cleanup(directory.path());
-    assert_eq!(stats(&runtime), expected_stats(1, 0, 1));
+    assert_eq!(stats(&runtime), expected_stats(3, 0, 3));
     let rows = records(directory.path());
     let traffic: Vec<_> = rows
         .iter()
         .filter(|row| row["event"] == "traffic.request" || row["event"] == "traffic.response")
         .collect();
-    assert_eq!(traffic.len(), 2);
-    check_event(traffic[0], "alice", &host, "/h2", false, 12, true);
-    check_event(traffic[1], "alice", &host, "/h2", true, 13, true);
-    assert_eq!(traffic[0]["request_id"], traffic[1]["request_id"]);
+    assert_eq!(traffic.len(), 6);
+    for request in traffic
+        .iter()
+        .filter(|row| row["event"] == "traffic.request")
+    {
+        check_event(request, "alice", &host, "/h2", false, 12, true);
+        let response = traffic
+            .iter()
+            .find(|row| {
+                row["event"] == "traffic.response" && row["request_id"] == request["request_id"]
+            })
+            .unwrap();
+        check_event(response, "alice", &host, "/h2", true, 13, true);
+    }
     let credentials: Vec<_> = rows
         .iter()
         .filter(|row| row["event"] == "security.credential_guard")
         .collect();
-    assert_eq!(credentials.len(), 2);
-    assert_eq!(credentials[0]["decision"], "allow");
-    assert_eq!(credentials[1]["decision"], "deny");
-    assert_eq!(credentials[0]["agent"], "alice");
-    assert_eq!(credentials[1]["agent"], "alice");
+    assert_eq!(credentials.len(), 4);
+    assert!(
+        credentials[..3]
+            .iter()
+            .all(|row| row["decision"] == "allow" && row["agent"] == "alice")
+    );
+    assert_eq!(credentials[3]["decision"], "deny");
+    assert_eq!(credentials[3]["agent"], "alice");
     owned_egress(directory.path(), &host, port, 1);
+    let rows = crate::connection_events::tests::records(&runtime, directory.path());
+    crate::connection_events::tests::assert_pairs(&rows);
+    let clients =
+        crate::connection_events::tests::connections(&rows, "client_to_proxy", "terminal");
+    let servers =
+        crate::connection_events::tests::connections(&rows, "proxy_to_upstream", "terminal");
+    assert_eq!(clients.len(), 1);
+    for connection in clients.iter().chain(servers.iter()) {
+        if connection["state"] == "failed" {
+            assert!(
+                connection["error"].is_string(),
+                "a transport error must retain its category"
+            );
+        }
+    }
+    assert_eq!(
+        servers.len(),
+        1,
+        "three H2 streams and CONNECT share the actual upstream"
+    );
+    let hello = &clients[0]["tls_client_hello"];
+    assert_eq!(hello["alpn_offers"], json!(["h2"]));
+    assert_eq!(hello["ja3"].as_str().unwrap().len(), 32);
+    assert!(hello["ja4"].as_str().unwrap().starts_with("t13"));
+    assert_eq!(servers[0]["tls_sessions"].as_array().unwrap().len(), 1);
+    let session = &servers[0]["tls_sessions"][0];
+    assert_eq!(session["peer"], "origin");
+    assert_eq!(session["version"], "TLSv1_3");
+    assert!(session["cipher"].as_str().unwrap().starts_with("TLS13_"));
+    assert_eq!(session["alpn"], "h2");
+    assert_eq!(session["handshake_kind"], "Full");
+    assert_eq!(
+        session["leaf_certificate"]["cert_sha256"],
+        expected_cert_hash
+    );
+    assert_eq!(
+        session["leaf_certificate"]["spki_sha256"],
+        expected_spki_hash
+    );
+    // One client hello, one origin server hello and one upstream TLS session,
+    // independent of application streams. Terminal records retain the facts.
+    assert_eq!(
+        rows.iter()
+            .filter(
+                |row| row["event"] == "network.connection" && row["details"]["state"] == "updated"
+            )
+            .count(),
+        3
+    );
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        assert!(servers[0]["tls_server_name"].is_null());
+    } else {
+        assert_eq!(servers[0]["tls_server_name"], host);
+    }
+    let flows: Vec<_> = rows
+        .iter()
+        .filter(|row| row["event"] == "traffic.flow")
+        .collect();
+    assert_eq!(
+        flows.len(),
+        5,
+        "CONNECT, three upstream streams and one local denial"
+    );
+    assert_eq!(
+        flows
+            .iter()
+            .filter(|flow| flow["details"]["server_connection_id"] == servers[0]["connection_id"])
+            .count(),
+        4
+    );
+    assert_eq!(
+        flows
+            .iter()
+            .filter(|flow| flow["details"]["server_connection_id"].is_null())
+            .count(),
+        1
+    );
+    for flow in flows {
+        assert_eq!(
+            flow["details"]["client_connection_id"],
+            clients[0]["connection_id"]
+        );
+        assert_eq!(flow["details"]["runtime_id"], clients[0]["runtime_id"]);
+    }
 }
 
 #[tokio::test]
@@ -964,7 +1491,7 @@ async fn network_security_events_precede_traffic_and_use_trusted_uds_identity() 
                     _ => "high",
                 }
             );
-            assert_eq!(security["schema_version"], 1);
+            assert_eq!(security["schema_version"], 2);
             if mode == "prompt" {
                 let key: Value =
                     serde_json::from_str(security["approval"]["key"].as_str().unwrap()).unwrap();

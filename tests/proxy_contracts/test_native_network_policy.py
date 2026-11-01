@@ -199,7 +199,7 @@ def test_native_policy_two_agent_http_and_forged_identity(proxy_backend, tmp_pat
         with policy_proxy(proxy_backend, directory, POLICY, parent_proxy=parent_url) as proxy:
             for agent, expected in (("bob", 403), ("alice", 200), ("bob", 403), ("alice", 200)):
                 before = origin.accepts
-                egress_before = len(proxy.events("proxy.egress"))
+                egress_before = len(proxy.events("traffic.egress"))
                 status, headers, body = send_request(proxy.paths[agent], url, headers={
                     "X-SafeYolo-Agent": "alice" if agent == "bob" else "bob",
                     "X-SafeYolo-Request-Id": FORGED_REQUEST_ID,
@@ -213,14 +213,14 @@ def test_native_policy_two_agent_http_and_forged_identity(proxy_backend, tmp_pat
                 assert origin.accepts - before == int(expected == 200)
                 if expected == 403:
                     assert_rejection(status, headers, body, expected, host)
-                    assert len(proxy.events("proxy.egress")) == egress_before
+                    assert len(proxy.events("traffic.egress")) == egress_before
                 else:
                     assert body == b"hello"
-            events = proxy.events("proxy.request")
+            events = proxy.events("traffic.request_outcome")
             assert [event["agent"] for event in events] == ["bob", "alice", "bob", "alice"]
             assert [event["request_id"] for event in events] == identifiers
-            assert [event["status"] for event in events] == [403, 200, 403, 200]
-            assert all(event["host"] == host and event["port"] == port for event in events)
+            assert [event["details"]["status"] for event in events] == [403, 200, 403, 200]
+            assert all(event["host"] == host and event["details"]["port"] == port for event in events)
             expected_target = url if parent else "/signed?part=one&part=two%2Fthree"
             assert origin.requests == [{"method": "GET", "target": expected_target}] * 2
 
@@ -240,7 +240,7 @@ def test_native_policy_runtime_guard_modes(proxy_backend, tmp_path, options, sta
                 else:
                     assert body == b"hello"
             assert origin.accepts == (2 if status == 200 else 0)
-            assert len(proxy.events("proxy.egress")) == origin.accepts
+            assert len(proxy.events("traffic.egress")) == origin.accepts
 
 
 @pytest.mark.parametrize("scope", ["domain", "client"])
@@ -263,7 +263,7 @@ def test_native_policy_scoped_bypass_and_required_addon(proxy_backend, tmp_path,
                     assert parent.accepts - before == int(bypassed)
                     if not bypassed:
                         assert_rejection(status, headers, body, 403, host)
-            assert len(proxy.events("proxy.egress")) == parent.accepts
+            assert len(proxy.events("traffic.egress")) == parent.accepts
 
 
 @pytest.mark.parametrize("homoglyph", [True, False])
@@ -281,7 +281,7 @@ def test_native_policy_homoglyph_checks_the_source_matching_host(proxy_backend, 
                 assert json.loads(body)["domain"] == host
                 assert {name.lower(): value for name, value in headers.items()}["x-blocked-by"] == "network-guard"
                 assert parent.accepts == 0
-                assert proxy.events("proxy.egress") == []
+                assert proxy.events("traffic.egress") == []
             else:
                 assert body == b"hello"
                 assert parent.requests == [{"method": "GET", "target": f"http://{wire_host}:8123/path"}]
@@ -312,7 +312,7 @@ def test_native_policy_homoglyph_authority_forms(proxy_backend, tmp_path, form, 
             (directory / "homoglyph-authority.json").write_text(json.dumps({
                 "form": form, "mode": mode, "wire_target": target, "wire_host": wire_host,
                 "status": status, "origin_accepts": parent.accepts,
-                "origin_requests": parent.requests, "events": proxy.events("proxy.request"),
+                "origin_requests": parent.requests, "events": proxy.events("traffic.request_outcome"),
             }, indent=2) + "\n")
             if mode == "block":
                 if proxy_backend == "python":
@@ -328,7 +328,7 @@ def test_native_policy_homoglyph_authority_forms(proxy_backend, tmp_path, form, 
                 assert json.loads(body)["type"] == "homoglyph_attack"
                 assert {name.lower(): value for name, value in headers.items()}["x-blocked-by"] == "network-guard"
                 assert parent.accepts == 0
-                assert proxy.events("proxy.egress") == []
+                assert proxy.events("traffic.egress") == []
             else:
                 assert status == 200 and body == b"hello"
                 assert parent.accepts == 1 and len(parent.requests) == 1
@@ -352,7 +352,7 @@ def test_native_policy_malformed_ace_inspection_modes(proxy_backend, tmp_path, m
                           network_guard_enabled=mode != "disabled") as proxy:
             status, headers, body = send_request(proxy.paths["alice"], "/inspection",
                                                   headers={"Host": f"{host}:8123"})
-            events = proxy.events("proxy.network_guard")
+            events = proxy.events("security.network_guard.evaluated")
             assert len(events) == 1
             guard = events[0]
             (directory / "hostname-inspection.json").write_text(json.dumps({
@@ -364,19 +364,20 @@ def test_native_policy_malformed_ace_inspection_modes(proxy_backend, tmp_path, m
                 assert_rejection(status, headers, body, 403, host)
                 assert json.loads(body)["reason"] == "Hostname inspection failed"
                 assert parent.accepts == 0
-                assert proxy.events("proxy.egress") == []
+                assert proxy.events("traffic.egress") == []
             else:
                 assert status == 200 and body == b"hello"
                 assert parent.accepts == 1 and len(parent.requests) == 1
             if mode in ("block", "warn"):
-                assert guard["outcome"] == ("blocked" if mode == "block" else "warned")
-                assert guard["audit"]["decision"] == ("deny" if mode == "block" else "warn")
-                assert guard["audit"]["details"]["reason"] == "Hostname inspection failed"
-                assert guard["pdp"] is None
+                assert guard["details"]["outcome"] == ("blocked" if mode == "block" else "warned")
+                security, = proxy.events("security.network_guard")
+                assert security["decision"] == ("deny" if mode == "block" else "warn")
+                assert security["details"]["reason"] == "Hostname inspection failed"
+                assert guard["details"]["pdp"] is None
             else:
-                assert guard["outcome"] == ("allowed" if mode == "homoglyph-disabled" else "bypassed")
-                assert guard["audit"] is None
-                assert (guard["pdp"] is not None) == (mode == "homoglyph-disabled")
+                assert guard["details"]["outcome"] == ("allowed" if mode == "homoglyph-disabled" else "bypassed")
+                assert proxy.events("security.network_guard") == []
+                assert (guard["details"]["pdp"] is not None) == (mode == "homoglyph-disabled")
 
 
 @pytest.mark.parametrize("host", ["XN--pi-fia905a.invalid", "XN--pi-6kc646z.invalid"])
@@ -393,7 +394,7 @@ def test_native_policy_raw_decodable_mixed_script_ace(proxy_backend, tmp_path, h
             (directory / "hostname-inspection.json").write_text(json.dumps({
                 "wire_host": host, "homoglyph": homoglyph, "status": status,
                 "origin_accepts": parent.accepts, "origin_requests": parent.requests,
-                "events": proxy.events("proxy.request"),
+                "events": proxy.events("traffic.request_outcome"),
             }, indent=2) + "\n")
             if homoglyph:
                 if proxy_backend == "python":
@@ -406,7 +407,7 @@ def test_native_policy_raw_decodable_mixed_script_ace(proxy_backend, tmp_path, h
                 assert json.loads(body)["type"] == "homoglyph_attack"
                 assert {name.lower(): value for name, value in headers.items()}["x-blocked-by"] == "network-guard"
                 assert parent.accepts == 0
-                assert proxy.events("proxy.egress") == []
+                assert proxy.events("traffic.egress") == []
             else:
                 assert status == 200 and body == b"hello"
                 assert parent.accepts == 1 and len(parent.requests) == 1
@@ -441,7 +442,7 @@ def test_native_policy_raw_utf8_origin_host(proxy_backend, tmp_path, host, homog
                 response = http.client.HTTPResponse(stream)
                 response.begin()
                 status, headers, body = response.status, dict(response.getheaders()), response.read()
-            events = proxy.events("proxy.request")
+            events = proxy.events("traffic.request_outcome")
             (directory / "raw-host-forwarding.json").write_text(json.dumps({
                 "wire_head_hex": head.hex(), "policy_host": host, "status": status,
                 "origin_accepts": parent.accepts, "parent_head_hex": [item.hex() for item in parent.heads],
@@ -460,14 +461,14 @@ def test_native_policy_raw_utf8_origin_host(proxy_backend, tmp_path, host, homog
                 assert host_lines == [b" " + wire_host + b":8123"]
             else:
                 assert parent.accepts == 0 and parent.heads == []
-                assert proxy.events("proxy.egress") == []
+                assert proxy.events("traffic.egress") == []
                 if expected == 403:
                     assert json.loads(body)["type"] == "homoglyph_attack"
                     assert json.loads(body)["domain"] == host
                     assert {name.lower(): value for name, value in headers.items()}["x-blocked-by"] == "network-guard"
             if host is not None:
                 assert len(events) == 1
-                assert events[0]["host"] == host and events[0]["port"] == 8123
+                assert events[0]["host"] == host and events[0]["details"]["port"] == 8123
 
 
 @pytest.mark.parametrize("budget", ["global", "host"])
@@ -502,7 +503,7 @@ def test_native_policy_budget_is_shared_and_survives_reload(proxy_backend, tmp_p
             else:
                 assert status == 200 and body == b"hello"
             assert time.monotonic() - started < 30, "Scenario crossed the intended no-refill window"
-            assert len(proxy.events("proxy.egress")) == parent.accepts
+            assert len(proxy.events("traffic.egress")) == parent.accepts
 
 
 def test_native_policy_failed_reload_retains_scoped_decisions(proxy_backend, tmp_path):
@@ -585,7 +586,7 @@ def test_native_policy_failed_reload_retains_scoped_decisions(proxy_backend, tmp
 
             deadline = time.monotonic() + 3
             while True:
-                requests = {row["request_id"]: row for row in proxy.events("proxy.request")}
+                requests = {row["request_id"]: row for row in proxy.events("traffic.request_outcome")}
                 audit = {row["request_id"]: row for row in read_events(directory / "audit.jsonl")
                          if row["event"] == "security.network_guard"}
                 denied = [item for item in observations if item[3] == 403]
@@ -595,7 +596,7 @@ def test_native_policy_failed_reload_retains_scoped_decisions(proxy_backend, tmp
                 time.sleep(0.025)
             for identifier, agent, port, status in observations:
                 row = requests[identifier]
-                assert (row["agent"], row["host"], row["port"], row["status"], row["decision"]) == (
+                assert (row["agent"], row["host"], row["details"]["port"], row["details"]["status"], row["decision"]) == (
                     agent, "127.0.0.1", port, status, "allow" if status == 200 else "deny"
                 )
                 if status == 403:
@@ -603,7 +604,7 @@ def test_native_policy_failed_reload_retains_scoped_decisions(proxy_backend, tmp
                     assert denial["agent"] == agent and denial["decision"] == "deny"
                     assert denial["details"]["port"] == port
                     assert denial["details"]["attribution"]["trusted_transport_identity"] == agent
-            assert len(proxy.events("proxy.egress")) == sum(status == 200 for *_, status in observations)
+            assert len(proxy.events("traffic.egress")) == sum(status == 200 for *_, status in observations)
 
 
 def test_native_invalid_configuration_reload_keeps_policy(proxy_backend, tmp_path):
@@ -653,7 +654,7 @@ def test_native_invalid_configuration_reload_keeps_policy(proxy_backend, tmp_pat
             assert allowed.accepts == 2 and len(allowed.request_heads) == 2
             deadline = time.monotonic() + 3
             while True:
-                requests = {row["request_id"]: row for row in proxy.events("proxy.request")}
+                requests = {row["request_id"]: row for row in proxy.events("traffic.request_outcome")}
                 audit = {row["request_id"]: row for row in read_events(directory / "audit.jsonl")
                          if row["event"] == "security.network_guard"}
                 if all(identifier in requests and identifier in audit for _, identifier in denied_ids):
@@ -662,7 +663,7 @@ def test_native_invalid_configuration_reload_keeps_policy(proxy_backend, tmp_pat
                 time.sleep(0.025)
             for agent, identifier in denied_ids:
                 assert requests[identifier]["agent"] == agent
-                assert requests[identifier]["status"] == 403
+                assert requests[identifier]["details"]["status"] == 403
                 assert requests[identifier]["decision"] == "deny"
                 assert audit[identifier]["agent"] == agent and audit[identifier]["decision"] == "deny"
             before_ready = proxy.readiness_file.stat()

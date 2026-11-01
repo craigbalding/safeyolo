@@ -84,13 +84,13 @@ def response_event(proxy, headers, *, agent, status):
     ]
     deadline = time.monotonic() + 5
     while True:
-        rows = [row for row in proxy.events("proxy.request")
+        rows = [row for row in proxy.events("traffic.request_outcome")
                 if row.get("request_id") == identifier]
         if rows or time.monotonic() >= deadline:
             break
         time.sleep(0.025)
     assert len(rows) == 1, (identifier, rows)
-    assert rows[0]["agent"] == agent and rows[0]["status"] == status, rows[0]
+    assert rows[0]["agent"] == agent and rows[0]["details"]["status"] == status, rows[0]
     return identifier
 
 
@@ -129,7 +129,7 @@ def wss_echo(peer, results):
 
 def run_batch(proxy, index, *, wss_pem, proxy_ca, admin):
     """Keep five transport legs live during a control and authenticated admin read."""
-    egress_before = len(proxy.events("proxy.egress"))
+    egress_before = len(proxy.events("traffic.egress"))
     prefix = (f"batch-{index}-".encode() * 8192)[:65536]
     payload = (f"opaque-{index}-".encode() * 1024)[:8192]
     upload_path = f"/cancel-{index}"
@@ -186,7 +186,7 @@ def run_batch(proxy, index, *, wss_pem, proxy_ca, admin):
                 assert (status, body) == (200, b"hello")
                 control_id = response_event(proxy, headers, agent="alice", status=200)
                 assert admin.stats()["proxy"] == "safeyolo"
-                before_denial = (http_origin.accepts, len(proxy.events("proxy.egress")))
+                before_denial = (http_origin.accepts, len(proxy.events("traffic.egress")))
                 status, headers, _ = request(
                     proxy.paths["bob"], url + "/denied",
                     headers={"X-SafeYolo-Agent": "alice"},
@@ -194,7 +194,7 @@ def run_batch(proxy, index, *, wss_pem, proxy_ca, admin):
                 headers = {name.lower(): value for name, value in headers.items()}
                 assert status == 403 and headers.get("x-blocked-by") == "network-guard"
                 denied_id = response_event(proxy, headers, agent="bob", status=403)
-                assert (http_origin.accepts, len(proxy.events("proxy.egress"))) == before_denial
+                assert (http_origin.accepts, len(proxy.events("traffic.egress"))) == before_denial
                 wss_peer.close()
                 assert wss_peer.receive() == (
                     8, struct.pack("!H", 1000) + b"fixture complete"
@@ -236,9 +236,9 @@ def run_batch(proxy, index, *, wss_pem, proxy_ca, admin):
         handshake, _ = wss_origin.handshakes.get(timeout=5)
         assert handshake == "GET /socket HTTP/1.1"
         assert wss_origin.handshakes.empty() and wss_origin.results.empty()
-        egress = proxy.events("proxy.egress")[egress_before:]
+        egress = proxy.events("traffic.egress")[egress_before:]
         assert len(egress) == 7 and all(row["agent"] == "alice" for row in egress), egress
-        assert {row["port"] for row in egress} == {
+        assert {row["details"]["port"] for row in egress} == {
             http_origin.server_address[1], upload_origin.server_address[1],
             int(authority.rsplit(":", 1)[1]), wss_origin.server_address[1],
         }
@@ -341,7 +341,7 @@ def test_mixed_cancellation_batches_drain_and_restart_same_listener(proxy_backen
                 expected_backend="rust-m2",
             )
             restarted = RunningProxy(
-                proxy.paths, proxy.event_log, restarted_process, proxy.readiness_file
+                proxy.paths, proxy.audit_log, restarted_process, proxy.readiness_file
             )
             assert restarted.process.pid != first_pid
             assert json.loads(proxy.readiness_file.read_text())["pid"] == restarted.process.pid

@@ -1,6 +1,9 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex,
+};
 use std::task::{Context, Poll};
 use tokio::sync::oneshot;
 
@@ -64,19 +67,65 @@ impl std::error::Error for RequestAborted {}
 #[derive(Clone)]
 struct RequestCompletionSlot(Arc<Mutex<Option<RequestCompletion>>>);
 
+/// Parser-consumed stream offsets, including framing. Read-ahead bytes remain
+/// outside the range until this parser consumes them. No content is retained.
+#[derive(Clone, Debug)]
+pub struct RequestByteRange {
+    start: u64,
+    head_end: u64,
+    end: Arc<AtomicU64>,
+    body_parse_failed: Arc<AtomicBool>,
+}
+impl RequestByteRange {
+    /// Offset before this message, including any parser-consumed leading lines.
+    pub fn start(&self) -> u64 {
+        self.start
+    }
+    /// Offset immediately after the validated request head.
+    pub fn head_end(&self) -> u64 {
+        self.head_end
+    }
+    /// Latest consumed offset, including body framing and trailers.
+    pub fn end(&self) -> u64 {
+        self.end.load(Ordering::Acquire)
+    }
+    /// True only when HTTP/1 body framing or trailers failed validation.
+    /// Transport errors and incomplete input do not set this marker.
+    pub fn body_parse_failed(&self) -> bool {
+        self.body_parse_failed.load(Ordering::Acquire)
+    }
+}
 #[derive(Debug)]
-pub(crate) struct RequestCompletionProducer(oneshot::Sender<()>);
+pub(crate) struct RequestCompletionProducer {
+    sender: oneshot::Sender<()>,
+    range: RequestByteRange,
+}
 impl RequestCompletionProducer {
+    pub(crate) fn advance(&self, end: u64) {
+        self.range.end.store(end, Ordering::Release);
+    }
+    pub(crate) fn body_parse_failed(&self) {
+        self.range.body_parse_failed.store(true, Ordering::Release);
+    }
     pub(crate) fn complete(self) {
-        let _ = self.0.send(());
+        let _ = self.sender.send(());
     }
 }
 pub(crate) fn register_request_completion(
     extensions: &mut http::Extensions,
+    start: u64,
+    head_end: u64,
 ) -> RequestCompletionProducer {
     let (sender, receiver) = oneshot::channel();
     extensions.insert(RequestCompletionSlot(Arc::new(Mutex::new(Some(
         RequestCompletion(receiver),
     )))));
-    RequestCompletionProducer(sender)
+    let range = RequestByteRange {
+        start,
+        head_end,
+        end: Arc::new(AtomicU64::new(head_end)),
+        body_parse_failed: Arc::new(AtomicBool::new(false)),
+    };
+    extensions.insert(range.clone());
+    RequestCompletionProducer { sender, range }
 }

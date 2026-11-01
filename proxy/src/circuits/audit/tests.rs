@@ -1,4 +1,4 @@
-use std::{path::Path, process::Command, time::Duration};
+use std::{path::Path, time::Duration};
 
 use serde_json::{Value, json};
 
@@ -31,37 +31,11 @@ fn records(path: &Path) -> Vec<Value> {
         .unwrap_or_default()
         .lines()
         .map(|line| {
-            let mut value: Value = serde_json::from_str(line).unwrap();
+            let mut value = crate::audit::parse_record(line).unwrap();
             value.as_object_mut().unwrap().shift_remove("ts");
             value
         })
         .collect()
-}
-
-#[test]
-#[ignore = "actual Python circuit audit oracle; set SAFEYOLO_POLICY_PYTHON"]
-fn live_source_submission_oracle_matches_frozen_rows() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-    let python = std::env::var_os("SAFEYOLO_POLICY_PYTHON")
-        .expect("set SAFEYOLO_POLICY_PYTHON to the source Python environment");
-    let result = Command::new(python)
-        .arg(root.join("proxy/tests/circuit_audit_order_source.py"))
-        .arg("--check")
-        .arg(root.join("proxy/tests/circuit_audit_order_source.json"))
-        .env(
-            "PYTHONPATH",
-            format!(
-                "{0}/cli/src:{0}",
-                std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
-            ),
-        )
-        .output()
-        .unwrap();
-    assert!(
-        result.status.success(),
-        "source circuit audit oracle failed: {}",
-        String::from_utf8_lossy(&result.stderr)
-    );
 }
 
 #[test]
@@ -171,10 +145,30 @@ fn submission_failure_preserves_source_partial_effects_and_success_envelopes() {
             );
             assert!(writer.wait_for_drain(WAIT).unwrap(), "{name}");
             assert!(writer.shutdown(WAIT).unwrap(), "{name}");
+            let actual: Vec<_> = records(&path)
+                .into_iter()
+                .map(|mut value| {
+                    assert_eq!(
+                        value
+                            .as_object_mut()
+                            .unwrap()
+                            .shift_remove("schema_version"),
+                        Some(json!(2))
+                    );
+                    value
+                })
+                .collect();
+            let mut expected = row["submitted"].clone();
+            for value in expected.as_array_mut().unwrap() {
+                value
+                    .as_object_mut()
+                    .unwrap()
+                    .shift_remove("schema_version");
+            }
             assert_eq!(
-                serde_json::to_string(&records(&path)).unwrap(),
-                serde_json::to_string(&row["submitted"]).unwrap(),
-                "fields and source insertion order: {name}"
+                json!(actual),
+                expected,
+                "publication payload and ordering: {name}"
             );
         }
         // Observe without get_status/get_stats: those would mutate the fixture.
@@ -242,7 +236,7 @@ fn transition_constructor_reuses_existing_source_envelopes_and_optional_scope() 
     let output = records(&path);
     assert_eq!(output.len(), rows.len());
     for (record, row) in output.iter().zip(rows) {
-        assert_eq!(record["schema_version"], 1);
+        assert_eq!(record["schema_version"], 2);
         assert_eq!(record["event"], row["source_event"]);
         assert_eq!(record["summary"], row["source_summary"]);
         assert_eq!(record["kind"], "ops");

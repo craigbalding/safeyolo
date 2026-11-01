@@ -26,7 +26,7 @@ echo "[static start] pid=$$" > /dev/console 2>/dev/null || true
 # --------------------------------------------------------------------------
 _agent_name=""
 if [ -f /safeyolo/agent-name ]; then
-    _agent_name=$(cat /safeyolo/agent-name 2>/dev/null || echo "")
+    _agent_name=$(< /safeyolo/agent-name) 2>/dev/null || _agent_name=""
     if [ -n "$_agent_name" ]; then
         hostname "$_agent_name" 2>/dev/null || true
         echo "$_agent_name" > /etc/hostname 2>/dev/null || true
@@ -45,9 +45,8 @@ fi
 # before dropping to agent-user context. We run as root at this
 # point (pre-per-run) with CAP_MKNOD + CAP_DAC_OVERRIDE, which is
 # sufficient to unlink.
-rm -f /dev/net/tun 2>/dev/null || true
+rm -f /dev/net/tun /dev/fuse 2>/dev/null || true
 rmdir /dev/net 2>/dev/null || true
-rm -f /dev/fuse 2>/dev/null || true
 
 # Standard /dev symlinks -- normally created by udev or systemd-tmpfiles
 # at boot, but this VM uses a minimal init with neither. Without these,
@@ -119,28 +118,27 @@ fi
 # 2. Mount VirtioFS shares (workspace, host config dirs/files)
 #
 # On macOS (VZ microVM), VirtioFS is the mount mechanism -- failure is
-# fatal. On Linux (gVisor), the OCI spec handles mounts via bind -- the
-# virtiofs mount calls legitimately fail and are skipped. Detect by
+# fatal. On Linux (gVisor), the OCI spec handles mounts via bind. Detect by
 # checking if /workspace is already mounted (OCI bind-mounts appear
-# before init runs).
+# before init runs). Keep that decision for all shares: mounting the VZ
+# workspace must not suppress failures on the remaining shares.
 # --------------------------------------------------------------------------
-_needs_virtiofs_mount() { ! mountpoint -q /workspace 2>/dev/null; }
+needs_virtiofs_mount=1
+if mountpoint -q /workspace 2>/dev/null; then
+    needs_virtiofs_mount=0
+fi
 
-mkdir -p /workspace
-if _needs_virtiofs_mount; then
+[ -d /workspace ] || mkdir -p /workspace
+if [ "$needs_virtiofs_mount" = 1 ]; then
     mount -t virtiofs workspace /workspace
-else
-    mount -t virtiofs workspace /workspace 2>/dev/null || true
 fi
 
 # Status share -- writable channel for guest→host signals (vm-status,
 # per-run-started, etc.). Separate from /safeyolo so the config share
 # can be read-only.
-mkdir -p /safeyolo-status
-if _needs_virtiofs_mount; then
+[ -d /safeyolo-status ] || mkdir -p /safeyolo-status
+if [ "$needs_virtiofs_mount" = 1 ]; then
     mount -t virtiofs status /safeyolo-status
-else
-    mount -t virtiofs status /safeyolo-status 2>/dev/null || true
 fi
 
 # Persistent /home/agent -- must mount before the host-config-mount
@@ -150,11 +148,9 @@ fi
 # $HOME/.mise (see /etc/profile.d/mise.sh + vsock-term), so mise
 # installs persist here too. Seed missing /etc/skel entries without replacing
 # anything already written by a host setup script or the operator.
-mkdir -p /home/agent
-if _needs_virtiofs_mount; then
+[ -d /home/agent ] || mkdir -p /home/agent
+if [ "$needs_virtiofs_mount" = 1 ]; then
     mount -t virtiofs home /home/agent
-else
-    mount -t virtiofs home /home/agent 2>/dev/null || true
 fi
 if [ -d /etc/skel ]; then
     # `cp -r` (not `-a`) -- VirtioFS on VZ rejects utimes, which makes
@@ -163,7 +159,7 @@ if [ -d /etc/skel ]; then
     # on skel dotfiles aren't load-bearing. Copy as agent so newly seeded
     # files have the right ownership on both Linux bind mounts and VZ
     # VirtioFS. Globs cover ordinary and hidden skeleton entries.
-    su agent -c '
+    seed_home='
         for source in /etc/skel/* /etc/skel/.[!.]* /etc/skel/..?*; do
             [ -e "$source" ] || [ -L "$source" ] || continue
             name=${source##*/}
@@ -171,6 +167,14 @@ if [ -d /etc/skel ]; then
                 cp -r "$source" "/home/agent/$name"
         done
     '
+    # setpriv avoids a PAM session just to copy files. Probe the same identity
+    # and environment options so older/custom images retain the su route.
+    if command -v setpriv >/dev/null 2>&1 \
+       && setpriv --reuid=agent --regid=agent --init-groups --reset-env true >/dev/null 2>&1; then
+        setpriv --reuid=agent --regid=agent --init-groups --reset-env /bin/sh -c "$seed_home"
+    else
+        su agent -c "$seed_home"
+    fi
 fi
 
 # Host config directory mounts (e.g., ~/.claude → /home/agent/.claude)
@@ -178,10 +182,8 @@ if [ -f /safeyolo/host-mounts ]; then
     while IFS=: read -r tag guest_path; do
         [ -z "$tag" ] && continue
         mkdir -p "$guest_path"
-        if _needs_virtiofs_mount; then
+        if [ "$needs_virtiofs_mount" = 1 ]; then
             mount -t virtiofs "$tag" "$guest_path"
-        else
-            mount -t virtiofs "$tag" "$guest_path" 2>/dev/null || true
         fi
         # No chown: on gVisor the userns map (container uid 1000 →
         # host operator uid) already presents host-owned files as
@@ -191,23 +193,86 @@ if [ -f /safeyolo/host-mounts ]; then
     done < /safeyolo/host-mounts
 fi
 
+# Host mounts can replace /etc/ssh, so resolve its marker and keys only after
+# mounting. Overlap generation in that final directory with CA setup. Join
+# before starting sshd or completing static init, including before a snapshot.
+ssh_keygen_pid=
+if command -v ssh-keygen >/dev/null 2>&1 \
+   && [ ! -e /etc/ssh/.safeyolo-host-keys-generated ]; then
+    # Repair old base images containing shared keys before generating keys
+    # local to this agent's overlay or operator-selected mount.
+    rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub 2>/dev/null || true
+    ssh-keygen -A >/dev/null 2>&1 &
+    ssh_keygen_pid=$!
+    # A failed static setup must not leave key generation running behind it.
+    trap 'kill "$ssh_keygen_pid" 2>/dev/null || true; wait "$ssh_keygen_pid" 2>/dev/null || true' EXIT
+fi
+
 # --------------------------------------------------------------------------
 # 3. Trust SafeYolo CA certificate (idempotent)
 #
-# Skip the rebuild on every boot -- the CA cert is the same across runs.
-# Trigger update-ca-certificates only if either:
-#   - the source cert differs from what's installed
-#   - the bundle file is missing (recovery from a corrupt/missing state)
-# Drop --fresh: incremental update is enough since we're adding, not pruning.
+# Debian images already contain their configured system trust. A fresh Linux
+# overlay loses only the instance CA addition on stop. Add that CA to the
+# prepared bundle and index it without rescanning every distro certificate.
+# Existing SafeYolo entries (including rotations and incomplete prior setup)
+# and custom update hooks still use the distro updater. VZ's retained overlay
+# follows that path, so image/configuration changes are not hidden by reuse.
+# The destination can be a read-only bind; matching bytes alone are not proof
+# that the bundle trusts the instance CA.
 # --------------------------------------------------------------------------
 SY_CERT_SRC=/safeyolo/mitmproxy-ca-cert.pem
 SY_CERT_DST=/usr/local/share/ca-certificates/safeyolo.crt
-SY_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+SY_CERT_DIR=/etc/ssl/certs
+SY_BUNDLE=$SY_CERT_DIR/ca-certificates.crt
+SY_PEM=$SY_CERT_DIR/safeyolo.pem
+SY_CA_REPAIR=$SY_CERT_DIR/.safeyolo-ca-repair-needed
+index_instance_ca() {
+    local hash index=0
+    hash=$(openssl x509 -in "$SY_CERT_DST" -noout -subject_hash) || return 1
+    [[ "$hash" =~ ^[0-9a-fA-F]{8}$ ]] || return 1
+    # Keep existing collision entries. A dangling link needs distro repair
+    # before CApath lookup can reach the new certificate.
+    while [ -e "$SY_CERT_DIR/$hash.$index" ] || [ -L "$SY_CERT_DIR/$hash.$index" ]; do
+        [ -e "$SY_CERT_DIR/$hash.$index" ] || return 1
+        index=$((index + 1))
+    done
+    ln -s safeyolo.pem "$SY_CERT_DIR/$hash.$index"
+}
 if [ -f "$SY_CERT_SRC" ]; then
-    if [ ! -f "$SY_CERT_DST" ] || ! cmp -s "$SY_CERT_SRC" "$SY_CERT_DST" || [ ! -f "$SY_BUNDLE" ]; then
+    if [ ! -f "$SY_CERT_DST" ] || ! cmp -s "$SY_CERT_SRC" "$SY_CERT_DST"; then
         install -m 644 "$SY_CERT_SRC" "$SY_CERT_DST"
+    fi
+    SY_CA_READY=0
+    if [ -f /etc/debian_version ] && [ -s "$SY_BUNDLE" ] \
+       && [ ! -e "$SY_PEM" ] && [ ! -L "$SY_PEM" ] \
+       && [ ! -e "$SY_CA_REPAIR" ] && [ ! -L "$SY_CA_REPAIR" ] \
+       && SY_CA_HOOKS=$(run-parts --test /etc/ca-certificates/update.d 2>/dev/null) \
+       && [ -z "$SY_CA_HOOKS" ] && command -v openssl >/dev/null 2>&1; then
+        if SY_CA_TEMP=$(mktemp "$SY_BUNDLE.XXXXXX") \
+           && { cat "$SY_BUNDLE" && printf '\n' && cat "$SY_CERT_DST" && printf '\n'; } > "$SY_CA_TEMP" \
+           && chmod 644 "$SY_CA_TEMP" \
+           && ln -s "$SY_CERT_DST" "$SY_PEM" \
+           && index_instance_ca \
+           && mv -f "$SY_CA_TEMP" "$SY_BUNDLE"; then
+            SY_CA_READY=1
+            SY_CA_TEMP=
+        fi
+        # The distro updater repairs a partial index or failed bundle commit.
+        [ -z "$SY_CA_TEMP" ] || rm -f "$SY_CA_TEMP" || true
+    fi
+    if [ "$SY_CA_READY" = 0 ]; then
+        # Debian otherwise skips rehash when only certificate bytes changed,
+        # or a prior attempt left the named entry without a complete index.
+        if [ -f /etc/debian_version ]; then
+            # Record unfinished repair before removing its named entry. A
+            # failure or interruption must not admit the stale bundle as fresh.
+            touch "$SY_CA_REPAIR"
+            rm -f "$SY_PEM" 2>/dev/null || true
+        fi
         if ! update-ca-certificates >/dev/null 2>&1; then
             echo "[static] WARNING: update-ca-certificates failed" > /dev/console 2>/dev/null || true
+        elif [ -f /etc/debian_version ]; then
+            rm -f "$SY_CA_REPAIR" 2>/dev/null || true
         fi
     fi
 fi
@@ -240,17 +305,11 @@ if [ -f /safeyolo/authorized_keys ]; then
     usermod -p '*' root 2>/dev/null || true
 fi
 
-if command -v ssh-keygen >/dev/null 2>&1 \
-   && [ ! -e /etc/ssh/.safeyolo-host-keys-generated ]; then
-    # Generate SSH host keys inside the guest overlay instead of baking
-    # reusable private keys into the base rootfs image or repo-visible
-    # rootfs-tree build output. The pre-delete repairs old base images that
-    # already contain generated host keys: overlayfs records the deletion and
-    # the regenerated keys are agent-local from then on.
-    rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub 2>/dev/null || true
-    if ssh-keygen -A >/dev/null 2>&1; then
+if [ -n "$ssh_keygen_pid" ]; then
+    if wait "$ssh_keygen_pid"; then
         touch /etc/ssh/.safeyolo-host-keys-generated 2>/dev/null || true
     fi
+    trap - EXIT
 fi
 # SSH host keys must be root-owned and 600. Keys from the rootfs
 # tarball already have correct ownership, but ssh-keygen -A above
@@ -262,14 +321,19 @@ fi
 # in a userns that lacks CAP_CHOWN over the file's original inode —
 # set -e kills guest-init before per-run. Skip the chown when it
 # would be a no-op; only invoke when the current owner differs.
+ssh_host_keys=()
 for keyfile in /etc/ssh/ssh_host_*_key; do
     [ -f "$keyfile" ] || continue
-    owner=$(stat -c '%u:%g' "$keyfile" 2>/dev/null || echo "")
-    if [ "$owner" != "0:0" ]; then
+    # Static init runs as guest uid/gid 0. Bash can check both owners without
+    # starting stat for each key, including through a user namespace.
+    if [ ! -O "$keyfile" ] || [ ! -G "$keyfile" ]; then
         chown root:root "$keyfile" 2>/dev/null || true
     fi
-    chmod 600 "$keyfile" 2>/dev/null || true
+    ssh_host_keys+=("$keyfile")
 done
+if [ "${#ssh_host_keys[@]}" -gt 0 ]; then
+    chmod 600 "${ssh_host_keys[@]}" 2>/dev/null || true
+fi
 
 # Refresh guest-root support at boot so existing base images gain the current
 # sudo shim and policy without requiring a rootfs rebuild. On gVisor the shim
@@ -278,10 +342,10 @@ done
 if [ -x /usr/bin/sudo ] && [ -r /safeyolo/guest-sudo ]; then
     install -d -m 0755 /usr/local/bin /etc/sudoers.d
     install -m 0755 /safeyolo/guest-sudo /usr/local/bin/sudo
-    cat > /etc/sudoers.d/safeyolo-agent <<'SUDOERS'
-agent ALL=(ALL) NOPASSWD:ALL
-Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"
-SUDOERS
+    printf '%s\n' \
+        'agent ALL=(ALL) NOPASSWD:ALL' \
+        'Defaults env_keep += "HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS"' \
+        > /etc/sudoers.d/safeyolo-agent
     chmod 0440 /etc/sudoers.d/safeyolo-agent
 fi
 
@@ -294,8 +358,6 @@ mkdir -p /run/sshd
 /usr/sbin/sshd -D -e >/var/log/sshd.log 2>&1 &
 echo "[static] sshd launched pid=$!" > /dev/console 2>/dev/null || true
 
-sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
-
 # Restore classic same-uid ptrace semantics INSIDE the sandbox. Debian
 # and Ubuntu ship Linux YAMA's `ptrace_scope=1` by default (parent-only
 # attach). Inside a per-agent gVisor sandbox that policy is
@@ -305,7 +367,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
 # itself -- gVisor's sentry serves its own /proc/sys view, so this
 # write does NOT touch the host's YAMA policy.
 # Silent-fail so hosts / kernels without YAMA compiled in do not error.
-sysctl -w kernel.yama.ptrace_scope=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.all.disable_ipv6=1 kernel.yama.ptrace_scope=0 >/dev/null 2>&1 || true
 
 # Stage guest-init-per-run into tmpfs so the orchestrator has something
 # to exec after a restore. VirtioFS file reads are unreliable post-
@@ -314,14 +376,16 @@ sysctl -w kernel.yama.ptrace_scope=0 >/dev/null 2>&1 || true
 # which triggers a kernel panic in init). /run is tmpfs, part of the
 # captured memory image, so the staged copy survives the save/restore
 # round trip.
-mkdir -p /run/safeyolo
+[ -d /run/safeyolo ] || mkdir -p /run/safeyolo
+guest_run_files=()
 if [ -f /safeyolo/guest-init-per-run ]; then
-    cp /safeyolo/guest-init-per-run /run/safeyolo/guest-init-per-run
-    chmod +x /run/safeyolo/guest-init-per-run
+    guest_run_files+=(/safeyolo/guest-init-per-run)
 fi
 if [ -f /safeyolo/safeyolo-guest ]; then
-    cp /safeyolo/safeyolo-guest /run/safeyolo/safeyolo-guest
-    chmod +x /run/safeyolo/safeyolo-guest
+    guest_run_files+=(/safeyolo/safeyolo-guest)
+fi
+if [ "${#guest_run_files[@]}" -gt 0 ]; then
+    install -m 0755 "${guest_run_files[@]}" /run/safeyolo/
 fi
 
 # --------------------------------------------------------------------------

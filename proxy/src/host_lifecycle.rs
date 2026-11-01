@@ -1511,8 +1511,7 @@ pub(crate) async fn start(
         }
         let prepared: Result<(), Error> = async {
             crate::host_runs::save(&agent.name, &run)?;
-            crate::host_platform::update_agent_map(&agent.name, Some(&ip))?;
-            sync_agent_listeners().await
+            sync_agent_listeners(Some((&agent.name, Some(&ip)))).await
         }
         .await;
         if let Err(error) = prepared {
@@ -1550,10 +1549,7 @@ pub(crate) async fn start(
         .await;
         if let Err(error) = boot {
             let mut failures = Vec::new();
-            if let Err(rollback) = crate::host_platform::update_agent_map(&agent.name, None) {
-                failures.push(format!("agent-map rollback failed: {rollback}"));
-            }
-            if let Err(rollback) = sync_agent_listeners().await {
+            if let Err(rollback) = sync_agent_listeners(Some((&agent.name, None))).await {
                 failures.push(format!("listener rollback failed: {rollback}"));
             }
             if !failures.is_empty() {
@@ -1610,7 +1606,8 @@ pub(crate) async fn start(
 }
 
 // The setup lock is held, and no backend process was spawned for this record.
-// Retire it before rebuilding the map so a failed projection can be retried.
+// Retire it before synchronizing listeners so a failed update cannot keep
+// this known preboot record active.
 // A changed record or generation no longer belongs to this failed start.
 async fn rollback_preboot_start(agent: &Agent, run: &Value) -> Result<(), Error> {
     let Some(saved) = crate::host_runs::read(&agent.name)? else {
@@ -1627,8 +1624,7 @@ async fn rollback_preboot_start(agent: &Agent, run: &Value) -> Result<(), Error>
         return Err("preboot runtime identity changed; saved state was preserved".into());
     }
     std::fs::remove_file(crate::host_runs::path(&agent.name))?;
-    crate::host_platform::update_agent_map(&agent.name, None)?;
-    sync_agent_listeners().await
+    sync_agent_listeners(Some((&agent.name, None))).await
 }
 
 /// Reuse a live launch without selecting another launcher.
@@ -1711,30 +1707,41 @@ fn tmux_session() -> Result<String, Error> {
     Ok(format!("{session}-{}", instance.trim()))
 }
 
-pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
+pub(crate) async fn sync_agent_listeners(
+    change: Option<(&str, Option<&str>)>,
+) -> Result<(), Error> {
+    sync_agent_listener_config(change).await.map(|_| ())
+}
+
+pub(crate) async fn sync_agent_listener_config(
+    change: Option<(&str, Option<&str>)>,
+) -> Result<Option<crate::Config>, Error> {
     let path = crate::host_platform::config_path();
     if !path.is_file() {
-        return Ok(());
+        return Ok(None);
     }
     if !path.is_absolute() {
         return Err("proxy config path must be absolute".into());
     }
+    let mut timing = crate::startup_timings::StartupTimings::new("listener_projection");
     let _same_process_lock = LISTENER_LOCK.lock().await;
     let lock_path = crate::host_platform::config_dir().join("data/native-listeners.lock");
     let _lock =
         tokio::task::spawn_blocking(move || crate::host_platform::lock_host_state(&lock_path))
             .await??;
+    timing.record("locks");
     let cwd = crate::host_platform::config_dir();
-    let sockets = crate::host_platform::config_dir().join("data/sockets");
     let source = std::fs::read(&path)?;
     let native = path
         .extension()
         .is_some_and(|extension| extension == "toml");
-    let mut config: Value = if native {
-        serde_json::to_value(crate::native_config::read(&path)?)?
+    let mut current: crate::Config = if native {
+        crate::native_config::from_source(&path, std::str::from_utf8(&source)?)?
     } else {
         serde_json::from_slice(&source)?
     };
+    let mut config = serde_json::to_value(&current)?;
+    timing.record("configuration_read");
     let entries = config
         .get("listeners")
         .and_then(Value::as_array)
@@ -1751,93 +1758,105 @@ pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
         } else {
             cwd.join(path)
         };
-        let managed = path.file_name().is_some_and(|name| name == "proxy.sock")
-            && path.parent().and_then(std::path::Path::parent) == Some(sockets.as_path())
-            && path
-                .parent()
-                .and_then(std::path::Path::file_name)
-                .and_then(|name| name.to_str())
-                .and_then(|name| name.split_once('_'))
-                .is_some_and(|(ip, name)| {
-                    ip.parse::<std::net::Ipv4Addr>().is_ok()
-                        && crate::host_platform::valid_agent_name(name)
-                });
+        let managed = crate::host_platform::is_managed_agent_listener(&crate::AgentListener {
+            agent_id: entry
+                .get("agent_id")
+                .and_then(Value::as_str)
+                .ok_or("agent listeners need agent_id strings")?
+                .into(),
+            socket_path: path,
+            source_id: None,
+        });
         if !managed {
             retained.push(entry.clone());
         }
     }
-    let map_path = crate::host_platform::agent_map_path()?;
-    let map: serde_json::Map<String, Value> = match std::fs::read(map_path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .or_else(|_| crate::host_platform::agent_map_from_runs())?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            crate::host_platform::agent_map_from_runs()?
+    // Reuse startup's backend/generation reconciliation. A prepared start
+    // supplies its listener before the backend exists, so the guest can reach
+    // the proxy from its first instruction. A failed boot removes its listener
+    // without discarding an uncertain backend record. No separate map is written.
+    timing.record("retained_listeners");
+    crate::host_commands::restore_attachments(&mut current).await?;
+    if let Some((name, ip)) = change {
+        current.listeners.retain(|entry| {
+            entry.agent_id != name || !crate::host_platform::is_managed_agent_listener(entry)
+        });
+        if let Some(ip) = ip {
+            current
+                .listeners
+                .push(crate::host_platform::agent_proxy_listener(name, ip));
         }
-        Err(error) => return Err(error.into()),
-    };
-    for (name, entry) in map {
-        let Some(ip) = entry.get("ip").and_then(Value::as_str) else {
-            continue;
-        };
-        if !crate::host_platform::valid_agent_name(&name)
-            || ip.parse::<std::net::Ipv4Addr>().is_err()
-        {
-            return Err("invalid agent listener identity".into());
-        }
-        let path = sockets.join(format!("{ip}_{name}")).join("proxy.sock");
-        if path.as_os_str().as_bytes().len() > if cfg!(target_os = "macos") { 104 } else { 108 } {
-            return Err("agent socket path exceeds platform limit".into());
-        }
-        retained.push(json!({"agent_id":name,"socket_path":path,"source_id":ip}));
     }
-    let requested = uuid::Uuid::new_v4().simple().to_string();
-    config["listeners"] = Value::Array(retained);
-    config["reload_id"] = requested.clone().into();
-    let mode = std::fs::metadata(&path)?.permissions().mode();
-    let parent = path.parent().ok_or("configuration has no parent")?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    if native {
-        let mut document: toml_edit::DocumentMut = std::str::from_utf8(&source)?.parse()?;
-        let mut listeners = toml_edit::ArrayOfTables::new();
-        for entry in config["listeners"]
-            .as_array()
-            .ok_or("listeners must be an array")?
-        {
-            let mut table = toml_edit::Table::new();
-            for (name, value) in entry.as_object().ok_or("listener must be a table")? {
-                table.insert(
-                    name,
-                    toml_edit::value(value.as_str().ok_or("listener fields must be strings")?),
-                );
+    for entry in &current.listeners {
+        if crate::host_platform::is_managed_agent_listener(entry) {
+            if entry.socket_path.as_os_str().as_bytes().len()
+                > if cfg!(target_os = "macos") { 104 } else { 108 }
+            {
+                return Err("agent socket path exceeds platform limit".into());
             }
-            listeners.push(table);
+            retained.push(serde_json::to_value(entry)?);
         }
-        document["listeners"] = toml_edit::Item::ArrayOfTables(listeners);
-        document["reload_id"] = toml_edit::value(requested.as_str());
-        temporary.write_all(document.to_string().as_bytes())?;
-    } else {
-        serde_json::to_writer_pretty(&mut temporary, &config)?;
-        temporary.write_all(b"\n")?;
     }
-    temporary.as_file().sync_all()?;
-    temporary
-        .as_file()
-        .set_permissions(std::fs::Permissions::from_mode(mode))?;
-    temporary.persist(&path)?;
-    File::open(parent)?.sync_all()?;
+    let changed = config["listeners"] != Value::Array(retained.clone());
+    config["listeners"] = Value::Array(retained);
+    current.listeners = serde_json::from_value(config["listeners"].clone())?;
+    if changed {
+        current.reload_id = Some(uuid::Uuid::new_v4().simple().to_string());
+        config["reload_id"] = current.reload_id.clone().into();
+    }
+    timing.record("attachment_reconciliation");
+    if changed {
+        let mode = std::fs::metadata(&path)?.permissions().mode();
+        let parent = path.parent().ok_or("configuration has no parent")?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        if native {
+            let mut document: toml_edit::DocumentMut = std::str::from_utf8(&source)?.parse()?;
+            let mut listeners = toml_edit::ArrayOfTables::new();
+            for entry in config["listeners"]
+                .as_array()
+                .ok_or("listeners must be an array")?
+            {
+                let mut table = toml_edit::Table::new();
+                for (name, value) in entry.as_object().ok_or("listener must be a table")? {
+                    table.insert(
+                        name,
+                        toml_edit::value(value.as_str().ok_or("listener fields must be strings")?),
+                    );
+                }
+                listeners.push(table);
+            }
+            document["listeners"] = toml_edit::Item::ArrayOfTables(listeners);
+            document["reload_id"] = toml_edit::value(
+                current
+                    .reload_id
+                    .as_deref()
+                    .expect("changed projection has reload ID"),
+            );
+            temporary.write_all(document.to_string().as_bytes())?;
+        } else {
+            serde_json::to_writer_pretty(&mut temporary, &config)?;
+            temporary.write_all(b"\n")?;
+        }
+        timing.record("projection_write");
+        temporary.as_file().sync_all()?;
+        timing.record("file_sync");
+        temporary
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(mode))?;
+        temporary.persist(&path)?;
+        timing.record("projection_publish");
+        File::open(parent)?.sync_all()?;
+        timing.record("directory_sync");
+    }
     // Stop and independent recovery can update the projection while the
     // proxy is unavailable. Startup reconstructs listeners from current runs.
     if !crate::host_commands::proxy_live() {
-        return Ok(());
+        return Ok(Some(current));
     }
     let proxy = read_json(&cwd.join("data/proxy-process.json"))?
         .ok_or("proxy process identity is missing; run safeyolo start")?;
     if !process_matches(&proxy, "pid", "token") {
         return Err("proxy process identity is stale; run safeyolo start".into());
-    }
-    let pid = i32::try_from(proxy["pid"].as_i64().ok_or("proxy PID is missing")?)?;
-    if unsafe { libc::kill(pid, libc::SIGHUP) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
     }
     let readiness = config
         .get("readiness_file")
@@ -1849,13 +1868,30 @@ pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
     } else {
         cwd.join(readiness)
     };
+    if !changed
+        && std::fs::read(&readiness)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|marker| {
+                marker.get("pid") == proxy.get("pid")
+                    && marker.get("reload_id").and_then(Value::as_str)
+                        == current.reload_id.as_deref()
+            })
+    {
+        return Ok(Some(current));
+    }
+    let pid = i32::try_from(proxy["pid"].as_i64().ok_or("proxy PID is missing")?)?;
+    if unsafe { libc::kill(pid, libc::SIGHUP) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     while tokio::time::Instant::now() < deadline {
         if let Ok(bytes) = std::fs::read(&readiness)
             && let Ok(marker) = serde_json::from_slice::<Value>(&bytes)
-            && marker.get("reload_id").and_then(Value::as_str) == Some(&requested)
+            && marker.get("pid") == proxy.get("pid")
+            && marker.get("reload_id").and_then(Value::as_str) == current.reload_id.as_deref()
         {
-            return Ok(());
+            return Ok(Some(current));
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
@@ -2090,6 +2126,17 @@ pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result
     };
     let current = crate::host_agents::refresh(agent)?;
     let agent = &current;
+    let observed = crate::host_runs::observe(&agent.name).await;
+    if observed["runtime_state"] != "stopped" || observed["backend"].is_object() {
+        crate::host_platform::check_stop_sandbox(&agent.name).await?;
+    }
+    if let Some(mut run) = crate::host_runs::read(&agent.name)?
+        && run["agent_id"] == agent.id
+        && matches!(run["state"].as_str(), Some("starting" | "running"))
+    {
+        run["state"] = "stopping".into();
+        crate::host_runs::save(&agent.name, &run)?;
+    }
     let command_warning = stop_supervisor(&agent.name)
         .await
         .err()
@@ -2101,12 +2148,11 @@ pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result
     }
     #[cfg(target_os = "linux")]
     crate::linux_host::shares::cleanup_stopped(&agent.name).await?;
-    crate::host_platform::update_agent_map(&agent.name, None)?;
     if let Some(mut run) = crate::host_runs::read(&agent.name)? {
         run["state"] = "stopped".into();
         crate::host_runs::save(&agent.name, &run)?;
     }
-    sync_agent_listeners().await?;
+    sync_agent_listeners(Some((&agent.name, None))).await?;
     crate::host_events::write(
         &agent.name,
         "agent.stopped",
@@ -2278,6 +2324,54 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn listener_reconciliation_writes_only_changes_and_returns_the_published_config() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("data")).unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, "listeners = []\n[trace]\nttl_s = 12\n").unwrap();
+        crate::host_platform::in_instance(temp.path().to_owned(), async {
+            let original = std::fs::read(&path).unwrap();
+            let before = std::fs::metadata(&path).unwrap();
+            let config = sync_agent_listener_config(None).await.unwrap().unwrap();
+            assert!(config.listeners.is_empty());
+            assert!(config.reload_id.is_none());
+            assert_eq!(std::fs::metadata(&path).unwrap().ino(), before.ino());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            let changed = sync_agent_listener_config(Some(("alice", Some("10.0.0.2"))))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(changed.listeners.len(), 1);
+            assert!(changed.reload_id.is_some());
+            let published = std::fs::read(&path).unwrap();
+            let before = std::fs::metadata(&path).unwrap();
+            let repeated = sync_agent_listener_config(Some(("alice", Some("10.0.0.2"))))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(repeated.reload_id, changed.reload_id);
+            assert_eq!(std::fs::metadata(&path).unwrap().ino(), before.ino());
+            assert_eq!(std::fs::read(&path).unwrap(), published);
+            assert_eq!(
+                crate::native_config::read(&path).unwrap().reload_id,
+                repeated.reload_id
+            );
+            let removed = sync_agent_listener_config(Some(("alice", None)))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(removed.listeners.is_empty());
+            assert_ne!(removed.reload_id, repeated.reload_id);
+            assert_eq!(
+                crate::native_config::host_settings().unwrap().trace.ttl_s,
+                12
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn preboot_rollback_preserves_changed_runtime_and_generation() {
         let temp = tempfile::tempdir().unwrap();
         crate::host_platform::in_instance(temp.path().to_owned(), async {
@@ -2292,6 +2386,13 @@ mod tests {
             let run_id = "0123456789abcdef0123456789abcdef";
             let run = json!({"name":agent.name,"agent_id":agent.id,"run_id":run_id,"ip":"10.200.0.1","state":"starting"});
             let context = agent_dir(&agent.name).join("config-share/host-launch-context.json");
+            let config_path = crate::host_platform::config_path();
+            let peer = json!({"agent_id":"peer","socket_path":temp.path().join("peer.sock")});
+            std::fs::write(&config_path, toml::to_string(&json!({"listeners":[
+                crate::host_platform::agent_proxy_listener(&agent.name, "10.200.0.1"),
+                peer.clone(),
+            ]})).unwrap()).unwrap();
+            let saved_config = std::fs::read(&config_path).unwrap();
             let map = temp.path().join("data/agent_map.json");
             write_json(&map, &json!({"marker":{"ip":"10.200.0.1"},"peer":{"ip":"10.200.0.2"}})).unwrap();
             let saved_map = std::fs::read(&map).unwrap();
@@ -2320,23 +2421,31 @@ mod tests {
                 let saved = std::fs::read(crate::host_runs::path(&agent.name)).unwrap();
                 assert!(rollback_preboot_start(&agent, &run).await.is_err(), "{field}");
                 assert_eq!(std::fs::read(crate::host_runs::path(&agent.name)).unwrap(), saved, "{field}");
+                assert_eq!(std::fs::read(&config_path).unwrap(), saved_config, "{field}");
                 assert_eq!(std::fs::read(&map).unwrap(), saved_map, "{field}");
             }
             write_json(&context, &json!({"generation":run_id})).unwrap();
             crate::host_runs::save(&agent.name, &run).unwrap();
-            // A failed map rollback must report failure, but must not leave
+            // A failed listener update must report failure, but must not leave
             // this known preboot record holding status/retry indefinitely.
-            std::fs::remove_file(&map).unwrap();
-            std::fs::create_dir(&map).unwrap();
+            let listener_lock = temp.path().join("data/native-listeners.lock");
+            std::fs::create_dir(&listener_lock).unwrap();
             assert!(rollback_preboot_start(&agent, &run).await.is_err());
             assert!(!crate::host_runs::path(&agent.name).exists());
             assert_eq!(crate::host_runs::observe(&agent.name).await["runtime_state"], "stopped");
-            std::fs::remove_dir(&map).unwrap();
-            write_json(&map, &serde_json::from_slice::<Value>(&saved_map).unwrap()).unwrap();
+            assert_eq!(std::fs::read(&config_path).unwrap(), saved_config);
+            assert_eq!(std::fs::read(&map).unwrap(), saved_map);
+            std::fs::remove_dir(&listener_lock).unwrap();
+            // Even an unusable retired map must not prevent listener rollback.
+            std::fs::remove_file(&map).unwrap();
+            std::fs::create_dir(&map).unwrap();
             crate::host_runs::save(&agent.name, &run).unwrap();
             rollback_preboot_start(&agent, &run).await.unwrap();
             assert!(!crate::host_runs::path(&agent.name).exists());
-            assert_eq!(read_json(&map).unwrap().unwrap(), json!({"peer":{"ip":"10.200.0.2"}}));
+            assert_eq!(crate::host_runs::observe(&agent.name).await["runtime_state"], "stopped");
+            let listeners = crate::native_config::read(&config_path).unwrap().listeners;
+            assert_eq!(serde_json::to_value(listeners).unwrap(), json!([peer]));
+            assert!(map.is_dir());
         })
         .await;
     }

@@ -86,7 +86,7 @@ def test_guest_initial_reads_are_bound_to_both_send_envelopes(tmp_path, monkeypa
     (tmp_path / "data").mkdir()
     (tmp_path / "data/proxy-process.json").write_text(json.dumps({
         "pid": os.getpid(), "token": "stale" if fault == "birth_token" else installed_host_smoke._process_start_token(os.getpid())}))
-    monkeypatch.setattr(installed_host_smoke, "_agent_map", lambda root: [
+    monkeypatch.setattr(installed_host_smoke, "_agent_listeners", lambda root: [
         {"agent_id": name, "path": str(root / name / "proxy.sock")} for name in ("primary", "peer")])
     monkeypatch.setattr(installed_ingress, "runsc_identity", lambda root, name, listener, **kwargs: {
         "pid": 1 if name == "primary" else 2})

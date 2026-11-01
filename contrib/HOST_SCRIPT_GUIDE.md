@@ -88,9 +88,21 @@ skills keep the existing copy behavior.
 ### First Codex login
 
 Use the installed product and its matching Linux guest Coord assets.
-For a fresh agent using `codex-host-setup.sh`, authentication happens inside
-that agent's persistent home. After its first run installs Codex, leave it
-running and open a guest shell from a second host terminal. Replace `work` with the agent name:
+For ordinary first use, `safeyolo agent launch . --harness codex` owns setup,
+login selection and client startup. Current source offers a trusted host choice
+to authorize the selected subscription login for that agent before startup.
+It can copy a host login into an empty agent login, with explicit consent.
+The public installer invokes the same operation with `--launch --harness codex`;
+no additional import command is required. See the
+[installation reference](../docs/installation.md#public-bootstrap-availability) for release
+limits and the choices. Enter keeps guest login and normal approvals.
+Copying and `codex-state adopt` record client state; neither grants proxy
+authority. Existing credential and network rules remain applicable.
+
+For explicit setup or coordinated-agent preparation, a fresh agent can instead
+log in inside its persistent home. After its first run installs Codex, leave
+it running and open a guest shell from a second host terminal. Replace `work`
+with the agent name:
 
 ```sh
 "$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent shell work
@@ -106,6 +118,18 @@ codex login --device-auth
 Then return to the Codex terminal. Repeat the login and adoption commands after
 an explicit authentication reset. The coordinated setup requires the same agent
 to complete this normal Codex login before selecting `codex-coord-host-setup.sh`.
+
+Codex routing discovery can require credential approval during startup. SafeYolo
+holds the routing `GET /backend-api/wham/accounts/check` for up to 30 seconds
+while its credential approval is pending. Use the trusted host controls to inspect
+and approve or reject the request. Once approval is active, SafeYolo returns a
+temporary redirect to the same URL. If the run or policy changes during the wait,
+SafeYolo also redirects the GET so the current checks decide it. Codex follows
+the redirect without restarting the client. The redirect does not grant access
+or send the original request upstream. Current checks can still refuse the new
+GET. Rejection or timeout retains the ordinary approval response. Codex's own
+HTTP deadline can expire earlier. Other requests keep their existing approval
+behavior.
 
 ## Why host-side
 
@@ -251,7 +275,74 @@ a separate choice and must live outside guest-writable shares. See
 custom hooks, attach, and remote terminal behavior; see the
 [supervisor contract](../docs/codex-coord-supervisor.md) for factory recovery.
 
-For Alpine rootfs images, do not rely on `mise use -g node@...`: mise may
+### Claude and Codex installation and updates
+
+The bundled Claude and Codex launchers use native upstream releases in the
+agent's persistent home. Claude uses mise's Aqua backend. This path does not
+acquire Node.js or npm. It retains other installed tools and their mise
+configuration. Claude keeps its staged authentication and extensions; Codex
+keeps its agent-local `.codex` configuration and authentication ownership.
+Ordinary Codex, coordinated Codex, Lab and Demo use the same launcher payload.
+
+Mise selects a release at least `SAFEYOLO_MIN_RELEASE_AGE` old (default `24h`)
+when it supports `minimum_release_age`. The launcher warns if it cannot apply
+that delay. It resolves the selected version before installation and checks
+the executable before launch. The installer verifies the GitHub release asset
+digest before extraction.
+Claude releases also publish `SHASUMS256.txt`. These checks trust upstream
+release metadata over HTTPS; they do not independently authenticate the
+publisher. Codex uses the complete `codex-package` archive, including its
+search executable, code-mode host and adjacent resources. Fresh Codex defaults
+use mise's GitHub backend to select the smaller upstream `.tar.zst` archive.
+A healthy existing Aqua selection is reused. Explicit native specs keep their
+selected backend and archive. Reentry repairs
+missing required executables and reuses a healthy selected version.
+
+During public installation with `--launch --harness codex`, SafeYolo can fetch,
+verify and extract the complete Linux client while acquiring the host and guest.
+Apple Silicon hosts acquire the Linux ARM64 package. After setup consent, launch
+moves this payload into the new agent home. A healthy installed selection keeps
+precedence. With the default native spec and `24h` age setting, the guest reuses
+the host-selected version after checking its platform, version, required
+executables and resources. It runs the complete payload in place and records it
+with `mise link`. This avoids another version lookup, `mise use`, client download
+and extraction on first launch. Unless `MISE_INSTALLS_DIR` is set, the guest also
+skips installed-version queries for absent native installation namespaces.
+The guest probes mise's release-age support only when a repair or update notice
+needs a remote lookup; the imported default already passed the host's 24-hour
+selection policy.
+Host mise is not required.
+Prefetch applies to the fresh default with the default release-age setting.
+It checks the first 30 upstream releases and acquires the newest stable version
+at least 24 hours old with a complete package and digest for the guest platform.
+This can select an older eligible release when the latest release is too young.
+Pins, custom age settings and unavailable or invalid prefetch use the ordinary
+guest resolver and installer. After resolving a custom age setting, the guest
+can still reuse the payload if its version matches. Reentry reuses a healthy
+payload and checks for newer supported versions without automatically upgrading.
+The harness and its child commands receive the payload on `PATH`. An explicit
+mise installation takes precedence on the next launch.
+Existing agent state, login, approval and interactive retry controls still apply.
+
+To pin a native version, set `SAFEYOLO_CLAUDE_NATIVE_SPEC` to
+`aqua:anthropics/claude-code@VERSION`, or `SAFEYOLO_CODEX_NATIVE_SPEC` to
+`aqua:openai/codex@VERSION`, in the guest launch environment. Replace `VERSION`
+with an upstream release version. The defaults select `latest`. Update notices
+show the exact `mise use -g` command to run inside the guest; launch does not
+upgrade a healthy selection. Claude's background updater is disabled by default
+on this path to preserve mise's selection. An explicit `DISABLE_AUTOUPDATER`
+value is retained.
+Codex native pins need the complete `codex-package` layout. Older Claude pins
+that Aqua downloads directly from the vendor bucket can lack the GitHub asset
+digest check. Existing npm pins remain available through the legacy routes.
+
+An explicit `SAFEYOLO_CLAUDE_NPM_SPEC` or `SAFEYOLO_CLAUDE_NPM_PACKAGE` selects
+Claude's legacy npm route instead. The corresponding `SAFEYOLO_CODEX_NPM_SPEC`
+or `SAFEYOLO_CODEX_NPM_PACKAGE` selects Codex's legacy npm route. These selections
+take precedence over native specs. Their Node/npm dependency remains separate
+from native startup.
+
+For npm tools in Alpine rootfs images, do not rely on `mise use -g node@...`: mise may
 try to build Node from source against musl. Use Alpine's native packages and
 a persistent home prefix instead:
 
@@ -260,7 +351,7 @@ sudo -n apk add nodejs npm
 npm install --global --prefix /home/agent/.local @example/myagent@latest
 ```
 
-The bundled Codex launcher uses apk-provided Node.js and installs Codex through
+The legacy Codex npm route uses apk-provided Node.js and installs Codex through
 mise on Alpine, even if retained mise configuration selects another Node version.
 It applies `SAFEYOLO_MIN_RELEASE_AGE` (default `24h`) when mise
 supports `minimum_release_age`. The launcher reports when mise lacks that

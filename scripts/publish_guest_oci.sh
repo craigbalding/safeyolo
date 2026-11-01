@@ -7,23 +7,25 @@ if [[ ${1:-} == --promote || ${1:-} == --record-stage || ${1:-} == --record-smok
     exec "${SAFEYOLO_BUILD_PYTHON:-python3}" "$script_dir/guest_release.py" "$operation" "$@"
 fi
 usage() {
-    echo 'Usage: publish_guest_oci.sh (--artifacts DIR | --from-layout) --layout DIR --version TAG --compatibility C --revision SHA --verifier EXECUTABLE [--publish REPOSITORY] [--plain-http]' >&2
+    echo 'Usage: publish_guest_oci.sh (--artifacts DIR | --from-layout) --layout DIR --version TAG --compatibility C --revision SHA --verifier EXECUTABLE [--profile NAME] [--publish REPOSITORY] [--plain-http]' >&2
     exit 64
 }
 artifacts= layout= version= compatibility= revision= verifier= repository=
+profile=
 plain_http=0 from_layout=0
 created_at=
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --plain-http) plain_http=1; shift ;;
         --from-layout) from_layout=1; shift ;;
-        --artifacts|--layout|--version|--compatibility|--revision|--verifier|--publish|--created-at)
+        --artifacts|--layout|--version|--compatibility|--revision|--verifier|--publish|--created-at|--profile)
             [[ $# -ge 2 && -n "$2" ]] || usage
             case "$1" in
                 --artifacts) artifacts=$2 ;; --layout) layout=$2 ;;
                 --version) version=$2 ;; --compatibility) compatibility=$2 ;;
                 --revision) revision=$2 ;; --verifier) verifier=$2 ;;
                 --publish) repository=$2 ;; --created-at) created_at=$2 ;;
+                --profile) profile=$2 ;;
             esac
             shift 2 ;;
         *) usage ;;
@@ -59,33 +61,61 @@ if (( ! from_layout )); then
         # Assembly time is distinct from verified staging completion.
         --annotation "org.opencontainers.image.created=$created_at"
     )
+    platforms=(darwin-arm64 linux-amd64 linux-arm64)
+    if [[ -n $profile ]]; then
+        annotations+=(--annotation "dev.safeyolo.guest.profile=$profile")
+        platforms=()
+        for platform in darwin-arm64 linux-amd64 linux-arm64; do
+            if [[ -d $artifacts/$platform ]]; then platforms+=("$platform"); fi
+        done
+        [[ ${#platforms[@]} -gt 0 ]] || { echo 'Custom profile has no consumer archives.' >&2; exit 1; }
+    fi
     children=()
-    for platform in darwin-arm64 linux-amd64 linux-arm64; do
+    for platform in "${platforms[@]}"; do
         directory="$artifacts/$platform"
         [[ -s "$directory/guest.tar.zst" && -s "$directory/build-base.txt" ]] || {
             echo "Missing archive or pinned build provenance: $directory" >&2; exit 1;
         }
         build_base=$(cat "$directory/build-base.txt")
+        input_annotations=()
+        if [[ -n $profile ]]; then
+            jq -e --arg profile "$profile" --arg arch "${platform##*-}" \
+                '.profile.name == $profile and .architecture == $arch' "$directory/build-inputs.json" >/dev/null
+            input_digest=$(sha256sum "$directory/build-inputs.json")
+            input_annotations+=(--annotation "dev.safeyolo.guest.build-inputs=sha256:${input_digest%% *}")
+        fi
         printf '{"os":"%s","architecture":"%s"}' "${platform%-*}" "${platform##*-}" > "$scratch/platform.json"
         (
             cd -- "$directory"
             "$oras" push --oci-layout --image-spec v1.1 --artifact-type "$artifact_type" \
                 --config "$scratch/platform.json:application/vnd.safeyolo.guest.platform.v1+json" \
-                "${annotations[@]}" --annotation "dev.safeyolo.guest.build-base=$build_base" \
+                "${annotations[@]}" "${input_annotations[@]}" --annotation "dev.safeyolo.guest.build-base=$build_base" \
                 "$layout:$version-$platform" 'guest.tar.zst:application/vnd.safeyolo.guest.v1.tar+zstd' >/dev/null
         )
-        children+=("$("$oras" resolve --oci-layout "$layout:$version-$platform")")
+        child=$("$oras" resolve --oci-layout "$layout:$version-$platform")
+        children+=("$child")
+        jq --arg digest "$child" '{digest: $digest, platform: .}' \
+            "$scratch/platform.json" >> "$scratch/platforms.json"
     done
     "$oras" manifest index create --oci-layout --artifact-type "$artifact_type" \
-        "${annotations[@]}" "$layout:$version" "${children[@]}" >/dev/null
+        "${annotations[@]}" --output "$scratch/index.json" "$layout:$version" "${children[@]}"
+    # Supply descriptor platforms explicitly for our custom config media type.
+    # Bind each descriptor to the platform used for its unchanged child config.
+    jq --slurpfile platforms "$scratch/platforms.json" '
+        .manifests |= map(. as $child |
+            .platform = ($platforms[] | select(.digest == $child.digest) | .platform))
+    ' "$scratch/index.json" > "$scratch/platform-index.json"
+    "$oras" manifest push --oci-layout "$layout:$version" "$scratch/platform-index.json" >/dev/null
 fi
 index_digest=$("$oras" resolve --oci-layout "$layout:$version")
 index_file="$layout/blobs/sha256/${index_digest#sha256:}"
 # A retained layout must match the requested release, without recreating bytes.
 jq -e --arg version "$version" --arg revision "$revision" \
+    --arg profile "$profile" \
     '.annotations["org.opencontainers.image.version"] == $version and
-     .annotations["org.opencontainers.image.revision"] == $revision' "$index_file" >/dev/null || {
-    echo 'Guest layout does not match the requested version and revision.' >&2; exit 1;
+     .annotations["org.opencontainers.image.revision"] == $revision and
+     (.annotations["dev.safeyolo.guest.profile"] // "") == $profile' "$index_file" >/dev/null || {
+    echo 'Guest layout does not match the requested version, revision or profile.' >&2; exit 1;
 }
 "$verifier" "$layout" "$index_digest" "$compatibility"
 jq -r '.manifests[].digest' "$index_file" > "$scratch/children"

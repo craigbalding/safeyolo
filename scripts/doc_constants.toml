@@ -9,6 +9,13 @@
 # phrases over generic ones ("2048 MiB" beats "MiB").
 
 [[assertion]]
+name = "connect-route-wait-seconds"
+source = "proxy/src/tunnels.rs"
+pattern = 'ROUTE_WAIT: Duration = Duration::from_secs\((?P<seconds>\d+)\)'
+docs = ["docs/CONFIGURATION.md", "cli/src/safeyolo/agent_context/skills/safeyolo/references/troubleshooting.md"]
+must_contain_any = ["{seconds}-second", "{seconds} seconds"]
+
+[[assertion]]
 name = "vm-proxy-admission"
 source = "cli/src/safeyolo/guest-proxy-forwarder.sh"
 pattern = 'max-children=(?P<maximum>\d+),backlog=(?P<backlog>\d+)'
@@ -40,9 +47,16 @@ must_contain = "~/.safeyolo/data/{key_name}"
 name = "rootfs-size-mb"
 source = "guest/build-rootfs.sh"
 pattern = 'ROOTFS_SIZE_MB="\$\{ROOTFS_SIZE_MB:-(?P<size_mb>\d+)\}"'
-docs = ["guest/README.md"]
+docs = ["guest/README.md", "docs/microvm-architecture.md"]
 must_contain = "{size_mb} MiB"
 forbidden = ["20% + 50MB headroom", "20%+50MB headroom"]
+
+[[assertion]]
+name = "vz-writable-overlay-gib"
+source = "proxy/src/host_platform.rs"
+pattern = 'file\.set_len\((?P<size_gib>\d+) \* 1024 \* 1024 \* 1024\)'
+docs = ["docs/microvm-architecture.md"]
+must_contain = "{size_gib} GiB sparse file"
 
 [[assertion]]
 name = "default-agent-memory-mib"
@@ -189,7 +203,7 @@ must_contain = "port {port}"
 [[assertion]]
 name = "approval-audit-http-confirmed"
 source = "proxy/src/http.rs"
-pattern = 'runtime\.audit\.emit_confirmed\(audit\.to_event\(\)\)\.await'
+pattern = 'let submission = if audit\.kind == agent_api::AuditKind::FlowReadAll[\s\S]*?is_some_and\(\|approval\| approval\.required\)[\s\S]*?runtime\.audit\.emit_confirmed\(event\)\.await'
 docs = ["docs/proxy-parity.md"]
 must_contain = "Approval-bearing Agent API requests"
 
@@ -275,3 +289,46 @@ source = "proxy/src/http_content.rs"
 pattern = 'pub const BUFFERED_BODY_THRESHOLD: usize = (?P<mebibytes>\d+) \* 1024 \* 1024;'
 docs = ["docs/TLS_CERTIFICATE.md"]
 must_contain = "{mebibytes} MiB"
+
+
+[[assertion]]
+name = "classic-compat-segment-payload"
+source = "proxy/src/packet_capture/compat.rs"
+pattern = 'PAYLOAD_BYTES: usize = (?P<bytes>\d+);'
+docs = ["docs/native-observations.md"]
+must_contain = "at most {bytes}"
+
+[[assertion]]
+name = "classic-compat-metadata-bound"
+source = "proxy/src/packet_capture/compat.rs"
+pattern = 'METADATA_BYTES: usize = (?P<bytes>\d+);'
+docs = ["docs/native-observations.md"]
+must_contain = "at most {bytes} bytes total"
+
+[[assertion]]
+name = "coord-status-brief-excerpt"
+source = "proxy/src/coord_rooms/room_status.rs"
+pattern = 'const BRIEF_BYTES: usize = (?P<bytes>\d+);'
+docs = ["docs/coord-operations.md"]
+must_contain = "first {bytes} UTF-8 bytes"
+
+[[assertion]]
+name = "coord-status-section-count"
+source = "proxy/src/coord_rooms/room_status.rs"
+pattern = 'const MAX_ITEMS: usize = (?P<count>\d+);'
+docs = ["docs/coord-operations.md"]
+must_contain = "at most {count} items"
+
+[[assertion]]
+name = "coord-status-section-bytes"
+source = "proxy/src/coord_rooms/room_status.rs"
+pattern = 'const SECTION_BYTES: usize = (?P<kib>\d+) \* 1024;'
+docs = ["docs/coord-operations.md"]
+must_contain = "{kib} KiB of item JSON"
+
+[[assertion]]
+name = "coord-status-work-excerpt"
+source = "proxy/src/coord_rooms/room_status.rs"
+pattern = 'const WORK_TEXT_BYTES: usize = (?P<bytes>\d+);'
+docs = ["docs/coord-operations.md"]
+must_contain = "at most {bytes} UTF-8 bytes each"

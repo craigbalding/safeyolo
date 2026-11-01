@@ -7,7 +7,7 @@ import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from hypothesis import given, settings
@@ -76,11 +76,80 @@ def test_discovery_and_rpc_errors(adapter):
     ])
     assert results[1]["result"]["protocolVersion"] == "2025-03-26"
     tools = results[2]["result"]["tools"]
-    assert len(tools) == 11
-    assert {tool["name"] for tool in tools} >= {"send", "send_task", "read_room", "read_brief", "wait_for_coord"}
+    by_name = {tool["name"]: tool for tool in tools}
+    assert len(tools) == len(by_name)
+    assert set(by_name) == {
+        "join_room", "read_brief", "get_room_state", "declare_capabilities",
+        "send", "send_task", "read_room", "wait_for_coord", "wait_for_attention",
+        "read_attention", "wait_for_message",
+        "list_approvals", "read_approval", "resolve_approval",
+        "create_work", "list_work", "read_work", "claim_work", "release_work", "complete_work",
+        "create_signal", "read_signal", "list_signals",
+        "change_work_target", "attest_work", "list_work_attestations",
+        "import_github_work", "read_github_work",
+    }
+    for name, required in {
+        "list_approvals": [],
+        "read_approval": ["approval_id"],
+        "resolve_approval": ["approval_id", "decision", "delegation", "option"],
+    }.items():
+        schema = by_name[name]["inputSchema"]
+        assert schema["type"] == "object" and schema["additionalProperties"] is False
+        assert schema["required"] == required
+        assert set(schema["properties"]) == set(required)
+    assert by_name["resolve_approval"]["inputSchema"]["properties"]["decision"]["enum"] == ["approve", "reject", "defer"]
     assert results[None]["error"]["code"] == -32600
     assert results[3]["error"]["code"] == -32601
     assert calls == []
+
+
+def test_native_exact_work_target_requests(adapter):
+    call, _, calls, _, _ = adapter
+    target = {"work_id": "work-example", "expected_version": 3, "expected_target_generation": 2,
+              "target_ref": "opaque:branch?candidate=π", "operation_id": "target-change"}
+    call("change_work_target", {"room_name": "backlog", **target})
+    assert calls[-1][0:2] == ("POST", "http://_safeyolo.proxy.internal/api/coord/rooms/backlog/work")
+    assert calls[-1][2] == {"action": "change_target", **target}
+    evidence = {"work_id": "work-example", "target_generation": 3, "kind": "acceptance",
+                "verdict": "reject", "summary": "Check this exact candidate", "evidence_refs": ["https://untrusted.invalid/ref"],
+                "operation_id": "attestation"}
+    call("attest_work", {"room_name": "backlog", **evidence})
+    assert calls[-1][2] == {"action": "attest", **evidence}
+    call("list_work_attestations", {"room_name": "backlog", "work_id": "work-example", "after": "att-previous", "limit": 2})
+    assert calls[-1][0] == "GET"
+    request = urlsplit(calls[-1][1])
+    assert request.path == "/api/coord/rooms/backlog/work"
+    assert parse_qs(request.query) == {"work_id": ["work-example"], "attestations": ["true"], "limit": ["2"], "after": ["att-previous"]}
+
+
+def test_github_import_uses_local_create_replay_without_remote_access(adapter):
+    call, _, calls, _, _ = adapter
+    call("import_github_work", {"room_name": "backlog", "url": "https://github.com/owner/repo/issues/42#comment", "operation_id": "seed42"})
+    assert len(calls) == 1
+    assert calls[0][2] == {"action": "create", "title": "GitHub owner/repo#42", "external_ref": "https://github.com/owner/repo/issues/42", "operation_id": "seed42"}
+    call("import_github_work", {"room_name": "backlog", "url": "https://evil.test/o/r/issues/42"})
+    assert len(calls) == 1
+
+
+def test_github_read_without_service_returns_local_work_and_no_secret(adapter):
+    call, _, calls, replies, _ = adapter
+    work = {"work_id": "work-42", "external_ref": "https://github.com/owner/repo/pull/42", "state": "claimed", "claim_agent_id": "alice", "version": 3, "target_generation": 2}
+    replies["/api/coord/rooms/backlog/work"] = (200, work)
+    replies["/gateway/services"] = (200, {"authorized": {"other": {"token": "sgw_PRIVATE"}}})
+    result = call("read_github_work", {"room_name": "backlog", "work_id": "work-42"})
+    assert result["structuredContent"]["work"] == work
+    assert result["structuredContent"]["external"]["status"] == "unavailable"
+    assert "PRIVATE" not in json.dumps(result)
+    assert all(method == "GET" for method, *_ in calls)
+    assert [urlsplit(path).path for _, path, *_ in calls] == ["/api/coord/rooms/backlog/work", "/gateway/services", "/api/coord/rooms/backlog/work"]
+
+
+def test_github_read_requires_current_room_access_even_when_service_is_unavailable(adapter):
+    call, _, calls, replies, _ = adapter
+    replies["/api/coord/rooms/backlog/work"] = (403, {"error": "room revoked"})
+    result = call("read_github_work", {"room_name": "backlog", "work_id": "work-42"})
+    assert result["isError"] is True
+    assert len(calls) == 1
 
 
 def test_native_send_defaults_and_exact_task_producer(adapter):

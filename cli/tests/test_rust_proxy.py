@@ -298,7 +298,7 @@ def test_default_native_config_is_generated_for_the_selected_instance(tmp_path, 
     # Durable native state reuses the existing instance paths.
     assert native["circuit_state_file"] == str(config_dir / "data" / "circuit_breaker_state.json")
     assert native["flow_store_db_path"] == str(logs_dir / "flows.sqlite3")
-    assert native["event_log"] == str(logs_dir / "native-events.jsonl")
+    assert "event_log" not in native
     assert native_path.stat().st_mode & 0o777 == 0o600
 
 
@@ -838,7 +838,7 @@ def test_failed_start_cleanup_preserves_original_error_and_ownership(launch, mon
 @pytest.mark.parametrize(
     "field",
     ["policy_file", "agent_map_file", "tls_ca_file", "upstream_ca_file", "admin_api_token_file",
-     "circuit_state_file", "flow_store_db_path", "audit_log_path", "event_log", "inspection.policy_file"],
+     "circuit_state_file", "flow_store_db_path", "audit_log_path", "inspection.policy_file"],
 )
 def test_readiness_collision_preserves_native_input_and_state_files(launch, field):
     launch.ready.write_text("owned input must survive a rejected launch")

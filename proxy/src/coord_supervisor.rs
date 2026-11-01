@@ -360,6 +360,10 @@ pub struct Awaiting {
     pub recipient_agent: String,
     pub body: String,
     pub correlation: BTreeMap<String, String>,
+    // Older checkpoints and retained text have no canonical send receipt.
+    // Keep those handoffs pending until their identity is reconciled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_attention_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_attention_id: Option<String>,
 }
@@ -428,6 +432,10 @@ impl State {
             }
             Err(e) => return Err(e.into()),
         }
+        Self::read_existing(path)
+    }
+
+    pub(crate) fn read_existing(path: &Path) -> Result<Self, Error> {
         let state: Self = serde_json::from_value(read(path)?)?;
         state.validate()?;
         Ok(state)
@@ -468,6 +476,9 @@ impl State {
                 || request_header(&a.body, &a.request, &a.recipient_agent)
                     != Some(a.correlation.clone())
                 || a.parent_attention_id
+                    .as_ref()
+                    .is_some_and(|id| !attention_id(id))
+                || a.request_attention_id
                     .as_ref()
                     .is_some_and(|id| !attention_id(id))
             {
@@ -540,6 +551,20 @@ impl State {
         } else {
             self.in_flight.iter().collect()
         }
+    }
+    fn has_ready_work(&self) -> bool {
+        let suspended: BTreeSet<_> = self
+            .awaiting_handoffs
+            .iter()
+            .filter_map(|a| a.parent_attention_id.as_ref())
+            .collect();
+        let suspend_all_tasks = self
+            .awaiting_handoffs
+            .iter()
+            .any(|a| a.parent_attention_id.is_none());
+        self.in_flight.iter().any(|p| {
+            !suspended.contains(&p.attention_id) && (!p.requires_terminal || !suspend_all_tasks)
+        })
     }
 }
 fn validate_pending(p: &Pending) -> Result<(), Error> {
@@ -940,6 +965,7 @@ impl Supervisor {
             a.room_name == p.room_name
                 && a.recipient_agent == p.sender_agent_name
                 && a.correlation.get("target") == fields.get("target")
+                && a.request_attention_id.as_ref() == fields.get("attention_id")
                 && f.handoffs.iter().any(|h| {
                     h.request == a.request
                         && h.source == f.role
@@ -1070,6 +1096,16 @@ impl Supervisor {
                         recipient_agent: recipient.clone(),
                         body: body.into(),
                         correlation,
+                        request_attention_id: if history {
+                            None
+                        } else {
+                            result["attention_recipients"]
+                                .as_array()
+                                .filter(|recipients| recipients.len() == 1)
+                                .and_then(|recipients| recipients[0]["attention_id"].as_str())
+                                .filter(|id| attention_id(id))
+                                .map(str::to_owned)
+                        },
                         parent_attention_id: self
                             .state
                             .repair_selection
@@ -1081,6 +1117,7 @@ impl Supervisor {
                             && a.request == awaited.request
                             && a.recipient_agent == awaited.recipient_agent
                             && a.correlation == awaited.correlation
+                            && (history || a.request_attention_id == awaited.request_attention_id)
                     }) {
                         if self.state.awaiting_handoffs.len() >= MAX_PENDING {
                             return Err("too many awaiting handoffs".into());
@@ -1199,24 +1236,14 @@ impl Supervisor {
             self.state.phase = "idle".into();
             self.state.save(&self.state_path)?;
         }
-        let suspended: BTreeSet<_> = self
-            .state
-            .awaiting_handoffs
-            .iter()
-            .filter_map(|a| a.parent_attention_id.as_ref())
-            .collect();
-        let other_ready = self.state.in_flight.iter().any(|p| {
-            !suspended.contains(&p.attention_id)
-                && (!p.requires_terminal
-                    || !self
-                        .state
-                        .awaiting_handoffs
-                        .iter()
-                        .any(|a| a.parent_attention_id.is_none()))
-        });
+        let page_limit = self
+            .config
+            .page_limit
+            .min(MAX_PENDING - self.state.in_flight.len());
         if self.state.repair_selection.is_none()
+            && page_limit > 0
             && (self.state.in_flight.is_empty()
-                || (!self.state.awaiting_handoffs.is_empty() && !other_ready))
+                || (!self.state.awaiting_handoffs.is_empty() && !self.state.has_ready_work()))
         {
             let previous: BTreeSet<_> = self
                 .state
@@ -1224,7 +1251,7 @@ impl Supervisor {
                 .iter()
                 .map(|p| p.attention_id.clone())
                 .collect();
-            let page=self.client.call("wait_for_coord",&json!({"since_sequence":self.state.safe_cursor,"timeout_seconds":self.config.wait_seconds,"limit":self.config.page_limit})).await?;
+            let page=self.client.call("wait_for_coord",&json!({"since_sequence":self.state.safe_cursor,"timeout_seconds":self.config.wait_seconds,"limit":page_limit})).await?;
             let added = self.accept_page(&page, &rooms)?;
             for p in self
                 .state
@@ -1256,6 +1283,11 @@ impl Supervisor {
                 if let Ok(Err(error))=tokio::time::timeout(Duration::from_secs(5),self.client.call("send",&json!({"room_name":p.room_name,"body":body,"declared_content_type":"text/plain","notify":notify}))).await {eprintln!("protocol diagnostic unavailable: {error}");}
             }
             if added == 0 {
+                // An empty wait cannot resolve an earlier uncertain turn.
+                // Preserve its backoff without redispatching suspended work.
+                if self.state.phase == "uncertain" {
+                    return Ok(false);
+                }
                 self.state.consecutive_failures = 0;
                 self.state.save(&self.state_path)?;
                 return Ok(true);
@@ -1305,6 +1337,12 @@ pub async fn run(
     // A fresh, idle Factory also needs a readable checkpoint. Saving the
     // existing state does not consume attention or create a task.
     supervisor.state.save(state_path)?;
+    process::notice(
+        &supervisor,
+        "ready",
+        "supervisor started; checkpoint loaded",
+    )
+    .await;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     loop {

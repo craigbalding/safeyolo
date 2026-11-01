@@ -234,5 +234,35 @@
       "proxy/tests/response_head_capture.rs"
     ],
     "license": "MIT (existing LICENSE unchanged)"
+  },
+  "stream_parse_error_patch": {
+    "base_commit": "c80677a78bfd92f1424b4b623e7b6137954902e4",
+    "scope": "Optional content-free observation at native recoverable stream-parser rejection owners, including heads rejected before service admission. One callback per connection; no frame retention, stream history, new dependency, admission, reset, abort or flow-control changes.",
+    "files": [
+      {
+        "path": "src/ext.rs",
+        "base_sha256": "1a028c7efe990e25e44955e909d951827ad9021245c1dc24fcd1b8a5e2ebf85a",
+        "candidate_sha256": "63d57506b11f9414fabe4ced5c34fb9ebe9b454ca260cc16854ba4be1112ef1a"
+      },
+      {
+        "path": "src/proto/connection.rs",
+        "base_sha256": "e7b371737a3648fee2a0746deab015f99765cd9ec2cb2428ea536b803f097d3c",
+        "candidate_sha256": "d96390e499394725eaf459f1fc220c7a97629116654efcb1876af94d73f23e46"
+      },
+      {
+        "path": "src/proto/streams/streams.rs",
+        "base_sha256": "d9d91dc6085fcedf19e559a4cea9935926febef2a69a73ddeb64c6b54e8c884a",
+        "candidate_sha256": "7db0f0943ed9f692d53b221722b90932213b77961c966fd09019fe916a48efd1"
+      },
+      {
+        "path": "src/server.rs",
+        "base_sha256": "6c288263c09ea51eabf87332a990547a8212bfd9d9301e5540d51cbe56b27d86",
+        "candidate_sha256": "41657623f9d8977a56d1d27447b7b14eed721dc47be8463a0b061844c028d681"
+      }
+    ],
+    "validation": [
+      "proxy/src/http/traffic/tests.rs::h2_stream_parser_failures_preserve_a_healthy_tunnel"
+    ],
+    "license": "MIT (existing LICENSE unchanged)"
   }
 }

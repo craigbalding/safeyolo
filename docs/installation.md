@@ -14,6 +14,14 @@ installation alternatives, earlier bundles, host preparation, builds and recover
 The [tested scope](#tested-onboarding-scope) separates installed proof from
 current-source capabilities and remaining platform work.
 
+On macOS, select a repository or worktree as the workspace, such as
+`safeyolo agent launch ~/proj/my-repo`. A broad parent such as `~/proj` gives
+the agent write access to unrelated projects. Traversing that larger VirtioFS
+share also retains more host file handles, which several agents can exhaust.
+Intentional broad shares remain supported. See
+[macOS host file-table pressure](microvm-architecture.md#macos-host-file-table-pressure)
+for the warning, limits and diagnostics.
+
 ## Install and start
 
 This manual alternative retains the earlier `host-7a38` bundle instructions.
@@ -154,9 +162,44 @@ consent or privileges, and does not update an already published bundle.
 Put installer options before `--launch`. Arguments after it go to the existing
 `agent launch` command. Omitting `--launch` installs only. `--yes` accepts
 listed host changes; setup, workspace access and optional authentication copying
-still require their own host choices. The command entry works in the same
-terminal after installation. A failed download must stop the procedure: do
+and authorization still require their own host choices. The command entry works
+in the same terminal after installation. A failed download must stop the procedure: do
 not run a previous file left at the download name.
+
+In a release that includes Codex launch support, use `safeyolo agent launch .
+--harness codex` to select the shipped Codex setup and native package. The
+default harness remains Claude. For the two-command installer route, put
+`--launch --harness codex` on the second command; use the same public download
+command from the quick start.
+
+Current source offers a login choice before starting a stopped Codex agent.
+Select `a` to authorize a trusted login already in that agent's home, `h` to
+select the host's `CODEX_HOME/auth.json` (default `~/.codex/auth.json`), or enter
+another trusted file path. The choice uses `credentials import-codex` for the
+new agent's unique identity; it needs no separate import shell command.
+Installation asks no storage question and creates no vault. If this import is
+the first credential write, it asks for local random-key storage or passphrase
+protection. Passphrase storage requires an explicit unlock after each proxy
+restart. If launch imports while the proxy is stopped, launch asks for that
+unlock after services become ready and before the client starts. See
+[credential storage and unlock](credentials.md#store-a-local-credential).
+If the agent has no login, the selected host file is also copied privately. The guest
+can read the copy; the host original and an existing agent login are preserved.
+Copying or adoption alone grants no proxy authority. If authorization fails,
+the copied login remains. Enter retains the current login or allows guest sign-in
+with normal approvals. `q` cancels before services and the client start.
+The displayed import name identifies the authorization to remove for revocation.
+Existing credential and network rules still apply. The
+[credential reference](credentials.md#use-codex-with-a-chatgpt-subscription)
+explains the supported scope. Older packages lack this in-flow choice; a
+source test does not establish public packaged cold readiness or timing.
+
+Repeating the command reuses the matching agent, home, workspace and launcher.
+A live repeat leaves login and authorization unchanged. A stopped repeat
+offers the same choice; Enter does not reimport or restore a revoked grant.
+The same tmux detach and host approval controls apply to both harnesses.
+Earlier packages that report “available: claude” need an explicit update to a
+release with this support. A source change alone does not update an installation.
 
 Trust comes from HTTPS delivery by the official
 `github.com/craigbalding/safeyolo` publisher. A checksum from the same release
@@ -165,6 +208,65 @@ The bootstrap does not use a remote shell pipe or a package-manager install.
 The release producer also writes a release-bound `install-safeyolo.sh` beside
 the host archive and `SHA256SUMS`; the earlier `host-7a38` release lacks that
 bootstrap asset.
+
+New host packages also include a `-guest-download.tar.gz` release asset.
+It contains the same compiled command and `package-info` as the complete host archive.
+The producer receipt and same-release checksums bind these bytes to that archive;
+they do not add an independent trust source. When this asset is available, the
+bootstrap verifies it and downloads the compatible guest while the host archive
+arrives. When the early command supports `guest download --prepare`, it also
+attempts guest cache preparation through a private staging directory. On Linux,
+this needs existing validated UID/GID ranges and tar with numeric ownership,
+ACL and extended-attribute support. Extraction, remapping and any privileged
+cleanup use noninteractive sudo.
+On macOS, cached image extraction needs no elevation. Early preparation does not
+allocate ranges, change host settings or prompt for privilege. If setup, tools
+or extraction privilege is missing, the normal installer prepares the verified
+archive after host consent.
+If staging cleanup fails, installation stops and reports the remaining path.
+The bootstrap passes the selected immutable OCI index to the normal installer.
+The installer uses its actual host settings to select and check the mapped tree
+before activation. Full host-package and guest integrity checks still apply.
+An interruption removes partial transfers. During early extraction, the helper
+waits for extraction/remapping and private-stage cleanup before exit. Completed
+verified blobs and trees remain reusable. Earlier immutable releases retain
+their existing acquisition path.
+Guest preparation reports separate elapsed times for archive decoding/extraction
+and Linux ownership preparation.
+The overlap does not establish the complete cold onboarding time; bandwidth
+contention, extraction, setup and coding-client readiness still contribute.
+
+For an acquisition diagnostic, set `SAFEYOLO_GUEST_DOWNLOAD_TIMING=1` in the
+environment of the bootstrap or `guest download` command. The download command
+emits one aggregate JSON summary on standard error before extraction. Normal
+output is unchanged when the variable is absent or has another value.
+The summary includes request/setup time, compressed chunk count and bytes,
+first/last chunk and end-of-stream offsets, and cumulative time around
+`stream.try_next()`, compressed writes and decoder writes. It reports the final
+compressed flush, file sync and decoder finish separately. All times are seconds
+from the start of download setup or accumulated operation durations. Request/setup
+includes cache locking, metadata resolution, decoder setup and the blob request.
+Stream polling includes OCI digest work and task scheduling; it does not measure
+remote network time. Decoder writes include decompression and decoded-file writes.
+Cache reuse and decoder fallback have explicit status fields. A null value means
+the operation or boundary was not reached. Errors and cancellation retain partial
+timings, including a pending operation. Summary output failure does not change the
+acquisition result. These counters alone establish no performance gain or cause.
+
+When the verified early command supports `host-package gunzip`, the bootstrap
+uses the command's bundled gzip decoder and pipes its output to the host's
+existing tar extractor. During a fresh transfer, the bootstrap saves the archive
+and extracts it into a separate private directory as the bytes arrive. It does
+not source or execute those extracted files until the complete archive passes
+its release checksum. The early command retains its own verified archive and
+extraction directory. A download, checksum, gzip or tar failure stops installation
+and removes the private extraction. Interruption also stops and reaps the
+transfer and extraction children. The ordinary package verifier still checks
+the complete payload before activation. Retained archives pass the release
+checksum before extraction. This uses the same `.tar.gz` assets and standard
+host commands. Earlier commands and paths without an early command use tar's
+gzip extraction. Local retained-archive measurements do not establish a cold
+onboarding saving.
 
 ### Tested onboarding scope
 
@@ -459,11 +561,37 @@ Use `--no-guest-download` for a contributor or proxy-only installation that
 will receive guest assets separately. That option preserves already prepared
 inputs. It does not build a guest or fall back after a failed pull.
 
+## Alpine host packages
+
+Alpine host qualification and package publication are tracked in
+[#370](https://github.com/craigbalding/safeyolo/issues/370).
+The older Linux release archives linked above require glibc and do not run on
+Alpine. Use a qualified prebuilt musl package from your bundle supplier.
+The AMD64 package is named `safeyolo-linux-amd64-musl-production.tar.gz`.
+Its `package-info` keeps `platform=linux-amd64` for guest selection and records
+`libc=musl` and the required musl version. The installer checks the libc family
+and version before it creates an instance.
+
+On Alpine, use an ordinary account with sudo. Before running the public
+bootstrap or unpacked installer, install Bash, curl, tar and the GCC runtime
+library. These are runtime prerequisites; installation uses prebuilt product
+executables and needs no compiler or Rust toolchain.
+
+```sh
+sudo apk add bash curl tar libgcc
+```
+
+Use the supplied package's ordinary `install.sh`. Host preparation installs
+missing rootless tools with APK and uses shadow's locked allocator for missing
+subordinate IDs. The guest remains the package's compatible OCI selection.
+Alpine host qualification is separate from the accepted Alpine guest images.
+
 ## Linux host preparation in new source bundles
 
-The tested newer Linux release and current source bundles include the complete
-gVisor `release-20261005.0` payload for the bundle's architecture. The installer checks its checksums,
-architecture, executable files and version. It uses that private runtime;
+The tested newer Linux release and current source bundles include the required
+gVisor `release-20261005.0` payload for the bundle's architecture.
+The installer checks the required files' checksums, architecture, executable
+permissions and runtime version. It uses that private runtime;
 it does not replace a system `runsc` or add a package repository.
 The earlier `host-7a38` manual alternative still needs its manual prerequisites.
 
@@ -472,14 +600,14 @@ The public installer downloads the host archive with that runtime already
 inside it. Selecting the bundled runtime needs no separate gVisor download.
 
 Run the bundle's ordinary `install.sh` as your host account. Before changing
-Ubuntu, it lists missing packages, subordinate account ranges, file permissions
-and the AppArmor profile, then asks for consent. `--yes` accepts those listed changes
+Ubuntu or Alpine, it lists missing packages, subordinate account ranges, file permissions,
+the namespace entry and AppArmor profiles, then asks for consent. `--yes` accepts those listed changes
 for an unattended installation. The proxy and agents run without host root
 privilege. Guest root maps to subordinate host user and group IDs, not host root.
 
-Host preparation uses sudo to run `apt-get` for missing packages, allocate
+Host preparation uses sudo to run `apt-get` on Ubuntu or `apk` on Alpine for missing packages, allocate
 missing unused user ID (UID) and group ID (GID) ranges, and install or load the
-required AppArmor profile. Runtime access uses `setfacl` to grant the selected
+required AppArmor profiles. Runtime access uses `setfacl` to grant the selected
 sandbox IDs traversal through private parent directories and read/execute
 access to the selected runtime. This uses sudo only for paths your account
 does not own. Activation uses the same access helper for the installed path.
@@ -495,19 +623,32 @@ stage because of its mapped owners, cleanup uses `sudo -n` for that newly
 created stage only. Completed host preparation remains if guest acquisition
 fails; retry reuses valid inputs.
 
-Preparation installs missing host tools from Ubuntu's existing package sources.
+Preparation installs missing host tools from the host's existing package sources.
+Alpine uses `shadow-subids`, `shadow-libs` and `util-linux-misc` for the
+corresponding rootless tools and allocator. Ubuntu package names stay unchanged.
+Guest acquisition needs tar's owner, ACL and extended-attribute options and
+find's numeric owner predicates. Shared-directory startup needs unshare's
+child-cleanup option. Alpine preparation installs `tar`, `findutils` or
+`util-linux-misc` when the existing command lacks the required options,
+including BusyBox variants.
 It reuses suitable subordinate UID and GID ranges independently. If either
 range is missing, shadow's locked account allocator selects an unused range.
 Another account's allocation at 100000–165535 does not prevent installation.
 Preparation preserves that allocation and uses different bases when needed.
 It never renumbers existing accounts or changes a live guest tree.
 
-Where Ubuntu restricts unprivileged user namespaces, preparation installs and
-loads a separate AppArmor profile for this runtime's actual path. It grants
-only the selected mapped root UID needed access through private runtime
-directories. It preserves other users' and groups' effective file permissions.
-It keeps AppArmor enabled and checks global namespace settings without changing
-them. For an explicitly selected KVM backend, set
+Where Ubuntu restricts unprivileged user namespaces, preparation installs
+`host/namespace-entry` under the installation root. It loads separate AppArmor
+profiles for that entry and the selected runtime's actual path. The namespace
+probe, agent namespace holder and stopped scheduler-spool cleanup execute the
+entry so the kernel applies its profile. They do not enter the profile through
+`aa-exec`. Existing installations obtain the entry by running `safeyolo host prepare`
+from the updated bundle. The entry remains if a later preparation step fails.
+
+Preparation grants only the selected mapped root UID needed access through
+private runtime directories. It preserves other users' and groups' effective
+file permissions. It keeps AppArmor enabled and checks global namespace
+settings without changing them. For an explicitly selected KVM backend, set
 `SAFEYOLO_RUNSC_PLATFORM=kvm` when installing or preparing the host. Preparation
 requires `/dev/kvm` and grants the mapped root GID required read/write access.
 It repairs a selected root UID denial if required and preserves other ACL
@@ -548,15 +689,22 @@ archive or the installed package.
 A cold system comparison must count that common package cost and the separate
 runtime download, verification and administrator setup.
 Bundled runtime fixes arrive through normal SafeYolo host-package updates;
-there is no separate runtime updater. SafeYolo ships `runsc` and its five
-companion executables. It omits the separate containerd shim, which its launcher
-does not call. `package-info` records the bundled
+there is no separate runtime updater. Current source bundles ship `runsc`,
+`gvisor_sentry`, `gvisor-sentry-prewarmer` and `runsc-fd-parking`. They omit
+`checkpointgofer`, `runsc-metric-server` and the separate containerd shim.
+SafeYolo does not use Google Cloud Storage checkpoints, the metrics server or
+the containerd integration. `package-info` records the bundled
 version, source and origin. `assets/licenses` contains the gVisor and dependency
 notices.
 
+Linux production bundles omit gVisor source-level debug information. Debug
+bundles and the original pinned upstream archives retain that information.
+Production bundles keep runtime metadata and function symbols.
+
 The verified upstream tar is about 121 MB compressed for ARM64 and 130 MB for
-AMD64; the ARM64 payload is about 268 MB unpacked. The host package includes
-those runtime files. Its compressed size also includes the SafeYolo host
+AMD64; the upstream ARM64 payload is about 268 MB unpacked. Those upstream
+sizes precede the removal of unused executables and production debug data.
+The host package's compressed size also includes the SafeYolo host
 executables and assets; the upstream tar size is not the increase in the host
 archive size. Bundling avoids an extra package source, changes to an unrelated
 system runtime and system-package version drift. A system installation can
@@ -865,10 +1013,15 @@ First, read Worker's pending request with the operator client:
 safeyolo approvals list --agent worker
 ```
 
-A network prompt records `request_id` and
-`details.network_action`. The action binds Worker's durable identity, the host,
-the port and the relevant network-policy revision. Historical prompts without
-that binding remain available through their existing operator actions.
+A network prompt records a host-owned `approval_id`, its traffic `request_id`
+and `details.network_action`. Equivalent retries retain the approval ID while
+each attempt has its own traffic ID. The action binds Worker's durable identity,
+the host, the port and the relevant network-policy revision. The pending record
+also binds the method and resource. Inspection leaves the record pending.
+See [pending approvals](operator-guide.md#inspect-a-pending-approval) for the
+decision, expiry and restart behavior. Historical prompts remain readable.
+Assisted decisions require a new durable request. Explicit policy controls
+remain available.
 
 Replace `REQUEST_ID` with the selected pending request and grant Helper its
 diagnostic and approval reads:
@@ -922,17 +1075,18 @@ through Helper's configured proxy; operator routes use the host Admin API.
 | Operator | `POST /admin/approvals/ID/readers` with `{"helper":"helper","helper_id":"CURRENT_DURABLE_ID"}` | Idempotent selected diagnostic and approval reads; no network grant. |
 | Operator | `POST /admin/approvals/ID` with `{"decision":"approve"}` or `{"decision":"reject"}` | Canonical terminal disposition and exact action; the resolver does not accept caller-supplied scope. |
 
-CLI and Commander network decisions use this common resolver for bound prompts. Repeat or concurrent decisions return the first terminal disposition.
-A relevant policy change or recreated Worker makes a pending action stale;
-approval returns 409 and needs a new request and human decision. The operator
-can still reject that stale request without changing permissions. A changed
-action cannot be substituted during preparation. Helper cannot call the operator
-mutation or grant itself evidence reads.
+CLI and Commander use the common resolver for canonical network, credential
+and gateway approvals. Repeat or concurrent decisions return the first terminal
+result. A relevant policy or service change, or a recreated Worker, supersedes
+a pending approval. Resolution returns 409 and needs a new request and human
+decision. A changed action cannot be substituted during preparation. Helper
+cannot call the operator mutation or grant itself evidence reads.
 
 If the resolution response is lost, read `GET /admin/approvals/ID` before taking
-another action. A committed allow rule carries its request and action identity,
-so the canonical approved outcome remains readable if its audit receipt fails.
-Unavailable evidence returns 503. Direct operator policy commands remain usable.
+another action. The host saves a decision receipt with its policy or grant
+effect. The pending record and receipt let the resolver recover its result if
+the audit write fails. Missing canonical state fails closed; logs cannot replace
+it. Direct operator policy commands remain usable.
 Raw audit files and separately authorised flow reads and exports retain their
 existing access; selected Helper reads do not redact that operator evidence.
 
@@ -983,8 +1137,20 @@ approval operations retain their separate owners.
 
 From a clean committed checkout on the target host, use Bash and the Rust
 toolchain pinned in `proxy/rust-toolchain.toml`. Linux also needs readelf and
-ldd, curl and a tar with zstd support for the pinned gVisor payload. The
+ldd, curl and a tar with zstd support for the pinned gVisor payload. GNU Linux
+build hosts need musl-tools; Alpine build hosts need build-base and musl-dev. The
 assembler verifies the downloaded archive and reuses its checked cache.
+On the Linux build host, install the Rust musl target for its architecture:
+`x86_64-unknown-linux-musl` on AMD64 or `aarch64-unknown-linux-musl` on ARM64,
+using `rustup target add TARGET`. The default builder links the two guest
+helpers statically with musl so Alpine guests need no glibc compatibility
+package. GNU host executables keep their existing target. On native musl build
+hosts, the assembler links host executables dynamically so host preparation can
+load shadow's allocator. Those host executables require Alpine's `libgcc` runtime.
+Guest helpers remain static. The guest compiler is `musl-gcc` on GNU hosts and
+`cc` on native musl hosts; target-specific Cargo linker and C compiler overrides remain
+available. An explicit `SAFEYOLO_GUEST_TARGET` keeps the configured cross-build
+target and its target-specific artifact directory.
 macOS needs Command Line Tools and a signed VM helper build. Prepared
 runtime inputs contain the `tmux` executable for this host. The assembler
 copies its resolved non-system libraries. This Ubuntu example selects

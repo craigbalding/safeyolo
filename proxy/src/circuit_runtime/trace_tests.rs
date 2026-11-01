@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::{
-    Config, audit,
+    Config, Runtime, audit,
     trace::{Settings, TraceStore},
 };
 
@@ -26,9 +26,8 @@ fn make_runtime(directory: &std::path::Path, settings: Value, enabled: bool) -> 
     .unwrap();
     let config: Config = serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")}],
-        "policy_file":policy,"data_dir":directory.join("data"),"event_log":directory.join("diagnostics.jsonl"),
+        "policy_file":policy,"data_dir":directory.join("data"),
         "audit_log_path":directory.join("audit.jsonl"),"readiness_file":directory.join("ready"),
-        "agent_map_file":directory.join("absent-map.json"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("unused.sqlite3"),
         "circuit_state_file":"","circuit_breaker_enabled":enabled,
     }))
@@ -42,10 +41,11 @@ fn context(store: &Arc<TraceStore>) -> Arc<RequestTrace> {
     let trace = Arc::new(RequestTrace::new(
         store.clone(),
         &ConnectionIdentity {
+            ingress_binding: None,
+            run: None,
             agent_id: "alice".into(),
             connection_id: "owned-connection".into(),
             source_id: None,
-            reconciled: None,
         },
         RID,
         "GET",
@@ -190,7 +190,7 @@ fn refresh_and_audit_errors_keep_exception_continuation_and_partial_effects() {
     assert!(matches!(
         result,
         ResponseOutcome::Exception {
-            evidence_failed: false
+            evidence_failed: true
         }
     ));
     let rows = steps(&runtime.traces);
@@ -272,10 +272,11 @@ fn trace_failure_and_opt_out_do_not_change_response_effects() {
         let trace = Arc::new(RequestTrace::new(
             runtime.traces.clone(),
             &ConnectionIdentity {
+                ingress_binding: None,
+                run: None,
                 agent_id: "alice".into(),
                 connection_id: "owned-connection".into(),
                 source_id: None,
-                reconciled: None,
             },
             RID,
             "GET",
@@ -359,10 +360,11 @@ fn selected_source_hooks_match_decisions_and_retained_state() {
         let trace = Arc::new(RequestTrace::new(
             runtime.traces.clone(),
             &ConnectionIdentity {
+                ingress_binding: None,
+                run: None,
                 agent_id: "alice".into(),
                 connection_id: "owned-connection".into(),
                 source_id: None,
-                reconciled: None,
             },
             RID,
             "POST",

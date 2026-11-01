@@ -13,10 +13,66 @@ use crate::{Error, native_config};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
+pub(crate) struct ProbeReply {
+    pub status: u16,
+    pub request_id: Option<String>,
+    pub body_complete: bool,
+}
+
+/// Exercise the ordinary request path on a configured agent listener. The
+/// reserved host has its own transport backstop and never needs external DNS.
+pub(crate) async fn pipeline_probe(socket: &Path) -> Result<ProbeReply, Error> {
+    let deadline = tokio::time::Instant::now() + TIMEOUT;
+    let (response, _driver) = tokio::time::timeout_at(deadline, async {
+        let socket = tokio::net::UnixStream::connect(socket).await?;
+        let (mut client, connection) =
+            hyper::client::conn::http1::handshake(TokioIo::new(socket)).await?;
+        let driver = Connection(tokio::spawn(connection));
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(format!("http://{}/__pipeline_probe", crate::PROBE_HOST))
+            .header("host", crate::PROBE_HOST)
+            .header("x-safeyolo-trace", "1")
+            .header(
+                crate::test_context::HEADER,
+                "run=doctor;agent=doctor;test=pipeline-probe",
+            )
+            .header("connection", "close")
+            .body(Full::new(Bytes::new()))?;
+        let response = client.send_request(request).await?;
+        Ok::<_, Error>((response, driver))
+    })
+    .await??;
+    let status = response.status().as_u16();
+    let request_id = response
+        .headers()
+        .get("x-safeyolo-request-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| crate::agent_api::valid_request_id(value))
+        .map(str::to_owned);
+    // Keep correlation even when a local block or a broken body prevented a
+    // clean sink response. Doctor still retrieves and classifies that trace.
+    let body_complete = tokio::time::timeout_at(deadline, response.into_body().collect())
+        .await
+        .is_ok_and(|body| body.is_ok());
+    Ok(ProbeReply {
+        status,
+        request_id,
+        body_complete,
+    })
+}
+
 struct Connection(tokio::task::JoinHandle<Result<(), hyper::Error>>);
 impl Drop for Connection {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+struct Json(Value);
+impl Drop for Json {
+    fn drop(&mut self) {
+        crate::credentials::wipe_json(&mut self.0);
     }
 }
 
@@ -26,27 +82,30 @@ async fn send<IO>(
     path: &str,
     token: &str,
     method: Method,
-    body: Value,
+    mut body: Value,
 ) -> Result<(Response<Incoming>, Connection), Error>
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    let bytes = if method == Method::GET && body.is_null() {
+        Ok(Vec::new())
+    } else {
+        serde_json::to_vec(&body)
+    };
+    crate::credentials::wipe_json(&mut body);
+    let bytes = Zeroizing::new(bytes?);
     let (mut client, connection) =
         hyper::client::conn::http1::handshake(TokioIo::new(socket)).await?;
     let driver = Connection(tokio::spawn(connection));
-    let bytes = if method == Method::GET && body.is_null() {
-        Vec::new()
-    } else {
-        serde_json::to_vec(&body)?
-    };
     let request = Request::builder()
         .method(method)
         .uri(path)
         .header("host", host)
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
+        .header("user-agent", "SafeYolo")
         .header("connection", "close")
-        .body(Full::new(Bytes::from(bytes)))?;
+        .body(Full::new(Bytes::from_owner(bytes)))?;
     let response = client.send_request(request).await?;
     Ok((response, driver))
 }
@@ -132,8 +191,18 @@ pub async fn admin(
     body: Value,
     timeout: Duration,
 ) -> Result<Value, Error> {
+    let mut body = Json(body);
     let (socket, host, token) = operator_socket(config_path).await?;
-    send_json(socket, &host, path, token.trim(), method, body, timeout).await
+    send_json(
+        socket,
+        &host,
+        path,
+        token.trim(),
+        method,
+        std::mem::take(&mut body.0),
+        timeout,
+    )
+    .await
 }
 
 /// Stream into a same-directory temporary file. A missing or truncated export
@@ -203,14 +272,117 @@ where
     json(response, deadline).await
 }
 
-/// Host REST requests use the configured HTTPS proxy and the same native TLS
-/// trust loader as upstream connections. No redirects or automatic retries:
-/// callers own uncertain-write reconciliation. Credentials are header-only.
+/// HTTP status and retry timing, without response bodies or credentials.
+#[derive(Debug)]
+pub(crate) struct RestStatusError {
+    pub status: u16,
+    pub retry_after: Option<Duration>,
+}
+impl std::fmt::Display for RestStatusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "REST request failed with HTTP {}", self.status)
+    }
+}
+impl std::error::Error for RestStatusError {}
+
+fn retry_after(value: &str) -> Option<Duration> {
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let format = time::format_description::parse_borrowed::<2>(
+        "[weekday repr:short], [day] [month repr:short] [year] [hour]:[minute]:[second] GMT",
+    )
+    .ok()?;
+    let date = time::PrimitiveDateTime::parse(value, &format)
+        .ok()?
+        .assume_utc();
+    Some(Duration::from_secs_f64(
+        (date - time::OffsetDateTime::now_utc())
+            .as_seconds_f64()
+            .max(0.0),
+    ))
+}
+
+/// Host REST requests use the configured HTTPS proxy and native TLS trust.
+/// There are no redirects or automatic retries. Callers reconcile uncertain
+/// writes. Credentials are header-only.
 pub(crate) async fn https_json(
     url: &str,
     token: &str,
     method: Method,
     body: Value,
+) -> Result<Value, Error> {
+    https_json_from(url, token, method, body, HttpsRoute::default()).await
+}
+
+/// A native agent adapter uses the same attributed listener as its Agent API
+/// client. It requires that proxy route and never falls back to direct egress.
+pub(crate) async fn gateway_json(
+    socket: Option<&Path>,
+    url: &str,
+    token: &str,
+) -> Result<Value, Error> {
+    https_json_from(
+        url,
+        token,
+        Method::GET,
+        Value::Null,
+        HttpsRoute {
+            proxy_socket: socket,
+            require_proxy: true,
+            max_response_bytes: 1024 * 1024,
+            ..HttpsRoute::default()
+        },
+    )
+    .await
+}
+
+/// Only the host's explicit federation route supplies pinned peer trust.
+/// Loopback peers stay inside this host. External peers use the configured
+/// proxy, including its normal TLS trust and credential mediation.
+pub(crate) async fn federation_json(
+    url: &str,
+    token: &str,
+    body: Value,
+    tls: std::sync::Arc<rustls::ClientConfig>,
+) -> Result<Value, Error> {
+    https_json_from(
+        url,
+        token,
+        Method::POST,
+        body,
+        HttpsRoute {
+            peer_tls: Some(tls),
+            max_response_bytes: 8 * 1024 * 1024,
+            ..HttpsRoute::default()
+        },
+    )
+    .await
+}
+
+struct HttpsRoute<'a> {
+    proxy_socket: Option<&'a Path>,
+    require_proxy: bool,
+    max_response_bytes: usize,
+    peer_tls: Option<std::sync::Arc<rustls::ClientConfig>>,
+}
+impl Default for HttpsRoute<'_> {
+    fn default() -> Self {
+        Self {
+            proxy_socket: None,
+            require_proxy: false,
+            max_response_bytes: usize::MAX,
+            peer_tls: None,
+        }
+    }
+}
+
+async fn https_json_from(
+    url: &str,
+    token: &str,
+    method: Method,
+    body: Value,
+    route: HttpsRoute<'_>,
 ) -> Result<Value, Error> {
     use rustls::pki_types::ServerName;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -231,39 +403,67 @@ pub(crate) async fn https_json(
         .to_owned();
     let path = uri.path_and_query().map_or("/", |p| p.as_str());
     let ca = std::env::var_os("SSL_CERT_FILE").or_else(|| std::env::var_os("REQUESTS_CA_BUNDLE"));
-    let tls = crate::http::client_tls(ca.as_deref().map(Path::new))?;
-    tokio::time::timeout(Duration::from_secs(15), async {
+    let parent_tls = crate::http::client_tls(ca.as_deref().map(Path::new))?;
+    let tls = route.peer_tls.clone().unwrap_or_else(|| parent_tls.clone());
+    let loopback = route.peer_tls.is_some()
+        && host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    let timeout = if route.peer_tls.is_some() {
+        Duration::from_secs(330)
+    } else {
+        Duration::from_secs(15)
+    };
+    tokio::time::timeout(timeout, async {
         let proxy = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
             .into_iter()
             .find_map(|key| std::env::var(key).ok().filter(|v| !v.is_empty()));
-        let socket: crate::tunnels::BoxStream = if let Some(proxy) = proxy {
-            let proxy: hyper::Uri = proxy.parse()?;
-            let route = proxy.authority().ok_or("invalid HTTPS proxy route")?;
-            let (credentials, route) = route
-                .as_str()
-                .rsplit_once('@')
-                .map_or((None, route.as_str()), |(c, r)| (Some(c), r));
-            let route: hyper::http::uri::Authority = route.parse()?;
-            let proxy_host = route.host().trim_matches(['[', ']']).to_owned();
-            let encrypted = match proxy.scheme_str() {
-                Some("http") => false,
-                Some("https") => true,
-                _ => return Err("HTTPS proxy route must use HTTP or HTTPS".into()),
-            };
-            let stream = tokio::net::TcpStream::connect((
-                proxy_host.as_str(),
-                route.port_u16().unwrap_or(if encrypted { 443 } else { 80 }),
-            ))
-            .await?;
-            let mut stream: crate::tunnels::BoxStream = if encrypted {
-                Box::new(
-                    tokio_rustls::TlsConnector::from(tls.clone())
-                        .connect(ServerName::try_from(proxy_host)?, stream)
-                        .await?,
-                )
+        let proxy_stream: Option<(crate::tunnels::BoxStream, Option<Zeroizing<String>>)> =
+            if loopback {
+                None
+            } else if let Some(socket) = route.proxy_socket {
+                Some((
+                    Box::new(tokio::net::UnixStream::connect(socket).await?),
+                    None,
+                ))
+            } else if let Some(proxy) = proxy {
+                let proxy: hyper::Uri = proxy.parse()?;
+                let route = proxy.authority().ok_or("invalid HTTPS proxy route")?;
+                let (credentials, route) = route
+                    .as_str()
+                    .rsplit_once('@')
+                    .map_or((None, route.as_str()), |(c, r)| (Some(c), r));
+                let route: hyper::http::uri::Authority = route.parse()?;
+                let proxy_host = route.host().trim_matches(['[', ']']).to_owned();
+                let encrypted = match proxy.scheme_str() {
+                    Some("http") => false,
+                    Some("https") => true,
+                    _ => return Err("HTTPS proxy route must use HTTP or HTTPS".into()),
+                };
+                let stream = tokio::net::TcpStream::connect((
+                    proxy_host.as_str(),
+                    route.port_u16().unwrap_or(if encrypted { 443 } else { 80 }),
+                ))
+                .await?;
+                let stream: crate::tunnels::BoxStream = if encrypted {
+                    Box::new(
+                        tokio_rustls::TlsConnector::from(parent_tls.clone())
+                            .connect(ServerName::try_from(proxy_host)?, stream)
+                            .await?,
+                    )
+                } else {
+                    Box::new(stream)
+                };
+                Some((
+                    stream,
+                    credentials.map(|value| Zeroizing::new(value.to_owned())),
+                ))
             } else {
-                Box::new(stream)
+                None
             };
+        let socket: crate::tunnels::BoxStream = if let Some((mut stream, credentials)) =
+            proxy_stream
+        {
             let destination = if uri.port_u16().is_some() {
                 authority.clone()
             } else {
@@ -272,7 +472,7 @@ pub(crate) async fn https_json(
             let mut request = Zeroizing::new(format!(
                 "CONNECT {destination} HTTP/1.1\r\nHost: {destination}\r\n"
             ));
-            if let Some(credentials) = credentials {
+            if let Some(credentials) = credentials.as_ref() {
                 use base64::Engine;
                 let decoded = percent_encoding::percent_decode_str(credentials).decode_utf8()?;
                 request.push_str(&format!(
@@ -299,10 +499,17 @@ pub(crate) async fn https_json(
             }
             let status = status_line.next().and_then(|v| v.parse::<u16>().ok());
             if !status.is_some_and(|v| (200..300).contains(&v)) {
-                return Err("HTTPS proxy refused CONNECT".into());
+                return Err(RestStatusError {
+                    status: status.ok_or("HTTPS proxy response is invalid")?,
+                    retry_after: None,
+                }
+                .into());
             }
             stream
         } else {
+            if route.require_proxy {
+                return Err("GitHub work reads require the caller's configured proxy route".into());
+            }
             Box::new(
                 tokio::net::TcpStream::connect((host.as_str(), uri.port_u16().unwrap_or(443)))
                     .await?,
@@ -314,9 +521,20 @@ pub(crate) async fn https_json(
         let (response, _connection) = send(socket, &authority, path, token, method, body).await?;
         let status = response.status();
         if !matches!(status.as_u16(), 200 | 201) {
-            return Err(format!("REST request failed with HTTP {}", status.as_u16()).into());
+            return Err(RestStatusError {
+                status: status.as_u16(),
+                retry_after: response
+                    .headers()
+                    .get(hyper::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(retry_after),
+            }
+            .into());
         }
-        let bytes = response.into_body().collect().await?.to_bytes();
+        let bytes = http_body_util::Limited::new(response.into_body(), route.max_response_bytes)
+            .collect()
+            .await?
+            .to_bytes();
         Ok(serde_json::from_slice(&bytes)?)
     })
     .await?
@@ -383,4 +601,27 @@ pub async fn helper_timeout(
         timeout,
     )
     .await
+}
+
+#[cfg(test)]
+mod rest_tests {
+    use super::*;
+
+    #[test]
+    fn retry_after_seconds_and_http_date() {
+        assert_eq!(retry_after("120"), Some(Duration::from_secs(120)));
+        assert_eq!(
+            retry_after("Wed, 21 Oct 2015 07:28:00 GMT"),
+            Some(Duration::ZERO)
+        );
+        let future = time::OffsetDateTime::now_utc() + time::Duration::seconds(120);
+        let format = time::format_description::parse_borrowed::<2>(
+            "[weekday repr:short], [day] [month repr:short] [year] [hour]:[minute]:[second] GMT",
+        )
+        .unwrap();
+        let delay = retry_after(&future.format(&format).unwrap()).unwrap();
+        assert!((Duration::from_secs(118)..=Duration::from_secs(120)).contains(&delay));
+        assert_eq!(retry_after("not a date or seconds"), None);
+        assert_eq!(retry_after("-1"), None);
+    }
 }
