@@ -399,7 +399,9 @@ action = "warn"
 
     async fn get(path: &Path, target: &str, token: &str) -> String {
         let mut stream = UnixStream::connect(path).await.unwrap();
-        stream.write_all(format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nX-SafeYolo-Agent: gate:proof\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+        let uri: hyper::Uri = target.parse().unwrap();
+        let host = uri.authority().unwrap();
+        stream.write_all(format!("GET {target} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {token}\r\nX-SafeYolo-Agent: gate:proof\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
         let mut response = String::new();
         tokio::time::timeout(TIMEOUT, stream.read_to_string(&mut response))
             .await
@@ -470,7 +472,7 @@ action = "warn"
                 "test-agent-token",
             )
             .await;
-            assert!(!api.starts_with("HTTP/1.1 200"), "{api}");
+            assert!(api.starts_with("HTTP/1.1 503"), "{api}");
             assert!(
                 !get(
                     &delegation.socket_path,
