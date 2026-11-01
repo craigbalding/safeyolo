@@ -259,6 +259,8 @@ nodes:
           sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
         - path: tests/blackbox/host/job_sandbox.py
           sha256: d0636a2c40ebea884bf7eafdc701960f8db7e0586db64f3dd6264820b9678741
+        - path: tests/blackbox/host/job_network.py
+          sha256: d7d9a2bed1b66abed3edf1d54d3f12ff6a1a02828cb51304d943fed3d5c734f6
         - path: proxy/Cargo.toml
           sha256: 8e3331141644bc07bf5ace2921d8c13c62ef176fd7f1cd818932825855da74a9
         - path: proxy/Cargo.lock
@@ -273,6 +275,7 @@ nodes:
         gvisor_systrap: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh systrap --verbose"
         gvisor_kvm: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh kvm --verbose"
         disposable_jobs: "python3 tests/blackbox/host/job_sandbox.py --cli <candidate-cli> --root <prepared-disposable-instance> --scratch <disk-backed-directory>"
+        credentialed_jobs: "python3 tests/blackbox/host/job_network.py --cli <candidate-cli> --proxy <candidate-proxy> --base-root <prepared-instance> --root <fresh-traversable-root> --scratch <empty-disk-backed-directory> --admin-port <authorized-port> --upstream-port <authorized-port>"
       capture: [trusted base, runsc version, actual platform metadata, uid map, guest-root boundary, lifecycle result, runsc logs, exit status]
 
   - id: ev.accept_vz_lane
@@ -310,6 +313,8 @@ nodes:
           sha256: 310d5544e870e18de8adf89ea47ac39e5f029462ec0974453c5977caf2c86837
         - path: tests/blackbox/host/job_sandbox.py
           sha256: d0636a2c40ebea884bf7eafdc701960f8db7e0586db64f3dd6264820b9678741
+        - path: tests/blackbox/host/job_network.py
+          sha256: d7d9a2bed1b66abed3edf1d54d3f12ff6a1a02828cb51304d943fed3d5c734f6
         - path: proxy/Cargo.toml
           sha256: 8e3331141644bc07bf5ace2921d8c13c62ef176fd7f1cd818932825855da74a9
         - path: proxy/Cargo.lock
@@ -330,6 +335,7 @@ nodes:
         full_vz: "./tests/blackbox/run-lane.sh vz --verbose"
         snapshot_restore: "bash vm/test/snapshot-smoke.sh <disposable-agent>"
         disposable_jobs: "python3 tests/blackbox/host/job_sandbox.py --cli <candidate-cli> --root <prepared-disposable-instance> --scratch <disk-backed-directory> --observer-probe <static-linux-arm64-probe>"
+        credentialed_jobs: "python3 tests/blackbox/host/job_network.py --cli <candidate-cli> --proxy <candidate-proxy> --base-root <prepared-instance> --root <fresh-traversable-root> --scratch <empty-disk-backed-directory> --admin-port <authorized-port> --upstream-port <authorized-port>"
       capture: [trusted base, safeyolo-vm version, physical host identity, VZ assertion, snapshot fingerprint result, exit status]
 
   - id: ev.accept_coord_lane
