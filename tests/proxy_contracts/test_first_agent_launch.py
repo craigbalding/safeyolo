@@ -968,18 +968,35 @@ def test_credential_policy_write_cannot_bypass_canonical_approval(tmp_path):
         for field, changed in (("host", "localhost"), ("agent_id", "ag-" + "c" * 32),
                                ("credentials", ["hmac:different"])):
             instance.admin("POST", "/admin/policy/baseline/approve",
-                           {**body, "approval_action": {**action, field: changed}}, expected_status=503)
-            assert instance.policy.read_bytes() == before
-        instance.admin("POST", "/admin/policy/baseline/approve", body, expected_status=503)
+                           {**body, "approval_action": {**action, field: changed}}, expected_status=409)
+            assert instance.policy.read_bytes() == before and origin.accepts == 0
+        instance.admin("POST", "/admin/policy/baseline/approve",
+                       {**body, "approval_request_id": "req-" + "0" * 32}, expected_status=409)
+        assert instance.policy.read_bytes() == before and origin.accepts == 0
+        # A matching pending action reaches the policy write. Refuse that write
+        # without changing the canonical request or the active credential rule.
+        instance.root.chmod(0o500)
+        try:
+            failed = instance.admin("POST", "/admin/policy/baseline/approve", body, expected_status=503)
+            assert failed["status"] == "rejected"
+            assert failed["error"] == "credential approval could not be saved or activated"
+        finally:
+            instance.root.chmod(0o700)
         assert instance.policy.read_bytes() == before
+        assert request(instance.paths["alice"], target,
+                       headers={"Authorization": "Bearer first-launch-key"})[0] == 428
         instance.admin("POST", "/admin/policy/baseline/deny",
                        {"destination": action["host"], "cred_id": action["credentials"][0]})
         # The old denial endpoint only logs. Audit alone cannot decide the
         # canonical record; the shared resolver records the actual refusal.
-        assert instance.admin("GET", f"/admin/approvals/{view['approval_id']}")["status"] == "pending"
+        pending = instance.admin("GET", f"/admin/approvals/{view['approval_id']}")
+        assert pending["status"] == "pending" and pending["action"] == action
+        assert pending["request_id"] == identifier
         instance.admin("POST", f"/admin/approvals/{view['approval_id']}", {"decision": "reject"})
-        instance.admin("POST", "/admin/policy/baseline/approve", body, expected_status=503)
+        instance.admin("POST", "/admin/policy/baseline/approve", body, expected_status=409)
         replay = instance.admin("POST", f"/admin/approvals/{view['approval_id']}",
                                 {"decision": "approve", "option": "persistent"})
-        assert replay["status"] == "rejected"
+        assert replay["status"] == "rejected" and replay["action"] == action
+        assert request(instance.paths["alice"], target,
+                       headers={"Authorization": "Bearer first-launch-key"})[0] == 428
         assert instance.policy.read_bytes() == before and origin.accepts == 0
