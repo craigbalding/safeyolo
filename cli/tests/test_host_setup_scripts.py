@@ -2245,14 +2245,25 @@ def test_lab_runner_reaches_staged_harness_with_multiline_context(tmp_path, sock
     env["TERM"] = "xterm-256color"
     socket = socket_dir / "controller.sock"
     tmux = ["tmux", "-S", str(socket)]
-    subprocess.run([*tmux, "new-session", "-d", "-s", "controller", "-c", str(home),
-                    "/bin/bash --noprofile --norc"], env=env, check=True)
     runner = [str(LAB_CONTROLLER_SOURCE / "scripts/run-controller.sh"), "--startup-file", str(startup)]
-    if harness:
+    if selected == "claude":
+        # On either host, check the real shell hint and pass its harness choice
+        # to the runner. The guest launcher itself requires Linux /proc.
+        entry = home / ".local/bin/safeyolo-lab"
+        assert os.readlink(entry) == LAB_COMMAND_TARGET
+        entry.unlink()
+        entry.symlink_to(LAB_CONTROLLER_SOURCE / "scripts/safeyolo-lab")
+        shell = _lab_shell(home, ":", interactive=True)
+        assert shell.returncode == 0, shell.stderr
+        assert shell.stdout == "SafeYolo lab: run safeyolo-lab --harness claude\n"
+        runner += shlex.split(shell.stdout.removeprefix("SafeYolo lab: run "))[1:]
+    elif harness:
         runner += ["--harness", harness]
     runner += ["--", "--probe", "argument with spaces"]
     line = shlex.join(runner) + '; printf "%s" "$?" > "$HOME/runner-rc"'
     try:
+        subprocess.run([*tmux, "new-session", "-d", "-s", "controller", "-c", str(home),
+                        "/bin/bash --noprofile --norc"], env=env, check=True)
         subprocess.run([*tmux, "send-keys", "-t", "controller", "-l", "--", line], env=env, check=True)
         subprocess.run([*tmux, "send-keys", "-t", "controller", "Enter"], env=env, check=True)
         deadline = time.monotonic() + 10
@@ -2282,7 +2293,8 @@ def test_lab_runner_reaches_staged_harness_with_multiline_context(tmp_path, sock
         subprocess.run([*tmux, "kill-server"], env=env, capture_output=True, check=False)
 
 
-def test_claude_lab_hint_launches_native_context(tmp_path: Path, socket_dir: Path) -> None:
+@pytest.mark.skipif(os.uname().sysname != "Linux", reason="The guest Lab launcher validates Linux /proc process births")
+def test_claude_lab_hint_launches_guest_controller_with_native_context(tmp_path: Path, socket_dir: Path) -> None:
     home, command, env = _stage_native_client(tmp_path, "claude", host_tools=("flock",))
     prepared = subprocess.run([str(command), "--prepare"], env=env, capture_output=True, text=True)
     assert prepared.returncode == 0, prepared.stderr
