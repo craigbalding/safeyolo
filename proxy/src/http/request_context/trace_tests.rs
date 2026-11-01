@@ -316,6 +316,120 @@ async fn request_decode_error_keeps_response_trace_independent_and_response_erro
 }
 
 #[tokio::test]
+async fn last_completion_owner_finishes_response_evidence_with_an_unfinished_upload() {
+    for complete in [true, false] {
+        let fixture = Fixture::new(true, json!(["owned.invalid"]), false);
+        let trace = fixture.trace(true);
+        let mut ingress = H1::new().await;
+        let mut request = ingress.request(10, Some(CLAIM), "identity").await;
+        let mut context = pending(fixture.prepare_traced(&mut request, &trace));
+        let state = Arc::new(RwLock::new(fixture.runtime.clone()));
+        let traffic = crate::http::traffic::Traffic::new(
+            state.clone(),
+            &fixture.identity(),
+            "owned-request",
+            &request,
+            &fixture.destination(),
+        );
+        context.attach_traffic(traffic);
+        let mut outbound = Request::builder()
+            .method("POST")
+            .uri("http://owned.invalid/path")
+            .body(Empty::<Bytes>::new())
+            .unwrap();
+        let completion = crate::http::circuit_completion::Completion::register(
+            &mut outbound,
+            false,
+            state,
+            fixture.identity(),
+            "owned-request".into(),
+            "owned.invalid".into(),
+            Some(context),
+            None,
+            None,
+        );
+        let (socket, mut origin) = tokio::io::duplex(4096);
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(socket))
+            .await
+            .unwrap();
+        let driver = tokio::spawn(completion.clone().drive(connection));
+        let response = tokio::spawn(async move {
+            sender
+                .send_request(outbound)
+                .await
+                .unwrap()
+                .into_body()
+                .collect()
+                .await
+        });
+        let mut head = Vec::new();
+        timeout(LIMIT, async {
+            while !head.ends_with(b"\r\n\r\n") {
+                head.push(origin.read_u8().await.unwrap());
+            }
+        })
+        .await
+        .unwrap();
+        origin
+            .write_all(b"HTTP/1.1 500 Owned\r\nContent-Length: 5\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        origin
+            .write_all(if complete { b"early" } else { b"ear" })
+            .await
+            .unwrap();
+        origin.shutdown().await.unwrap();
+        let body = timeout(LIMIT, response).await.unwrap().unwrap();
+        assert_eq!(body.is_ok(), complete);
+        if let Ok(body) = body {
+            assert_eq!(body.to_bytes(), Bytes::from_static(b"early"));
+        }
+        let _ = timeout(LIMIT, driver).await.unwrap().unwrap();
+        // Keep the ingress parser alive and its upload incomplete through the
+        // final outbound owner. No scheduler timing can complete this request.
+        assert_eq!(completion.try_finish(), None);
+        drop(completion);
+        assert_eq!(fixture.counts(), [0; 5]);
+        let report = fixture
+            .runtime
+            .traces
+            .get(
+                "owned-request",
+                Some("alice"),
+                crate::circuit_runtime::now(),
+            )
+            .unwrap()
+            .unwrap_or_else(|| json!({"steps": []}));
+        let response_steps: Vec<_> = report["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|step| step["addon"] == "test-context")
+            .map(|step| json!([step["hook"], step["state"], step["outcome"]]))
+            .collect();
+        assert_eq!(
+            response_steps,
+            if complete {
+                vec![json!(["response", "evaluated", "not_applicable"])]
+            } else {
+                vec![]
+            }
+        );
+        let stats = fixture
+            .runtime
+            .request_logger
+            .stats()
+            .unwrap()
+            .document()
+            .json()
+            .unwrap();
+        assert_eq!(stats["requests_total"], 0);
+        assert_eq!(stats["responses_total"], u64::from(complete));
+        fixture.drain();
+    }
+}
+
+#[tokio::test]
 async fn response_not_applicable_is_reached_without_provenance_but_not_after_skip_or_abort() {
     let fixture = Fixture::new(true, json!([]), false);
     let trace = fixture.trace(true);

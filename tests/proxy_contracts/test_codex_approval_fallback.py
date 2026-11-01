@@ -1,0 +1,373 @@
+"""Exercise Codex startup approval and the manual fallback with synthetic credentials."""
+
+from __future__ import annotations
+
+import http.client
+import json
+import os
+import select
+import shutil
+import signal
+import sqlite3
+import subprocess
+import sys
+import time
+from contextlib import contextmanager
+from pathlib import Path
+
+import pytest
+import tomlkit
+
+from tests.proxy_contracts.harness import read_events, request
+from tests.proxy_contracts.test_authority_consistency import _connect, _peers
+from tests.proxy_contracts.test_native_policy_cli import native_instance
+
+pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Uses the maintained installed Linux fixture")
+
+ROUTING_PATH = "/backend-api/wham/accounts/check?workspace_id=fixture"
+ROUTING_POLICY = '''budget=12000
+[hosts]
+"*"={egress="allow",unknown_creds="prompt"}
+[credential.synthetic]
+match=["routing-login-secret", "replacement-login-secret"]
+headers=["authorization"]
+[agents.alice]
+agent_id="ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+[agents.bob]
+agent_id="ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+'''
+
+
+@contextmanager
+def _routing_run(instance):
+    # This existing sentry-shaped process contract supplies a controlled run
+    # identity. It does not claim a booted guest or namespace isolation.
+    generation = "0123456789abcdef0123456789abcdef"
+    agent = instance.root / "agents/alice"
+    (agent / "config-share").mkdir(parents=True)
+    backend = subprocess.Popen(
+        ["runsc-sandbox", "-c", "read line", f"--root={instance.root / 'run'}", "boot", f"safeyolo-{generation}"],
+        executable="/bin/sh", stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        birth = Path(f"/proc/{backend.pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        (agent / "runtime.json").write_text(json.dumps({
+            "name": "alice", "agent_id": "ag-" + "a" * 32, "run_id": generation, "state": "running",
+            "backend_pid": backend.pid, "backend_token": f"linux:{boot}:{backend.pid}:{birth}",
+        }))
+        (agent / "config-share/host-launch-context.json").write_text(json.dumps({
+            "agent_id": "ag-" + "a" * 32, "generation": generation,
+        }))
+        yield agent
+    finally:
+        if backend.poll() is None:
+            backend.terminate()
+        backend.communicate(timeout=5)
+        # Retain the controlled identity records without making the installed
+        # fixture keep runtime copies for a guest that was never booted.
+        agent.rename(instance.root / "controlled-run")
+        agent.parent.rmdir()
+
+
+@contextmanager
+def _routing_client(instance, transport):
+    scheme = "http" if transport == "http" else "https"
+    curl = shutil.which("curl")
+    assert curl, "the installed-proxy HTTP client is required"
+    # Curl's Unix-socket option bypasses proxy CONNECT. Use the same local TCP
+    # to trusted UDS bridge as the guest so curl exercises real HTTPS and H2.
+    socat = shutil.which("socat")
+    assert socat, "the maintained guest proxy bridge is required"
+    bridge = subprocess.Popen(
+        [socat, "-d", "-d", "TCP-LISTEN:0,bind=127.0.0.1,fork", f"UNIX-CONNECT:{instance.paths['alice']}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, start_new_session=True,
+    )
+    try:
+        assert select.select([bridge.stderr], [], [], 5)[0], "proxy bridge did not start"
+        listening = bridge.stderr.readline()
+        assert "listening on" in listening, listening
+        port = int(listening.rsplit(":", 1)[1])
+        command = [
+            curl, "--silent", "--show-error", "--location", "--max-redirs", "2", "--max-time", "40",
+            "--http2" if transport == "h2" else "--http1.1",
+            "--proxy", f"http://127.0.0.1:{port}",
+            "--cacert", str(instance.root / "certs/mitmproxy-ca-cert.pem"),
+            "--header", "Authorization: Bearer routing-login-secret",
+            "--write-out", "\n%{http_code} %{num_redirects} %{http_version}",
+            f"{scheme}://allowed.invalid{ROUTING_PATH}",
+        ]
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as client:
+            try:
+                yield client
+            finally:
+                if client.poll() is None:
+                    client.terminate()
+                client.communicate(timeout=5)
+    finally:
+        try:
+            os.killpg(bridge.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            # The owned bridge and all its connection children already exited.
+            pass
+        bridge.communicate(timeout=5)
+
+
+def _routing_pending(instance, client):
+    deadline = time.monotonic() + 4
+    while True:
+        pending = instance.admin("GET", "/admin/approvals")["approvals"]
+        if pending:
+            assert len(pending) == 1 and pending[0]["status"] == "pending"
+            assert pending[0]["action"]["run"]["run_id"] == "0123456789abcdef0123456789abcdef"
+            assert client.poll() is None, "routing discovery returned before the operator decision"
+            return pending[0]["approval_id"]
+        assert client.poll() is None, client.communicate()
+        assert time.monotonic() < deadline, "routing discovery did not create its canonical approval"
+        time.sleep(0.02)
+
+
+@pytest.mark.parametrize("transport", ["http", "https", "h2"])
+@pytest.mark.parametrize("option", ["persistent", "run"])
+def test_codex_routing_continues_after_explicit_approval(tmp_path, transport, option):
+    with _peers(tmp_path / "peers") as (parent, origins, trust), native_instance(
+        tmp_path, source=ROUTING_POLICY,
+        parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+        extra_config=f'upstream_ca_file={json.dumps(str(trust))}\ntls_ca_file="certs/mitmproxy-ca.pem"\n',
+    ) as instance, _routing_run(instance), _routing_client(instance, transport) as client:
+        identifier = _routing_pending(instance, client)
+        assert not any(origin.requests for origin in origins)
+        decided = instance.cli("approvals", "approve", identifier, "--option", option, "--json")
+        assert decided.returncode == 0, decided.stderr
+        stdout, stderr = client.communicate(timeout=5)
+        assert client.returncode == 0, stderr
+        assert stdout.splitlines()[-1] == f"200 1 {'2' if transport == 'h2' else '1.1'}"
+        delivered = [row for origin in origins for row in origin.requests]
+        assert len(delivered) == 1
+        assert f"GET {ROUTING_PATH} HTTP/1.1".encode() in delivered[0]["head"]
+        assert b"authorization: bearer routing-login-secret\r\n" in delivered[0]["head"].lower()
+        # A repeat needs no redirect. Current-run approval remains narrower
+        # than the offered persistent instance-wide option.
+        target = "http://allowed.invalid/backend-api/codex/responses"
+        headers = {"Authorization": "Bearer routing-login-secret"}
+        assert request(instance.paths["alice"], target, headers=headers)[0] == 200
+        assert request(instance.paths["bob"], target, headers=headers)[0] == (200 if option == "persistent" else 428)
+        assert request(instance.paths["alice"], target.replace("allowed", "forbidden"), headers=headers)[0] == 428
+        assert request(instance.paths["alice"], target,
+                       headers={"Authorization": "Bearer replacement-login-secret"})[0] == 428
+        responses = read_events(instance.root / "logs/audit.jsonl")
+        events = json.dumps(responses)
+        assert "routing-login-secret" not in events and "replacement-login-secret" not in events
+        assert any(row["event"] == "traffic.response" and row["details"]["status"] == 307 for row in responses)
+
+
+@pytest.mark.parametrize("transport", ["http", "h2"])
+@pytest.mark.parametrize("outcome", ["reject", "network_deny", "run_changed", "policy_allow", "cancel"])
+def test_codex_routing_wait_keeps_refusal_and_cancellation(tmp_path, transport, outcome):
+    with _peers(tmp_path / "peers") as (parent, origins, trust), native_instance(
+        tmp_path, source=ROUTING_POLICY,
+        parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+        extra_config=f'upstream_ca_file={json.dumps(str(trust))}\ntls_ca_file="certs/mitmproxy-ca.pem"\n',
+    ) as instance, _routing_run(instance) as agent, _routing_client(instance, transport) as client:
+        identifier = _routing_pending(instance, client)
+        assert not any(origin.requests for origin in origins)
+        if outcome == "run_changed":
+            state = json.loads((agent / "runtime.json").read_text())
+            state["run_id"] = "1" * 32
+            (agent / "runtime.json").write_text(json.dumps(state))
+        elif outcome == "policy_allow":
+            # A classified credential needs explicit permission; changing the
+            # fallback for unknown credentials would not approve this secret.
+            action = instance.admin("GET", f"/admin/approvals/{identifier}")["action"]
+            policy = tomlkit.parse(instance.policy.read_text())
+            policy["hosts"]["allowed.invalid"] = {"allow": action["credentials"]}
+            instance.apply(tomlkit.dumps(policy))
+        else:
+            if outcome == "network_deny":
+                instance.apply(instance.policy.read_text().replace('egress="allow"', 'egress="deny"'))
+            if outcome == "cancel":
+                client.terminate()
+                client.communicate(timeout=5)
+            command = "reject" if outcome == "reject" else "approve"
+            decided = instance.cli("approvals", command, identifier, "--option", "run", "--json")
+            assert decided.returncode == 0, decided.stderr
+        stdout, stderr = client.communicate(timeout=5)
+        if outcome != "cancel":
+            assert client.returncode == 0, stderr
+            expected = (["200", "1"] if outcome == "policy_allow" else
+                        ["403", "1"] if outcome in ("network_deny", "run_changed") else ["428", "0"])
+            assert stdout.splitlines()[-1].split()[:2] == expected
+        assert sum(len(origin.requests) for origin in origins) == (1 if outcome == "policy_allow" else 0)
+
+
+def test_codex_routing_wait_timeout_leaves_approval_pending_without_replay(tmp_path):
+    with _peers(tmp_path / "peers") as (parent, origins, trust), native_instance(
+        tmp_path, source=ROUTING_POLICY,
+        parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+        extra_config=f'upstream_ca_file={json.dumps(str(trust))}\ntls_ca_file="certs/mitmproxy-ca.pem"\n',
+    ) as instance, _routing_run(instance), _routing_client(instance, "http") as client:
+        started = time.monotonic()
+        identifier = _routing_pending(instance, client)
+        stdout, stderr = client.communicate(timeout=35)
+        assert time.monotonic() - started >= 29
+        assert client.returncode == 0, stderr
+        assert stdout.splitlines()[-1].split()[:2] == ["428", "0"]
+        view = instance.admin("GET", f"/admin/approvals/{identifier}")
+        assert view["status"] == "pending"
+        decided = instance.cli("approvals", "approve", identifier, "--option", "run", "--json")
+        assert decided.returncode == 0, decided.stderr
+        assert not any(origin.requests for origin in origins)
+
+
+@pytest.mark.parametrize("option", ["run", "persistent"])
+def test_codex_routing_waits_for_active_approval_after_saved_receipt(tmp_path, option):
+    with _peers(tmp_path / "peers") as (parent, origins, trust), native_instance(
+        tmp_path, source=ROUTING_POLICY,
+        parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+        extra_config=f'upstream_ca_file={json.dumps(str(trust))}\ntls_ca_file="certs/mitmproxy-ca.pem"\n',
+    ) as instance, _routing_run(instance):
+        assert request(instance.paths["alice"], "http://allowed.invalid/before-routing",
+                       headers={"Authorization": "Bearer routing-login-secret"})[0] == 428
+        identifier = instance.admin("GET", "/admin/approvals")["approvals"][0]["approval_id"]
+        # Reuse the canonical recovery fault from delegated_approvals.rs: the
+        # real operator decision commits its policy receipt, but the final
+        # database status write fails. No authority or receipt is fabricated.
+        with sqlite3.connect(instance.root / "data/approvals.sqlite3") as database:
+            database.execute("CREATE TRIGGER fail_canonical_result BEFORE UPDATE ON approvals "
+                             "WHEN json_extract(NEW.record,'$.status')='approved' "
+                             "BEGIN SELECT RAISE(FAIL,'controlled canonical write failure'); END;")
+            instance.cli("approvals", "approve", identifier, "--option", option, "--json")
+            # The CLI can recover success from the policy receipt. Inspect the
+            # canonical database row to establish the intended lost write.
+            assert database.execute("SELECT status FROM approvals WHERE approval_id=?", (identifier,)).fetchone()[0] == "pending"
+            approved = instance.policy.read_text()
+            assert instance.admin("GET", f"/admin/approvals/{identifier}")["status"] == "approved"
+            # Reuse the saved/live mismatch control from native_policy_cli.py.
+            # Hold the real saved receipt ahead of activation without waking
+            # the mtime watcher; policy apply remains the activation operation.
+            instance.apply(ROUTING_POLICY)
+            metadata = instance.policy.stat()
+            instance.policy.write_text(approved)
+            os.utime(instance.policy, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+            assert not instance.show()["saved_matches_active"]
+            with _routing_client(instance, "http") as client:
+                deadline = time.monotonic() + 4
+                while database.execute("SELECT count(*) FROM approval_requests WHERE approval_id=?", (identifier,)).fetchone()[0] < 2:
+                    assert client.poll() is None, client.communicate()
+                    assert time.monotonic() < deadline
+                    time.sleep(0.02)
+                with pytest.raises(subprocess.TimeoutExpired):
+                    client.communicate(timeout=0.2)
+                assert not any(origin.requests for origin in origins)
+                instance.apply(approved)
+                stdout, stderr = client.communicate(timeout=5)
+                assert client.returncode == 0, stderr
+                assert stdout.splitlines()[-1].split()[:2] == ["200", "1"]
+                assert sum(len(origin.requests) for origin in origins) == 1
+            database.execute("DROP TRIGGER fail_canonical_result")
+
+
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_codex_fallback_approves_each_replacement_at_one_destination(tmp_path, scheme):
+    # Controlled origins replace the documented subscription destination.
+    # These opaque fixtures make no claim about a Codex token's actual format.
+    tokens = ["synthetic-subscription-access-first", "synthetic-subscription-access-replacement"]
+    arbitrary = "unapproved-arbitrary-bearer"
+    other = "unapproved-other-credential-AbCdEf0123456789_-"
+    secrets = [*tokens, arbitrary, other]
+    source = '''budget = 12000
+[hosts]
+"*" = {egress="allow", unknown_creds="prompt"}
+[hosts."allowed.invalid"]
+unknown_creds = "prompt"
+'''
+    with _peers(tmp_path / "peers") as (parent, origins, trust), native_instance(
+        tmp_path, source=source,
+        parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+        extra_config=f'upstream_ca_file={json.dumps(str(trust))}\ntls_ca_file="certs/mitmproxy-ca.pem"\n',
+    ) as instance:
+        pid = instance.process.pid
+
+        def send(token, expected, *, destination="allowed.invalid", extra=None):
+            before = [len(origin.requests) for origin in origins]
+            headers = {"Authorization": f"Bearer {token}", **(extra or {})}
+            path = "/backend-api/codex/responses"
+            if scheme == "http":
+                status, response_headers, body = request(
+                    instance.paths["alice"], f"http://{destination}{path}", headers=headers,
+                )
+            else:
+                status, stream = _connect(
+                    instance.paths["alice"], f"{destination}:443".encode(), destination,
+                    instance.root / "certs/mitmproxy-ca-cert.pem",
+                )
+                assert status == 200
+                with stream:
+                    fields = "".join(f"{name}: {value}\r\n" for name, value in headers.items())
+                    stream.sendall((f"GET {path} HTTP/1.1\r\nHost: {destination}\r\n"
+                                    f"{fields}Connection: close\r\n\r\n").encode())
+                    response = http.client.HTTPResponse(stream)
+                    response.begin()
+                    status, response_headers, body = response.status, dict(response.getheaders()), response.read()
+            assert status == expected, (status, body)
+            counts = before.copy()
+            if expected == 200:
+                index = (0 if destination == "allowed.invalid" else 1) + (2 if scheme == "https" else 0)
+                counts[index] += 1
+                assert f"Authorization: Bearer {token}\r\n".encode() in origins[index].requests[-1]["head"]
+            assert [len(origin.requests) for origin in origins] == counts
+            request_id = next(value for name, value in response_headers.items()
+                              if name.lower() == "x-safeyolo-request-id")
+            deadline = time.monotonic() + 4
+            while True:
+                logs = instance.cli("logs", "--agent", "alice", "--lines", "50", "--json")
+                assert logs.returncode == 0, logs.stderr
+                assert all(value not in logs.stdout + logs.stderr for value in secrets)
+                events = json.loads(logs.stdout)["events"]
+                rows = [row for row in events if row["event"] == "security.credential_guard"
+                        and row.get("request_id") == request_id]
+                if rows:
+                    break
+                assert time.monotonic() < deadline
+                time.sleep(0.02)
+            decision = {200: "allow", 428: "require_approval", 403: "deny"}[expected]
+            event = next(row for row in rows if row["decision"] == decision)
+            assert event["agent"] == "alice" and event["host"] == destination
+            assert event["details"]["rule"] == "unknown_secret"
+            assert all(value not in json.dumps(events) and value.encode() not in body for value in secrets)
+            return event["details"]["fingerprint"]
+
+        fingerprints = []
+        for token in tokens:
+            fingerprint = send(token, 428)
+            assert fingerprint.startswith("hmac:")
+            fingerprints.append(fingerprint)
+            approved = instance.cli("credentials", "approve", fingerprint, "--destination", "allowed.invalid")
+            assert approved.returncode == 0, approved.stderr
+            assert all(value not in approved.stdout + approved.stderr for value in secrets)
+            deadline = time.monotonic() + 4
+            while True:
+                shown = instance.show()
+                if shown["saved_matches_active"] and fingerprint in shown["effective"]["hosts"]["allowed.invalid"]["allow"]:
+                    break
+                assert time.monotonic() < deadline
+                time.sleep(0.02)
+            assert send(token, 200) == fingerprint
+            send(token, 428, destination="forbidden.invalid")
+        assert fingerprints[0] != fingerprints[1]
+        instance.apply(instance.policy.read_text())
+        send(tokens[0], 200)
+        send(tokens[1], 200)
+        send(arbitrary, 428)
+        send(tokens[1], 428, extra={"X-Auth-Token": other})
+        pending = instance.cli("services", "approvals")
+        assert pending.returncode == 0, pending.stderr
+        assert all(value not in pending.stdout + pending.stderr for value in secrets)
+
+        denied = tomlkit.parse(instance.policy.read_text())
+        denied["hosts"]["allowed.invalid"]["rules"] = [{
+            "action": "credential:use", "resource": "allowed.invalid/*", "effect": "deny",
+        }]
+        instance.apply(tomlkit.dumps(denied))
+        assert send(tokens[1], 403) == fingerprints[1]
+        assert instance.process.pid == pid and instance.process.poll() is None

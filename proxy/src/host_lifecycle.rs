@@ -1710,28 +1710,38 @@ fn tmux_session() -> Result<String, Error> {
 pub(crate) async fn sync_agent_listeners(
     change: Option<(&str, Option<&str>)>,
 ) -> Result<(), Error> {
+    sync_agent_listener_config(change).await.map(|_| ())
+}
+
+pub(crate) async fn sync_agent_listener_config(
+    change: Option<(&str, Option<&str>)>,
+) -> Result<Option<crate::Config>, Error> {
     let path = crate::host_platform::config_path();
     if !path.is_file() {
-        return Ok(());
+        return Ok(None);
     }
     if !path.is_absolute() {
         return Err("proxy config path must be absolute".into());
     }
+    let mut timing = crate::startup_timings::StartupTimings::new("listener_projection");
     let _same_process_lock = LISTENER_LOCK.lock().await;
     let lock_path = crate::host_platform::config_dir().join("data/native-listeners.lock");
     let _lock =
         tokio::task::spawn_blocking(move || crate::host_platform::lock_host_state(&lock_path))
             .await??;
+    timing.record("locks");
     let cwd = crate::host_platform::config_dir();
     let source = std::fs::read(&path)?;
     let native = path
         .extension()
         .is_some_and(|extension| extension == "toml");
-    let mut config: Value = if native {
-        serde_json::to_value(crate::native_config::read(&path)?)?
+    let mut current: crate::Config = if native {
+        crate::native_config::from_source(&path, std::str::from_utf8(&source)?)?
     } else {
         serde_json::from_slice(&source)?
     };
+    let mut config = serde_json::to_value(&current)?;
+    timing.record("configuration_read");
     let entries = config
         .get("listeners")
         .and_then(Value::as_array)
@@ -1765,11 +1775,7 @@ pub(crate) async fn sync_agent_listeners(
     // supplies its listener before the backend exists, so the guest can reach
     // the proxy from its first instruction. A failed boot removes its listener
     // without discarding an uncertain backend record. No separate map is written.
-    let mut current = if native {
-        crate::native_config::read(&path)?
-    } else {
-        serde_json::from_value(config.clone())?
-    };
+    timing.record("retained_listeners");
     crate::host_commands::restore_attachments(&mut current).await?;
     if let Some((name, ip)) = change {
         current.listeners.retain(|entry| {
@@ -1781,8 +1787,8 @@ pub(crate) async fn sync_agent_listeners(
                 .push(crate::host_platform::agent_proxy_listener(name, ip));
         }
     }
-    for entry in current.listeners {
-        if crate::host_platform::is_managed_agent_listener(&entry) {
+    for entry in &current.listeners {
+        if crate::host_platform::is_managed_agent_listener(entry) {
             if entry.socket_path.as_os_str().as_bytes().len()
                 > if cfg!(target_os = "macos") { 104 } else { 108 }
             {
@@ -1791,54 +1797,66 @@ pub(crate) async fn sync_agent_listeners(
             retained.push(serde_json::to_value(entry)?);
         }
     }
-    let requested = uuid::Uuid::new_v4().simple().to_string();
+    let changed = config["listeners"] != Value::Array(retained.clone());
     config["listeners"] = Value::Array(retained);
-    config["reload_id"] = requested.clone().into();
-    let mode = std::fs::metadata(&path)?.permissions().mode();
-    let parent = path.parent().ok_or("configuration has no parent")?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    if native {
-        let mut document: toml_edit::DocumentMut = std::str::from_utf8(&source)?.parse()?;
-        let mut listeners = toml_edit::ArrayOfTables::new();
-        for entry in config["listeners"]
-            .as_array()
-            .ok_or("listeners must be an array")?
-        {
-            let mut table = toml_edit::Table::new();
-            for (name, value) in entry.as_object().ok_or("listener must be a table")? {
-                table.insert(
-                    name,
-                    toml_edit::value(value.as_str().ok_or("listener fields must be strings")?),
-                );
-            }
-            listeners.push(table);
-        }
-        document["listeners"] = toml_edit::Item::ArrayOfTables(listeners);
-        document["reload_id"] = toml_edit::value(requested.as_str());
-        temporary.write_all(document.to_string().as_bytes())?;
-    } else {
-        serde_json::to_writer_pretty(&mut temporary, &config)?;
-        temporary.write_all(b"\n")?;
+    current.listeners = serde_json::from_value(config["listeners"].clone())?;
+    if changed {
+        current.reload_id = Some(uuid::Uuid::new_v4().simple().to_string());
+        config["reload_id"] = current.reload_id.clone().into();
     }
-    temporary.as_file().sync_all()?;
-    temporary
-        .as_file()
-        .set_permissions(std::fs::Permissions::from_mode(mode))?;
-    temporary.persist(&path)?;
-    File::open(parent)?.sync_all()?;
+    timing.record("attachment_reconciliation");
+    if changed {
+        let mode = std::fs::metadata(&path)?.permissions().mode();
+        let parent = path.parent().ok_or("configuration has no parent")?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        if native {
+            let mut document: toml_edit::DocumentMut = std::str::from_utf8(&source)?.parse()?;
+            let mut listeners = toml_edit::ArrayOfTables::new();
+            for entry in config["listeners"]
+                .as_array()
+                .ok_or("listeners must be an array")?
+            {
+                let mut table = toml_edit::Table::new();
+                for (name, value) in entry.as_object().ok_or("listener must be a table")? {
+                    table.insert(
+                        name,
+                        toml_edit::value(value.as_str().ok_or("listener fields must be strings")?),
+                    );
+                }
+                listeners.push(table);
+            }
+            document["listeners"] = toml_edit::Item::ArrayOfTables(listeners);
+            document["reload_id"] = toml_edit::value(
+                current
+                    .reload_id
+                    .as_deref()
+                    .expect("changed projection has reload ID"),
+            );
+            temporary.write_all(document.to_string().as_bytes())?;
+        } else {
+            serde_json::to_writer_pretty(&mut temporary, &config)?;
+            temporary.write_all(b"\n")?;
+        }
+        timing.record("projection_write");
+        temporary.as_file().sync_all()?;
+        timing.record("file_sync");
+        temporary
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(mode))?;
+        temporary.persist(&path)?;
+        timing.record("projection_publish");
+        File::open(parent)?.sync_all()?;
+        timing.record("directory_sync");
+    }
     // Stop and independent recovery can update the projection while the
     // proxy is unavailable. Startup reconstructs listeners from current runs.
     if !crate::host_commands::proxy_live() {
-        return Ok(());
+        return Ok(Some(current));
     }
     let proxy = read_json(&cwd.join("data/proxy-process.json"))?
         .ok_or("proxy process identity is missing; run safeyolo start")?;
     if !process_matches(&proxy, "pid", "token") {
         return Err("proxy process identity is stale; run safeyolo start".into());
-    }
-    let pid = i32::try_from(proxy["pid"].as_i64().ok_or("proxy PID is missing")?)?;
-    if unsafe { libc::kill(pid, libc::SIGHUP) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
     }
     let readiness = config
         .get("readiness_file")
@@ -1850,13 +1868,30 @@ pub(crate) async fn sync_agent_listeners(
     } else {
         cwd.join(readiness)
     };
+    if !changed
+        && std::fs::read(&readiness)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|marker| {
+                marker.get("pid") == proxy.get("pid")
+                    && marker.get("reload_id").and_then(Value::as_str)
+                        == current.reload_id.as_deref()
+            })
+    {
+        return Ok(Some(current));
+    }
+    let pid = i32::try_from(proxy["pid"].as_i64().ok_or("proxy PID is missing")?)?;
+    if unsafe { libc::kill(pid, libc::SIGHUP) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     while tokio::time::Instant::now() < deadline {
         if let Ok(bytes) = std::fs::read(&readiness)
             && let Ok(marker) = serde_json::from_slice::<Value>(&bytes)
-            && marker.get("reload_id").and_then(Value::as_str) == Some(&requested)
+            && marker.get("pid") == proxy.get("pid")
+            && marker.get("reload_id").and_then(Value::as_str) == current.reload_id.as_deref()
         {
-            return Ok(());
+            return Ok(Some(current));
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
@@ -2287,6 +2322,54 @@ async fn stop_launcher(agent: &Agent) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn listener_reconciliation_writes_only_changes_and_returns_the_published_config() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("data")).unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, "listeners = []\n[trace]\nttl_s = 12\n").unwrap();
+        crate::host_platform::in_instance(temp.path().to_owned(), async {
+            let original = std::fs::read(&path).unwrap();
+            let before = std::fs::metadata(&path).unwrap();
+            let config = sync_agent_listener_config(None).await.unwrap().unwrap();
+            assert!(config.listeners.is_empty());
+            assert!(config.reload_id.is_none());
+            assert_eq!(std::fs::metadata(&path).unwrap().ino(), before.ino());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            let changed = sync_agent_listener_config(Some(("alice", Some("10.0.0.2"))))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(changed.listeners.len(), 1);
+            assert!(changed.reload_id.is_some());
+            let published = std::fs::read(&path).unwrap();
+            let before = std::fs::metadata(&path).unwrap();
+            let repeated = sync_agent_listener_config(Some(("alice", Some("10.0.0.2"))))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(repeated.reload_id, changed.reload_id);
+            assert_eq!(std::fs::metadata(&path).unwrap().ino(), before.ino());
+            assert_eq!(std::fs::read(&path).unwrap(), published);
+            assert_eq!(
+                crate::native_config::read(&path).unwrap().reload_id,
+                repeated.reload_id
+            );
+            let removed = sync_agent_listener_config(Some(("alice", None)))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(removed.listeners.is_empty());
+            assert_ne!(removed.reload_id, repeated.reload_id);
+            assert_eq!(
+                crate::native_config::host_settings().unwrap().trace.ttl_s,
+                12
+            );
+        })
+        .await;
+    }
 
     #[tokio::test]
     async fn preboot_rollback_preserves_changed_runtime_and_generation() {

@@ -175,7 +175,7 @@ impl Hash for TemporalValue {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct TemporalEntry {
     pub(super) path: Vec<String>,
     pub(super) key: bool,
@@ -190,7 +190,7 @@ impl Drop for TemporalEntry {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub(crate) struct TimestampPaths {
     pub(super) entries: Vec<TemporalEntry>,
 }

@@ -1,8 +1,8 @@
 //! Native encrypted credentials and host-controlled external references.
 //!
-//! Files contain a 16-byte salt followed by an authenticated Fernet token.
-//! PBKDF2-HMAC-SHA256 derives the key with 480,000 iterations. New native
-//! credentials use encrypted JSON; old vault files and keys are not loaded.
+//! Files contain a 16-byte salt or native-format header, then a Fernet token.
+//! Passphrase stores retain 480,000 PBKDF2-HMAC-SHA256 iterations. New native
+//! stores use a generated random Fernet key, marked explicitly in credentials.key.
 //! Clones share snapshots and OAuth revisions. A file lock serializes native
 //! command writes with refresh publication across processes.
 
@@ -33,6 +33,9 @@ use crate::policy::{expiry_has_offset, parse_expiry};
 
 const SALT_LENGTH: usize = 16;
 const KDF_ITERATIONS: u32 = 480_000;
+const NATIVE_KEY_PREFIX: &str = "safeyolo-native-key-v1:";
+pub const PASSPHRASE_KEY_MARKER: &str = "safeyolo-passphrase-v1";
+const NATIVE_HEADER: [u8; SALT_LENGTH] = *b"SafeYolo:key:v1\0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -44,6 +47,7 @@ pub enum ErrorKind {
     Activation,
     Rollback,
     State,
+    Locked,
 }
 
 /// Identifies the side of an atomic vault publication callback. Candidate
@@ -73,6 +77,9 @@ impl fmt::Display for VaultError {
             ErrorKind::Activation => "vault activation rejected",
             ErrorKind::Rollback => "vault rollback failed",
             ErrorKind::State => "vault state unavailable",
+            ErrorKind::Locked => {
+                "credential storage is locked; explicitly unlock with its passphrase"
+            }
         })
     }
 }
@@ -131,7 +138,37 @@ pub struct Credential {
     pub token_url: Option<String>,
     pub client_id: Option<String>,
     pub client_secret: Option<Secret>,
+    pub subscription_client: Option<SubscriptionClient>,
+    pub refresh_scope: Option<String>,
+    pub chatgpt_account_id: Option<String>,
     pub expires_at: Option<String>,
+    pub codex: Option<CodexAuthorization>,
+    pub(crate) codex_tokens: CodexTokens,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriptionClient {
+    Codex,
+    Claude,
+}
+
+/// An explicit host import authorizes one agent's Codex login. The optional
+/// generation narrows that authorization to an independently verified run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexAuthorization {
+    pub import_id: String,
+    pub agent: String,
+    pub agent_id: String,
+    pub run_id: Option<String>,
+}
+
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CodexTokens {
+    pub access: Vec<[u8; 32]>,
+    pub refresh: Vec<[u8; 32]>,
 }
 impl Credential {
     pub fn new(name: impl Into<String>, credential_type: impl Into<String>, value: Secret) -> Self {
@@ -144,7 +181,12 @@ impl Credential {
             token_url: None,
             client_id: None,
             client_secret: None,
+            subscription_client: None,
+            refresh_scope: None,
+            chatgpt_account_id: None,
             expires_at: None,
+            codex: None,
+            codex_tokens: CodexTokens::default(),
         }
     }
     pub fn metadata(&self) -> CredentialMetadata {
@@ -153,6 +195,7 @@ impl Credential {
             credential_type: self.credential_type.clone(),
             expires_at: self.expires_at.clone(),
             reference: self.reference.clone(),
+            codex: self.codex.clone(),
         }
     }
     /// Python treats malformed expiry as expired but raises for valid naive
@@ -187,6 +230,8 @@ pub struct CredentialMetadata {
     pub credential_type: String,
     pub expires_at: Option<String>,
     pub reference: Option<ExternalReference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex: Option<CodexAuthorization>,
 }
 
 /// Provider selection is stored by the host. Guests select only minted gateway
@@ -223,21 +268,85 @@ fn lock_file(path: &Path) -> Result<File> {
     Ok(file)
 }
 
-/// Fresh native state has its own names and JSON schema. Old vault keys/files
-/// are never inspected. This is the same encrypted store used by OAuth refresh.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Storage {
+    Local,
+    Passphrase,
+}
+
+/// Existing keys select their existing format. A missing key beside ciphertext
+/// is unavailable storage, never permission to create a replacement.
+pub fn storage(data_dir: &Path) -> Result<Option<Storage>> {
+    match fs::read_to_string(data_dir.join("credentials.key")) {
+        Ok(key) => {
+            let key = Zeroizing::new(key);
+            if key.trim().is_empty() {
+                return Err(error(ErrorKind::Authentication));
+            }
+            Ok(Some(if key.trim() == PASSPHRASE_KEY_MARKER {
+                Storage::Passphrase
+            } else {
+                Storage::Local
+            }))
+        }
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
+            if data_dir.join("credentials.enc").try_exists()? {
+                return Err(error(ErrorKind::Authentication));
+            }
+            Ok(None)
+        }
+        Err(failure) => Err(failure.into()),
+    }
+}
+
+/// Select passphrase protection without persisting the passphrase or derived key.
+/// This creates a new store only; existing data must be explicitly unlocked.
+pub fn create_passphrase(data_dir: &Path, passphrase: &Secret) -> Result<Vault> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::create_dir_all(data_dir)?;
+    let _key_lock = lock_file(&data_dir.join(".credentials.key.lock"))?;
+    if storage(data_dir)?.is_some() {
+        return Err(error(ErrorKind::State));
+    }
+    let key_path = data_dir.join("credentials.key");
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&key_path)?;
+    file.write_all(PASSPHRASE_KEY_MARKER.as_bytes())?;
+    file.sync_all()?;
+    Vault::unlock(data_dir.join("credentials.enc"), passphrase)
+}
+
+/// Create native storage only for an operation that will store a credential.
+/// Mark new random keys explicitly; unmarked keys keep their passphrase KDF.
 pub fn open(data_dir: &Path) -> Result<Vault> {
     use std::os::unix::fs::OpenOptionsExt;
     fs::create_dir_all(data_dir)?;
     let key_path = data_dir.join("credentials.key");
-    let key_lock = lock_file(&data_dir.join(".credentials.key.lock"))?;
+    let _key_lock = lock_file(&data_dir.join(".credentials.key.lock"))?;
     let key = match fs::read_to_string(&key_path) {
-        Ok(key) => Zeroizing::new(key),
+        Ok(key) => {
+            let key = Zeroizing::new(key);
+            if key.trim() == PASSPHRASE_KEY_MARKER {
+                return Err(error(ErrorKind::Locked));
+            }
+            if !data_dir.join("credentials.enc").try_exists()? {
+                return Err(error(ErrorKind::State));
+            }
+            key
+        }
         Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
+            if data_dir.join("credentials.enc").try_exists()? {
+                return Err(error(ErrorKind::Authentication));
+            }
             let mut raw = Zeroizing::new([0u8; 32]);
             SystemRandom::new()
                 .fill(raw.as_mut())
                 .map_err(|_| error(ErrorKind::State))?;
-            let key = Zeroizing::new(URL_SAFE.encode(raw.as_ref()));
+            let mut key = Zeroizing::new(NATIVE_KEY_PREFIX.to_owned());
+            URL_SAFE.encode_string(raw.as_ref(), &mut key);
             let mut file = fs::OpenOptions::new()
                 .create_new(true)
                 .write(true)
@@ -249,11 +358,27 @@ pub fn open(data_dir: &Path) -> Result<Vault> {
         }
         Err(failure) => return Err(failure.into()),
     };
-    drop(key_lock);
     if key.trim().is_empty() {
         return Err(error(ErrorKind::Authentication));
     }
-    Vault::unlock(data_dir.join("credentials.enc"), &Secret::new(key.trim()))
+    Vault::unlock_native(
+        data_dir.join("credentials.enc"),
+        &Secret::new(key.trim()),
+        true,
+    )
+}
+
+/// Reading or removing a credential never creates a key or an empty store.
+pub fn open_existing(data_dir: &Path) -> Result<Option<Vault>> {
+    let path = data_dir.join("credentials.enc");
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    let key = Zeroizing::new(fs::read_to_string(data_dir.join("credentials.key"))?);
+    if key.trim() == PASSPHRASE_KEY_MARKER {
+        return Err(error(ErrorKind::Locked));
+    }
+    Vault::unlock_native(path, &Secret::new(key.trim()), false).map(Some)
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -310,11 +435,55 @@ pub struct Vault {
 impl Vault {
     /// Create an empty encrypted store when absent.
     pub fn unlock(path: impl Into<PathBuf>, passphrase: &Secret) -> Result<Self> {
-        let path = path.into();
+        Self::unlock_with_cipher(path.into(), true, None, |salt| {
+            derive_cipher(passphrase, salt)
+        })
+    }
+
+    pub fn unlock_existing(path: impl Into<PathBuf>, passphrase: &Secret) -> Result<Self> {
+        Self::unlock_with_cipher(path.into(), false, None, |salt| {
+            derive_cipher(passphrase, salt)
+        })
+    }
+
+    pub(crate) fn unlock_native(path: PathBuf, key: &Secret, create: bool) -> Result<Self> {
+        if key.expose_secret() == PASSPHRASE_KEY_MARKER {
+            return Err(error(ErrorKind::Locked));
+        }
+        let native = key.expose_secret().starts_with(NATIVE_KEY_PREFIX);
+        Self::unlock_with_cipher(path, create, native.then_some(NATIVE_HEADER), |salt| {
+            if salt == &NATIVE_HEADER {
+                let encoded = key
+                    .expose_secret()
+                    .strip_prefix(NATIVE_KEY_PREFIX)
+                    .ok_or_else(|| error(ErrorKind::Authentication))?;
+                let bytes = Zeroizing::new(
+                    URL_SAFE
+                        .decode(encoded)
+                        .map_err(|_| error(ErrorKind::Authentication))?,
+                );
+                if bytes.len() != 32 {
+                    return Err(error(ErrorKind::Authentication));
+                }
+                Fernet::new(encoded)
+                    .map(Zeroizing::new)
+                    .ok_or_else(|| error(ErrorKind::Authentication))
+            } else {
+                derive_cipher(key, salt)
+            }
+        })
+    }
+
+    fn unlock_with_cipher(
+        path: PathBuf,
+        create: bool,
+        new_header: Option<[u8; SALT_LENGTH]>,
+        cipher: impl FnOnce(&[u8; SALT_LENGTH]) -> Result<Zeroizing<Fernet>>,
+    ) -> Result<Self> {
         let _file_lock = lock_file(&path.with_extension("lock"))?;
         let loaded = match read_file(&path) {
             Ok(value) => Some(value),
-            Err(value) if value.io_kind == Some(std::io::ErrorKind::NotFound) => None,
+            Err(value) if create && value.io_kind == Some(std::io::ErrorKind::NotFound) => None,
             Err(value) => return Err(value),
         };
         let mut salt = [0; SALT_LENGTH];
@@ -323,12 +492,14 @@ impl Vault {
                 raw.get(..SALT_LENGTH)
                     .ok_or_else(|| error(ErrorKind::Authentication))?,
             );
+        } else if let Some(header) = new_header {
+            salt = header;
         } else {
             SystemRandom::new()
                 .fill(&mut salt)
                 .map_err(|_| error(ErrorKind::State))?;
         }
-        let cipher = derive_cipher(passphrase, &salt)?;
+        let cipher = cipher(&salt)?;
         let (credentials, stamp) = if let Some((raw, stamp)) = loaded {
             (decrypt(&cipher, &raw)?, stamp)
         } else {
@@ -448,6 +619,44 @@ impl Vault {
     }
     pub fn store(&self, credential: Credential) -> Result<()> {
         self.store_with_activation(credential, |_| Ok(()))
+    }
+    /// Merge verified issuance under the existing cross-process vault lock.
+    /// The caller checks the exact imported authority against this current row;
+    /// concurrent observations must not discard each other's evidence.
+    pub(crate) fn record_codex_tokens(
+        &self,
+        name: &str,
+        access: Option<[u8; 32]>,
+        refresh: Option<[u8; 32]>,
+        authorized: impl FnOnce(&Credential) -> bool,
+    ) -> Result<bool> {
+        self.mutate(
+            None,
+            Some(name),
+            |credentials| {
+                let Some(credential) = credentials
+                    .iter_mut()
+                    .find(|credential| credential.name == name)
+                else {
+                    return false;
+                };
+                if !authorized(credential) {
+                    return false;
+                }
+                if let Some(digest) = access
+                    && !credential.codex_tokens.access.contains(&digest)
+                {
+                    credential.codex_tokens.access.push(digest);
+                }
+                if let Some(digest) = refresh
+                    && !credential.codex_tokens.refresh.contains(&digest)
+                {
+                    credential.codex_tokens.refresh.push(digest);
+                }
+                true
+            },
+            |_, _| Ok(()),
+        )
     }
     pub fn store_with_activation(
         &self,
@@ -658,7 +867,12 @@ fn same_credential(left: &Credential, right: &Credential) -> bool {
         && left.client_id == right.client_id
         && left.client_secret.as_ref().map(Secret::expose_secret)
             == right.client_secret.as_ref().map(Secret::expose_secret)
+        && left.subscription_client == right.subscription_client
+        && left.refresh_scope == right.refresh_scope
+        && left.chatgpt_account_id == right.chatgpt_account_id
         && left.expires_at == right.expires_at
+        && left.codex == right.codex
+        && left.codex_tokens == right.codex_tokens
 }
 
 fn metadata(credentials: &[Credential]) -> Vec<CredentialMetadata> {
@@ -740,7 +954,30 @@ fn decode_credentials(document: &mut Value) -> Result<Vec<Credential>> {
         credential.token_url = optional(record, "token_url")?;
         credential.client_id = optional(record, "client_id")?;
         credential.client_secret = optional(record, "client_secret")?.map(Secret::new);
+        credential.subscription_client = record
+            .get_mut("subscription_client")
+            .map(Value::take)
+            .filter(|value| !value.is_null())
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| error(ErrorKind::Format))?;
+        credential.refresh_scope = optional(record, "refresh_scope")?;
+        credential.chatgpt_account_id = optional(record, "chatgpt_account_id")?;
         credential.expires_at = optional(record, "expires_at")?;
+        credential.codex = record
+            .get_mut("codex")
+            .map(Value::take)
+            .filter(|value| !value.is_null())
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| error(ErrorKind::Format))?;
+        credential.codex_tokens = record
+            .get_mut("codex_tokens")
+            .map(Value::take)
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| error(ErrorKind::Format))?
+            .unwrap_or_default();
         upsert(&mut credentials, credential);
     }
     Ok(credentials)
@@ -829,6 +1066,11 @@ fn encrypt(
                     .as_deref()
                     .filter(|value| !value.is_empty()),
             ),
+            ("refresh_scope", credential.refresh_scope.as_deref()),
+            (
+                "chatgpt_account_id",
+                credential.chatgpt_account_id.as_deref(),
+            ),
         ];
         let mut comma = false;
         for (key, value) in fields {
@@ -850,6 +1092,18 @@ fn encrypt(
             }
             plaintext.extend_from_slice(b"\"reference\":");
             serde_json::to_writer(&mut *plaintext, reference)
+                .map_err(|_| error(ErrorKind::Format))?;
+        }
+        if let Some(codex) = &credential.codex {
+            plaintext.extend_from_slice(b",\"codex\":");
+            serde_json::to_writer(&mut *plaintext, codex).map_err(|_| error(ErrorKind::Format))?;
+            plaintext.extend_from_slice(b",\"codex_tokens\":");
+            serde_json::to_writer(&mut *plaintext, &credential.codex_tokens)
+                .map_err(|_| error(ErrorKind::Format))?;
+        }
+        if let Some(client) = credential.subscription_client {
+            plaintext.extend_from_slice(b",\"subscription_client\":");
+            serde_json::to_writer(&mut *plaintext, &client)
                 .map_err(|_| error(ErrorKind::Format))?;
         }
         plaintext.push(b'}');

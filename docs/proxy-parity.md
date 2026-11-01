@@ -260,7 +260,7 @@ checked.
 | Operation | Status | Owner or evidence |
 |---|---|---|
 | GET `/health`, `/stats`, `/modes`, `/plugins/{name}/mode` | Implemented | Native `admin_api`; the retained `AdminAPI` mode workflow is covered by `tests/proxy_migration/test_operator_modes_and_listeners.py`. |
-| GET `/admin/runtime-identity`, `/admin/approvals` | Implemented | Native `admin_api` keeps the process runtime identity separate from the durable host identity and reads pending approvals from the canonical audit owner. |
+| GET `/admin/runtime-identity`, `/admin/approvals` | Implemented | Native `admin_api` keeps the process runtime identity separate from the durable host identity. Approval listing reads the host-owned pending store and streams current plumb and desktop audit views within the existing 50,000-line window. |
 | GET `/admin/instance`, `/admin/agents` | Implemented for installed host use | Native `admin_api` reads the existing `sy-*` Coord identity file and Rust host inventory. The installed loopback witness in `proxy/tests/command_centre_installed.rs` checks the Mac client's required agent fields and a stable host ID across proxy restarts. The physical Mac app journey remains open in #640 B2. |
 | GET `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/budgets` | Implemented | Native policy, task registry and budget owners. |
 | GET/PUT `/admin/traffic/scope` | Implemented | Native traffic-scope owner; traffic effect proof remains with the traffic lane. |
@@ -1063,33 +1063,26 @@ atomic snapshot or durable storage guarantee.
 
 The reader uses the process writer's startup path and backup settings, including
 the development audit-path override. Reload keeps the same writer and reader
-source. File reads and the bounded drain run off async workers. Malformed JSON
-lines are skipped; unreadable retained files mark the result as `error` while
-other files can still contribute events. Exceptions from valid non-object JSON
-or undecodable text remain handler failures. The trace and diagnostic probe
-implementations are described separately below.
+source. File reads and the bounded drain run off async workers. Both the agent
+explanation and private approval lookup use the current audit validator.
+Invalid envelopes, unsupported generations and undecodable text fail with
+categorical handler errors. Unreadable retained files mark the explanation as
+`error` while other files can still contribute events. Approval lookup fails
+when a selected file cannot be read.
 
-The [source controls](../proxy/tests/agent_api_explain_source.py) capture actual
-handler, scanner and serializer results. The [reader tests](../proxy/src/audit/explain/tests.rs)
-compare retained-file recipes and exercise the real writer's bounded drain.
+The [reader tests](../proxy/src/audit/explain/tests.rs) exercise current native
+events, ownership, retained-file windows and the real writer's bounded drain.
 The [API tests](../proxy/tests/agent_api_explain.rs) check authentication, identity,
 query ordering and typed error responses. The [HTTP test](../proxy/src/http/agent_audit_tests.rs)
 uses two private agent sockets and checks shared-writer continuity after reload.
 
-Matching records retain NaN and integers larger than 64 bits. Escaped lone
-surrogates remain unsupported by the existing native JSON representation and
-produce a local compatibility failure. A missing reader preserves the previous
-handler-owned development 503 without an additional guard event. The reader
-preserves Python's empty-path and parent-directory suffix behavior; the existing
-writer's parent-directory rotation behavior is unchanged. These controls do not
-establish parity for arbitrary filesystem races. The native typed parser uses
-iterative traversal and does not reproduce Python's JSON recursion limit.
-
-Validation for this change passed 57 selected Rust tests and 22 actual-source
-controls. The joined HTTP test passed with the process writer supplied by the
-runtime. Four inherited opt-in source oracles remained ignored; existing live
-audit oracles ran in their selected targets. These results are implementation
-evidence and do not establish complete API or migration acceptance.
+Matching records preserve current JSON values, including integers larger than
+64 bits. The writer normalizes nonfinite numbers to JSON null; the reader does
+not accept nonstandard NaN or Infinity tokens. A missing reader retains the
+handler-owned development 503 without an additional guard event. Existing
+empty-path, backup suffix, file ordering and drain/status behavior remain.
+These controls do not establish an atomic snapshot, arbitrary filesystem-race
+behavior or durable storage.
 
 The authenticated `/budgets` response reads the existing shared rate-limit
 timestamps and current policy matcher. It does not evaluate requests, spend
@@ -2139,12 +2132,13 @@ operator inspection, remaining audit producers and independent acceptance remain
 
 ### Canonical traffic audit and runtime ownership
 
-The [audit writer](../proxy/src/audit.rs) emits schema-version-1 JSON Lines for
-reached request logger hooks. Its typed envelope retains source field order,
-optional fields, nested attribution, temporal values, nonfinite-number behavior
-and minimal serialization fallback. The existing Python audit consumer reads
-native output. These comparisons cover the represented native value domain;
-arbitrary Python objects and lone-surrogate strings remain outside it.
+The [audit writer](../proxy/src/audit.rs) emits the current schema-version-2
+JSON Lines envelope for all native audit families. Current producers and the
+native reader evolve together; earlier and unversioned formats are rejected.
+The typed envelope retains optional fields, nested attribution, temporal values
+and nonfinite-number behavior. Invalid event construction emits a current
+`ops.audit_validation_failed` diagnostic without the original payload or trusted
+scope. See the [current audit contract](nsm-events.md#current-audit-contract).
 
 One lazy writer belongs to the process and survives configuration reloads.
 `audit_log_path` is a development startup override; otherwise the process uses
@@ -2294,8 +2288,8 @@ check response and denial ordering, early-response field omissions and later
 response hooks after synchronous submission failure. [Owned Agent API tests](../proxy/src/http/agent_audit_tests.rs)
 check actual shared-writer ordering through ordinary HTTP/1 dispatch.
 [Operator tests](../proxy/tests/admin_transport.rs) compare parsed source auth
-facts with owned listener records; their source parser control is not a source
-listener comparison. This evidence does not establish OS thread-start exhaustion,
+facts with current owned listener records. Accepted source payload specimens
+do not impose their retired audit envelope generation. This evidence does not establish OS thread-start exhaustion,
 file durability, source-container auth exception continuation, rejected HTTP/2
 API mutation-completion behavior, inactive service/credential producers or
 independent acceptance.

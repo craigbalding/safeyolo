@@ -1,5 +1,118 @@
 use super::*;
 
+#[tokio::test]
+async fn download_decoder_preserves_concatenated_frames_and_checks_the_last_frame() {
+    use std::io::{Read, Write};
+
+    let plain = vec![b'x'; 3 * 1024 * 1024 + 7];
+    let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1).unwrap();
+    encoder.include_checksum(true).unwrap();
+    encoder.write_all(&plain).unwrap();
+    let frame = encoder.finish().unwrap();
+    for fault in ["none", "truncated", "checksum", "invalid-header"] {
+        let mut compressed = [frame.as_slice(), frame.as_slice()].concat();
+        if fault == "truncated" {
+            compressed.pop();
+        } else if fault == "checksum" {
+            *compressed.last_mut().unwrap() ^= 1;
+        } else if fault == "invalid-header" {
+            compressed[0] ^= 1;
+        }
+        let mut decoder = archive::DownloadDecoder::new(tempfile::tempfile().unwrap()).unwrap();
+        let mut written = Ok(());
+        for chunk in compressed.chunks(7) {
+            written = decoder.write(bytes::Bytes::copy_from_slice(chunk)).await;
+            if written.is_err() {
+                break;
+            }
+        }
+        let result = match written {
+            Ok(()) => decoder.finish().await,
+            Err(error) => Err(error),
+        };
+        if fault == "none" {
+            let mut actual = Vec::new();
+            result.unwrap().read_to_end(&mut actual).unwrap();
+            assert_eq!(actual, [plain.as_slice(), plain.as_slice()].concat());
+        } else {
+            assert!(result.is_err(), "accepted {fault} frame");
+        }
+    }
+}
+
+#[tokio::test]
+async fn download_decoder_reports_buffered_and_full_write_failures() {
+    // A read-only output accepts buffered bytes but must fail before returning
+    // a decoded file, including when the final buffer is the only output.
+    for size in [7, 2 * 1024 * 1024 + 7] {
+        let plain = vec![b'x'; size];
+        let compressed = zstd::stream::encode_all(plain.as_slice(), 1).unwrap();
+        let output = tempfile::NamedTempFile::new().unwrap();
+        let mut decoder =
+            archive::DownloadDecoder::new(fs::File::open(output.path()).unwrap()).unwrap();
+        let result = match decoder.write(compressed.into()).await {
+            Ok(()) => decoder.finish().await,
+            Err(error) => Err(error),
+        };
+        assert!(result.is_err(), "lost output failure for {size} bytes");
+    }
+}
+
+#[tokio::test]
+async fn download_decoder_overlaps_output_with_bounded_input_and_cancels_pending_finish() {
+    use std::{io::Read, os::fd::FromRawFd};
+
+    // A real pipe holds output back independently of decoding or network speed.
+    // Its capacity is smaller than one decoded output batch.
+    let mut descriptors = [-1; 2];
+    assert_eq!(unsafe { libc::pipe(descriptors.as_mut_ptr()) }, 0);
+    let mut reader = unsafe { fs::File::from_raw_fd(descriptors[0]) };
+    let output = unsafe { fs::File::from_raw_fd(descriptors[1]) };
+    let plain = vec![b'x'; 3 * 1024 * 1024];
+    let chunk = bytes::Bytes::from(zstd::stream::encode_all(plain.as_slice(), 1).unwrap());
+    let mut decoder = archive::DownloadDecoder::new(output).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), decoder.write(chunk.clone()))
+        .await
+        .expect("input waited for blocked output")
+        .unwrap();
+    // Wait for the worker to reach the blocked file write.
+    let mut reader = tokio::task::spawn_blocking(move || {
+        reader.read_exact(&mut [0]).unwrap();
+        reader
+    })
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        tokio::time::timeout(Duration::from_secs(5), decoder.write(chunk.clone()))
+            .await
+            .expect("queued input waited for blocked output")
+            .unwrap();
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), decoder.write(chunk))
+            .await
+            .is_err(),
+        "blocked decoder accepted unbounded queued input"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), decoder.finish())
+            .await
+            .is_err(),
+        "decoder finished while output was blocked"
+    );
+    // Closing the download discards queued work. Once the current write can
+    // finish, the worker must close its file without another input or EOF marker.
+    let drained = tokio::task::spawn_blocking(move || reader.read_to_end(&mut Vec::new()).unwrap());
+    let remaining = tokio::time::timeout(Duration::from_secs(5), drained)
+        .await
+        .expect("decoder retained its output after cancellation")
+        .unwrap();
+    assert!(
+        remaining + 1 < plain.len(),
+        "decoder kept decoding after cancellation"
+    );
+}
+
 #[test]
 fn package_guest_uses_the_existing_strict_fields() {
     let temp = tempfile::tempdir().unwrap();
@@ -234,6 +347,7 @@ mod linux {
         let source = directory.join("source");
         fs::create_dir_all(source.join("rootfs-tree/usr/bin")).unwrap();
         fs::write(source.join("rootfs-tree/usr/bin/fixture"), "guest bytes").unwrap();
+        fs::write(source.join("rootfs-tree/usr/bin/guest-user"), "user bytes").unwrap();
         fs::hard_link(
             source.join("rootfs-tree/usr/bin/fixture"),
             source.join("rootfs-tree/usr/bin/hardlink"),
@@ -245,6 +359,14 @@ mod linux {
             std::process::Command::new("sudo")
                 .args(["-n", "chown", "-R", "100000:100000"])
                 .arg(source.join("rootfs-tree"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            std::process::Command::new("sudo")
+                .args(["-n", "chown", "101000:101000"])
+                .arg(source.join("rootfs-tree/usr/bin/guest-user"))
                 .status()
                 .unwrap()
                 .success()
@@ -269,64 +391,74 @@ mod linux {
 
     #[tokio::test]
     async fn acquisition_installs_backend_inputs_and_reuses_selected_digests() {
-        let temp = tempfile::tempdir().unwrap();
-        let release = release(linux_archive(temp.path()));
-        let registry = Registry::new(&release);
-        let package = registry.package();
-        let store = temp.path().join("store");
-        let selection = acquire(
-            &registry.client(),
-            &package,
-            &store,
-            None,
-            None,
-            crate::linux_host::Mapping::for_bases(100000, 100000),
-        )
-        .await
-        .unwrap();
-        assert_eq!(selection.archive, release.archive);
-        let tree = selection.assets.join("rootfs-tree");
-        assert_eq!(tree.metadata().unwrap().uid(), 100000);
-        assert_eq!(tree.metadata().unwrap().gid(), 100000);
-        assert_eq!(
-            tree.join("usr/bin/fixture").metadata().unwrap().ino(),
-            tree.join("usr/bin/hardlink").metadata().unwrap().ino()
+        assert_ne!(
+            unsafe { libc::getuid() },
+            0,
+            "run acquisition as the ordinary host account"
         );
-        assert_eq!(
-            fs::read_link(tree.join("bin")).unwrap(),
-            Path::new("usr/bin")
-        );
-        assert_eq!(
-            fs::read_to_string(selection.assets.join("cache-paths.txt")).unwrap(),
-            "/var/cache/apt\n"
-        );
-        let tree_identity = selection.assets.metadata().unwrap().ino();
-        let requests = registry.requests.lock().unwrap().len();
-        let again = acquire(
-            &registry.client(),
-            &package,
-            &store,
-            None,
-            None,
-            crate::linux_host::Mapping::for_bases(100000, 100000),
-        )
-        .await
-        .unwrap();
-        assert_eq!(again.assets.metadata().unwrap().ino(), tree_identity);
-        let seen = registry.requests.lock().unwrap();
-        assert!(
-            seen[requests..]
-                .iter()
-                .all(|path| !path.contains("/blobs/"))
-        );
-        assert_eq!(
-            seen.iter()
-                .filter(|path| *path == "/v2/guest/manifests/compat-v1")
-                .count(),
-            2
-        );
-        drop(seen);
-        archive::remove_stage(&store, package.platform).unwrap();
+        for (uid_base, gid_base) in [(100000, 100000), (231072, 400000)] {
+            let temp = tempfile::tempdir().unwrap();
+            let release = release(linux_archive(temp.path()));
+            let registry = Registry::new(&release);
+            let package = registry.package();
+            let store = temp.path().join("store");
+            let selection = acquire(
+                &registry.client(),
+                &package,
+                &store,
+                None,
+                None,
+                crate::linux_host::Mapping::for_bases(uid_base, gid_base),
+            )
+            .await
+            .unwrap();
+            assert_eq!(selection.archive, release.archive);
+            let tree = selection.assets.join("rootfs-tree");
+            assert_eq!(tree.metadata().unwrap().uid(), uid_base);
+            assert_eq!(tree.metadata().unwrap().gid(), gid_base);
+            let guest_user = tree.join("usr/bin/guest-user").metadata().unwrap();
+            assert_eq!(guest_user.uid(), unsafe { libc::getuid() });
+            assert_eq!(guest_user.gid(), unsafe { libc::getgid() });
+            assert_eq!(
+                tree.join("usr/bin/fixture").metadata().unwrap().ino(),
+                tree.join("usr/bin/hardlink").metadata().unwrap().ino()
+            );
+            assert_eq!(
+                fs::read_link(tree.join("bin")).unwrap(),
+                Path::new("usr/bin")
+            );
+            assert_eq!(
+                fs::read_to_string(selection.assets.join("cache-paths.txt")).unwrap(),
+                "/var/cache/apt\n"
+            );
+            let tree_identity = selection.assets.metadata().unwrap().ino();
+            let requests = registry.requests.lock().unwrap().len();
+            let again = acquire(
+                &registry.client(),
+                &package,
+                &store,
+                None,
+                None,
+                crate::linux_host::Mapping::for_bases(uid_base, gid_base),
+            )
+            .await
+            .unwrap();
+            assert_eq!(again.assets.metadata().unwrap().ino(), tree_identity);
+            let seen = registry.requests.lock().unwrap();
+            assert!(
+                seen[requests..]
+                    .iter()
+                    .all(|path| !path.contains("/blobs/"))
+            );
+            assert_eq!(
+                seen.iter()
+                    .filter(|path| *path == "/v2/guest/manifests/compat-v1")
+                    .count(),
+                2
+            );
+            drop(seen);
+            archive::remove_stage(&store, package.platform).unwrap();
+        }
     }
 
     #[tokio::test]
@@ -382,18 +514,19 @@ mod linux {
     }
 
     #[test]
-    fn darwin_layout_decodes_finished_images_and_rejects_a_link_in_place_of_an_image() {
+    fn darwin_layout_decodes_images_and_rejects_links_and_truncated_frames() {
         // Linux GNU tar exercises the archive/layout branch; this is not an APFS witness.
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
         fs::create_dir(&source).unwrap();
         fs::write(source.join("Image"), "kernel fixture").unwrap();
-        fs::write(source.join("initramfs.cpio.gz"), "initramfs fixture").unwrap();
+        let initramfs: Vec<u8> = (0..384 * 1024 + 7).map(|n| (n % 251) as u8).collect();
+        fs::write(source.join("initramfs.cpio.gz"), &initramfs).unwrap();
         let mut image = fs::File::create(source.join("rootfs-base.ext4")).unwrap();
         image.seek(std::io::SeekFrom::Start(1024 * 1024)).unwrap();
         image.write_all(b"end").unwrap();
-        for linked in [false, true] {
-            if linked {
+        for fault in ["none", "truncated", "link"] {
+            if fault == "link" {
                 fs::remove_file(source.join("Image")).unwrap();
                 symlink("rootfs-base.ext4", source.join("Image")).unwrap();
             }
@@ -405,21 +538,25 @@ mod linux {
                 .unwrap();
             assert!(tar.status.success());
             let input = temp.path().join("archive.zst");
-            fs::write(
-                &input,
-                zstd::stream::encode_all(tar.stdout.as_slice(), 1).unwrap(),
-            )
-            .unwrap();
-            let destination = temp
-                .path()
-                .join(if linked { "refused" } else { "prepared" });
+            let mut encoder = zstd::stream::Encoder::new(Vec::new(), 1).unwrap();
+            encoder.include_checksum(true).unwrap();
+            encoder.write_all(&tar.stdout).unwrap();
+            let mut encoded = encoder.finish().unwrap();
+            if fault == "truncated" {
+                // Tar has all its bytes; the decoder must still check the frame end.
+                encoded.pop();
+            }
+            fs::write(&input, encoded).unwrap();
+            let destination = temp.path().join(format!("prepared-{fault}"));
             let result = archive::prepare(
                 &input,
+                None,
                 &destination,
                 ConsumerPlatform::DarwinArm64,
                 crate::linux_host::Mapping::for_bases(100000, 100000),
+                None,
             );
-            if linked {
+            if fault != "none" {
                 assert!(result.is_err());
                 assert!(!destination.exists());
             } else {
@@ -427,6 +564,10 @@ mod linux {
                 assert_eq!(
                     fs::read_to_string(destination.join("Image")).unwrap(),
                     "kernel fixture"
+                );
+                assert_eq!(
+                    fs::read(destination.join("initramfs.cpio.gz")).unwrap(),
+                    initramfs
                 );
                 assert_eq!(
                     destination
@@ -437,6 +578,13 @@ mod linux {
                     1024 * 1024 + 3
                 );
             }
+            assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .as_encoded_bytes()
+                    .starts_with(b"extract-")
+            }));
         }
     }
 }

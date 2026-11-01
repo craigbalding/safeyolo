@@ -12,6 +12,14 @@ The default endpoint is signed out. --connected adds one foreground first task
 and live return, with --preparation supplying actual prior accounting operands.
 In connected mode, Ctrl-] triggers the fixed task once; other input stays in the
 normal product terminal. The observer never signs in or retries a task.
+--cold-setup-only measures the released ARM64 sandbox and tool setup separately.
+It uses sandbox-only start, then the shipped command with --version, without reentry.
+Release bindings may select Codex instead. That endpoint requires its nonloading
+input display in the matching live attached pane, rechecked after witness
+collection. It sends no task and reuses only
+operator-provisioned agent authentication. Codex does not import host login state.
+--prepared-codex-auth permits only the explicitly adopted authentication files
+under the future agent home. Record the actual staging operations in --preparation.
 """
 
 import argparse
@@ -39,21 +47,35 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from harness.process_identity import child_exited, process_start_token
 
+HARNESS = "claude"
+BOOTSTRAP_SHA256 = None
 SOURCE = "c9ecb66b462c2ba0c499f2322f6cfc5c142012da"
 BOOTSTRAP = "45d8853a202c04c9f5f8ca772df410ae8ced1844"
 PACKAGES = {
-    "linux-amd64": {"machine": "x86_64", "bytes": 190882862,
+    "linux-amd64": {"source": SOURCE, "machine": "x86_64", "bytes": 190882862,
                     "sha256": "c91e61117e416a8245476e100d20155b7512ac429976457c87a0b2c3e6bec6da"},
-    "linux-arm64": {"machine": "aarch64", "bytes": 176869006,
-                    "sha256": "eab9b709b3e4c6b536614eeb6b422d12c2b55826149085f78c326b31637922af"},
+    "linux-arm64": {"source": "c94e991682e021b1f6bddc01a83722bcf36b36db",
+                    "machine": "aarch64", "bytes": 177934638,
+                    "sha256": "97e565ab9a6ab194fb2ac512296f834204a81166fefd125d64f0a658d6875eba"},
 }
 RELEASE = "host-" + SOURCE
 CONNECTED_SOURCE = "c5ce76019b6c997e282ab05cea0212b492e945d2"
-CONNECTED_PACKAGE = {"machine": "x86_64", "bytes": 191260514,
+CONNECTED_PACKAGE = {"source": CONNECTED_SOURCE, "machine": "x86_64", "bytes": 191260514,
                      "sha256": "811a20c1fa75d081504b9bfa3a7766bb3c2df6e55f4740742243ad24bc217538"}
+COLD_SETUP_PACKAGE = {"source": "621b2c717393c9fb7de47bc9cce8c823489fde6b",
+                      "machine": "aarch64", "bytes": 178081425,
+                      "sha256": "c3598361a2f8ae6822db1d68fe530a22d9286647e06a1de5c87799ab5cbc18d5"}
+COLD_SETUP_BOOTSTRAP_SHA256 = "bf38f2b52bef358c0b9ff426ac60b3d684249054ee4db790e035b384ea31c993"
+COLD_SETUP_SCRIPT_SHA256 = "ca5ac5ad046ca7d15ea88576b2480f6d66d4578a0990f9056045d262dcac3928"
+# Exact guest operands from native run 39744720606, not today's compatibility tag.
+COLD_SETUP_GUEST = {
+    "index": "sha256:67bcb6c51460619d3c021414961cd42b1f9751adc07f69d212a1d6485b1f132a",
+    "manifest": "sha256:003c08138381c6f01cd8c30ea4b22e3a909dcc95628b097f21b6307b2b0e0dcb",
+    "archive": "sha256:455a590c4b69ffb403b32353013d659b513ac3c3a496a5c263d6339f254595a0",
+}
 TASK = ('Create /workspace/index.html as a complete HTML page with the heading '
         '"Hello from SafeYolo". Use no external dependencies.')
-CONNECTED_PROSE = ("Start in an empty workspace on Ubuntu 24.04 AMD64 with curl and bash. "
+CONNECTED_PROSE = ("Start in an empty workspace on Ubuntu 24.04 with curl and bash. "
     "Use an ordinary account. Review the requested host changes and workspace access before consenting. "
     "If you already use Claude, you can consent to copy its selected host authentication. "
     "Ctrl-b then d opens SafeYolo's host controls. Use a to inspect pending requests and their scope before approving. "
@@ -77,7 +99,9 @@ PROBES = [
     ("direct-https", "curl -sS -D /dev/stderr -w '%{json}' --noproxy '*' --connect-timeout 3 --max-time 10 -k -o /dev/null https://8.8.8.8"),
 ]
 PHASE_TEXT = [
-    ("host-acquisition", "SafeYolo: acquiring safeyolo-linux-"),
+    ("host-acquisition", "SafeYolo: acquiring safeyolo-"),
+    ("host-download-unpack", "SafeYolo: downloading and unpacking the host package."),
+    ("guest-download-overlap", "SafeYolo: downloading the compatible guest while acquiring the host package."),
     ("host-verification-unpack", "SafeYolo: verifying and unpacking the host package."),
     ("host-preparation-consent", "SafeYolo needs these host changes:"),
     ("guest-acquisition", "SafeYolo: acquiring and verifying the compatible guest."),
@@ -742,8 +766,42 @@ def snapshot_state(phase, row, connected=False):
     return state
 
 
+def sample_acquisition_files(phase, observed):
+    """Retain transient file growth before bootstrap cleanup removes staging."""
+    paths = {}
+    for stage in archive.parent.glob("acquire.*"):
+        paths[stage / archive.name] = "host-transfer"
+        paths[stage / "guest-download.tar.gz"] = "auxiliary-transfer"
+        paths[stage / "guest-index"] = "guest-index-output"
+    parent = store / "blobs/sha256"
+    if parent.is_dir():
+        for path in parent.iterdir():
+            if path.name.startswith(".tmp"):
+                paths[path] = "guest-transfer"
+    records = x.setdefault("acquisition_files", {})
+    present = set()
+    for path, kind in paths.items():
+        try:
+            info = path.stat()
+        except FileNotFoundError:
+            # The bootstrap owns staging and may rename/unlink it between samples.
+            continue
+        key = phase + ":" + str(path)
+        present.add(key)
+        row = records.setdefault(key, {"phase": phase, "kind": kind, "path": str(path),
+            "inode": info.st_ino, "first_seen": observed, "growth": []})
+        if not row["growth"] or row["growth"][-1]["bytes"] != info.st_size:
+            row["growth"].append({"bytes": info.st_size, **observed})
+        row["last_seen"] = observed
+    for key, row in records.items():
+        if row["phase"] == phase and key not in present and "first_absent" not in row:
+            row["first_absent"] = observed
+    save()
+
+
 def sample_files(phase):
     observed = stamp()
+    sample_acquisition_files(phase, observed)
     sampling = x.setdefault("sampling", {}).setdefault(phase, {"max_gap_seconds": 0})
     previous = sampling.get("last")
     if previous:
@@ -758,10 +816,15 @@ def sample_files(phase):
                     paths[kind + "/" + path.name] = path
     for label, path in paths.items():
         key = phase + ":" + label
-        if key not in sampled and path.exists():
+        try:
+            info = path.stat()
+        except FileNotFoundError:
+            # Acquisition may commit or remove a file between enumeration and stat.
+            continue
+        if key not in sampled:
             sampled.add(key)
             x["phase_observations"].append({"phase": phase, "boundary": label,
-                "path": str(path), "size": path.stat().st_size,
+                "path": str(path), "size": info.st_size, "inode": info.st_ino,
                 "previous_sample": previous, **observed})
             save()
     sampling["last"] = observed
@@ -779,11 +842,36 @@ def theme_prompt(data):
 
 def login_label(data):
     plain = terminal_plain(data)
+    if HARNESS == "codex":
+        # A version/banner or sign-in/trust screen is not an input display.
+        # 0.163 shows the input placeholder while account/read is still loading.
+        if re.search(rb"\bloading\b", plain) or any(label in plain for label in [
+                b"sign in", b"log in", b"trust this", b"trust the", b"error: ", b"reconnecting...",
+                b"account/read failed during tui bootstrap:"]):
+            return []
+        legacy_fields = all(label in plain for label in [b"model:", b"directory:", "›".encode()])
+        input_placeholder = "› ask codex to do anything".encode() in plain
+        return ["Codex input display"] if b"openai codex" in plain and (legacy_fields or input_placeholder) else []
     # Shipped startup banners mention sign-in BEFORE the harness is installed.
     plain = b"\n".join(line for line in plain.splitlines()
                        if b"opening the session" not in line and b"first use may download tools" not in line)
     plain = plain.replace(b"sign in if claude asks.", b"")
     return [label for label in ["/login", "sign in"] if label.encode() in plain]
+
+
+def codex_input_process(phase, row):
+    """Require the native client in the owned guest as well as its live pane."""
+    row["codex_process"] = guest(phase + "-codex-process",
+        'for p in /proc/[0-9]*/exe; do '
+        'target=$(readlink "$p") || continue; '
+        'case "$target" in "$HOME"/.mise/installs/aqua-openai-codex/*/bin/codex|'
+        '"$HOME"/.mise/installs/github-openai-codex/*/bin/codex|'
+        '"$HOME"/.safeyolo/codex-package/payload/bin/codex) '
+        'pid=${p#/proc/}; printf "%s\\n" "${pid%/exe}"; exit 0;; esac; '
+        'done; exit 1', time.monotonic() + 5)
+    save()
+    return (row["codex_process"].get("exit") == 0
+            and bool(re.fullmatch(r"[1-9][0-9]*\n", row["codex_process"].get("stdout", ""))))
 
 
 def console_group(pid):
@@ -887,8 +975,17 @@ def record_launch_result(row, output):
                 (b"coding-agent observation timed out", "coding-agent-observation-timeout"),
                 (b"coding-agent observation failed", "coding-agent-observation-failed"),
                 (b"coding-agent observation is unverified", "coding-agent-observation-unverified"),
+                (b"guest did not reach per-run startup", "guest-startup-unready"),
+                (b"runsc did not identify its backend", "runsc-backend-unidentified"),
             ]:
-                if matches[-1][1].startswith(message + b". saved agent state is retained."):
+                if (matches[-1][1].startswith(message + b". saved agent state is retained.")
+                        or matches[-1][1].startswith(message + b"; sandbox cleanup failed: ")):
+                    result["error_category"] = error_category
+            # Native create/start errors contain runsc stderr. Export only the
+            # fixed operation, never its private paths, output or cleanup error.
+            for prefix, error_category in [(b"runsc create failed: ", "runsc-create-failed"),
+                                           (b"runsc start failed: ", "runsc-start-failed")]:
+                if matches[-1][1].startswith(prefix):
                     result["error_category"] = error_category
     try:
         launch = launch_record()
@@ -978,6 +1075,15 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     if match:
                         row[key.lower() + "_stdout"] = match.group(1).decode(errors="replace").strip()[:2048]
                 console_active = terminal_open and "command_exit" not in row and not child_exited(pid)
+                # These fixed host fields retain a client failure even when q
+                # later returns zero. Terminal contents remain private.
+                harness_return = re.search(
+                    rb'Harness session: "?(failed|exited|stopped)"?\. Sandbox: "?([a-z-]+)"?\. Exit status: (null|-?\d+)\.', pending)
+                if harness_return and "harness_return" not in row:
+                    row["harness_return"] = {"agent_state": harness_return[1].decode(),
+                        "runtime_state": harness_return[2].decode(),
+                        "exit_code": None if harness_return[3] == b"null" else int(harness_return[3]), **stamp()}
+                    save()
                 if console_active and connected and operator_fd in ready:
                     data = os.read(operator_fd, 1024)
                     if not data:
@@ -1007,7 +1113,9 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     completed.add("theme")
                     pending = b""
                     save()
-                labels = login_label(pending) if not connected else []
+                # Codex readiness requires the current matching attached pane.
+                # Buffered output can retain an old prompt after the client exits.
+                labels = login_label(pending) if not connected and HARNESS != "codex" else []
                 label_source = "host-terminal-output"
                 if connected and console_active and not captured and time.monotonic() >= next_pane_read:
                     connected_done = journey.poll()
@@ -1019,11 +1127,16 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     next_pane_read = time.monotonic() + 1
                     labels = row["pane_screen"].get("labels", [])
                     label_source = "attached-pane-screen"
+                    if HARNESS == "codex" and labels and not codex_input_process(phase, row):
+                        labels = []
                 expired = time.monotonic() >= deadline
-                if console_active and not captured and (labels or connected_done or expired):
+                client_returned = HARNESS == "codex" and "harness_return" in row and b"SafeYolo host> " in pending
+                if console_active and not captured and (labels or connected_done or expired or client_returned):
                     if labels:
-                        row["signed_out_label"] = {"labels": labels, "source": label_source, **stamp()}
-                    elif not row.get("connected_ready"):
+                        row["client_display"] = {"harness": HARNESS, "labels": labels, "source": label_source, **stamp()}
+                        if HARNESS == "claude":
+                            row["signed_out_label"] = row["client_display"]
+                    elif expired and not row.get("connected_ready"):
                         row["readiness_unclassified_at_deadline"] = stamp()
                     save()
                     started = time.monotonic()
@@ -1031,15 +1144,33 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                     states = witness("before-return" if phase == "cold" else "after-reentry", phase == "cold" and not connected,
                                      **({"connected": True} if connected else {}))
                     row["capture_seconds"] = time.monotonic() - started
-                    # Capture precedes detach even for an unclassified UI.
-                    os.write(fd, b"\x02d")
-                    detached = True
-                    row["viewer_detach"] = stamp()
-                    x["interactions"].append({"phase": phase, "kind": "return to host", "answer": "Ctrl-b d", "sent": stamp()})
-                    pending = b""
                     deadline = time.monotonic() + 30
                     save()
-                if console_active and detached and b"SafeYolo host> " in pending and "q" not in completed:
+                    # Witness collection can outlive the client. Drain current
+                    # output and refresh state before choosing detach or host q.
+                    continue
+                at_host_controls = b"SafeYolo host> " in pending
+                if console_active and captured and not detached and "q" not in completed:
+                    live_client = True
+                    if HARNESS == "codex":
+                        capture(row, "return_pane_screen", lambda: pane_screen(phase + "-return"))
+                        screen = row["return_pane_screen"]
+                        live_client = screen.get("matching_live_visible_pane") and codex_input_process(phase + "-return", screen)
+                        at_host_controls = at_host_controls and not screen.get("matching_live_visible_pane")
+                        if at_host_controls:
+                            row["return_path"] = "host-controls-after-client-exit"
+                        if live_client and screen.get("labels") and row.get("client_display"):
+                            row["input_ready"] = row["client_display"]
+                    if live_client:
+                        os.write(fd, b"\x02d")
+                        detached = True
+                        row["viewer_detach"] = stamp()
+                        row["return_path"] = "detach-live-client"
+                        x["interactions"].append({"phase": phase, "kind": "return to host", "answer": "Ctrl-b d", "sent": stamp()})
+                        pending = b""
+                        at_host_controls = False
+                    save()
+                if console_active and captured and at_host_controls and "q" not in completed:
                     record_reading(phase, "host return controls")
                     os.write(fd, b"q\n")
                     row["ordinary_q"] = stamp()
@@ -1087,7 +1218,7 @@ def entered(phase, seconds, connected=False, operator_fd=None):
 
 def inventory():
     tools = ["bash", "curl", "tar", "sha256sum", "shasum", "git", "python3", "uv", "cargo",
-             "rustc", "gcc", "make", "sudo", "newuidmap", "newgidmap", "getfacl", "setfacl", "runsc", "nats-server", "claude",
+             "rustc", "gcc", "make", "sudo", "newuidmap", "newgidmap", "getfacl", "setfacl", "runsc", "nats-server", "claude", "codex",
              "mise", "node", "npm", "tmux", "docker", "oras", "apt-get"]
     return {"hostname": os.uname().nodename, "machine": list(os.uname()), "uid": os.getuid(),
             "gid": os.getgid(), "groups": os.getgroups(), "PATH": os.environ.get("PATH"),
@@ -1096,12 +1227,35 @@ def inventory():
             "kvm_present": Path("/dev/kvm").exists(), "kvm_user_rw": os.access("/dev/kvm", os.R_OK | os.W_OK),
             "userns": text(Path("/proc/sys/kernel/unprivileged_userns_clone")),
             "apparmor_userns": text(Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")),
-            "auth_present": {p: (Path.home() / p).exists() for p in [".claude.json", ".claude/.credentials.json"]},
-            "vendor_cache_present": {p: (Path.home() / p).exists() for p in [".local/share/claude", ".cache/claude", ".local/bin/claude"]},
+            "auth_present": {p: (Path.home() / p).exists() for p in ([".codex/auth.json"] if HARNESS == "codex" else [".claude.json", ".claude/.credentials.json"])},
+            "vendor_cache_present": {p: (Path.home() / p).exists() for p in ([".mise/installs/aqua-openai-codex", ".mise/installs/github-openai-codex", ".local/bin/codex"] if HARNESS == "codex" else [".local/share/claude", ".cache/claude", ".local/bin/claude"])},
             "cache_present": {str(p): p.exists() for p in [root, archive.parent, store,
                 Path.home() / ".local/share/mise", Path.home() / ".cache/mise", Path.home() / ".local/share/safeyolo/tools"]},
-            "credential_env_names": [p for p in ["GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] if os.environ.get(p)],
+            "credential_env_names": [p for p in ["GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
+                                     + (["OPENAI_API_KEY"] if HARNESS == "codex" else []) if os.environ.get(p)],
             "proxy_ca_env_present": {p: bool(os.environ.get(p)) for p in ["HTTP_PROXY", "HTTPS_PROXY", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS"]}}
+
+
+def codex_auth_only_root():
+    """Recognize disclosed authentication preparation without reading credentials."""
+    paths = {"agents", "agents/first", "agents/first/home", "agents/first/home/.codex",
+             "agents/first/home/.codex/auth.json", "agents/first/home/.codex/.safeyolo-provenance.json"}
+    if root.is_symlink() or not root.is_dir():
+        return False
+    actual = list(root.rglob("*"))
+    if {str(path.relative_to(root)) for path in actual} != paths:
+        return False
+    for path in actual:
+        info = path.lstat()
+        if path.is_symlink() or info.st_uid != os.getuid():
+            return False
+        if path.name in {"auth.json", ".safeyolo-provenance.json"}:
+            if not path.is_file() or info.st_mode & 0o777 != 0o600:
+                return False
+        elif not path.is_dir():
+            return False
+    marker = read_json(root / "agents/first/home/.codex/.safeyolo-provenance.json")
+    return isinstance(marker, dict) and marker.get("state") == "agent-local"
 
 
 def cleanup():
@@ -1181,6 +1335,29 @@ def preparation_accounting(path):
     return data
 
 
+def acquisition_accounting():
+    """Report observed overlap without treating concurrent phases as disjoint."""
+    rows = list(x.get("acquisition_files", {}).values())
+    spans = [{"kind": row["kind"], "path": row["path"], "phase": row["phase"],
+              "first": row["growth"][0], "last": row["growth"][-1]}
+             for row in rows if len(row["growth"]) > 1]
+    overlaps = []
+    for host in [row for row in spans if row["kind"] == "host-transfer"]:
+        for other in [row for row in spans if row["kind"] in {"guest-transfer", "auxiliary-transfer"}
+                      and row["phase"] == host["phase"]]:
+            start = max(host["first"]["monotonic"], other["first"]["monotonic"])
+            end = min(host["last"]["monotonic"], other["last"]["monotonic"])
+            overlaps.append({"host": host["path"], "other": other["path"],
+                "kind": other["kind"], "observed_growth_span_overlap_seconds": max(0, end - start)})
+    expected = x.get("expected_host_package", {})
+    x["acquisition"] = {"expected_host_bytes": expected.get("bytes"),
+        "expected_auxiliary": expected.get("guest_download"),
+        "file_growth_spans": spans, "overlaps": overlaps,
+        "committed_files": [row for row in x["phase_observations"]
+                            if row["boundary"] == "host-archive-verified" or row["boundary"].startswith("blobs/")],
+        "limits": "File growth spans are sampled disk observations, not exact transfer durations or network bytes. Zero or missing overlap does not prove serial transfer. Auxiliary bytes duplicate the CLI and contend with host/guest traffic. Do not subtract or sum concurrent spans."}
+
+
 def signed_out_accounting():
     """Keep counts and measured intervals without claiming a first task."""
     cold = [row for row in x["product_commands"] if row.get("phase") != "warm"]
@@ -1193,13 +1370,38 @@ def signed_out_accounting():
         "observer_diagnostic_commands": sum(row.get("role") == "observer" for row in x["observations"]),
         "observer_tmux_commands": x.get("observer_tmux_commands", {}),
         "reading_method": "Displayed instructions and terminal text; command echoes excluded. Repeated text counts again.",
-        "limits": "Signed-out endpoint only. No human reading duration or complete first-task command count is claimed."}
+        "limits": "Client display only; no new task. No human reading duration or complete first-task command count is claimed."}
     timings = x.setdefault("timings", {})
+    launch = next((row for row in cold if row.get("phase") == "cold"), {})
+    first = cold[0] if cold else {}
+    ready = launch.get("input_ready", {})
+    timings["cold_product_to_input_ready_seconds"] = (ready["monotonic"] - first["monotonic"]
+        if ready and first.get("monotonic") is not None else None)
+    timings["human_reading_seconds"] = None
+    timings["provider_wait_seconds"] = None
     timings.update(phase_boundaries=x["phase_observations"],
         automated_interaction_intervals=[row for row in x["interactions"] if row.get("seen")],
         observer_intervals=[{"label": row["label"], "started": {key: row[key] for key in ["at", "monotonic"]},
                              "ended": row.get("ended")} for row in x["observations"] if row.get("role") == "observer"],
         wait_limit="Phase observations are sampled bounds. Automated responses do not measure human reading or provider-only waits.")
+    preparation = x.get("preparation")
+    if preparation is not None:
+        required = [row for row in preparation["commands"] if row["role"] == "required-user"]
+        x["counts"]["required_user_preparation_commands"] = len(required)
+        x["counts"]["total_required_user_commands_to_input"] = len(required) + len(cold)
+        x["counts"]["required_user_preparation_decisions"] = sum(row["role"] == "required-user" for row in preparation["decisions"])
+        x["counts"]["material_decisions"] += x["counts"]["required_user_preparation_decisions"]
+        for role in ["fixture", "observer"]:
+            x["counts"][role + "_preparation_commands"] = sum(row["role"] == role for row in preparation["commands"])
+            x["counts"][role + "_preparation_decisions"] = sum(row["role"] == role for row in preparation["decisions"])
+        x["counts"]["required_reading_words"] += sum(len(row["text"].split()) for row in preparation["required_reading"])
+        starts = [row.get("started_at") for row in required]
+        starts += [row.get("seen_at") for row in preparation["decisions"] if row["role"] == "required-user"]
+        starts += [row.get("seen_at") for row in preparation["required_reading"]]
+        timings["cold_total_to_input_ready_seconds"] = (
+            (dt.datetime.fromisoformat(ready["at"]) - min(map(dt.datetime.fromisoformat, [first["at"], *starts]))).total_seconds()
+            if ready and first.get("at") and all(starts) else None)
+    acquisition_accounting()
     save()
 
 
@@ -1273,7 +1475,7 @@ def connected_accounting():
     save()
 
 
-def provider_intervals():
+def provider_intervals(include_downloads=False):
     requests = {}
     intervals = []
     path = root / "logs/audit.jsonl"
@@ -1283,7 +1485,7 @@ def provider_intervals():
         if not line.endswith(b"\n"):
             continue
         event = json.loads(line)
-        if event.get("host") not in {"api.anthropic.com", "mcp-proxy.anthropic.com"} or not event.get("request_id"):
+        if (not include_downloads and event.get("host") not in {"api.anthropic.com", "mcp-proxy.anthropic.com"}) or not event.get("request_id"):
             continue
         identifier = event["request_id"]
         if event.get("event") == "traffic.request":
@@ -1295,6 +1497,153 @@ def provider_intervals():
                 "status": event.get("details", {}).get("status")})
     return {"responses": intervals, "requests_without_response": requests,
             "scope": "Reached requests in this new single-agent instance; no provider-only or disjoint-wait total."}
+
+
+def instrument_cold_setup(command):
+    """Time fixed tool calls in the owned command; retain no arguments or environment."""
+    original = command.read_text()
+    calls = {call: label for label, call in [
+        ("mise-release-age", "mise settings get min_release_age"),
+        ("claude-remote-version", 'mise latest "$1"'),
+        ("claude-local-version", 'mise latest --installed "$1"'),
+        ("node-acquire-install", 'mise install "$SAFEYOLO_CLAUDE_NODE_SPEC"'),
+        ("claude-acquire-install", 'mise install --force "$sy_spec"'),
+        ("node-acquisition-wait", 'wait "$sy_node_pid"'),
+        ("tools-configure", 'mise use -g "$SAFEYOLO_CLAUDE_NODE_SPEC" "$sy_spec"'),
+        ("node-configure-install", 'mise use -g "$SAFEYOLO_CLAUDE_NODE_SPEC"'),
+        ("claude-configure-install", 'mise use -g --force "$sy_spec"'),
+        ("claude-fallback-install", 'mise use -g "$sy_spec"'),
+        ("claude-executable-check", "claude --version"),
+        ("claude-install-location", 'mise where "$sy_spec"'),
+        ("claude-postinstall", 'mise exec "$SAFEYOLO_CLAUDE_NODE_SPEC" -- node "$claude_postinstall"'),
+        ("claude-reshim", "mise reshim"),
+    ]}
+    for call, label in calls.items():
+        if call not in original:
+            raise ValueError("Released command lacks expected timing boundary: " + label)
+    # Replace once, longest call first. The combined configuration contains
+    # the Node-only call; repeated replacement would wrap it a second time.
+    pattern = "|".join(re.escape(call) for call in sorted(calls, key=len, reverse=True))
+    timed = re.sub(pattern, lambda match: "sy1050_step " + calls[match[0]] + " " + match[0], original)
+    function = '''
+sy1050_step() {
+    local label=$1 result=0
+    shift
+    printf '%s\\tstart\\t%s\\t\\n' "$label" "$EPOCHREALTIME" >> "$HOME/.safeyolo-cold-setup.tsv"
+    "$@" || result=$?
+    printf '%s\\tend\\t%s\\t%s\\n' "$label" "$EPOCHREALTIME" "$result" >> "$HOME/.safeyolo-cold-setup.tsv"
+    return "$result"
+}
+'''
+    if timed.count("set -e\n") != 1:
+        raise ValueError("Released command has an unexpected shell entry")
+    timed = timed.replace("set -e\n", "set -e\n" + function, 1)
+    command.write_text(timed)
+    return {"original_sha256": hashlib.sha256(original.encode()).hexdigest(),
+            "instrumented_sha256": digest(command),
+            "change": "Fixed tool calls and same-shell waits wrapped with Bash realtime start/end and exit markers; arguments and output remain private."}
+
+
+def cold_setup_run(args, package):
+    """One finite diagnostic on the existing hosted baseline, with no first-task claim."""
+    x["purpose"] = "Native cold sandbox and Claude setup diagnostic; no clean-host or first-task acceptance"
+    x["bootstrap_source"] = package["source"]
+    x["expected_guest"] = COLD_SETUP_GUEST
+    x["limits"] = [
+        "Existing non-clean runner baseline. No warm repeat, login, model task or 15-second acceptance.",
+        "Sandbox-only command includes CLI validation, staging, boot and readiness; internal staging versus boot remains unseparated.",
+        "Tool markers use Bash realtime in this same guest. Instrumentation adds file writes; elapsed values are diagnostic.",
+        "Acquisition markers combine tool resolution, downloads and installation. Wait markers cover only the remaining child wait; neither isolates network time.",
+        "Audit response durations include proxy/request work, can overlap, and do not measure provider-only or download-only waits.",
+        "The released bootstrap's download-only path permits its unchanged installer to pin the retained guest index.",
+    ]
+    save()
+    deadline = time.monotonic() + args.cold_seconds
+
+    def step(label, command):
+        row = observe(label, command, max(0.1, deadline - time.monotonic()), private_output=True)
+        row["elapsed_seconds"] = row["ended"]["monotonic"] - row["monotonic"]
+        save()
+        if row.get("exit") != 0 or row.get("timeout"):
+            x["diagnostic_failure"] = {"step": label, "exit": row.get("exit"), "timeout": row.get("timeout", False)}
+            save()
+            return False
+        return True
+
+    download = [*DOWNLOAD[:-1], f"https://github.com/craigbalding/safeyolo/releases/download/host-{package['source']}/install-safeyolo.sh"]
+    bundle = private / "released-package"
+    setup = root / "assets/contrib/claude-host-setup.sh"
+    commands = [
+        ("bootstrap-download", download),
+        ("host-package-acquisition", ["bash", "install-safeyolo.sh", "--release", "host-" + package["source"], "--download-only", bundle]),
+        ("pinned-guest-install", ["bash", bundle / "install.sh", "--root", root, "--guest-index", COLD_SETUP_GUEST["index"], "--yes"]),
+        ("harness-host-setup", ["env", "SAFEYOLO_CLAUDE_COPY_HOST_STATE=0", cli, "agent", "create", "first",
+                                "--workspace", project, "--host-script", setup, "--launcher", "tmux-window"]),
+        ("proxy-start", [cli, "start"]),
+        ("coord-start", [cli, "coord", "start"]),
+        ("guest-stage-and-boot", [cli, "agent", "start", "first", "--sandbox-only"]),
+        ("harness-cold-setup", [cli, "agent", "shell", "first", "-c", "exec /home/agent/.safeyolo-command --version"]),
+    ]
+    for label, command in commands:
+        if not step(label, command):
+            return
+        if label == "bootstrap-download":
+            x["bootstrap_sha256"] = digest(project / "install-safeyolo.sh")
+            if x["bootstrap_sha256"] != COLD_SETUP_BOOTSTRAP_SHA256:
+                raise ValueError("Released bootstrap differs from the selected cold-setup input")
+        elif label == "host-package-acquisition":
+            x["host_archive"] = {"bytes": archive.stat().st_size, "sha256": digest(archive)}
+            if x["host_archive"] != {"bytes": package["bytes"], "sha256": package["sha256"]}:
+                raise ValueError("Released archive differs from retained native input")
+        elif label == "pinned-guest-install":
+            selected = read_json(root / "share/guest-selection.json")
+            x["guest_selection"] = selected
+            if any(selected[key]["digest"] != expected for key, expected in COLD_SETUP_GUEST.items()):
+                raise ValueError("Installed guest differs from retained native input")
+            x["package_info"] = text(root / "package-info")
+        elif label == "harness-host-setup":
+            # Check the setup source before changing the disposable generated command.
+            if digest(setup) != COLD_SETUP_SCRIPT_SHA256:
+                raise ValueError("Claude setup script differs from the selected cold-setup input")
+            x["command_instrumentation"] = instrument_cold_setup(root / "agents/first/home/.safeyolo-command")
+        elif label == "guest-stage-and-boot":
+            x["diagnostic_runtime"] = live_record()
+            # A missing version result remains unknown; it does not stop setup.
+            guest("guest-mise-version", "mise --version", deadline, private_output=True)
+        save()
+    x["diagnostic_runtime_after_setup"] = live_record()
+    before, after = x["diagnostic_runtime"], x["diagnostic_runtime_after_setup"]
+    x["same_diagnostic_runtime"] = bool(before.get("run_id") and before == after
+        and len(after["live_births"]) == 2
+        and all(pair["observed"] and pair["observed"] == pair["recorded"] for pair in after["live_births"].values()))
+    if not x["same_diagnostic_runtime"]:
+        raise ValueError("Same live sandbox identity was not established across tool setup")
+    x["observation_outcome"] = "cold setup captured; independent assessment required"
+    save()
+
+
+def cold_setup_operands():
+    home = root / "agents/first/home"
+    markers = home / ".safeyolo-cold-setup.tsv"
+    # These four fields are authored by the timing wrapper, never tool output.
+    x["cold_setup_tool_events"] = []
+    if markers.is_file():
+        for line in markers.read_text().splitlines():
+            label, event, epoch, status = line.split("\t")
+            x["cold_setup_tool_events"].append({"step": label, "event": event,
+                "epoch_seconds": epoch, "exit": int(status) if status else None})
+    installs = home / ".mise/installs"
+    x["installed_tool_versions"] = {tool: sorted(p.name for p in (installs / tool).iterdir())
+        for tool in ["node", "npm-anthropic-ai-claude-code"] if (installs / tool).is_dir()}
+    # Export version numbers only. The original command output stays private.
+    for key, filename, pattern in [
+        ("mise_version", "guest-mise-version.stdout", r"(?:mise )?(\d+\.\d+\.\d+)(?:[^\n]*)\n?"),
+        ("claude_version", "harness-cold-setup.stdout", r"(\d+\.\d+\.\d+) \(Claude Code\)\s*"),
+    ]:
+        version = re.fullmatch(pattern, text(private / filename) or "")
+        x[key] = version[1] if version else None
+    x["network_intervals"] = provider_intervals(include_downloads=True)
+    save()
 
 
 def connected_run(args, package):
@@ -1310,7 +1659,7 @@ def connected_run(args, package):
     if first.get("exit") != 0:
         return
     x["bootstrap_sha256"] = digest(project / "install-safeyolo.sh")
-    cold, before = entered("cold", 900, connected=True)
+    cold, before = entered("cold", args.cold_seconds, connected=True)
     capture(x, "after_q_runtime", live_record)
     if archive.is_file():
         x["host_archive"] = {"bytes": archive.stat().st_size, "sha256": digest(archive)}
@@ -1337,7 +1686,7 @@ def connected_run(args, package):
             and not warm.get("observer_terminated_viewer") and x["same_runtime_record"] and x["same_launch"]
             and x["same_conversation"] and x["host_file_unchanged"] and x["live_births_match"]
             and x.get("host_archive", {}).get("matches_assigned_bytes")
-            and isinstance(x["package_info"], str) and f"source_commit={CONNECTED_SOURCE}" in x["package_info"]
+            and isinstance(x["package_info"], str) and f"source_commit={package['source']}" in x["package_info"]
             and "profile=production" in x["package_info"] and f"platform={args.platform}" in x["package_info"]
             and all(before.get(path) and after.get(path) for path in PUBLIC_STATE + PRIVATE_STATE
                     + ["agents/first/home/.claude/.credentials.json"])
@@ -1356,22 +1705,36 @@ def main():
     parser.add_argument("--platform", required=True, choices=PACKAGES)
     parser.add_argument("--observation-dir", type=Path, help="fresh private observer directory outside the checkout")
     parser.add_argument("--observer-source", default="unknown", help="workflow checkout commit; separate from product identities")
+    parser.add_argument("--cold-seconds", type=int, default=900,
+                        help="cold observation allowance in seconds; signed-out mode includes bootstrap (default: 900)")
+    parser.add_argument("--execution-mode", choices=["unknown", "native", "qemu-tcg"], default="unknown",
+                        help="execution mode declared by the fixture; architecture alone does not establish native execution")
     parser.add_argument("--cleanup-only", action="store_true", help="stop and inspect this observer's recorded attempt")
-    parser.add_argument("--connected", action="store_true", help="foreground AMD64 first task and live return using existing consented host authentication")
-    parser.add_argument("--preparation", type=Path, help="nonsecret actual preparation commands/times/reading; required with --connected")
+    parser.add_argument("--connected", action="store_true", help="foreground Ubuntu first task and live return using existing consented host authentication")
+    parser.add_argument("--cold-setup-only", action="store_true", help="native ARM64 cold sandbox and tool diagnostic; no reentry, login or model task")
+    parser.add_argument("--preparation", type=Path, help="nonsecret actual preparation commands/times/reading; required with --connected, also accepted for input-readiness accounting")
+    parser.add_argument("--prepared-codex-auth", action="store_true",
+                        help="allow only explicitly adopted Codex auth in the future agent home; requires --preparation")
     args = parser.parse_args()
+    if args.cold_seconds <= 0:
+        parser.error("--cold-seconds must be a positive whole number")
+    if args.cold_setup_only and (args.connected or args.platform != "linux-arm64"):
+        parser.error("--cold-setup-only requires signed-out linux-arm64")
+    if HARNESS == "codex" and (args.connected or args.cold_setup_only):
+        parser.error("The Codex binding observes input readiness without a new task; use the ordinary public entry.")
+    if args.prepared_codex_auth and (HARNESS != "codex" or not args.preparation):
+        parser.error("--prepared-codex-auth requires the Codex binding and actual --preparation accounting")
     if os.uname().nodename != args.host or args.host == "sy-1050-c9-cold-428968871" or os.geteuid() == 0:
         raise SystemExit("Use only the named fresh host as its ordinary user; the retained fixture is excluded.")
     root = Path.home() / ".safeyolo"
     private = args.observation_dir or Path.home() / "239-onboarding-observation"
     project = Path.home() / "239-onboarding-project"
     cli = root / "bin/safeyolo"
-    if args.connected and args.platform != "linux-amd64":
-        raise SystemExit("The connected operator witness is bound to Ubuntu AMD64; signed-out platform use is unchanged.")
-    package = CONNECTED_PACKAGE if args.connected else PACKAGES[args.platform]
-    source = CONNECTED_SOURCE if args.connected else SOURCE
+    package = (COLD_SETUP_PACKAGE if args.cold_setup_only else
+               CONNECTED_PACKAGE if args.connected and args.platform == "linux-amd64" else PACKAGES[args.platform])
+    source = package["source"]
     LAUNCH = ["bash", "install-safeyolo.sh", "--release", "host-" + source, "--launch", ".",
-              "--name", "first", "--harness", "claude", "--launcher", "tmux-window"]
+              "--name", "first", "--harness", HARNESS, "--launcher", "tmux-window"]
     archive = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "safeyolo/host-packages" / ("host-" + source) / f"safeyolo-{args.platform}-production.tar.gz"
     store = Path.home() / ".local/share/safeyolo/guests"
     os.umask(0o077)
@@ -1390,15 +1753,16 @@ def main():
         save()
         return 0 if x.get("cleanup_verified") else 1
     private.mkdir(mode=0o700)
-    x = {"started": stamp(), "purpose": "Public Ubuntu install, normal q and warm repeat",
+    x = {"started": stamp(), "purpose": "Public Ubuntu install, normal q and warm repeat", "harness": HARNESS,
          "observation_outcome": "partial",
          "platform": args.platform, "expected_host_package": package,
          "native_source": source, "bootstrap_source": BOOTSTRAP, "observer_parent": "operator6542/6732",
          "observer_source": args.observer_source,
+         "cold_allowance_seconds": args.cold_seconds, "execution_mode": args.execution_mode,
          "ownership": {"runner": "borrowed; no host shutdown or tool/cache removal",
                        "product_root": str(root), "agent": "first", "project": str(project), "private_observer": str(private)},
          "product_commands": [], "interactions": [], "observations": [], "phase_observations": [],
-         "limits": ["Signed-out endpoint only; no model task, login or authentication copy",
+         "limits": ["No model task or new login. Codex uses operator-provisioned agent-local state; host authentication is not imported." if HARNESS == "codex" else "Signed-out endpoint only; no model task, login or authentication copy",
                     "File/terminal boundaries are sampled; combined phases and provider/download waits remain bounds",
                     "Terminal screens and state hashes must remain private; only selected-state equality and presence are exported",
                     "Guest-home proof covers the saved command and a guest-written marker, not every changing home file",
@@ -1407,17 +1771,25 @@ def main():
     if args.connected:
         x["purpose"] = "Connected public first task and normal live return"
         x["observer_parent"] = "TASK7946/operator7950"
-        x["limits"] = ["One authorized existing-host-authentication Ubuntu AMD64 witness; no new sign-in or other platform claim.",
+        x["limits"] = [f"One authorized existing-host-authentication Ubuntu witness on {args.platform}; no new sign-in or other platform claim.",
             "Only selected policy, CA/token, guest, authentication, configuration and task state comparisons; no whole-home/cache equality.",
             "Only captured process births/listeners are covered by owned cleanup; historical missing captures stay unknown.",
             "Terminal screens, canonical history contents and state hashes stay private.",
             "Source readiness is not product acceptance. The 15-second target stays unmet."]
     x["baseline"] = inventory()
     save()
+    if args.prepared_codex_auth:
+        preparation_accounting(args.preparation)
+        x["prepared_codex_auth_only"] = codex_auth_only_root()
+        x["limits"].append("Agent-local Codex authentication was explicitly staged/adopted before installation. This is a prepared-auth baseline; all native tool acquisition remains in the product interval.")
+        save()
+        if not x["prepared_codex_auth_only"]:
+            return 2
     overrides = [p for p in os.environ if p.startswith("SAFEYOLO_")]
     prior_product = any(p.exists() or p.is_symlink() for p in
-                        [root, archive.parent, store, Path.home() / ".local/share/safeyolo/tools"])
-    prior_vendor = any(x["baseline"][key][p] for key in (["vendor_cache_present"] if args.connected else ["auth_present", "vendor_cache_present"]) for p in x["baseline"][key])
+                        ([root] if not args.prepared_codex_auth else [])
+                        + [archive.parent, store, Path.home() / ".local/share/safeyolo/tools"])
+    prior_vendor = any(x["baseline"][key][p] for key in (["vendor_cache_present"] if args.connected or args.prepared_codex_auth else ["auth_present", "vendor_cache_present"]) for p in x["baseline"][key])
     if prior_product or prior_vendor or overrides or x["baseline"]["credential_env_names"] or os.uname().machine != package["machine"]:
         x["baseline_unavailable"] = {"reason": "Existing product/authentication inputs, overrides or wrong architecture; all preserved", "override_names": overrides}
         save()
@@ -1440,6 +1812,19 @@ def main():
     x["fixture_preparation"] = {"project": str(project), "file": None if args.connected else "onboarding-fixture.txt", **stamp()}
     x["owns_product_attempt"] = True
     save()
+    if args.cold_setup_only:
+        try:
+            cold_setup_run(args, package)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            x["observer_error"] = str(error)
+        finally:
+            try:
+                cold_setup_operands()
+            finally:
+                cleanup()
+                x["ended"] = stamp()
+                save()
+        return 0 if x["observation_outcome"] != "partial" and x.get("cleanup_verified") else 1
     if args.connected:
         try:
             connected_run(args, package)
@@ -1457,9 +1842,14 @@ def main():
                 save()
         return 0 if x["observation_outcome"] != "partial" and x.get("cleanup_verified") else 1
     try:
+        if args.preparation:
+            preparation_accounting(args.preparation)
         observe("baseline-sudo-noninteractive", ["sudo", "-n", "true"], 5)
-        record_reading("cold", "signed-out observation instructions", SIGNED_OUT_PROSE.encode())
-        print(SIGNED_OUT_PROSE, flush=True)
+        prose = ("Use the authorized selected Codex state. No model task or new sign-in. "
+                 "After its input display, detach with Ctrl-b d, use q to keep the session, then repeat launch."
+                 if HARNESS == "codex" else SIGNED_OUT_PROSE)
+        record_reading("cold", "client observation instructions", prose.encode())
+        print(prose, flush=True)
         started = time.monotonic()
         first = observe("bootstrap-download", DOWNLOAD, 60, role="product")
         x["product_commands"].append(first)
@@ -1467,10 +1857,14 @@ def main():
         if first.get("exit") != 0:
             return 1
         x["bootstrap_sha256"] = digest(project / "install-safeyolo.sh")
-        cold, state_before = entered("cold", max(1, 900 - (time.monotonic() - started)))
+        save()
+        if BOOTSTRAP_SHA256 is not None and x["bootstrap_sha256"] != BOOTSTRAP_SHA256:
+            raise ValueError("Downloaded bootstrap differs from the selected release source.")
+        cold, state_before = entered("cold", max(1, args.cold_seconds - (time.monotonic() - started)))
+        readiness_key = "input_ready" if HARNESS == "codex" else "client_display"
         x["timings"] = {"bootstrap_seconds": first["ended"]["monotonic"] - first["monotonic"],
-                        "cold_readiness_seconds": (cold["signed_out_label"]["monotonic"] - first["monotonic"])
-                        if cold.get("signed_out_label") else None}
+                        "cold_readiness_seconds": (cold[readiness_key]["monotonic"] - first["monotonic"])
+                        if cold.get(readiness_key) else None}
         capture(x, "after_q_runtime", live_record)
         capture(x, "after_q_processes", processes)
         guest("after-q-marker", MARKER_QUERY, time.monotonic() + 15)
@@ -1483,13 +1877,14 @@ def main():
         observe("native-help", [cli, "--help"])
         observe("proxy-version", [root / "bin/safeyolo-proxy", "--version"])
         observe("installed-runsc-version", [root / "libexec/runsc", "--version"])
-        guest("harness-version", "command -v claude; claude --version", time.monotonic() + 20)
+        guest("harness-version", f"command -v {HARNESS}; {HARNESS} --version", time.monotonic() + 20)
         save()
         # A failed/terminated first entry is not silently retried as a warm success.
-        if cold.get("ordinary_q") and cold.get("exit_code") == 0 and not cold.get("observer_terminated_viewer"):
+        if (cold.get("ordinary_q") and cold.get("exit_code") == 0 and not cold.get("observer_terminated_viewer")
+                and (HARNESS != "codex" or cold.get(readiness_key))):
             warm, state_after = entered("warm", 180)
-            x["timings"]["warm_readiness_seconds"] = (warm["signed_out_label"]["monotonic"] - warm["monotonic"]
-                if warm.get("signed_out_label") else None)
+            x["timings"]["warm_readiness_seconds"] = (warm[readiness_key]["monotonic"] - warm["monotonic"]
+                if warm.get(readiness_key) else None)
             x["timings"]["observer_gap_before_warm_seconds"] = warm["monotonic"] - cold["ended"]["monotonic"]
             x["selected_public_state_equality"] = {p: bool(state_before.get(p)) and state_before.get(p) == state_after.get(p) for p in PUBLIC_STATE}
             x["selected_private_state_equality"] = {p: (p in state_before and p in state_after
@@ -1504,10 +1899,10 @@ def main():
                 and all(pair["observed"] and pair["observed"] == pair["recorded"]
                         for pair in r["runtime"]["live_births"].values()) for r in [a, b])
             x["warm_returned_normally"] = bool(warm.get("ordinary_q") and warm.get("exit_code") == 0 and not warm.get("observer_terminated_viewer"))
-            complete = (cold.get("signed_out_label") and warm.get("signed_out_label")
+            complete = (cold.get(readiness_key) and warm.get(readiness_key)
                 and x.get("host_archive", {}).get("matches_assigned_bytes")
                 and isinstance(x.get("package_info"), str)
-                and f"source_commit={SOURCE}" in x["package_info"] and "profile=production" in x["package_info"]
+                and f"source_commit={source}" in x["package_info"] and "profile=production" in x["package_info"]
                 and f"platform={args.platform}" in x["package_info"]
                 and x["warm_returned_normally"] and x["same_runtime_record"] and x["same_marker"]
                 and x["marker_heartbeat_changed"] and x["live_births_match"]
@@ -1518,10 +1913,10 @@ def main():
                         and all(n["expected_result"] for n in r["network"]) for r in [a, b]))
             if complete:
                 x["observation_outcome"] = "captured; independent assessment required"
-            if not warm.get("signed_out_label"):
+            if not warm.get(readiness_key):
                 x["warm_display_limit"] = "Unclassified display; no warm harness-readiness time is claimed. Live operands and normal return are separate."
         else:
-            x["warm_not_run"] = "First entry did not return normally; preserve reached result without retry."
+            x["warm_not_run"] = "First entry lacks the required readiness or normal return; preserve reached result without retry."
     except Exception as error:
         # This observer boundary records an unexpected error and still performs owned cleanup.
         x["observer_error"] = repr(error)

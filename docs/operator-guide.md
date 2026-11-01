@@ -34,6 +34,16 @@ you opened. A running proxy alone does not mean that the agent is running.
 
 Keep the operator credential in the instance's `data/admin_token` on the host.
 
+## Schedule shell work
+
+Inside a running standard Debian guest, use cron for recurring work and at for
+one-off work. Jobs continue while the sandbox runs, even when its coding
+harness exits. Follow the [guest scheduling recipes](../cli/src/safeyolo/agent_context/skills/safeyolo/references/scheduling.md)
+for current environment and credentials, Coord messages, literal tmux input,
+listing, cancellation, diagnostics and image rollout. For work that must be
+triggered while a guest is stopped, use the separate
+[trusted host recipe](coord-operations.md#schedule-an-operator-message).
+
 ## Open an agent desktop
 
 Use the host account and instance selected above. The proxy must be running.
@@ -238,6 +248,13 @@ See [policy configuration](installation.md#check-show-and-apply).
 
 ## Read traffic and save evidence
 
+For externally generated traffic, the source prototype can bind a named TCP
+HTTP proxy to an existing agent's policy and evidence partition. Configure and
+remove the binding on the host. Read its actual address and lifecycle from the
+proxy readiness file. Follow the [external-ingress procedure and limits](networking-vsock-uds.md#operator-bound-external-ingress-prototype).
+External provenance does not claim that the selected sandbox initiated the
+traffic. Existing capture and content-retention settings still apply.
+
 In inspect with an agent selected, `traffic` lists its HTTP exchanges, called
 flows. `traffic ~c 428` selects flows with response code 428. Copy a full flow
 `id` from the result and replace `FLOW_ID` before entering these inputs:
@@ -250,7 +267,7 @@ logs
 
 `show` opens the exchange; `body` reads its retained bytes. Bodies include
 exact `data_base64` bytes and `text` when the bytes are UTF-8. JavaScript Object Notation (JSON) output escapes terminal controls. Missing or pruned bytes retain their availability and
-reason fields. `logs` reads the configured host-local audit file.
+reason fields. `logs` reads the configured host-local audit file, or explicitly selected files with `--file`.
 
 For scripts or a terminal without interactive input, direct commands carry
 their own agent selection. Use the actual name from `status`; these examples
@@ -284,6 +301,324 @@ All seven export formats are supported:
 
 A flow pruned before the byte read returns unavailable. Retention and exporter
 limits are described in [live traffic inspection](DEVELOPERS.md#live-traffic-inspection).
+
+### Read current observation measurements
+
+On the host account that owns the selected installed instance, keep the proxy
+and its authenticated administrative application programming interface (Admin API)
+running. The native command-line interface (CLI) uses that instance's
+configuration and operator token. These commands read existing metadata and do
+not enable payload capture, content storage, files or capture listeners:
+
+```sh
+safeyolo observations
+safeyolo observations --json
+```
+
+For another installed instance, put `--root /path/to/instance` or
+`--config /path/to/selected.toml` before `observations`. The report identifies
+the selected config, durable `instance_id` and process `runtime_id`. The CLI
+checks the returned instance against the selected installation's identity.
+JSON preserves the existing stats owner's values under `observations`;
+`source` identifies their owner and effective queue, payload and capture state.
+
+The measurements aggregate all agents, requests and connections in that runtime.
+They are not evidence about an individual retained connection or request.
+Reload preserves counters, namespace and effective observation settings.
+Restart changes `runtime_id` and resets counters. To check a namespace found
+with `logs list`, replace `INSTANCE_ID` and `RUNTIME_ID` with its exact values:
+
+```sh
+safeyolo observations --instance INSTANCE_ID --runtime RUNTIME_ID --json
+```
+
+A different runtime, missing identity, unavailable Admin API or absent
+measurement data returns an error, not a zero report. Identity and measurements
+come from one authenticated response, so a restart cannot attach one process's
+identity to another process's counters. A terminated response fails. The report
+describes the responding process at acquisition; it does not guarantee that
+the process remains running afterward or retrieve historical aggregates.
+
+Attempted observations, canonical admission loss, delivered consumer metadata
+and individual sink loss have different counters. A zero sink counter does not
+prove delivery or availability; check `source` for capture and subscription
+state. Empty `payload_layers` means metadata-only observation. Wire acquisition
+and interface/filter loss have their separate scope. Fixed behaviour series
+show counters and cumulative finite histogram buckets, counts and sums.
+Counters are sampled as traffic continues; canonical processing can lag
+attempted observations.
+See [observation counter meanings and limits](native-observations.md#configuration-and-operational-state).
+
+### Follow local NSM evidence
+
+On the host, Network Security Monitoring (NSM) pivots read the configured local
+audit JSONL file. The running proxy and its Admin API need not be available.
+Start with `logs list` to discover the retained instance/runtime namespaces and
+agent context. Then narrow the listing with `--instance`, `--runtime` and
+`--agent` as needed. Each entry shows connection/request references, indicator
+metadata, event IDs and physical source locations. Replace `INSTANCE_ID`,
+`RUNTIME_ID`, `REQUEST_ID` and `CONNECTION_ID` below with exact listed values.
+Use the recorded agent name; these examples select `work`.
+
+```sh
+safeyolo logs list --lines 1000
+safeyolo logs list --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --lines 1000 --json
+safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --lines 1000
+safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --lines 1000 --json
+```
+
+To distinguish successive supervised sandbox runs of the same agent, read the
+listing's `sandbox_run` and `run_context`. A `recorded` binding contains the
+host-owned agent name, agent identity and sandbox run ID captured at ingress.
+Replace `RUN_ID` below with that exact `sandbox_run.run_id`, and use the same
+namespace, agent and window as the listing:
+
+```sh
+safeyolo logs list --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --sandbox-run RUN_ID --lines 1000 --json
+safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --sandbox-run RUN_ID --lines 1000
+safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --sandbox-run RUN_ID --lines 1000 --json
+```
+
+The same `--sandbox-run` option works with repeated offline `--file` inputs.
+Without this option, pivots keep their existing selection and distinguish each
+record's run context. Run selection never matches missing context or borrows
+support from another run with reused local IDs. Conflict detection precedes run
+selection. Namespace counts describe the searched namespace before run selection.
+Source or novelty references into another run remain inspectable with unavailable
+support. `unavailable` includes standalone traffic and ingress without host-run
+authority. `unknown` attribution and `conflicting` claims remain separate from
+recorded context. Run-unavailable records can still support their existing
+run-unavailable relationships.
+
+A retained run can be stopped or replaced while its evidence remains readable.
+Late connection events retain the original ingress binding. This is historical
+provenance, not a liveness check or renewed permission. A sandbox run ID is not
+the proxy runtime ID, host launch/terminal ID or coding task. The view does not
+identify an executable or process. Request claims, filenames and current host
+files cannot supply missing historical run context. File/schema validation does
+not authenticate these claims.
+
+To inspect admission or credential handling, select the request reference from a
+scoped `security.network_guard`, guard evaluation, `security.credential_guard`
+or gateway entry. The request pivot shows the original decision or evaluation
+beside retained flow, connection and indication records. Each record retains its
+source file and physical line. Use a listed connection reference to inspect
+decisions for the requests whose flows name that connection. The same workflow
+works with the explicit files below, including decisions and transport evidence
+retained in separate files.
+
+Decision links require the same instance, runtime, resolved agent, request and
+recorded client connection. Guard evaluations show their existing `outcome`,
+`pdp` or `evaluations`; they do not imply credential detection. A denied request
+may have only ingress evidence and no upstream flow. Read an unavailable link
+as missing support in this search. An allow or credential-injection event does
+not establish upstream delivery, model receipt or compromise. Approval IDs are
+not traffic join keys. Unscoped events cannot acquire scope from a
+matching request ID. See the [scoped request contract](nsm-events.md#scoped-request-decisions)
+for supported events and evidence limits.
+
+For offline inspection on a machine with the native `safeyolo` CLI, copy retained
+native audit JSONL files from your owned instances through your existing trusted
+operational route. In a local directory containing those files, replace
+`instance-a.jsonl` and `instance-a-earlier.jsonl` below with the selected paths.
+Start with the listing, then use the exact instance, runtime, request and agent
+values it shows. The CLI needs normal filesystem read access. File mode needs no
+installed proxy, config, credentials or Admin API. It does not acquire remote
+logs. These commands read the files without modifying them:
+
+```sh
+safeyolo logs list --file instance-a.jsonl --file instance-a-earlier.jsonl --lines 1000
+safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --file instance-a.jsonl --file instance-a-earlier.jsonl --lines 1000
+safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --file instance-a.jsonl --file instance-a-earlier.jsonl --lines 1000 --json
+```
+
+To follow those audit records into an existing capture, select a current classic
+`pcap:compat` file produced by your instance. On the host or offline machine,
+use the same audit selection and namespace. Replace `capture.pcap` with the
+readable capture path and the IDs with the values from `logs list`:
+
+```sh
+safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --file instance-a.jsonl --capture capture.pcap --lines 1000 --json
+safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --file instance-a.jsonl --capture capture.pcap --lines 1000
+```
+
+The `capture` result shows matching observation metadata, its supporting audit
+lines, and the capture packet number and byte offset. Packet numbers start at
+one; offsets point to the PCAP packet header. The connection view requires the
+recorded connection and agent attribution in the selected instance/runtime.
+The request view selects observations with that recorded request ID and follows
+one level of their retained input ancestry. Lower-layer ancestry can be shared
+by several requests or include parser read-ahead. It does not identify exclusive
+request bytes. Missing lineage stays unavailable; retained lineage references
+describe partial support, not complete coverage.
+
+For a prompt exposure, `source_transport.behaviour` and
+`model_transport.behaviour` also summarize the exact source/model connections.
+Groups separate each connection, observation point, layer and direction. Each
+group reports retained chunk counts, observed-byte sums and minimum/maximum
+chunk sizes. `retained_inter_chunk_intervals_ns` reports the count, sum and
+range of intervals between retained chunks in nanoseconds. `chunks` preserves
+observation IDs, measured lengths, stream offsets, timestamps, clock resolutions,
+packet/byte offsets and audit references. The first chunk has no prior interval.
+Reversed observation order or decreasing monotonic time leaves the interval null.
+Unknown clock resolution remains null without discarding same-runtime durations.
+Known lengths supply byte sums and ranges; `chunks_with_observed_length` counts
+those chunks. Intervals can span missing chunks. A model-request query includes its
+source connection's measurements when the exact source/flow evidence resolves.
+These are descriptive connection-wide measurements. They can include other
+requests and shared input/read-ahead. They do not establish exclusive request
+bytes, anomaly scores or causal timing. Do not add layers as application bytes.
+Wire-packet segmentation is excluded, as in the fixed stream behaviour metrics.
+
+The reader scans the capture to its current end, keeping at most `--lines`
+matching connection observations across the selected and correlated source/model
+connections together, and `--lines` runtime loss records. Omitted
+records are counted. Loss ranges identify the runtime; they do not identify
+which connection or request lost evidence. Wrong namespaces, connections or
+recorded agent attribution cannot supply matching observations. Request IDs
+constrain direct request observations; they do not restrict the connection-wide
+behaviour summary. Missing
+captures and unsupported formats leave capture evidence unavailable while the
+audit view remains usable. Malformed or truncated captures can leave a partial
+prefix with a scan reason. Reaching end of file without a loss record does not
+prove that capture evidence is complete.
+
+This command reads metadata from the existing reconstructed compatibility
+representation. Synthetic addresses, TCP headers and checksums are not measured
+wire behaviour. It returns no payload and does not enable capture or change
+retention. It does not recover process, executable or coding-task provenance.
+Sandbox-run context comes from the selected audit records; capture metadata does
+not supply a new run binding. File selection and validation do not authenticate
+the producer. See [native capture controls](native-observations.md) for capture
+configuration and content-retention limits. Portable PCAPNG output remains a
+separate outcome.
+
+The listing groups records by instance/runtime, envelope agent name, recorded
+attribution and sandbox run binding. `resolved_agent` requires resolved
+attribution whose evidence owner and trusted transport identity both match
+that agent. `unknown` includes missing,
+unavailable or inconsistent attribution, even when an agent name is present.
+`conflicting` identifies incompatible event copies or transport/request owners.
+These groups stay separate. Selecting `--agent` filters recorded names; it does
+not resolve unknown attribution. No task, executable or live-agent identity is
+inferred. A connection's recorded state is historical evidence, not a liveness
+check.
+
+References in the listing are recorded keys, including source and novelty
+references whose supporting records may be unavailable. Use a connection or
+request pivot with the same namespace, agent, input files and window to inspect
+those records and link availability. An indicator without a connection/request
+reference still has its event ID, metadata and source locations. The listing
+adds no relationship verdict. Ordinary output uses JSON escaping for exact IDs,
+paths and text, including terminal controls; decode those escapes when supplying
+CLI arguments. JSON output preserves the same values.
+
+`logs list` defaults to the last 100 selected-agent rows per input, before
+namespace selection. Increase `--lines` to search a larger retained window.
+Input reports show rows read, retained physical line ranges and selected-agent
+rows omitted by the window. Listing counts describe retained distinct NSM
+records, duplicate copies and conflicts, not lifetime traffic. Non-NSM retained
+rows are counted as input copies and excluded from discovery. Ordinary control
+records and `ops.audit_validation_failed` diagnostics remain visible with plain
+`logs --json`; they cannot create NSM namespace, agent or run choices. An empty listing means no matching NSM evidence
+in the searched window, not that no agent or traffic existed.
+
+Repeat `--file` for each selected input, including files from several instances.
+Only records in the requested instance/runtime and selected agent can supply
+support. Source, flow, connection and novelty records can resolve across selected
+files in the same namespace. Without `--file`, the configured single-file
+workflow above keeps its existing behavior.
+
+Provenance depends on your source selection and the original trusted producer.
+Schema validation does not authenticate a file or its claims. The CLI does not
+infer identity from a filename. File argument order and wall timestamps do not
+establish a global chronological order.
+
+In file-mode pivot output, `inputs` maps each input number to its supplied path
+and read/window counts. A line reference such as `{"input":2,"line":7}` means
+physical line 7 of input 2. Each displayed record has `locations` for all retained
+copies, including repeated input arguments and overlapping exports. Equal parsed
+records share one evidence record even if JSON spacing or key order differs.
+Copies do not count as independent support. Within the retained windows,
+conflicting copies with the same event ID in a namespace, or conflicting connection/request owners within an
+agent, remain inspectable but cannot support a join. Records identify that
+conflict; links remain unavailable and correlations remain partial or unavailable.
+The original parsed records and input bytes are preserved.
+
+The pivot shows related `network.connection`, `traffic.flow` and
+`security.indicator` records, plus available supporting records. The output
+retains source timestamps, event IDs, attribution and details. Each link names
+its source field, scoped IDs, availability and matching physical file lines.
+Novelty links require the recorded connection and event ID. A prompt exposure
+source requires a response indication with its recorded request ID, connection
+ID and evidence hash. Copy a linked connection or request ID into the same
+command to continue. Supporting links are followed once; the command does not
+recursively traverse history.
+
+When investigating a `prompt_injection_exposure` indication, use its envelope
+`request_id` in `logs request` as above. Both ordinary and JSON output include
+the same prompt exposure correlation:
+
+1. Inspect `source.record_lines` for the exact response indication named by
+   the exposure's source request, connection, direction, host and hash.
+2. Follow `source_transport` and `model_transport` to their flow and connection
+   lines. These labels distinguish the fetched source from the authenticated
+   model request. Each novelty entry identifies the client or server connection
+   it concerns, its original indicator, exact supporting event links and reason.
+3. Look for `Investigation warning` in ordinary output, or
+   `correlations[].warning.status: investigate` in JSON. The reason combines
+   exact response-source exposure with the actual novelty fact on a named
+   source/model client or server connection. Follow `warning.supported_novelty`
+   to that transport's original indicator and current/previous/client support
+   lines. Exposure alone, novelty alone, routine policy/credential activity and
+   chunk measurements do not establish this combined warning.
+4. Read the overall `linked`, `partial` or `unavailable` status together with
+   the individual support statuses. Increase `--lines` if required evidence is
+   outside the current window. The original exposure remains visible when
+   support is missing; no available novelty is not a clean verdict.
+
+The warning uses the same configured audit file or selected `--file` inputs as
+the pivot. A supported warning can remain visible with a `partial` relationship
+when additional context is missing. `--capture` adds retained measurements and
+observation/packet/offset references when available; capture is optional.
+Missing or conflicting essential source or novelty support leaves the warning
+`unavailable`. A recorded sandbox run must match when present, but standalone
+traffic does not need a run.
+
+Connection-wide novelty can predate or serve several requests, including both
+exchanges. The correlation does not claim novelty unique to this request,
+malicious intent, model receipt or causal compromise. Legitimate quotation or
+text reuse can produce the underlying prompt signals. See the
+[correlation meaning and limits](nsm-events.md) for the exact join rules.
+
+Both namespace options are required. Local IDs from another instance or restart
+cannot join. `--agent` filters rows before links are resolved. All current audit
+families use `schema_version: 2`. Earlier generations, unversioned JSON and
+invalid current records fail explicitly. Unscoped current records cannot supply
+either side of an NSM link. No selected input is migrated or changed.
+
+For audit records, `--lines` retains the last selected-agent rows before namespace and
+pivot selection; its default is 100 **per input audit file**. Total retention is at most
+the number of inputs times `--lines`, before duplicate removal. Read and omitted
+counts include all input copies; unique, duplicate and conflicting namespace
+counts describe the selected pivot search. Each input reports its physical line
+range and total rows read. All related and supporting records in the retained
+windows are displayed; there is no additional output limit. Increase `--lines`
+to widen each window. The limit does not bound bytes read: the audit reader validates
+every audit row to end of file, including
+rows outside the window or agent selection. A malformed, unsupported or
+unreadable selected audit file aborts the command with its input number and a
+diagnostic that omits its path and event data. No partial result is returned as
+a complete search.
+
+Only the configured audit file or the explicitly selected audit files are searched. There
+is no directory discovery or rotation watcher. Unselected rotations, queued
+writes, dropped events and earlier evidence outside the windows can leave links
+unavailable. An unavailable link is not proof that nothing occurred. The view
+does not drain the running writer, reconstruct missing records, change audit
+files or fetch retained bodies. Use the existing `traffic` commands to inspect
+content that policy retained in the FlowStore; a request ID is not a FlowStore
+numeric row ID. See [NSM contracts and evidence limits](nsm-events.md).
 
 To return to an existing agent terminal, use `attach` in inspect. It requires
 a running, attachable command. A missing terminal produces an error and keeps

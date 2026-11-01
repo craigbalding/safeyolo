@@ -48,7 +48,7 @@ sha256 = "85e777937878bce2a074e70de87c10ef142c3a081387414fdfe25cdd5ede590c"
 id = "FACTORY-RESTART-NO-REPLAY"
 description = "Restart preserves outstanding handoffs and does not recreate completed work."
 node = "cli/tests/test_codex_coord_supervisor.py::test_factory_handoff_survives_restart_then_terminal_is_deduplicated"
-sha256 = "ecbc86ab542f9995bb526022c1c70d7913537504332e53b4202ade1a8c196b6d"
+sha256 = "e535be5bf6366a5cfa4d784894ab0088468b3c22f5ced9babd4e4d67a02add32"
 
 [[factory_acceptance]]
 id = "FACTORY-AGENT-ROOM-BOUNDARY"

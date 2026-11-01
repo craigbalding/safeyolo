@@ -348,6 +348,16 @@ verified process group and reports terminal state. An occupied supervisor or
 unverified surviving group remains an error; a transport PID cannot prove
 guest-command liveness.
 
+For a running supervised command, `agent diagnostics NAME` includes the latest
+sanitized stderr tail in `error`. The guest publishes captured stderr on its
+one-second heartbeat without signalling or restarting the command. The tail
+retains at most 16 KiB of raw bytes before terminal-control sanitization. The
+guest's `supervise check` JSON includes `last_stderr`, `last_stderr_bytes`,
+`last_stderr_truncated` and `last_stderr_sha256`. The byte count and SHA-256 hash
+cover all raw stderr captured in that attempt, including discarded bytes. A
+quiet replacement retains the previous exit diagnostic until the replacement
+emits stderr. Exit publishes the final tail through the same private state.
+
 If the guest loopback banner succeeds while the host shell banner fails, inspect
 the recorded guest bridge processes and helper vsock errors to separate those
 remaining hops. If this recovery path also times out, the result cannot

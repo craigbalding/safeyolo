@@ -35,8 +35,11 @@ pub async fn run(config: PathBuf, args: &[String]) -> Result<i32, Error> {
 pub async fn prepare_proxy(config: &mut crate::Config) -> Result<(), Error> {
     if let Some(path) = config.native_config_path.clone() {
         host_platform::in_config(path.clone(), async {
-            host_lifecycle::sync_agent_listeners(None).await?;
-            *config = crate::native_config::read(&path)?;
+            let mut timing = crate::startup_timings::StartupTimings::new("listener_preparation");
+            *config = host_lifecycle::sync_agent_listener_config(None)
+                .await?
+                .ok_or("proxy configuration disappeared during listener reconciliation")?;
+            timing.record("projection");
             Ok::<_, Error>(())
         })
         .await?;
@@ -99,6 +102,7 @@ pub(crate) fn proxy_live() -> bool {
 }
 
 pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
+    let mut timing = crate::startup_timings::StartupTimings::new("launcher");
     let root = host_platform::config_dir();
     let lock_path = root.join("data/proxy-start.lock");
     let _lock =
@@ -121,13 +125,49 @@ pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
         return Ok(None);
     }
     let config_path = host_platform::config_path();
+    timing.record("ownership_start_lock");
     let config = crate::native_config::read(&config_path)?;
-    if let Err(error) = crate::coord_rooms::start(&root, None, None, None).await {
-        eprintln!(
-            "Coord unavailable: {error}. Proxy startup continues; run coord status after repairing its prerequisite."
-        );
+    timing.record("configuration");
+    // Coord is optional for proxy readiness. Keep both starts owned by this
+    // command, and await both results before returning or releasing the lock.
+    let coord = async {
+        let mut timing = crate::startup_timings::StartupTimings::new("managed_nats");
+        if let Err(error) = crate::coord_rooms::start(&root, None, None, None).await {
+            eprintln!(
+                "Coord unavailable: {error}. Proxy startup continues; run coord status after repairing its prerequisite."
+            );
+        }
+        timing.record("start_complete");
+    };
+    let (_, proxy) = tokio::join!(
+        coord,
+        start_proxy_process(&root, &config_path, &config.readiness_file),
+    );
+    let (mut child, ready) = proxy?;
+    // A proxy that became ready first can exit while NATS is still starting.
+    // Retain its child handle and recheck readiness at command completion.
+    let result = (|| {
+        if child.try_wait()?.is_some() {
+            return Err("proxy exited during startup; inspect logs/proxy.log".into());
+        }
+        if !config.readiness_file.is_file() || !proxy_live() {
+            return Err(
+                "proxy lost verified readiness during startup; inspect logs/proxy.log".into(),
+            );
+        }
+        Ok(ready)
+    })();
+    if result.is_err() {
+        child.kill().await?;
     }
-    let readiness = &config.readiness_file;
+    result
+}
+
+async fn start_proxy_process(
+    root: &Path,
+    config_path: &Path,
+    readiness: &Path,
+) -> Result<(tokio::process::Child, Option<Value>), Error> {
     match fs::remove_file(readiness) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -142,7 +182,7 @@ pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
     command
         .args(["--config"])
         .arg(config_path)
-        .env("SAFEYOLO_CONFIG_DIR", &root)
+        .env("SAFEYOLO_CONFIG_DIR", root)
         .env_remove("SAFEYOLO_HOST_SETUP_LOCK_FD")
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
@@ -156,20 +196,34 @@ pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
         });
     }
     let mut child = command.spawn()?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while tokio::time::Instant::now() < deadline {
-        if child.try_wait()?.is_some() {
-            return Err("proxy exited during startup; inspect logs/proxy.log".into());
+    // Healthy initialization can exceed five seconds on emulated hosts.
+    // Keep polling readiness so faster starts return without an added delay.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let result = async {
+        while tokio::time::Instant::now() < deadline {
+            if child.try_wait()?.is_some() {
+                return Err("proxy exited during startup; inspect logs/proxy.log".into());
+            }
+            if readiness.is_file() && proxy_live() {
+                // The startup lock binds this newly created incarnation. Demo can
+                // release it only while this record and all runtimes still agree.
+                return crate::guest_commands::read_state(&process_path());
+            }
+            tokio::select! {
+                status = child.wait() => {
+                    status?;
+                    return Err("proxy exited during startup; inspect logs/proxy.log".into());
+                }
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
         }
-        if Path::new(readiness).is_file() && proxy_live() {
-            // The startup lock binds this newly created incarnation. Demo can
-            // release it only while this record and all runtimes still agree.
-            return crate::guest_commands::read_state(&process_path());
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        Err("proxy did not publish readiness within fifteen seconds; inspect logs/proxy.log".into())
     }
-    child.kill().await?;
-    Err("proxy did not publish readiness within five seconds; inspect logs/proxy.log".into())
+    .await;
+    if result.is_err() {
+        child.kill().await?;
+    }
+    result.map(|ready| (child, ready))
 }
 
 pub(crate) async fn stop_proxy() -> Result<(), Error> {
@@ -443,7 +497,7 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
             print(&report)?;
         }
         [agent, help] if agent == "agent" && help == "--help" => println!(
-            "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude] [--launcher LAUNCHER]\nsafeyolo [--root ROOT] agent create|configure NAME --workspace PATH [--memory MB] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] agent start NAME [--foreground|--sandbox-only] [--dangerously-allow-unowned] [-- ARGUMENTS...]\nsafeyolo [--root ROOT] agent status|stop|cleanup|attach|present|diagnostics|recover NAME\nsafeyolo [--root ROOT] agent watch NAME [--history COUNT] [--once] [--plain]\nsafeyolo [--root ROOT] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--root ROOT] agent mount NAME HOST:GUEST[:ro]\nsafeyolo [--root ROOT] agent unmount NAME GUEST\nsafeyolo [--root ROOT] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nLaunch defaults to the current directory and Claude. Setup and optional host-state copying require host consent. Detach from the agent terminal to review requests here. Configure changes apply at the next sandbox start. Mount and unmount change only the current sandbox; saved mounts are unchanged and apply again on restart. Busy removal is refused. Copied or already resident data is not erased. Start arguments affect only that launch. Attach never launches an absent coding agent. Shell is independent."
+            "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude|codex] [--launcher LAUNCHER]\nsafeyolo [--root ROOT] agent create|configure NAME --workspace PATH [--memory MB] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] agent start NAME [--foreground|--sandbox-only] [--dangerously-allow-unowned] [-- ARGUMENTS...]\nsafeyolo [--root ROOT] agent status|stop|cleanup|attach|present|diagnostics|recover NAME\nsafeyolo [--root ROOT] agent watch NAME [--history COUNT] [--once] [--plain]\nsafeyolo [--root ROOT] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--root ROOT] agent mount NAME HOST:GUEST[:ro]\nsafeyolo [--root ROOT] agent unmount NAME GUEST\nsafeyolo [--root ROOT] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nLaunch defaults to the current directory and Claude. Setup and optional Claude host-state copying require host consent. Codex uses agent-local authentication and settings. Detach from the agent terminal to review requests here. Configure changes apply at the next sandbox start. Mount and unmount change only the current sandbox; saved mounts are unchanged and apply again on restart. Busy removal is refused. Copied or already resident data is not erased. Start arguments affect only that launch. Attach never launches an absent coding agent. Shell is independent."
         ),
         [kind, operation, rest @ ..] if kind == "agent" && operation == "launch" => {
             return crate::host_launch::run(rest).await;
@@ -537,6 +591,8 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
                         let observed = host_lifecycle::runtime(&agent).await?;
                         if !host_lifecycle::reuses_current_launch(&observed) {
                             host_lifecycle::validate_start_launcher(&proposed,operation)?;
+                            #[cfg(target_os = "macos")]
+                            crate::host_boot::warn_broad_shares(&proposed);
                         }
                         start_proxy().await?;
                     }

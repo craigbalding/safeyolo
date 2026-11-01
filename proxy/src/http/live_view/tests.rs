@@ -54,6 +54,7 @@ impl Fixture {
 
     fn identity(&self) -> ConnectionIdentity {
         ConnectionIdentity {
+            ingress_binding: None,
             run: None,
             agent_id: "alice".into(),
             connection_id: "owned-connection".into(),
@@ -188,7 +189,7 @@ fn applied_metadata_survives_the_real_provenance_decode_error() {
         .runtime
         .test_context
         .prepare_request_current(
-            fixture.runtime.policy.as_ref(),
+            fixture.runtime.policy.as_deref(),
             test_context::Request {
                 host: "owned.invalid",
                 prior_response: false,

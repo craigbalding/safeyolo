@@ -93,6 +93,52 @@ fn pending(start: Start) -> Box<PendingInjection> {
     }
 }
 #[test]
+fn codex_gateway_owns_the_imported_account_header_and_validates_before_mutation() {
+    let (_directory, vault) = vault();
+    for account in [Some("host-selected-account"), None] {
+        let mut credential = credential();
+        credential.subscription_client =
+            Some(safeyolo_proxy::credentials::SubscriptionClient::Codex);
+        credential.chatgpt_account_id = account.map(str::to_owned);
+        vault.store(credential).unwrap();
+        let mut headers = headers();
+        headers.append(
+            "chatgpt-account-id",
+            HeaderValue::from_static("guest-account"),
+        );
+        headers.append(
+            "chatgpt-account-id",
+            HeaderValue::from_static("guest-duplicate"),
+        );
+        ready(start(selection(Some("bearer")), Some(&vault), "https").unwrap())
+            .apply(&mut headers)
+            .unwrap();
+        assert_eq!(
+            headers.get_all("chatgpt-account-id").iter().count(),
+            usize::from(account.is_some())
+        );
+        assert_eq!(
+            headers
+                .get("chatgpt-account-id")
+                .map(|value| value.to_str().unwrap()),
+            account
+        );
+        assert_eq!(headers["x-credential"], "Bearer synthetic-value");
+    }
+    let mut credential = credential();
+    credential.subscription_client = Some(safeyolo_proxy::credentials::SubscriptionClient::Codex);
+    credential.chatgpt_account_id = Some("invalid\r\naccount".into());
+    vault.store(credential).unwrap();
+    assert!(matches!(
+        start(selection(Some("bearer")), Some(&vault), "https"),
+        Err(Error {
+            kind: ErrorKind::InvalidHeaderValue,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn exact_auth_kind_drives_validated_sensitive_header_replacement() {
     let (_directory, vault) = vault();
     vault.store(credential()).unwrap();
@@ -531,14 +577,17 @@ fn existing_service_selection_and_credential_guard_see_the_injected_secret() {
     let guard = CredentialGuard::new(b"synthetic-hmac");
     guard.load_sensor_config(&json!({})).unwrap();
     let original = Secret::new("Bearer sgw_synthetic");
-    assert!(
-        guard
-            .classify_headers(&[Header {
-                name: "Authorization",
-                value: &original
-            }])
-            .unwrap()
-            .is_empty()
+    let original_findings = guard
+        .classify_headers(&[Header {
+            name: "Authorization",
+            value: &original,
+        }])
+        .unwrap();
+    assert_eq!(original_findings.len(), 1);
+    assert_eq!(original_findings[0].rule, "unknown_secret");
+    assert_eq!(
+        original_findings[0].credential_type.as_deref(),
+        Some("unknown")
     );
     let mut headers = HeaderMap::new();
     headers.insert(

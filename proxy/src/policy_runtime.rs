@@ -30,9 +30,8 @@ pub(crate) fn load_native_locked(
     let mut observed = Policy::capture_native_baseline_files(path, previous)?;
     let source = zeroize::Zeroizing::new(std::fs::read_to_string(path)?);
     let now = policy::current_time_ms();
-    let mut candidate = Policy::native_source(&source, path, registry, now)?;
-    let document = policy::parse_toml_document(&source)?;
-    let expired = policy::expired_host_entries(&document, now)?;
+    let (mut candidate, expired) =
+        Policy::native_source_with_expired_hosts(&source, path, registry, now, previous)?;
     if !expired.is_empty() {
         let replacement_time =
             policy::expiry::persist_expired_hosts_locked(path, &expired, Some(&source))?;
@@ -259,7 +258,7 @@ mod tests {
         assert_eq!(
             event,
             json!({
-                "schema_version":1, "event":"ops.policy_error", "kind":"ops",
+                "schema_version":2, "event":"ops.policy_error", "kind":"ops",
                 "severity":"high", "addon":"policy-loader",
                 "summary":format!("Baseline policy load failed: {}", expected.message),
                 "details":{"policy_type":"baseline", "error":expected.message}
@@ -310,7 +309,14 @@ mod tests {
                 .unwrap()
                 .lines()
                 .map(|line| {
-                    let mut value: Value = serde_json::from_str(line).unwrap();
+                    let mut value = crate::audit::parse_record(line).unwrap();
+                    assert_eq!(
+                        value
+                            .as_object_mut()
+                            .unwrap()
+                            .shift_remove("schema_version"),
+                        Some(json!(2))
+                    );
                     value["ts"] = "<canonical timestamp>".into();
                     value
                 })
@@ -319,7 +325,14 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|attempt| attempt["event"].clone())
+                .map(|attempt| {
+                    let mut payload = attempt["event"].clone();
+                    payload
+                        .as_object_mut()
+                        .unwrap()
+                        .shift_remove("schema_version");
+                    payload
+                })
                 .collect();
             assert_eq!(actual, expected, "{name}");
             for (actual, expected) in actual.iter().zip(&expected) {

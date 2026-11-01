@@ -20,6 +20,30 @@ pub(crate) fn workspace(path: &Path, allow_unowned: bool) -> Result<PathBuf, Err
     Ok(path)
 }
 
+#[cfg(target_os = "macos")]
+// DOC: docs/microvm-architecture.md
+pub(crate) fn warn_broad_shares(agent: &Agent) {
+    use std::io::Write;
+
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mounts = agent.mounts.iter().filter_map(|spec| match mount(spec) {
+        Ok((host, _, false)) => Some(host),
+        _ => None, // Validation reports invalid mounts; read-only shares grant no write access.
+    });
+    for path in agent.folder.iter().map(PathBuf::from).chain(mounts) {
+        if let Some(warning) =
+            crate::macos_share_warning::broad_share_warning(&path, home.as_deref())
+        {
+            // Failure to display advice must not refuse an explicit share.
+            let _ = writeln!(
+                std::io::stderr(),
+                "{}",
+                crate::network_guard::sanitize_with_limit(&warning, usize::MAX)
+            );
+        }
+    }
+}
+
 pub(crate) fn mount(spec: &str) -> Result<(PathBuf, String, bool), Error> {
     let parts: Vec<_> = spec.split(':').collect();
     if !(parts.len() == 2 || parts.len() == 3 && parts[2] == "ro") {
@@ -358,6 +382,7 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
             &guest_inputs,
             &workspace,
             &shares,
+            agent.rootfs_overlay.as_deref() == Some("memory"),
         )?;
         crate::guest_commands::write_json(&directory.join("config.json"), &spec)?;
     }
@@ -408,6 +433,7 @@ fn oci(
     guest_inputs: &Path,
     workspace: &Path,
     shares: &[(PathBuf, String, bool)],
+    ephemeral: bool,
 ) -> Result<Value, Error> {
     let name = directory
         .file_name()
@@ -430,6 +456,18 @@ fn oci(
         ),
         bind(&directory.join("proxy"), "/safeyolo/proxy", true),
     ];
+    // runsc's file-backed tmpfs upper disappears with the sandbox. Keep the
+    // native queues in this agent's existing overlay directory instead. A
+    // reset of that directory removes them; memory mode uses the fresh rootfs.
+    if !ephemeral
+        && rootfs
+            .join("usr/local/lib/safeyolo/scheduling.sh")
+            .is_file()
+    {
+        let spool = directory.join("overlay/var/spool/cron");
+        fs::create_dir_all(&spool)?;
+        mounts.push(bind(&spool, "/var/spool/cron", false));
+    }
     // Extra sources are served by isolated Gofers after runsc start. Their
     // guest targets are prepared inside the sentry, not through host home
     // paths. An OCI bind would leave the source in the root Gofer tree.
@@ -516,6 +554,7 @@ mod mount_tests {
             root,
             &root.join("workspace"),
             &shares,
+            false,
         )
         .unwrap();
         let mounts = spec["mounts"].as_array().unwrap();
@@ -557,7 +596,7 @@ mod mount_tests {
         let root = fixture.path();
         let directory = root.join("agents/alice");
         fs::create_dir_all(&directory).unwrap();
-        let spec = oci(root, &directory, root, root, root, &[]).unwrap();
+        let spec = oci(root, &directory, root, root, root, &[], false).unwrap();
         assert!(
             spec["process"]["env"]
                 .as_array()
@@ -592,6 +631,71 @@ mod mount_tests {
                 .success()
         );
         assert_eq!(fs::read_to_string(started).unwrap(), "started");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn scheduler_spool_is_per_agent_and_survives_boot_staging() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let rootfs = root.join("rootfs");
+        let alice = root.join("agents/alice");
+        let bob = root.join("agents/bob");
+        let spool = alice.join("overlay/var/spool/cron");
+        fs::create_dir_all(&rootfs).unwrap();
+        let spec = |directory: &Path, ephemeral| {
+            oci(root, directory, &rootfs, root, root, &[], ephemeral).unwrap()
+        };
+        let mounted_spool = |spec: Value| {
+            spec["mounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|mount| mount["destination"] == "/var/spool/cron")
+                .cloned()
+        };
+        // Custom images that omit the integration need no new bind target.
+        assert!(mounted_spool(spec(&alice, false)).is_none());
+        assert!(!spool.exists());
+        fs::create_dir_all(rootfs.join("usr/local/lib/safeyolo")).unwrap();
+        fs::write(rootfs.join("usr/local/lib/safeyolo/scheduling.sh"), "").unwrap();
+        let mount = mounted_spool(spec(&alice, false)).unwrap();
+        assert_eq!(mount["source"], json!(spool));
+        for option in ["rw", "nosuid", "nodev"] {
+            assert!(
+                mount["options"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(option))
+            );
+        }
+        for job in ["crontabs/agent", "atjobs/a00001000000"] {
+            let path = spool.join(job);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, job).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        // A later run must reuse the queues without rewriting job metadata.
+        assert_eq!(mounted_spool(spec(&alice, false)).unwrap(), mount);
+        for job in ["crontabs/agent", "atjobs/a00001000000"] {
+            assert_eq!(fs::read_to_string(spool.join(job)).unwrap(), job);
+            assert_eq!(fs::metadata(spool.join(job)).unwrap().mode() & 0o777, 0o600);
+        }
+        let bob_spool = bob.join("overlay/var/spool/cron");
+        assert_eq!(
+            mounted_spool(spec(&bob, false)).unwrap()["source"],
+            json!(bob_spool)
+        );
+        assert_eq!(fs::read_dir(&bob_spool).unwrap().count(), 0);
+        assert!(mounted_spool(spec(&alice, true)).is_none());
+        assert!(spool.join("crontabs/agent").is_file());
+        // Reset/removal of the existing overlay also discards the queues.
+        fs::remove_dir_all(alice.join("overlay")).unwrap();
+        spec(&alice, false);
+        assert_eq!(fs::read_dir(&spool).unwrap().count(), 0);
+        fs::remove_dir_all(bob.join("overlay")).unwrap();
+        fs::write(bob.join("overlay"), "not a directory").unwrap();
+        assert!(oci(root, &bob, &rootfs, root, root, &[], false).is_err());
     }
 
     #[test]

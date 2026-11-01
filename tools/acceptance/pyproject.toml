@@ -20,7 +20,18 @@ stress = [
 [tool.uv]
 package = false
 # Semgrep 1.179.0 pins MCP 1.29.0; 1.30.0 fixes GHSA-84m7-p3x7-pcfv.
-override-dependencies = ["mcp==1.30.0"]
+# GHSA-xcq7-p3pf-p88h requires OpenTelemetry API 1.45.1. Semgrep's five
+# OpenTelemetry constraints select the older family. Override them together:
+# the SDK, exporter and instrumentation require matching family versions.
+# The dependency controls exercise Semgrep tracing and the propagation parser.
+override-dependencies = [
+    "mcp==1.30.0",
+    "opentelemetry-api==1.45.1",
+    "opentelemetry-sdk==1.45.1",
+    "opentelemetry-exporter-otlp-proto-http==1.45.1",
+    "opentelemetry-instrumentation-requests==0.66b1",
+    "opentelemetry-instrumentation-threading==0.66b1",
+]
 
 [tool.mypy]
 # The existing repository is not yet clean under mypy. Lens uses this profile

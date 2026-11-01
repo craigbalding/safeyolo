@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import shlex
 import signal
 import socket
 import subprocess
@@ -125,6 +126,69 @@ def test_existing_work_directory_is_preserved_before_acquisition(tmp_path):
         with pytest.raises(FileExistsError):
             m.main()
     assert marker.read_text() == "keep"
+
+
+@pytest.mark.parametrize("cold_seconds", [None, 1800])
+@pytest.mark.parametrize("ssh_timeout", [False, True])
+def test_main_propagates_cold_allowance_and_recovers_reached_result_after_ssh_timeout(tmp_path, cold_seconds, ssh_timeout):
+    work = tmp_path / "vm"
+    allowance = 900 if cold_seconds is None else cold_seconds
+    observer_seconds = 1380 if cold_seconds is None else allowance + 900
+    ssh_seconds = 1500 if cold_seconds is None else allowance + 1080
+    recovery_seconds = 100 if cold_seconds is None else 180
+    observed = {"cold_allowance_seconds": allowance, "execution_mode": "qemu-tcg", "observation_outcome": "partial"}
+
+    def run(command, **kwargs):
+        if command[0] == "ssh" and "timeout --signal=INT" in command[-1] and ssh_timeout:
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        if command[0] == "ssh-keygen":
+            (work / "ssh-key.pub").write_text("public-test-key")
+        stdout = b""
+        if command[:2] == ["qemu-img", "info"]:
+            stdout = b'{"format":"qcow2"}'
+        elif command[0] == "ssh" and command[-1] == "cat onboarding-observation/result.json":
+            stdout = json.dumps(observed).encode()
+        status = 37 if command[0] == "ssh" and "timeout --signal=INT" in command[-1] else 0
+        return subprocess.CompletedProcess(command, status, stdout, b"")
+
+    argv = [m.__file__, "--work-dir", str(work), "--observer-source", "test-source"]
+    if cold_seconds is not None:
+        argv += ["--cold-seconds", str(cold_seconds)]
+    vm = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    machine = os.uname_result(("Linux", "fixture", "6.8", "test", "aarch64"))
+    try:
+        with patch.object(sys, "argv", argv), patch.object(m.os, "uname", autospec=True, return_value=machine), \
+             patch.object(m, "port_closed", autospec=True, return_value=True), \
+             patch.object(m, "verify_diagnostic_guest", autospec=True, return_value={}), \
+             patch.object(m, "verify_image", autospec=True), patch.object(m.signal, "signal", autospec=True), \
+             patch.object(m.subprocess, "Popen", autospec=True, return_value=vm), \
+             patch.object(m.subprocess, "run", autospec=True, side_effect=run) as commands:
+            assert m.main() == 1
+        assert vm.poll() is not None
+    finally:
+        if vm.poll() is None:
+            vm.kill()
+        vm.wait(timeout=5)
+    observer = [call for call in commands.call_args_list if call.args[0][0] == "ssh"
+                and "timeout --signal=INT" in call.args[0][-1]]
+    assert len(observer) == 1
+    remote = shlex.split(observer[0].args[0][-1])
+    assert remote[:4] == ["timeout", "--signal=INT", "--kill-after=120s", str(observer_seconds)]
+    assert remote[remote.index("--cold-seconds") + 1] == str(allowance)
+    assert remote[remote.index("--execution-mode") + 1] == "qemu-tcg"
+    assert observer[0].kwargs["timeout"] == ssh_seconds
+    recovery = [call for call in commands.call_args_list if "--cleanup-only" in call.args[0][-1]]
+    assert len(recovery) == 1 and recovery[0].kwargs["timeout"] == recovery_seconds
+    report = json.loads((work / "reports/fixture.json").read_text())
+    assert report["cold_allowance_seconds"] == allowance
+    assert report["execution_mode"] == "qemu-tcg"
+    assert report["observer_timeout_seconds"] == observer_seconds
+    assert report["ssh_timeout_seconds"] == ssh_seconds
+    assert ("error" in report) == ssh_timeout
+    assert report.get("observer_exit") == (None if ssh_timeout else 37)
+    assert report["vm_cleanup"]["reaped"] and report["ssh_port_closed"]
+    assert report["owned_disks_and_keys_removed"] and not (work / "ssh-key.pub").exists()
+    assert json.loads((work / "reports/observation.json").read_text()) == observed
 
 
 @pytest.mark.skipif(os.uname().machine != "aarch64", reason="the fixture executes only on native ARM64")

@@ -74,7 +74,7 @@ class TestLiveHostListener:
             report["host_liveness"].append(host_live())
             save()
             command = ("cd /workspace/tests/blackbox/isolation && "
-                       "SAFEYOLO_BLACKBOX_ISOLATION=1 pytest -q -s -rs --tb=short --timeout=30 " + shlex.join(nodes))
+                       "SAFEYOLO_BLACKBOX_ISOLATION=1 /usr/bin/python3 -m pytest -q -s -rs --tb=short --timeout=30 " + shlex.join(nodes))
             report["command"] = guest_command_args(cli, agent, command, guest_root=guest_root)
             save()
             result = subprocess.run(report["command"], capture_output=True, text=True, timeout=75)

@@ -171,6 +171,22 @@ def test_checksum_digest_preserves_tool_failure(checksum_bundle):
     assert result.returncode != 0 and not result.stdout
 
 
+def test_bootstrap_owned_bundle_moves_verified_files_without_copying(checksum_bundle, tmp_path):
+    bundle = checksum_bundle
+    binary = bundle / "bin/safeyolo"
+    previous = binary.stat()
+    contents = binary.read_bytes()
+    root = tmp_path / "installed"
+    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(tmp_path / "commands"),
+                 "--no-guest-download", "--move-bundle")
+    assert result.returncode == 0, result.stderr
+    installed = root / "bin/safeyolo"
+    assert installed.read_bytes() == contents
+    assert (installed.stat().st_dev, installed.stat().st_ino) == (previous.st_dev, previous.st_ino)
+    assert not binary.exists()
+    assert result.stdout.count("Verified SafeYolo package:") == 1
+
+
 def test_only_installed_layout_allows_original_installer_omissions(checksum_bundle):
     bundle = checksum_bundle
     command = ("bash", "-c", 'source "$1"; verify_native_package "$2" "${3:-}"',
@@ -197,12 +213,27 @@ def test_only_installed_layout_allows_original_installer_omissions(checksum_bund
 def executable(path, identity, guest_exit=None, guest_assets=None):
     # Real ELF header/architecture, controlled identity; never a runtime witness.
     source = path.with_suffix(".c")
-    guest_command = ""
+    guest_command = ('if(argc>2 && strcmp(argv[1],"codex")==0 && strcmp(argv[2],"prefetch")==0){'
+                     'char *download=getenv("PACKAGE_CODEX_PREFETCH_CLI");'
+                     'if(download){execv(download,argv);return 96;}return 0;}')
+    guest_command += ('if(argc>1 && strcmp(argv[1],"host-package")==0){'
+                      'char *decoder=getenv("PACKAGE_HOST_GUNZIP_CLI");'
+                      'if(!decoder)return 1;'
+                      'char *marker=getenv("PACKAGE_HOST_GUNZIP_CALLS");'
+                      'if(marker){FILE *out=fopen(marker,"a");if(!out)return 98;'
+                      'for(int i=1;i<argc;i++)fprintf(out,"%s\\n",argv[i]);fclose(out);}'
+                      'execv(decoder,argv);return 99;}')
     if guest_exit is not None or guest_assets is not None:
-        guest_command = ('if(argc>3 && strcmp(argv[3],"guest")==0){'
+        guest_command += ('if(argc>2 && strcmp(argv[1],"guest")==0 && strcmp(argv[2],"download")==0){'
+                         'char *download=getenv("PACKAGE_GUEST_DOWNLOAD_CLI");'
+                         'if(download){execv(download,argv);return 95;}'
+                         + (f'return {guest_exit};' if guest_exit is not None else 'puts("sha256:' + 'b' * 64 + '");return 0;') + '}')
+        guest_command += ('if(argc>3 && strcmp(argv[3],"guest")==0){'
                          'char *marker=getenv("PACKAGE_GUEST_CALLS");'
                          'if(marker){FILE *out=fopen(marker,"w");if(!out)return 90;'
                          'for(int i=1;i<argc;i++)fprintf(out,"%s\\n",argv[i]);fclose(out);}'
+                         'char *acquire=getenv("PACKAGE_GUEST_ACQUIRE_CLI");'
+                         'if(acquire){execv(acquire,argv);return 95;}'
                          )
         if guest_exit is not None:
             guest_command += f'fprintf(stderr,"controlled guest acquisition refusal\\n");return {guest_exit};'
@@ -213,6 +244,7 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
         guest_command += '}'
     host_command = (
         'if(argc>4 && strcmp(argv[3],"host")==0 && strcmp(argv[4],"prepare")==0){'
+        'char *code=getenv("PACKAGE_HOST_EXIT");if(code)return atoi(code);'
         'char *installed="/fixture";char *settings=NULL;'
         'for(int i=5;i+1<argc;i++){if(strcmp(argv[i],"--installed-root")==0)installed=argv[i+1];'
         'if(strcmp(argv[i],"--write-settings")==0)settings=argv[i+1];}'
@@ -220,16 +252,21 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
         'if(!out)return 92;for(int i=1;i<argc;i++)fprintf(out,"%s\\n",argv[i]);fclose(out);}'
         'if(settings){FILE *out=fopen(settings,"w");if(!out)return 93;'
         'fprintf(out,"[linux]\\nhost_uid=1000\\nhost_gid=1000\\nuid_base=100000\\ngid_base=100000\\nrunsc=\\\"%s/libexec/runsc\\\"\\nrunsc_origin=\\\"bundled\\\"\\n",installed);fclose(out);}return 0;}'
+        'if(argc>4 && strcmp(argv[3],"host")==0 && strcmp(argv[4],"grant-runtime-access")==0){'
+        'char *grant=getenv("PACKAGE_RUNTIME_ACCESS_CLI");'
+        'if(grant){execv(grant,argv);return 99;}return 0;}'
     )
     launch_command = (
         'if(argc>4 && strcmp(argv[3],"agent")==0 && strcmp(argv[4],"launch")==0){'
         'char *marker=getenv("PACKAGE_LAUNCH_CALLS");if(marker){FILE *out=fopen(marker,"w");'
         'if(!out)return 94;for(int i=1;i<argc;i++)fprintf(out,"%s\\n",argv[i]);fclose(out);}'
+        'char *handoff=getenv("PACKAGE_CODEX_HANDOFF");if(handoff){FILE *out=fopen(handoff,"w");'
+        'if(!out)return 97;char *input=getenv("SAFEYOLO_CODEX_PACKAGE");if(input)fputs(input,out);fclose(out);}'
         'char *code=getenv("PACKAGE_LAUNCH_EXIT");return code?atoi(code):0;}'
     )
-    source.write_text('#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n'
+    source.write_text('#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <unistd.h>\n'
                       f'int main(int argc,char **argv){{{host_command}{guest_command}{launch_command}puts("{identity}");return 0;}}\n')
-    subprocess.run(["cc", str(source), "-o", str(path)], check=True, timeout=15)
+    subprocess.run(["cc", "-g", str(source), "-o", str(path)], check=True, timeout=15)
     source.unlink()
 
 
@@ -243,8 +280,8 @@ def package_inputs(tmp_path, request, monkeypatch):
     scripts.mkdir(parents=True)
     for name in ("build_host_packages.sh", "native_package.sh", "install_native.sh", "install_host_package.sh", "tmux_runtime.sh", "watch_backlog_factory.sh"):
         shutil.copy2(REPO / "scripts" / name, scripts / name)
-    # Only upstream acquisition is controlled. The real producer, complete
-    # payload reader, installer and architecture checks consume these bytes.
+    # Only upstream acquisition is controlled. Include its optional executables
+    # so the real producer must omit them from the package.
     (scripts / "acquire_runsc.sh").write_text(
         '#!/bin/bash\nset -euo pipefail\nmkdir "$1"\n'
         'cp -R "$PACKAGE_RUNSC_FIXTURE/"* "$1/"\n',
@@ -541,16 +578,41 @@ def test_workflow_consumers_validate_prepared_native_inputs(package_inputs, tmp_
         assert "safeyolo-coord" in result.stderr
 
 
+@pytest.mark.parametrize("package_inputs", ["debug", "production"], indirect=True)
 def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs, tmp_path):
+    runtime = Path(os.environ["PACKAGE_RUNSC_FIXTURE"])
+    upstream = {path.relative_to(runtime): path.read_bytes() for path in runtime.rglob("*") if path.is_file()}
     output = tmp_path / "output"
     result = run(*package_inputs[4], "--output", str(output))
     assert result.returncode == 0, result.stderr
     bootstrap = output / "install-safeyolo.sh"
     assert f"release=host-{package_inputs[5]}" in bootstrap.read_text()
     assert os.access(bootstrap, os.X_OK)
-    archive, = output.glob("*.tar.gz")
+    archive, = (path for path in output.glob("*.tar.gz") if not path.name.endswith("-guest-download.tar.gz"))
+    early = output / (archive.name.removesuffix(".tar.gz") + "-guest-download.tar.gz")
+    with tarfile.open(archive) as full, tarfile.open(early) as download:
+        assert download.getnames() == [archive.name.removesuffix(".tar.gz") + "/" + path
+                                       for path in ("bin/safeyolo", "package-info")]
+        for member in download.getnames():
+            assert download.extractfile(member).read() == full.extractfile(member).read()
     with tarfile.open(archive) as stream:
         names = stream.getnames()
+        metadata = stream.extractfile(archive.name.removesuffix(".tar.gz") + "/package-info").read().decode()
+        profile = dict(line.split("=", 1) for line in metadata.splitlines())["profile"]
+        checksums = stream.extractfile(archive.name.removesuffix(".tar.gz") + "/SHA256SUMS").read().decode()
+        for relative, original in upstream.items():
+            member = archive.name.removesuffix(".tar.gz") + "/libexec/" + str(relative)
+            assert (runtime / relative).read_bytes() == original
+            if relative.name in ("checkpointgofer", "runsc-metric-server"):
+                assert member not in names
+                assert f"./libexec/{relative}" not in checksums
+                continue
+            packaged = stream.extractfile(member).read()
+            assert f"{hashlib.sha256(packaged).hexdigest()}  ./libexec/{relative}\n" in checksums
+            assert b".debug_info\0" in original
+            assert (b".debug_info\0" in packaged) == (profile == "debug")
+            if profile == "debug":
+                assert packaged == original
         assert any(name.endswith("/assets/skills/safeyolo/SKILL.md") for name in names)
         assert not any(name.endswith(("/github_checks.py", "/github-checks.md", ".pyc")) for name in names)
         skill_path, = [name for name in names if name.endswith("/assets/skills/safeyolo/SKILL.md")]
@@ -595,7 +657,7 @@ def test_musl_bundle_uses_distinct_archive_and_existing_guest_contract(package_i
     output = tmp_path / "output"
     result = run(*package_inputs[4], "--output", str(output))
     assert result.returncode == 0, result.stderr
-    archive, = output.glob("*.tar.gz")
+    archive, = (path for path in output.glob("*.tar.gz") if not path.name.endswith("-guest-download.tar.gz"))
     assert archive.name.endswith("-musl-production.tar.gz")
     with tarfile.open(archive) as stream:
         metadata = stream.extractfile(archive.name.removesuffix(".tar.gz") + "/package-info").read().decode()
@@ -615,6 +677,10 @@ def test_musl_bundle_uses_distinct_archive_and_existing_guest_contract(package_i
     assert receipt["archive"]["name"] == archive.name
     assert receipt["archive"]["sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
     assert receipt["source_revision"] == fields["source_commit"]
+    early = output / receipt["guest_download"]["name"]
+    assert receipt["guest_download"]["sha256"] == hashlib.sha256(early.read_bytes()).hexdigest()
+    assert receipt["guest_download"]["size"] == early.stat().st_size
+    assert len((output / "SHA256SUMS").read_text().splitlines()) == 2
 
 
 @pytest.mark.parametrize("libc,minimum,diagnosis", [
@@ -646,6 +712,7 @@ def test_musl_package_is_refused_on_glibc_before_installation(package_inputs, tm
 
 
 @pytest.mark.parametrize("damage", ["missing", "corrupt", "architecture", "unlisted", "empty-metadata", "missing-metadata"])
+@pytest.mark.parametrize("package_inputs", ["debug", "production"], indirect=True)
 def test_runtime_payload_refusal_preserves_other_installation(package_inputs, tmp_path, damage):
     bundle = build_bundle(package_inputs, tmp_path)
     sidecar = bundle / "libexec/gvisor-bin/gvisor_sentry"
@@ -712,7 +779,7 @@ def test_default_installer_calls_native_guest_before_creating_configuration(pack
     arguments = marker.read_text().splitlines()
     staging = Path(arguments[1])
     assert staging.parent == root.parent and staging.name.startswith("safeyolo-install.")
-    assert arguments == ["--root", str(staging), "guest", "acquire", "--package-info", str(bundle / "package-info"), "--write-selection", str(staging / "guest-selection.json"),
+    assert arguments == ["--root", str(staging), "guest", "acquire", "--package-info", str(staging / "package-info"), "--write-selection", str(staging / "guest-selection.json"),
                          *(["--index", guest_index] if guest_index else []),
                          "--host-settings", str(staging / "host-settings.toml")]
     assert not staging.exists()
@@ -1023,6 +1090,34 @@ def test_platform_install_stages_cache_paths_without_changing_prepared_tree(pack
         assert installed_caches.read_text() == cache_paths
     else:
         assert not installed_caches.exists()
+
+
+@pytest.mark.parametrize("grant_status", [0, 37])
+def test_installer_grants_final_runtime_access_before_publishing_config(package_inputs, tmp_path, grant_status):
+    bundle = build_bundle(package_inputs, tmp_path)
+    root = tmp_path / "private-instance"
+    marker = tmp_path / "granted-runtime"
+    grant = tmp_path / "grant-access"
+    grant.write_text(
+        f"#!{os.sys.executable}\nimport pathlib, sys, tomllib\n"
+        "config = pathlib.Path(sys.argv[2]) / 'config.toml'\n"
+        "runtime = pathlib.Path(tomllib.loads(config.read_text())['linux']['runsc'])\n"
+        "root = runtime.parent.parent\n"
+        "assert not (root / 'config.toml').exists()\n"
+        "assert all((runtime.parent / name).is_file() for name in "
+        "('runsc', 'gvisor-bin/gvisor-sentry-prewarmer', 'gvisor-bin/gvisor_sentry', "
+        "'gvisor-bin/runsc-fd-parking'))\n"
+        f"pathlib.Path({str(marker)!r}).write_text(str(runtime))\n"
+        f"raise SystemExit({grant_status})\n",
+    )
+    grant.chmod(0o700)
+    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"),
+                 env={**os.environ, "PACKAGE_RUNTIME_ACCESS_CLI": str(grant)}, input="", umask=0o077)
+    assert result.returncode == grant_status, result.stderr
+    assert marker.read_text() == str(root / "libexec/runsc")
+    assert (root / "libexec/runsc").is_file()
+    assert (root / "config.toml").exists() == (grant_status == 0)
+    assert (root / "commands/safeyolo").is_symlink() == (grant_status == 0)
 
 
 # Python saves CI debug metadata only; production uses the shell producer.

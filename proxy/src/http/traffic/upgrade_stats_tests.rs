@@ -59,10 +59,14 @@ fn all_records(directory: &Path) -> Vec<Value> {
         .collect()
 }
 fn records(directory: &Path) -> Vec<Value> {
-    // Memory lifetimes are asserted separately below. Keep every other
-    // producer event and its original order in the logger/API controls.
+    // Memory lifetimes are asserted separately below. Connection history has
+    // its own producer tests. Preserve the other logger/API event order.
     all_records(directory)
         .into_iter()
+        .filter(|row| {
+            !(row["event"] == "security.indicator"
+                && row["details"]["sensor"] == "connection-history.v1")
+        })
         .filter(|row| {
             !(row["addon"] == "memory-monitor"
                 && matches!(
@@ -74,7 +78,9 @@ fn records(directory: &Path) -> Vec<Value> {
             !matches!(
                 row["event"].as_str(),
                 Some(
-                    "traffic.request_outcome"
+                    "network.connection"
+                        | "traffic.flow"
+                        | "traffic.request_outcome"
                         | "traffic.egress"
                         | "traffic.tunnel"
                         | "traffic.websocket.start"
@@ -738,9 +744,13 @@ async fn dropping_listener_stops_its_unpolled_task() {
     let listener = crate::RunningListener::start(
         socket,
         path,
-        "alice".into(),
-        None,
+        crate::AgentListener {
+            agent_id: "alice".into(),
+            socket_path: directory.path().join("alice.sock"),
+            source_id: None,
+        },
         std::sync::Arc::new(std::sync::RwLock::new(runtime.clone())),
+        std::sync::Arc::default(),
     );
     let task = listener.task.abort_handle();
     // Directly dropping the listener closes its stop channel. The task must

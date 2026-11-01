@@ -5,23 +5,32 @@ import base64
 import hmac
 import ipaddress
 import json
+import os
 import ssl
+import stat
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import certifi
 import jwt
+import msgpack
 import requests
 import urllib3
+from cachecontrol import CacheControl
+from cachecontrol.caches import FileCache
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
+from filelock import FileLock, Timeout
 
 
 @contextmanager
@@ -40,6 +49,10 @@ def http_responses(responses, tls_context=None):
                 self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.do_GET()
 
         def log_message(self, *_args):
             pass  # Fixture traffic is checked by the caller, not written to stderr.
@@ -193,6 +206,200 @@ class JWTDependencies(unittest.TestCase):
             subject="client",
         )
         self.assertIn("jti", claims)
+
+
+class OpenTelemetryDependencies(unittest.TestCase):
+    def test_propagation_preserves_valid_context_and_bounds_combined_headers(self):
+        from opentelemetry import propagate, trace
+
+        parent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+
+        def extract(state):
+            return trace.get_current_span(propagate.extract({"traceparent": parent, "tracestate": state})).get_span_context()
+
+        valid = extract(["vendor=value, other=second"])
+        self.assertTrue(valid.is_remote)
+        self.assertEqual(valid.trace_id, int(parent.split("-")[1], 16))
+        self.assertEqual(valid.span_id, int(parent.split("-")[2], 16))
+        self.assertEqual(dict(valid.trace_state), {"vendor": "value", "other": "second"})
+        for state in (["vendor=first", "vendor=second"], ["bad key=value"]):
+            with self.subTest(state=state):
+                self.assertEqual(len(extract(state).trace_state), 0)
+
+        # The upstream fix counts comma separators between header fields.
+        headers = [f"k{index}=" + "v" * 250 for index in range(32)]
+        headers[-1] += " " * (8192 - sum(map(len, headers)) - len(headers) + 1)
+        self.assertEqual(len(extract(headers).trace_state), 32)
+        headers[-1] += " "
+        self.assertEqual(len(extract(headers).trace_state), 0)
+
+    def test_whitespace_attack_finishes_without_quadratic_parsing(self):
+        # A subprocess deadline also bounds a regression to the vulnerable parser.
+        probe = """
+import logging
+from opentelemetry import propagate, trace
+from opentelemetry.trace import TraceState
+
+logging.disable(logging.CRITICAL)
+parent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+for whitespace in (" ", "\\t"):
+    state = "vendor=value" + whitespace * 200_000 + "x"
+    assert len(TraceState.from_header([state])) == 0
+    context = propagate.extract({"traceparent": parent, "tracestate": state})
+    span = trace.get_current_span(context).get_span_context()
+    assert span.is_valid and len(span.trace_state) == 0
+"""
+        run = subprocess.run([sys.executable, "-I", "-c", probe], capture_output=True, text=True, timeout=5)
+        self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_semgrep_tracing_exports_and_preserves_parent_across_threads(self):
+        # Semgrep configures global providers and instrumentation. Isolate them.
+        probe = """
+import logging
+import os
+import sys
+import threading
+import requests
+from opentelemetry import trace
+from opentelemetry._logs import get_logger_provider
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+from opentelemetry.instrumentation.threading import ThreadingInstrumentor
+from semgrep.telemetry import Telemetry, TRACER
+
+parent = "0af7651916cd43dd8448eb211c80319c"
+os.environ["SEMGREP_TRACE_PARENT_TRACE_ID"] = parent
+os.environ["SEMGREP_TRACE_PARENT_SPAN_ID"] = "b7ad6b7169203331"
+Telemetry().configure(True, sys.argv[1])
+assert RequestsInstrumentor().is_instrumented_by_opentelemetry
+assert ThreadingInstrumentor().is_instrumented_by_opentelemetry
+observed = []
+with TRACER.start_as_current_span("dependency-control"):
+    thread = threading.Thread(target=lambda: observed.append(trace.get_current_span().get_span_context().trace_id))
+    thread.start()
+    thread.join(timeout=2)
+    assert observed == [int(parent, 16)]
+    response = requests.get(sys.argv[1] + "/input", timeout=2)
+    assert response.status_code == 200
+    logging.getLogger("semgrep.telemetry").warning("dependency-control")
+assert trace.get_tracer_provider().force_flush(timeout_millis=2000)
+assert get_logger_provider().force_flush(timeout_millis=2000)
+trace.get_tracer_provider().shutdown()
+get_logger_provider().shutdown()
+"""
+        with http_responses({"/": (200, {}, b"")}) as (url, paths):
+            run = subprocess.run([sys.executable, "-I", "-c", probe, url], capture_output=True, text=True, timeout=10)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertTrue({"/input", "/v1/traces", "/v1/logs"} <= set(paths), paths)
+
+
+class CacheDependencies(unittest.TestCase):
+    def test_pip_audit_cache_round_trip_survives_new_session(self):
+        from pip_audit._service import PyPIService
+
+        body = b'{"vulnerabilities": []}'
+        responses = {"/": (200, {"Cache-Control": "public, max-age=3600"}, body)}
+        with tempfile.TemporaryDirectory() as temporary, http_responses(responses) as (url, paths):
+            # pip-audit overrides FileCache writes to avoid lock files.
+            for expected_cached in (False, True):
+                with PyPIService(cache_dir=Path(temporary)).session as session:
+                    session.trust_env = False
+                    with session.get(url + "/", timeout=5) as response:
+                        self.assertEqual(response.content, body)
+                        self.assertEqual(response.from_cache, expected_cached)
+            self.assertEqual(paths, ["/"])
+
+    @unittest.skipUnless(os.name == "posix", "Unix lock replacement control")
+    def test_file_cache_preserves_renamed_and_hard_linked_lock_targets(self):
+        # GHSA-69hj-f68j-2879: a regular file at the lock path is not a symlink.
+        for replacement in ("rename", "hardlink"):
+            for mode in (None, 0o666):
+                with self.subTest(replacement=replacement, mode=mode), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    cache = FileCache(root / "cache")
+                    if mode is not None:
+                        cache.lock_class = partial(FileLock, mode=mode)
+                    key = "https://cache.invalid/dependency"
+                    cache.set(key, b"before")
+                    lock_path = Path(cache._fn(key) + ".lock")
+                    lock_path.unlink(missing_ok=True)
+                    victim = root / "private-journal"
+                    victim.write_bytes(b"keep private contents")
+                    victim.chmod(0o600)
+                    with victim.open("rb") as retained:
+                        before = os.fstat(retained.fileno())
+                        if replacement == "rename":
+                            victim.rename(lock_path)
+                        else:
+                            os.link(victim, lock_path)
+                        cache.set(key, b"after")
+                        after = os.fstat(retained.fileno())
+                        self.assertEqual(retained.read(), b"keep private contents")
+                        self.assertEqual(stat.S_IMODE(after.st_mode), 0o600)
+                        self.assertEqual((after.st_uid, after.st_gid), (before.st_uid, before.st_gid))
+                    self.assertEqual(cache.get(key), b"after")
+                    self.assertEqual(stat.S_IMODE(Path(cache._fn(key)).stat().st_mode), 0o600)
+
+    def test_file_cache_lock_contention_preserves_cached_value_and_recovers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = FileCache(temporary, lock_class=partial(FileLock, timeout=0))
+            key = "https://cache.invalid/dependency"
+            cache.set(key, b"before")
+            with FileLock(cache._fn(key) + ".lock", timeout=0):
+                with self.assertRaises(Timeout):
+                    cache.set(key, b"blocked")
+                self.assertEqual(cache.get(key), b"before")
+            cache.set(key, b"after")
+            self.assertEqual(cache.get(key), b"after")
+
+    @unittest.skipUnless(os.name == "posix", "Unix lock mode control")
+    def test_new_lock_honors_explicit_private_mode(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "private.lock"
+            with FileLock(path, mode=0o600):
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                self.assertEqual(path.stat().st_uid, os.getuid())
+
+    def test_strict_map_key_failure_releases_decoded_value(self):
+        self.assertEqual(msgpack.unpackb.__module__, "msgpack._cmsgpack")
+        value = object()
+        payload = msgpack.packb({42: {"nested": "value"}}, use_bin_type=True)
+        references = sys.getrefcount(value)
+        for _ in range(100):
+            with self.assertRaises(ValueError):
+                msgpack.unpackb(payload, raw=False, object_hook=lambda _mapping: value)
+        # The rejected outer key must release the already decoded nested value.
+        self.assertEqual(sys.getrefcount(value), references)
+
+    def test_file_cache_round_trip_and_malformed_entries_refetch(self):
+        body = msgpack.packb({42: b"network body"}, use_bin_type=True)
+        responses = {"/": (200, {"Cache-Control": "public, max-age=3600"}, body)}
+        with tempfile.TemporaryDirectory() as temporary, http_responses(responses) as (url, paths):
+            cache = FileCache(temporary)
+            with CacheControl(requests.Session(), cache=cache) as session:
+                session.trust_env = False
+                url += "/"
+                for expected_cached in (False, True):
+                    with session.get(url, timeout=5) as response:
+                        self.assertEqual(response.content, body)
+                        self.assertEqual(response.from_cache, expected_cached)
+                self.assertEqual(paths, ["/"])
+                saved = cache.get(url)
+                self.assertTrue(saved.startswith(b"cc=4,"))
+                self.assertEqual(msgpack.loads(saved[5:], raw=False)["response"]["body"], body)
+                for damaged in (
+                    b"cc=4," + body,  # The same map is invalid as a serialized cache entry.
+                    saved[:-1],
+                    b"cc=4,\xc1",
+                    saved + b"\0",
+                ):
+                    with self.subTest(damaged=damaged[:24]):
+                        cache.set(url, damaged)
+                        with session.get(url, timeout=5) as response:
+                            self.assertEqual(response.content, body)
+                            self.assertFalse(response.from_cache)
+                        refreshed = msgpack.loads(cache.get(url)[5:], raw=False)
+                        self.assertEqual(refreshed["response"]["body"], body)
+                self.assertEqual(paths, ["/"] * 5)
 
 
 class NetworkDependencies(unittest.TestCase):

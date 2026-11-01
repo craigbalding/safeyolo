@@ -1,7 +1,9 @@
 //! Host-owned pending requests. Audit events describe this authority; they do
 //! not create it. Policy and gateway stores still own every permission effect.
 
-use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt, path::PathBuf, time::Duration};
+use std::{
+    fs::OpenOptions, os::unix::fs::OpenOptionsExt, path::PathBuf, sync::Arc, time::Duration,
+};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -547,7 +549,7 @@ pub(crate) fn revision(policy: &Policy, action: &Value) -> Option<String> {
 /// Called at the reached enforcement hook, before publishing a pending response.
 pub(crate) async fn bind_network(
     writer: &Writer,
-    policy: &Policy,
+    policy: &Arc<Policy>,
     event: &mut Event,
     request: &crate::policy::NetworkRequest<'_>,
     scheme: &str,
@@ -591,7 +593,7 @@ pub(crate) async fn bind_network(
         credential_bindings: Default::default(),
     };
     let store = writer.approvals().clone();
-    let current_policy = policy.clone();
+    let current_policy = Arc::clone(policy);
     let request_id = event
         .request_id
         .clone()
@@ -609,7 +611,7 @@ pub(crate) async fn bind_network(
 pub(crate) async fn bind_credentials(
     run: Option<&crate::host_runs::AgentRun>,
     writer: &Writer,
-    policy: &Policy,
+    policy: &Arc<Policy>,
     events: &mut [Event],
     request: &crate::policy::NetworkRequest<'_>,
     scheme: &str,
@@ -682,7 +684,7 @@ pub(crate) async fn bind_credentials(
         credential_bindings: Default::default(),
     };
     let store = writer.approvals().clone();
-    let current_policy = policy.clone();
+    let current_policy = Arc::clone(policy);
     let record =
         tokio::task::spawn_blocking(move || store.submit(authority, &request_id, &current_policy))
             .await
@@ -756,7 +758,12 @@ pub(crate) fn current_view(
         }
     }
     let runtime = state
-        .map(|state| state.read().map_err(|_| invalid("runtime unavailable")))
+        .map(|state| {
+            state
+                .read()
+                .map(|runtime| runtime.clone())
+                .map_err(|_| invalid("runtime unavailable"))
+        })
         .transpose()?;
     if view["status"] == "pending"
         && let Some(runtime) = runtime.as_deref()
@@ -871,7 +878,7 @@ pub(crate) fn inspect(
     Ok(view)
 }
 
-fn active_policy(state: &crate::RuntimeState) -> Result<Policy> {
+fn active_policy(state: &crate::RuntimeState) -> Result<std::sync::Arc<Policy>> {
     state
         .read()
         .map_err(|_| invalid("runtime unavailable"))?
@@ -899,7 +906,10 @@ pub(crate) fn check_saved(
     source: &str,
     record: &Record,
 ) -> Result<bool> {
-    let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?;
+    let runtime = state
+        .read()
+        .map_err(|_| invalid("runtime unavailable"))?
+        .clone();
     let policy = runtime
         .policy
         .as_ref()
@@ -960,7 +970,7 @@ pub(crate) fn resolve_as(
         record.status = record.current_status(&policy)?;
         if record.status == "pending" { record.status = record.current_status(&saved)?; }
         if record.status != "pending" { return Ok(()); }
-        let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?;
+        let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?.clone();
         let credentials_current = gateway::credentials_current(&runtime, record)?;
         drop(runtime);
         if !credentials_current {
@@ -1000,7 +1010,7 @@ pub(crate) fn resolve_as(
             }
         }
         let parameters = selected.parameters.clone();
-        let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?;
+        let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?.clone();
         let option_current = gateway::option_current(&runtime, selected)?;
         drop(runtime);
         if !option_current { return Err(invalid("the selected credential option expired or changed; make a new request")); }
@@ -1008,7 +1018,7 @@ pub(crate) fn resolve_as(
         if action["kind"] == "contract_binding" {
             let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?;
             let store = runtime.gateway_grants.clone().ok_or_else(|| invalid("gateway grant store unavailable"))?;
-            let registry = runtime.policy.as_ref().and_then(Policy::gateway).and_then(|gateway| gateway.registry())
+            let registry = runtime.policy.as_deref().and_then(Policy::gateway).and_then(|gateway| gateway.registry())
                 .ok_or_else(|| invalid("service catalogue unavailable"))?;
             let service = action["service"].as_str().ok_or_else(|| invalid("service unavailable"))?;
             let capability = action["capability"].as_str().ok_or_else(|| invalid("capability unavailable"))?;
@@ -1139,6 +1149,44 @@ pub(crate) fn resolve_as(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_binding_preserves_records_without_subscription_metadata() {
+        let guard = crate::credential_guard::CredentialGuard::new(b"legacy-binding-test");
+        let credential = crate::credentials::Credential::new(
+            "legacy",
+            "bearer",
+            crate::credentials::Secret::new("synthetic"),
+        );
+        assert_eq!(
+            guard.approval_binding(&credential),
+            "hmac256:57e9407cfc1f3222841e5477db83459e989d1e3d47737e37ada673f2615e52b5"
+        );
+    }
+
+    #[test]
+    fn subscription_credential_binding_distinguishes_values_and_absence() {
+        use crate::credentials::{Credential, Secret, SubscriptionClient};
+
+        let guard = crate::credential_guard::CredentialGuard::new(b"subscription-binding-test");
+        let mut bindings = std::collections::BTreeSet::new();
+        for client in [
+            None,
+            Some(SubscriptionClient::Codex),
+            Some(SubscriptionClient::Claude),
+        ] {
+            for scope in [None, Some(""), Some("value")] {
+                for account in [None, Some(""), Some("value")] {
+                    let mut credential =
+                        Credential::new("fixture", "oauth2", Secret::new("synthetic"));
+                    credential.subscription_client = client;
+                    credential.refresh_scope = scope.map(str::to_owned);
+                    credential.chatgpt_account_id = account.map(str::to_owned);
+                    assert!(bindings.insert(guard.approval_binding(&credential)));
+                }
+            }
+        }
+    }
 
     #[test]
     fn credential_expiry_keeps_subsecond_precision() {

@@ -15,6 +15,8 @@ pub struct Settings {
     pub protected_host_directories: Vec<PathBuf>,
     pub capture: Capture,
     pub trace: Trace,
+    pub observations: crate::observations::Limits,
+    pub packet_capture: crate::packet_capture::Settings,
     pub audit: Audit,
     pub agent_launcher: AgentLauncher,
     pub desktop: Desktop,
@@ -188,11 +190,15 @@ pub fn read(path: &Path) -> Result<Config, Error> {
     if path.extension().and_then(|value| value.to_str()) != Some("toml") {
         return Err("configuration requires config.toml".into());
     }
+    from_source(path, &std::fs::read_to_string(path)?)
+}
+
+pub(crate) fn from_source(path: &Path, source: &str) -> Result<Config, Error> {
     let root = path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let mut value = crate::policy::parse_toml_document(&std::fs::read_to_string(path)?)?;
+    let mut value = crate::policy::parse_toml_document(source)?;
     let fields = value
         .as_object_mut()
         .ok_or("configuration must be a table")?;
@@ -232,6 +238,8 @@ pub fn read(path: &Path) -> Result<Config, Error> {
     for key in [
         "capture",
         "trace",
+        "observations",
+        "packet_capture",
         "audit",
         "agent_launcher",
         "desktop",
@@ -247,6 +255,17 @@ pub fn read(path: &Path) -> Result<Config, Error> {
     }
     let mut settings: Settings = serde_json::from_value(Value::Object(settings))
         .map_err(|error| format!("config.toml settings: {error}"))?;
+    for path in [
+        &mut settings.packet_capture.file,
+        &mut settings.packet_capture.secrets_token_file,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !path.is_absolute() {
+            *path = root.join(&*path);
+        }
+    }
     if let Some(linux) = &settings.linux {
         linux.validate()?;
     }
@@ -569,6 +588,9 @@ max_response_body_bytes=3
 preview_text_chars=4
 compress_bodies=false
 queue_max=6
+[observations]
+items=17
+bytes=32768
 [trace]
 ttl_s=10
 global_max=11
@@ -686,6 +708,8 @@ tailnet_port=8443
             crate::circuits::CircuitValue::Bool(false)
         );
         assert_eq!(settings.capture.queue_max, 6);
+        assert_eq!(settings.observations.items, 17);
+        assert_eq!(settings.observations.bytes, 32768);
         let trace = settings.trace.store_settings();
         assert_eq!(trace.ttl_s, 10);
         assert_eq!(trace.global_max, 11.into());

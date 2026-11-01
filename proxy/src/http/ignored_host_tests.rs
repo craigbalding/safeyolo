@@ -174,7 +174,7 @@ fn check(row: &Value, phase: &str, authority: &str, host: &str, port: u16, elaps
         details["error"] = json!(error);
     }
     let expected = json!({
-        "schema_version":1,"ts":timestamp,"event":format!("traffic.passthrough_{phase}"),
+        "schema_version":2,"ts":timestamp,"event":format!("traffic.passthrough_{phase}"),
         "kind":"traffic","severity":severity,
         "summary":format!("TLS passthrough {verb} {authority}"),
         "agent":"alice","addon":"ignored-host-logger","host":host,"details":details
@@ -443,6 +443,7 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
             .unwrap();
         let runtime = proxy.runtime.read().unwrap().clone();
         let identity = ConnectionIdentity {
+            ingress_binding: None,
             run: None,
             agent_id: "alice".into(),
             connection_id: "owned-lifecycle-seam".into(),
@@ -627,6 +628,7 @@ fn pending_guard_drop_or_explicit_error_consumes_terminal_ownership_once() {
         audit::Settings::default(),
     ));
     let identity = ConnectionIdentity {
+        ingress_binding: None,
         run: None,
         agent_id: "alice".into(),
         connection_id: "owned-pending-seam".into(),

@@ -220,7 +220,7 @@ impl Drop for Running {
     }
 }
 
-fn read_token(path: Option<&Path>) -> Result<Zeroizing<String>, Error> {
+pub(crate) fn read_token(path: Option<&Path>) -> Result<Zeroizing<String>, Error> {
     let Some(path) = path.filter(|path| !path.as_os_str().is_empty()) else {
         return Ok(Zeroizing::new(String::new()));
     };
@@ -418,6 +418,19 @@ async fn serve_connection(
                         .to_owned()
                 })
                 .unwrap_or_else(|| peer.ip().to_string());
+            if request.method() == hyper::Method::GET && request.uri().path() == "/admin/capture" {
+                return serve_capture(
+                    request,
+                    runtime,
+                    access.token.trim_matches(python_whitespace),
+                    event_stop,
+                    client_ip,
+                    path,
+                    event_tasks,
+                )
+                .await
+                .map(close_http_response_unless_upgrade);
+            }
             if request.method() == hyper::Method::GET && request.uri().path() == "/admin/events" {
                 return serve_events(
                     request,
@@ -495,6 +508,14 @@ async fn serve_connection(
             connection.as_mut().graceful_shutdown();
             let _ = connection.await;
         }
+    }
+}
+
+fn close_http_response_unless_upgrade<B>(response: hyper::Response<B>) -> hyper::Response<B> {
+    if response.status() == hyper::StatusCode::SWITCHING_PROTOCOLS {
+        response
+    } else {
+        close_http_response(response)
     }
 }
 
@@ -757,6 +778,99 @@ fn is_operator_event(event: &serde_json::Value) -> bool {
             .get("severity")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|severity| matches!(severity, "high" | "critical"))
+}
+
+async fn serve_capture(
+    mut request: hyper::Request<hyper::body::Incoming>,
+    runtime: Arc<crate::Runtime>,
+    token: &str,
+    stop: watch::Receiver<bool>,
+    client_ip: String,
+    target: String,
+    tasks: EventTasks,
+) -> Result<hyper::Response<crate::admin_api::AdminBody>, admin_api::Error> {
+    // DOC: docs/native-observations.md
+    let read = admin_api::authenticate(request.headers(), token)?;
+    let capture = runtime
+        .connection_events
+        .as_ref()
+        .and_then(|events| events.observations.capture.get())
+        .filter(|capture| capture.settings.wss);
+    let secrets = match capture {
+        Some(capture) => capture.authorize_secrets(request.headers())?,
+        None => false,
+    };
+    if !read && !secrets {
+        return Ok(admin_api::unauthorized()
+            .submit_audit(&runtime.audit, &client_ip, &target)?
+            .into_response());
+    }
+    let Some(capture) = capture else {
+        return Ok(admin_api::event_not_found().into_response());
+    };
+    let handshake = Handshake::request(&mut request).map_err(|_| admin_api::Error::BodyFraming)?;
+    let Ok(receiver) = capture.subscribe_authorized(crate::packet_capture::Sink::Wss, secrets)
+    else {
+        return Ok(hyper::Response::builder()
+            .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
+            .body(
+                Full::new(Bytes::new())
+                    .map_err(|never: std::convert::Infallible| match never {})
+                    .boxed(),
+            )
+            .unwrap());
+    };
+    let upgrade = hyper::upgrade::on(request);
+    let body = Full::new(Bytes::new())
+        .map_err(|never: std::convert::Infallible| match never {})
+        .boxed();
+    let response = handshake
+        .server_response(body)
+        .map_err(|_| admin_api::Error::BodyFraming)?;
+    spawn_event_task(&tasks, async move {
+        let Ok(upgraded) = upgrade.await else {
+            return;
+        };
+        stream_capture(upgraded, receiver, stop).await;
+    })
+    .await;
+    Ok(response)
+}
+async fn stream_capture(
+    upgraded: hyper::upgrade::Upgraded,
+    mut receiver: crate::packet_capture::Receiver,
+    mut stop: watch::Receiver<bool>,
+) {
+    let (read, write) = tokio::io::split(TokioIo::new(upgraded));
+    let mut reader = Reader::new(read, true, None);
+    let mut writer = Writer::new(write, false, None);
+    loop {
+        // Keep a partially received client frame alive across capture deliveries.
+        // Reader::read may only be cancelled when discarding this connection.
+        let incoming = reader.read();
+        tokio::pin!(incoming);
+        loop {
+            tokio::select! {
+                biased;
+                _=stop.changed()=>return,
+                event=&mut incoming=>match event {
+                    Ok(WebSocketEvent::Ping(bytes))=>{
+                        if !matches!(tokio::time::timeout(Duration::from_secs(1),writer.control(Control::Pong,&bytes)).await,Ok(Ok(()))) {receiver.error("wss_control_failed");return;}
+                        break;
+                    },
+                    Ok(WebSocketEvent::Pong(_))=>break,
+                    Ok(WebSocketEvent::Close(bytes))=>{let _=tokio::time::timeout(Duration::from_secs(1),writer.control(Control::Close,&bytes)).await;return;},
+                    Ok(WebSocketEvent::Message(_))=>break,
+                    Err(_)=>return,
+                },
+                delivery=receiver.recv()=>{
+                    let Some(delivery)=delivery else {return;};
+                    if !matches!(tokio::time::timeout(Duration::from_secs(1),writer.binary(&delivery.bytes)).await,Ok(Ok(()))) {receiver.error("wss_write_failed_or_timed_out");return;}
+                    receiver.written(delivery.bytes.len());
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

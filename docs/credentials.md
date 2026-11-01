@@ -31,9 +31,41 @@ In a host terminal, inspect the running service definition, then add the token:
 `--value-env` or piped stdin. Do not put the value in command arguments.
 Add replaces an existing credential with the same name. List prints only its
 name, type, expiry and external reference. Local use needs neither `op` nor
-Python. The host creates `data/credentials.key` and encrypted
-`data/credentials.enc`, both with mode 0600. It does not read old vault files.
+Python. Installation creates no vault and asks no storage question. The first
+valid add, reference write or client import asks you to choose `local` random-key
+storage or `passphrase` protection. To cancel before creation, enter `q`.
+For a script or piped input, supply `--storage local` or `--storage passphrase`
+on the first write. No backend is selected automatically.
+
+Both choices create encrypted `data/credentials.enc` and `data/credentials.key`
+with mode 0600. Local storage keeps a marked random encryption key in the key
+file and needs no password stretching. Passphrase storage keeps only a format
+marker there. It never saves the passphrase or derived key. Enter and confirm
+the passphrase at the hidden prompt, or use `--passphrase-file FILE` with a
+host file that you protect. Never put a passphrase in command arguments.
+Existing unmarked local keys retain their existing derivation and ciphertext;
+unrelated legacy vault filenames are ignored. Reading does not migrate data.
+An existing store keeps its type; `--storage` does not convert existing data.
+
+Proxy readiness does not wait for storage creation or unlock. Operations that need
+stored credentials load the vault on demand and fail closed if it is unavailable.
 Ordinary proxy stop/start retains these files and service authorization.
+Passphrase storage starts locked after each proxy restart. On the host, after
+starting that instance, run:
+
+```sh
+safeyolo credentials unlock
+```
+
+The command prompts without echo and unlocks only the running proxy process.
+Use `credentials lock` to require another explicit unlock. Independent traffic
+and credential-leak controls remain ready while locked. A passphrase-protected
+CLI read, removal or write also needs the passphrase, even if the proxy is
+unlocked. Those commands accept `--passphrase-file FILE` for noninteractive use.
+A successful passphrase write unlocks the current proxy. If the proxy is stopped,
+start it and run `credentials unlock` before using stored credentials.
+1Password secret values remain in 1Password; reference metadata uses the selected
+local store and the existing host provider resolves values after authorization.
 
 `services authorized` returns Alice's current `sgw_` credential, account,
 credential reference name, capability and compiled routes. An agent obtains its own token from the authenticated Agent API
@@ -109,6 +141,140 @@ handling. Clear that client's cached registry token or start a fresh client
 session, then repeat its anonymous token exchange through the proxy to restore
 automatic recognition. Registry login credentials and personal access tokens
 retain their existing approval requirements.
+
+## Keep coding-client provider tokens on the host
+
+The opt-in [coding-client gateway integration](coding-client-gateway.md) uses
+`credentials import-client` and scoped service tokens with native Codex or
+Claude Code. The host stores and renews the selected provider login; the guest
+receives its gateway token. The guide records the tested client versions,
+subscription limits and platform. The client-held Codex flow below retains its
+existing scope.
+
+## Use Codex with a ChatGPT subscription
+
+Codex supports [ChatGPT subscription authentication and OpenAI API key
+authentication](https://learn.chatgpt.com/docs/auth). These are different
+credentials. SafeYolo's `openai` detector recognises `sk-proj-` and
+`sk-svcacct-` API keys. A grant for `openai:*` does not identify or approve a
+ChatGPT subscription OAuth access token.
+
+Current source's `agent launch . --harness codex` offers this authorization
+before client startup. The installer uses the same choice with
+`--launch --harness codex`, without an extra import shell command. See the
+[installation reference](installation.md#public-bootstrap-availability) for
+login choices, copying, repeat behavior and release limits. The command below
+remains available for explicit administration.
+
+For the supported subscription paths, an operator can authorize an explicitly
+selected login through the existing encrypted credential vault. On the operator
+host, use the instance's CLI, an existing agent with a unique `agent_id`
+in policy, and a trusted `auth.json` input selected before the guest can replace
+its contents. In this example, `alice` is that agent and
+`/secure/codex/auth.json` is the selected host input. Keep credential values out
+of command arguments and output.
+
+```sh
+safeyolo credentials import-codex codex-alice --agent alice --auth-file /secure/codex/auth.json
+```
+
+The command stores the exact access and refresh pair with the agent's identity
+and the supported issuer/client binding. It prints the agent and credential
+name, never token values. It grants proxy authorization; provision the client's
+login through the existing trusted workflow before launching the client.
+An adoption marker or a guest-writable login file does not create this authority.
+
+The default authorization is persistent until the record is removed, replaced,
+or reaches an explicitly supplied `--expires-at` time. `--scope run` instead
+binds the import to the agent's current independently verified sandbox run.
+A stopped or replaced run cannot inherit it. To revoke an import, run
+`credentials remove codex-alice` with the same instance CLI. Explicit
+credential permissions, including deny and prompt, network policy, and inspection
+of other secrets still apply.
+
+The supported native Codex transport uses a JSON refresh POST to
+`https://auth.openai.com/oauth/token` with the default Codex client ID. SafeYolo
+checks the exact imported or observed refresh credential and complete verified
+TLS exchange.
+It records keyed digests of present access/refresh replacements in the same
+encrypted record before releasing the response body. An omitted field retains
+the existing recognition. Codex performs renewal and persists its own client
+state. Malformed, duplicate, incomplete or oversized successful refresh responses
+do not establish a replacement and are refused. Token response capture is bounded
+to 64 KiB. An unsupported refresh request or an additional authentication header
+does not establish replacement authority.
+
+Access recognition is limited to HTTPS on `chatgpt.com:443`: account-check and
+usage GET requests, Codex models/rate-limit GET requests, and Codex response POST,
+compact POST and response WebSocket GET paths. It also covers the native Codex GET
+paths `/backend-api/plugins/featured`, `/backend-api/ps/plugins/installed`,
+`/backend-api/ps/plugins/suggested/codex`, `/backend-api/ps/plugins/list` and
+`/backend-api/wham/rate-limit-reset-credits`. It does not cover custom or
+regional endpoints selected by client configuration, unrelated paths, arbitrary
+methods, or other OpenAI services. Only exact imported or observed credentials
+receive this recognition. The issuer still decides whether a token is valid.
+
+The encrypted imported pair, replacement digests and authorization scope survive
+proxy restart. Recognition stops after revocation, expiry, an agent identity
+change, or the end of a run-scoped authorization. A replacement made without a
+qualifying observed exchange retains ordinary handling. SafeYolo never rescans
+guest replacements to create or repair authorization.
+
+With the [default bearer controls](#unknown-bearer-credentials), an unrecognised
+`Authorization: Bearer` value uses `unknown_secret`, regardless of entropy.
+Detection does not verify a JSON Web Token (JWT) signature, issuer or audience.
+A claimed issuer, token shape, matching regular expression or destination alone
+provides no authority. No entropy adjustment or custom classifier is needed.
+
+When trustworthy issuance evidence is unavailable, use the manual approval
+fallback. Keep `unknown_creds = "prompt"` for the intended destination.
+For example, if your authorised Codex traffic uses `chatgpt.com`, merge this
+field into that host's existing table in a copy of your host `policy.toml`:
+
+```toml
+[hosts."chatgpt.com"]
+unknown_creds = "prompt"
+```
+
+Use the destination recorded for your client; this example does not authorise
+another OpenAI service or a client-selected URL. The fragment grants no network
+access. Preserve existing network permissions, credential denials and other
+host fields. [Check and apply the candidate](installation.md#check-show-and-apply),
+then retry the client's request. With network access permitted and blocking
+credential controls active, an unapproved bearer returns HTTP 428 with a
+credential fingerprint. An explicit denial returns HTTP 403.
+
+On the host, inspect the reported agent, destination and fingerprint in the
+pending credential approval or the `security.credential_guard` audit event.
+Use `services approvals` to read pending records. `logs --agent WORKER --lines
+50 --json` returns complete selected audit events; replace `WORKER` with your
+agent's name. Match the event's `request_id`, `agent` and `host` to the client's
+request, then read its `details.fingerprint`.
+Do not extract or share a token or Codex authentication file to obtain the
+fingerprint.
+
+For the installed instance at `$HOME/.safeyolo`, replace `FINGERPRINT` with the
+reported `hmac:` fingerprint and `HOST` with the intended destination. Approve
+only the token and destination you intend to permit:
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials approve FINGERPRINT --destination HOST
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" policy show
+```
+
+Wait for `saved_matches_active` to be true, then let the client retry.
+The exact-fingerprint grant covers that token at the chosen host. It is a
+host-policy grant, not an agent-specific grant or proof of issuer or account.
+It does not constrain the method or path. Existing network permissions,
+explicit credential denials and inspection of other secrets still apply.
+
+Let Codex manage login and refresh. A replacement access token needs its own
+approval; approval of the preceding token does not cover it. This fallback
+does not provide approval-free rotation or prove that the upstream service will
+accept a token. Keep approvals when per-token provenance cannot be established.
+Setting `unknown_creds = "allow"`, excluding `Authorization` from inspection,
+or granting a custom token family would permit values without proving their
+issuer or intended use.
 
 ## Use a 1Password reference
 

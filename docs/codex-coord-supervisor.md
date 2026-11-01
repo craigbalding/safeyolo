@@ -71,6 +71,18 @@ the configured room, sender, message-type, brief, and handoff checks, and
 atomically checkpoints the result. Empty, brief-only, and irrelevant pages
 re-arm the wait without launching a harness.
 
+The configured `page_limit` is an upper bound (default 16). Each wait requests
+at most the free slots in the 16-object in-flight checkpoint. If the checkpoint
+is full, the supervisor continues the retained work before receiving another
+page. The turn can recover missing downstream information from canonical room
+history; that history read does not advance the attention cursor. Unconsumed
+attention remains available after the turn frees space. A completed turn that
+consumes informational objects counts as progress while remaining tasks are
+suspended on unanswered handoffs and there is no unresolved send or prior
+uncertainty. Informational consumption and empty waits do not clear uncertainty;
+canonical progress or terminal recovery can resolve it. If the turn makes no
+progress, the existing uncertainty and failure backoff apply.
+
 An actionable page launches the selected harness and creates one session.
 Later actionable pages resume that exact session while an inbound request or
 outbound handoff remains pending. Once both lists are empty, the supervisor
@@ -101,6 +113,20 @@ supervisor transport behavior rather than an agent task.
 Codex and Pi expose the same canonical `send` operation through their tool interfaces. The supervisor normalizes each successful result into one
 outbound-send event before it evaluates a terminal response or records an
 outbound handoff. Downstream behavior does not depend on the selected harness.
+
+The canonical send receipt includes `attention_recipients`, with each recipient's
+agent ID and attention ID. The supervisor stores the downstream recipient's
+attention ID as `request_attention_id` in the awaiting handoff. A response must
+repeat that exact request ID, as well as the declared room, sender, target and
+response kind. A delayed response for an earlier request leaves newer requests
+pending, including requests for the same target.
+
+An older checkpoint or send receipt can lack `request_attention_id`. The
+supervisor preserves that handoff and its parent suspension, but no response
+can complete it automatically. Retained request text alone does not establish
+the missing ID. Preserve the checkpoint and reconcile the identity from
+canonical send evidence before resuming that work. Do not replay the send or
+guess an ID from a response.
 
 A failed wait or canonical-object resolution cannot advance the safe cursor.
 Harness exit code 0 and model text are not work-completion evidence.

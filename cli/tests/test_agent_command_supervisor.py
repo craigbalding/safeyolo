@@ -256,6 +256,7 @@ stop.write_text(json.dumps({"name": "demo", "requested_at": "worker"}))
     enabled.touch()
     owner_fragment = owner_fragment.replace("/safeyolo/command-supervisor-enabled", str(enabled))
     owner_fragment += (
+        "\ncheck_guest_schedulers() { :; }\n"
         "\nexport SAFEYOLO_COMMAND_SUPERVISOR_STATE SAFEYOLO_COMMAND_SUPERVISOR_STOP\n"
         "SAFEYOLO_COMMAND_SUPERVISOR_STATE=\"$COMMAND_SUPERVISOR_STATE\"\n"
         "SAFEYOLO_COMMAND_SUPERVISOR_STOP=\"$COMMAND_SUPERVISOR_STOP\"\n"

@@ -199,7 +199,7 @@ impl Completion {
             && let Some(capture) = &self.capture
         {
             capture.apply_head();
-            capture.memory_response();
+            capture.completed_content();
         }
         if let Some(capture) = &self.capture {
             let error = observation.live_error.take();
@@ -428,6 +428,17 @@ impl Completion {
     }
 }
 
+impl Drop for Completion {
+    fn drop(&mut self) {
+        let _ = self.try_finish();
+        let mut observation = self.lock();
+        // The last owner cannot finish a still-pending upload. Its unreached
+        // request hooks must not discard an independently validated response.
+        observation.request = None;
+        self.finish_evidence(&mut observation);
+    }
+}
+
 struct Driving<F> {
     completion: Arc<Completion>,
     connection: Option<Pin<Box<F>>>,
@@ -545,6 +556,7 @@ mod tests {
                 http2,
                 self.state.clone(),
                 ConnectionIdentity {
+                    ingress_binding: None,
                     run: None,
                     agent_id: "alice".into(),
                     connection_id: "owned-connection".into(),
@@ -640,6 +652,7 @@ mod tests {
                 runtime.audit.poison_for_test();
             }
             let identity = ConnectionIdentity {
+                ingress_binding: None,
                 run: None,
                 agent_id: "alice".into(), connection_id: "owned-connection".into(), source_id: None,
             };
@@ -805,6 +818,7 @@ mod tests {
             false,
             fixture.state.clone(),
             ConnectionIdentity {
+                ingress_binding: None,
                 run: None,
                 agent_id: "alice".into(),
                 connection_id: "owned-connection".into(),
@@ -1242,6 +1256,7 @@ mod tests {
             true,
             fixture.state.clone(),
             ConnectionIdentity {
+                ingress_binding: None,
                 run: None,
                 agent_id: "alice".into(),
                 connection_id: "owned-connection".into(),

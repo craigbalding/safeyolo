@@ -393,7 +393,7 @@ Tests the content, not the name.
 - **`test_full_filesystem_scan_for_private_keys`** — Whole-filesystem scan finds no unexpected private-key material.
   - *Probe:* os.walk from / (skipping /proc, /sys, /dev, /run and
 third-party site-packages); inspect private-key markers and allow only
-the three exact guest sshd host-key paths.
+the listed exact guest sshd host-key paths.
   - *Consequence if unasserted:* The targeted tests above check known-critical paths.
 This is the catch-all: if any private key leaked to a surprising
 location (/tmp, /var/log, an agent workspace subdir), the
@@ -760,8 +760,9 @@ mechanism (which varies between gVisor and VZ).
 
 - **`test_dev_whitelist`** — Every /dev entry is on the expected whitelist.
   - *Probe:* Enumerate /dev; compare against the expected set
-(plus prefixed exceptions for microVMs); assert no
-unexpected entries.
+(plus prefixed exceptions for microVMs). If /dev/log exists,
+verify it is a guest-root-owned socket. Assert no unexpected
+entries.
   - *Consequence if unasserted:* Novel device entries are attack surface. This test is
 deliberately allowlist-based rather than blocklist-based —
 if the runtime adds a new device, the test fails until a

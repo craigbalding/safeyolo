@@ -241,14 +241,19 @@ host target as the production input producers for Clippy, tests and builds.
 It retains the host target's Coord test runner. Production compilation, test
 compilation and test execution have separate bounded steps. A successful
 Clippy check does not supply the executable outputs needed by those steps.
-Overnight test compilation first prepares the shared library, library/bin tests
-and host binaries selected by the version integration test. A second step keeps
+Overnight test compilation prepares the library test, then binary tests and
+host binaries selected by the version integration test. A separate step prepares
+the agent API and native integration tests. The final compilation step keeps
 the complete default target selection, including examples, and reuses those
-outputs. Both steps use the unchanged release profile and flags. The dependency
+outputs. All steps use the unchanged release profile and flags. The dependency
 cache does not supply these workspace executables. Completed Cargo timing
 reports are retained even when a later compilation step fails; an interrupted
 compiler can leave no report for its unfinished command. The verbose job log
 still identifies the targets started before interruption.
+Linux library acquisition tests use the built CLI for the privileged rootfs
+remapper. Build `safeyolo` with the selected profile, then set
+`SAFEYOLO_NATIVE_CLI` to its absolute path when running those tests. Both Rust
+CI lanes supply this input.
 The input producers and native checks share the existing quick-job dependency
 cache namespace for each profile. The pinned cache action still separates
 operating systems, architectures, Rust toolchains, flags and lockfile inputs.
@@ -329,6 +334,11 @@ artifacts without this receipt also require a build. Damaged downloads or invali
 receipts fail the job. Consumer tests, terminal-input checks and complete package
 assembly still run.
 
+Linux input producers use Ubuntu 24.04 on both architectures. Complete Linux
+packages acquire tmux and its private libraries on that same runner. The packager
+derives the minimum glibc version from all shipped host executables and runtime
+libraries, so a floating runner can raise the package's runtime requirement.
+
 Use the `packages_only` input of `proxy-rust.yml` to produce complete host
 bundles without the contract matrix. It calls the existing
 `guest-test-inputs.yml` producer with production profile and package retention.
@@ -383,6 +393,21 @@ Start waits for readiness. Status and doctor use the owned process
 record and distinguish process, endpoint, sandbox and command state. Startup
 success does not prove a working guest or policy scenario. Stop shuts down the
 proxy and its Coord runtime; stop each disposable agent separately.
+For a fresh start, managed NATS and the proxy initialize concurrently. The
+command waits for both starts to finish. A Coord failure is reported and does
+not prevent proxy startup. With `SAFEYOLO_STARTUP_TIMINGS=1`, the proxy writes
+`startup` JSON records to `logs/proxy.log`, with source, profile, monotonic stage and elapsed seconds,
+and process CPU seconds for configuration, policy, credentials, flow recording,
+inspection, TLS and readiness publication. Listener projection separates the
+configuration read, reconciliation, writing, file sync and directory sync.
+Unchanged listeners keep the existing configuration file and reload identifier.
+Credential preparation separates grants, HMAC key loading and detector compilation.
+Vault unlock is deferred to credential-consuming operations and does not delay
+proxy readiness. Initialization and read-only credential commands create no store.
+Launcher and NATS-start timings go to the command's standard error.
+CPU time covers all threads in the emitting process and excludes its children.
+Component timings are nested;
+do not add their elapsed values to obtain total startup time.
 Doctor also sends a traced request through every configured agent Unix-domain
 socket. The reserved probe runs the normal request controls and terminates
 locally without external network access. The `pipeline` result lists each
@@ -1117,11 +1142,14 @@ controls also execute generated POSIX launchers at paths with spaces, long
 shebangs, quotes and backslashes through both seeders. They check rewritten
 pip-seeder RECORD hashes, failed symlink deletion as an ordinary user, and
 creation over prepared executable and library directory links. The filesystem
-controls check that external target content and modes stay unchanged. HTTP
-fixtures listen on disposable loopback ports and close after each test. The
-seed-wheel test downloads the pip version in the acceptance lockfile from the
-default index, verifies its published PyPI digest, and checks rejection after
-altering the downloaded file. The tests remove their temporary files.
+controls check that external target content and modes stay unchanged.
+The acceptance dependency controls also exercise
+OpenTelemetry propagation limits, whitespace parsing and Semgrep trace/log
+export with requests and threading instrumentation. HTTP fixtures
+listen on disposable loopback ports and close after each test. The seed-wheel
+test downloads the pip version in the acceptance lockfile from the default index, verifies its
+published PyPI digest, and checks rejection after altering the downloaded
+file. The tests remove their temporary files.
 
 A lockfile update changes the tool selected by the next frozen sync. It does
 not replace activation scripts or launchers in existing environments. After
@@ -1130,15 +1158,14 @@ the normal hook command to recreate cached hook environments. Recreate other
 environments made by virtualenv with the updated tool and their normal
 creation command.
 
-Virtualenv 21.14.9 repairs launchers from its app-data seeder and rewrites
-launchers from its pip seeder. It does not patch pip's vendored distlib.
-The bundled pip 26.2.1 uses vendored distlib 0.4.2. A later pip installation,
+Virtualenv repairs initial seed launchers. It does not patch pip's vendored
+distlib. Virtualenv 21.14.13 bundles pip 26.2.2 with vendored distlib 0.4.2.
+A later pip installation,
 reinstallation or upgrade can generate an unsafe POSIX launcher again when an
 attacker-influenced interpreter path contains shell syntax and needs a shell
 wrapper. Spaces or a long shebang select that wrapper. Running the launcher
 then interprets the path as shell syntax. Environment recreation repairs the
-initial launchers only; it does not protect later pip writes. Use trusted
-environment destinations for this remaining upstream pip exposure.
+initial launchers only; it does not protect later pip writes.
 
 These Linux controls do not execute Windows batch activation. Upstream
 virtualenv skips downloaded-wheel digest verification for custom indexes or

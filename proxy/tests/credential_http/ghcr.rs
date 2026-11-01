@@ -196,45 +196,31 @@ async fn fetch_response(
     headers: &[(&str, &str)],
     h2: bool,
 ) -> hyper::Response<Vec<u8>> {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(format!("https://{host}{path}"))
+        .header("host", host);
+    for (key, value) in headers {
+        request = request.header(*key, *value);
+    }
+    fetch_request(
+        socket,
+        ca,
+        request.body(Full::new(Bytes::new())).unwrap(),
+        h2,
+    )
+    .await
+}
+
+pub(super) async fn fetch_request(
+    socket: &std::path::Path,
+    ca: rustls::pki_types::CertificateDer<'static>,
+    request: Request<Full<Bytes>>,
+    h2: bool,
+) -> hyper::Response<Vec<u8>> {
     tokio::time::timeout(Duration::from_secs(30), async {
-        let mut stream = UnixStream::connect(socket).await.unwrap();
-        stream
-            .write_all(
-                format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n").as_bytes(),
-            )
-            .await
-            .unwrap();
-        let head = super::response_head(&mut stream).await;
-        assert!(head.starts_with(b"HTTP/1.1 200"), "CONNECT failed");
-        let mut roots = rustls::RootCertStore::empty();
-        roots.add(ca).unwrap();
-        let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-        tls.alpn_protocols = vec![if h2 {
-            b"h2".to_vec()
-        } else {
-            b"http/1.1".to_vec()
-        }];
-        let stream = tokio_rustls::TlsConnector::from(Arc::new(tls))
-            .connect(
-                rustls::pki_types::ServerName::try_from(host.to_owned()).unwrap(),
-                stream,
-            )
-            .await
-            .unwrap();
-        let mut request = Request::builder()
-            .method(method)
-            .uri(format!("https://{host}{path}"))
-            .header("host", host);
-        for (key, value) in headers {
-            request = request.header(*key, *value);
-        }
-        let request = request.body(Empty::<Bytes>::new()).unwrap();
+        let host = request.uri().host().unwrap().to_owned();
+        let stream = connect_tls(socket, ca, &host, h2).await;
         let (reply, connection) = if h2 {
             let (mut sender, connection) =
                 hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(stream))
@@ -261,7 +247,43 @@ async fn fetch_response(
         hyper::Response::from_parts(parts, bytes)
     })
     .await
-    .expect("GHCR response deadline")
+    .expect("owned HTTPS response deadline")
+}
+
+pub(super) async fn connect_tls(
+    socket: &std::path::Path,
+    ca: rustls::pki_types::CertificateDer<'static>,
+    host: &str,
+    h2: bool,
+) -> tokio_rustls::client::TlsStream<UnixStream> {
+    let mut stream = UnixStream::connect(socket).await.unwrap();
+    stream
+        .write_all(format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let head = super::response_head(&mut stream).await;
+    assert!(head.starts_with(b"HTTP/1.1 200"), "CONNECT failed");
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ca).unwrap();
+    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    tls.alpn_protocols = vec![if h2 {
+        b"h2".to_vec()
+    } else {
+        b"http/1.1".to_vec()
+    }];
+    tokio_rustls::TlsConnector::from(Arc::new(tls))
+        .connect(
+            rustls::pki_types::ServerName::try_from(host.to_owned()).unwrap(),
+            stream,
+        )
+        .await
+        .unwrap()
 }
 
 #[tokio::test]

@@ -83,9 +83,20 @@ for binary in safeyolo safeyolo-proxy safeyolo-coord; do cp "$artifacts/$binary"
 cp "$runtime_artifacts/tmux" "$directory/libexec/"
 if [[ $platform == linux-* ]]; then
   "$repository/scripts/acquire_runsc.sh" "$directory/gvisor-runtime"
+  # SafeYolo uses neither cloud checkpoint storage nor the metrics server.
+  # Omit their executables from both profiles; keep the upstream cache intact.
+  rm -f -- "$directory/gvisor-runtime/gvisor-bin/checkpointgofer" \
+    "$directory/gvisor-runtime/gvisor-bin/runsc-metric-server"
   cp -R "$directory/gvisor-runtime/"* "$directory/libexec/"
   rm -rf "$directory/gvisor-runtime"
   chmod 0755 "$directory/libexec" "$directory/libexec/gvisor-bin"
+  if [[ $profile == production ]]; then
+    # Remove source-level debug data only from packaging copies. Keep the
+    # original upstream cache and debug bundles intact for debugging.
+    while IFS= read -r binary; do
+      objcopy --remove-section='.debug*' --remove-section='.zdebug*' "$directory/libexec/$binary"
+    done < <(runsc_files)
+  fi
 fi
 cp "$repository/scripts/tmux_runtime.sh" "$directory/bin/tmux"
 cp "$repository/scripts/watch_backlog_factory.sh" "$directory/bin/watch-backlog-factory"
@@ -198,6 +209,10 @@ fi
 verify_native_package "$directory"
 if [[ -n $output ]]; then
   tar -czf "$output/$name.tar.gz" -C "$temporary" "$name"
+  # The same CLI and discovery metadata can acquire guest bytes before the
+  # complete host archive arrives. No guest selection is frozen at build time.
+  tar -czf "$output/$name-guest-download.tar.gz" -C "$temporary" \
+    "$name/bin/safeyolo" "$name/package-info"
   # The public bootstrap stays bound to the release that supplies this package.
   # Publishing this file follows the existing host-release procedure.
   sed "s/^release=$/release=host-$revision/" \

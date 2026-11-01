@@ -144,7 +144,7 @@ jobs:
             BASE=HEAD~1
           fi
           git diff --name-only "$BASE" HEAD > "$RUNNER_TEMP/changed-paths"
-          if grep -Eq '^(proxy/|scripts/rust_cache_command\.sh$|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$)' "$RUNNER_TEMP/changed-paths"; then
+          if grep -Eq '^(proxy/|tests/proxy_contracts/test_(native_policy_cli|first_agent_launch)\.py$|tests/test_proxy_rust_coord_fixture\.py$|scripts/(cargo_with_space|rust_cache_command)\.sh$|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$)' "$RUNNER_TEMP/changed-paths"; then
             echo 'rust=true' >> "$GITHUB_OUTPUT"
           elif [ "$?" -ne 1 ]; then
             echo 'ERROR: changed-path matcher failed' >&2
@@ -290,12 +290,18 @@ jobs:
             cli/tests/test_sockets.py \
             tests/test_blackbox_harness.py \
             tests/proxy_contracts/test_readiness.py \
-            tests/test_proxy_rust_coord_fixture.py \
             tests/test_proxy_rust_ci_events.py \
             tests/test_linux_share_mount_observations.py \
             tests/test_proxy_cutover_deletion_map.py \
             tests/test_blackbox_sinkhole.py::test_sinkhole_head_has_get_headers_no_body_and_control_observation \
             tests/test_workflow_action_pins.py
+
+      - name: Test current native Coord fixture boundaries
+        if: steps.changes.outputs.rust == 'true'
+        env:
+          SAFEYOLO_NATIVE_CLI: ${{ github.workspace }}/proxy/target/release/safeyolo
+          SAFEYOLO_RUST_PROXY: ${{ github.workspace }}/proxy/target/release/safeyolo-proxy
+        run: uv run --frozen pytest -q tests/test_proxy_rust_coord_fixture.py
 
       - name: Test guest command staging and bounded native recovery
         if: steps.changes.outputs.guest == 'true'
@@ -351,6 +357,8 @@ jobs:
         if: steps.changes.outputs.rust == 'true'
         timeout-minutes: 10
         working-directory: proxy
+        env:
+          SAFEYOLO_NATIVE_CLI: ${{ github.workspace }}/proxy/target/release/safeyolo
         run: |
           ../scripts/cargo_with_space.sh test --release --locked --test version
           ../scripts/cargo_with_space.sh test --release --locked --test agent_api_audit
@@ -531,19 +539,34 @@ jobs:
           source scripts/native_package.sh
           verify_native_artifacts "$SAFEYOLO_NATIVE_ARTIFACTS" guest/command/target/release production "$(host_platform)"
 
-      - name: Compile shared Rust contract targets
-        # The dependency cache excludes workspace outputs. Compile the library,
-        # library/bin tests and test-linked host binaries before the full set.
-        # The version integration target also prepares the CARGO_BIN_EXE inputs.
+      - name: Compile Rust library contract target
+        # Give the library and its harness their own compilation budget.
         timeout-minutes: ${{ matrix.os == 'macos-latest' && 20 || 25 }}
         working-directory: proxy
         env:
           SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
-        run: ../scripts/cargo_with_space.sh test --release --locked --lib --bins --test version --no-run --timings --verbose
+        run: ../scripts/cargo_with_space.sh test --release --locked --lib --no-run --timings --verbose
+
+      - name: Compile Rust binary contract targets
+        # Reuse the library output. The version target prepares CARGO_BIN_EXE.
+        timeout-minutes: ${{ matrix.os == 'macos-latest' && 20 || 25 }}
+        working-directory: proxy
+        env:
+          SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: ../scripts/cargo_with_space.sh test --release --locked --bins --test version --no-run --timings --verbose
+
+      - name: Compile Rust agent API and native contract targets
+        # These integration targets took over ten minutes in the Mac timeout.
+        # Prepare them separately so the complete selection reuses their outputs.
+        timeout-minutes: ${{ matrix.os == 'macos-latest' && 20 || 25 }}
+        working-directory: proxy
+        env:
+          SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: ../scripts/cargo_with_space.sh test --release --locked --test 'agent_api*' --test 'native*' --no-run --timings --verbose
 
       - name: Compile Rust contract executables
         # Keep the complete default target selection, including examples.
-        # Shared workspace outputs from the preceding step remain reusable.
+        # Shared workspace outputs from the preceding steps remain reusable.
         timeout-minutes: ${{ matrix.os == 'macos-latest' && 20 || 25 }}
         working-directory: proxy
         env:
@@ -559,12 +582,12 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      - name: Start the Python-owned Coord fixture
+      - name: Start the native Coord fixture
         env:
-          SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture
+          SAFEYOLO_COORD_FIXTURE_ROOT: ${{ runner.temp }}/safeyolo-coord-fixture
           SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture
         run: |
-          fixture_root="$SAFEYOLO_COORD_DATA_DIR"
+          fixture_root="$SAFEYOLO_COORD_FIXTURE_ROOT"
           fixture_ready="$fixture_root/fixture.ready"
           fixture_log="$RUNNER_TEMP/safeyolo-coord-fixture.log"
           test ! -e "$fixture_root" || {
@@ -578,11 +601,11 @@ jobs:
             if test -f "$fixture_ready"; then
               uv run --frozen python - <<'PY'
           import os
-          import sys
-          sys.path.insert(0, "tests/reference")
-          from safeyolo.coord import nats_runtime
+          import json
+          from pathlib import Path
+          fixture = json.loads((Path(os.environ["SAFEYOLO_COORD_FIXTURE_ROOT"]) / "data/coord/fixture.json").read_text())
           with open(os.environ["GITHUB_ENV"], "a") as environment:
-              environment.write(f"SAFEYOLO_COORD_NATS_BINARY={nats_runtime.nats_binary_path()}\n")
+              environment.write(f"SAFEYOLO_COORD_NATS_BINARY={fixture['nats_binary']}\n")
           PY
               exit 0
             fi
@@ -611,22 +634,24 @@ jobs:
         env:
           SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: |
-          export SAFEYOLO_PROXY_COORD_DATA_DIR="$RUNNER_TEMP/safeyolo-coord-fixture"
+          export SAFEYOLO_PROXY_COORD_DATA_DIR="$RUNNER_TEMP/safeyolo-coord-fixture/data/coord"
           export SAFEYOLO_PROXY_NATS_TEST_INSTANCE=proxy-rust-fixture
           ../scripts/cargo_with_space.sh test --release --locked
+          ../scripts/cargo_with_space.sh test --release --locked --test native_coord \
+            inventory::native_inventory_uses_current_grants_and_fixture_provider_evidence_across_restart -- --exact --ignored
           # Tests can select binaries linked with dev-dependency features.
           # Restore the normal production outputs for the component consumers.
           ../scripts/cargo_with_space.sh build --release --locked --bins
 
-      - name: Stop the Python-owned Coord fixture
+      - name: Stop the native Coord fixture
         if: always()
         env:
-          SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture
+          SAFEYOLO_COORD_FIXTURE_ROOT: ${{ runner.temp }}/safeyolo-coord-fixture
           SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture
         run: |
           fixture_log="$RUNNER_TEMP/safeyolo-coord-fixture.log"
-          fixture_stopped="$SAFEYOLO_COORD_DATA_DIR/fixture.stopped"
-          if test ! -e "$SAFEYOLO_COORD_DATA_DIR"; then
+          fixture_stopped="$SAFEYOLO_COORD_FIXTURE_ROOT/fixture.stopped"
+          if test ! -e "$SAFEYOLO_COORD_FIXTURE_ROOT"; then
             exit 0
           fi
           uv run --frozen python proxy/tests/coord_fixture.py --teardown

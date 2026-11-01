@@ -8,8 +8,8 @@
 //! the NATS subscription before returning.
 //!
 //! The test needs a real SafeYolo NATS fixture.  The command used to produce
-//! the retained evidence starts the pinned fixture through the existing
-//! Python `nats_runtime`; the test does not create a second coordination
+//! the retained evidence starts the pinned fixture through the current
+//! native CLI; the test does not create a second coordination
 //! database or substitute a fake provider.
 
 use rusqlite::Connection;
@@ -38,6 +38,7 @@ struct Reply {
 fn config(root: &Path) -> Config {
     Config {
         native_product: false,
+        ingress_bindings: vec![],
         native_settings: None,
         native_config_dir: None,
         native_config_path: None,
@@ -294,6 +295,76 @@ fn file_lines(path: &Path) -> Vec<String> {
         .collect()
 }
 
+fn assert_wait_shutdown_audit(before: &[String], after: &[String], instance_id: &str) -> Value {
+    assert!(
+        after.starts_with(before),
+        "owner drain must preserve prior records"
+    );
+    let prior: Vec<_> = before
+        .iter()
+        .map(|line| safeyolo_proxy::audit::parse_record(line).unwrap())
+        .collect();
+    let opened: Vec<_> = prior
+        .iter()
+        .filter(|row| {
+            row["event"] == "network.connection"
+                && row["details"]["runtime_id"] == instance_id
+                && row["details"]["state"] == "open"
+        })
+        .collect();
+    assert_eq!(opened.len(), 1, "one held ingress connection");
+    let open = opened[0];
+    assert_eq!(open["agent"], "alice");
+    assert_eq!(open["details"]["instance_id"], instance_id);
+    assert_eq!(open["details"]["leg"], "client_to_proxy");
+    assert_eq!(open["details"]["transport"], "unix");
+    assert_eq!(
+        open["details"]["attribution"]["trusted_transport_identity"],
+        "alice"
+    );
+    let delta: Vec<_> = after[before.len()..]
+        .iter()
+        .map(|line| safeyolo_proxy::audit::parse_record(line).unwrap())
+        .collect();
+    assert_eq!(
+        delta
+            .iter()
+            .map(|row| row["event"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["traffic.flow", "network.connection"],
+        "owner drain must emit only the held flow and connection terminal, with no fabricated agent.api_response: {delta:?}"
+    );
+    let flow = &delta[0];
+    let terminal = &delta[1];
+    assert_eq!(flow["agent"], open["agent"]);
+    assert!(flow["request_id"].as_str().is_some_and(|id| !id.is_empty()));
+    assert_eq!(
+        flow["details"],
+        json!({
+            "client_connection_id": open["details"]["connection_id"],
+            "server_connection_id": null,
+            "instance_id": instance_id,
+            "runtime_id": instance_id,
+            "attribution": open["details"]["attribution"],
+        })
+    );
+    assert_eq!(terminal["agent"], open["agent"]);
+    assert!(terminal["details"]["ended_at"].is_string());
+    let mut expected_terminal = open["details"].clone();
+    expected_terminal["state"] = json!("closed");
+    expected_terminal["error"] = Value::Null;
+    expected_terminal["ended_at"] = terminal["details"]["ended_at"].clone();
+    assert_eq!(terminal["details"], expected_terminal);
+    json!({
+        "prior_records_unchanged": after.starts_with(before),
+        "added_events": [flow["event"], terminal["event"]],
+        "connection_id": open["details"]["connection_id"],
+        "request_id": flow["request_id"],
+        "terminal_state": terminal["details"]["state"],
+        "terminal_error": terminal["details"]["error"],
+    })
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn native_attention_wait_is_reclaimed_by_proxy_shutdown() {
     assert!(
@@ -381,10 +452,9 @@ async fn native_attention_wait_is_reclaimed_by_proxy_shutdown() {
     assert_eq!(admin_identity.status, 200);
     assert_eq!(admin_identity.body["instance_id"], instance_id);
 
-    // Capture both sinks before the owner drain. A wait with no attention
-    // result must not create a late audit or event after its owner terminates.
-    let audit_before_first_shutdown = file_lines(&config.audit_log_path.clone().unwrap());
-    let events_before_first_shutdown = file_lines(config.audit_log_path.as_ref().unwrap());
+    // Owner drain emits the held flow and ingress terminal before the audit
+    // writer stops. A canceled wait must not fabricate an API response.
+    let audit_before_first_shutdown = file_lines(config.audit_log_path.as_ref().unwrap());
 
     let started = tokio::time::Instant::now();
     proxy.shutdown().await;
@@ -425,15 +495,11 @@ async fn native_attention_wait_is_reclaimed_by_proxy_shutdown() {
         TcpStream::connect(("127.0.0.1", admin_port)).await.is_err(),
         "admin listener must close at shutdown"
     );
-    let audit_after_first_shutdown = file_lines(&config.audit_log_path.clone().unwrap());
-    let events_after_first_shutdown = file_lines(config.audit_log_path.as_ref().unwrap());
-    assert_eq!(
-        audit_after_first_shutdown, audit_before_first_shutdown,
-        "first owner drain must not append a late audit event"
-    );
-    assert_eq!(
-        events_after_first_shutdown, events_before_first_shutdown,
-        "first owner drain must not append a late event"
+    let audit_after_first_shutdown = file_lines(config.audit_log_path.as_ref().unwrap());
+    let first_shutdown_audit = assert_wait_shutdown_audit(
+        &audit_before_first_shutdown,
+        &audit_after_first_shutdown,
+        &instance_id,
     );
 
     // Reopen the exact same state and socket paths. The new process must have
@@ -473,8 +539,7 @@ async fn native_attention_wait_is_reclaimed_by_proxy_shutdown() {
         restarted_subscriptions_before >= 1,
         "restarted attention wait must create a live NATS subscription"
     );
-    let audit_before_second_shutdown = file_lines(&config.audit_log_path.clone().unwrap());
-    let events_before_second_shutdown = file_lines(config.audit_log_path.as_ref().unwrap());
+    let audit_before_second_shutdown = file_lines(config.audit_log_path.as_ref().unwrap());
     restarted.shutdown().await;
 
     let mut restarted_subscriptions_after = usize::MAX;
@@ -504,15 +569,11 @@ async fn native_attention_wait_is_reclaimed_by_proxy_shutdown() {
             .is_err(),
         "restarted admin listener must close at shutdown"
     );
-    let audit_after_second_shutdown = file_lines(&config.audit_log_path.clone().unwrap());
-    let events_after_second_shutdown = file_lines(config.audit_log_path.as_ref().unwrap());
-    assert_eq!(
-        audit_after_second_shutdown, audit_before_second_shutdown,
-        "restarted owner drain must not append a late audit event"
-    );
-    assert_eq!(
-        events_after_second_shutdown, events_before_second_shutdown,
-        "restarted owner drain must not append a late event"
+    let audit_after_second_shutdown = file_lines(config.audit_log_path.as_ref().unwrap());
+    let second_shutdown_audit = assert_wait_shutdown_audit(
+        &audit_before_second_shutdown,
+        &audit_after_second_shutdown,
+        restarted_instance_id,
     );
 
     let evidence = json!({
@@ -539,12 +600,10 @@ async fn native_attention_wait_is_reclaimed_by_proxy_shutdown() {
             "subscriptions_after": restarted_subscriptions_after,
             "readiness_removed": !config.readiness_file.exists(),
             "agent_socket_removed": !config.listeners[0].socket_path.exists(),
-            "audit_lines_unchanged": audit_after_second_shutdown == audit_before_second_shutdown,
-            "event_lines_unchanged": events_after_second_shutdown == events_before_second_shutdown,
+            "shutdown_audit": second_shutdown_audit,
         },
         "first_shutdown": {
-            "audit_lines_unchanged": audit_after_first_shutdown == audit_before_first_shutdown,
-            "event_lines_unchanged": events_after_first_shutdown == events_before_first_shutdown,
+            "shutdown_audit": first_shutdown_audit,
         },
         "remaining_scope": [
             "other #626/#628/#629 standalone workers",
@@ -645,8 +704,7 @@ async fn native_room_wait_consumer_is_reclaimed_by_proxy_shutdown() {
         exchange_admin(admin_port, &admin_request("/admin/runtime-identity")).await;
     assert_eq!(admin_identity.status, 200);
     assert_eq!(admin_identity.body["instance_id"], instance_id);
-    let audit_before = file_lines(&config.audit_log_path.clone().unwrap());
-    let events_before = file_lines(config.audit_log_path.as_ref().unwrap());
+    let audit_before = file_lines(config.audit_log_path.as_ref().unwrap());
 
     proxy.shutdown().await;
 
@@ -678,12 +736,9 @@ async fn native_room_wait_consumer_is_reclaimed_by_proxy_shutdown() {
         "shutdown must not fabricate a wait result"
     );
     assert!(TcpStream::connect(("127.0.0.1", admin_port)).await.is_err());
-    let first_audit_lines_after_shutdown = file_lines(&config.audit_log_path.clone().unwrap());
-    let first_event_lines_after_shutdown = file_lines(config.audit_log_path.as_ref().unwrap());
-    let first_audit_lines_unchanged = first_audit_lines_after_shutdown == audit_before;
-    let first_event_lines_unchanged = first_event_lines_after_shutdown == events_before;
-    assert_eq!(first_audit_lines_after_shutdown, audit_before);
-    assert_eq!(first_event_lines_after_shutdown, events_before);
+    let audit_after = file_lines(config.audit_log_path.as_ref().unwrap());
+    let first_shutdown_audit =
+        assert_wait_shutdown_audit(&audit_before, &audit_after, &instance_id);
 
     // Repeat the same owner boundary on the same state/socket paths. This
     // catches stale consumer state and verifies a second process can admit the
@@ -723,8 +778,7 @@ async fn native_room_wait_consumer_is_reclaimed_by_proxy_shutdown() {
         sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(restarted_consumers_before, 1);
-    let restarted_audit_before = file_lines(&config.audit_log_path.clone().unwrap());
-    let restarted_events_before = file_lines(config.audit_log_path.as_ref().unwrap());
+    let restarted_audit_before = file_lines(config.audit_log_path.as_ref().unwrap());
     restarted.shutdown().await;
 
     let mut restarted_consumers_after = usize::MAX;
@@ -753,13 +807,11 @@ async fn native_room_wait_consumer_is_reclaimed_by_proxy_shutdown() {
             .await
             .is_err()
     );
-    assert_eq!(
-        file_lines(&config.audit_log_path.clone().unwrap()),
-        restarted_audit_before
-    );
-    assert_eq!(
-        file_lines(config.audit_log_path.as_ref().unwrap()),
-        restarted_events_before
+    let restarted_audit_after = file_lines(config.audit_log_path.as_ref().unwrap());
+    let second_shutdown_audit = assert_wait_shutdown_audit(
+        &restarted_audit_before,
+        &restarted_audit_after,
+        restarted_instance_id,
     );
 
     let evidence = json!({
@@ -774,8 +826,7 @@ async fn native_room_wait_consumer_is_reclaimed_by_proxy_shutdown() {
             "consumer_count_after_shutdown": consumers_after,
             "readiness_removed": !config.readiness_file.exists(),
             "agent_socket_removed": !config.listeners[0].socket_path.exists(),
-            "audit_lines_unchanged": first_audit_lines_unchanged,
-            "event_lines_unchanged": first_event_lines_unchanged,
+            "shutdown_audit": first_shutdown_audit,
         },
         "restart": {
             "same_state_and_socket_paths": true,
@@ -785,8 +836,7 @@ async fn native_room_wait_consumer_is_reclaimed_by_proxy_shutdown() {
             "consumer_count_after_shutdown": restarted_consumers_after,
             "readiness_removed": !config.readiness_file.exists(),
             "agent_socket_removed": !config.listeners[0].socket_path.exists(),
-            "audit_lines_unchanged": file_lines(&config.audit_log_path.clone().unwrap()) == restarted_audit_before,
-            "event_lines_unchanged": file_lines(config.audit_log_path.as_ref().unwrap()) == restarted_events_before,
+            "shutdown_audit": second_shutdown_audit,
         },
         "remaining_scope": [
             "shared OAuth refresh owner shutdown",

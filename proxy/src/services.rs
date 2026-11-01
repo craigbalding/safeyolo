@@ -628,6 +628,33 @@ impl GatewaySnapshot {
         self.agents.get(name)?.as_deref()
     }
 
+    /// Answer one advertised collaboration label without copying token,
+    /// credential, account, host or route inventories out of this owner.
+    pub(crate) fn room_capability_authorized(
+        &self,
+        agent: &str,
+        id: &str,
+        provider: &str,
+        capability: &str,
+    ) -> bool {
+        if self.token_issue.is_some() || self.configured_agent_id(agent) != Some(id) {
+            return false;
+        }
+        // The current per-agent service surface selects the last binding for
+        // a service. An earlier capability must not survive its replacement.
+        self.tokens
+            .iter()
+            .zip(&self.token_timestamps)
+            .rev()
+            .find(|(binding, typed)| {
+                !typed.agent
+                    && !typed.service
+                    && binding.agent == agent
+                    && binding.service == provider
+            })
+            .is_some_and(|(binding, typed)| !typed.capability && binding.capability == capability)
+    }
+
     pub fn compiled_routes(&self) -> &[CompiledRoute] {
         &self.routes
     }
@@ -1275,8 +1302,8 @@ pub fn method_matches(method: &str, methods: &[String]) -> bool {
         .any(|allowed| allowed == "*" || allowed.eq_ignore_ascii_case(method))
 }
 
-/// Mirrors detection/core matching: normalize resource path, lowercase only its
-/// host/service prefix, then lowercase the complete pattern. '*' crosses '/'.
+/// Normalize request paths and preserve path case on both sides. Host/service
+/// prefixes are case-insensitive; '*' crosses '/'.
 pub fn resource_matches(resource: &str, pattern: &str) -> bool {
     let resource = if resource.starts_with('/') {
         normalize_path(resource)
@@ -1289,14 +1316,20 @@ pub fn resource_matches(resource: &str, pattern: &str) -> bool {
     } else {
         resource.to_lowercase()
     };
-    let pattern = pattern.to_lowercase();
+    let pattern = if pattern.starts_with('/') {
+        pattern.to_owned()
+    } else if let Some((prefix, path)) = pattern.split_once('/') {
+        format!("{}/{path}", prefix.to_lowercase())
+    } else {
+        pattern.to_lowercase()
+    };
     crate::policy::glob(&resource, &pattern.replace("**", "*"))
         || (pattern.contains("**")
             && resource == pattern.trim_end_matches('*').trim_end_matches('/'))
 }
 
-/// The path normalization used by the shipped yarl-based matcher. Invalid UTF-8
-/// percent bytes remain escaped; query/fragment text is outside the path.
+/// Normalize a request path. Invalid UTF-8 percent bytes remain escaped;
+/// query/fragment text is outside the path.
 pub fn normalize_path(path: &str) -> String {
     let path: String = path.nfkc().collect();
     if !path.starts_with('/') {

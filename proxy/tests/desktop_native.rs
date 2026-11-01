@@ -46,6 +46,17 @@ fn fixture(root: &Path) {
 printf 'runsc=%s uid=%s gid=%s userns=%s netns=%s\n' "$0" "$(/usr/bin/id -u)" "$(/usr/bin/id -g)" "$(/usr/bin/readlink /proc/self/ns/user)" "$(/usr/bin/readlink /proc/self/ns/net)" >> "$SAFEYOLO_CONFIG_DIR/desktop-child.trace"
 printf 'argv <%s>\n' "$@" >> "$SAFEYOLO_CONFIG_DIR/desktop-child.trace"
 trap 'printf "runsc exit=%s\n" "$?" >> "$SAFEYOLO_CONFIG_DIR/desktop-child.trace"' EXIT
+guest_socket=$SAFEYOLO_CONFIG_DIR/guest.sock
+if [ -d "$SAFEYOLO_CONFIG_DIR/desktop-targets" ]; then
+    case "$3" in
+      state) FAKE_RUN_ID=$4;;
+      exec) FAKE_RUN_ID=$8;;
+      port-forward) FAKE_RUN_ID=$6;;
+    esac
+    name=$(/bin/cat "$SAFEYOLO_CONFIG_DIR/desktop-targets/$FAKE_RUN_ID") || exit 2
+    [ ! -e "$SAFEYOLO_CONFIG_DIR/$name-stopped" ] || exit 1
+    guest_socket=$SAFEYOLO_CONFIG_DIR/guest-$name.sock
+fi
 case "$3" in
   state)
     if [ -e "$SAFEYOLO_CONFIG_DIR/agent-stopped" ]; then exit 1; fi
@@ -78,7 +89,7 @@ case "$3" in
       echo "connection was refused" >&2
       exit 1
     fi
-    /usr/bin/socat "UNIX-CONNECT:$5" "UNIX-CONNECT:$SAFEYOLO_CONFIG_DIR/guest.sock" </dev/null >/dev/null 2>/dev/null &
+    /usr/bin/socat "UNIX-CONNECT:$5" "UNIX-CONNECT:$guest_socket" </dev/null >/dev/null 2>/dev/null &
     ;;
   *) exit 2;;
 esac
@@ -114,11 +125,30 @@ async fn request(
     headers: &[(&str, String)],
     body: &[u8],
 ) -> Vec<u8> {
+    request_host(
+        port,
+        &format!("127.0.0.1:{port}"),
+        method,
+        path,
+        headers,
+        body,
+    )
+    .await
+}
+
+async fn request_host(
+    port: u16,
+    host: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, String)],
+    body: &[u8],
+) -> Vec<u8> {
     let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
         .await
         .unwrap();
     let mut head = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nContent-Length: {}\r\n",
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nContent-Length: {}\r\n",
         body.len()
     );
     for (name, value) in headers {
@@ -228,6 +258,536 @@ fn assert_staged_desktop_size(root: &Path, expected: &str) {
             assert_eq!(output.status.code(), Some(2));
             assert!(String::from_utf8_lossy(&output.stderr).contains("usage: guest-desktop start"));
         }
+    }
+}
+
+fn preview_guest(listener: UnixListener, agent: &'static str) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut clients = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                accepted = listener.accept() => {
+                    let (mut socket, _) = accepted.unwrap();
+                    clients.spawn(async move {
+                        let mut head = Vec::new();
+                        while !head.ends_with(b"\r\n\r\n") {
+                            head.push(socket.read_u8().await.unwrap());
+                        }
+                        let head = String::from_utf8(head).unwrap();
+                        assert!(head.contains("X-SafeYolo-Preview: 1\r\n"));
+                        assert!(!head.contains("safeyolo_preview_token_"));
+                        assert!(!head.contains("X-Forwarded-"));
+                        if head.contains("Upgrade: websocket\r\n") {
+                            socket.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n").await.unwrap();
+                            loop {
+                                let mut header = [0; 2];
+                                if socket.read_exact(&mut header).await.is_err() { break; }
+                                assert!(header[1] & 0x80 != 0);
+                                let mut mask = [0; 4];
+                                socket.read_exact(&mut mask).await.unwrap();
+                                let mut payload = vec![0; (header[1] & 0x7f) as usize];
+                                socket.read_exact(&mut payload).await.unwrap();
+                                for (index, byte) in payload.iter_mut().enumerate() { *byte ^= mask[index % 4]; }
+                                let (opcode, reply) = if header[0] == 0x89 {
+                                    (0x8a, payload)
+                                } else {
+                                    assert_eq!(header[0], 0x82);
+                                    (0x82, [agent.as_bytes(), b":", &payload].concat())
+                                };
+                                socket.write_all(&[opcode, reply.len() as u8]).await.unwrap();
+                                socket.write_all(&reply).await.unwrap();
+                            }
+                        } else if head.starts_with("GET /stream HTTP/1.1\r\n") {
+                            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1024\r\n\r\nhello").await.unwrap();
+                            let _ = socket.read_u8().await;
+                        } else {
+                            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{agent}", agent.len()).as_bytes()).await.unwrap();
+                        }
+                    });
+                }
+                Some(result) = clients.join_next() => { result.unwrap(); }
+            }
+        }
+    })
+}
+
+async fn viewer_message(socket: &mut TcpStream, agent: &str) {
+    // One masked binary browser frame and one unmasked guest frame.
+    socket.write_all(b"\x82\x85\0\0\0\0hello").await.unwrap();
+    let mut header = [0; 2];
+    loop {
+        socket.read_exact(&mut header).await.unwrap();
+        if header[0] != 0x89 {
+            break;
+        }
+        let mut ping = vec![0; header[1] as usize];
+        socket.read_exact(&mut ping).await.unwrap();
+        socket
+            .write_all(&[0x8a, header[1] | 0x80, 0, 0, 0, 0])
+            .await
+            .unwrap();
+        socket.write_all(&ping).await.unwrap();
+    }
+    assert_eq!(header, [0x82, (agent.len() + 6) as u8]);
+    let mut payload = vec![0; header[1] as usize];
+    socket.read_exact(&mut payload).await.unwrap();
+    assert_eq!(payload, format!("{agent}:hello").as_bytes());
+}
+
+async fn preview_viewer(port: u16, agent: &str, cookie: &str, path: &str) -> TcpStream {
+    let mut socket = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+        .await
+        .unwrap();
+    socket.write_all(format!("GET {path} HTTP/1.1\r\nHost: {agent}.localhost:{port}\r\nOrigin: http://{agent}.localhost:{port}\r\nCookie: {cookie}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").as_bytes()).await.unwrap();
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        head.push(socket.read_u8().await.unwrap());
+    }
+    assert_eq!(status(&head), 101, "{}", String::from_utf8_lossy(&head));
+    assert!(String::from_utf8_lossy(&head).contains(&format!("X-SafeYolo-Agent: {agent}\r\n")));
+    viewer_message(&mut socket, agent).await;
+    socket
+}
+
+async fn closed_connection(socket: &mut TcpStream) {
+    // A managed viewer can have an outstanding Ping when its target changes.
+    tokio::time::timeout(Duration::from_secs(7), async {
+        let mut bytes = [0; 64];
+        loop {
+            if socket.read(&mut bytes).await.unwrap() == 0 {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+}
+
+async fn shared_named_previews(root: &Path, admin_headers: &[(&str, String)]) {
+    let saved_run_id = std::env::var("FAKE_RUN_ID").unwrap();
+    let saved_alice: Vec<_> = [
+        "runtime.json",
+        "userns.pid",
+        "config-share/host-launch-context.json",
+    ]
+    .map(|path| {
+        (
+            path,
+            fs::read(root.join("agents/alice").join(path)).unwrap(),
+        )
+    })
+    .into();
+    let _bob_run = OwnedRun::start_agent(root, "bob");
+    fs::create_dir(root.join("desktop-targets")).unwrap();
+    for name in ["alice", "bob"] {
+        let context: Value = serde_json::from_slice(
+            &fs::read(
+                root.join("agents")
+                    .join(name)
+                    .join("config-share/host-launch-context.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("desktop-targets").join(format!(
+                "safeyolo-{}",
+                context["generation"].as_str().unwrap()
+            )),
+            name,
+        )
+        .unwrap();
+    }
+    fs::write(root.join("policy.toml"), format!("[agents.alice]\nagent_id='{ID}'\n[agents.bob]\nagent_id='ag-22222222222222222222222222222222'\n[agents.carol]\nagent_id='ag-33333333333333333333333333333333'\n")).unwrap();
+    let alice_guest = preview_guest(
+        UnixListener::bind(root.join("guest-alice.sock")).unwrap(),
+        "alice",
+    );
+    let bob_guest = preview_guest(
+        UnixListener::bind(root.join("guest-bob.sock")).unwrap(),
+        "bob",
+    );
+    let reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    drop(reservation);
+    fs::write(
+        root.join("config.toml"),
+        format!("audit_log_path='audit.jsonl'\n[desktop]\npresent_host_port={port}\n"),
+    )
+    .unwrap();
+    // Proxy startup alone does not create the endpoint or open any route.
+    let proxy = Proxy::start(config(root)).await.unwrap();
+    assert!(
+        TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .is_err()
+    );
+    let ready: Value = serde_json::from_slice(&fs::read(root.join("ready.json")).unwrap()).unwrap();
+    let admin_port = ready["admin_port"].as_u64().unwrap() as u16;
+    let mut cookies = Vec::new();
+    let mut codes = Vec::new();
+    for agent in ["alice", "bob"] {
+        let presented = request(
+            admin_port,
+            "POST",
+            &format!("/admin/agents/{agent}/desktop/present"),
+            admin_headers,
+            b"",
+        )
+        .await;
+        assert_eq!(
+            status(&presented),
+            200,
+            "{}",
+            String::from_utf8_lossy(&presented)
+        );
+        let presented = body(&presented);
+        assert_eq!(
+            presented["url"],
+            format!("http://{agent}.localhost:{port}/_safeyolo_desktop/")
+        );
+        let host = format!("{agent}.localhost:{port}");
+        let locked = request_host(port, &host, "GET", "/_safeyolo_desktop/", &[], b"").await;
+        assert!(String::from_utf8_lossy(&locked).contains("Unlock Preview"));
+        let code = presented["unlock_code"].as_str().unwrap();
+        if agent == "bob" {
+            let refused = request_host(
+                port,
+                &host,
+                "POST",
+                "/_safeyolo_preview/unlock",
+                &[("Content-Type", "application/x-www-form-urlencoded".into())],
+                format!("code={}", codes[0]).as_bytes(),
+            )
+            .await;
+            assert_eq!(status(&refused), 403);
+        }
+        let unlocked = request_host(
+            port,
+            &host,
+            "POST",
+            "/_safeyolo_preview/unlock",
+            &[
+                ("Content-Type", "application/x-www-form-urlencoded".into()),
+                ("Origin", format!("http://{host}")),
+            ],
+            format!("code={code}").as_bytes(),
+        )
+        .await;
+        assert_eq!(status(&unlocked), 303);
+        let text = String::from_utf8(unlocked).unwrap();
+        let cookie = text
+            .lines()
+            .find_map(|line| line.strip_prefix("Set-Cookie: "))
+            .unwrap();
+        assert!(cookie.ends_with("Path=/; HttpOnly; SameSite=Strict"));
+        assert!(!cookie.contains("Domain="));
+        cookies.push(cookie.split(';').next().unwrap().to_owned());
+        codes.push(code.to_owned());
+    }
+    assert_ne!(cookies[0], cookies[1]);
+    let host = format!("alice.localhost:{port}");
+    for unknown in [
+        "127.0.0.1",
+        "localhost",
+        "carol.localhost",
+        "unknown.localhost",
+        "alice.localhost.evil",
+        "alice.bob.localhost",
+        "alice%2elocalhost",
+        "user@alice.localhost",
+        "alice.localhost:bad",
+        "alice.localhost:",
+    ] {
+        let response = request_host(
+            port,
+            unknown,
+            "GET",
+            "/_safeyolo_desktop/",
+            &[("Cookie", cookies[0].clone())],
+            b"",
+        )
+        .await;
+        assert_eq!(status(&response), 404, "host={unknown}");
+    }
+    let duplicate = request_host(
+        port,
+        &host,
+        "GET",
+        "/_safeyolo_desktop/",
+        &[("Host", format!("bob.localhost:{port}"))],
+        b"",
+    )
+    .await;
+    assert_eq!(status(&duplicate), 404);
+    for (index, agent) in ["alice", "bob"].into_iter().enumerate() {
+        let host = format!("{agent}.localhost:{port}");
+        let own = [("Cookie", cookies[index].clone())];
+        let asset = request_host(
+            port,
+            &host,
+            "GET",
+            "/_safeyolo_desktop/assets/0123456789abcdef0123456789abcdef/core/rfb.js",
+            &own,
+            b"",
+        )
+        .await;
+        assert_eq!(status(&asset), 200);
+        assert!(asset.ends_with(agent.as_bytes()));
+        let wrong = request_host(
+            port,
+            &host,
+            "GET",
+            "/_safeyolo_desktop/diagnostics",
+            &[("Cookie", cookies[1 - index].clone())],
+            b"",
+        )
+        .await;
+        assert_eq!(status(&wrong), 401);
+        let cross = request_host(
+            port,
+            &host,
+            "GET",
+            "/websockify",
+            &[
+                ("Cookie", cookies[index].clone()),
+                (
+                    "Origin",
+                    format!(
+                        "http://{}.localhost:{port}",
+                        if index == 0 { "bob" } else { "alice" }
+                    ),
+                ),
+                ("Upgrade", "websocket".into()),
+                ("Connection", "Upgrade".into()),
+                ("X-Forwarded-Host", "other.test".into()),
+                ("X-Forwarded-Proto", "https".into()),
+            ],
+            b"",
+        )
+        .await;
+        assert_eq!(status(&cross), 403);
+        let forwarded_origin = request_host(
+            port,
+            &host,
+            "GET",
+            "/websockify",
+            &[
+                ("Cookie", cookies[index].clone()),
+                ("Origin", "https://other.test".into()),
+                ("Upgrade", "websocket".into()),
+                ("Connection", "Upgrade".into()),
+                ("X-Forwarded-Host", "other.test".into()),
+                ("X-Forwarded-Proto", "https".into()),
+            ],
+            b"",
+        )
+        .await;
+        assert_eq!(status(&forwarded_origin), 403);
+    }
+    let path_selection = request_host(
+        port,
+        &host,
+        "GET",
+        "/agents/bob/vnc.html",
+        &[("Cookie", cookies[0].clone())],
+        b"",
+    )
+    .await;
+    assert!(path_selection.ends_with(b"alice"));
+    let (mut alice_viewer, mut bob_viewer) = tokio::join!(
+        preview_viewer(port, "alice", &cookies[0], "/websockify"),
+        preview_viewer(port, "bob", &cookies[1], "/websockify")
+    );
+    let mut streaming = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+        .await
+        .unwrap();
+    streaming
+        .write_all(
+            format!(
+                "GET /stream HTTP/1.1\r\nHost: {host}\r\nCookie: {}\r\n\r\n",
+                cookies[0]
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        head.push(streaming.read_u8().await.unwrap());
+    }
+    assert_eq!(status(&head), 200);
+    let mut first_bytes = [0; 5];
+    streaming.read_exact(&mut first_bytes).await.unwrap();
+    assert_eq!(&first_bytes, b"hello");
+    fs::write(root.join("alice-stopped"), "").unwrap();
+    let runtime_path = root.join("agents/alice/runtime.json");
+    let runtime_bytes = fs::read(&runtime_path).unwrap();
+    let mut stopped_runtime: Value = serde_json::from_slice(&runtime_bytes).unwrap();
+    stopped_runtime["state"] = "stopped".into();
+    fs::write(&runtime_path, serde_json::to_vec(&stopped_runtime).unwrap()).unwrap();
+    let stopped = request_host(
+        port,
+        &host,
+        "GET",
+        "/vnc.html",
+        &[("Cookie", cookies[0].clone())],
+        b"",
+    )
+    .await;
+    assert_eq!(status(&stopped), 502);
+    closed_connection(&mut alice_viewer).await;
+    closed_connection(&mut streaming).await;
+    fs::remove_file(root.join("alice-stopped")).unwrap();
+    fs::write(&runtime_path, runtime_bytes).unwrap();
+    let attempt = "0123456789abcdef0123456789abcdef";
+    let mut managed = preview_viewer(
+        port,
+        "alice",
+        &cookies[0],
+        &format!("/_safeyolo_desktop/viewer?{attempt}"),
+    )
+    .await;
+    for (agent, cookie, state) in [
+        ("alice", &cookies[0], "open"),
+        ("bob", &cookies[1], "closed"),
+    ] {
+        let health = request_host(
+            port,
+            &format!("{agent}.localhost:{port}"),
+            "GET",
+            &format!("/_safeyolo_desktop/session?{attempt}"),
+            &[("Cookie", cookie.clone())],
+            b"",
+        )
+        .await;
+        assert_eq!(body(&health)["state"], state);
+    }
+    let _replacement = OwnedRun::start_agent(root, "alice");
+    fs::write(
+        root.join("desktop-targets")
+            .join(std::env::var("FAKE_RUN_ID").unwrap()),
+        "alice",
+    )
+    .unwrap();
+    let changed = request_host(
+        port,
+        &host,
+        "GET",
+        "/_safeyolo_desktop/diagnostics",
+        &[("Cookie", cookies[0].clone())],
+        b"",
+    )
+    .await;
+    assert_eq!(status(&changed), 410);
+    closed_connection(&mut managed).await;
+    viewer_message(&mut bob_viewer, "bob").await;
+    let reopened = request(
+        admin_port,
+        "POST",
+        "/admin/agents/alice/desktop/present",
+        admin_headers,
+        b"",
+    )
+    .await;
+    assert_eq!(status(&reopened), 200);
+    assert_eq!(body(&reopened)["reused"], false);
+    assert_eq!(
+        body(&reopened)["url"],
+        format!("http://alice.localhost:{port}/_safeyolo_desktop/")
+    );
+    let old_cookie = request_host(
+        port,
+        &host,
+        "GET",
+        "/_safeyolo_desktop/diagnostics",
+        &[("Cookie", cookies[0].clone())],
+        b"",
+    )
+    .await;
+    assert_eq!(status(&old_cookie), 401);
+    let renewed = request_host(
+        port,
+        &host,
+        "POST",
+        "/_safeyolo_preview/unlock",
+        &[("Content-Type", "application/x-www-form-urlencoded".into())],
+        format!("code={}", body(&reopened)["unlock_code"].as_str().unwrap()).as_bytes(),
+    )
+    .await;
+    assert_eq!(status(&renewed), 303);
+    let text = String::from_utf8(renewed).unwrap();
+    let new_cookie = text
+        .lines()
+        .find_map(|line| line.strip_prefix("Set-Cookie: "))
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let current = request_host(
+        port,
+        &host,
+        "GET",
+        "/vnc.html",
+        &[("Cookie", new_cookie)],
+        b"",
+    )
+    .await;
+    assert_eq!(status(&current), 200);
+    assert!(current.ends_with(b"alice"));
+    // Closing the owner closes established streams, pending headers and the port.
+    let mut pending = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+        .await
+        .unwrap();
+    pending.write_all(b"GET /").await.unwrap();
+    proxy.shutdown().await;
+    assert!(bob_viewer.read_u8().await.is_err());
+    assert!(pending.read_u8().await.is_err());
+    assert!(
+        TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .is_err()
+    );
+    let events: Vec<Value> = fs::read_to_string(root.join("audit.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    for agent in ["alice", "bob"] {
+        for event in [
+            "agent.preview_open",
+            "agent.preview_unlock",
+            "traffic.preview_request",
+            "traffic.preview_response",
+            "agent.preview_close",
+        ] {
+            assert!(
+                events.iter().any(|row| row["event"] == event
+                    && row["agent"] == agent
+                    && row["details"]["host_port"] == port),
+                "missing {event} for shared {agent}"
+            );
+        }
+    }
+    alice_guest.abort();
+    bob_guest.abort();
+    let _ = alice_guest.await;
+    let _ = bob_guest.await;
+    for (path, bytes) in saved_alice {
+        fs::write(root.join("agents/alice").join(path), bytes).unwrap();
+    }
+    fs::write(
+        root.join("policy.toml"),
+        format!("[agents.alice]\nagent_id='{ID}'\n"),
+    )
+    .unwrap();
+    fs::remove_file(root.join("config.toml")).unwrap();
+    fs::remove_dir_all(root.join("desktop-targets")).unwrap();
+    fs::remove_file(root.join("guest-alice.sock")).unwrap();
+    fs::remove_file(root.join("guest-bob.sock")).unwrap();
+    unsafe {
+        std::env::set_var("FAKE_RUN_ID", saved_run_id);
     }
 }
 
@@ -695,6 +1255,8 @@ exec /usr/bin/nsenter --preserve-credentials "$@" 2> >(/usr/bin/tee -a "$SAFEYOL
             .await
             .is_err()
     );
+
+    shared_named_previews(root.path(), &admin_headers).await;
 
     // An installed Commander request uses the durable ID returned by list,
     // even though the agent listener is named alice. Tailnet share must give

@@ -33,6 +33,7 @@ fn config(root: &Path) -> Config {
     std::fs::write(root.join("policy.json"), r#"{"permissions":[]}"#).unwrap();
     Config {
         native_product: false,
+        ingress_bindings: vec![],
         native_settings: None,
         native_config_dir: None,
         native_config_path: None,
@@ -227,6 +228,17 @@ async fn real_clients_share_operator_approval_membership_and_messages() {
     assert_eq!(pending.status, 200);
     assert_eq!(pending.body["pending"][0]["request_id"], request_id);
     assert_eq!(pending.body["pending"][0]["requester"], "alice");
+    let approvals = exchange_admin(
+        operator_port,
+        &admin_request("GET", "/admin/approvals", b""),
+    )
+    .await;
+    assert_eq!(approvals.status, 200);
+    assert_eq!(approvals.body["approvals"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        approvals.body["approvals"][0]["approval"]["key"],
+        request_id
+    );
     observations
         .push(json!({"step":"operator_pending","status":pending.status,"body":pending.body}));
 
@@ -315,6 +327,13 @@ async fn real_clients_share_operator_approval_membership_and_messages() {
     )
     .await;
     assert_eq!(approved.status, 200);
+    let approvals = exchange_admin(
+        operator_port,
+        &admin_request("GET", "/admin/approvals", b""),
+    )
+    .await;
+    assert_eq!(approvals.status, 200);
+    assert_eq!(approvals.body["approvals"], json!([]));
     let conversation_id = approved.body["conversation_id"]
         .as_str()
         .unwrap()

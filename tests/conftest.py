@@ -21,6 +21,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests" / "referenc
 
 
 @pytest.fixture
+def system_python_stub(tmp_path):
+    # Intercept only the distro interpreter boundary; leave ambient command
+    # lookup intact so PATH decoys can expose accidental mise/venv selection.
+    startup = tmp_path / 'system-python.sh'
+    startup.write_text('/usr/bin/python3() { "$PROBE_SYSTEM_PYTHON" "$@"; }\n')
+    return {'BASH_ENV': str(startup), 'PROBE_SYSTEM_PYTHON': str(tmp_path / 'tools/python3')}
+
+
+@pytest.fixture
 def linux_workflow_stat():
     """Use real GNU stat for Ubuntu workflow assertions on either test host."""
     command = shutil.which("gstat") or shutil.which("stat")
@@ -31,16 +40,16 @@ def linux_workflow_stat():
 @pytest.fixture(scope="session")
 def _binary_cache(tmp_path_factory):
     """Cache a test NATS binary once per session for isolated Coord fixtures."""
+    selected = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
+    if selected:
+        return Path(selected).resolve()
     from safeyolo.coord import nats_runtime as nr
 
     cache_dir = tmp_path_factory.mktemp("nats-binary-cache")
     previous = os.environ.get("SAFEYOLO_COORD_DATA_DIR")
     os.environ["SAFEYOLO_COORD_DATA_DIR"] = str(cache_dir)
     try:
-        try:
-            return nr.ensure_binary()
-        except Exception as error:
-            pytest.skip(f"nats-server binary unavailable: {error!s}")
+        return nr.ensure_binary()
     finally:
         if previous is None:
             os.environ.pop("SAFEYOLO_COORD_DATA_DIR", None)

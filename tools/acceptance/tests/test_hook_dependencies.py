@@ -14,12 +14,46 @@ import unittest
 from pathlib import Path
 
 import virtualenv
+from filelock import FileLock, Timeout
+from python_discovery._cache import DiskContentStore
 from virtualenv.app_data import AppDataDiskFolder
 from virtualenv.create.pyenv_cfg import PyEnvCfg
 from virtualenv.seed.wheels.acquire import download_wheel
+from virtualenv.util.lock import ReentrantFileLock
 
 
 class HookDependencies(unittest.TestCase):
+    def test_virtualenv_cache_lock_is_reentrant_and_exclusive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = ReentrantFileLock(root)
+            lock = FileLock(str(root / "wheel.lock"))
+            with cache.lock_for_key("wheel"), cache.lock_for_key("wheel"):
+                with self.assertRaises(Timeout):
+                    lock.acquire(timeout=0)
+            with lock.acquire(timeout=0):
+                self.assertTrue(lock.is_locked)
+            with cache.non_reentrant_lock_for_key("wheel"):
+                with self.assertRaises(Timeout):
+                    lock.acquire(timeout=0)
+
+    def test_discovery_cache_lock_releases_after_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "cache"
+            store = DiskContentStore(root, "python")
+            lock = FileLock(str(root / "python.lock"))
+            with self.assertRaisesRegex(RuntimeError, "abort cache write"):
+                with store.locked():
+                    store.write({"executable": sys.executable})
+                    with self.assertRaises(Timeout):
+                        lock.acquire(timeout=0)
+                    raise RuntimeError("abort cache write")
+            with lock.acquire(timeout=0):
+                self.assertEqual(store.read(), {"executable": sys.executable})
+            with store.locked():
+                store.remove()
+            self.assertFalse(store.exists())
+
     def activate(self, shell, script, root, command):
         options = {"bash": ["--noprofile", "--norc"], "fish": ["--no-config"], "zsh": ["-f"]}
         return subprocess.run(

@@ -41,7 +41,7 @@ def prepare_native_instance(source: Path, root: Path) -> None:
     """Create fresh native state and reuse the prepared immutable inputs."""
     subprocess.run([str(source / "bin/safeyolo"), "--root", str(root), "init"],
                    check=True, timeout=10)
-    for name in ("bin", "assets", "lib", "libexec", "share"):
+    for name in ("bin", "assets", "lib", "libexec", "share", "host"):
         if not (source / name).exists():
             continue
         target = root / name

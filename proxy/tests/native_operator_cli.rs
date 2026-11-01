@@ -19,6 +19,9 @@ mod shared_approval_fixture;
 mod test_owned_endpoint;
 use shared_approval_fixture::*;
 
+#[path = "native_operator_cli/observations.rs"]
+mod observations;
+
 fn configure(fixture: &Fixture) {
     fs::write(fixture.root.path().join("config.toml"), format!(
         "admin_port={}\nadmin_api_token_file='admin_token'\npolicy_file='policy.toml'\naudit_log_path='audit.jsonl'\n", fixture.admin)).unwrap();
@@ -594,6 +597,7 @@ async fn requesting_context_uses_real_coord_attention_and_the_authenticated_repl
         "worker",
         &[],
         false,
+        None,
     )
     .unwrap();
     let id = fixture.network("worker", fixture.address).await.id();
@@ -1608,7 +1612,14 @@ async fn pending_gateway_credential_replacement_has_the_same_agent_and_operator_
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
         .arg("--root")
         .arg(fixture.root.path())
-        .args(["credentials", "add", "fixture", "--stdin"])
+        .args([
+            "credentials",
+            "add",
+            "fixture",
+            "--stdin",
+            "--storage",
+            "local",
+        ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1688,6 +1699,208 @@ async fn pending_gateway_credential_replacement_has_the_same_agent_and_operator_
     );
     drop(database);
     fixture.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subscription_metadata_replacement_supersedes_pending_gateway_options_and_routes() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use safeyolo_proxy::{
+        credentials::{Secret, Vault},
+        subscription_login::{Client, import_login},
+    };
+
+    for field in ["chatgpt_account_id", "refresh_scope", "subscription_client"] {
+        let fixture = Fixture::new().await;
+        fs::write(
+            fixture.root.path().join("data/credentials.key"),
+            "synthetic-subscription-binding-key",
+        )
+        .unwrap();
+        let vault = Vault::unlock(
+            fixture.root.path().join("data/credentials.enc"),
+            &Secret::new("synthetic-subscription-binding-key"),
+        )
+        .unwrap();
+        let (client, mut login) = if field == "refresh_scope" {
+            (
+                Client::Claude,
+                json!({"claudeAiOauth":{
+                    "accessToken":"synthetic-access", "refreshToken":"synthetic-refresh",
+                    "expiresAt":4102444800000_i64, "scopes":["user:inference", "user:profile"]
+                }}),
+            )
+        } else {
+            let payload = URL_SAFE_NO_PAD.encode(br#"{"exp":4102444800}"#);
+            (
+                Client::Codex,
+                json!({"auth_mode":"chatgpt", "tokens":{
+                    "access_token":format!("synthetic.{payload}.signature"),
+                    "refresh_token":"synthetic-refresh", "account_id":"account-a"
+                }}),
+            )
+        };
+        let original = import_login(client, "fixture", login.to_string().as_bytes()).unwrap();
+        if field == "refresh_scope" {
+            login["claudeAiOauth"]["scopes"] = json!(["user:inference"]);
+        } else {
+            login["tokens"]["account_id"] = json!("account-b");
+        }
+        let mut replacement =
+            import_login(client, "fixture", login.to_string().as_bytes()).unwrap();
+        if field == "subscription_client" {
+            replacement = original.clone();
+            replacement.subscription_client = None;
+        }
+        vault.store(original.clone()).unwrap();
+        let service = PENDING_SERVICE
+            .replace("127.0.0.1", &fixture.address.ip().to_string())
+            .replace("capabilities:", "auth:\n  type: bearer\n  header: Authorization\n  scheme: Bearer\n  allow_http: true\ncapabilities:");
+        fs::write(fixture.root.path().join("services/pending.yaml"), service).unwrap();
+        let policy = format!(
+            "{}\n[hosts.'{}']\nservice='pending_fixture'\n[[risk]]\nagent='worker'\nservice='pending_fixture'\ntactics=['impact']\ndecision='require_approval'\n",
+            fixture
+                .source()
+                .replace("egress='prompt'", "egress='allow'"),
+            fixture.address.ip()
+        );
+        fs::write(fixture.root.path().join("policy.toml"), &policy).unwrap();
+        let fixture = restart(fixture).await;
+        let request = json!({"service":"pending_fixture", "capability":"operate"});
+        let pending = fixture
+            .agent(
+                "worker",
+                "POST",
+                "/gateway/request-access",
+                Some(request.clone()),
+            )
+            .await;
+        assert_eq!(pending.status, 202);
+        let path = format!("/admin/approvals/{}", pending.id());
+        let initial = fixture.admin("GET", &path, None).await.json();
+        assert_eq!(initial["status"], "pending");
+        assert_eq!(initial["options"][0]["id"], "credential:fixture");
+        assert_eq!(initial["options"][0]["status"], "available");
+
+        // Rewriting the same contents keeps the offered credential selectable.
+        vault.store(original.clone()).unwrap();
+        let equivalent = fixture
+            .agent(
+                "worker",
+                "POST",
+                "/gateway/request-access",
+                Some(request.clone()),
+            )
+            .await;
+        assert_eq!(equivalent.status, 202);
+        assert_eq!(
+            fixture
+                .admin(
+                    "GET",
+                    &format!("/admin/approvals/{}", equivalent.id()),
+                    None
+                )
+                .await
+                .json()["approval_id"],
+            initial["approval_id"]
+        );
+        assert_eq!(
+            fixture.admin("GET", &path, None).await.json()["options"][0]["status"],
+            "available"
+        );
+        let snapshot = vault.snapshot("fixture").unwrap().unwrap();
+        vault.store(replacement).unwrap();
+        assert!(!vault.is_current(&snapshot).unwrap());
+        // New gateway requests reload the changed vault before offering it.
+        let fresh = fixture
+            .agent("worker", "POST", "/gateway/request-access", Some(request))
+            .await;
+        assert_eq!(fresh.status, 202);
+        let fresh_path = format!("/admin/approvals/{}", fresh.id());
+        let current = fixture.admin("GET", &fresh_path, None).await.json();
+        assert_eq!(current["options"][0]["status"], "available");
+        assert_ne!(current["approval_id"], initial["approval_id"]);
+        let stale = fixture.admin("GET", &path, None).await.json();
+        assert_eq!(stale["options"][0]["status"], "superseded", "{field}");
+        assert_eq!(
+            fixture
+                .agent(
+                    "worker",
+                    "GET",
+                    &format!("/approvals/{}", pending.id()),
+                    None
+                )
+                .await
+                .json()["options"],
+            stale["options"]
+        );
+        let decision = fixture
+            .admin(
+                "POST",
+                &path,
+                Some(json!({"decision":"approve", "option":"credential:fixture"})),
+            )
+            .await;
+        assert_eq!(decision.status, 409, "{field}: {}", decision.json());
+        assert_eq!(fixture.source(), policy);
+
+        // A new request can authorize the replacement through the normal path.
+        let approved = fixture
+            .admin(
+                "POST",
+                &fresh_path,
+                Some(json!({"decision":"approve", "option":"credential:fixture"})),
+            )
+            .await;
+        assert_eq!(approved.status, 200, "{}", approved.json());
+        let authorized = success(fixture.root.path(), &["services", "authorized", "worker"]).await;
+        let header = format!(
+            "Authorization: Bearer {}\r\n",
+            authorized["services"]["pending_fixture"]["token"]
+                .as_str()
+                .unwrap()
+        );
+        let route = fixture
+            .request("worker", fixture.address, "POST", "/v1/alpha", &header)
+            .await;
+        assert_eq!(route.status, 428, "{}", route.json());
+        let route_path = format!("/admin/approvals/{}", route.id());
+        assert_eq!(
+            fixture.admin("GET", &route_path, None).await.json()["status"],
+            "pending"
+        );
+        let policy = fixture.source();
+        vault.store(original).unwrap();
+        let fresh_route = fixture
+            .request("worker", fixture.address, "POST", "/v1/alpha", &header)
+            .await;
+        assert_eq!(fresh_route.status, 428, "{}", fresh_route.json());
+        assert_eq!(
+            fixture.admin("GET", &route_path, None).await.json()["status"],
+            "superseded",
+            "{field}"
+        );
+        let decision = fixture
+            .admin(
+                "POST",
+                &route_path,
+                Some(json!({"decision":"approve", "option":"remembered"})),
+            )
+            .await;
+        assert_eq!(decision.status, 409, "{field}: {}", decision.json());
+        assert_eq!(fixture.source(), policy);
+        assert!(
+            success(fixture.root.path(), &["services", "grants"]).await["grants"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            timeout(Duration::from_millis(30), fixture.origin.accept())
+                .await
+                .is_err()
+        );
+        fixture.stop().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

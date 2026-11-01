@@ -430,31 +430,7 @@ impl Demo {
             return Err("stop the selected guest before supplying its Demo login".into());
         }
         let home = directory.join("home");
-        private_directory(&home)?;
-        let codex = home.join(".codex");
-        private_directory(&codex)?;
-        let destination = codex.join("auth.json");
-        if fs::symlink_metadata(&destination).is_ok() {
-            return Err("selected guest already has Codex authentication; use its existing login without --auth-file".into());
-        }
-        // The source is an explicit operator input. Read through a checked
-        // handle; never follow a guest-controlled destination or log its bytes.
-        let source = source.canonicalize()?;
-        let mut input = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(source)?;
-        if !input.metadata()?.is_file() {
-            return Err("Codex authentication input must be a regular file".into());
-        }
-        let mut temporary = tempfile::NamedTempFile::new_in(&codex)?;
-        temporary
-            .as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))?;
-        std::io::copy(&mut input, &mut temporary)?;
-        temporary.as_file().sync_all()?;
-        temporary.persist_noclobber(&destination)?;
-        crate::coord_setup::codex_state(&home, None, false, Some("adopt"))?;
+        crate::coord_setup::copy_codex_login(&home, source)?;
         println!(
             "Existing Codex login staged privately in the Demo guest. Login status is checked before the task."
         );
@@ -522,16 +498,23 @@ impl Demo {
             );
         }
         host_lifecycle::stop(&self.agent, Some(lock)).await?;
+        let lock_directory = directory.clone();
         let lock = tokio::task::spawn_blocking(move || {
-            host_lifecycle::SetupLock::acquire_in(&directory, None)
+            host_lifecycle::SetupLock::acquire_in(&lock_directory, None)
         })
         .await??;
+        host_agents::refresh(&self.agent)?;
         if crate::host_runs::observe(&self.agent.name).await["runtime_state"] != "stopped" {
             return Err("Demo guest stop is unverified; files were preserved".into());
         }
         let metadata = fs::symlink_metadata(&self.workspace)?;
         if !metadata.is_dir() || (metadata.dev(), metadata.ino()) != self.workspace_identity {
             return Err("Demo workspace was replaced; its files were preserved".into());
+        }
+        #[cfg(target_os = "linux")]
+        if !self.keep && self.original.is_none() {
+            // DOC: cli/src/safeyolo/agent_context/skills/safeyolo/references/scheduling.md
+            crate::linux_host::remove_scheduler_spool(&directory).await?;
         }
         edit_policy(|document| {
             let agents = document["agents"]

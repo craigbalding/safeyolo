@@ -123,6 +123,11 @@ Policy apply updates policy controls without restarting. Existing capture
 limits, queue modes and trace/storage retention are unchanged; use the exact
 values and zero/negative handling in [settings](settings.md).
 
+For explicit classic PCAP file, pipe, TCP or authenticated WSS output, see
+[native observations and capture](native-observations.md). Payload capture is
+disabled by default. Metadata monitoring and FlowStore retention remain
+independent of that capture setting.
+
 ### Select a target IP
 
 On the host, edit the active instance's `config.toml` and restart SafeYolo.
@@ -213,11 +218,64 @@ busy mounts, including open files, working directories and memory mappings.
 It does not erase files copied into the guest or bytes already read into memory.
 
 `desktop.size` retains `auto` or an explicit `WIDTHxHEIGHT` preference;
-`desktop.present_host_port` selects the permitted loopback presentation port.
+`desktop.present_host_port` selects the loopback presentation port. The default,
+`0`, gives each presentation its own available port. A nonzero value shares one
+port across explicitly opened local presentations and selects each agent by
+its `<agent>.localhost` hostname.
 Use `safeyolo agent present work` for the running desktop. Web and Commander
 listener/share settings stay in the same config. Their authenticated
 Admin owners and Commander make the existing operator changes; the retired
 Python desktop/web/command-centre wrappers are not installed.
+
+### Preview through one SSH forward
+
+On the remote SafeYolo host, use the account that owns the instance. The agents
+must already exist. Their guest images must include the desktop capability.
+In the selected instance's `config.toml`, set the port before opening previews.
+If a `[desktop]` table exists, edit that table:
+
+```toml
+[desktop]
+present_host_port = 6080
+```
+
+On your client computer, add this line to the existing `Host kali` entry in
+`~/.ssh/config`. Here, `kali` is the SSH alias for the remote host. Both port
+6080 listeners must be available:
+
+```sshconfig
+Host kali
+    LocalForward 127.0.0.1:6080 127.0.0.1:6080
+```
+
+Connect with `ssh kali`. In the remote shell, open each wanted presentation.
+For existing agents named `alice` and `bob`, run:
+
+```sh
+safeyolo agent present alice
+safeyolo agent present bob
+```
+
+Each result contains a URL and a separate unlock code. In your client browser,
+open `http://alice.localhost:6080/_safeyolo_desktop/` or
+`http://bob.localhost:6080/_safeyolo_desktop/`. Enter that agent's unlock code.
+The browser must resolve `*.localhost` to loopback. Browser and operating-system
+support varies; a client that does not resolve these names needs local hostname
+resolution support. No local SafeYolo installation is needed.
+
+Both agents use the same SSH forward. Later presentations on this port use the
+same forward. Each agent has a separate browser origin and host-only session
+cookie. A path cannot select another agent. Unknown names and configured agents
+without an open presentation return 404. The endpoint ignores forwarded host
+headers; the SSH connection carries the browser's original host and origin.
+
+The first explicit presentation opens the listener on `127.0.0.1`. Proxy startup
+alone does not open it. Stopped targets cannot accept new guest connections.
+Replacing an agent or its run invalidates the old presentation. The proxy owns
+the routes and closes their connections and listener at shutdown. Existing
+presentations keep their URL until they close. The default unlock lifetime and
+failure limit still apply. Tailscale sharing retains its separate per-agent
+transport and ports.
 
 ## Shared working folder (optional)
 

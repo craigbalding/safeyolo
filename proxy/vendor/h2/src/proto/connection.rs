@@ -450,6 +450,10 @@ where
     }
 
     fn handle_poll2_result(&mut self, result: Result<(), Error>) -> Result<(), Error> {
+        // Errors already consumed by reset_on_recv_stream_err do not reach here.
+        if let Err(error) = &result {
+            self.streams.report_stream_parse_error(error);
+        }
         match result {
             // The connection has shutdown normally
             Ok(()) => {
@@ -621,6 +625,13 @@ where
     T: AsyncRead + AsyncWrite + Unpin,
     B: Buf,
 {
+    pub(crate) fn set_stream_parse_error_observer(
+        &mut self,
+        observer: crate::ext::StreamParseErrorObserver,
+    ) {
+        self.inner.streams.set_stream_parse_error_observer(observer);
+    }
+
     pub fn next_incoming(&mut self) -> Option<StreamRef<B>> {
         self.inner.streams.next_incoming()
     }

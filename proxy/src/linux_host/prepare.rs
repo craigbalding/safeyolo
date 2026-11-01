@@ -11,7 +11,7 @@ use std::{
     io::{self, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 fn command_path(name: &str) -> Option<PathBuf> {
@@ -71,6 +71,7 @@ fn host_tool_ready(name: &str) -> bool {
 }
 
 pub(super) fn check_prerequisites(
+    root: &Path,
     settings: Option<&Settings>,
     mapping: Mapping,
 ) -> Result<(), Error> {
@@ -87,17 +88,13 @@ pub(super) fn check_prerequisites(
         )
         .into());
     }
-    let profile = if restricted()? {
-        Some(match settings {
-            Some(settings) => settings.apparmor_profile.as_deref().ok_or(
-                "the selected runtime needs an AppArmor profile; run safeyolo host prepare, then retry",
-            )?,
-            None => "safeyolo-runsc",
-        })
-    } else {
-        None
-    };
-    probe_namespace(profile)?;
+    if restricted()? && settings.is_some_and(|s| s.apparmor_profile.is_none()) {
+        return Err(
+            "the selected runtime needs an AppArmor profile; run safeyolo host prepare, then retry"
+                .into(),
+        );
+    }
+    probe_namespace(root)?;
     runsc_platform(mapping)?;
     Ok(())
 }
@@ -302,13 +299,13 @@ fn allocate_ids(uid: u32) -> Result<(), Error> {
     result
 }
 
-fn profile_name(runtime: &Path) -> String {
+fn profile_name(runtime: &Path, prefix: &str) -> String {
     let digest = ring::digest::digest(
         &ring::digest::SHA256,
         runtime.as_os_str().as_encoded_bytes(),
     );
     format!(
-        "safeyolo-runsc-{}",
+        "{prefix}-{}",
         digest.as_ref()[..8]
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -336,14 +333,14 @@ fn profile_text(name: &str, runtime: &Path) -> Result<String, Error> {
     ))
 }
 
-fn load_profile(runtime: &Path) -> Result<(), Error> {
+fn load_profile(runtime: &Path, prefix: &str) -> Result<(), Error> {
     if unsafe { libc::geteuid() } != 0 {
         return Err(
             "loading the runtime profile requires the installer's privileged profile operation"
                 .into(),
         );
     }
-    let name = profile_name(runtime);
+    let name = profile_name(runtime, prefix);
     let text = profile_text(&name, runtime)?;
     let path = Path::new("/etc/apparmor.d").join(&name);
     let check_existing = || -> Result<(), Error> {
@@ -687,17 +684,158 @@ fn namespaces_enabled() -> Result<(), Error> {
     Ok(())
 }
 
-fn probe_namespace(profile: Option<&str>) -> Result<(), Error> {
-    let mut command = if let Some(profile) = profile {
-        let mut command = Command::new("aa-exec");
-        command.args(["-p", profile, "--", "unshare"]);
+// Execute this installation's launcher so the kernel applies its attachment.
+// change_profile (including aa-exec) retains restricted unconfined on newer hosts.
+pub(super) const NAMESPACE_ENTRY: &[u8] = b"#!/bin/sh\nexec \"$@\"\n";
+
+fn namespace_entry(root: &Path) -> PathBuf {
+    root.join("host/namespace-entry")
+}
+
+pub(crate) fn namespace_command(root: &Path, program: &str) -> io::Result<Command> {
+    let restricts = restricted().map_err(io::Error::other)?;
+    #[cfg(test)]
+    let restricts = match std::env::var("SAFEYOLO_TEST_FAILED_START_LAUNCH").as_deref() {
+        Ok("direct") => false,
+        Ok("apparmor" | "missing-entry") => true,
+        _ => restricts,
+    };
+    Ok(if restricts {
+        let entry = namespace_entry(root);
+        fs::metadata(&entry).map_err(|error| io::Error::new(error.kind(), format!(
+            "namespace entry {} is unavailable: {error}; run safeyolo host prepare, then retry",
+            entry.display(),
+        )))?;
+        let mut command = Command::new(entry);
+        command.arg(program);
         command
     } else {
-        Command::new("unshare")
-    };
-    let output = command.args(["-Urn", "true"]).output()?;
+        Command::new(program)
+    })
+}
+
+#[cfg(test)]
+pub(crate) struct TestNamespaceProfile(Option<PathBuf>);
+
+#[cfg(test)]
+impl TestNamespaceProfile {
+    pub(crate) fn load(entry: &Path) -> Self {
+        if !restricted().unwrap() {
+            return Self(None);
+        }
+        let entry = entry.canonicalize().unwrap();
+        let profile = entry.with_extension("apparmor");
+        fs::write(
+            &profile,
+            profile_text(&profile_name(&entry, "safeyolo-test-userns"), &entry).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            Command::new("sudo")
+                .args(["-n", "apparmor_parser", "-r"])
+                .arg(&profile)
+                .status()
+                .unwrap()
+                .success()
+        );
+        Self(Some(profile))
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestNamespaceProfile {
+    fn drop(&mut self) {
+        if let Some(profile) = &self.0 {
+            let status = Command::new("sudo")
+                .args(["-n", "apparmor_parser", "-R"])
+                .arg(profile)
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "namespace fixture profile was not removed"
+            );
+        }
+    }
+}
+
+fn probe_namespace(root: &Path) -> Result<(), Error> {
+    let mut command = namespace_command(root, "unshare")?;
+    command.args(["-Urn", "true"]);
+    let started = time::OffsetDateTime::now_utc();
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let pid = child.id();
+    let output = child.wait_with_output()?;
     if !output.status.success() {
-        return Err(format!("rootless namespace check failed: {}; repair the host namespace or AppArmor setup, then retry. No agent was started",String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(2048)])).into());
+        let finished = time::OffsetDateTime::now_utc();
+        let read = |path: &Path| match fs::read_to_string(path) {
+            Ok(text) => text.trim_end().to_owned(),
+            Err(error) => format!("read failed: {error}"),
+        };
+        let mut diagnosis = format!(
+            "namespace probe pid={pid} status={} started={started} finished={finished}\nsource={} command={command:?}\n",
+            output.status,
+            env!("SAFEYOLO_BUILD_REVISION"),
+        );
+        for name in [
+            "apparmor_restrict_unprivileged_userns",
+            "apparmor_restrict_unprivileged_unconfined",
+        ] {
+            diagnosis.push_str(&format!(
+                "kernel.{name}={}\n",
+                read(&Path::new("/proc/sys/kernel").join(name))
+            ));
+        }
+        // Observe the selected transition separately, without changing the
+        // namespace command or replacing its failed result.
+        match namespace_command(root, "/bin/cat") {
+            Ok(mut label) => {
+                label.arg("/proc/self/attr/current");
+                diagnosis.push_str(&format!("AppArmor label command={label:?}\n"));
+                match label.output() {
+                    Ok(label) => diagnosis.push_str(&format!(
+                        "AppArmor label status={}\n{}{}",
+                        label.status,
+                        String::from_utf8_lossy(&label.stdout),
+                        String::from_utf8_lossy(&label.stderr),
+                    )),
+                    Err(error) => {
+                        diagnosis.push_str(&format!("AppArmor label read failed: {error}\n"))
+                    }
+                }
+            }
+            Err(error) => diagnosis.push_str(&format!("AppArmor label read failed: {error}\n")),
+        }
+        // Query only this probe's AppArmor denials during its execution window.
+        // Do not request privilege or turn missing audit access into probe success.
+        let mut audit = Command::new("journalctl");
+        audit
+            .args([
+                "--dmesg",
+                "--no-pager",
+                "--output=short-iso-precise",
+                "--since",
+            ])
+            .arg(format!("@{}", started.unix_timestamp()))
+            .arg("--until")
+            .arg(format!("@{}", finished.unix_timestamp() + 1))
+            .arg("--grep")
+            .arg(format!(r#"apparmor="DENIED".* pid={pid}( |$)"#));
+        diagnosis.push_str(&format!("AppArmor audit command={audit:?}\n"));
+        match audit.output() {
+            Ok(audit) => diagnosis.push_str(&format!(
+                "AppArmor audit status={}\n{}{}",
+                audit.status,
+                String::from_utf8_lossy(&audit.stdout),
+                String::from_utf8_lossy(&audit.stderr),
+            )),
+            Err(error) => diagnosis.push_str(&format!("AppArmor audit read failed: {error}\n")),
+        }
+        return Err(format!("rootless namespace check failed: {}; repair the host namespace or AppArmor setup, then retry. No agent was started\n{diagnosis}",String::from_utf8_lossy(&output.stderr)).into());
     }
     Ok(())
 }
@@ -812,15 +950,40 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
         linux_host::validate_current_mapping(saved.mapping()?)?;
     }
     let apparmor = restricted()?;
-    let name = profile_name(&destination);
+    let name = profile_name(&destination, "safeyolo-runsc");
     let text = profile_text(&name, &destination)?;
     let profile = Path::new("/etc/apparmor.d").join(&name);
     let missing_profile = apparmor && !profile.try_exists()?;
     if apparmor && !missing_profile && fs::read_to_string(&profile)? != text {
         return Err(format!("existing AppArmor profile {} differs and was preserved; ask the host administrator to reconcile this installation's profile",profile.display()).into());
     }
-    let load_profile_needed =
-        apparmor && (missing_profile || probe_namespace(Some(&name)).is_err());
+    let entry = namespace_entry(root);
+    let entry_missing = if apparmor {
+        match fs::read(&entry) {
+            Ok(bytes) if bytes == NAMESPACE_ENTRY => false,
+            Ok(_) => {
+                return Err(format!(
+                    "existing namespace entry {} differs and was preserved",
+                    entry.display()
+                )
+                .into());
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        false
+    };
+    let entry_setup_needed = apparmor && (entry_missing || probe_namespace(root).is_err());
+    // The namespace entry has its own profile. Its probe cannot establish that
+    // the runtime profile is loaded. Only test profile availability with aa-exec;
+    // creating namespaces must still use the executable attachment above.
+    let load_profile_needed = apparmor
+        && (missing_profile
+            || !Command::new("aa-exec")
+                .args(["-p", &name, "--", "true"])
+                .output()
+                .is_ok_and(|output| output.status.success()));
     let mut packages = Vec::new();
     for &(package, commands) in REQUIRED_PACKAGES {
         if commands.iter().any(|name| command_path(name).is_none()) {
@@ -834,10 +997,8 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
             packages.push("libsubid4");
         }
     }
-    if apparmor && command_path("aa-exec").is_none() {
-        packages.push("apparmor-utils");
-    }
-    if apparmor && command_path("apparmor_parser").is_none() {
+    if apparmor && (command_path("apparmor_parser").is_none() || command_path("aa-exec").is_none())
+    {
         packages.push("apparmor");
     }
     // Already prepared contributor hosts need no package changes and retain
@@ -896,6 +1057,12 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
         changes.push(format!(
             "load the existing AppArmor profile {}",
             profile.display()
+        ));
+    }
+    if entry_setup_needed {
+        changes.push(format!(
+            "prepare namespace entry {} and load its installation-scoped AppArmor profile",
+            entry.display()
         ));
     }
     let planned_mapping = saved
@@ -1007,7 +1174,36 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
             applied,
         )?;
     }
-    probe_namespace(apparmor.then_some(name.as_str()))?;
+    if entry_setup_needed {
+        fs::create_dir_all(entry.parent().ok_or("namespace entry has no parent")?)?;
+        if entry_missing {
+            let mut temporary = tempfile::NamedTempFile::new_in(entry.parent().unwrap())?;
+            temporary.write_all(NAMESPACE_ENTRY)?;
+            temporary
+                .as_file()
+                .set_permissions(fs::Permissions::from_mode(0o755))?;
+            temporary.as_file().sync_all()?;
+            temporary.persist_noclobber(&entry)?;
+            applied.push(format!(
+                "installed namespace entry {}; it remains if profile setup fails",
+                entry.display()
+            ));
+        }
+        fs::File::open(entry.parent().unwrap())?.sync_all()?;
+        let executable = std::env::current_exe()?;
+        execute(
+            privilege(
+                executable
+                    .to_str()
+                    .ok_or("installer executable path is not UTF-8")?,
+            )
+            .args(["host", "load-namespace-profile"])
+            .arg(entry.canonicalize()?),
+            "load this installation's namespace AppArmor profile",
+            applied,
+        )?;
+    }
+    probe_namespace(root)?;
     // A private home may otherwise hide the installed runtime from mapped
     // sandbox root. Grant traversal to that one subordinate UID only.
     runtime_access(&destination, mapping, applied)?;
@@ -1032,7 +1228,12 @@ pub(super) fn run(root: &Path, args: &[String]) -> Result<(), Error> {
             Ok(())
         }
         [operation, uid] if operation == "allocate-ids" => allocate_ids(uid.parse()?),
-        [operation, runtime] if operation == "load-profile" => load_profile(Path::new(runtime)),
+        [operation, runtime] if operation == "load-profile" => {
+            load_profile(Path::new(runtime), "safeyolo-runsc")
+        }
+        [operation, entry] if operation == "load-namespace-profile" => {
+            load_profile(Path::new(entry), "safeyolo-userns")
+        }
         [operation] if operation == "grant-runtime-access" => {
             let settings = crate::native_config::read(&root.join("config.toml"))?
                 .native_settings
@@ -1045,6 +1246,9 @@ pub(super) fn run(root: &Path, args: &[String]) -> Result<(), Error> {
                     if applied.is_empty() { "none".into() } else { applied.join("; ") }
                 ).into()
             })
+        }
+        [operation, tree, builder_uid] if operation == "archive-profile-tree" => {
+            super::ownership::archive_profile_tree(Path::new(tree), builder_uid.parse()?)
         }
         [operation, tree, uid, gid, host_uid, host_gid] if operation == "remap-rootfs" => {
             super::ownership::remap_tree(

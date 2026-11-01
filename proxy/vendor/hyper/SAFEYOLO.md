@@ -18,3 +18,15 @@ The implementation proof covered 36 source/socket observations, including 27
 mutually admitted cases with exact bytes, order, first spelling and grouped
 values. Six bare-parser admission differences remain outside this metadata
 patch. This proof does not establish complete Python transport parity.
+
+SafeYolo also retains the native HTTP/2 stream ID in accepted request extensions.
+HTTP/1 `ext::RequestByteRange` exposes parser-consumed stream offsets for the
+request head, body framing and trailers. It contains counters only. Read-ahead
+bytes stay outside the range until consumed. The existing completion producer
+owns updates; these offsets do not change framing, completion or admission.
+
+The HTTP/2 server builder also accepts `on_stream_parse_error` with h2's optional
+content-free stream observer. Hyper installs the observer after the handshake
+and before polling requests. SafeYolo uses this callback to emit canonical
+parser-failure metadata for recoverable stream rejections, including heads
+rejected before service admission. The observer does not change traffic handling.

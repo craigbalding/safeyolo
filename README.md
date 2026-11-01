@@ -31,6 +31,14 @@ Use the terminal on a workstation or headless server; the Mac GUI is optional.
 SafeYolo is pre-v1. Use the installer below; published Python CLI packages
 belong to the earlier product.
 
+**Install preview:** Edited Ubuntu 24.04 AMD64 walkthrough with Codex and an
+existing host login.
+Install SafeYolo and get your first agent running in less than a minute.
+
+![SafeYolo installation preview: download, review access, and open Codex](docs/media/install-preview.gif)
+
+[Terminal walkthrough (.cast)](docs/media/install-preview.cast)
+
 ## Quick start
 
 Use Ubuntu 24.04 AMD64 (x86_64), an ordinary sudo-enabled account, Bash, curl,
@@ -107,7 +115,7 @@ command family to its current operating instructions.
 | Manual installation, custom roots, builds or recovery | [Installation reference](docs/installation.md) |
 | Try a useful task and decide its access | [Demo](docs/demo.md) |
 | Controlled experiments | [The Lab](cli/README.md#lab) and [agent debugging](docs/agent-debugging.md) |
-| Coordinating agents | [Factories](docs/factories.md), [Coord](docs/coord-operations.md), [Mattermost](docs/coord-mattermost.md) |
+| Claim shared work or coordinate agents | [Work claims](docs/coord-operations.md#claim-durable-work), [Factories](docs/factories.md), [Coord](docs/coord-operations.md), [Mattermost](docs/coord-mattermost.md) |
 | A different agent or setup | [Host scripts](contrib/HOST_SCRIPT_GUIDE.md) |
 | Kali, Alpine or another rootfs | [Custom rootfs preparation](contrib/ROOTFS_SCRIPT_GUIDE.md) |
 | Contained physical Mac access | [Seatbelt SSH account](contrib/macos-seatbelt-agent/README.md) |
