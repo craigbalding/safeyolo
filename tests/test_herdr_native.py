@@ -9,6 +9,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -45,12 +46,14 @@ def wait_for(check):
 
 
 @pytest.fixture
-def herdr_socket(tmp_path, request):
+def herdr_socket(request):
     calls = []
     stop = threading.Event()
-    path = tmp_path / "herdr.sock"
     reply = getattr(request, "param", {"id": "safeyolo", "result": {}})
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+    # macOS pytest paths can exceed AF_UNIX's 104-byte limit.
+    with tempfile.TemporaryDirectory(prefix="sy-herdr-", dir="/tmp") as directory, \
+            socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        path = Path(directory) / "herdr.sock"
         listener.bind(str(path))
         listener.listen()
         listener.settimeout(0.05)
@@ -212,11 +215,16 @@ def test_journey_retains_protocol_failure_through_cleanup(tmp_path, preparation,
 
 
 @pytest.mark.parametrize("attach", [False, True])
-def test_wrapper_delegates_real_stdio_and_exit_without_claiming_idle(tmp_path, native_cli, herdr_socket, attach):
+@pytest.mark.parametrize("ca_present", [False, True])
+def test_wrapper_delegates_real_stdio_and_exit_without_claiming_idle(tmp_path, native_cli, herdr_socket,
+                                                                   attach, ca_present):
     socket_path, calls = herdr_socket
     environment = dict(os.environ, HERDR_SOCKET_PATH=str(socket_path), HERDR_PANE_ID="w1:p1",
-                       HERDR_ENV="1", EXPECTED_CA=os.environ.get("SSL_CERT_FILE", ""),
-                       TMUX="unrelated", TMUX_PANE="%99")
+                       HERDR_ENV="1", TMUX="unrelated", TMUX_PANE="%99")
+    for key in ("SSL_CERT_FILE", "EXPECTED_CA"):
+        environment.pop(key, None)
+    if ca_present:
+        environment.update(SSL_CERT_FILE=str(tmp_path / "ca.pem"), EXPECTED_CA=str(tmp_path / "ca.pem"))
     args = [sys.executable, str(ROOT / "scripts/safeyolo_herdr.py"), "first",
             "--safeyolo", str(native_cli), "--root", str(tmp_path)]
     if attach:

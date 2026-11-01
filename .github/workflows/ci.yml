@@ -153,7 +153,7 @@ jobs:
       - name: Install Mac CLI test dependencies
         if: runner.os == 'macOS'
         run: |
-          brew install socat tmux coreutils bash
+          brew install socat tmux flock coreutils bash
           printf '%s\n' "$(brew --prefix bash)/bin" \
             "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
 
