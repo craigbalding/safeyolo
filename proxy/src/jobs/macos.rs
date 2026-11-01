@@ -411,6 +411,11 @@ impl ObserverLog {
 }
 
 async fn observed_wait(session: &mut client::Handle<PinnedServer>) -> Result<Outcome, Error> {
+    // OpenSSH reclaims the previous session during channel cleanup, after
+    // dispatching buffered packets. A close acknowledgement and new channel
+    // in one batch can therefore hit MaxSessions 1. Wait for a global-request
+    // reply so cleanup runs before opening the metadata channel.
+    session.send_ping().await?;
     let mut channel = session.channel_open_session().await?;
     channel.exec(true, "read-job-wait").await?;
     channel.eof().await?;
