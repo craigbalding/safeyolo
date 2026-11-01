@@ -21,5 +21,8 @@ capabilities:
         path: /api/claude_code/policy_limits
       - methods: [GET]
         path: /api/claude_code/settings
+      # GrowthBook's feature-flag software development kit (SDK) uses a public
+      # client identifier here, such as sdk-zAZezfDKGoZuXXKe in Claude Code 2.1.303.
+      # This identifier is not a login secret.
       - methods: [POST]
-        path: /api/eval/sdk-zAZezfDKGoZuXXKe
+        path: /api/eval/sdk-*

@@ -284,6 +284,7 @@ fn claude_startup_configuration_keeps_gateway_routes_scoped() {
         ("GET", "/api/claude_code/policy_limits"),
         ("GET", "/api/claude_code/settings"),
         ("POST", "/api/eval/sdk-zAZezfDKGoZuXXKe"),
+        ("POST", "/api/eval/sdk-anotherClient123"),
     ] {
         for candidate in ["GET", "POST", "PUT"] {
             check(
@@ -299,7 +300,7 @@ fn claude_startup_configuration_keeps_gateway_routes_scoped() {
     }
     for path in [
         "/api/eval/another-client",
-        "/api/eval/sdk-zazezfdkgozuxxke",
+        "/api/eval/sdk",
         "/api/eval-authed/sdk-zAZezfDKGoZuXXKe",
         "/api/claude_code/settings/other",
         "/api/oauth/claude_cli/create_api_key",
