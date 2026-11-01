@@ -260,7 +260,7 @@ nodes:
         - path: tests/blackbox/host/job_sandbox.py
           sha256: d0636a2c40ebea884bf7eafdc701960f8db7e0586db64f3dd6264820b9678741
         - path: tests/blackbox/host/job_network.py
-          sha256: d7d9a2bed1b66abed3edf1d54d3f12ff6a1a02828cb51304d943fed3d5c734f6
+          sha256: 50e5875eb2e8c62cd8277c90a338228d631762bf25a49d04f0f5f78d25f0c64b
         - path: proxy/Cargo.toml
           sha256: 8e3331141644bc07bf5ace2921d8c13c62ef176fd7f1cd818932825855da74a9
         - path: proxy/Cargo.lock
@@ -269,7 +269,7 @@ nodes:
           sha256: ea22eed26249af480f105212d08fc47006023276b2683254122bce031b30d373
         - path: proxy/src/bin/safeyolo.rs
           sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
-      setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
+      setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
       verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh proxy/src/host_platform.rs proxy/src/host_boot.rs guest/build-rootfs.sh && safeyolo doctor"
       run:
         gvisor_systrap: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh systrap --verbose"
@@ -314,7 +314,7 @@ nodes:
         - path: tests/blackbox/host/job_sandbox.py
           sha256: d0636a2c40ebea884bf7eafdc701960f8db7e0586db64f3dd6264820b9678741
         - path: tests/blackbox/host/job_network.py
-          sha256: d7d9a2bed1b66abed3edf1d54d3f12ff6a1a02828cb51304d943fed3d5c734f6
+          sha256: 50e5875eb2e8c62cd8277c90a338228d631762bf25a49d04f0f5f78d25f0c64b
         - path: proxy/Cargo.toml
           sha256: 8e3331141644bc07bf5ace2921d8c13c62ef176fd7f1cd818932825855da74a9
         - path: proxy/Cargo.lock
@@ -329,7 +329,7 @@ nodes:
           sha256: 72e284a6b8cc9aae65870b97cdf9ab9f4c123dacebc78f3694bd2cb4203ff58a
         - path: tests/fixtures/job-observer-probe.c
           sha256: 0207c5417386d7022d0ffefeb9a6b4b9d162e5017a8684a5225c62533beb0e8b
-      setup: "Use the approved physical Apple Silicon host; make -C vm install; prepare a disposable BYOA agent for snapshot smoke."
+      setup: "Use the approved physical Apple Silicon host; make -C vm install; prepare a disposable BYOA agent for snapshot smoke. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance."
       verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
       run:
         full_vz: "./tests/blackbox/run-lane.sh vz --verbose"

@@ -93,13 +93,13 @@ action = "warn"
         "extendedKeyUsage=serverAuth\n"
     )
     subprocess.run(
-        ["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes",
+        ["openssl", "req", "-sha256", "-new", "-newkey", "rsa:2048", "-nodes",
          "-config", str(request), "-keyout", str(root / "certs/upstream.key"),
          "-out", str(root / "certs/upstream.csr")],
         check=True,
     )
     subprocess.run(
-        ["openssl", "x509", "-req", "-in", str(root / "certs/upstream.csr"), "-days", "1",
+        ["openssl", "x509", "-sha256", "-req", "-in", str(root / "certs/upstream.csr"), "-days", "1",
          "-CA", str(root / "certs/mitmproxy-ca.pem"), "-CAkey", str(root / "certs/mitmproxy-ca.pem"),
          "-CAcreateserial", "-extfile", str(request), "-extensions", "extensions",
          "-out", str(root / "certs/upstream.pem")],
@@ -110,11 +110,12 @@ action = "warn"
 def program(port: int) -> str:
     """Use only the shared guest's Bash, curl and sha256sum; never print tokens."""
     return r'''
+trap 'printf "job assertion failed at line %s\n" "$LINENO" >&2' ERR
 test ! -e /app/agent_token
 test ! -e /safeyolo/agent_token
 test "$SSL_CERT_FILE" = /safeyolo/network/mitmproxy-ca-cert.pem
 test -s "$SSL_CERT_FILE"
-pattern='^\{"simple":"(sgw_[A-Za-z0-9_-]+)"\}$'
+pattern='^\{[[:space:]]*"simple"[[:space:]]*:[[:space:]]*"(sgw_[A-Za-z0-9_-]+)"[[:space:]]*\}$'
 [[ ${SAFEYOLO_GATEWAY_TOKENS:?} =~ $pattern ]]
 token=${BASH_REMATCH[1]}
 request() {
