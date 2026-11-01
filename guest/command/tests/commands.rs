@@ -399,6 +399,46 @@ fn live_stderr_does_not_overwrite_replacement_supervision_or_run() {
 }
 
 #[test]
+#[ignore = "requires guest root to check a different UID with the real diagnostic reader"]
+fn live_stderr_refuses_another_uid() {
+    assert_eq!(unsafe { libc::geteuid() }, 0);
+    let guest = Guest::new();
+    // Allow the other UID to traverse the fixture and execute the helper.
+    // Only the supervisor state should prevent the diagnostic read.
+    fs::set_permissions(guest.directory.path(), fs::Permissions::from_mode(0o755)).unwrap();
+    let helper = guest.directory.path().join("safeyolo-guest");
+    fs::copy(env!("CARGO_BIN_EXE_safeyolo-guest"), &helper).unwrap();
+    guest.publish("echo private-diagnostic >&2; exec sleep 60");
+    let mut supervisor = Supervisor::start(&guest);
+    let running = guest.wait(|state| state["last_stderr"] == "private-diagnostic\n");
+    let refused = guest
+        .command_at(&helper)
+        .args(["supervise", "check"])
+        .uid(65534)
+        .gid(65534)
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(refused.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("Permission denied"));
+    assert!(!String::from_utf8_lossy(&refused.stderr).contains("private-diagnostic"));
+    let checked = success(
+        guest
+            .command()
+            .args(["supervise", "check"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(checked["last_stderr"], running["last_stderr"]);
+    assert_eq!(
+        checked["command_start_token"],
+        running["command_start_token"]
+    );
+    assert_eq!(checked["restart_count"], 0);
+    supervisor.stop();
+}
+
+#[test]
 fn marker_crash_replacement_and_intentional_stop() {
     let guest = Guest::new();
     guest.publish("n=0; test ! -f attempts || n=$(cat attempts); n=$((n+1)); echo $n > attempts; \
