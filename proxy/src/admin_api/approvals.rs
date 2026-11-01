@@ -170,7 +170,7 @@ struct Explanation {
 pub(super) async fn respond<B: Body<Data = Bytes>>(
     request: Request<B>,
     path: &str,
-    policy: Option<&Policy>,
+    policy: Option<&Arc<Policy>>,
     audit: Option<&Arc<crate::audit::Writer>>,
     state: Option<&crate::RuntimeState>,
     service_audit: Option<ServiceAudit<'_>>,
@@ -215,7 +215,7 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
             ));
         };
         let (policy, writer, id, state) = (
-            policy.clone(),
+            Arc::clone(policy),
             writer.clone(),
             id.to_owned(),
             state.cloned(),
@@ -235,7 +235,7 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
     }
     if request.method() == Method::GET && !share {
         let (policy, writer, id, state) = (
-            policy.clone(),
+            Arc::clone(policy),
             writer.clone(),
             id.to_owned(),
             state.cloned(),
@@ -320,7 +320,7 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
 async fn context<B: Body<Data = Bytes>>(
     request: Request<B>,
     path: &str,
-    policy: Option<&Policy>,
+    policy: Option<&Arc<Policy>>,
     audit: Option<&Arc<crate::audit::Writer>>,
     state: Option<&crate::RuntimeState>,
 ) -> Result<Outcome, Error> {
@@ -359,7 +359,7 @@ async fn context<B: Body<Data = Bytes>>(
     }
     let (writer, policy, state, id) = (
         writer.clone(),
-        policy.clone(),
+        Arc::clone(policy),
         state.cloned(),
         id.to_owned(),
     );
@@ -463,7 +463,7 @@ fn context_error(error: crate::approvals::ApprovalError) -> Outcome {
 pub(super) async fn delegations<B: Body<Data = Bytes>>(
     request: Request<B>,
     path: &str,
-    policy: Option<&Policy>,
+    policy: Option<&Arc<Policy>>,
     state: Option<&crate::RuntimeState>,
     owner: Option<ServiceAudit<'_>>,
 ) -> Result<Outcome, Error> {
@@ -517,7 +517,7 @@ pub(super) async fn delegations<B: Body<Data = Bytes>>(
         name.to_owned(),
         operation.to_owned(),
         state.clone(),
-        policy.clone(),
+        Arc::clone(policy),
     );
     let Some(owner) = owner else {
         return Ok(response(

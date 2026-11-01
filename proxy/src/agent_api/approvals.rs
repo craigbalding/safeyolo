@@ -23,7 +23,7 @@ pub(super) fn request_id(path: &str) -> Option<(&str, bool)> {
 pub(super) async fn read(
     request: Request<'_>,
     writer: Option<&Arc<Writer>>,
-    policy: &Policy,
+    policy: &Arc<Policy>,
     state: Option<&crate::RuntimeState>,
     id: &str,
     read: Read,
@@ -39,7 +39,7 @@ pub(super) async fn read(
     };
     let (writer, policy, state, caller, id) = (
         writer.clone(),
-        policy.clone(),
+        Arc::clone(policy),
         state.cloned(),
         caller.to_owned(),
         id.to_owned(),
@@ -83,7 +83,7 @@ pub(super) async fn read(
 pub(super) async fn respond<B>(
     request: Request<'_>,
     writer: Option<&Arc<Writer>>,
-    policy: &Policy,
+    policy: &Arc<Policy>,
     state: Option<&crate::RuntimeState>,
     body: RequestBody<'_, B>,
 ) -> Result<Outcome<'static>, B::Error>
@@ -150,7 +150,7 @@ where
     };
     let (work_writer, policy, caller, work_id) = (
         writer.clone(),
-        policy.clone(),
+        Arc::clone(policy),
         caller.to_owned(),
         id.to_owned(),
     );
@@ -182,7 +182,7 @@ where
 async fn context<B>(
     request: Request<'_>,
     writer: Option<&Arc<Writer>>,
-    policy: &Policy,
+    policy: &Arc<Policy>,
     state: Option<&crate::RuntimeState>,
     body: RequestBody<'_, B>,
     id: &str,
@@ -205,7 +205,7 @@ where
     }
     let (writer, policy, state, caller, id) = (
         writer.clone(),
-        policy.clone(),
+        Arc::clone(policy),
         state.cloned(),
         caller.to_owned(),
         id.to_owned(),
@@ -355,7 +355,7 @@ async fn delegated<B: Body<Data = Bytes> + Unpin>(
     request: Request<'_>,
     writer: &Arc<Writer>,
     state: &crate::RuntimeState,
-    policy: &Policy,
+    policy: &Arc<Policy>,
     body: RequestBody<'_, B>,
 ) -> Result<Outcome<'static>, B::Error> {
     use crate::approvals::pending::{self, delegation};
@@ -369,7 +369,7 @@ async fn delegated<B: Body<Data = Bytes> + Unpin>(
     if path == "/approvals" && request.method == "GET" {
         let (writer, policy, state, reviewer) = (
             writer.clone(),
-            policy.clone(),
+            Arc::clone(policy),
             state.clone(),
             reviewer.clone(),
         );
@@ -408,7 +408,7 @@ async fn delegated<B: Body<Data = Bytes> + Unpin>(
     if !resolve && request.method == "GET" {
         let (writer, policy, state, reviewer, id) = (
             writer.clone(),
-            policy.clone(),
+            Arc::clone(policy),
             state.clone(),
             reviewer.clone(),
             id.to_owned(),
