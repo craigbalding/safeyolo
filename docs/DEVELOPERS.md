@@ -1142,7 +1142,14 @@ controls also execute generated POSIX launchers at paths with spaces, long
 shebangs, quotes and backslashes through both seeders. They check rewritten
 pip-seeder RECORD hashes, failed symlink deletion as an ordinary user, and
 creation over prepared executable and library directory links. The filesystem
-controls check that external target content and modes stay unchanged.
+controls also exercise existing, dangling and hard-linked generated files,
+current umask after a warm seed cache, metadata deletion paths, and
+stdlib-venv configuration boundaries. External target content and modes must
+stay unchanged. Activation controls cover Bash 4.2 compatibility and xonsh
+literals decoded as UTF-8, GBK and Big5. The xonsh control checks generated
+literals; it does not run a xonsh shell. Download controls reject altered bytes
+before cache promotion or pip-seeder installation, even when the downloader
+reports a different, valid file in its output.
 The acceptance dependency controls also exercise
 OpenTelemetry propagation limits, whitespace parsing and Semgrep trace/log
 export with requests and threading instrumentation. HTTP fixtures
@@ -1168,10 +1175,11 @@ then interprets the path as shell syntax. Environment recreation repairs the
 initial launchers only; it does not protect later pip writes.
 
 These Linux controls do not execute Windows batch activation. Upstream
-virtualenv skips downloaded-wheel digest verification for custom indexes or
-missing PyPI digest metadata. A passing seed-wheel control establishes the
-default-index path with published metadata; it does not establish integrity
-for those skipped paths.
+virtualenv retains its custom-index exceptions to PyPI digest comparison.
+Missing default-index digest metadata refuses the downloaded bytes; a bundle
+request can then fall back to the verified embedded wheel. The controls check
+that fallback and the default-index path with published metadata. They do not
+establish integrity for custom-index exceptions.
 
 ### HTTP/2 gate verification
 

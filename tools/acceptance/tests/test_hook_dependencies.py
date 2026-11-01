@@ -1,8 +1,10 @@
 """Run with the frozen root development Python; the wheel test reads PyPI."""
 
+import ast
 import base64
 import csv
 import hashlib
+import io
 import os
 import shutil
 import stat
@@ -12,13 +14,15 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 import virtualenv
 from filelock import FileLock, Timeout
 from python_discovery._cache import DiskContentStore
 from virtualenv.app_data import AppDataDiskFolder
 from virtualenv.create.pyenv_cfg import PyEnvCfg
-from virtualenv.seed.wheels.acquire import download_wheel
+from virtualenv.seed.wheels.acquire import download_wheel, get_wheel
+from virtualenv.seed.wheels.embed import get_embed_wheel
 from virtualenv.util.lock import ReentrantFileLock
 
 
@@ -160,6 +164,126 @@ class HookDependencies(unittest.TestCase):
                     self.assertEqual(target.read_bytes(), b"external fixture")
                     self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
                     self.assertEqual(stat.S_IMODE(outside.stat().st_mode), directory_mode)
+
+    def test_generated_files_replace_links_without_writing_external_targets(self):
+        # GHSA-558c-9hv2-4prj: distinguish existing, dangling and hard-linked files.
+        for relative in ("pyvenv.cfg", "bin/activate"):
+            for kind in ("symlink", "dangling", "hardlink"):
+                with self.subTest(file=relative, kind=kind), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    target = root / "external"
+                    if kind != "dangling":
+                        target.write_bytes(b"external fixture")
+                        target.chmod(0o640)
+                    folder = root / "venv"
+                    linked = folder / relative
+                    linked.parent.mkdir(parents=True)
+                    if kind == "hardlink":
+                        os.link(target, linked)
+                    else:
+                        linked.symlink_to(target)
+                    virtualenv.cli_run(["--no-seed", "--activators", "bash", str(folder)])
+                    self.assertTrue(linked.is_file())
+                    self.assertFalse(linked.is_symlink())
+                    if kind == "dangling":
+                        self.assertFalse(target.exists())
+                    else:
+                        self.assertEqual(target.read_bytes(), b"external fixture")
+                        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
+                        self.assertFalse(linked.samefile(target))
+
+    def test_warm_copy_seed_respects_current_umask(self):
+        # GHSA-fc2g-4w5p-6whm: the second environment must not inherit cache modes.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = ["--no-download", "--no-periodic-update", "--app-data", str(root / "app-data")]
+            previous = os.umask(0o022)
+            try:
+                virtualenv.cli_run([*args, str(root / "warm")])
+                cached = next((root / "app-data").rglob("pip/__init__.py"))
+                self.assertEqual(stat.S_IMODE(cached.stat().st_mode), 0o644)
+                os.umask(0o077)
+                session = virtualenv.cli_run([*args, str(root / "private")])
+            finally:
+                os.umask(previous)
+            self.assertEqual(stat.S_IMODE((session.creator.purelib / "pip/__init__.py").stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(cached.stat().st_mode), 0o644)
+
+    def test_seed_replacement_contains_metadata_deletion_paths(self):
+        # GHSA-hhxq-47xx-j5xx: hostile RECORD/top_level entries cannot delete outside.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            folder = root / "venv"
+            args = ["--no-download", "--no-periodic-update", "--app-data", str(root / "app-data"), str(folder)]
+            session = virtualenv.cli_run(args)
+            outside = root / "outside"
+            outside.mkdir()
+            target = outside / "keep"
+            target.write_bytes(b"external fixture")
+            target.chmod(0o640)
+            (session.creator.purelib / "outside-link").symlink_to(outside, target_is_directory=True)
+            metadata = next(session.creator.purelib.glob("pip-*.dist-info"))
+            names = [str(target), os.path.relpath(target, session.creator.purelib), "outside-link/keep"]
+            (metadata / "top_level.txt").write_text("\n".join(names) + "\n")
+            (metadata / "RECORD").write_text("".join(f"{name},,\n" for name in [*names, "../..", "../../../bin/pip"]))
+            virtualenv.cli_run(args)
+            self.assertEqual(target.read_bytes(), b"external fixture")
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
+            self.assertTrue((session.creator.purelib / "pip/__init__.py").is_file())
+            result = subprocess.run([str(folder / "bin/pip"), "--version"], capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_venv_creator_rejects_configuration_boundaries_before_writing(self):
+        # GHSA-qmx5-4p3x-wvqf: exercise the stdlib creator, not the builtin writer.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for boundary in "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029":
+                with self.subTest(boundary=repr(boundary)):
+                    folder = root / f"env{boundary}home = /attacker{boundary}include-system-site-packages = true"
+                    with patch("sys.stderr", new_callable=io.StringIO) as error:
+                        with self.assertRaises(SystemExit) as raised:
+                            virtualenv.cli_run(["--creator", "venv", "--no-seed", str(folder)])
+                    self.assertIn("must not contain a line boundary", error.getvalue())
+                    self.assertEqual(raised.exception.code, 2)
+                    self.assertEqual(list(root.iterdir()), [])
+            session = virtualenv.cli_run(["--creator", "venv", "--no-seed", str(root / "ordinary path")])
+            self.assertEqual(PyEnvCfg.from_folder(session.creator.dest)["include-system-site-packages"], "false")
+
+    def test_xonsh_activation_literals_survive_legacy_decoding(self):
+        # GHSA-394h-qwmc-48pf: use the upstream codec/literal boundary control.
+        payload = "中'; __import__(\"os\").system(\"touch injected\"); #"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            virtualenv.cli_run([
+                "--no-seed", "--activators", "xonsh", "--prompt", payload, str(root / "venv"),
+            ])
+            script = (root / "venv/bin/activate.xsh").read_bytes()
+            for codec in ("utf-8", "gbk", "big5"):
+                line = next(line for line in script.decode(codec).splitlines()
+                            if line.strip().startswith("self.embedded_virtual_prompt ="))
+                self.assertEqual(ast.literal_eval(line.partition(" = ")[2]), payload)
+            self.assertFalse((root / "injected").exists())
+
+    def test_bash_compat42_prompt_remains_literal(self):
+        # GHSA-6w3r-xr62-4xcp: compatibility 4.2 uses different replacement semantics.
+        payload = r"x\$(touch injected-dollar)\`touch injected-backtick`"
+        for source in ("path", "prompt"):
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                folder = root / (payload if source == "path" else "venv")
+                prompt = ["--prompt", payload] if source == "prompt" else []
+                virtualenv.cli_run([
+                    "--no-seed", "--activators", "bash", *prompt, str(folder),
+                ])
+                result = self.activate(
+                    "bash", folder / "bin/activate", root,
+                    'BASH_COMPAT=4.2; shopt -s promptvars; PS1="base> "; source "$TEST_ACTIVATE" || exit; '
+                    'printf "%s\\n" "${PS1@P}"',
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(), [f"({payload}) base> "])
+                self.assertFalse((root / "injected-dollar").exists())
+                self.assertFalse((root / "injected-backtick").exists())
 
     def test_placeholder_in_path_is_not_substituted_again(self):
         # GHSA-8rjx-v5ww-45pp: a later replacement must not rewrite quoted input.
@@ -342,9 +466,46 @@ class HookDependencies(unittest.TestCase):
                 env,
             )
             verify_wheel_digest(wheel)
+            clean = wheel.path.read_bytes()
             wheel.path.write_bytes(wheel.path.read_bytes() + b"tampered")
             with self.assertRaisesRegex(RuntimeError, "sha256"):
                 verify_wheel_digest(wheel)
+            # GHSA-494p-63j8-28p3 / GHSA-cx28-75q4-x26q: fake only the external
+            # downloader; use the real PyPI verifier and real pip-seeder selection.
+            decoy = root / "decoy" / wheel.name
+            decoy.parent.mkdir()
+            decoy.write_bytes(clean)
+
+            def corrupted_download(command, **kwargs):
+                staging = Path(command[command.index("-d") + 1])
+                (staging / wheel.name).write_bytes(clean + b"tampered")
+                return Mock(returncode=0, communicate=lambda: (f"Saved {decoy}\n", ""))
+
+            with patch("virtualenv.seed.wheels.acquire.Popen", side_effect=corrupted_download):
+                house = root / "verified-house"
+                with self.assertRaisesRegex(RuntimeError, "sha256"):
+                    download_wheel(
+                        "pip", f"=={pip_version}", f"{sys.version_info.major}.{sys.version_info.minor}",
+                        [], AppDataDiskFolder(str(root / "download-data")), house, env,
+                    )
+                self.assertEqual(list(house.iterdir()), [])
+                # The pip seeder must verify the downloaded input before installation.
+                with patch.dict(os.environ, env, clear=True), self.assertRaisesRegex(RuntimeError, "sha256"):
+                    virtualenv.cli_run([
+                        "--seeder", "pip", "--download", "--no-periodic-update", "--pip", pip_version,
+                        "--app-data", str(root / "pip-data"), str(root / "downloaded-venv"),
+                    ])
+                self.assertFalse(list((root / "pip-data").rglob(wheel.name)))
+                with patch("virtualenv.seed.wheels.periodic_update._pypi_sha256_for_wheel", return_value=None), \
+                        patch("virtualenv.seed.wheels.periodic_update.sleep"):
+                    selected = get_wheel(
+                        "pip", "bundle", f"{sys.version_info.major}.{sys.version_info.minor}", [], True,
+                        AppDataDiskFolder(str(root / "fallback-data")), False, env,
+                    )
+                    self.assertEqual(
+                        selected.name, get_embed_wheel("pip", f"{sys.version_info.major}.{sys.version_info.minor}").name,
+                    )
+                    self.assertFalse(list((root / "fallback-data").rglob(wheel.name)))
 
 
 if __name__ == "__main__":
