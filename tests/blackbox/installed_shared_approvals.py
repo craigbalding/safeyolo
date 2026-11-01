@@ -12,6 +12,9 @@ requests through native MCP tools. It requires the separate fixture service
 and checks owned origin effects without a human decision.
 Delegated-service mode proves one scoped service authorization with a synthetic
 host credential, the same attention tools and an explicit guest retry.
+Fresh delegated model journeys start at the current attention cutoff. Older
+edges are recorded without reading or resolving their payloads. An explicit
+--attention-cutoff must match the current cutoff on the owned instance.
 Python is used only for the black-box driver and guest request transport.
 """
 
@@ -157,6 +160,27 @@ def guest_coord(transport_cli: Path, name: str, operation: str, arguments: dict)
     command = "printf %s " + shlex.quote(json.dumps(arguments)) + " | " + shlex.join(
         ["/home/agent/.safeyolo/safeyolo-coord", "call", operation])
     return json.loads(checked(guest_command_args(transport_cli, name, command)))
+
+
+def reviewer_attention_cutoff(transport_cli: Path, name: str, expected: int | None = None) -> dict:
+    """Record older attention metadata before starting a fresh owned journey."""
+    cursor = 0
+    edges = []
+    while True:
+        page = guest_coord(transport_cli, name, "wait_for_attention",
+            {"since_sequence": cursor, "timeout_seconds": 0, "limit": 100})
+        edges.extend(page["edges"])
+        next_cursor = page["next_cursor"]
+        assert next_cursor >= cursor, "attention cutoff moved backwards"
+        if len(page["edges"]) < 100:
+            break
+        assert next_cursor > cursor, "attention page did not advance"
+        cursor = next_cursor
+    observation = {"since_sequence": next_cursor, "expected_cutoff": expected, "prior_attention_edges": edges,
+        "prior_history": "Excluded from this fresh journey; payload availability unverified here. No prior object was read or resolved."}
+    print(json.dumps({"phase": "attention_cutoff", "observation": observation}), flush=True)
+    assert expected is None or expected == next_cursor, "explicit attention cutoff differs from the current cutoff"
+    return observation
 
 
 def model_fixture_policy(root: Path, names: tuple[str, str], port: int, *, unavailable_model_port: int | None = None) -> str:
@@ -726,8 +750,8 @@ def run(args: argparse.Namespace) -> None:
                 assert coord_unavailable["state"] == "stopped"
                 cursor = None
             else:
-                cursor = guest_coord(args.transport_cli, args.helper, "wait_for_attention",
-                    {"since_sequence": 0, "timeout_seconds": 0})["next_cursor"]
+                attention_start = reviewer_attention_cutoff(args.transport_cli, args.helper, args.attention_cutoff)
+                cursor = attention_start["since_sequence"]
             proposals = []
 
             def configure_delegation(name: str, scope: dict) -> None:
@@ -937,6 +961,7 @@ def run(args: argparse.Namespace) -> None:
             assert model_config_path.read_bytes() == saved_model_config
             result = {"commit": args.commit, "native_cli": cli_version, "proxy": proxy_version,
                 "guests": guests, "exchanges": exchanges, "delegations": proposals,
+                "attention_start": attention_start,
                 "reviewer_launch_id": after["launch_id"], "private_events": str(events_path),
                 "limitations": "This focused guest exchange does not replace the separate race, lifecycle, failure and client acceptance checks."}
             return
@@ -1228,6 +1253,7 @@ def main() -> None:
     parser.add_argument("--reconcile-seconds", type=float, default=60, help="Seconds to keep the resolved instance live for client observations (default: 60)")
     parser.add_argument("--shared-room", help="Existing ordinary Coord room granting Helper send/receive and Worker receive")
     parser.add_argument("--helper-events", type=Path, help="New private raw Codex output file; default: unique file in the owned root's logs directory")
+    parser.add_argument("--attention-cutoff", type=int, help="For a fresh --delegated or --delegated-service journey, require this current attention cursor; older edges are recorded without reading or resolving their payloads. Default: discover the current cutoff across all metadata pages")
     args = parser.parse_args()
     if (args.real_helper or args.model_unavailable) and not args.interfaces:
         parser.error("model modes require --interfaces")
@@ -1237,6 +1263,8 @@ def main() -> None:
         parser.error("--delegated requires --interfaces --real-helper")
     if args.delegated_service and (not (args.interfaces and args.real_helper) or args.delegated or args.delegated_clients or args.delegated_lifecycle):
         parser.error("--delegated-service requires --interfaces --real-helper and runs separately from other delegated modes")
+    if args.attention_cutoff is not None and (args.attention_cutoff < 0 or not (args.delegated or args.delegated_service)):
+        parser.error("--attention-cutoff requires a nonnegative cursor and --delegated or --delegated-service")
     if args.delegated_lifecycle_remainder and not args.delegated_lifecycle:
         parser.error("--delegated-lifecycle-remainder requires --delegated-lifecycle")
     if args.delegated_lifecycle_crash_only and not args.delegated_lifecycle:

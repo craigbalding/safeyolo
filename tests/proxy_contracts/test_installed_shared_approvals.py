@@ -28,6 +28,35 @@ from tests.proxy_contracts.harness import request as http_request
 from tests.proxy_contracts.test_native_policy_cli import AGENT_TOKEN, native_instance
 
 
+@pytest.mark.parametrize("count,expected", [(0, None), (8, None), (8, 8), (200, 200), (201, None), (8, 7), (8, 9)])
+def test_fresh_reviewer_attention_cutoff_records_all_prior_edges(monkeypatch, capsys, count, expected):
+    edges = [{"attention_id": f"expired-{index}"} for index in range(count)]
+    calls = []
+
+    def metadata_only(cli, name, operation, arguments):
+        assert cli == Path("owned-cli") and name == "helper"
+        assert operation == "wait_for_attention", "fresh setup must not read or resolve prior payloads"
+        assert arguments["limit"] == 100 and arguments["timeout_seconds"] == 0
+        cursor = arguments["since_sequence"]
+        calls.append(cursor)
+        page = edges[cursor:cursor + 100]
+        return {"edges": page, "next_cursor": cursor + len(page)}
+
+    monkeypatch.setattr(approvals, "guest_coord", metadata_only)
+    if expected is not None and expected != count:
+        with pytest.raises(AssertionError, match="explicit attention cutoff differs"):
+            approvals.reviewer_attention_cutoff(Path("owned-cli"), "helper", expected)
+    else:
+        observation = approvals.reviewer_attention_cutoff(Path("owned-cli"), "helper", expected)
+        assert observation["since_sequence"] == count
+    recorded = json.loads(capsys.readouterr().out)["observation"]
+    assert recorded["since_sequence"] == count and recorded["expected_cutoff"] == expected
+    assert recorded["prior_attention_edges"] == edges
+    assert "payload availability unverified" in recorded["prior_history"]
+    assert "No prior object was read or resolved" in recorded["prior_history"]
+    assert calls == list(range(0, count + 1, 100))
+
+
 @pytest.fixture
 def helper_instance(tmp_path_factory, monkeypatch):
     directory = tmp_path_factory.mktemp("u6")
@@ -47,7 +76,7 @@ def helper_instance(tmp_path_factory, monkeypatch):
         args = SimpleNamespace(config_dir=root, native_cli=root / "bin/safeyolo", native_proxy=root / "bin/safeyolo-proxy",
             transport_cli=str(root / "bin/safeyolo"), worker="worker", helper="helper", commit=commit,
             interfaces=True, model_unavailable=True, real_helper=False, shared_room=None, helper_events=None,
-            wait_for_operator=False, operator_timeout=1, reconcile_seconds=0)
+            wait_for_operator=False, operator_timeout=1, reconcile_seconds=0, attention_cutoff=None)
         yield instance, args
 
 
@@ -104,7 +133,7 @@ def test_helper_consumer_refuses_unowned_runtime_before_guest_effects(helper_ins
 
 
 @pytest.mark.parametrize("control", ["clean", "different_launch", "wrong_guest_profile", "guest_cleanup_failure", "delegated", "delegated_lifecycle",
-    "lifecycle_remainder", "lifecycle_crash_only", "delegated_clients", "delegated_service"])
+    "lifecycle_remainder", "lifecycle_crash_only", "delegated_clients", "delegated_service", "delegated_service_cutoff"])
 def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(helper_instance, monkeypatch, capsys, control, request):
     instance, args = helper_instance
     root = instance.root
@@ -127,11 +156,13 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
     crash_only = control == "lifecycle_crash_only"
     crashing = lifecycle and not remaining
     clients = control == "delegated_clients"
-    if control in {"delegated", "delegated_service"} or lifecycle or clients:
+    service = control in {"delegated_service", "delegated_service_cutoff"}
+    if control == "delegated" or service or lifecycle or clients:
         if sys.platform != "linux":
             pytest.skip("controlled run backend uses the Linux birth/argv boundary")
         args.delegated = control == "delegated"
-        args.delegated_service = control == "delegated_service"
+        args.delegated_service = service
+        args.attention_cutoff = 8 if control == "delegated_service_cutoff" else None
         args.delegated_lifecycle = lifecycle
         args.delegated_lifecycle_remainder = remaining
         args.delegated_lifecycle_crash_only = crash_only
@@ -161,10 +192,14 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
         nats = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
         started = instance.cli("coord", "start", *(["--binary", nats] if nats else []))
         assert started.returncode == 0, started.stderr
-        if control in {"delegated", "delegated_service"} or clients:
+        if control == "delegated" or service or clients:
             for operands in (("coord", "room", "create", "helper-agent"),
                              ("coord", "grant", "helper-agent", args.helper)):
                 assert instance.cli(*operands).returncode == 0
+            if service:
+                for index in range(8):
+                    prior = instance.cli("coord", "send", "helper-agent", f"Prior journey {index}", "--to", args.helper)
+                    assert prior.returncode == 0, prior.stderr
     checked = approvals.checked
     run_command = subprocess.run
     stopped = []
@@ -244,12 +279,13 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
         return ["controlled-guest", name, text]
 
     def model_turn(arguments, events_path, **kwargs):
-        if control in {"delegated", "delegated_service"}:
+        if control == "delegated" or service:
             # The reviewer and guest transport are deliberate doubles here.
             # The calls below execute the actual native attention, canonical
             # read, decision and permission boundaries used by the runner.
             state.update(launch_id="controlled-reviewer", agent_state="running")
-            cursor = 0
+            cursor = int(re.search(r"since_sequence=(\d+)", arguments[-1])[1])
+            assert cursor == (8 if service else 0)
             events = []
             with events_path.open("x", encoding="utf-8") as output:
                 def call(tool, data):
@@ -262,7 +298,7 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
                     value = json.loads(subprocess.check_output([str(root / "bin/safeyolo-coord"), "call", tool],
                         input=json.dumps(data), text=True, env=environment, timeout=30))
                     return value
-                for _ in range(1 if control == "delegated_service" else 3):
+                for _ in range(1 if service else 3):
                     attention = call("wait_for_coord", {"since_sequence": cursor, "timeout_seconds": 20, "limit": 1})
                     assert len(attention["objects"]) == 1
                     cursor = attention["next_cursor"]
@@ -338,7 +374,7 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
         monkeypatch.setattr(approvals, "wait_for_operator", operator_choice)
     original = instance.policy.read_bytes()
     try:
-        successful = control in {"clean", "delegated", "delegated_lifecycle", "lifecycle_remainder", "lifecycle_crash_only", "delegated_clients", "delegated_service"}
+        successful = control in {"clean", "delegated", "delegated_lifecycle", "lifecycle_remainder", "lifecycle_crash_only", "delegated_clients"} or service
         if successful:
             approvals.run(args)
         else:
@@ -351,7 +387,10 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
         assert bool(final) == successful
         if final:
             result = final[0]
-            if control == "delegated_service":
+            if service:
+                assert result["attention_start"]["since_sequence"] == 8
+                assert result["attention_start"]["expected_cutoff"] == args.attention_cutoff
+                assert len(result["attention_start"]["prior_attention_edges"]) == 8
                 assert result["reviewer_launch_id"] == "controlled-reviewer"
                 assert len(result["exchanges"]) == 1
                 exchange = result["exchanges"][0]
