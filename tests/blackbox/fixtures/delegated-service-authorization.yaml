@@ -1,0 +1,15 @@
+schema_version: 1
+name: delegated-service-fixture
+default_host: 127.0.0.3
+auth:
+  type: bearer
+  allow_http: true
+capabilities:
+  reader:
+    routes:
+      - methods: [GET, POST]
+        path: /delegated-read/*
+risky_routes:
+  - methods: [POST]
+    path: /delegated-read/*
+    tactics: [impact]

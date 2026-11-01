@@ -1,6 +1,7 @@
 //! Pure service-definition snapshots and gateway route selection. A selection is
 //! not authorization to dial: risky-route policy and credential lifecycle still follow.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -10,7 +11,7 @@ use std::sync::Arc;
 
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use unicode_normalization::UnicodeNormalization;
 use zeroize::Zeroizing;
 
@@ -624,6 +625,13 @@ impl GatewaySnapshot {
             .then_some(name.as_str())
     }
 
+    pub(crate) fn provider_for_request(&self, request: &GatewayRequest<'_>) -> Option<&str> {
+        let hosts = self.hosts_for_request(request);
+        let name = hosts.get(&request.host.to_lowercase())?;
+        let (name, _) = self.registry.as_ref()?.services.get_key_value(name)?;
+        self.agents.contains_key(name).then_some(name.as_str())
+    }
+
     pub(crate) fn configured_agent_id(&self, name: &str) -> Option<&str> {
         self.agents.get(name)?.as_deref()
     }
@@ -651,6 +659,9 @@ impl GatewaySnapshot {
                     && !typed.service
                     && binding.agent == agent
                     && binding.service == provider
+                    && self.canonical["token_map"][binding.token.expose_secret()]
+                        .get("delegated")
+                        .is_none()
             })
             .is_some_and(|(binding, typed)| !typed.capability && binding.capability == capability)
     }
@@ -759,6 +770,20 @@ impl GatewaySnapshot {
             let Some(name) = binding.service.as_str() else {
                 return Err(ServiceViewError::Compatibility);
             };
+            let delegated = self.canonical["token_map"][binding.token.expose_secret()]
+                .get("delegated")
+                .is_some();
+            if delegated
+                && winners.get(name).is_some_and(
+                    |(previous, _): &(&TokenBinding, &TokenTimestamps)| {
+                        self.canonical["token_map"][previous.token.expose_secret()]
+                            .get("delegated")
+                            .is_none()
+                    },
+                )
+            {
+                continue;
+            }
             winners.insert(name, (binding, typed));
         }
         let mut services = Value::Object(Map::new());
@@ -777,6 +802,22 @@ impl GatewaySnapshot {
             service.insert("token".into(), binding.token.expose_secret().into());
             service.insert("capability".into(), binding.capability.clone());
             service.insert("account".into(), binding.account.clone());
+            let authorizations: Vec<_> = self.tokens.iter().filter(|binding| binding.agent == agent && binding.service == name)
+                .filter_map(|binding| {
+                    let encoded = self.canonical["token_map"][binding.token.expose_secret()]["delegated"].as_str()?;
+                    let issued: crate::policy::delegation::IssuedAccess = serde_json::from_str(encoded).ok()?;
+                    Some(json!({"approval_id":issued.approval_id,"token":binding.token.expose_secret(),"capability":binding.capability,"host":issued.action["host"],
+                        "account":binding.account,"resources":issued.action["resources"],"expires_at":issued.expires_at}))
+                }).collect();
+            if let Some(authorization) = authorizations
+                .iter()
+                .find(|authorization| authorization["token"] == binding.token.expose_secret())
+            {
+                service.insert("host".into(), authorization["host"].clone());
+            }
+            if !authorizations.is_empty() {
+                service.insert("authorizations".into(), json!(authorizations));
+            }
             services
                 .as_object_mut()
                 .unwrap()
@@ -803,7 +844,74 @@ impl GatewaySnapshot {
         registry.available_services(&authorized)
     }
 
+    // A grant can route only its own token. Selection below still checks its
+    // current beneficiary/run and resources before using this request-local map.
+    fn hosts_for_request(&self, request: &GatewayRequest<'_>) -> Cow<'_, HostMap> {
+        if let Some(registry) = self.registry.as_deref() {
+            for binding in &self.tokens {
+                let Some(encoded) =
+                    self.canonical["token_map"][binding.token.expose_secret()]["delegated"]
+                        .as_str()
+                else {
+                    continue;
+                };
+                let Ok(issued) =
+                    serde_json::from_str::<crate::policy::delegation::IssuedAccess>(encoded)
+                else {
+                    continue;
+                };
+                let (Some(host), Some(service)) = (
+                    issued.action["host"].as_str(),
+                    issued.action["service"].as_str(),
+                ) else {
+                    continue;
+                };
+                if !host.eq_ignore_ascii_case(request.host) {
+                    continue;
+                }
+                let hosts = HostMap::from([(host.to_lowercase(), service.to_owned())]);
+                if extract_token(registry, &hosts, request)
+                    .is_some_and(|token| token.expose_secret() == binding.token.expose_secret())
+                {
+                    return Cow::Owned(hosts);
+                }
+            }
+        }
+        Cow::Borrowed(&self.hosts)
+    }
+
     pub fn select(&self, request: GatewayRequest<'_>) -> GatewayDecision {
+        let hosts = self.hosts_for_request(&request);
+        let issued = self
+            .registry
+            .as_deref()
+            .and_then(|registry| extract_token(registry, &hosts, &request))
+            .and_then(|token| {
+                self.canonical["token_map"][token.expose_secret()]["delegated"].as_str()
+            })
+            .map(|encoded| {
+                serde_json::from_str::<crate::policy::delegation::IssuedAccess>(encoded)
+            });
+        let issued = match issued {
+            Some(Ok(issued)) => {
+                let path = request.request.target.split('?').next().unwrap_or_default();
+                let current = matches!(request.route_mode, RouteMode::CompiledPolicy(policy) if issued.active(policy));
+                if !current
+                    || !issued.action["resources"].as_array().is_some_and(|paths| {
+                        paths.iter().any(|pattern| {
+                            pattern
+                                .as_str()
+                                .is_some_and(|pattern| resource_matches(path, pattern))
+                        })
+                    })
+                {
+                    return denied(403, "SERVICE_AUTHORIZATION_EXPIRED_OR_OUT_OF_SCOPE");
+                }
+                Some(issued)
+            }
+            Some(Err(_)) => return denied(403, "SERVICE_AUTHORIZATION_UNAVAILABLE"),
+            None => None,
+        };
         if let Some(hosts) = self.canonical.get("host_map") {
             let Some(hosts) = hosts.as_object() else {
                 return incompatible(GatewayCompatibility::HostMap);
@@ -819,10 +927,10 @@ impl GatewaySnapshot {
                 return incompatible(GatewayCompatibility::HostMap);
             }
         }
-        let decision = match self.registry.as_deref() {
+        let mut decision = match self.registry.as_deref() {
             Some(registry) => select_route_inner(
                 registry,
-                &self.hosts,
+                &hosts,
                 &self.tokens,
                 &self.contracts,
                 &self.contract_issues,
@@ -833,6 +941,11 @@ impl GatewaySnapshot {
             // It still contains the reserved token prefix before ordinary traffic.
             None => unresolved_token(request.request.headers),
         };
+        if let (GatewayDecision::Selected { credential }, Some(issued)) = (&mut decision, issued) {
+            credential.authorization_binding = issued.action["credential_binding"]
+                .as_str()
+                .map(str::to_owned);
+        }
         if matches!(decision, GatewayDecision::Selected { .. })
             && let Some(issue) = self.token_issue
         {
@@ -847,7 +960,8 @@ impl GatewaySnapshot {
         let Some(registry) = self.registry.as_deref() else {
             return false;
         };
-        let Some(token) = extract_token(registry, &self.hosts, request) else {
+        let hosts = self.hosts_for_request(request);
+        let Some(token) = extract_token(registry, &hosts, request) else {
             return false;
         };
         self.tokens
@@ -1166,6 +1280,26 @@ fn compile_gateway_document(
                         .unwrap()
                         .insert(service.clone(), token.expose_secret().into());
                 }
+                for encoded in config
+                    .get("service_grants")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flat_map(|grants| grants.values())
+                {
+                    let encoded = encoded
+                        .as_str()
+                        .ok_or("service permission must be an encoded host record")?;
+                    let issued: crate::policy::delegation::IssuedAccess =
+                        serde_json::from_str(encoded)?;
+                    issued.validate()?;
+                    let action = &issued.action;
+                    let service = action["service"].as_str().ok_or("service unavailable")?;
+                    let token = mint_gateway_token()?;
+                    tokens.0.as_object_mut().expect("tokens").insert(token.expose_secret().into(), json!({
+                        "agent":agent,"service":service,"capability":action["capability"],"account":action["account"],
+                        "token":action["credential"],"delegated":encoded
+                    }));
+                }
                 environment
                     .0
                     .as_object_mut()
@@ -1444,6 +1578,9 @@ pub struct GatewayRequest<'a> {
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CredentialSelection {
+    /// Current credential definition approved for a run-bound service grant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authorization_binding: Option<String>,
     pub binding_id: Option<String>,
     pub agent: String,
     pub service: String,
@@ -1765,6 +1902,7 @@ fn select_binding(
     };
     GatewayDecision::Selected {
         credential: Box::new(CredentialSelection {
+            authorization_binding: None,
             binding_id: bindings
                 .iter()
                 .find(|state| {

@@ -88,9 +88,11 @@ pub(crate) fn explain(
     if kind == "credential_allow" && selected.is_some_and(|option| option.id == "run") {
         non_grants[1] = "No permission for other workers, reviewers, credential fingerprints or destinations. This leaves shared baseline credential approval unchanged.";
     }
-    let mut unknowns = vec![
-        "The target resource cannot be established from safe retained metadata. Raw request paths, queries and contract values are omitted because they can contain secrets.",
-    ];
+    let mut unknowns = vec![if kind == "service_authorize" {
+        "The requested resource scope is supplied by the guest. It is not proof of an upstream request, intent or payload effects."
+    } else {
+        "The target resource cannot be established from safe retained metadata. Raw request paths, queries and contract values are omitted because they can contain secrets."
+    }];
     if !known {
         unknowns
             .push("The grant meaning is unknown. Use direct policy controls to inspect its scope.");
@@ -98,14 +100,17 @@ pub(crate) fn explain(
     if selected.is_none() {
         unknowns.push("No approval option is selected. Select an offered option to explain the decision's effect.");
     }
-    // Only fixed metadata enters this projection. Never copy raw audit events,
-    // agent reasons, contract values, request headers, bodies or queries.
+    // Project fixed metadata and the explicit requested service scope. Never
+    // copy raw audit events, agent reasons, contract values, headers or bodies.
     let mut facts = json!({"agent":action["agent"],"agent_id":action["agent_id"],
         "run_id":action["run"]["run_id"],"binding_id":action["binding_id"],
         "destination":action["host"],"port":record.authority.port,
         "service":action["service"],"capability":action["capability"],
         "credential_reference":action["credential"],"account":action["account"],
         "request_method":method,"request_scheme":record.authority.scheme});
+    if kind == "service_authorize" {
+        facts["resource_scope"] = action["resources"].clone();
+    }
     if kind == "credential_allow" {
         facts["credential_fingerprints"] = action["credentials"].clone();
     }
@@ -159,7 +164,7 @@ pub(crate) fn explain(
             } else {
                 offered.effect.clone()
             };
-            if kind == "service_authorize" {
+            if kind == "service_authorize" && offered.id != "run" {
                 effect.push_str(" This also saves the service's host routing for the instance. The capability grant is only for the selected agent.");
             }
             if kind == "gateway_route" && method == "[custom method omitted]" {

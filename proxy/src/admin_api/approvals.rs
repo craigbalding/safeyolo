@@ -537,7 +537,7 @@ pub(super) async fn delegations<B: Body<Data = Bytes>>(
         } else {
             match serde_json::from_value::<crate::approvals::delegations::Proposal>(data.0.clone()) {
                 Ok(input) if operation=="apply"=>crate::approvals::delegations::apply(&state,&name,input),
-                Ok(input)=>crate::approvals::delegations::preview(&policy,&name,&input),
+                Ok(input)=>crate::approvals::delegations::preview(&policy,&name,&input,&state),
                 Err(_)=>Err(crate::approvals::invalid("invalid delegation proposal; unknown fields and unsupported bounds are rejected")),
             }
         };

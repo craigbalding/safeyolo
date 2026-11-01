@@ -2001,8 +2001,13 @@ where
         && let Some(audit) = &outcome.audit
     {
         let mut event = audit.to_event();
-        let pending =
-            crate::approvals::pending::bind_agent_request(runtime, &mut event, request_id).await?;
+        let pending = crate::approvals::pending::bind_agent_request(
+            runtime,
+            identity.run.as_ref(),
+            &mut event,
+            request_id,
+        )
+        .await?;
         if let Some(record) = &pending {
             outcome
                 .response
@@ -2032,6 +2037,8 @@ where
                 // second failure and its local response must remain intact.
                 evidence_failed |= runtime.audit.emit(guard.to_event()).is_err();
             }
+        } else if let Some(record) = &pending {
+            crate::approvals::pending::delegation::notify(runtime, record).await;
         }
     }
     evidence_failed |= record_agent_api(runtime, identity, request_id, &outcome).is_err();
@@ -3419,6 +3426,12 @@ where
         .as_deref()
         .and_then(crate::policy::Policy::gateway)
         .is_some_and(|gateway| gateway.requires_request_body(&gateway_request));
+    let provider_name = runtime
+        .policy
+        .as_deref()
+        .and_then(crate::policy::Policy::gateway)
+        .and_then(|snapshot| snapshot.provider_for_request(&gateway_request))
+        .map(str::to_owned);
     let buffer_required = client_version != hyper::Version::HTTP_2
         || pipeline_probe
         || request.body().is_end_stream()
@@ -3440,9 +3453,6 @@ where
         .and_then(|trace| trace.hook("service-gateway", "request"));
     if let Some(policy) = runtime.policy.as_deref() {
         let snapshot = policy.gateway();
-        let provider_name = snapshot
-            .and_then(|snapshot| snapshot.provider_for_host(&destination.policy_host))
-            .map(str::to_owned);
         if provider_name.is_some() && destination.selected_ip.is_some() {
             return Ok((
                 prior_block(gateway_response(
@@ -3750,6 +3760,7 @@ where
                     *credential,
                     vault,
                     crate::credential_injection::RequestInfo {
+                        authorization_guard: runtime.credential_guard.as_ref(),
                         method: request.method().as_str(),
                         host: &destination.policy_host,
                         path: &destination.path,

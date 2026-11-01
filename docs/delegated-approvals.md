@@ -1,7 +1,7 @@
 # Delegate approval decisions
 
-A host operator can let named local reviewer agents decide network, credential
-and gateway-route requests for named workers. Any one eligible reviewer can
+A host operator can let named local reviewer agents decide network, credential,
+service-authorization and gateway-route requests for named workers. Any one eligible reviewer can
 decide. This does not give the reviewer policy administration, a worker's
 credentials, or the permissions that it can issue.
 
@@ -94,6 +94,7 @@ Each `scopes` entry uses one of these shapes:
 |---|---|
 | `network_egress` | `host` is a supported destination pattern. `ports` and `all_ports` are required. Select either a nonempty port list with `all_ports: false`, or an empty list with `all_ports: true`. `actions` contains `request`, `connect`, or both. Each decision issues the canonical destination, port and action, rather than the whole envelope. Ordinary requests can reuse that permission across methods and paths. Existing budgets remain. |
 | `credential` | `host` is an exact destination. `fingerprints` contains exact `hmac:` fingerprints. Each decision permits those observed fingerprints only for the worker's current run. It covers all ports, methods and paths at that host. It does not change the shared baseline credential approval. Port, operation, family and once bounds are unsupported and rejected. Network and service controls still apply. |
+| `service_authorization` | `service`, `capability`, `account`, `credential` and `resources` bound the envelope. The credential is an exact host-store reference, or an empty string for a credential-free service. Preview fills `credential_binding` with the current definition fingerprint. Each grant authorizes only the selected worker run and resource paths. Capability routes, network policy, credential resolution, contract binding and risky-route approval remain separate checks. |
 | `gateway_route` | `service`, `capability`, `method`, `path` and optional `binding_id` bound the envelope. Supported method/path patterns can cover several routes. Each issued grant binds the canonical method and literal path, current service/capability/binding definitions and worker run. It does not bind an exact payload. Existing service authorization and contract checks remain. |
 
 Wildcard destinations, all ports, reusable access, multiple reviewers and
@@ -102,10 +103,92 @@ usable after the proposal is acknowledged. The selected request must fit
 entirely within one current delegation. Two partial delegations cannot be
 combined to approve it.
 
+## Delegate service authorization
+
+On the host, configure the service definition and store its credential through
+the normal `services` and `credentials` commands. The reviewer does not need
+service access. In the proposal above, replace `scopes` with the intended
+service envelope. For example, a configured `mail` service can use:
+
+```json
+[{"type":"service_authorization","service":"mail","capability":"reader",
+  "account":"work","credential":"mail-token","resources":["/messages/*"]}]
+```
+
+Use the same preview, acknowledgment and apply commands. Keep the host's
+`credential_binding` and `definition_revisions` in the apply input. If a relevant
+credential or service definition changes, preview again without the old binding,
+definition revisions and acknowledgment. The account is the gateway's configured
+account label; the credential reference selects the upstream login.
+
+In the worker guest, request an explicit scope through its Agent API. The guest
+uses its normal proxy and its own `/app/agent_token`. For this example, save the
+following JSON as `service-request.json` and run:
+
+```json
+{"service":"mail","capability":"reader","account":"work",
+ "credential":"mail-token","resources":["/messages/selected"]}
+```
+
+```sh
+(
+  agent_token=$(cat /app/agent_token) || exit
+  printf 'Authorization: Bearer %s\n' "$agent_token" |
+    curl --fail-with-body --header @- \
+      -H 'Content-Type: application/json' --data-binary @service-request.json \
+      http://_safeyolo.proxy.internal/gateway/request-access
+)
+```
+
+The response is 202 with `x-safeyolo-approval-id`. An eligible reviewer receives
+the canonical reference and can select `run`. No upstream request runs during
+the decision. After approval, the worker reads `GET /gateway/services` using
+its Agent API token. The worker uses the returned `authorized.mail.token` as
+the gateway bearer on an explicit retry to the service host. This token is
+scoped gateway access; the host resolves and injects the upstream credential.
+The reviewer receives neither token nor credential.
+
+Routing supplied by a service grant applies only to that grant's token after
+the worker run and scope checks. It does not change the operator's shared host
+routing or enable another agent's independently configured service token.
+
+`resources` contains exact paths or supported path patterns. Query parameters
+and request bodies are outside this bound. An exact path can fit an envelope
+pattern; a requested pattern must equal an acknowledged envelope pattern.
+Containment between different patterns is unsupported. One current delegation
+must cover every requested path with the same service, capability, account and
+credential. Ports and methods remain governed by network policy and capability
+routes. Service authorization does not supply contract values or approve a
+risky route. Unsupported fields and lifetime bounds are rejected.
+
+Multiple issued authorizations for one service appear in that service's
+`authorizations` list, with their tokens, approval IDs, resources and expiry.
+An independent operator binding remains the default token when present.
+Revoking or narrowing a delegation removes its service grants and preserves
+independent operator authorization. Use `approvals delegation revoke` for
+delegated access; `services revoke` removes the independently configured binding.
+Stopping, replacing or changing the worker identity invalidates its grants.
+Credential and service-definition checks also apply before use. These checks
+stop future authorizations; an already admitted stream can finish. Proxy restart
+preserves the recorded grant if its worker run and definitions remain current,
+but rotates gateway tokens. The worker must read its current token again.
+
+For a real two-guest service journey, stage
+`tests/blackbox/fixtures/delegated-service-authorization.yaml` in the selected
+disposable instance's configured service directory before proxy startup. Use the
+same prepared Ubuntu/systrap instance, native binaries and authenticated reviewer
+as the installed delegated workflow below. Select `--delegated-service` in place
+of `--delegated`, retaining `--interfaces --real-helper` and the exact source
+commit. This mode creates a unique synthetic credential in local storage,
+checks attention, canonical decision, explicit retry, injected-origin digest,
+resource/risk refusals and reviewer isolation, then removes the credential and
+stops its owned guests, proxy and origins. It does not require 1Password.
+
 ## Reviewer workflow
 
-The worker receives a normal 428 with an `x-safeyolo-approval-id` header. Its
-request is not held for automatic replay. The existing Coord attention path
+The worker receives 428 for a blocked traffic request, or 202 for a service
+access request, with an `x-safeyolo-approval-id` header. The request is not held
+for automatic replay. The existing Coord attention path
 sends eligible reviewers a reference in their configured `NAME-agent` room.
 It sends no secret evidence or permission in the message. Other room members
 can see the reference; this does not let them read or decide the approval.
@@ -120,7 +203,7 @@ In the reviewer's normal native Coord MCP session:
    `option`, and `decision: approve`, `reject`, or `defer`.
 5. Use `list_approvals` to reconcile after reconnect or unavailable attention.
 
-Network and credential decisions use the offered `run` option. Gateway decisions
+Network, credential and service-authorization decisions use the offered `run` option. Gateway decisions
 can use `run`, or `delegated_once` when the delegation permits it. Routine
 in-envelope decisions require no further human confirmation. The reviewer
 cannot replace the destination, identity, fingerprint, service, payload or

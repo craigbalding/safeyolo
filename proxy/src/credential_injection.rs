@@ -69,6 +69,7 @@ fn error(kind: ErrorKind, refreshed: u64) -> Error {
 
 /// Full URL can contain a signed query. It has no Debug/Serialize representation.
 pub struct RequestInfo<'a> {
+    pub authorization_guard: Option<&'a crate::credential_guard::CredentialGuard>,
     pub method: &'a str,
     pub host: &'a str,
     pub path: &'a str,
@@ -77,6 +78,7 @@ pub struct RequestInfo<'a> {
     pub request_id: Option<&'a str>,
 }
 struct Context {
+    authorization_guard: Option<crate::credential_guard::CredentialGuard>,
     selection: CredentialSelection,
     method: String,
     host: String,
@@ -88,6 +90,11 @@ struct Context {
 impl Context {
     fn new(selection: CredentialSelection, request: RequestInfo<'_>) -> Self {
         Self {
+            authorization_guard: selection
+                .authorization_binding
+                .as_ref()
+                .and(request.authorization_guard)
+                .cloned(),
             selection,
             method: request.method.into(),
             host: request.host.into(),
@@ -96,6 +103,22 @@ impl Context {
             full_url: request.full_url.clone(),
             request_id: request.request_id.map(str::to_owned),
         }
+    }
+
+    fn check_authorization(&self, snapshot: &CredentialSnapshot) -> Result<()> {
+        if self
+            .selection
+            .authorization_binding
+            .as_ref()
+            .is_some_and(|expected| {
+                self.authorization_guard
+                    .as_ref()
+                    .is_none_or(|guard| guard.approval_binding(snapshot.credential()) != *expected)
+            })
+        {
+            return Err(error(ErrorKind::Superseded, 0));
+        }
+        Ok(())
     }
 }
 
@@ -443,6 +466,7 @@ pub fn prepare(
         return Ok(Start::Blocked(deny(context, Missing::Initial, 0)));
     };
     let credential = snapshot.credential();
+    context.check_authorization(&snapshot)?;
     if credential.reference.is_some() {
         // Redirects do not need a provider read. No resolved value is cached in
         // the snapshot or the store, including after successful delivery.
@@ -550,6 +574,9 @@ fn finish_with_value(
     refreshed: u64,
     resolved: Option<Secret>,
 ) -> Result<Start> {
+    if let Some(snapshot) = &snapshot {
+        context.check_authorization(snapshot)?;
+    }
     let mut evidence = empty_evidence(refreshed);
     let selection = &context.selection;
     if context.scheme == "http" && selection.auth_kind.is_some() {

@@ -22,6 +22,10 @@ pub(super) fn credentials_current(runtime: &Runtime, record: &Record) -> Result<
             return Ok(false);
         };
         if !vault.is_current(&snapshot).map_err(unavailable)?
+            || snapshot
+                .credential()
+                .is_expired(time::OffsetDateTime::now_utc())
+                .map_err(unavailable)?
             || guard.approval_binding(snapshot.credential()) != *binding
         {
             return Ok(false);
@@ -211,6 +215,7 @@ async fn submit(
 
 pub(crate) async fn bind_agent_request(
     runtime: &std::sync::Arc<Runtime>,
+    run: Option<&crate::host_runs::AgentRun>,
     event: &mut Event,
     request_id: &str,
 ) -> Result<Option<Record>> {
@@ -256,8 +261,9 @@ pub(crate) async fn bind_agent_request(
     let mut action = json!({"kind":if binding {"contract_binding"} else {"service_authorize"},
         "agent":agent,"agent_id":agent_id,"service":service,"capability":capability,
         "host":definition.default_host});
+    let scoped = !binding && hint.get("resources").is_some();
     let mut credentials = Vec::new();
-    let options = if binding {
+    let mut options = if binding {
         for key in ["template", "bindings", "grantable_operations"] {
             action[key] = hint[key].clone();
         }
@@ -272,6 +278,8 @@ pub(crate) async fn bind_agent_request(
             session_id: None,
             parameters: Value::Null,
         }]
+    } else if scoped {
+        Vec::new()
     } else if definition.auth.is_none() {
         vec![OptionScope {
             id: "credential_free".into(),
@@ -312,6 +320,30 @@ pub(crate) async fn bind_agent_request(
         options.sort_by(|a, b| a.id.cmp(&b.id));
         options
     };
+    if scoped {
+        for key in ["account", "credential", "resources"] {
+            action[key] = hint[key].clone();
+        }
+        action["run"] = json!(run);
+        let name = action["credential"]
+            .as_str()
+            .ok_or_else(|| invalid("credential unavailable"))?
+            .to_owned();
+        let expires_at = if name.is_empty() {
+            None
+        } else {
+            let (bindings, expires_at) = credential_bindings(runtime, std::slice::from_ref(&name))?;
+            action["credential_binding"] = json!(bindings[&name]);
+            credentials.push(name.clone());
+            expires_at
+        };
+        let mut option = super::run_option(&format!(
+            "Authorize only {agent}'s current run for {service}/{capability}, account {}, credential reference {}, resource paths {}. Existing capability routes, network policy, contract binding, risky-route approval and credential resolution still apply. No payload approval or reviewer access is granted.",
+            action["account"], action["credential"], action["resources"]
+        ));
+        option.parameters = json!({"credential":name,"credential_binding":action["credential_binding"],"expires_at":expires_at});
+        options.push(option);
+    }
     let authority = Authority {
         revision: revision(policy, &action)
             .ok_or_else(|| invalid("gateway revision unavailable"))?,
@@ -327,7 +359,7 @@ pub(crate) async fn bind_agent_request(
     event.request_id = Some(request_id.into());
     if !binding && let Some(approval) = event.approval.as_mut() {
         let mut hint = approval.scope_hint.json().map_err(unavailable)?;
-        hint["proposed_lifetime"] = json!("persistent");
+        hint["proposed_lifetime"] = json!(if scoped { "worker_run" } else { "persistent" });
         approval.scope_hint = hint.into();
     }
     submit(runtime, event, authority, credentials)

@@ -15,6 +15,7 @@ fn now() -> OffsetDateTime {
 }
 fn selection(kind: Option<&str>) -> CredentialSelection {
     CredentialSelection {
+        authorization_binding: None,
         binding_id: None,
         agent: "alice".into(),
         service: "demo".into(),
@@ -70,6 +71,7 @@ fn start(
         selection,
         vault,
         RequestInfo {
+            authorization_guard: None,
             method: "GET",
             host: "api.example",
             path: "/signed/%2F?Q=a%2Bb&Q=%252F",
