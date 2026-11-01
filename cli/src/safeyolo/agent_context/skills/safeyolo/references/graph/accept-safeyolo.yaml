@@ -478,7 +478,7 @@ nodes:
       obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: cli/tests/test_codex_coord_supervisor.py
-          sha256: 10b61146c25bc9e7c88e8e60bb8ec6c09eb4f4ebdda5de63d2c1d7ffc2b7ff18
+          sha256: 0695022278d9a535de3a5c2edbaaa16829e7e02c20c2908539b18a1a981b4012
         - path: cli/tests/test_agent_command_supervisor.py
           sha256: 4e667aff35a4b8d2cedc3c7b9bf03dc1d4c647896df33d8846cc0a22be47a3db
         - path: tests/proxy_contracts/test_native_factory_cli.py
