@@ -775,12 +775,7 @@ async fn lost_committed_response_reads_canonical_state_and_missing_evidence_keep
         .admin("GET", &format!("/admin/approvals/{id}"), None)
         .await
         .json();
-    fs::rename(
-        fixture.root.path().join("audit.jsonl"),
-        fixture.root.path().join("held-audit.jsonl"),
-    )
-    .unwrap();
-    fs::create_dir(fixture.root.path().join("audit.jsonl")).unwrap();
+    fixture.make_audit_unavailable();
     assert!(fs::read(fixture.root.path().join("audit.jsonl")).is_err());
     let recovered = fixture
         .admin("GET", &format!("/admin/approvals/{id}"), None)
@@ -902,7 +897,7 @@ async fn terminal_approval_replay_does_not_restore_changed_policy_even_without_a
         }
         let source = toml::to_string(&policy).unwrap();
         fixture.apply(&source).await;
-        // Flush the earlier writes before making this sink unavailable.
+        // Check the terminal view before making the audit sink unavailable.
         assert_eq!(
             fixture
                 .admin("GET", &format!("/admin/approvals/{id}"), None)
@@ -910,12 +905,7 @@ async fn terminal_approval_replay_does_not_restore_changed_policy_even_without_a
                 .status,
             200
         );
-        fs::rename(
-            fixture.root.path().join("audit.jsonl"),
-            fixture.root.path().join("held-audit.jsonl"),
-        )
-        .unwrap();
-        fs::create_dir(fixture.root.path().join("audit.jsonl")).unwrap();
+        fixture.make_audit_unavailable();
         let view = fixture
             .admin("GET", &format!("/admin/approvals/{id}"), None)
             .await;
@@ -1078,7 +1068,9 @@ async fn audit_only_credentials_cannot_replace_canonical_approval_authority() {
         (&id, "first.example"),
         (&id, "second.example"),
     ] {
-        writeln!(audit, "{}", event(request, host)).unwrap();
+        audit
+            .write_all(format!("{}\n", event(request, host)).as_bytes())
+            .unwrap();
     }
     assert_eq!(
         fixture

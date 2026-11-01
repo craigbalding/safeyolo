@@ -1885,9 +1885,7 @@ async fn failed_policy_write_and_missing_audit_keep_a_recoverable_operator_path(
     );
     assert_eq!(f.network("worker", f.address).await.status, 428);
     no_origin(&f).await;
-    let audit = f.root.path().join("audit.jsonl");
-    fs::rename(&audit, f.root.path().join("held-audit.jsonl")).unwrap();
-    fs::create_dir(&audit).unwrap();
+    f.make_audit_unavailable();
     let approved = f
         .admin(
             "POST",
