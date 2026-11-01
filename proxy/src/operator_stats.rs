@@ -34,7 +34,7 @@ fn document_with_memory(
     report.insert("agents".into(), agents);
     report.insert(
         "policy-engine".into(),
-        policy_stats(runtime.policy.as_ref(), &runtime.tasks),
+        policy_stats(runtime.policy.as_deref(), &runtime.tasks),
     );
     // These pipeline reports belong to an installed native policy.
     if runtime.policy.is_some() {

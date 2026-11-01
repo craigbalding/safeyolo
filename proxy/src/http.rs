@@ -1925,7 +1925,7 @@ where
         .join("agent_token");
         let policy = runtime
             .policy
-            .as_ref()
+            .as_deref()
             .map_or(PolicyState::Unavailable, PolicyState::Ready);
         let mut random = rand::random::<f64>;
         agent_api::respond_with_body_and_audit_id_with_plumb(
@@ -2787,7 +2787,7 @@ where
     if request.method() == Method::CONNECT {
         if runtime
             .policy
-            .as_ref()
+            .as_deref()
             .and_then(crate::policy::Policy::gateway)
             .and_then(|gateway| gateway.provider_for_host(&destination.policy_host))
             .is_some()
@@ -2925,7 +2925,7 @@ where
                     if runtime.admin_shield.blocks_request_destination(&destination.host, destination.port) {
                         return Err(AdminPortAccess.into());
                     }
-                    if runtime.policy.as_ref().and_then(crate::policy::Policy::gateway)
+                    if runtime.policy.as_deref().and_then(crate::policy::Policy::gateway)
                         .and_then(|gateway| gateway.provider_for_host(&destination.policy_host)).is_some() {
                         return Err("provider destination cannot use an ordinary selected-IP tunnel".into());
                     }
@@ -3413,7 +3413,7 @@ where
             .has_scope(crate::inspection::Direction::Request, "body")?;
     let contract_needs_body = runtime
         .policy
-        .as_ref()
+        .as_deref()
         .and_then(crate::policy::Policy::gateway)
         .is_some_and(|gateway| gateway.requires_request_body(&gateway_request));
     let buffer_required = client_version != hyper::Version::HTTP_2
@@ -3435,7 +3435,7 @@ where
     let gateway_trace = trace
         .as_ref()
         .and_then(|trace| trace.hook("service-gateway", "request"));
-    if let Some(policy) = runtime.policy.as_ref() {
+    if let Some(policy) = runtime.policy.as_deref() {
         let snapshot = policy.gateway();
         let provider_name = snapshot
             .and_then(|snapshot| snapshot.provider_for_host(&destination.policy_host))

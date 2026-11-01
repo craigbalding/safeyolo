@@ -909,7 +909,7 @@ pub async fn respond<B>(
     request: Request<B>,
     expected_token: &str,
     registry: &Registry,
-    policy: Option<&Policy>,
+    policy: Option<&Arc<Policy>>,
 ) -> Result<Outcome, Error>
 where
     B: Body<Data = Bytes>,
@@ -921,7 +921,7 @@ pub async fn respond_with_circuits<B>(
     request: Request<B>,
     expected_token: &str,
     registry: &Registry,
-    policy: Option<&Policy>,
+    policy: Option<&Arc<Policy>>,
     circuits: Option<&crate::circuits::CircuitBreaker>,
 ) -> Result<Outcome, Error>
 where
@@ -936,7 +936,7 @@ pub(crate) async fn respond_with_stats<B>(
     request: Request<B>,
     expected_token: &str,
     registry: &Registry,
-    policy: Option<&Policy>,
+    policy: Option<&Arc<Policy>>,
     circuits: Option<&crate::circuits::CircuitBreaker>,
     stats: Option<&(dyn Fn() -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
 ) -> Result<Outcome, Error>
@@ -968,7 +968,7 @@ pub(crate) struct ServiceAudit<'a> {
 /// persist configuration; the existing runtime watcher owns later activation.
 pub(crate) struct OperatorContext<'a> {
     pub tasks: &'a Registry,
-    pub policy: Option<&'a Policy>,
+    pub policy: Option<&'a Arc<Policy>>,
     pub circuits: Option<&'a crate::circuits::CircuitBreaker>,
     pub stats:
         Option<&'a (dyn Fn() -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
@@ -995,7 +995,7 @@ pub(crate) async fn respond_with_view<B>(
     request: Request<B>,
     expected_token: &str,
     registry: &Registry,
-    policy: Option<&Policy>,
+    policy: Option<&Arc<Policy>>,
     circuits: Option<&crate::circuits::CircuitBreaker>,
     stats: Option<&(dyn Fn() -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
     view: Option<&std::sync::Arc<crate::traffic_view::TrafficView>>,
@@ -1036,7 +1036,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
 ) -> Result<Outcome, Error> {
     let OperatorContext {
         tasks: registry,
-        policy,
+        policy: policy_snapshot,
         circuits,
         stats,
         view,
@@ -1053,6 +1053,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         plumb,
         task_state,
     } = context;
+    let policy = policy_snapshot.map(Arc::as_ref);
     let method = request.method();
     if !matches!(
         *method,
@@ -1304,10 +1305,12 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         return approvals::delegations(request, &path, policy, task_state, service_audit).await;
     }
     if method == Method::GET && path == "/admin/approvals" {
-        if let (Some(writer), Some(policy)) = (audit, policy)
+        if let (Some(writer), Some(policy)) = (audit, policy_snapshot)
             && writer.approvals_enabled()
         {
-            let (writer, policy, state) = (writer.clone(), policy.clone(), task_state.cloned());
+            // Keep the accepted policy generation alive across reloads without
+            // copying its expanded host lists into each listing worker.
+            let (writer, policy, state) = (writer.clone(), Arc::clone(policy), task_state.cloned());
             return tokio::task::spawn_blocking(move || {
                 let records = match writer.approvals().list() {
                     Ok(records) => records,

@@ -61,6 +61,7 @@ async fn synchronous_submission_errors_preserve_mutations_and_stop_later_events(
         let breaker = CircuitBreaker::new();
         breaker.force_open(HOST, 1000.).unwrap();
         let tasks = Registry::default();
+        let policy = std::sync::Arc::new(policy);
         let evaluations = policy.engine_stats().unwrap()["evaluations"].clone();
         let source = match route {
             "budget" => Some(&budgets["failure_rows"][failure_index]),

@@ -23,7 +23,7 @@ fn network() -> NetworkRequest<'static> {
         path: "/",
     }
 }
-fn prepared() -> Policy {
+fn prepared() -> std::sync::Arc<Policy> {
     let policy = Policy::parse_at(&fixture()["policy"].to_string(), Format::Json, NOW).unwrap();
     for expected in [Effect::Allow, Effect::Allow, Effect::BudgetExceeded] {
         assert_eq!(
@@ -31,7 +31,7 @@ fn prepared() -> Policy {
             expected
         );
     }
-    policy
+    std::sync::Arc::new(policy)
 }
 fn request(method: &str, path: &str, body: &[u8]) -> Request<Full<Bytes>> {
     Request::builder()
@@ -279,6 +279,7 @@ async fn get_reporting_failure_terminates_with_a_categorical_error() {
         .reload_from_source_at(&source, Format::Json, NOW)
         .unwrap();
     let registry = Registry::default();
+    let policy = std::sync::Arc::new(policy);
     let outcome = admin_api::respond(
         request("GET", "/admin/budgets", b""),
         TOKEN,

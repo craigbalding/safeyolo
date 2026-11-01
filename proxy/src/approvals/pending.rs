@@ -876,7 +876,7 @@ pub(crate) fn inspect(
     Ok(view)
 }
 
-fn active_policy(state: &crate::RuntimeState) -> Result<Policy> {
+fn active_policy(state: &crate::RuntimeState) -> Result<std::sync::Arc<Policy>> {
     state
         .read()
         .map_err(|_| invalid("runtime unavailable"))?
@@ -1016,7 +1016,7 @@ pub(crate) fn resolve_as(
         if action["kind"] == "contract_binding" {
             let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?;
             let store = runtime.gateway_grants.clone().ok_or_else(|| invalid("gateway grant store unavailable"))?;
-            let registry = runtime.policy.as_ref().and_then(Policy::gateway).and_then(|gateway| gateway.registry())
+            let registry = runtime.policy.as_deref().and_then(Policy::gateway).and_then(|gateway| gateway.registry())
                 .ok_or_else(|| invalid("service catalogue unavailable"))?;
             let service = action["service"].as_str().ok_or_else(|| invalid("service unavailable"))?;
             let capability = action["capability"].as_str().ok_or_else(|| invalid("capability unavailable"))?;

@@ -405,7 +405,7 @@ nodes:
         - path: proxy/tests/native_coord/inventory.rs
           sha256: 1de6227ecdc2bbf2062f0e912c0c4ae7d6e149e2ea61837d75705393891b7276
         - path: proxy/src/agent_api/coord/inventory.rs
-          sha256: f85419536d55930f90681795452050a726daf9fdc2ed94e5bb4cc65009898763
+          sha256: 8fbf8a3581d4a18cd9e3914ac49d622fd29ea6dfe7549df6c00a08d997d393bf
         - path: proxy/src/coord_rooms/inventory.rs
           sha256: 043c13f0398038972f8cafdab35015fd0730953290b6dbc3760dd08db0804683
         - path: proxy/tests/native_coord/work.rs
