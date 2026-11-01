@@ -51,22 +51,21 @@ pub(super) fn plumb_and_desktop(path: &Path) -> Vec<Value> {
         let Ok(name) = serde_json::from_str::<EventName<'_>>(&line) else {
             continue;
         };
-        if matches!(
-            name.event.as_ref(),
-            "plumb.requested"
-                | "plumb.approved"
-                | "plumb.denied"
-                | "agent.desktop_present_requested"
-                | "admin.desktop_presented"
-        ) || (matches!(name.event.as_ref(), "admin.denial" | "admin.approval_added")
-            && name
-                .details
-                .and_then(|details| details.destination)
-                .is_some_and(|destination| destination.starts_with("desktop:")))
-        {
-            if let Ok(event) = serde_json::from_str::<Value>(&line) {
-                events.push_back((sequence, event));
-            }
+        let selected =
+            matches!(
+                name.event.as_ref(),
+                "plumb.requested"
+                    | "plumb.approved"
+                    | "plumb.denied"
+                    | "agent.desktop_present_requested"
+                    | "admin.desktop_presented"
+            ) || (matches!(name.event.as_ref(), "admin.denial" | "admin.approval_added")
+                && name
+                    .details
+                    .and_then(|details| details.destination)
+                    .is_some_and(|destination| destination.starts_with("desktop:")));
+        if selected && let Ok(event) = serde_json::from_str::<Value>(&line) {
+            events.push_back((sequence, event));
         }
     }
 
