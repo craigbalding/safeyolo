@@ -538,7 +538,12 @@ impl Policy {
             return None;
         }
         for agent in agents.keys() {
-            for field in ["agent_id", "services", "contract_bindings"] {
+            for field in [
+                "agent_id",
+                "services",
+                "service_grants",
+                "contract_bindings",
+            ] {
                 if !same(&["agents", agent, field]) {
                     return None;
                 }

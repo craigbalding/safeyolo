@@ -1998,8 +1998,13 @@ where
         && let Some(audit) = &outcome.audit
     {
         let mut event = audit.to_event();
-        let pending =
-            crate::approvals::pending::bind_agent_request(runtime, &mut event, request_id).await?;
+        let pending = crate::approvals::pending::bind_agent_request(
+            runtime,
+            identity.run.as_ref(),
+            &mut event,
+            request_id,
+        )
+        .await?;
         if let Some(record) = &pending {
             outcome
                 .response
@@ -2029,6 +2034,8 @@ where
                 // second failure and its local response must remain intact.
                 evidence_failed |= runtime.audit.emit(guard.to_event()).is_err();
             }
+        } else if let Some(record) = &pending {
+            crate::approvals::pending::delegation::notify(runtime, record).await;
         }
     }
     evidence_failed |= record_agent_api(runtime, identity, request_id, &outcome).is_err();
@@ -3747,6 +3754,7 @@ where
                     *credential,
                     vault,
                     crate::credential_injection::RequestInfo {
+                        authorization_guard: runtime.credential_guard.as_ref(),
                         method: request.method().as_str(),
                         host: &destination.policy_host,
                         path: &destination.path,

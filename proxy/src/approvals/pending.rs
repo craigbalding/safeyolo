@@ -811,6 +811,16 @@ pub(crate) fn current_view(
     let gateway_grants = runtime
         .as_deref()
         .and_then(|runtime| runtime.gateway_grants.clone());
+    let service_credentials_current =
+        if view["status"] == "approved" && record.authority.action["kind"] == "service_authorize" {
+            runtime
+                .as_deref()
+                .map(|runtime| gateway::credentials_current(runtime, record))
+                .transpose()?
+                .unwrap_or(false)
+        } else {
+            true
+        };
     drop(runtime);
     if view["status"] == "approved" && view["result"].get("issued_access").is_some() {
         let issued: crate::policy::delegation::IssuedAccess =
@@ -838,7 +848,8 @@ pub(crate) fn current_view(
         } else {
             true
         };
-        view["grant_active"] = json!(stored && issued.active(policy));
+        view["grant_active"] =
+            json!(stored && issued.active(policy) && service_credentials_current);
         if policy
             .approval_result(&record.approval_id)
             .map_err(invalid)?
@@ -1000,7 +1011,7 @@ pub(crate) fn resolve_as(
                 crate::edit_native_policy(state, true, |source| {
                     if !check_saved(state, source, record)? { return Err(invalid("approval or delegation changed before commit")); }
                     let (mut document, context) = crate::policy::parse_toml_for_edit(source).map_err(unavailable)?;
-                    let kind = if action["kind"] == "network_allow" { "network_grants" } else if action["kind"] == "credential_allow" { "credential_grants" } else { return Err(invalid("unsupported run permission")); };
+                    let kind = match action["kind"].as_str() { Some("network_allow") => "network_grants", Some("credential_allow") => "credential_grants", Some("service_authorize") => "service_grants", _ => return Err(invalid("unsupported run permission")) };
                     document["agents"][action["agent"].as_str().ok_or_else(|| invalid("agent unavailable"))?][kind][&record.approval_id] = toml_edit::value(serde_json::to_string(&issued).map_err(unavailable)?);
                     save_receipt(&mut document, record)?;
                     Ok(((), crate::policy::restore_large_toml_integers(&document.to_string(), &context)))

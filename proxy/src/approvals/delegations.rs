@@ -23,15 +23,80 @@ pub(crate) struct Preview {
     revocation: &'static str,
 }
 
-pub(crate) fn preview(policy: &Policy, name: &str, proposal: &Proposal) -> Result<Value> {
+pub(crate) fn preview(
+    policy: &Policy,
+    name: &str,
+    proposal: &Proposal,
+    state: &crate::RuntimeState,
+) -> Result<Value> {
     if !crate::host_platform::valid_agent_name(name) {
         return Err(invalid("invalid delegation name"));
     }
-    proposal
-        .delegation
-        .valid()
-        .map_err(|e| invalid(e.to_string()))?;
     let mut candidate = proposal.delegation.clone();
+    let runtime = state
+        .read()
+        .map_err(|_| invalid("runtime unavailable"))?
+        .clone();
+    for scope in &mut candidate.scopes {
+        if let crate::policy::delegation::Scope::ServiceAuthorization {
+            service,
+            capability,
+            credential,
+            credential_binding,
+            ..
+        } = scope
+        {
+            let registry = policy
+                .gateway()
+                .and_then(|gateway| gateway.registry())
+                .ok_or_else(|| invalid("service catalogue unavailable"))?;
+            let definition = registry
+                .services
+                .get(service)
+                .filter(|definition| definition.capabilities.contains_key(capability))
+                .ok_or_else(|| invalid("service or capability unavailable"))?;
+            if definition.auth.is_some() == credential.is_empty() {
+                return Err(invalid(
+                    "select a configured credential for an authenticated service, or an empty credential for a credential-free service",
+                ));
+            }
+            let current = if credential.is_empty() {
+                None
+            } else {
+                let loaded = runtime
+                    .gateway_vault
+                    .load()
+                    .map_err(|_| invalid("credential store unavailable"))?;
+                let (Some(loaded), Some(guard)) = (loaded, &runtime.credential_guard) else {
+                    return Err(invalid("credential binding unavailable"));
+                };
+                loaded
+                    .vault
+                    .reload_if_changed()
+                    .map_err(|_| invalid("credential store unavailable"))?;
+                let snapshot = loaded
+                    .vault
+                    .snapshot(credential)
+                    .map_err(|_| invalid("credential unavailable"))?
+                    .ok_or_else(|| invalid("credential unavailable"))?;
+                if !loaded
+                    .vault
+                    .is_current(&snapshot)
+                    .map_err(|_| invalid("credential unavailable"))?
+                {
+                    return Err(invalid("credential changed; preview again"));
+                }
+                Some(guard.approval_binding(snapshot.credential()))
+            };
+            if credential_binding.is_some() && *credential_binding != current {
+                return Err(invalid(
+                    "credential definition changed; preview without the old credential_binding and acknowledgment",
+                ));
+            }
+            *credential_binding = current;
+        }
+    }
+    candidate.valid().map_err(|e| invalid(e.to_string()))?;
     let dependencies = candidate
         .dependencies(policy)
         .map_err(|e| invalid(e.to_string()))?;
@@ -75,7 +140,7 @@ pub(crate) fn preview(policy: &Policy, name: &str, proposal: &Proposal) -> Resul
         acknowledgment: revision.clone(),
         revision,
         warnings,
-        effect: "Any one named reviewer may select a canonical option wholly inside this delegation. Network and credential access is bounded to the current worker run. Optional grant expiry is separate from delegation validity and pending-request expiry. Gateway once uses the existing reservation and response-completion rules.",
+        effect: "Any one named reviewer may select a canonical option wholly inside this delegation. Network, credential and service authorization access is bounded to the current worker run. Optional grant expiry is separate from delegation validity and pending-request expiry. Gateway once uses the existing reservation and response-completion rules.",
         revocation: "Changing or revoking this delegation invalidates its derived access. Independently sourced permission remains. Future authorizations are rechecked. An admitted opaque tunnel may continue; revocation cannot undo upstream effects. Inspect network, credential and service permissions for residual access."
     });
     preview["independent_access"] = json!(independent);
@@ -97,7 +162,7 @@ pub(crate) fn apply(state: &crate::RuntimeState, name: &str, proposal: Proposal)
         let saved = current
             .reload_native_source(source, path)
             .map_err(|e| invalid(e.to_string()))?;
-        let view = preview(&saved, name, &proposal)?;
+        let view = preview(&saved, name, &proposal, state)?;
         if proposal.delegation.revision() != view["revision"].as_str().unwrap_or("")
             || proposal.delegation.acknowledgment.as_deref() != view["revision"].as_str()
         {
@@ -142,7 +207,7 @@ pub(crate) fn revoke(
 fn remove_issued(document: &mut toml_edit::DocumentMut, source: &str, name: &str) -> Result<()> {
     let value = crate::policy::parse_toml_document(source).map_err(|e| invalid(e.to_string()))?;
     for (agent, fields) in value["agents"].as_object().into_iter().flatten() {
-        for collection in ["network_grants", "credential_grants"] {
+        for collection in ["network_grants", "credential_grants", "service_grants"] {
             for (id, raw) in fields[collection].as_object().into_iter().flatten() {
                 let issued = raw.as_str().and_then(|s| {
                     serde_json::from_str::<crate::policy::delegation::IssuedAccess>(s).ok()

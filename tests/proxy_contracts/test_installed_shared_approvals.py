@@ -33,8 +33,9 @@ def helper_instance(tmp_path_factory, monkeypatch):
     directory = tmp_path_factory.mktemp("u6")
     (directory / "operator-token").write_text("synthetic-helper-admin-token")
     fixture = (Path(__file__).parents[1] / "blackbox/fixtures/delegated-approval-service.yaml").read_text()
+    service_fixture = (Path(__file__).parents[1] / "blackbox/fixtures/delegated-service-authorization.yaml").read_text()
     with native_instance(directory, services=True, agent_api=True,
-                         service_sources={"delegated-fixture.yaml": fixture},
+                         service_sources={"delegated-fixture.yaml": fixture, "delegated-service-fixture.yaml": service_fixture},
                          agent_addresses={"worker": "10.0.0.2", "helper": "10.0.0.3"},
                          extra_config='readiness_file="data/selected-ready.json"\nadmin_api_token_file="../operator-token"\n') as instance:
         root = instance.root
@@ -103,7 +104,7 @@ def test_helper_consumer_refuses_unowned_runtime_before_guest_effects(helper_ins
 
 
 @pytest.mark.parametrize("control", ["clean", "different_launch", "wrong_guest_profile", "guest_cleanup_failure", "delegated", "delegated_lifecycle",
-    "lifecycle_remainder", "lifecycle_crash_only", "delegated_clients"])
+    "lifecycle_remainder", "lifecycle_crash_only", "delegated_clients", "delegated_service"])
 def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(helper_instance, monkeypatch, capsys, control, request):
     instance, args = helper_instance
     root = instance.root
@@ -126,15 +127,16 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
     crash_only = control == "lifecycle_crash_only"
     crashing = lifecycle and not remaining
     clients = control == "delegated_clients"
-    if control == "delegated" or lifecycle or clients:
+    if control in {"delegated", "delegated_service"} or lifecycle or clients:
         if sys.platform != "linux":
             pytest.skip("controlled run backend uses the Linux birth/argv boundary")
         args.delegated = control == "delegated"
+        args.delegated_service = control == "delegated_service"
         args.delegated_lifecycle = lifecycle
         args.delegated_lifecycle_remainder = remaining
         args.delegated_lifecycle_crash_only = crash_only
         args.delegated_clients = clients
-        args.real_helper, args.model_unavailable = args.delegated, False
+        args.real_helper, args.model_unavailable = args.delegated or args.delegated_service, False
         generation = "0123456789abcdef0123456789abcdef"
         backend = subprocess.Popen(["runsc-sandbox", "-c", "import time; time.sleep(300)", "boot",
             "safeyolo-" + generation, "--root", str(root / "run")], executable=sys.executable)
@@ -159,7 +161,7 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
         nats = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
         started = instance.cli("coord", "start", *(["--binary", nats] if nats else []))
         assert started.returncode == 0, started.stderr
-        if control == "delegated" or clients:
+        if control in {"delegated", "delegated_service"} or clients:
             for operands in (("coord", "room", "create", "helper-agent"),
                              ("coord", "grant", "helper-agent", args.helper)):
                 assert instance.cli(*operands).returncode == 0
@@ -242,7 +244,7 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
         return ["controlled-guest", name, text]
 
     def model_turn(arguments, events_path, **kwargs):
-        if control == "delegated":
+        if control in {"delegated", "delegated_service"}:
             # The reviewer and guest transport are deliberate doubles here.
             # The calls below execute the actual native attention, canonical
             # read, decision and permission boundaries used by the runner.
@@ -260,7 +262,7 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
                     value = json.loads(subprocess.check_output([str(root / "bin/safeyolo-coord"), "call", tool],
                         input=json.dumps(data), text=True, env=environment, timeout=30))
                     return value
-                for _ in range(3):
+                for _ in range(1 if control == "delegated_service" else 3):
                     attention = call("wait_for_coord", {"since_sequence": cursor, "timeout_seconds": 20, "limit": 1})
                     assert len(attention["objects"]) == 1
                     cursor = attention["next_cursor"]
@@ -336,7 +338,7 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
         monkeypatch.setattr(approvals, "wait_for_operator", operator_choice)
     original = instance.policy.read_bytes()
     try:
-        successful = control in {"clean", "delegated", "delegated_lifecycle", "lifecycle_remainder", "lifecycle_crash_only", "delegated_clients"}
+        successful = control in {"clean", "delegated", "delegated_lifecycle", "lifecycle_remainder", "lifecycle_crash_only", "delegated_clients", "delegated_service"}
         if successful:
             approvals.run(args)
         else:
@@ -349,7 +351,20 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
         assert bool(final) == successful
         if final:
             result = final[0]
-            if control == "delegated" or clients:
+            if control == "delegated_service":
+                assert result["reviewer_launch_id"] == "controlled-reviewer"
+                assert len(result["exchanges"]) == 1
+                exchange = result["exchanges"][0]
+                assert exchange["type"] == "service"
+                assert exchange["decision"]["action"]["kind"] == "service_authorize"
+                assert exchange["decision"]["result"]["issued_access"]["beneficiary"]["agent_id"] == ids[args.worker]
+                assert exchange["resource_refusal"]["status"] == 403
+                assert exchange["risk_refusal"]["status"] == 428
+                assert not list((root / "data").glob("sy1349-*.value"))
+                credentials = instance.cli("credentials", "list")
+                assert credentials.returncode == 0, credentials.stderr
+                assert "sy1349-" not in credentials.stdout
+            elif control == "delegated" or clients:
                 assert [exchange["type"] for exchange in result["exchanges"]] == ["network", "credential", "gateway"]
                 if clients:
                     assert [exchange["decision"]["option"] for exchange in result["exchanges"]] == ["run", "run", "delegated_once"]

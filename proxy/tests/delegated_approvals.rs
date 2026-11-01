@@ -7,6 +7,8 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     time::timeout,
 };
+#[path = "delegated_approvals/service_authorization.rs"]
+mod service_authorization;
 #[allow(dead_code)]
 #[path = "support/shared_approvals.rs"]
 mod shared_approval_fixture;

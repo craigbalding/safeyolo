@@ -131,7 +131,55 @@ pub(super) fn request_access(
         );
     };
 
-    if let Some(contract) = &capability.contract {
+    let scoped = ["account", "credential", "resources"]
+        .iter()
+        .any(|key| fields.contains_key(*key));
+    let requested_scope = if scoped {
+        if fields.keys().any(|key| {
+            ![
+                "service",
+                "capability",
+                "account",
+                "credential",
+                "resources",
+                "reason",
+            ]
+            .contains(&key.as_str())
+        }) {
+            return response(
+                400,
+                json!({"error":"unsupported service authorization field or bound"}),
+            );
+        }
+        let resources = fields.get("resources").and_then(|value| value.json().ok());
+        let (Some(account), Some(credential), Some(resources)) = (
+            required_text(fields, "account"),
+            optional_text(fields, "credential"),
+            resources,
+        ) else {
+            return response(
+                400,
+                json!({"error":"run service authorization requires account, credential reference and resources"}),
+            );
+        };
+        if resources.as_array().is_none_or(|paths| {
+            paths.is_empty()
+                || paths.iter().any(|path| {
+                    path.as_str()
+                        .is_none_or(|path| !crate::policy::delegation::valid_resource(path))
+                })
+        }) || service.auth.is_some() == credential.is_empty()
+        {
+            return response(
+                400,
+                json!({"error":"select explicit resource paths or patterns and a credential matching the service authentication"}),
+            );
+        }
+        Some(json!({"account":account,"credential":credential,"resources":resources}))
+    } else {
+        None
+    };
+    if !scoped && let Some(contract) = &capability.contract {
         return contract_challenge(service_name, capability_name, contract);
     }
     let description = service
@@ -148,7 +196,7 @@ pub(super) fn request_access(
         .and_then(|capability| capability.get("description"))
         .cloned()
         .unwrap_or_else(|| Value::String(String::new()));
-    let scope_hint = json!({
+    let mut scope_hint = json!({
         "service":service_name,
         "capability":capability_name,
         "description":description,
@@ -156,6 +204,12 @@ pub(super) fn request_access(
         "reason":reason,
         "proposed_lifetime":"session",
     });
+    if let Some(scope) = requested_scope {
+        scope_hint
+            .as_object_mut()
+            .expect("scope")
+            .extend(scope.as_object().expect("scope").clone());
+    }
     let summary = if reason.is_empty() {
         format!("{agent_name} requests {service_name}/{capability_name}")
     } else {

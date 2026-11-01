@@ -100,6 +100,23 @@ impl Policy {
     ) -> Option<String> {
         let native = self.native.as_ref()?;
         let credential = kind == "credential_allow";
+        if kind == "service_authorize" {
+            // Generated service routes are the effect of this approval. Bind
+            // its authority to authored rules and definitions, not its own effect.
+            let mut value = self.gateway_approval_definition(agent, service?)?;
+            value["routing_revision"] = json!(self.delegated_gateway_revision(agent, service?)?);
+            for key in ["permissions", "exceptions", "risk", "budget", "gateway"] {
+                value[key] = native.authored[key].clone();
+            }
+            value["task"] = self
+                .task
+                .as_ref()
+                .map(|task| task.baseline.value.clone())
+                .unwrap_or(Value::Null);
+            let revision = crate::approvals::pending::digest(&value);
+            crate::credentials::wipe_json(&mut value);
+            return Some(revision);
+        }
         let relevant = |baseline: &super::Baseline| {
             let permissions: Vec<_> = baseline.value["permissions"]
                 .as_array()?
@@ -171,7 +188,11 @@ impl Policy {
             .as_object()
             .into_iter()
             .flat_map(|tokens| tokens.iter())
-            .filter(|(_, token)| token["agent"] == agent && token["service"] == service)
+            .filter(|(_, token)| {
+                token["agent"] == agent
+                    && token["service"] == service
+                    && token.get("delegated").is_none()
+            })
             .map(|(_, token)| token)
             .collect();
         tokens.sort_by_key(|token| crate::approvals::pending::digest(token));
@@ -195,7 +216,8 @@ impl Policy {
     pub(crate) fn delegated_gateway_revision(&self, agent: &str, service: &str) -> Option<String> {
         let mut value = self.gateway_approval_definition(agent, service)?;
         value["host_map"] = json!(
-            self.gateway()?.canonical_gateway()["host_map"]
+            self.gateway()?
+                .operator_host_map()
                 .as_object()
                 .into_iter()
                 .flatten()

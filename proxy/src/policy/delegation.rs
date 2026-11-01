@@ -29,6 +29,15 @@ pub(crate) enum Scope {
         host: String,
         fingerprints: Vec<String>,
     },
+    ServiceAuthorization {
+        service: String,
+        capability: String,
+        account: String,
+        credential: String,
+        #[serde(default)]
+        credential_binding: Option<String>,
+        resources: Vec<String>,
+    },
     GatewayRoute {
         service: String,
         capability: String,
@@ -74,6 +83,12 @@ impl Delegation {
                     if *all_ports { warnings.push(format!("Network destination {host} permits every destination port. Port 443 does not establish safe use.")); }
                 }
                 Scope::Credential { .. } => warnings.push("Credential destination access permits all methods, paths and ports at the selected destination. It does not limit an API operation or grant network access.".into()),
+                Scope::ServiceAuthorization { resources, .. } => {
+                    warnings.push("Service authorization permits the selected capability and resource paths with the selected account and credential for the worker run. Contract binding, risky-route approval, network policy and credential resolution remain separate checks. It does not bind a request payload.".into());
+                    if resources.iter().any(|path| path.contains(['*', '?', '['])) {
+                        warnings.push("Service resource patterns include every matching current or future path. A capability name or GET method does not establish business safety.".into());
+                    }
+                }
                 Scope::GatewayRoute { method, path, .. } => {
                     if method=="*" || path.contains(['*','?','[']) { warnings.push("The gateway envelope includes multiple or future matching routes. Each issued grant still binds the canonical method and exact path; payload effects remain unknown.".into()); }
                     warnings.push("A gateway route grant covers its supported method and path. It does not bind a payload or undo an upstream write. Capability and contract checks still apply.".into());
@@ -168,6 +183,28 @@ impl Delegation {
                         ));
                     }
                 }
+                Scope::ServiceAuthorization {
+                    service,
+                    capability,
+                    account,
+                    credential,
+                    credential_binding,
+                    resources,
+                } => {
+                    if service.is_empty()
+                        || capability.is_empty()
+                        || account.is_empty()
+                        || resources.is_empty()
+                        || resources.iter().any(|path| !valid_resource(path))
+                        || (credential.is_empty() && credential_binding.is_some())
+                        || (!credential.is_empty()
+                            && credential_binding.as_deref().is_none_or(str::is_empty))
+                    {
+                        return Err(invalid(
+                            "service authorization requires exact service, capability, account, credential reference and explicit resource paths or patterns",
+                        ));
+                    }
+                }
                 Scope::GatewayRoute {
                     service,
                     capability,
@@ -221,6 +258,16 @@ impl Delegation {
                 self.scopes.iter().any(|scope|matches!(scope,Scope::Credential {host,fingerprints} if a["host"]==*host && value.as_str().is_some_and(|v|fingerprints.iter().any(|p|p==v))))
             }));
         }
+        if a["kind"] == "service_authorize" && option == "run" {
+            return a["resources"].as_array().is_some_and(|resources| !resources.is_empty() && resources.iter().all(|resource| {
+                resource.as_str().is_some_and(|resource| self.scopes.iter().any(|scope| {
+                    matches!(scope, Scope::ServiceAuthorization {service, capability, account, credential, credential_binding, resources}
+                        if a["service"] == *service && a["capability"] == *capability && a["account"] == *account
+                            && a["credential"] == *credential && a["credential_binding"].as_str() == credential_binding.as_deref()
+                            && resources.iter().any(|pattern| resource_within(resource, pattern)))
+                }))
+            }));
+        }
         self.scopes.iter().any(|scope| match scope {
             Scope::NetworkEgress {
                 host,
@@ -254,6 +301,7 @@ impl Delegation {
                             })
                     })
             }
+            Scope::ServiceAuthorization { .. } => false,
             Scope::GatewayRoute {
                 service,
                 capability,
@@ -274,6 +322,20 @@ impl Delegation {
             }
         })
     }
+}
+
+pub(crate) fn valid_resource(path: &str) -> bool {
+    (path == "*" || path.starts_with('/'))
+        && !path.contains(['#', '\r', '\n'])
+        && !crate::contracts::reject_path_tricks(path)
+}
+
+// A requested pattern is supported when it is the acknowledged pattern itself.
+// Exact paths can be narrower. Do not guess containment between arbitrary globs.
+fn resource_within(resource: &str, pattern: &str) -> bool {
+    resource == pattern
+        || (!resource.contains(['*', '?', '['])
+            && crate::services::resource_matches(resource, pattern))
 }
 
 pub(crate) fn expired(value: Option<&str>) -> bool {
@@ -360,6 +422,7 @@ impl IssuedAccess {
         let kind = match self.action["kind"].as_str() {
             Some("network_allow") => "network_grants",
             Some("credential_allow") => "credential_grants",
+            Some("service_authorize") => "service_grants",
             // Gateway permissions belong to the gateway grant store. Its
             // caller checks the recorded grant and this authority together.
             Some("gateway_route") => return true,
@@ -469,7 +532,7 @@ impl Policy {
             return vec![];
         };
         native.authored["agents"].as_object().into_iter().flat_map(|agents| agents.keys())
-            .flat_map(|agent| ["network_grants","credential_grants"].into_iter().flat_map(move |kind| {
+            .flat_map(|agent| ["network_grants","credential_grants","service_grants"].into_iter().flat_map(move |kind| {
                 self.issued_access(agent,kind).into_iter().map(move |grant| json!({"kind":kind,"active":grant.active(self),"permission":grant}))
             })).collect()
     }
@@ -490,6 +553,19 @@ impl IssuedAccess {
                 "network_action",
             ],
             "credential_allow" => &["kind", "agent", "agent_id", "host", "credentials", "run"],
+            "service_authorize" => &[
+                "kind",
+                "agent",
+                "agent_id",
+                "service",
+                "capability",
+                "host",
+                "account",
+                "credential",
+                "credential_binding",
+                "resources",
+                "run",
+            ],
             "gateway_route" => &[
                 "kind",
                 "agent",
@@ -537,6 +613,26 @@ impl IssuedAccess {
                 "issued permission has unsupported scope, identity or lifetime",
             ));
         }
+        if kind == "service_authorize" {
+            let text = |key: &str| self.action[key].as_str();
+            if ["service", "capability", "account", "host"]
+                .iter()
+                .any(|key| text(key).is_none_or(str::is_empty))
+                || text("credential").is_none()
+                || (text("credential") != Some("")
+                    && text("credential_binding").is_none_or(str::is_empty))
+                || self.action["resources"].as_array().is_none_or(|paths| {
+                    paths.is_empty()
+                        || paths
+                            .iter()
+                            .any(|path| path.as_str().is_none_or(|path| !valid_resource(path)))
+                })
+            {
+                return Err(invalid(
+                    "issued service authorization has unsupported credential or resource scope",
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -546,6 +642,7 @@ pub(crate) fn validate_grants(document: &Value) -> Result<()> {
         for (collection, kind) in [
             ("network_grants", "network_allow"),
             ("credential_grants", "credential_allow"),
+            ("service_grants", "service_authorize"),
         ] {
             if let Some(values) = fields.get(collection) {
                 for (id, value) in super::object(values, collection)? {
@@ -621,7 +718,9 @@ impl Delegation {
     pub(crate) fn dependencies(&self, policy: &Policy) -> Result<BTreeMap<String, String>> {
         let mut result = BTreeMap::new();
         for scope in &self.scopes {
-            if let Scope::GatewayRoute { service, .. } = scope {
+            if let Scope::GatewayRoute { service, .. }
+            | Scope::ServiceAuthorization { service, .. } = scope
+            {
                 for agent in &self.beneficiaries {
                     let revision = policy
                         .delegated_gateway_revision(&agent.name, service)
@@ -731,6 +830,8 @@ impl Policy {
                     }
                     Scope::NetworkEgress {..}=>access.push(json!({"beneficiary":beneficiary,"type":"network_egress","independent_access":"Cannot enumerate all matching destinations or ports. Existing configured permissions remain authoritative and survive revocation."})),
                     Scope::Credential {..}=>access.push(json!({"beneficiary":beneficiary,"type":"credential","independent_access":"Existing shared fingerprint/type and destination permissions survive revocation. Full scope depends on the observed credential classification and current policy; this preview does not infer an API operation limit."})),
+                    Scope::ServiceAuthorization {service,capability,..}=>access.push(json!({"beneficiary":beneficiary,"type":"service_authorization","service":service,"capability":capability,
+                        "independent_access":"Existing operator service authorization survives delegation revocation. Contract bindings and risky-route grants do not themselves authorize service access."})),
                     Scope::GatewayRoute {service,capability,..}=>access.push(json!({"beneficiary":beneficiary,"type":"gateway_route","service":service,"capability":capability,
                         "independent_access":"Existing service authorization, contract bindings and independently sourced route grants survive revocation. A delegation does not add service authorization."})),
                 }
