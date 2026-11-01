@@ -15,6 +15,14 @@ pub(super) fn plumb_and_desktop(path: &Path) -> Vec<Value> {
     struct EventName<'a> {
         #[serde(borrow)]
         event: std::borrow::Cow<'a, str>,
+        #[serde(borrow)]
+        details: Option<Destination<'a>>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Destination<'a> {
+        #[serde(borrow)]
+        destination: Option<std::borrow::Cow<'a, str>>,
     }
 
     let Ok(file) = std::fs::File::open(path) else {
@@ -50,9 +58,15 @@ pub(super) fn plumb_and_desktop(path: &Path) -> Vec<Value> {
                 | "plumb.denied"
                 | "agent.desktop_present_requested"
                 | "admin.desktop_presented"
-        ) && let Ok(event) = serde_json::from_str::<Value>(&line)
+        ) || (matches!(name.event.as_ref(), "admin.denial" | "admin.approval_added")
+            && name
+                .details
+                .and_then(|details| details.destination)
+                .is_some_and(|destination| destination.starts_with("desktop:")))
         {
-            events.push_back((sequence, event));
+            if let Ok(event) = serde_json::from_str::<Value>(&line) {
+                events.push_back((sequence, event));
+            }
         }
     }
 
@@ -77,14 +91,26 @@ pub(super) fn plumb_and_desktop(path: &Path) -> Vec<Value> {
                     resolved.insert(key);
                 }
             }
-            Some("admin.desktop_presented") => {
-                let Some(agent_id) = event["details"]["agent_id"]
-                    .as_str()
-                    .filter(|id| !id.is_empty())
-                else {
+            Some("admin.desktop_presented" | "admin.denial" | "admin.approval_added") => {
+                let key = if event["event"] == "admin.desktop_presented" {
+                    event["details"]["agent_id"]
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .map(|id| format!("desktop.present:desktop:{id}"))
+                } else {
+                    let credentials = &event["details"]["cred_id"];
+                    let desktop = credentials == "desktop.present"
+                        || credentials.as_array().is_some_and(|values| {
+                            values.iter().any(|value| value == "desktop.present")
+                        });
+                    event["details"]["destination"]
+                        .as_str()
+                        .filter(|_| desktop)
+                        .map(|destination| format!("desktop.present:{destination}"))
+                };
+                let Some(key) = key else {
                     continue;
                 };
-                let key = format!("desktop.present:desktop:{agent_id}");
                 if prompts.get(&key).is_some_and(|(_, prompt)| {
                     event["details"]["approval_request_id"]
                         .as_str()

@@ -938,6 +938,58 @@ async fn terminal_approval_replay_does_not_restore_changed_policy_even_without_a
 }
 
 #[tokio::test]
+async fn desktop_denial_resolves_only_its_request_beside_canonical_approvals() {
+    let fixture = Fixture::new().await;
+    let network = fixture.network("worker", fixture.address).await.id();
+    fixture.network("worker", fixture.address).await;
+    let desktop = fixture
+        .agent("worker", "POST", "/desktop/present", Some(json!({})))
+        .await;
+    assert_eq!(desktop.status, 202);
+    let id = desktop.json()["request_id"].as_str().unwrap().to_owned();
+    let listed = fixture.admin("GET", "/admin/approvals", None).await.json();
+    let approvals = listed["approvals"].as_array().unwrap();
+    assert_eq!(approvals.len(), 2);
+    assert_eq!(approvals[0]["request_id"], network);
+    let denial = json!({"destination":approvals[1]["approval"]["target"],
+        "cred_id":"desktop.present","approval_request_id":"req-an-older-request"});
+    assert_eq!(
+        fixture
+            .admin("POST", "/admin/policy/baseline/deny", Some(denial.clone()))
+            .await
+            .status,
+        200
+    );
+    assert_eq!(
+        fixture.admin("GET", "/admin/approvals", None).await.json()["approvals"],
+        listed["approvals"]
+    );
+    let mut denial = denial;
+    denial["approval_request_id"] = json!(id);
+    assert_eq!(
+        fixture
+            .admin("POST", "/admin/policy/baseline/deny", Some(denial))
+            .await
+            .status,
+        200
+    );
+    let listed = fixture.admin("GET", "/admin/approvals", None).await.json();
+    assert_eq!(listed["approvals"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["approvals"][0]["request_id"], network);
+    let retry = fixture
+        .agent("worker", "POST", "/desktop/present", Some(json!({})))
+        .await;
+    assert_eq!(retry.status, 202);
+    let listed = fixture.admin("GET", "/admin/approvals", None).await.json();
+    assert_eq!(listed["approvals"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        listed["approvals"][1]["request_id"],
+        retry.json()["request_id"]
+    );
+    fixture.stop().await;
+}
+
+#[tokio::test]
 async fn credential_action_binding_uses_current_canonical_request() {
     let fixture = Fixture::new().await;
     let source = fixture

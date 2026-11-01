@@ -3324,6 +3324,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(json!(approvals::plumb_and_desktop(&path)), json!([retry]));
+
+        // The generic desktop approval consumer accepts a credential list.
+        let approved = json!({"event":"admin.approval_added", "details":{
+            "destination":"desktop:alice", "cred_id":["desktop.present"]}});
+        std::fs::write(&path, format!("{retry}\n{approved}\n")).unwrap();
+        assert!(approvals::plumb_and_desktop(&path).is_empty());
+        std::fs::write(&path, format!("{retry}\n{approved}\n{request}\n")).unwrap();
+        assert_eq!(json!(approvals::plumb_and_desktop(&path)), json!([request]));
     }
 
     #[test]
