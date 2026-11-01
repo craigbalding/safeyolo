@@ -279,6 +279,126 @@ fn success(output: Output) -> Value {
 }
 
 #[test]
+fn live_stderr_snapshots_preserve_the_command_and_terminal_diagnostics() {
+    let guest = Guest::new();
+    let first = b"\x1b[31mlive diagnostic\x1b[0m\n";
+    let suffix = b"\x1b]0;hidden-title\x07second diagnostic\x01\n";
+    let mut second = vec![b'x'; 20_000];
+    second.extend_from_slice(suffix);
+    let final_bytes = b"terminal diagnostic\n";
+    fs::write(guest.directory.path().join("first"), first).unwrap();
+    fs::write(guest.directory.path().join("second"), &second).unwrap();
+    fs::write(guest.directory.path().join("final"), final_bytes).unwrap();
+    guest.publish(
+        "cat first >&2; while test ! -f append; do sleep 0.02; done; \
+         cat second >&2; while test ! -f finish; do sleep 0.02; done; \
+         cat final >&2; exit 23",
+    );
+    let mut supervisor = Supervisor::start(&guest);
+    let original = guest.wait(|state| state["state"] == "running");
+    let mut raw = Vec::from(first);
+    for (expected, length) in [
+        ("live diagnostic\n".to_owned(), first.len()),
+        (
+            "x".repeat(16 * 1024 - suffix.len()) + "second diagnostic\\x01\n",
+            first.len() + second.len(),
+        ),
+    ] {
+        guest.wait(|state| state["last_stderr_bytes"] == length);
+        let checked = success(
+            guest
+                .command()
+                .args(["supervise", "check"])
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(checked["state"], "running");
+        for key in [
+            "command_pid",
+            "command_start_token",
+            "supervisor_pid",
+            "supervisor_start_token",
+            "supervision_id",
+            "generation",
+            "restart_count",
+        ] {
+            assert_eq!(checked[key], original[key], "changed {key}");
+        }
+        assert!(supervisor.0.try_wait().unwrap().is_none());
+        assert_eq!(fs::metadata(&guest.state).unwrap().mode() & 0o777, 0o600);
+        assert_eq!(checked["last_stderr"], expected);
+        assert_eq!(checked["last_stderr_truncated"], length > 16 * 1024);
+        assert_eq!(
+            checked["last_stderr_sha256"],
+            ring::digest::digest(&ring::digest::SHA256, &raw)
+                .as_ref()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        if length == first.len() {
+            raw.extend_from_slice(&second);
+            fs::write(guest.directory.path().join("append"), b"").unwrap();
+        }
+    }
+    fs::write(guest.directory.path().join("finish"), b"").unwrap();
+    guest.wait(|state| state["state"] == "restarting" && state["last_exit_code"] == 23);
+    supervisor.stop();
+    let stopped = success(
+        guest
+            .command()
+            .args(["supervise", "check"])
+            .output()
+            .unwrap(),
+    );
+    raw.extend_from_slice(final_bytes);
+    assert_eq!(stopped["restart_count"], 1);
+    assert_eq!(stopped["last_exit_code"], 23);
+    assert_eq!(stopped["last_exit_reason"], "command-exit-nonzero");
+    assert_eq!(stopped["last_stderr_bytes"], raw.len());
+    assert_eq!(stopped["last_stderr_truncated"], true);
+    assert_eq!(
+        stopped["last_stderr"],
+        "x".repeat(16 * 1024 - suffix.len() - final_bytes.len())
+            + "second diagnostic\\x01\nterminal diagnostic\n"
+    );
+    assert_eq!(
+        stopped["last_stderr_sha256"],
+        ring::digest::digest(&ring::digest::SHA256, &raw)
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+}
+
+#[test]
+fn live_stderr_does_not_overwrite_replacement_supervision_or_run() {
+    for key in ["supervision_id", "generation"] {
+        let guest = Guest::new();
+        guest.publish("echo owned-diagnostic >&2; exec sleep 60");
+        let mut supervisor = Supervisor::start(&guest);
+        let mut replacement = guest.wait(|state| state["last_stderr"] == "owned-diagnostic\n");
+        replacement[key] = json!("replacement");
+        replacement["last_stderr"] = json!("replacement-diagnostic");
+        let original = serde_json::to_vec(&replacement).unwrap();
+        let temporary = guest.state.with_extension("replacement");
+        fs::write(&temporary, &original).unwrap();
+        fs::rename(temporary, &guest.state).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = supervisor.0.try_wait().unwrap() {
+                assert!(!status.success());
+                break;
+            }
+            assert!(Instant::now() < deadline, "old supervisor did not stop");
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(fs::read(&guest.state).unwrap(), original);
+    }
+}
+
+#[test]
 fn marker_crash_replacement_and_intentional_stop() {
     let guest = Guest::new();
     guest.publish("n=0; test ! -f attempts || n=$(cat attempts); n=$((n+1)); echo $n > attempts; \
@@ -296,6 +416,12 @@ fn marker_crash_replacement_and_intentional_stop() {
     assert!(guest.directory.path().join("marker").is_file());
     assert_eq!(running["last_exit_code"], 37);
     assert_eq!(running["last_stderr"], "configured-crash\n");
+    // A quiet replacement keeps the prior failure diagnostic across heartbeats.
+    let heartbeat = running["heartbeat_at"].as_f64().unwrap();
+    let later = guest.wait(|state| state["heartbeat_at"].as_f64().unwrap() > heartbeat);
+    assert_eq!(later["last_stderr"], running["last_stderr"]);
+    assert_eq!(later["last_stderr_bytes"], running["last_stderr_bytes"]);
+    assert_eq!(later["last_stderr_sha256"], running["last_stderr_sha256"]);
     assert_eq!(
         success(
             guest

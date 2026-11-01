@@ -108,12 +108,13 @@ impl Tail {
             self.data.drain(..self.data.len() - TAIL_BYTES);
         }
     }
-    fn finish(self, value: &mut Value) {
+    fn snapshot(&self, value: &mut Value) {
         value["last_stderr"] = json!(sanitize(&String::from_utf8_lossy(&self.data)));
         value["last_stderr_bytes"] = json!(self.total);
         value["last_stderr_truncated"] = json!(self.total > TAIL_BYTES as u64);
         value["last_stderr_sha256"] = json!(
             self.digest
+                .clone()
                 .finish()
                 .as_ref()
                 .iter()
@@ -291,11 +292,15 @@ fn attempt(paths: &Paths, value: &mut Value) -> Result<std::process::ExitStatus,
             }
             if let Some(status) = child.try_wait()? {
                 drain(&mut child, &mut tail)?;
-                tail.finish(value);
+                tail.snapshot(value);
                 return Ok(status);
             }
             if heartbeat.elapsed() >= Duration::from_secs(1) {
                 value["heartbeat_at"] = json!(now());
+                // Retain the previous exit diagnostic until this attempt emits stderr.
+                if tail.total > 0 {
+                    tail.snapshot(value);
+                }
                 save(paths, value)?;
                 heartbeat = Instant::now();
             }
