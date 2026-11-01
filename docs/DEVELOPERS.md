@@ -1122,7 +1122,7 @@ it does not replace independent acceptance of the behaviour being changed.
 For a Python dependency repair, run the focused dependency controls from a
 Linux repository checkout with Python 3.12 or 3.13 and Bash. Install fish and
 zsh to exercise their activation controls; the tests report skips when a shell
-is absent.
+is absent. Run as an ordinary user; root skips the failed-deletion control.
 Use the configured proxy and certificate authority for package downloads.
 These commands create the two frozen environments and run the controls:
 
@@ -1137,7 +1137,20 @@ Expected result: both test runs pass. The controls exercise JSON Web Token
 (JWT) verification, Semgrep and Model Context Protocol (MCP) authentication,
 HTTPS proxy certificate policy, chunked response parsing, virtualenv
 configuration, repeated activation-template substitution, fish quoting, zsh
-prompt substitution and Bash prompt decoding and expansion. They also exercise
+prompt substitution and Bash prompt decoding and expansion. The virtualenv
+controls also execute generated POSIX launchers at paths with spaces, long
+shebangs, quotes and backslashes through both seeders. They check rewritten
+pip-seeder RECORD hashes, failed symlink deletion as an ordinary user, and
+creation over prepared executable and library directory links. The filesystem
+controls also exercise existing, dangling and hard-linked generated files,
+current umask after a warm seed cache, metadata deletion paths, and
+stdlib-venv configuration boundaries. External target content and modes must
+stay unchanged. Activation controls cover Bash 4.2 compatibility and xonsh
+literals decoded as UTF-8, GBK and Big5. The xonsh control checks generated
+literals; it does not run a xonsh shell. Download controls reject altered bytes
+before cache promotion or pip-seeder installation, even when the downloader
+reports a different, valid file in its output.
+The acceptance dependency controls also exercise
 OpenTelemetry propagation limits, whitespace parsing and Semgrep trace/log
 export with requests and threading instrumentation. HTTP fixtures
 listen on disposable loopback ports and close after each test. The seed-wheel
@@ -1146,16 +1159,27 @@ published PyPI digest, and checks rejection after altering the downloaded
 file. The tests remove their temporary files.
 
 A lockfile update changes the tool selected by the next frozen sync. It does
-not replace activation scripts in existing environments. After the development
-sync, run `uv run --frozen --no-sync pre-commit clean`, then the normal hook
-command to recreate cached hook environments. Recreate other environments made
-by virtualenv with the updated tool and their normal creation command.
+not replace activation scripts or launchers in existing environments. After
+the development sync, run `uv run --frozen --no-sync pre-commit clean`, then
+the normal hook command to recreate cached hook environments. Recreate other
+environments made by virtualenv with the updated tool and their normal
+creation command.
+
+Virtualenv repairs initial seed launchers. It does not patch pip's vendored
+distlib. Virtualenv 21.14.13 bundles pip 26.2.2 with vendored distlib 0.4.2.
+A later pip installation,
+reinstallation or upgrade can generate an unsafe POSIX launcher again when an
+attacker-influenced interpreter path contains shell syntax and needs a shell
+wrapper. Spaces or a long shebang select that wrapper. Running the launcher
+then interprets the path as shell syntax. Environment recreation repairs the
+initial launchers only; it does not protect later pip writes.
 
 These Linux controls do not execute Windows batch activation. Upstream
-virtualenv skips downloaded-wheel digest verification for custom indexes or
-missing PyPI digest metadata. A passing seed-wheel control establishes the
-default-index path with published metadata; it does not establish integrity
-for those skipped paths.
+virtualenv retains its custom-index exceptions to PyPI digest comparison.
+Missing default-index digest metadata refuses the downloaded bytes; a bundle
+request can then fall back to the verified embedded wheel. The controls check
+that fallback and the default-index path with published metadata. They do not
+establish integrity for custom-index exceptions.
 
 ### HTTP/2 gate verification
 
