@@ -948,7 +948,7 @@ impl Supervisor {
         }
         candidate.safe_cursor = next;
         self.select_repair(&mut candidate)?;
-        if added > 0 {
+        if added > 0 && candidate.phase != "uncertain" {
             candidate.phase = "accepted".into();
         }
         candidate.save(&self.state_path)?;

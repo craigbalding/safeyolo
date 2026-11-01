@@ -1065,6 +1065,7 @@ def test_full_checkpoint_without_progress_retains_uncertainty_and_backoff(binary
 
 def test_information_does_not_mask_an_uncertain_send_for_ready_work(binary, fixture):
     coord, state, harness, capture, original = retained_tasks(binary, fixture, 1)
+    coord.page = {"edges": [], "next_cursor": original["safe_cursor"]}
     saved = json.loads(state.read_text())
     saved["awaiting_handoffs"] = []
     info_id = f"attn-{2000:032x}"
@@ -1134,13 +1135,17 @@ def test_information_preserves_unresolved_send_with_suspended_parent(binary, fix
         assert restarted["consecutive_failures"] >= saved["consecutive_failures"]
         assert restarted["awaiting_handoffs"] == saved["awaiting_handoffs"]
         assert len(list(capture.glob("prompt-*"))) == 1
-        restarted["in_flight"].append({**saved["in_flight"][0], "attention_id": f"attn-{2001:032x}",
-                                      "requires_terminal": False, "body": f"CONTEXT target={TARGET}"})
-        subprocess.run([str(binary), "write-state", str(state)], input=json.dumps(restarted), text=True, check=True)
+        info_id = f"attn-{2001:032x}"
+        edge = {**EDGE, "attention_id": info_id, "object_id": "msg-new-info", "revision_or_sequence": 43}
+        coord.page = {"edges": [edge], "next_cursor": restarted["safe_cursor"] + 1}
+        coord.objects[info_id] = {"edge": edge, "object": {
+            **OBJECT, "msg_id": edge["object_id"], "sequence": 43, "body": f"CONTEXT target={TARGET}"}}
         assert run(binary, fixture, *harness_args, confirm_fresh_identity=False).returncode != 0
         restarted = json.loads(state.read_text())
         assert restarted["phase"] == "uncertain"
         assert restarted["consecutive_failures"] > saved["consecutive_failures"]
+        assert restarted["safe_cursor"] == saved["safe_cursor"] + 1
+        assert info_id in restarted["recent_attention_ids"]
         assert restarted["in_flight"] == original["in_flight"]
         assert restarted["awaiting_handoffs"] == saved["awaiting_handoffs"]
         assert coord.sends == 1

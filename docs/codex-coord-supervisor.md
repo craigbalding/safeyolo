@@ -110,12 +110,11 @@ turn sends its declared response to every role in the handoff's `response_to`
 list and exits. It does not call or re-arm `wait_for_coord`; waiting is
 supervisor transport behavior rather than an agent task.
 
-At each safe cycle boundary, the supervisor receives one bounded attention page
-before continuing runnable work. With runnable work, the receive timeout is zero;
-an empty page still continues the existing task. Idle work and tasks suspended
-on downstream handoffs use the configured wait timeout. The existing checkpoint
-capacity bounds intake. A selected stronger-model repair remains scoped to its
-task and does not admit additional attention during that selection.
+When checkpoint capacity permits and no stronger-model repair is selected, the
+supervisor receives one bounded attention page at each safe cycle boundary.
+With runnable work, the receive timeout is zero; an empty page still continues
+the existing task. Idle work and tasks suspended on downstream handoffs use the
+configured wait timeout. New attention alone does not clear an uncertain turn.
 
 Codex and Pi expose the same canonical `send` operation through their tool interfaces. The supervisor normalizes each successful result into one
 outbound-send event before it evaluates a terminal response or records an
