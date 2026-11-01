@@ -228,6 +228,11 @@ async fn failed_dial_keeps_attempt_id_and_flow_without_response() {
     assert!(failed[0]["remote_endpoint"].is_null());
     assert!(failed[0]["resolved_origin_peer"].is_null());
     assert!(connections(&rows, "proxy_to_upstream", "open").is_empty());
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row["details"]["rule"] == "origin_ip.first_observation.v1")
+    );
     let flows: Vec<_> = rows
         .iter()
         .filter(|row| row["event"] == "traffic.flow")
@@ -312,6 +317,11 @@ async fn parent_connect_reports_physical_parent_and_real_tunnel_lifetime() {
             address.to_string()
         );
         assert!(servers[0]["resolved_origin_peer"].is_null());
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row["details"]["rule"] == "origin_ip.first_observation.v1")
+        );
         if refused {
             assert_eq!(servers[0]["error"], "parent_connection_failed");
         }
@@ -557,6 +567,30 @@ async fn failed_protocol_keeps_the_established_tcp_connection_and_flow_id() {
         );
         assert!(servers[0]["tls_server_name"].is_null());
         assert!(servers[0]["tls_sessions"].is_null());
+        let clues: Vec<_> = rows
+            .iter()
+            .filter(|row| row["details"]["rule"] == "origin_ip.first_observation.v1")
+            .collect();
+        assert_eq!(
+            clues.len(),
+            1,
+            "a measured socket survives later protocol failure"
+        );
+        let current = &clues[0]["details"]["novelty"]["current"];
+        assert_eq!(
+            current["origin_ip"],
+            address.ip().to_canonical().to_string()
+        );
+        assert_eq!(current["connection_id"], servers[0]["connection_id"]);
+        let source = rows
+            .iter()
+            .find(|row| row["event_id"] == current["event_id"])
+            .unwrap();
+        assert_eq!(source["details"]["state"], "open");
+        assert_eq!(
+            source["details"]["resolved_origin_peer"],
+            address.to_string()
+        );
         let flows: Vec<_> = rows
             .iter()
             .filter(|row| row["event"] == "traffic.flow")

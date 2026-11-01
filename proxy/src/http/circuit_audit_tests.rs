@@ -70,7 +70,13 @@ fn records(directory: &Path) -> Vec<Value> {
     std::fs::read_to_string(directory.join("audit.jsonl"))
         .unwrap_or_default()
         .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
+        .map(|line| crate::audit::parse_record(line).unwrap())
+        // Transport-history indications have separate producer coverage; these
+        // assertions compare the reached circuit/request hook publications.
+        .filter(|row| {
+            !(row["event"] == "security.indicator"
+                && row["details"]["sensor"] == "connection-history.v1")
+        })
         // Preserve all other producer events and their original order.
         .filter(|row: &Value| {
             !(row["addon"] == "memory-monitor"
@@ -144,7 +150,7 @@ fn trace_steps(runtime: &Runtime, response: &[u8], agent: &str) -> Vec<Value> {
 
 fn check_open(event: &Value, host: &str) {
     assert_eq!(event["event"], "ops.circuit_breaker.open");
-    assert_eq!(event["schema_version"], 1);
+    assert_eq!(event["schema_version"], 2);
     assert_eq!(event["kind"], "ops");
     assert_eq!(event["severity"], "medium");
     assert_eq!(event["addon"], "circuit-breaker");

@@ -168,7 +168,8 @@ async fn authenticated_stats_share_counters_and_reached_read_effects_across_relo
             "flow-recorder",
             "request-logger",
             "metrics",
-            "observations"
+            "observations",
+            "observation_source"
         ]
     );
     assert_eq!(

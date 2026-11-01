@@ -2,7 +2,7 @@
 # Shared staging for first-party host setup scripts. Source this file, then
 # call: stage_safeyolo_context "$SAFEYOLO_AGENT_HOME" codex|claude|pi|none
 
-_stage_safeyolo_codex_lab_entrypoint() {
+_stage_safeyolo_lab_entrypoint() {
     local agent_home="$1"
     local command_dir="$agent_home/.local/bin"
     local command_path="$command_dir/safeyolo-lab"
@@ -16,7 +16,7 @@ _stage_safeyolo_codex_lab_entrypoint() {
     fi
     # shellcheck source=../../cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/lab-bashrc.sh
     . "$lab_scripts/lab-bashrc.sh"
-    _prepare_safeyolo_lab_bashrc "$bashrc" || return 1
+    _prepare_safeyolo_lab_bashrc "$bashrc" "$3" || return 1
 
     if [ -L "$command_path" ]; then
         current_target="$(readlink "$command_path")"
@@ -182,7 +182,7 @@ stage_safeyolo_context() {
             ;;
         claude)
             link_dir="$agent_home/.claude/skills"
-            skill_names="safeyolo readme-usability"
+            skill_names="safeyolo safeyolo-lab-controller safeyolo-factory readme-usability"
             ;;
         pi)
             link_dir="$agent_home/.pi/agent/skills"
@@ -199,7 +199,7 @@ stage_safeyolo_context() {
     esac
 
     _stage_refuse_unsafe_parent "$managed_root"
-    if [ "$consumer" = "codex" ] || [ "$consumer" = "pi" ]; then
+    if [ "$consumer" = "codex" ] || [ "$consumer" = "claude" ] || [ "$consumer" = "pi" ]; then
         _stage_refuse_unsafe_parent "$agent_home/.local/bin"
     fi
     if [ -n "$link_dir" ]; then
@@ -264,8 +264,8 @@ stage_safeyolo_context() {
         done
     fi
 
-    if [ "$consumer" = "codex" ] && { [ -z "${SAFEYOLO_FACTORY_SNAPSHOT:-}" ] || [ ! -d "$repo_root/skills" ]; }; then
-        _stage_safeyolo_codex_lab_entrypoint "$agent_home" "$repo_root"
+    if [ "$consumer" = "claude" ] || { [ "$consumer" = "codex" ] && { [ -z "${SAFEYOLO_FACTORY_SNAPSHOT:-}" ] || [ ! -d "$repo_root/skills" ]; }; }; then
+        _stage_safeyolo_lab_entrypoint "$agent_home" "$repo_root" "$consumer"
     fi
     if [ "$consumer" = "codex" ] || [ "$consumer" = "pi" ]; then
         _stage_safeyolo_repo_map "$agent_home"

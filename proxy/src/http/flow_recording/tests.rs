@@ -14,6 +14,8 @@ const LIMIT: Duration = Duration::from_secs(5);
 const ID: &str = "req-00000000000000000000000000000000";
 fn identity(agent: &str) -> ConnectionIdentity {
     ConnectionIdentity {
+        authorization_principal: None,
+        ingress_binding: None,
         run: None,
         agent_id: agent.into(),
         connection_id: "owned-connection".into(),

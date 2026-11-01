@@ -5,7 +5,10 @@ capabilities that follow the initial NATS room/chat substrate. Treat the work
 as a sequence of independently useful stages, with acceptance tests proving
 semantics rather than UI.
 
-The current implementation is a good base precisely because it is still small: SQLite owns room/membership control state; JetStream owns messages; the agent surface is essentially `join_room`, `send`, `read_room`, `wait_for_message`.   Issue #371 explicitly deferred addressing, operator summons, voting and summarisation until dogfood demonstrated what was actually needed. It has now done that.
+SQLite owns native Coord control state. JetStream owns conversation history.
+The Agent API and MCP expose room reads, messages, durable targeted attention,
+brief reads, work ownership, and declarations. The stages below distinguish current contracts
+from capabilities that still need implementation and acceptance.
 
 Implement the capabilities in this order.
 
@@ -13,8 +16,8 @@ Implement the capabilities in this order.
 
 Do this before adding features.
 
-Add a real SQLite schema migration/version mechanism, stable object-ID
-conventions, optimistic/version fields where appropriate, generic mutation
+Use the native versioned SQLite store, stable object-ID
+conventions, optimistic/version fields where appropriate, mutation
 idempotency, immutable revision/transition history, and a `coord.*` audit-event
 family. The kernel invariants are:
 
@@ -45,13 +48,14 @@ the original result; reusing it with different input returns a conflict.
 `operation_id` handles ambiguous retries. Object revisions and claim
 generations independently reject stale concurrent mutations.
 
-Stage 0 deliberately uses the existing local `operator` sentinel as the scope
-for operator mutations. It does not introduce or imply a real authenticated
-operator-ID model. The first implementation boundary is:
+Host-local mutations authenticate through the owning host account and use the
+existing `operator` sentinel as their ledger principal. Agents cannot invoke
+these mutations through the Agent API. Stage 0 does not introduce separate
+operator identities. The caller boundary is:
 
 | Mutation | Stage-0 `operation_id` contract |
 |---|---|
-| `grant` / `revoke` | Caller-visible, generation or explicit CLI retry handle |
+| `grant` / `revoke` | Optional `--operation-id ID`; generated IDs appear in results |
 | grant suboperations inside `room_create` | Internal generated IDs only |
 | `room_create` | Unsupported at the caller boundary |
 | `send` | Unsupported; JetStream recovery is designed with the cross-store stage |
@@ -60,48 +64,61 @@ Do not partially claim caller-visible idempotency across SQLite and
 JetStream. `room_create` and `send` need explicit cross-store recovery
 semantics before they can make that promise.
 
-The migration foundation matters because the current store simply creates
-three tables idempotently; once several durable object classes appear, ad-hoc
-`CREATE TABLE IF NOT EXISTS` evolution becomes debt quickly. Migrations use
-explicit SQLite transaction control and individual statements, never
-`sqlite3.executescript()`. An unversioned database is classified as either
-fresh/empty or the semantically compatible current-master legacy schema. A
-partial or malformed legacy schema is rejected rather than stamped current.
+Canonical grant input uses the resolved room and durable agent IDs, with sorted,
+distinct permissions. Omitted grant permissions mean `receive,send`. Revoke has
+no permission input. Replay precedes membership mutation: a retry cannot restore
+a grant revoked by a later operation. The operation result records the original
+membership generation and transition time. The immutable operation ledger,
+membership change, and metadata audit row commit in one SQLite transaction.
 
-Stage 0 also introduces a generic transactional outbox with stable event IDs.
+SafeYolo is pre-v1. Current-master state and retained messages must remain
+usable across the candidate boundary. Bootstrap accepts an empty database or
+the current native schema; it refuses populated unversioned, incompatible, or
+unknown newer schemas. It does not convert earlier implementation generations.
+Bootstrap and schema changes use explicit transactions. A failure rolls back
+the entire transaction.
+
+Stage 0 uses the existing transactional outbox with stable event IDs.
 Canonical state and its logical event commit together. JSONL is an
 at-least-once projection: a crash after append but before delivery marking may
 produce a duplicate with the same `event_id`. Each append is flushed and
 `fsync()`ed, along with each newly created containing directory entry, before
 the outbox records successful delivery; any file or directory `fsync()` failure
 leaves the edge pending for retry. All `coord.*` JSONL events flow through this
-outbox. A failure before migration 0→1 creates the outbox is
-reported only through normal operational logging. Later migration failures
-may use an already-existing older-version outbox through a recovery-only path,
-even while normal candidate operations refuse the outdated schema.
+outbox. The shared writer serializes file recovery, rotation, and append across
+native writers. Before appending, it removes an incomplete final line left by
+an interrupted write and preserves all complete lines. Pending outbox rows
+retain the original records for retry. One process-owned native worker delivers
+audit rows through the shared audit writer and attention hints through
+authenticated NATS. The worker resumes pending rows in the selected instance
+at proxy startup and survives policy reloads. A NATS flush confirms
+the server received a hint; it does not prove a subscriber consumed it. SQLite
+attention remains authoritative. Publication without a successful flush, audit
+sync failure, or a crash before delivery marking leaves the row pending.
+Retries preserve the event ID. Delivery failures in one destination do not
+prevent attempts in the other destination. No canonical body enters a hint or
+audit row. Bootstrap failures before an operational outbox exists use normal
+operational logging.
 
 Key acceptance tests:
 
 * Upgrade a real current-master coord database containing rooms, grants and retained messages; everything remains usable.
-* Fresh/unversioned classification accepts semantically compatible legacy DDL
-  independent of incidental SQLite SQL text, but rejects partial tables,
-  missing keys/uniqueness, and incompatible foreign keys without stamping it.
+* Bootstrap refuses populated unversioned and unsupported schemas without
+  changing their state.
 * Fresh bootstrap and repeated bootstrap produce the same schema/state.
-* Two simultaneous bootstraps/migrations cannot corrupt or partially migrate the DB.
-* Simulated failure halfway through a migration rolls back cleanly.
-* Failure before the outbox exists produces operational logging but no direct
-  `coord.*` JSONL write; a later failure is recoverably enqueued through the
-  older valid outbox while ordinary API use remains schema-gated.
+* Two simultaneous bootstraps cannot corrupt or partially initialize the DB.
+* Simulated failure during bootstrap or a mutation rolls back cleanly.
+* Failure before the outbox exists produces no direct `coord.*` JSONL write.
 * New code refuses a database schema newer than it understands rather than silently operating on it.
 * Existing chat dogfood tests remain green with no semantic change.
 * `coord.*` events round-trip through the shared audit schema and `watch` without schema-drift warnings. The existing audit envelope is already designed as the shared contract for future PEPs/control-plane consumers.
 * Retrying a mutation with the same `operation_id` and request returns the
   original result; changing the request under that ID returns a conflict.
-* A minimal test-local typed object proves that a current-state projection and
-  immutable revision append commit atomically, enforce expected revisions,
-  roll back together and replay deterministic outcomes. Typed brief, work and
-  signal schemas remain in their own stages; Stage 0 adds no generic object
-  store.
+* Native membership and brief controls prove that current-state projections,
+  immutable outcome/revision history, and audit staging commit atomically and
+  roll back together. The controls verify operation replay and the expected
+  revisions exposed by each caller. Typed brief, work, and signal contracts
+  remain in their own stages; Stage 0 adds no generic object store.
 * `room_create` gives each grant suboperation a distinct internal operation ID
   without exposing or claiming room-level caller idempotency.
 * Audit events contain only the object identity, revision/transition,
@@ -294,7 +311,7 @@ One versioned Markdown document per room is enough:
 
 ```text
 coord brief show huddle
-coord brief set huddle <file/text>
+coord brief set huddle --file brief.md --expected-revision 4 --operation-id intent-5
 ```
 
 Avoid structured workflow settings. Put goals, priorities, working style and communication expectations in ordinary operator-authored prose.
@@ -303,6 +320,25 @@ Store the current brief for efficient reads and retain every immutable brief
 revision in canonical SQLite history. Expose the latest version prominently.
 An update generates attention to all room members. Its JSONL event records the
 room, revision, content hash and actor, not the Markdown body.
+
+The owning host account updates the brief with an expected revision and an
+optional caller-selected `--operation-id`. Omitted IDs are generated and
+returned in the result. To recover an ambiguous result, repeat the original
+operation ID, expected revision and exact Markdown. Canonical input contains
+the resolved room ID, expected revision and Markdown bytes, independent of
+whether the caller supplies an argument, file or stdin. Replay returns the
+original committed metadata result before checking the current revision. It
+does not replace a later brief or create more history, audit or attention.
+Changed input under the same operator/type/ID returns an operation conflict.
+Different operations with the same expected revision still produce one update
+and one revision conflict.
+
+The current projection, immutable revision, operation result and metadata audit
+and attention outbox rows commit in the same SQLite transaction. The common
+native delivery worker retries pending rows after restart, preserving their
+original event and attention IDs. Canonical reads and attention resolution
+independently check current receive permission; brief attention resolves its
+original immutable revision. Audit and hints never contain the Markdown.
 
 Key acceptance tests:
 
@@ -313,6 +349,10 @@ Key acceptance tests:
 * Updating v4→v5 wakes all current members and their next state read shows v5.
 * A revoked agent cannot read updates.
 * Concurrent operator edits using the same expected version produce one update and one conflict rather than silently losing an edit.
+* An ambiguous retry returns the original result even after a later update;
+  changed input under the original operation ID conflicts without side effects.
+* Delivered JSONL and attention preserve original revision, hash and IDs across
+  interrupted publication, without copying Markdown into delivery metadata.
 * Previous versions remain auditable.
 * Operator changes "messages succinct; evidence before inference" once; agents joining later receive it without replaying transcript history.
 
@@ -351,26 +391,33 @@ coord state huddle
 coord inventory advertise-capability huddle bob rundeck:acceptance_runner
 coord inventory unadvertise-capability huddle bob rundeck:acceptance_runner
 coord inventory advertise-resource huddle rundeck acceptance_runner
+coord inventory unadvertise-resource huddle rundeck acceptance_runner
 ```
 
-Provider adapters receive only room ID, stable member IDs, advertised granted
-labels and advertised resource labels. Their raw payloads and errors never
-enter room state: coord allow-lists availability/lease fields, bounds the call
-and output, and changes missing, failed, malformed or stale evidence to
-`unknown`.
+Room state uses stable member IDs, advertised granted capability labels and
+advertised resource labels. Coord selects providers from those labels and
+allow-lists their availability and lease fields. It bounds reads and output.
+Raw provider payloads and errors never enter room state. Missing, failed,
+malformed or stale evidence becomes `unknown`.
 
-The production adapter boundary is provider-neutral. A service integration
-atomically replaces a bounded public observation file at
-`~/.safeyolo/coord-providers/<provider>.json`; coord discovers those adapters
-at process bootstrap and reconstructs them after restart. The JSON object uses
-the same narrow `capabilities` and `leases` evidence shape as the adapter
-contract and must not contain credentials or connection configuration. Coord
-never writes provider state. Missing, unreadable, oversized, malformed, stale,
-or removed snapshots produce `unknown`. The complete provider call, including
-incorrectly blocking implementations, runs outside the Agent API event loop
-behind its timeout. Global and per-provider in-flight caps bound abandoned
-daemon workers, so a hung integration cannot consume the shared executor used
-for authoritative state reads or spawn new work indefinitely.
+The native observation boundary is a host-local public snapshot. A trusted
+service integration atomically replaces a bounded public observation file at
+`~/.safeyolo/coord-providers/<provider>.json`. For a selected instance root,
+the directory is `<root>/coord-providers`. Coord resolves advertised provider
+names on each state read, including the first read after bootstrap or restart.
+No registration or background polling is required. The JSON object uses narrow
+`capabilities` and `leases` arrays and must not contain credentials or connection
+configuration. Each observation has integer Unix-millisecond `observed_at` and
+`valid_until` fields. Fresh evidence requires `observed_at <= now < valid_until`,
+with at most five minutes between the timestamps. Coord never writes provider
+state. Missing, unreadable, oversized, malformed, stale or removed snapshots
+produce `unknown`. The directory and files must remain
+under trusted host/provider control; an agent-writable file is not authoritative
+provider evidence. Snapshot selection does not authenticate a provider. Agents
+cannot upload observations through Coord. The complete snapshot read runs
+outside the Agent API event loop and its shared blocking executor, behind a
+one-second timeout. Process-wide and per-provider in-flight limits bound reads
+that remain blocked after timeout.
 
 Keep provenance explicit:
 
@@ -463,6 +510,31 @@ release_work
 complete_work
 ```
 
+Native agents use `create_work`, `list_work`, `read_work`, `claim_work`,
+`release_work` and `complete_work` through MCP or the native Coord client.
+Reads require current room `receive` permission. Mutations require both
+`send` and `receive`, because they read and change canonical work. The
+owning host account uses `coord work` for creation, reads and explicit
+release, completion or reassignment. It can recover a removed or revoked
+holder without granting that holder room access.
+
+Each mutation accepts an optional `operation_id`; omitted IDs are generated
+and returned. Canonical input contains the resolved room ID and typed mutation,
+including expectations, content and any reassignment's durable agent ID.
+Replay checks current room authority, then returns the original result before
+checking the current work version. It never reapplies old ownership. All work
+content in one mutation is bounded by the existing 256 KiB Coord content bound.
+Lists use bounded pages ordered by `work_id`; pages do not share a snapshot.
+
+The current work projection, immutable version, operation result, metadata
+audit and attention outbox commit in one SQLite transaction. Work changes
+notify current receive-authorized members except the agent actor. Operator
+changes notify every current receive-authorized agent. A `work_changed` edge
+resolves its original immutable work version, with current membership-generation
+authorization. Work titles, references and results do not enter audit or wake
+hints. Completion retains the final holder and claim timestamp in state `done`;
+release clears the holder and timestamp and returns the item to `open`.
+
 `external_ref` is deliberately opaque:
 
 ```text
@@ -500,6 +572,11 @@ That last test should deliberately reproduce the README/issue-filing duplication
 ---
 
 ### 5. Material signals and operator attention
+
+Native agents use `create_signal`, `read_signal` and `list_signals`. The owning
+host uses `coord signal` to inspect or resolve claims and `safeyolo watch` to
+read pending operator attention. See the [operator workflow](coord-operations.md#raise-a-material-signal).
+The native `coord watch --jsonl` path also fetches exact signal revisions.
 
 Once work exists, give agents a constrained way to say something **matters** without making every chat message important.
 
@@ -543,6 +620,28 @@ principal with the independently revocable `page_operator` permission causes
 an unresolved blocker/decision to create an operator attention edge.
 Operator-created local collaboration rooms enable `page_operator` by default,
 with bounded rate and deduplication controls.
+
+Native default membership grants include `page_operator` alongside `send` and
+`receive`. An explicit `send receive` grant independently revokes paging while
+preserving creation. Existing pending claims remain pending. Identical current
+blocker/decision input from the same author deduplicates to its original
+signal. At most five new pages per author/room and 20 per room are permitted
+in 60 seconds. Excess claims remain canonical with `page_status=rate_limited`;
+missing permission records `page_status=permission_denied`. Neither case pages
+automatically after time or permission changes.
+
+Summaries allow 1–1024 UTF-8 bytes. Refs allow at most 16 opaque strings of
+1024 bytes each. A mutation allows at most 32768 bytes. Reads require current
+`receive` permission; mutations require `send` and `receive`. The optional work
+reference must identify work in that room. Corrections require `supersedes`
+with the author's signal ID and expected current revision. The correction,
+old signal's superseded revision, current projections, operation result and
+metadata outbox commit atomically. Operator resolution likewise checks the
+expected revision. Replay uses principal, operation type and operation ID and
+checks current authority before returning the original result. Lists are
+bounded to 100 items and 65536 bytes of items, ordered by signal ID with a
+continuation. Current room state exposes bounded signals and needs-operator
+pages; full history remains readable by signal ID and exact revision.
 
 Feed permitted blocker/decision pages into the existing `safeyolo watch` path
 rather than inventing a second notification product. JSONL records signal ID,
@@ -779,7 +878,7 @@ Require every behavioural stage to pass four levels before moving on:
 
 1. **Model/API tests** — authorization, validation, state transitions, bounds.
 2. **Concurrency/restart tests** — simultaneous agents, ambiguous retries, process/NATS restart, revocation races.
-3. **Real Agent-API/NATS black-box tests** — don't just call Python functions; prove transport-derived identity and real substrate behaviour.
+3. **Real Agent-API/NATS black-box tests** — exercise the authenticated native transport and real stores; model-function calls alone do not prove this boundary.
 4. **Three-agent dogfood** — give agents a real SafeYolo task and measure whether the feature actually reduces transcript negotiation.
 
 For control-plane mutations, use the same philosophy as the new assurance work: deliberately interrupt operations around commit/publication boundaries and prove the invariant survives. The coordination state is becoming security-relevant platform state; it deserves stronger testing than a normal task tracker.

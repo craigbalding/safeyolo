@@ -40,11 +40,16 @@ async fn key(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn launcher(spec: &JobSpec) -> String {
+fn launcher(spec: &JobSpec, environment: &[String]) -> String {
     let mut script = include_str!("vz-exec.sh").to_owned();
     // Keep env's executable fixed, so an argv[0] containing '=' cannot become
     // another environment assignment. Every step execs without a wait wrapper.
     script.push_str("\nexec /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/home/agent USER=agent LOGNAME=agent LANG=C.UTF-8 ");
+    for variable in environment {
+        script.push('\'');
+        script.push_str(&variable.replace('\'', "'\\''"));
+        script.push_str("' ");
+    }
     if spec.privilege == super::Privilege::Unprivileged {
         script.push_str("/usr/bin/setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs -- ");
     } else {
@@ -68,6 +73,7 @@ async fn stage(
     guest: &Path,
     spec: &JobSpec,
     generation: &str,
+    environment: &[String],
 ) -> Result<PublicKey, Error> {
     // Include the terminating NUL in the existing Darwin sockaddr_un bound.
     // Check before boot, so an authorized but long TMPDIR has a useful error.
@@ -126,7 +132,7 @@ async fn stage(
     )?;
     // Exec at each step preserves the command's own wait status in sshd.
     // Neither an agent request nor SSH command text selects what is executed.
-    fs::write(share.join("job-exec"), launcher(spec))?;
+    fs::write(share.join("job-exec"), launcher(spec, environment))?;
     for name in ["guest-init", "job-exec", "job-ssh-command"] {
         fs::set_permissions(share.join(name), fs::Permissions::from_mode(0o755))?;
     }
@@ -434,11 +440,16 @@ pub(super) async fn run(
     guest: &Path,
     spec: &JobSpec,
     generation: &str,
+    environment: &[String],
+    installation: &Path,
     interrupt: &mut Signal,
     terminate: &mut Signal,
     cleanup_failed: &mut bool,
 ) -> Result<(Value, Option<Outcome>, Output, Output, Option<String>), Error> {
-    let public = stage(root, directory, host, guest, spec, generation).await?;
+    let public = stage(root, directory, host, guest, spec, generation, environment).await?;
+    if spec.network {
+        super::network::stage(&directory.join("config-share"), host, installation)?;
+    }
     host_runs::save(
         name,
         &json!({"name":name,"agent_id":name,"run_id":generation,"state":"starting"}),
@@ -535,7 +546,7 @@ mod tests {
             .chain(arguments)
             .map(str::to_owned)
             .collect();
-        let script = launcher(&spec);
+        let script = launcher(&spec, &[]);
         // Exercise the exact generated exec, without performing guest mounts
         // on the host. The runtime driver covers the full namespace launcher.
         let command = script.rsplit_once("\nexec ").unwrap().1;
@@ -558,7 +569,7 @@ mod tests {
             executable.to_str().unwrap().to_owned(),
             "literal command".into(),
         ];
-        let script = launcher(&spec);
+        let script = launcher(&spec, &[]);
         let command = script.rsplit_once("\nexec ").unwrap().1;
         let output = std::process::Command::new("/bin/bash")
             .args(["-c", &format!("exec {command}")])

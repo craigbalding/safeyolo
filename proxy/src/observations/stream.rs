@@ -457,6 +457,8 @@ mod tests {
                 Arc::default(),
             ),
             &ConnectionIdentity {
+                authorization_principal: None,
+                ingress_binding: None,
                 agent_id: "alice".into(),
                 run: None,
                 connection_id: "connection".into(),
@@ -552,6 +554,8 @@ mod tests {
         );
         let mut consumer = bus.subscribe(ConsumerKind::Capture, Limits::default());
         let identity = ConnectionIdentity {
+            authorization_principal: None,
+            ingress_binding: None,
             agent_id: "alice".into(),
             run: None,
             connection_id: "conn".into(),

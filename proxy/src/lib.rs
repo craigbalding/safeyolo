@@ -19,6 +19,10 @@ mod config;
 mod connection_events;
 mod connection_tasks;
 pub mod contracts;
+pub mod coord_acp_attention;
+mod coord_attention;
+pub mod coord_claude_attention;
+pub mod coord_codex_attention;
 pub mod coord_operator;
 pub mod coord_rooms;
 pub mod coord_setup;
@@ -37,6 +41,7 @@ pub(crate) mod desktop_present;
 mod desktop_preview;
 pub(crate) mod desktop_session;
 pub mod dispatch;
+pub mod external_ingress;
 pub mod factory;
 pub mod factory_proposals;
 mod flow_recorder;
@@ -61,6 +66,8 @@ pub mod lab;
 pub mod linux_host;
 #[cfg(target_os = "macos")]
 mod macos_mounts;
+#[cfg(any(target_os = "macos", test))]
+mod macos_share_warning;
 pub mod mattermost;
 pub mod observations;
 mod packet_capture;
@@ -144,10 +151,13 @@ use hyper_util::rt::TokioIo;
 use ring::digest::{SHA256, digest};
 use serde_json::{Value, json};
 use tokio::{
-    net::{UnixListener, UnixStream},
+    net::UnixListener,
     sync::watch,
     task::{JoinHandle, JoinSet},
 };
+
+#[cfg(test)]
+use tokio::net::UnixStream;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub(crate) type RuntimeState = Arc<RwLock<Arc<Runtime>>>;
@@ -299,18 +309,32 @@ impl CredentialActivation {
 #[derive(Clone)]
 pub(crate) struct ConnectionIdentity {
     agent_id: String,
+    authorization_principal: Option<String>,
     run: Option<host_runs::AgentRun>,
     connection_id: String,
     source_id: Option<String>,
+    ingress_binding: Option<String>,
 }
 
 impl ConnectionIdentity {
+    fn ingress(&self) -> String {
+        self.ingress_binding
+            .as_ref()
+            .map_or_else(|| "agent-uds".into(), |name| format!("switchboard/{name}"))
+    }
+
     fn request_agent(&self) -> Option<&str> {
+        if let Some(principal) = &self.authorization_principal {
+            return Some(principal);
+        }
         let agent = self.agent_id.trim();
         (!agent.is_empty() && !matches!(agent, "unknown" | "default")).then_some(agent)
     }
 
     fn request_identity(&self) -> network_guard::Identity<'_> {
+        if let Some(principal) = &self.authorization_principal {
+            return network_guard::Identity::Resolved(principal);
+        }
         if let Some(run) = &self.run {
             return network_guard::Identity::Current(run);
         }
@@ -320,24 +344,53 @@ impl ConnectionIdentity {
         )
     }
 
+    fn current_agent_run(&self) -> Option<&host_runs::AgentRun> {
+        self.authorization_principal
+            .is_none()
+            .then_some(self.run.as_ref())
+            .flatten()
+    }
+
     fn audit_attribution(&self) -> audit::Attribution {
+        if let Some(principal) = &self.authorization_principal {
+            return audit::Attribution {
+                evidence_owner: Some(self.agent_id.clone()),
+                trusted_transport_identity: Some(self.agent_id.clone()),
+                initiator: Some(audit::Initiator::Unknown),
+                status: Some(audit::AttributionStatus::Delegated),
+                provenance: Some(
+                    json!({"transport_source":"uds", "job_run":self.run,
+                    "authorization_principal":principal})
+                    .into(),
+                ),
+            };
+        }
         let agent = self.request_agent();
         audit::Attribution {
             evidence_owner: agent.map(str::to_owned),
             trusted_transport_identity: agent.map(str::to_owned),
-            initiator: Some(audit::Initiator::Unknown),
+            initiator: Some(if self.ingress_binding.is_some() {
+                audit::Initiator::External
+            } else {
+                audit::Initiator::Unknown
+            }),
             status: Some(if agent.is_some() {
                 audit::AttributionStatus::Resolved
             } else {
                 audit::AttributionStatus::Unavailable
             }),
             provenance: Some(
-                match agent {
-                    Some(agent) => serde_json::json!({
+                match (agent, self.ingress_binding.as_ref()) {
+                    (Some(agent), Some(binding)) => serde_json::json!({
+                        "transport_source": "uds", "ingress_transport": "tcp", "ingress": self.ingress(),
+                        "uds_agent": agent,
+                        "binding": binding, "selected_agent": agent,
+                    }),
+                    (Some(agent), None) => serde_json::json!({
                         "transport_source": "uds",
                         "uds_agent": agent.chars().take(128).collect::<String>(),
                     }),
-                    None => serde_json::json!({"reason":"no_trusted_identity"}),
+                    (None, _) => serde_json::json!({"reason":"no_trusted_identity"}),
                 }
                 .into(),
             ),
@@ -379,7 +432,7 @@ pub(crate) struct Runtime {
     /// change an already-admitted session.
     passthrough: Arc<RwLock<tunnels::Passthrough>>,
     scanner: inspection::Scanner,
-    policy: Option<policy::Policy>,
+    policy: Option<Arc<policy::Policy>>,
     /// Lazy, process-owned vault and refresh flights. Only credential consumers
     /// load it; Runtime publication never reads or unlocks credential storage.
     gateway_vault: GatewayVault,
@@ -441,7 +494,7 @@ impl Runtime {
         previous: Option<&Runtime>,
         admin_address: Option<std::net::SocketAddr>,
         event_address: Option<std::net::SocketAddr>,
-        capture_address: Option<admin_shield::CaptureEndpoint>,
+        capture_address: Option<admin_shield::BoundTcpEndpoint>,
         service_files: &mut Option<services::CatalogMetadata>,
     ) -> Result<Self, Error> {
         let mut startup = previous
@@ -452,6 +505,9 @@ impl Runtime {
             config.admin_port.unwrap_or(9090),
             &config.admin_shield_extra_ports,
         )?;
+        if let Some(previous) = previous {
+            admin_shield.retain_ingress_endpoints(&previous.admin_shield);
+        }
         if let Some(bound) = admin_address {
             admin_shield.protect_bound_port(bound);
         }
@@ -513,7 +569,7 @@ impl Runtime {
                     load(
                         path,
                         registry,
-                        previous.and_then(|runtime| runtime.policy.as_ref()),
+                        previous.and_then(|runtime| runtime.policy.as_deref()),
                         &audit,
                     )
                 })
@@ -588,8 +644,9 @@ impl Runtime {
                 && gateway_grants.is_some()
                 && previous.is_none()
             {
-                policy
-                    .observe_baseline_files(previous.and_then(|runtime| runtime.policy.as_ref()))?;
+                policy.observe_baseline_files(
+                    previous.and_then(|runtime| runtime.policy.as_deref()),
+                )?;
             }
             if let Some(timing) = credential_startup.as_mut() {
                 timing.record("grants");
@@ -676,19 +733,25 @@ impl Runtime {
                 .unwrap_or_else(|| Arc::new(memory_monitor::MemoryMonitor::new()));
             let coord = previous
                 .map(|runtime| {
-                    Arc::new(agent_api::CoordClient::with_owner(
-                        runtime.coord.owner(),
-                        config.policy_file.clone(),
-                    ))
+                    Arc::new(
+                        agent_api::CoordClient::with_owner(
+                            runtime.coord.owner(),
+                            config.policy_file.clone(),
+                        )
+                        .with_provider_directory(config.native_config_dir.as_deref()),
+                    )
                 })
                 .unwrap_or_else(|| {
-                    Arc::new(agent_api::CoordClient::new(
-                        config.policy_file.clone(),
-                        config
-                            .native_config_dir
-                            .as_ref()
-                            .map(|_| config.data_dir().join("coord")),
-                    ))
+                    Arc::new(
+                        agent_api::CoordClient::new(
+                            config.policy_file.clone(),
+                            config
+                                .native_config_dir
+                                .as_ref()
+                                .map(|_| config.data_dir().join("coord")),
+                        )
+                        .with_provider_directory(config.native_config_dir.as_deref()),
+                    )
                 });
             let flow_recorder = match previous {
                 Some(runtime) => runtime.flow_recorder.clone(),
@@ -779,7 +842,7 @@ impl Runtime {
                 certificate_authority,
                 passthrough,
                 scanner,
-                policy,
+                policy: policy.map(Arc::new),
                 gateway_vault,
                 credential_activation,
                 operator_modes,
@@ -892,7 +955,7 @@ fn prepare_policy_runtime(previous: &Runtime, policy: policy::Policy) -> Result<
         )?;
     }
     Ok(Runtime {
-        policy: Some(policy),
+        policy: Some(Arc::new(policy)),
         credential_guard: Some(credential_guard),
         gateway_grants,
         config,
@@ -1042,7 +1105,7 @@ fn native_policy_activation(
                     .unwrap_or_else(|| Arc::clone(current));
                 let mut runtime = previous.as_ref().clone();
                 if let Some(policy) = runtime.policy.as_mut() {
-                    policy
+                    Arc::make_mut(policy)
                         .observe_restored_native_file(list_mtime)
                         .map_err(|error| error.to_string())?;
                 }
@@ -1195,7 +1258,7 @@ pub(crate) fn activate_registered_task(
         .prepare_policy(&candidate)
         .map_err(|_| TaskPolicyActivationError::Invalid)?;
     let runtime = Arc::new(Runtime {
-        policy: Some(candidate),
+        policy: Some(Arc::new(candidate)),
         credential_guard: Some(credential_guard),
         ..current.as_ref().clone()
     });
@@ -1208,7 +1271,7 @@ pub(crate) fn activate_registered_task(
         .map_err(TaskPolicyActivationError::Registry)?;
     let permission_count = runtime
         .policy
-        .as_ref()
+        .as_deref()
         .and_then(policy::Policy::task_permissions_count)
         .unwrap_or(0);
     *current = runtime;
@@ -1248,7 +1311,7 @@ pub(crate) fn clear_registered_task(
         .prepare_policy(&candidate)
         .map_err(|_| TaskPolicyActivationError::Invalid)?;
     let runtime = Arc::new(Runtime {
-        policy: Some(candidate),
+        policy: Some(Arc::new(candidate)),
         credential_guard: Some(credential_guard),
         ..current.as_ref().clone()
     });
@@ -1560,20 +1623,34 @@ impl RunningListener {
     fn start(
         listener: impl Into<Arc<UnixListener>>,
         socket: SocketPath,
-        agent_id: String,
-        source_id: Option<String>,
+        target: AgentListener,
         runtime: Arc<RwLock<Arc<Runtime>>>,
+        ingress_peers: Arc<external_ingress::Peers>,
+    ) -> Self {
+        Self::start_with_job(listener, socket, target, runtime, ingress_peers, None)
+    }
+
+    fn start_with_job(
+        listener: impl Into<Arc<UnixListener>>,
+        socket: SocketPath,
+        target: AgentListener,
+        runtime: Arc<RwLock<Arc<Runtime>>>,
+        ingress_peers: Arc<external_ingress::Peers>,
+        job: Option<jobs::network::Authority>,
     ) -> Self {
         let listener = listener.into();
+        let agent_id = target.agent_id.clone();
+        let source_id = target.source_id();
         let (stop, receiver) = watch::channel(false);
         let stop = Arc::new(stop);
         let task = tokio::spawn(accept_agents(
             listener.clone(),
-            agent_id.clone(),
-            source_id.clone(),
+            target,
             runtime,
+            ingress_peers,
             Arc::downgrade(&stop),
             receiver,
+            job,
         ));
         Self {
             listener,
@@ -1600,11 +1677,12 @@ impl RunningListener {
 
 async fn accept_agents(
     listener: Arc<UnixListener>,
-    agent_id: String,
-    source_id: Option<String>,
+    target: AgentListener,
     runtime: Arc<RwLock<Arc<Runtime>>>,
+    ingress_peers: Arc<external_ingress::Peers>,
     stop_signal: std::sync::Weak<watch::Sender<bool>>,
     mut stop: watch::Receiver<bool>,
+    job: Option<jobs::network::Authority>,
 ) {
     let mut connections = JoinSet::new();
     loop {
@@ -1613,26 +1691,43 @@ async fn accept_agents(
             _ = stop.changed() => break,
             accepted = listener.accept() => match accepted {
                 Ok((socket, _)) => {
-                    let identity = ConnectionIdentity {
-                        agent_id: agent_id.clone(),
-                        run: runtime.read().ok().and_then(|runtime| {
-                            runtime.policy.as_ref()?.agent_run(&agent_id)
-                        }),
-                        connection_id: format!("conn-{}", uuid::Uuid::new_v4().simple()),
-                        source_id: source_id.clone(),
+                    let pending = match ingress_peers.claim(&socket, &target) {
+                        Ok(pending) => pending,
+                        Err(error) => { eprintln!("external UDS ingress rejected: {error}"); continue; }
                     };
+                    let external = pending.is_some();
+                    let identity = ConnectionIdentity {
+                        ingress_binding: pending.as_ref().map(|peer| peer.binding.clone()),
+                        agent_id: target.agent_id.clone(),
+                        authorization_principal: job.as_ref().map(|job| job.principal.clone()),
+                        run: job.as_ref().map(|job| job.run.clone()).or_else(|| runtime.read().ok().and_then(|runtime| {
+                            if external { None } else { runtime.policy.as_ref()?.agent_run(&target.agent_id) }
+                        })),
+                        connection_id: format!("conn-{}", uuid::Uuid::new_v4().simple()),
+                        source_id: if external { None } else { target.source_id() },
+                    };
+                    let connection = runtime.read().ok().and_then(|runtime| {
+                        runtime.connection_events.as_ref().map(|events| match pending.as_ref() {
+                            Some(peer) => events.tcp_ingress(&identity, peer.local, peer.remote),
+                            None => events.ingress(&identity, &socket),
+                        })
+                    });
+                    if let Some(peer) = pending && peer.accepted.send(connection.clone()).is_err() { continue; }
                     // Register before spawning so even an unpolled canceled
                     // task owns cleanup. One guard spans all inner upgrades.
                     let memory = match runtime.read() {
-                        Ok(runtime) => Some(memory_runtime::Client::new(&runtime, &identity.connection_id)),
+                        Ok(runtime) => Some(memory_runtime::Client::new(
+                            &runtime,
+                            &identity.connection_id,
+                        )),
                         Err(_) => {
-                            let _ = writeln!(std::io::stderr().lock(), "Memory monitor runtime unavailable");
+                            let _ = writeln!(
+                                std::io::stderr().lock(),
+                                "Memory monitor runtime unavailable"
+                            );
                             None
                         }
                     };
-                    let connection = runtime.read().ok().and_then(|runtime| {
-                        runtime.connection_events.as_ref().map(|events| events.ingress(&identity, &socket))
-                    });
                     let connection_runtime = runtime.clone();
                     let connection_stop = stop.clone();
                     connections.spawn(async move {
@@ -1645,13 +1740,24 @@ async fn accept_agents(
                         let driver_tasks = tasks.clone();
                         let stream = connection_events::observe(Box::new(socket), connection.clone());
                         let driver_connection = connection.clone();
-                        tasks.run(async move {
-                            let result = serve_connection(stream, identity, connection_runtime, connection_stop, driver_tasks).await;
-                            if let Err(error) = &result && let Some(connection) = driver_connection {
-                                connection.http_error(error.as_ref());
-                            }
-                            result
-                        }).await;
+                        tasks
+                            .run(async move {
+                                let result = serve_connection(
+                                    stream,
+                                    identity,
+                                    connection_runtime,
+                                    connection_stop,
+                                    driver_tasks,
+                                )
+                                .await;
+                                if let Err(error) = &result
+                                    && let Some(connection) = driver_connection
+                                {
+                                    connection.http_error(error.as_ref());
+                                }
+                                result
+                            })
+                            .await;
                         if let Some(disconnect_monitor) = disconnect_monitor {
                             disconnect_monitor.abort();
                             let _ = disconnect_monitor.await;
@@ -1725,7 +1831,7 @@ fn poll_agent_disconnect(descriptor: libc::c_int) -> std::io::Result<bool> {
 }
 
 fn monitor_agent_disconnect(
-    socket: &UnixStream,
+    socket: &impl AsRawFd,
     tasks: &Arc<connection_tasks::ConnectionTasks>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     let descriptor = unsafe { libc::dup(socket.as_raw_fd()) };
@@ -1822,6 +1928,8 @@ type PreparedListeners = HashMap<PathBuf, (Arc<UnixListener>, SocketPath)>;
 pub struct Proxy {
     runtime: Arc<RwLock<Arc<Runtime>>>,
     listeners: HashMap<PathBuf, RunningListener>,
+    ingress_bindings: HashMap<String, external_ingress::Running>,
+    ingress_peers: Arc<external_ingress::Peers>,
     admin: Option<admin_listener::Running>,
     capture: Option<packet_capture::Running>,
     command_centre_share: Option<command_centre::Publication>,
@@ -1829,6 +1937,7 @@ pub struct Proxy {
     default_via: String,
     readiness_file: PathBuf,
     circuit_snapshots: Option<circuit_runtime::Snapshots>,
+    coord_delivery: Option<agent_api::coord::outbox::Delivery>,
     service_files: Option<services::CatalogMetadata>,
     service_check_at: Option<tokio::time::Instant>,
     policy_check_at: Option<tokio::time::Instant>,
@@ -1869,7 +1978,7 @@ impl Proxy {
                     capture_address,
                     &mut service_files,
                 )?;
-                policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
+                policy_runtime::accepted(runtime.policy.as_deref(), &runtime.audit);
                 memory_runtime::running(&runtime);
                 Ok::<_, Error>((Arc::new(runtime), service_files))
             })
@@ -1879,6 +1988,8 @@ impl Proxy {
         let mut proxy = Self {
             runtime: Arc::new(RwLock::new(runtime)),
             listeners: HashMap::new(),
+            ingress_bindings: HashMap::new(),
+            ingress_peers: Arc::default(),
             admin: None,
             capture: None,
             command_centre_share: None,
@@ -1886,6 +1997,7 @@ impl Proxy {
             default_via,
             readiness_file: config.readiness_file.clone(),
             circuit_snapshots: None,
+            coord_delivery: None,
             service_check_at: service_files.as_ref().map(|_| tokio::time::Instant::now()),
             service_files,
             policy_check_at: config
@@ -1896,7 +2008,18 @@ impl Proxy {
         // A readiness marker is useful only after all configured sockets have bound.
         // Keep the prepared operator socket locally owned until agent binds succeed.
         let additions = proxy.prepare_listeners(&config)?;
+        let ingress = external_ingress::prepare(&proxy.ingress_bindings, &config)?;
+        {
+            let current = proxy
+                .runtime
+                .read()
+                .map_err(|_| "runtime write lock poisoned")?;
+            current
+                .admin_shield
+                .protect_ingress_endpoints(external_ingress::endpoints(&ingress)?);
+        }
         proxy.commit_listeners(&config, additions);
+        proxy.commit_ingress(&config, ingress);
         {
             let runtime = proxy
                 .runtime
@@ -1931,6 +2054,16 @@ impl Proxy {
                 Some(circuit_runtime::Snapshots::start(proxy.runtime.clone())?);
         }
         startup.record("listeners_readiness");
+        {
+            let runtime = proxy
+                .runtime
+                .read()
+                .map_err(|_| "runtime read lock poisoned")?;
+            proxy.coord_delivery = agent_api::coord::outbox::Delivery::start(
+                runtime.coord.clone(),
+                runtime.audit.clone(),
+            );
+        }
         Ok(proxy)
     }
 
@@ -1942,6 +2075,14 @@ impl Proxy {
             "ready": true, "pid": std::process::id(), "backend": "rust-m2",
             "instance_id": self.default_via, "listeners": self.listeners.len(),
         });
+        marker["ingress_bindings"] = external_ingress::status(
+            &self.ingress_bindings,
+            &self
+                .runtime
+                .read()
+                .map_err(|_| "runtime read lock poisoned")?
+                .config,
+        );
         if let Some(reload_id) = &self
             .runtime
             .read()
@@ -2024,9 +2165,9 @@ impl Proxy {
                     RunningListener::start(
                         listener,
                         socket,
-                        entry.agent_id.clone(),
-                        entry.source_id(),
+                        entry.clone(),
                         self.runtime.clone(),
+                        self.ingress_peers.clone(),
                     ),
                 );
             }
@@ -2178,7 +2319,7 @@ impl Proxy {
             runtime.configure_declarations()?;
             *current = runtime.clone();
         }
-        policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
+        policy_runtime::accepted(runtime.policy.as_deref(), &runtime.audit);
         Ok(())
     }
 
@@ -2201,9 +2342,12 @@ impl Proxy {
             &mut service_files,
         )?);
         let additions = self.prepare_listeners(&config)?;
+        let ingress = external_ingress::prepare(&self.ingress_bindings, &config)?;
+        let ingress_endpoints = external_ingress::endpoints(&ingress)?;
         if self.circuit_snapshots.is_none() && circuit_runtime::state_path(&config).is_some() {
             self.circuit_snapshots = Some(circuit_runtime::Snapshots::start(self.runtime.clone())?);
         }
+        let released;
         {
             // Completion, admission and snapshots all retain this same lock
             // through their state operation. Publish the selected file's state
@@ -2236,7 +2380,11 @@ impl Proxy {
                 .configure(config.flow_pruner_max, config.flow_pruner_max_body_bytes);
             // No fallible preparation remains before topology/runtime publication.
             clear_readiness(&self.readiness_file, &self.default_via);
+            runtime
+                .admin_shield
+                .protect_ingress_endpoints(ingress_endpoints);
             self.commit_listeners(&config, additions);
+            released = self.commit_ingress(&config, ingress);
             runtime.plumb.configure_limits(
                 runtime.config.plumb.max_participants,
                 runtime.config.plumb.max_message_bytes,
@@ -2245,7 +2393,12 @@ impl Proxy {
             );
             *current = runtime.clone();
         }
-        policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
+        for stopped in released {
+            stopped
+                .await
+                .map_err(|_| "ingress binding accept task failed during stop")?;
+        }
+        policy_runtime::accepted(runtime.policy.as_deref(), &runtime.audit);
         self.service_check_at = service_files.as_ref().map(|_| tokio::time::Instant::now());
         self.service_files = service_files;
         if previous.config.policy_file != config.policy_file {
@@ -2300,6 +2453,10 @@ impl Proxy {
         for (_, listener) in self.listeners.drain() {
             self.draining.push(listener.stop());
         }
+        for (_, binding) in self.ingress_bindings.drain() {
+            let (task, _) = binding.stop();
+            self.draining.push(task);
+        }
         for task in self.draining.drain(..) {
             if let Err(error) = task.await {
                 eprintln!("listener shutdown failed: {error}");
@@ -2317,6 +2474,9 @@ impl Proxy {
             .coord
             .clone();
         coord.shutdown().await;
+        if let Some(delivery) = self.coord_delivery.take() {
+            delivery.stop().await;
+        }
         let recorder = self
             .runtime
             .read()
@@ -2358,6 +2518,9 @@ impl Drop for Proxy {
         desktop_present::abort();
         for (_, listener) in self.listeners.drain() {
             drop(listener.stop());
+        }
+        for (_, binding) in self.ingress_bindings.drain() {
+            drop(binding.stop());
         }
     }
 }

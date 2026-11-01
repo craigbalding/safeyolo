@@ -60,7 +60,7 @@ def checked(command: list[str], *, timeout: int = 30) -> subprocess.CompletedPro
 
 def guest_command(cli: str, agent: str, platform: str, marker: str, phase: str, **options: str | int) -> list[str]:
     request = [
-        "python3",
+        "/usr/bin/python3",
         "-m",
         "tests.blackbox.isolation.installed_access",
         "--phase",

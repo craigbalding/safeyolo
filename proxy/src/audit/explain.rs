@@ -15,20 +15,17 @@ use serde_json::{Value, json};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{Writer, wipe, writer};
-use crate::{circuits::CircuitValue, policy::python_whitespace};
+use crate::circuits::CircuitValue;
 
 const MAX_LINES: usize = 10_000;
 const DRAIN: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExplainErrorKind {
-    Attribute,
     UnicodeDecode,
     Value,
     Permission,
     Io,
-    /// Existing JSON scalar representation cannot express this source value.
-    Compatibility,
 }
 
 /// Errors contain neither paths nor retained event data.
@@ -43,12 +40,10 @@ impl ExplainError {
 impl fmt::Display for ExplainError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self.0 {
-            ExplainErrorKind::Attribute => "audit record is not an object",
             ExplainErrorKind::UnicodeDecode => "audit file text decoding failed",
             ExplainErrorKind::Value => "audit lookup value cannot be converted",
             ExplainErrorKind::Permission => "audit file metadata permission denied",
             ExplainErrorKind::Io => "audit file metadata unavailable",
-            ExplainErrorKind::Compatibility => "audit JSON scalar representation unavailable",
         })
     }
 }
@@ -217,27 +212,14 @@ fn scan_requests(
         result.incomplete |= incomplete;
         for line in lines {
             // tail_file validates every input byte, including discarded lines.
-            let text = std::str::from_utf8(&line)
-                .expect("validated audit text")
-                .trim_matches(python_whitespace);
-            if text.is_empty() {
+            let text = std::str::from_utf8(&line).expect("validated audit text");
+            if text.trim().is_empty() {
                 continue;
             }
-            let mut entry = match CircuitValue::parse_api_json(text) {
-                Ok(entry) => entry,
-                Err(error) => {
-                    use crate::circuits::ErrorKind;
-                    match error.kind() {
-                        ErrorKind::Invalid => continue, // json.JSONDecodeError
-                        ErrorKind::Value => return Err(ExplainError(ExplainErrorKind::Value)),
-                        _ => return Err(ExplainError(ExplainErrorKind::Compatibility)),
-                    }
-                }
-            };
-            let Some(object) = entry.as_object() else {
-                wipe(&mut entry);
-                return Err(ExplainError(ExplainErrorKind::Attribute));
-            };
+            let mut entry = CircuitValue::from(
+                super::parse_record(text).map_err(|_| ExplainError(ExplainErrorKind::Value))?,
+            );
+            let object = entry.as_object().expect("validated current audit envelope");
             let matches = |key, expected: &str| matches!(object.get(key), Some(CircuitValue::Other(Value::String(value))) if value == expected);
             let owned = agent.is_none_or(|agent| matches("agent", agent));
             if owned

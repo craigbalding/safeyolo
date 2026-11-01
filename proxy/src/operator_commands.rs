@@ -1,8 +1,7 @@
 //! One native operator session over existing instance, evidence and approval owners.
 
 use std::{
-    collections::VecDeque,
-    io::{BufRead, IsTerminal, Write},
+    io::{IsTerminal, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -14,6 +13,8 @@ use serde_json::{Value, json};
 
 use crate::{Error, host_platform, native_client, native_config, network_guard};
 
+mod observations;
+
 pub const HELP: &str = "safeyolo [--root ROOT] inspect [--factory NAME] [--agent NAME]
 safeyolo [--root ROOT] traffic list [--agent NAME] [--filter EXPRESSION] [--json]
 safeyolo [--root ROOT] traffic show ID|body ID request|response|websocket ID|message ID NUMBER [--offset BYTES] [--agent NAME] [--json]
@@ -23,7 +24,11 @@ safeyolo [--root ROOT] approvals show|explain|approve|reject ID [--option ID] [-
 safeyolo [--root ROOT] approvals ask|context ID [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals delegations [--json]\nsafeyolo [--root ROOT] approvals delegation check|preview|apply|revoke NAME --file PROPOSAL.json [--json]\nsafeyolo [--root ROOT] approvals review --agent NAME
 safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
-safeyolo [--root ROOT] logs [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] logs list [--instance ID] [--runtime ID] [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] logs connection ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] logs request ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] observations [--instance ID] [--runtime ID] [--json]
 safeyolo [--root ROOT] diagnose [--agent NAME] [--json]
 safeyolo helper show ID|diagnostic ID|prepare ID --reason TEXT [--socket PATH] [--token-file FILE]
 safeyolo helper list\nsafeyolo helper approve|reject|defer ID --delegation NAME --option ID\nsafeyolo helper context|respond ID [--reason TEXT] [--socket PATH] [--token-file FILE]
@@ -40,13 +45,17 @@ Persistent network approval is reusable for the selected agent and host/port. Pe
 Gateway route approval defaults to once; --option selects an offered lifetime. Service access can require an offered credential option.
 Reject records a refusal without adding a policy deny rule. Terminal decisions cannot grant again.
 Helper uses its Agent API token (default /app/agent_token) and the existing guest proxy route.
-If evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable.";
+If evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable.
+Observations reads current runtime aggregates. --instance and --runtime check a retained namespace; they do not retrieve historical or per-agent measurements. Reload preserves counters; restart changes the runtime. Reading observations does not enable payload capture or content storage.
+Logs connection/request accept --capture FILE to read existing current pcap:compat metadata. Matches require the selected audit namespace, connection and recorded agent attribution; request observations require the selected request ID. Lower-layer ancestry can be shared input, not exclusive request bytes. Results include audit lines, one-based packet numbers and PCAP packet-header byte offsets. --lines also bounds retained matching connection observations and runtime loss records separately. Missing/unsupported captures remain unavailable; malformed/truncated input and omissions can leave partial evidence. Loss is runtime-wide with unknown connection/request attribution. Synthetic headers are representation, not measured wire behaviour. No payload is returned or capture enabled. EOF does not prove complete evidence.
+With --capture, prompt-exposure source/model transports also show retained stream chunk counts, observed-byte sums, size ranges and monotonic intervals, grouped by connection/point/layer/direction. Chunk references preserve observation IDs, packet/byte offsets and audit lines. The same observation limit covers selected and correlated connections together. These are connection-wide retained measurements, not exclusive request bytes, anomaly scores or complete coverage. Layers must not be added as application bytes.
+Logs use the configured local audit file unless --file PATH is supplied. Repeat --file for explicitly selected offline inputs; no installed config or API is needed. Each file is validated to EOF and retains the last --lines selected-agent rows (default 100 per file), so total retention is at most input count times --lines. Selected-file pivots identify every input/physical line and duplicate copy, and refuse conflicting event copies or transport owners as join evidence. Input order is not chronological order. Selection and schema validation do not authenticate the producer. Use logs list to discover retained namespaces, agent context, and connection/request/indicator references; --instance and --runtime optionally narrow that listing. It is not live inventory. Unknown attribution and conflicting copies stay distinct from recorded resolved agent context. Pivots require instance and runtime; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Prompt exposure correlations explain exact source and source/model transport novelty support, including partial or unavailable evidence. These are connection-wide relationships, not proof of malicious intent or model receipt. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.";
 
 pub fn handles(args: &[String]) -> bool {
     args.first().is_some_and(|arg| {
         matches!(
             arg.as_str(),
-            "inspect" | "traffic" | "approvals" | "helper" | "logs" | "diagnose"
+            "inspect" | "traffic" | "approvals" | "helper" | "logs" | "diagnose" | "observations"
         )
     })
 }
@@ -91,13 +100,17 @@ struct Options {
     filter: String,
     json: bool,
     lines: usize,
+    instance: Option<String>,
+    runtime: Option<String>,
+    sandbox_run: Option<String>,
     offset: u64,
     socket: Option<PathBuf>,
     token: Option<PathBuf>,
     reason: Option<String>,
     option: Option<String>,
     delegation: Option<String>,
-    file: Option<PathBuf>,
+    files: Vec<PathBuf>,
+    capture: Option<PathBuf>,
     scope: serde_json::Map<String, Value>,
     positional: Vec<String>,
 }
@@ -117,7 +130,8 @@ impl Options {
                 }
                 "--agent" | "--factory" | "--helper" | "--filter" | "--lines" | "--offset"
                 | "--socket" | "--token-file" | "--reason" | "--test" | "--intent" | "--role"
-                | "--expect" | "--option" | "--delegation" | "--file" => {
+                | "--expect" | "--option" | "--delegation" | "--file" | "--instance"
+                | "--runtime" | "--sandbox-run" | "--capture" => {
                     let value = args
                         .next()
                         .ok_or_else(|| format!("{arg} requires a value"))?;
@@ -127,13 +141,17 @@ impl Options {
                         "--helper" => options.helper = Some(value.clone()),
                         "--filter" => options.filter = value.clone(),
                         "--lines" => options.lines = value.parse()?,
+                        "--instance" => options.instance = Some(value.clone()),
+                        "--runtime" => options.runtime = Some(value.clone()),
+                        "--sandbox-run" => options.sandbox_run = Some(value.clone()),
                         "--offset" => options.offset = value.parse()?,
                         "--socket" => options.socket = Some(value.into()),
                         "--token-file" => options.token = Some(value.into()),
                         "--reason" => options.reason = Some(value.clone()),
                         "--option" => options.option = Some(value.clone()),
                         "--delegation" => options.delegation = Some(value.clone()),
-                        "--file" => options.file = Some(value.into()),
+                        "--file" => options.files.push(value.into()),
+                        "--capture" => options.capture = Some(value.into()),
                         key => {
                             options.scope.insert(
                                 if key == "--test" {
@@ -853,29 +871,267 @@ async fn traffic(root: &Path, options: &Options) -> Result<Value, Error> {
 }
 
 fn logs(_root: &Path, options: &Options) -> Result<Value, Error> {
-    let config = native_config::read(&host_platform::config_path())?;
-    let path = config
-        .audit_log_path
-        .ok_or("audit log path is unavailable")?;
-    let input = std::io::BufReader::new(std::fs::File::open(&path)?);
-    let mut rows = VecDeque::new();
-    for line in input.lines() {
-        let line = line?;
-        let row = crate::audit::parse_record(&line)
-            .map_err(|_| "local audit record is invalid; raw log remains inspectable")?;
-        if options
-            .agent
-            .as_ref()
-            .is_some_and(|agent| row["agent"] != *agent)
-        {
-            continue;
+    if options.capture.is_some()
+        && !matches!(options.positional.as_slice(), [kind, _] if matches!(kind.as_str(), "connection" | "request"))
+    {
+        return Err("--capture requires logs connection ID or logs request ID".into());
+    }
+    if options.positional.is_empty() && options.sandbox_run.is_some() {
+        return Err("--sandbox-run requires logs list, logs connection or logs request".into());
+    }
+    let explicit = !options.files.is_empty();
+    let paths = if explicit {
+        options.files.clone()
+    } else {
+        vec![
+            native_config::read(&host_platform::config_path())?
+                .audit_log_path
+                .ok_or("audit log path is unavailable")?,
+        ]
+    };
+    let tails = if explicit {
+        crate::audit::selected_tails(&paths, options.agent.as_deref(), options.lines)?
+    } else {
+        vec![crate::audit::local_tail(
+            &paths[0],
+            options.agent.as_deref(),
+            options.lines,
+        )?]
+    };
+    match options.positional.as_slice() {
+        [command] if command == "list" => crate::audit::pivot::list(
+            &paths,
+            tails,
+            explicit,
+            options.lines,
+            options.instance.as_deref(),
+            options.runtime.as_deref(),
+            options.agent.as_deref(),
+            options.sandbox_run.as_deref(),
+        ),
+        [] if !explicit => {
+            let rows: Vec<_> = tails
+                .into_iter()
+                .flat_map(|tail| tail.rows.into_iter().map(|(_, row)| row))
+                .collect();
+            Ok(json!({"file":paths[0],"events":rows}))
         }
-        rows.push_back(row);
-        if rows.len() > options.lines {
-            rows.pop_front();
+        [] => {
+            let inputs: Vec<_> = paths.iter().zip(tails).enumerate().map(|(index, (path, tail))| {
+                json!({"input":index + 1,"file":path,"lines_read":tail.lines_read,
+                    "agent_rows":tail.agent_rows,"omitted_rows":tail.agent_rows - tail.rows.len(),
+                    "events":tail.rows.into_iter().map(|(line, record)| json!({"line":line,"record":record})).collect::<Vec<_>>()})
+            }).collect();
+            Ok(json!({"inputs":inputs,"line_limit_per_input":options.lines,
+                "limits":"Each selected file is validated to EOF and retains at most --lines selected-agent rows. Input order is not chronological order. Selection and schema validation do not authenticate the producer."}))
+        }
+        [kind, id] if matches!(kind.as_str(), "connection" | "request") => {
+            let query = crate::audit::pivot::Query {
+                instance: options
+                    .instance
+                    .as_deref()
+                    .ok_or("logs pivot requires --instance ID")?,
+                runtime: options
+                    .runtime
+                    .as_deref()
+                    .ok_or("logs pivot requires --runtime ID")?,
+                kind,
+                id,
+                agent: options.agent.as_deref(),
+                sandbox_run: options.sandbox_run.as_deref(),
+                lines: options.lines,
+            };
+            let mut result = crate::audit::pivot::read(&paths, tails, explicit, &query)?;
+            if let Some(path) = &options.capture {
+                let capture = crate::audit::pivot::capture::read(path, &mut result, &query);
+                result["capture"] = capture;
+            }
+            Ok(result)
+        }
+        _ => Err("usage: safeyolo logs --help".into()),
+    }
+}
+
+fn show_log_listing(value: &Value) -> Result<(), Error> {
+    println!("Retained NSM evidence (not live inventory)");
+    for input in value["inputs"].as_array().into_iter().flatten() {
+        println!(
+            "Input {}: {}\n  Searched {} retained rows, physical lines {}..{}; {} selected-agent rows omitted ({} file rows read).",
+            input["input"],
+            context_json(&input["file"])?,
+            input["retained_rows"],
+            input["first_line"],
+            input["last_line"],
+            input["omitted_rows"],
+            input["lines_read"]
+        );
+    }
+    let search = &value["search"];
+    println!(
+        "Selected NSM records: {} distinct, {} duplicate copies, {} conflicting; {} non-NSM retained rows excluded.\n{}",
+        search["distinct_nsm_records"],
+        search["duplicate_nsm_rows"],
+        search["conflicting_nsm_records"],
+        search["non_nsm_rows"],
+        text(&search["limits"])
+    );
+    let namespaces = value["namespaces"]
+        .as_array()
+        .ok_or("NSM listing unavailable")?;
+    if namespaces.is_empty() {
+        println!("No NSM records in the selected retained window.");
+    }
+    for namespace in namespaces {
+        println!(
+            "\nInstance: {} | Runtime: {}",
+            context_json(&namespace["instance_id"])?,
+            context_json(&namespace["runtime_id"])?
+        );
+        for group in namespace["agents"].as_array().into_iter().flatten() {
+            println!(
+                "Agent: {} | Context: {}",
+                context_json(&group["agent"])?,
+                text(&group["context"])
+            );
+            println!(
+                "Sandbox run: {} | Run context: {}",
+                context_json(&group["sandbox_run"])?,
+                text(&group["run_context"])
+            );
+            for record in group["records"].as_array().into_iter().flatten() {
+                println!(
+                    "  {} | Decision: {} | Event ID: {} | Time: {} | Locations: {}\n    {}",
+                    text(&record["event"]),
+                    context_json(&record["decision"])?,
+                    context_json(&record["event_id"])?,
+                    context_json(&record["ts"])?,
+                    record["locations"],
+                    context_json(&record["summary"])?
+                );
+                for reference in record["references"].as_array().into_iter().flatten() {
+                    println!(
+                        "    {} {} via {}",
+                        text(&reference["kind"]),
+                        context_json(&reference["id"])?,
+                        text(&reference["field"])
+                    );
+                }
+                if record.get("indicator").is_some() {
+                    println!("    Indicator: {}", context_json(&record["indicator"])?);
+                }
+            }
         }
     }
-    Ok(json!({"file":path,"events":rows}))
+    println!(
+        "\nUse logs connection ID or logs request ID with the listed --instance ID --runtime ID, optional --agent NAME --sandbox-run RUN_ID, and the same --file/--lines selection. IDs above use JSON escaping; decode escapes when supplying an argument."
+    );
+    Ok(())
+}
+
+fn show_log_pivot(value: &Value) -> Result<(), Error> {
+    let query = &value["query"];
+    let search = &value["search"];
+    println!(
+        "Local audit: {}\nInstance: {}\nRuntime: {}\n{}: {}\nAgent: {}",
+        value["file"]
+            .as_str()
+            .map(safe)
+            .unwrap_or_else(|| "explicitly selected files".into()),
+        safe(text(&query["instance_id"])),
+        safe(text(&query["runtime_id"])),
+        safe(text(&query["kind"])),
+        safe(text(&query["id"])),
+        query["agent"]
+            .as_str()
+            .map(safe)
+            .unwrap_or_else(|| "all".into())
+    );
+    if let Some(run) = query["sandbox_run_id"].as_str() {
+        println!("Sandbox run selection: {}", safe(run));
+    }
+    if let Some(inputs) = value["inputs"].as_array() {
+        for input in inputs {
+            println!("Input {}: {}", input["input"], safe(text(&input["file"])));
+            println!(
+                "  Searched {} retained rows, physical lines {}..{}; {} selected-agent rows omitted ({} file rows read).",
+                input["retained_rows"],
+                input["first_line"],
+                input["last_line"],
+                input["omitted_rows"],
+                input["lines_read"]
+            );
+        }
+        println!(
+            "Total: {} retained copies, {} unique namespace records, {} duplicate copies, {} conflicting records; --lines {} per input.",
+            search["retained_rows"],
+            search["unique_namespace_rows"],
+            search["duplicate_namespace_rows"],
+            search["conflicting_namespace_rows"],
+            search["line_limit_per_input"]
+        );
+    } else {
+        println!(
+            "Searched {} retained rows, physical lines {}..{}; {} selected-agent rows omitted by --lines {} ({} total file rows read).",
+            search["retained_rows"],
+            search["first_line"],
+            search["last_line"],
+            search["omitted_rows"],
+            search["line_limit"],
+            search["lines_read"]
+        );
+    }
+    println!("{}", text(&search["limits"]));
+    for correlation in value["correlations"].as_array().into_iter().flatten() {
+        if correlation["warning"]["status"] == "investigate" {
+            println!(
+                "\nInvestigation warning: {}",
+                safe(text(&correlation["warning"]["reason"]))
+            );
+        }
+        println!(
+            "\nPrompt exposure correlation from line {} ({}):",
+            correlation["exposure_line"],
+            text(&correlation["status"])
+        );
+        print_json(correlation)?;
+    }
+    for entry in value["records"].as_array().into_iter().flatten() {
+        println!("\nLine {} ({}):", entry["line"], text(&entry["selection"]));
+        println!(
+            "Sandbox run: {} | Run context: {}",
+            context_json(&entry["sandbox_run"])?,
+            text(&entry["run_context"])
+        );
+        // JSON escapes control characters and preserves original attribution,
+        // timestamps, event IDs and evidence instead of rebuilding an event.
+        if let Some(locations) = entry.get("locations") {
+            println!(
+                "Locations: {}; conflicting copy or owner: {}",
+                serde_json::to_string(locations)?,
+                entry["conflicting"]
+            );
+        }
+        print_json(&entry["record"])?;
+    }
+    if value["records"].as_array().is_some_and(Vec::is_empty) {
+        println!("No related validated NSM records in the searched window.");
+    }
+    for link in value["links"].as_array().into_iter().flatten() {
+        println!(
+            "Link from line {} {}: {}",
+            link["from_line"],
+            text(&link["field"]),
+            serde_json::to_string(link)?
+        );
+    }
+    if let Some(capture) = value.get("capture") {
+        println!(
+            "\nSelected capture metadata ({}):",
+            text(&capture["status"])
+        );
+        print_json(capture)?;
+    }
+    Ok(())
 }
 
 async fn state(root: &Path, agent: &str) -> Result<Value, Error> {
@@ -1214,6 +1470,9 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         println!("{HELP}");
         return Ok(());
     }
+    if args[0] == "observations" {
+        return observations::run(&args[1..]).await;
+    }
     let options = Options::parse(&args[1..])?;
     let value = match args[0].as_str() {
         "inspect" => return inspect(root, &options).await,
@@ -1254,8 +1513,8 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
                     name,
                 ] => {
                     let input = options
-                        .file
-                        .as_ref()
+                        .files
+                        .last()
                         .ok_or("delegation requires --file PROPOSAL.json")?;
                     let proposal: Value = serde_json::from_slice(&std::fs::read(input)?)?;
                     let operation = if *operation == "check" {
@@ -1319,6 +1578,15 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         } else {
             show_context(&value)
         }
+    } else if args[0] == "logs" && value.get("namespaces").is_some() {
+        if options.json {
+            println!("{}", context_json(&value)?);
+            Ok(())
+        } else {
+            show_log_listing(&value)
+        }
+    } else if args[0] == "logs" && !options.json && value.get("query").is_some() {
+        show_log_pivot(&value)
     } else if args[0] == "helper" {
         print_json(&value)
     } else if !options.json && value.get("why_stopped").is_some() {

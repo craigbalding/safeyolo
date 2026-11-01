@@ -113,6 +113,7 @@ def run(cli: Path, root: Path, scratch: Path, signals_only: bool = False, observ
                     "retain_bytes": 8192,
                     "memory_mb": 512,
                     "privilege": privilege,
+                    "network": False,
                 }
             )
         )

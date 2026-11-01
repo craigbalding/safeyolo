@@ -32,7 +32,7 @@ impl Sink {
         fs::read_to_string(&self.path)
             .unwrap_or_default()
             .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
+            .map(|line| crate::audit::parse_record(line).unwrap())
             .collect()
     }
 
@@ -91,6 +91,10 @@ fn optional<'a>(spec: &'a Value, key: &str, default: &'a str) -> Option<&'a str>
 fn without_timestamp(value: &Value) -> String {
     let mut value = value.clone();
     value.as_object_mut().unwrap().shift_remove("ts");
+    value
+        .as_object_mut()
+        .unwrap()
+        .shift_remove("schema_version");
     serde_json::to_string(&value).unwrap()
 }
 

@@ -14,10 +14,18 @@ mount --make-rprivate /
 private=/run/job-private
 mount -t tmpfs -o mode=700 tmpfs "$private"
 mkdir "$private/upper" "$private/work" "$private/root"
+# The SSH command's private umask also applies here. Overlayfs exposes the
+# upper directory's mode as /, which must be traversable after dropping UID.
+chmod 755 "$private/upper"
 root=$private/root
 mount -t overlay -o "lowerdir=/run/job-lower,upperdir=$private/upper,workdir=$private/work,userxattr" overlay "$root"
 mkdir -p "$root"/{input,work,proc,sys,dev,tmp,run,home/agent}
 mount --bind /input "$root/input"
+if [[ -d /safeyolo/network ]]; then
+    mkdir -p "$root/safeyolo/network"
+    mount --bind /safeyolo/network "$root/safeyolo/network"
+    mount -o remount,bind,ro "$root/safeyolo/network"
+fi
 # PIDs remain visible, but observer credentials and descriptors are outside
 # the job's user namespace. A chroot or hidden PIDs alone is insufficient.
 mount --bind /proc "$root/proc"
@@ -43,6 +51,7 @@ cd "$root"
 umount -l /.observer-root
 rmdir /.observer-root
 cd /work
+if [[ -f /safeyolo/network/start ]]; then source /safeyolo/network/start; fi
 
 # Close inherited descriptors before the fixed argv. Bash keeps its script
 # at fd 255 with CLOEXEC; that final descriptor closes with the exec below.

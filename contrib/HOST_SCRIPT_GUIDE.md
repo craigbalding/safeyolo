@@ -81,6 +81,9 @@ defaults and SafeYolo context without reading host Claude state. Existing agent
 authentication stays in place. With copying enabled, the host helper replaces
 credential files through private temporary files with mode `0600`. Extension
 files use atomic replacement too; a destination directory link stops copying.
+Host skills named `safeyolo`, `safeyolo-lab-controller`, or `safeyolo-factory`
+are skipped because SafeYolo stages those shared skills itself. Other host
+skills keep the existing copy behavior.
 
 ### First Codex login
 
@@ -188,13 +191,22 @@ stage_safeyolo_context "$SAFEYOLO_AGENT_HOME" codex
 The helper stages the baseline under `~/.safeyolo/` and links applicable
 read-only, per-run skill trees under the agent's skill directory. Both Claude
 and Codex get `/safeyolo/skills/safeyolo`. Pi gets the same shared skill under
-its native `~/.pi/agent/skills` path. Codex also gets
+its native `~/.pi/agent/skills` path. Claude and Codex also get
 `/safeyolo/skills/safeyolo-lab-controller`,
 `/safeyolo/skills/safeyolo-factory`, and the `safeyolo-lab` guest command. The
 Codex and Pi setups both stage `repo-map` under `~/.local/bin`; their launchers
 put that directory on the harness `PATH`. The helper refuses to overwrite a
 user-owned skill or command with a managed name. Custom standalone scripts may
 instead stage their own instructions.
+
+In an owned Claude guest with valid authentication, start a Lab from its
+pre-lab shell with `safeyolo-lab --harness claude --objective "OBJECTIVE"`.
+The shared runner supplies the baseline, startup instructions and objective
+through a private temporary file. The staged Claude command passes that file
+with `--append-system-prompt-file`. The native host `safeyolo lab` entry
+continues to provision Codex Labs. See the Lab Controller skill's
+[bootstrap guide](../cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/references/bootstrap.md)
+for reconnect, recovery, evidence capture and teardown.
 
 `repo-map --query "<task>"` returns likely local implementation, tests, and
 documentation. An exact Python symbol, such as `repo-map --query api.send`,

@@ -36,6 +36,42 @@ preserves the process-owned queue, namespace and effective limits. Restart the
 proxy to change these limits.
 
 The existing authenticated operator stats report includes `observations`.
+On the owning host, the native command-line interface (CLI) provides
+`safeyolo observations` for an ordinary report and `safeyolo observations --json`
+for the same existing measurements. Select
+another installed instance with the existing `--root` or `--config` option
+before the command. The [operator workflow](operator-guide.md#read-current-observation-measurements)
+also explains how to compare a retained NSM namespace.
+
+The stats response adds `observation_source` from the observation owner beside
+the unchanged `observations` values. It contains `instance_id`, `runtime_id`,
+effective `queue_limits`, `payload_layers`, capture-owner/subscription state
+and `wire_source_active`. The CLI returns this as `source` with the selected
+config path and labels the report `scope = "current_runtime_aggregate"`.
+Identity and counters share one response. The CLI verifies the installed
+instance identity; optional `--instance` and `--runtime` checks refuse a
+different namespace rather than treating current totals as historical evidence.
+Missing identity, absent measurement data, failed authentication, an unavailable
+administrative application programming interface (Admin API) and interrupted
+responses fail explicitly without substitute zero counters.
+
+These are all-agent, all-request, all-connection runtime aggregates. They cannot
+supply measurements for an individual audit record. Reload preserves the owner;
+restart changes its runtime namespace and resets its counters. Reading the view
+does not start a consumer, enable capture or retain content. The counters are
+sampled while traffic and canonical fan-out continue; the report is not an
+atomic snapshot across every counter. It identifies the responding runtime,
+without guaranteeing that runtime remains available after acquisition.
+
+Capture `state = "not_running"` does not distinguish disabled capture from a
+failed startup. When a capture owner is running, output `configured` flags come
+from its effective settings, and `subscribed` flags describe live, open sink
+queues. Neither flag promises delivery. A configured TCP or WSS output can
+have no subscribed consumer. Consult its existing error, drop and disconnect
+counters separately. `wire_source_active` reports the existing acquisition
+owner's state, not a packet-completeness guarantee. An inactive wire source's
+zero counters do not establish successful acquisition.
+
 The runtime's existing Prometheus renderer includes the same operational
 counters. Metadata statistics use the existing HTTP endpoints. Layer labels identify transport
 streams, TLS cleartext, protocol messages and application content. Consumer

@@ -63,6 +63,8 @@ fn session(runtime: &Arc<Runtime>) -> Session {
     Session {
         state: Arc::new(RwLock::new(runtime.clone())),
         identity: ConnectionIdentity {
+            authorization_principal: None,
+            ingress_binding: None,
             run: None,
             agent_id: "alice".into(),
             connection_id: ID.into(),

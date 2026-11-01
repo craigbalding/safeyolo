@@ -248,9 +248,6 @@ ${command_install[@]+"${command_install[@]}"} mkdir -p "$command_dir"
 if ! $existing; then
   echo "SafeYolo: activating the verified installation at $root." >&2
   mkdir -p "$root"
-  if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]] || $runtime_override; }; then
-    "$staged_root/bin/safeyolo" --root "$staged_root" host grant-runtime-access
-  fi
   # Publish config last. Never replace a path created during activation.
   # A partial activation is preserved and refused on the next invocation.
   for input in "$staged_root/"*; do
@@ -261,6 +258,11 @@ if ! $existing; then
       move_install_input "$input" "$root"
     fi
   done
+  if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]] || $runtime_override; }; then
+    # The staged config selects the final runtime paths. Grant access only
+    # after those files exist, while keeping config publication last.
+    "$root/bin/safeyolo" --root "$staged_root" host grant-runtime-access
+  fi
   move_install_input "$staged_root/config.toml" "$root"
 else
   echo "SafeYolo: retaining the installed host, guest and state at $root." >&2

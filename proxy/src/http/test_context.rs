@@ -800,6 +800,8 @@ mod tests {
             Arc::new(Provenance::new(
                 self.state.read().unwrap().clone(),
                 ConnectionIdentity {
+                    authorization_principal: None,
+                    ingress_binding: None,
                     run: None,
                     agent_id: "alice".into(),
                     connection_id: "connection".into(),

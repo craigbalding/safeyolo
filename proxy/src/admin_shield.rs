@@ -7,7 +7,8 @@
 use std::{
     collections::BTreeSet,
     fmt,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::{Arc, RwLock},
 };
 
 use crate::{policy::python_whitespace, python_text::decimal};
@@ -58,14 +59,96 @@ impl std::error::Error for ConfigError {}
 #[derive(Clone, Debug)]
 pub struct AdminShield {
     ports: BTreeSet<u16>,
-    capture_endpoint: Option<CaptureEndpoint>,
+    capture_endpoint: Option<BoundTcpEndpoint>,
+    ingress_endpoints: Arc<RwLock<Vec<BoundTcpEndpoint>>>,
 }
 
-/// The bound capture address and the socket's effective address-family scope.
+/// The bound TCP address and the socket's effective address-family scope.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct CaptureEndpoint {
+pub(crate) struct BoundTcpEndpoint {
     pub(crate) address: SocketAddr,
     pub(crate) ipv6_only: bool,
+}
+
+impl BoundTcpEndpoint {
+    pub(crate) fn new(listener: &tokio::net::TcpListener) -> std::io::Result<Self> {
+        use std::os::fd::AsRawFd;
+        let address = listener.local_addr()?;
+        let mut ipv6_only: libc::c_int = 0;
+        if address.is_ipv6() {
+            let mut length = std::mem::size_of_val(&ipv6_only) as libc::socklen_t;
+            // The live socket and writable option buffer remain valid for this call.
+            if unsafe {
+                libc::getsockopt(
+                    listener.as_raw_fd(),
+                    libc::IPPROTO_IPV6,
+                    libc::IPV6_V6ONLY,
+                    (&mut ipv6_only as *mut libc::c_int).cast(),
+                    &mut length,
+                )
+            } != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(Self {
+            address,
+            ipv6_only: ipv6_only != 0,
+        })
+    }
+}
+
+// A wildcard ingress also listens on host interfaces. Resolve their current
+// addresses at the egress check, so an interface added after bind cannot open
+// a proxy route into another agent's partition.
+fn is_local_interface(address: IpAddr) -> bool {
+    if address.is_loopback() || address.is_unspecified() {
+        return true;
+    }
+    struct Interfaces(*mut libc::ifaddrs);
+    impl Drop for Interfaces {
+        fn drop(&mut self) {
+            unsafe {
+                libc::freeifaddrs(self.0);
+            }
+        }
+    }
+    let mut first = std::ptr::null_mut();
+    if unsafe { libc::getifaddrs(&mut first) } != 0 {
+        eprintln!("Ingress interface lookup failed; egress to its port denied");
+        return true;
+    }
+    let interfaces = Interfaces(first);
+    let mut current = interfaces.0;
+    while !current.is_null() {
+        // getifaddrs owns each address until Interfaces is dropped. The family
+        // chooses the matching sockaddr representation before its fields are read.
+        let entry = unsafe { &*current };
+        if !entry.ifa_addr.is_null() {
+            let family = unsafe { (*entry.ifa_addr).sa_family as libc::c_int };
+            let local = match family {
+                libc::AF_INET => Some(IpAddr::V4(std::net::Ipv4Addr::from(
+                    unsafe {
+                        (*(entry.ifa_addr as *const libc::sockaddr_in))
+                            .sin_addr
+                            .s_addr
+                    }
+                    .to_ne_bytes(),
+                ))),
+                libc::AF_INET6 => Some(IpAddr::V6(std::net::Ipv6Addr::from(unsafe {
+                    (*(entry.ifa_addr as *const libc::sockaddr_in6))
+                        .sin6_addr
+                        .s6_addr
+                }))),
+                _ => None,
+            };
+            if local.is_some_and(|local| normalize_mapped(local) == address) {
+                return true;
+            }
+        }
+        current = entry.ifa_next;
+    }
+    false
 }
 
 impl AdminShield {
@@ -100,6 +183,7 @@ impl AdminShield {
         Ok(Self {
             ports,
             capture_endpoint: None,
+            ingress_endpoints: Arc::default(),
         })
     }
 
@@ -125,7 +209,12 @@ impl AdminShield {
     /// The actual listener's bound port remains independently protected even
     /// when startup port zero or later option changes differ from this set.
     pub fn protects_port(&self, port: u16) -> bool {
-        self.ports.contains(&port)
+        self.ingress_endpoints
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .any(|bound| bound.address.port() == port)
+            || self.ports.contains(&port)
             || self
                 .capture_endpoint
                 .is_some_and(|bound| bound.address.port() == port)
@@ -138,7 +227,20 @@ impl AdminShield {
         self.ports.insert(bound.port());
     }
 
-    pub(crate) fn protect_capture_endpoint(&mut self, bound: CaptureEndpoint) {
+    pub(crate) fn retain_ingress_endpoints(&mut self, previous: &Self) {
+        self.ingress_endpoints = previous.ingress_endpoints.clone();
+    }
+
+    // Already-admitted requests retain Runtime snapshots. They must observe
+    // new local ingress endpoints too, rather than route into another partition.
+    pub(crate) fn protect_ingress_endpoints(&self, endpoints: Vec<BoundTcpEndpoint>) {
+        *self
+            .ingress_endpoints
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = endpoints;
+    }
+
+    pub(crate) fn protect_capture_endpoint(&mut self, bound: BoundTcpEndpoint) {
         self.capture_endpoint = Some(bound);
     }
 
@@ -147,16 +249,33 @@ impl AdminShield {
     /// This closes their alias hole without classifying all loopback IPs or
     /// remote addresses on these ports as local.
     pub fn blocks_address(&self, address: SocketAddr) -> bool {
-        self.capture_endpoint.is_some_and(|bound| {
-            let bound_ip = normalize_mapped(bound.address.ip());
-            let selected_ip = normalize_mapped(address.ip());
-            targets_listener(address, bound.address)
-                || bound.address.port() == address.port()
-                    && bound_ip.is_unspecified()
-                    && (bound_ip.is_ipv4() == selected_ip.is_ipv4()
-                        || bound_ip.is_ipv6() && !bound.ipv6_only)
-                    && (selected_ip.is_loopback() || selected_ip.is_unspecified())
-        }) || self.ports.contains(&address.port()) && is_protected_local_address(address.ip())
+        self.ingress_endpoints
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .any(|bound| {
+                if bound.address.port() != address.port() {
+                    return false;
+                }
+                let bound_ip = normalize_mapped(bound.address.ip());
+                let selected_ip = normalize_mapped(address.ip());
+                targets_listener(address, bound.address)
+                    || bound_ip.is_unspecified()
+                        && (bound_ip.is_ipv4() == selected_ip.is_ipv4()
+                            || bound_ip.is_ipv6() && !bound.ipv6_only)
+                        && is_local_interface(selected_ip)
+            })
+            || self.capture_endpoint.is_some_and(|bound| {
+                let bound_ip = normalize_mapped(bound.address.ip());
+                let selected_ip = normalize_mapped(address.ip());
+                targets_listener(address, bound.address)
+                    || bound.address.port() == address.port()
+                        && bound_ip.is_unspecified()
+                        && (bound_ip.is_ipv4() == selected_ip.is_ipv4()
+                            || bound_ip.is_ipv6() && !bound.ipv6_only)
+                        && (selected_ip.is_loopback() || selected_ip.is_unspecified())
+            })
+            || self.ports.contains(&address.port()) && is_protected_local_address(address.ip())
     }
 }
 
@@ -178,7 +297,7 @@ fn is_local(host: &str) -> bool {
 fn is_protected_local_address(address: IpAddr) -> bool {
     match normalize_mapped(address) {
         IpAddr::V4(ip) => ip == Ipv4Addr::LOCALHOST || ip == Ipv4Addr::UNSPECIFIED,
-        IpAddr::V6(ip) => ip == std::net::Ipv6Addr::LOCALHOST,
+        IpAddr::V6(ip) => ip == Ipv6Addr::LOCALHOST,
     }
 }
 
@@ -246,7 +365,7 @@ fn legacy_ipv4_component(value: &str) -> Option<u32> {
 /// An origin beyond that parent is not a socket opened by this process.
 ///
 /// Source gaps covered: textual aliases, IPv4-mapped IPv6, and the witnessed
-/// IPv4 unspecified destination that reaches a listener on 127.0.0.1. Other
+/// IPv4 and IPv6 unspecified destinations that reach their loopback listeners. Other
 /// loopback addresses and remote hosts on the same port stay outside this rule.
 pub fn targets_listener(selected: SocketAddr, bound: SocketAddr) -> bool {
     if selected.port() != bound.port() {
@@ -256,6 +375,7 @@ pub fn targets_listener(selected: SocketAddr, bound: SocketAddr) -> bool {
     let bound = normalize_mapped(bound.ip());
     selected == bound
         || selected == IpAddr::V4(Ipv4Addr::UNSPECIFIED) && bound == IpAddr::V4(Ipv4Addr::LOCALHOST)
+        || selected == IpAddr::V6(Ipv6Addr::UNSPECIFIED) && bound == IpAddr::V6(Ipv6Addr::LOCALHOST)
 }
 
 fn normalize_mapped(address: IpAddr) -> IpAddr {

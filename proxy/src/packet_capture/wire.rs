@@ -89,7 +89,7 @@ impl Drop for Ownership {
     }
 }
 impl Connections {
-    pub(super) fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         self.active.load(Ordering::Acquire)
     }
     pub(crate) fn register(
@@ -590,6 +590,8 @@ mod tests {
         ObservationSource::new(
             bus.clone(),
             &crate::ConnectionIdentity {
+                authorization_principal: None,
+                ingress_binding: None,
                 agent_id: "owned".into(),
                 connection_id: "ingress".into(),
                 source_id: None,

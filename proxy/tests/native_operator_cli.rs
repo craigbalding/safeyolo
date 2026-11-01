@@ -19,6 +19,9 @@ mod shared_approval_fixture;
 mod test_owned_endpoint;
 use shared_approval_fixture::*;
 
+#[path = "native_operator_cli/observations.rs"]
+mod observations;
+
 fn configure(fixture: &Fixture) {
     fs::write(fixture.root.path().join("config.toml"), format!(
         "admin_port={}\nadmin_api_token_file='admin_token'\npolicy_file='policy.toml'\naudit_log_path='audit.jsonl'\n", fixture.admin)).unwrap();
@@ -594,6 +597,7 @@ async fn requesting_context_uses_real_coord_attention_and_the_authenticated_repl
         "worker",
         &[],
         false,
+        None,
     )
     .unwrap();
     let id = fixture.network("worker", fixture.address).await.id();

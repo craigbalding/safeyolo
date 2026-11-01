@@ -591,6 +591,8 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
                         let observed = host_lifecycle::runtime(&agent).await?;
                         if !host_lifecycle::reuses_current_launch(&observed) {
                             host_lifecycle::validate_start_launcher(&proposed,operation)?;
+                            #[cfg(target_os = "macos")]
+                            crate::host_boot::warn_broad_shares(&proposed);
                         }
                         start_proxy().await?;
                     }

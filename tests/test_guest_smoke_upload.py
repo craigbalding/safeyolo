@@ -125,6 +125,9 @@ def test_workflow_refuses_incomplete_or_nontext_report_inputs(tmp_path, texts):
     ("workflow_dispatch", "refs/heads/master", "inspect", {"inspect"}),
     ("workflow_dispatch", "refs/heads/feature", "inspect", set()),
     ("pull_request", "refs/heads/master", "inspect", set()),
+    ("workflow_dispatch", "refs/heads/master", "custom-profile", {"custom-profile"}),
+    ("workflow_dispatch", "refs/heads/feature", "custom-profile", set()),
+    ("pull_request", "refs/heads/master", "custom-profile", set()),
 ])
 def test_upload_activity_selects_only_the_upload_job(event, ref, activity, expected):
     github = SimpleNamespace(event_name=event, ref=ref, event=SimpleNamespace(
@@ -160,6 +163,21 @@ def test_inspection_activity_is_read_only_and_retains_its_result():
     assert "cargo" not in commands and "--promote" not in commands and "--record-smoke" not in commands
     retained = next(step for step in job["steps"] if step.get("with", {}).get("name") == "guest-promotion-inspection")
     assert retained["if"] == "always()" and retained["with"]["path"] == "${{ runner.temp }}/guest-inspection.json"
+
+
+def test_custom_profile_activity_uses_only_the_selected_retained_layout():
+    job = WORKFLOW["jobs"]["custom-profile"]
+    assert "needs" not in job
+    assert job["permissions"] == {"contents": "read", "packages": "write"}
+    assert WORKFLOW["concurrency"] == {"group": "default-guest-publication", "cancel-in-progress": False}
+    download = next(step for step in job["steps"] if step.get("name") == "Download the selected layout release assets in order")
+    assert download["env"] == {"GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}"}
+    assert download["shell"] == "bash" and "${{" not in download["run"]
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "prepare_guest_transport_fixture" not in commands and "build-all.sh" not in commands
+    retained = next(step for step in job["steps"] if step.get("with", {}).get("name") == "guest-custom-profile-result")
+    assert retained["if"] == "always()"
+    assert "custom-profile-publication/result.json" in retained["with"]["path"]
 
 
 @pytest.mark.parametrize("activity,step_name,input_name", [

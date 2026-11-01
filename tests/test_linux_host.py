@@ -429,7 +429,7 @@ def test_remap_refuses_live_tree_and_bad_owner_before_changing_files(native_cli,
     result = command("sudo", "-n", native_cli, "host", "remap-rootfs", tree,
                      300000, 500000, os.getuid(), os.getgid())
     assert result.returncode != 0
-    assert {"shared": "private extract-", "outside-owner": "outside the published",
+    assert {"shared": "private extract-", "outside-owner": "outside the input ID range",
             "outside-link": "hard link outside"}[fault] in result.stderr
     assert tree.stat().st_uid == tree.stat().st_gid == 100000
     assert child.read_bytes() == b"preserved"

@@ -74,7 +74,7 @@ Service capabilities scope what an agent can do within a service. Risky routes (
 
 ### Auditability
 
-Behind the scenes, every request gets a unique ID. Every security decision — credential detection, policy evaluation, gateway enforcement — is logged to structured JSONL with the reasoning: what was detected, where it was going, what the policy said, and what happened. The `watch` command gives operators a real-time view of all decisions.
+Behind the scenes, every request gets a unique ID. Every security decision — credential detection, policy evaluation, gateway enforcement — is logged to structured JSONL with the reasoning: what was detected, where it was going, what the policy said, and what happened. Use `logs` to read retained events. Use `approvals` or `inspect` for current approval requests. Use `watch` for pending Coord signals.
 
 ## Enforcement Layers
 
@@ -125,6 +125,14 @@ Linux mounts only the agent's dedicated proxy directory into the sandbox.
 On Linux, a synthetic loopback address supplies attribution. It is not an
 external interface or a direct egress path. Existing explicit operator
 listeners keep their configured paths.
+
+An operator can also configure a named external TCP ingress for one existing
+listener's policy and evidence partition. The native proxy fixes that owner
+at accept and records external binding provenance. External bytes carry no
+sandbox run or source-slot authority. The operator chooses the TCP exposure;
+the ingress does not authenticate external clients. The existing operator-port
+shield prevents proxy egress from entering these listeners. See the
+[prototype's identity and lifecycle limits](docs/networking-vsock-uds.md#operator-bound-external-ingress-prototype).
 
 For a resolved service-gateway token, SafeYolo rejects a path spelling if
 service route normalization changes it. This includes dot segments, encoded

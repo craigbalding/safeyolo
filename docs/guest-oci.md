@@ -109,6 +109,163 @@ layered base. Build provenance and base compatibility do not relax the existing
 exact source/profile checks for host-shipped `safeyolo-guest`, `safeyolo-coord`
 or Mac helpers.
 
+### Explicit custom profiles
+
+A custom index and every child also carry the same nonempty
+`dev.safeyolo.guest.profile`, for example `kali-pentest`. Each child requires
+`dev.safeyolo.guest.build-inputs=sha256:<64 lowercase hex>`, the digest of its
+completed build's `build-inputs.json`. That record contains declared source
+hashes, base identity, architecture, output kind and frozen tool inputs.
+The archive producer includes the record in the opaque archive. The normal
+archive digest verifies all transported bytes.
+
+Custom indexes contain one or more of the supported consumer platforms.
+They need not contain every default-release platform. Duplicate or unknown
+platforms, incompatible generations and mismatched child profile identities
+are rejected. The maintained Kali profile supplies both Linux architectures
+and macOS arm64; its ARM64 distro build is reused for tree and ext4 exports.
+
+Prepare custom archives with `guest/archive-default.sh`, then invoke the same
+publisher with `--profile NAME`. Retained-layout publication also requires
+that explicit name. Custom publication does not update a compatibility tag.
+Stock compatibility-tag discovery and default promotion exclude custom profiles. Consumers
+select a custom index explicitly by immutable digest through the existing
+installer or guest upgrade command. The host compatibility requirement and
+normal ownership/ext4 contracts remain enforced. The
+[custom-rootfs guide](../contrib/ROOTFS_SCRIPT_GUIDE.md#cached-kali-builds)
+describes the local staged build and export path.
+
+### Publish a qualified custom layout through Actions
+
+The `custom-profile` activity in `guest-oci.yml` publishes an explicitly
+selected layout through the repository's `GITHUB_TOKEN` writer.
+It does not run a distro build. It copies the unchanged index by digest and
+reads back every child, config and archive through the shared verifier.
+Existing version and compatibility tags retain their targets. Custom indexes
+remain outside default discovery and promotion.
+
+First qualify the consumer archives with the maintained profile builder,
+exporter and archive producer. Keep each selected consumer's `guest.tar.zst`,
+`build-inputs.json` and `build-base.txt` together under `darwin-arm64`,
+`linux-amd64` or `linux-arm64` in one archive directory. Preserve the recorded
+archive and build-input hashes from that qualification. Publication checks
+those identities; it does not establish boot, installed isolation or clean-host
+acceptance.
+
+On a Linux maintainer machine, use Python 3.12+, a source checkout, the maintained ORAS
+publisher and a current shared native verifier that supports custom profiles.
+Set `ARTIFACTS` to the qualified archive directory and `LAYOUT` to an owned
+directory for the complete OCI layout. Set `PROFILE_SOURCE` to the full source
+commit used for the qualified profile inputs. It can differ from the Actions
+publisher commit. Set `GUEST_VERSION` to a fresh `guest-YYYY-MM-DD.N` identity,
+`PROFILE_NAME` to the custom profile name, `COMPATIBILITY` to the host's required
+identifier, and `VERIFIER` to the native verifier executable. From the checkout:
+
+```sh
+scripts/publish_guest_oci.sh --artifacts "$ARTIFACTS" --layout "$LAYOUT" \
+  --version "$GUEST_VERSION" --compatibility "$COMPATIBILITY" \
+  --revision "$PROFILE_SOURCE" --profile "$PROFILE_NAME" --verifier "$VERIFIER"
+INDEX=$(oras resolve --oci-layout "$LAYOUT:$GUEST_VERSION")
+```
+
+The command verifies the complete local layout and prints its immutable index
+digest. Transfer the unchanged layout with the maintained upload helper below.
+The helper uses the operator's existing authenticated `gh` repository access.
+Set `INPUT_RELEASE` to a new input-transfer release tag, for example
+`guest-layout-` followed by the index's SHA-256 hex. Set `TRANSFER_DIR` to a new
+owned directory outside the checkout, with disk space for the complete layout.
+
+```sh
+scripts/upload_guest_profile_layout.sh "$LAYOUT" "$PROFILE_SOURCE" "$INPUT_RELEASE" "$TRANSFER_DIR"
+```
+
+The helper packs `oci-layout`, `index.json` and `blobs/` at the tar root and
+splits the stream into 1 GiB parts. [GitHub limits each release asset](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)
+to less than 2 GiB; splitting preserves larger complete layouts without changing their
+OCI bytes. The helper creates a prerelease at `PROFILE_SOURCE`, explicitly
+leaves Latest unchanged, uploads the parts with `gh release create`, and reads
+their numeric asset IDs through the release API. These assets supply input
+transport; OCI remains the guest catalogue. The resulting
+`TRANSFER_DIR/layout-upload.json` records the ordered asset IDs, combined tar
+SHA-256, source revision and release ID. No local GHCR credential is used.
+After an interrupted upload, inspect that release and its assets before another
+write. The helper does not replace existing assets or delete retained inputs.
+
+After this workflow change is on `master`, an authenticated repository operator
+can dispatch the writer. The following command uses Python and `gh` from the
+same checkout. It sends the upload identities, selected source/profile/index and hashes the
+qualified archive and build-input files. Check those hashes against the retained
+qualification before dispatch. Set `REQUEST_FILE` to an owned JSON file outside
+the checkout. No local GHCR login is required.
+
+```sh
+export ARTIFACTS INDEX PROFILE_SOURCE PROFILE_NAME TRANSFER_DIR COMPATIBILITY
+python3 - <<'PY' > "$REQUEST_FILE"
+import hashlib
+import json
+import os
+from pathlib import Path
+
+def digest(path):
+    with path.open("rb") as stream:
+        return "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+
+artifacts = Path(os.environ["ARTIFACTS"])
+platforms = {}
+for name in ("darwin-arm64", "linux-amd64", "linux-arm64"):
+    directory = artifacts / name
+    if directory.is_dir():
+        platforms[name.replace("-", "/")] = {
+            "archive": digest(directory / "guest.tar.zst"),
+            "build_inputs": digest(directory / "build-inputs.json"),
+        }
+transfer = json.loads((Path(os.environ["TRANSFER_DIR"]) / "layout-upload.json").read_bytes())
+print(json.dumps({
+    **transfer,
+    "index": os.environ["INDEX"], "source_revision": os.environ["PROFILE_SOURCE"],
+    "profile": os.environ["PROFILE_NAME"], "platforms": platforms,
+}, indent=2))
+PY
+cat "$REQUEST_FILE"
+```
+
+After the request matches the qualified inputs, dispatch it:
+
+```sh
+gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
+  -f activity=custom-profile -f compatibility="$COMPATIBILITY" \
+  -F custom_profile=@"$REQUEST_FILE"
+```
+
+The writer downloads the exact asset IDs in order, checks the combined tar
+SHA-256, and extracts the layout into a new directory with Python's data-only
+tar filter. The extracted root contains `oci-layout`, `index.json` and `blobs/`.
+The writer refuses a mismatched source, profile, platform set, archive digest
+or build-input digest before registry login. The index digest binds all
+manifest and config bytes, including pinned base identities. The shared verifier
+checks compatibility and every referenced descriptor. A failed upload, login
+or readback fails the job. The `guest-custom-profile-result` artifact retains
+the request, verified selection and reached publication results. Only a
+successful readback writes `custom-profile-publication/result.json`, which
+includes the selected identities, destination and Actions publisher revision.
+Inspect the original run and live digest after an uncertain write before retrying.
+
+For a clean host with a verified compatible host bundle, set `HOST_BUNDLE` to
+the unpacked bundle directory, `ROOT` to the new installation directory, and
+`INDEX` to the successfully published custom index digest. Use the maintained
+installer from the qualified source checkout:
+
+```sh
+scripts/install_native.sh --bundle "$HOST_BUNDLE" --root "$ROOT" --guest-index "$INDEX" --yes
+```
+
+The installer selects the current host platform explicitly and verifies the
+published bytes. It does not repeat the distro build. For an existing
+compatible installation, select the same digest with
+`safeyolo --root "$ROOT" guest upgrade --index "$INDEX"`, then stop and start
+the agent to use it. Publication success alone does not prove either installed
+workflow or complete the custom-profile acceptance criteria.
+
 ## Descriptor verification and selection
 
 Each index child, config and archive descriptor must carry the required media
@@ -133,7 +290,7 @@ content from another release into that operation.
 its pinned child descriptor. `validate_child` checks raw child hash/size,
 shared annotations, build-base, config descriptor and single archive descriptor.
 `GuestChild::validate_config` checks the config's raw identity/size and exact
-consumer platform. `validate_children` checks all children in
+consumer platform. `validate_children` checks all declared children in
 `ConsumerPlatform::ALL` order, including distinct Mac/Linux arm64 archive
 identities. `Descriptor::verify` checks a reader incrementally through EOF;
 `check_size` supports callers whose OCI client already verifies the hash.

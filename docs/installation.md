@@ -14,6 +14,14 @@ installation alternatives, earlier bundles, host preparation, builds and recover
 The [tested scope](#tested-onboarding-scope) separates installed proof from
 current-source capabilities and remaining platform work.
 
+On macOS, select a repository or worktree as the workspace, such as
+`safeyolo agent launch ~/proj/my-repo`. A broad parent such as `~/proj` gives
+the agent write access to unrelated projects. Traversing that larger VirtioFS
+share also retains more host file handles, which several agents can exhaust.
+Intentional broad shares remain supported. See
+[macOS host file-table pressure](microvm-architecture.md#macos-host-file-table-pressure)
+for the warning, limits and diagnostics.
+
 ## Install and start
 
 This manual alternative retains the earlier `host-7a38` bundle instructions.

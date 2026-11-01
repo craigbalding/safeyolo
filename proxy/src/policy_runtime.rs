@@ -258,7 +258,7 @@ mod tests {
         assert_eq!(
             event,
             json!({
-                "schema_version":1, "event":"ops.policy_error", "kind":"ops",
+                "schema_version":2, "event":"ops.policy_error", "kind":"ops",
                 "severity":"high", "addon":"policy-loader",
                 "summary":format!("Baseline policy load failed: {}", expected.message),
                 "details":{"policy_type":"baseline", "error":expected.message}
@@ -309,7 +309,14 @@ mod tests {
                 .unwrap()
                 .lines()
                 .map(|line| {
-                    let mut value: Value = serde_json::from_str(line).unwrap();
+                    let mut value = crate::audit::parse_record(line).unwrap();
+                    assert_eq!(
+                        value
+                            .as_object_mut()
+                            .unwrap()
+                            .shift_remove("schema_version"),
+                        Some(json!(2))
+                    );
                     value["ts"] = "<canonical timestamp>".into();
                     value
                 })
@@ -318,7 +325,14 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|attempt| attempt["event"].clone())
+                .map(|attempt| {
+                    let mut payload = attempt["event"].clone();
+                    payload
+                        .as_object_mut()
+                        .unwrap()
+                        .shift_remove("schema_version");
+                    payload
+                })
                 .collect();
             assert_eq!(actual, expected, "{name}");
             for (actual, expected) in actual.iter().zip(&expected) {

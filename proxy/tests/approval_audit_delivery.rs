@@ -2,7 +2,7 @@
 
 use safeyolo_proxy::{AgentListener, Config, Proxy};
 use serde_json::{Value, json};
-use std::{fs, path::Path, process::Command, time::Duration};
+use std::{fs, path::Path, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UnixStream},
@@ -53,9 +53,10 @@ capabilities:
 
 fn config(root: &Path) -> Config {
     Config {
-        native_product: false,
+        native_product: true,
+        ingress_bindings: vec![],
         native_settings: None,
-        native_config_dir: None,
+        native_config_dir: Some(root.to_owned()),
         native_config_path: None,
         listeners: vec![AgentListener {
             agent_id: "alice".into(),
@@ -145,23 +146,24 @@ async fn reply(stream: &mut (impl AsyncReadExt + Unpin)) -> (u16, Value) {
     (status, serde_json::from_str(body).unwrap())
 }
 
-fn watch_pending(audit_path: &Path) -> Value {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-    let python = std::env::var_os("SAFEYOLO_PYTHON")
-        .unwrap_or_else(|| root.join(".venv/bin/python").into_os_string());
-    let output = Command::new(python)
-        .arg("-c")
-        .arg("import json,sys; from pathlib import Path; from safeyolo.core.audit_stream import scan_pending_approvals; print(json.dumps(scan_pending_approvals(Path(sys.argv[1]))[0]))")
-        .arg(audit_path)
-        .env("PYTHONPATH", root.join("tests/reference"))
-        .output()
-        .unwrap();
+async fn operator_pending(root: &Path) -> Value {
+    let output = tokio::time::timeout(
+        Duration::from_secs(15),
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .arg("--root")
+            .arg(root)
+            .args(["approvals", "list", "--json"])
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert!(
         output.status.success(),
-        "watch scan: {}",
+        "operator approvals: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    serde_json::from_slice(&output.stdout).unwrap()
+    serde_json::from_slice::<Value>(&output.stdout).unwrap()["approvals"].clone()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -180,7 +182,7 @@ async fn approval_claims_require_operator_visible_audit_and_recover_in_one_proce
     fs::write(root.join("services/contract.yaml"), CONTRACT).unwrap();
     fs::write(
         root.join("policy.toml"),
-        "[hosts.\"127.0.0.1\"]\nservice = \"simple\"\n[agents.alice]\n",
+        "[hosts.\"127.0.0.1\"]\nservice = \"simple\"\n[agents.alice]\nagent_id = \"ag-11111111111111111111111111111111\"\n",
     )
     .unwrap();
     let audit_path = root.join("audit.jsonl");
@@ -188,6 +190,9 @@ async fn approval_claims_require_operator_visible_audit_and_recover_in_one_proce
     let proxy = Proxy::start(config(root)).await.unwrap();
     let ready: Value = serde_json::from_slice(&fs::read(root.join("ready.json")).unwrap()).unwrap();
     let port = ready["admin_port"].as_u64().unwrap() as u16;
+    fs::write(root.join("config.toml"), format!(
+        "admin_port={port}\nadmin_api_token_file='admin-token'\npolicy_file='policy.toml'\naudit_log_path='audit.jsonl'\n"
+    )).unwrap();
     let socket = root.join("alice.sock");
     let cases = [
         (
@@ -210,13 +215,38 @@ async fn approval_claims_require_operator_visible_audit_and_recover_in_one_proce
         ),
     ];
 
+    let policy = fs::read_to_string(root.join("policy.toml")).unwrap();
     for (path, body, _, _) in cases {
         let (status, response) = agent(&socket, path, body).await;
         assert_eq!(status, 500, "{path}: {response}");
         assert_eq!(response["error"], "Internal error: RuntimeError");
+        assert!(response.get("status").is_none(), "{path}: {response}");
     }
-    assert_eq!(admin(port).await, json!([]));
-    assert_eq!(watch_pending(&audit_path), json!([]));
+    // Canonical requests survive failed audit delivery. They remain pending,
+    // without a permission effect or a successful response to the requester.
+    // Desktop presentation still requires its audit-backed prompt.
+    let retained = admin(port).await;
+    assert_eq!(retained.as_array().unwrap().len(), 2, "{retained}");
+    for approval_type in ["service", "contract_binding"] {
+        let record = retained
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["approval"]["approval_type"] == approval_type)
+            .unwrap();
+        assert_eq!(record["status"], "pending");
+        assert_eq!(record["agent"], "alice");
+        assert_eq!(
+            record["action"]["agent_id"],
+            "ag-11111111111111111111111111111111"
+        );
+        assert_eq!(record["approval"]["required"], true);
+        assert!(record["result"].is_null());
+    }
+    assert_eq!(
+        fs::read_to_string(root.join("policy.toml")).unwrap(),
+        policy
+    );
     assert!(audit_path.is_dir());
 
     fs::remove_dir(&audit_path).unwrap();
@@ -231,24 +261,77 @@ async fn approval_claims_require_operator_visible_audit_and_recover_in_one_proce
         }
     }
     let pending = admin(port).await;
-    let watched = watch_pending(&audit_path);
-    assert_eq!(pending.as_array().unwrap().len(), 3);
-    assert_eq!(watched.as_array().unwrap().len(), 3);
+    let listed = operator_pending(root).await;
+    let audit: Vec<Value> = fs::read_to_string(&audit_path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|event| event["approval"]["required"] == true)
+        .collect();
+    assert_eq!(pending.as_array().unwrap().len(), 3, "{pending}");
+    assert_eq!(listed.as_array().unwrap().len(), 3, "{listed}");
+    assert_eq!(audit.len(), 3, "{audit:?}");
     for (_, _, approval_type, event_name) in cases {
-        for view in [&pending, &watched] {
-            let event = view
+        let event = audit
+            .iter()
+            .find(|event| event["event"] == event_name)
+            .unwrap();
+        assert_eq!(event["schema_version"], 2);
+        assert_eq!(event["agent"], "alice");
+        assert_eq!(event["approval"]["approval_type"], approval_type);
+        let record = pending
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["approval"]["approval_type"] == approval_type)
+            .unwrap();
+        assert_eq!(record["agent"], "alice");
+        assert_eq!(record["approval"]["required"], true);
+        let id = if approval_type == "desktop_present" {
+            assert_eq!(record["event"], event_name);
+            assert_eq!(event["request_id"], desktop_request_id.as_deref().unwrap());
+            assert_eq!(record["request_id"], event["request_id"]);
+            &record["request_id"]
+        } else {
+            let canonical_event = if approval_type == "contract_binding" {
+                "gateway.contract_binding_requested"
+            } else {
+                event_name
+            };
+            assert_eq!(record["event"], canonical_event);
+            assert_eq!(record["status"], "pending");
+            assert_eq!(
+                record["action"]["agent_id"],
+                "ag-11111111111111111111111111111111"
+            );
+            assert_eq!(event["details"]["approval_id"], record["approval_id"]);
+            let prior = retained
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|event| event["event"] == event_name)
+                .find(|prior| prior["approval_id"] == record["approval_id"])
                 .unwrap();
-            assert_eq!(event["agent"], "alice");
-            assert_eq!(event["approval"]["approval_type"], approval_type);
-            assert_eq!(event["approval"]["required"], true);
-            if approval_type == "desktop_present" {
-                assert_eq!(event["request_id"], desktop_request_id.as_deref().unwrap());
-            }
+            assert_eq!(record["request_id"], prior["request_id"]);
+            assert_eq!(record["authority_digest"], prior["authority_digest"]);
+            &record["approval_id"]
+        };
+        let visible = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|visible| visible["approval_id"] == *id)
+            .unwrap();
+        assert!(id.as_str().is_some_and(|id| !id.is_empty()));
+        assert_eq!(visible["agent"], "alice");
+        assert_eq!(visible["status"], "pending");
+        for field in ["request_id", "summary", "action", "options"] {
+            assert_eq!(visible[field], record[field], "{approval_type}: {field}");
         }
+        assert_eq!(visible["target"], record["approval"]["target"]);
     }
+    assert_eq!(
+        fs::read_to_string(root.join("policy.toml")).unwrap(),
+        policy
+    );
     proxy.shutdown().await;
 }

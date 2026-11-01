@@ -5,7 +5,9 @@ import base64
 import hmac
 import ipaddress
 import json
+import os
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -13,6 +15,7 @@ import threading
 import unittest
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -27,6 +30,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
+from filelock import FileLock, Timeout
 
 
 @contextmanager
@@ -289,6 +293,72 @@ get_logger_provider().shutdown()
 
 
 class CacheDependencies(unittest.TestCase):
+    def test_pip_audit_cache_round_trip_survives_new_session(self):
+        from pip_audit._service import PyPIService
+
+        body = b'{"vulnerabilities": []}'
+        responses = {"/": (200, {"Cache-Control": "public, max-age=3600"}, body)}
+        with tempfile.TemporaryDirectory() as temporary, http_responses(responses) as (url, paths):
+            # pip-audit overrides FileCache writes to avoid lock files.
+            for expected_cached in (False, True):
+                with PyPIService(cache_dir=Path(temporary)).session as session:
+                    session.trust_env = False
+                    with session.get(url + "/", timeout=5) as response:
+                        self.assertEqual(response.content, body)
+                        self.assertEqual(response.from_cache, expected_cached)
+            self.assertEqual(paths, ["/"])
+
+    @unittest.skipUnless(os.name == "posix", "Unix lock replacement control")
+    def test_file_cache_preserves_renamed_and_hard_linked_lock_targets(self):
+        # GHSA-69hj-f68j-2879: a regular file at the lock path is not a symlink.
+        for replacement in ("rename", "hardlink"):
+            for mode in (None, 0o666):
+                with self.subTest(replacement=replacement, mode=mode), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    cache = FileCache(root / "cache")
+                    if mode is not None:
+                        cache.lock_class = partial(FileLock, mode=mode)
+                    key = "https://cache.invalid/dependency"
+                    cache.set(key, b"before")
+                    lock_path = Path(cache._fn(key) + ".lock")
+                    lock_path.unlink(missing_ok=True)
+                    victim = root / "private-journal"
+                    victim.write_bytes(b"keep private contents")
+                    victim.chmod(0o600)
+                    with victim.open("rb") as retained:
+                        before = os.fstat(retained.fileno())
+                        if replacement == "rename":
+                            victim.rename(lock_path)
+                        else:
+                            os.link(victim, lock_path)
+                        cache.set(key, b"after")
+                        after = os.fstat(retained.fileno())
+                        self.assertEqual(retained.read(), b"keep private contents")
+                        self.assertEqual(stat.S_IMODE(after.st_mode), 0o600)
+                        self.assertEqual((after.st_uid, after.st_gid), (before.st_uid, before.st_gid))
+                    self.assertEqual(cache.get(key), b"after")
+                    self.assertEqual(stat.S_IMODE(Path(cache._fn(key)).stat().st_mode), 0o600)
+
+    def test_file_cache_lock_contention_preserves_cached_value_and_recovers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = FileCache(temporary, lock_class=partial(FileLock, timeout=0))
+            key = "https://cache.invalid/dependency"
+            cache.set(key, b"before")
+            with FileLock(cache._fn(key) + ".lock", timeout=0):
+                with self.assertRaises(Timeout):
+                    cache.set(key, b"blocked")
+                self.assertEqual(cache.get(key), b"before")
+            cache.set(key, b"after")
+            self.assertEqual(cache.get(key), b"after")
+
+    @unittest.skipUnless(os.name == "posix", "Unix lock mode control")
+    def test_new_lock_honors_explicit_private_mode(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "private.lock"
+            with FileLock(path, mode=0o600):
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                self.assertEqual(path.stat().st_uid, os.getuid())
+
     def test_strict_map_key_failure_releases_decoded_value(self):
         self.assertEqual(msgpack.unpackb.__module__, "msgpack._cmsgpack")
         value = object()

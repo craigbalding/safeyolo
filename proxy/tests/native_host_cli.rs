@@ -1000,6 +1000,13 @@ esac
                 .unwrap();
         }
         wait_for(&|| root.join("starts").exists());
+        // The child can start before the parent publishes its PID and birth token.
+        // This launch's post_launch hook follows that publication.
+        let post_launch_line = format!("{} post_launch", results[0]["launch_id"].as_str().unwrap());
+        wait_for(&|| {
+            fs::read_to_string(root.join("hooks"))
+                .is_ok_and(|hooks| hooks.lines().any(|line| line == post_launch_line))
+        });
         fs::OpenOptions::new()
             .write(true)
             .open(root.join("transport-gate"))
@@ -1808,10 +1815,23 @@ fn workflow_stop_inherits_the_selected_lock_without_releasing_the_parent_barrier
         String::from_utf8_lossy(&rejected.stderr).contains("does not belong to the selected agent")
     );
     drop(lock);
-    assert_eq!(
-        unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-        0
-    );
+    // A concurrent fork can retain a close-on-exec copy until the child execs.
+    let (released, receive) = std::sync::mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let result = if unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        };
+        drop(contender);
+        // A retained lock can make the receiver time out and fail the test.
+        let _ = released.send(result);
+    });
+    receive
+        .recv_timeout(Duration::from_secs(5))
+        .expect("setup lock remained held after parent close")
+        .expect("acquire setup lock after parent close");
+    waiter.join().unwrap();
 }
 
 #[test]

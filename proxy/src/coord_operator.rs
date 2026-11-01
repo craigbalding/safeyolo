@@ -12,6 +12,11 @@ use rustyline::{DefaultEditor, ExternalPrinter, error::ReadlineError};
 use serde_json::{Value, json};
 
 use crate::{Error, agent_api::coord::OperatorCoord, coord_timeline};
+pub(crate) mod catch_up;
+pub(crate) mod signals;
+pub async fn watch(config: &Path, arguments: &[String]) -> Result<(), Error> {
+    signals::watch(config, arguments).await
+}
 
 pub const HELP: &str = "safeyolo [--root ROOT] coord send ROOM [TEXT | --file FILE | --stdin] [--to AGENT ...] [--content-type text/plain|text/markdown]\nsafeyolo [--root ROOT] coord chat ROOM [--since SEQUENCE] [--to AGENT] [--observe]\nsafeyolo [--root ROOT] coord history ROOM [--since SEQUENCE]\nsafeyolo [--root ROOT] coord watch ROOM [--history COUNT] [--since SEQUENCE] [--once] [--raw|--json|--compact] [--max-text COUNT] [--redact] [--show-unknown] [--no-color]\nsafeyolo coord watch --jsonl FILE [--raw|--json|--compact] [--max-text COUNT] [--redact] [--show-unknown]\n\nSend reads exactly one UTF-8 input and preserves its payload. --to targets receive-authorized members; otherwise it notifies the room.\nChat receives while you edit. :paste/:p reads the host clipboard, :edit/:e opens $VISUAL or $EDITOR, :q exits. Composed clipboard/editor messages require confirmation. Chat requires a terminal on stdin and stdout.\nWatch renders room messages and Codex/Pi harness events. --compact shows the concise transcript, with one start line and only failures or useful receipts on completion. Text is complete by default. --max-text limits only display; --redact is optional. --json preserves canonical payloads as JSONL. --jsonl - reads stdin.\nUnknown publication is reported without automatic retry. Inspect history before deciding whether to send again.";
 
@@ -22,6 +27,7 @@ struct Options {
     file: Option<String>,
     stdin: bool,
     expected_revision: Option<i64>,
+    operation_id: Option<String>,
     targets: Vec<String>,
     content_type: Option<String>,
     since: u64,
@@ -69,6 +75,9 @@ fn parse(command: &str, args: &[String]) -> Result<Options, Error> {
                             .filter(|revision| *revision >= 0)
                             .ok_or("--expected-revision requires a nonnegative integer")?,
                     );
+                }
+                "--operation-id" if command == "brief set" => {
+                    options.operation_id = Some(value()?.clone());
                 }
                 "--content-type" if command == "send" => {
                     options.content_type = Some(value()?.clone())
@@ -171,7 +180,7 @@ fn body(options: &Options, kind: &str) -> Result<String, Error> {
     Ok(body)
 }
 
-pub const BRIEF_HELP: &str = "safeyolo [--root ROOT] coord brief show ROOM\nsafeyolo [--root ROOT] coord brief set ROOM [MARKDOWN | --file FILE | --stdin] --expected-revision REVISION\n\nShow prints the canonical Markdown, revision and SHA-256, or state=none with revision 0.\nSet reads exactly one nonempty UTF-8 input (at most 65536 bytes). Use expected revision 0 to create a missing brief. Stale expectations fail without changing the brief or attention. Successful writes notify current receive-authorized members through brief_changed attention. A brief is optional standing context; it does not assign work or change workflow state.";
+pub const BRIEF_HELP: &str = "safeyolo [--root ROOT] coord brief show ROOM\nsafeyolo [--root ROOT] coord brief set ROOM [MARKDOWN | --file FILE | --stdin] --expected-revision REVISION [--operation-id ID]\n\nShow prints the canonical Markdown, revision and SHA-256, or state=none with revision 0.\nSet reads exactly one nonempty UTF-8 input (at most 65536 bytes). Use expected revision 0 to create a missing brief. Different operations with stale expectations fail without changing the brief or attention. Choose an operation ID before writing to recover an ambiguous result: retry the same ID, original expected revision and exact Markdown to receive the original result, even after later updates. Changed input under that ID conflicts. Omitted IDs are generated and returned in results. Successful writes notify current receive-authorized members through brief_changed attention. A brief is optional standing context; it does not assign work or change workflow state.";
 
 pub(crate) fn run_brief(root: &Path, arguments: &[String]) -> Result<Value, Error> {
     match arguments {
@@ -195,6 +204,7 @@ pub(crate) fn run_brief(root: &Path, arguments: &[String]) -> Result<Value, Erro
                 options.room.as_deref().ok_or("room missing")?,
                 &markdown,
                 expected,
+                options.operation_id.as_deref(),
             )
         }
         _ => Err(BRIEF_HELP.into()),
@@ -596,13 +606,25 @@ async fn run_options(
         } else {
             Box::new(std::io::BufReader::new(std::fs::File::open(path)?))
         };
+        let mut rendered_signals = BTreeSet::new();
         for line in input.lines() {
             let line = line?;
             if line.is_empty() {
                 continue;
             }
-            if serde_json::from_str::<Value>(&line).is_err() {
+            let Ok(event) = serde_json::from_str::<Value>(&line) else {
                 eprintln!("coord watch: invalid JSONL event; continuing with the next line");
+                continue;
+            };
+            if let Some(output) =
+                signals::audit_revision(config, &event, options.display.json).await?
+            {
+                if rendered_signals.insert((
+                    event["details"]["signal_id"].to_string(),
+                    event["details"]["revision"].to_string(),
+                )) {
+                    print!("{output}");
+                }
                 continue;
             }
             let message = json!({"sent_at":time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000,"sender_kind":"agent","sender_agent_name":"reviewer","body":line});

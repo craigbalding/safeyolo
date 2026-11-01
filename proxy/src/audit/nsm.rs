@@ -9,13 +9,88 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use super::{Error, ErrorKind, Result};
 
-pub(super) const SCHEMA_VERSION: i64 = 2;
-
 pub(super) fn is_event(name: &str) -> bool {
     matches!(
         name,
         "network.connection" | "traffic.flow" | "security.indicator"
     )
+}
+
+/// Decision events participate in NSM joins at scoped request publications.
+pub(super) fn is_request_decision(name: &str) -> bool {
+    matches!(
+        name,
+        "security.network_guard"
+            | "security.network_guard.evaluated"
+            | "security.credential_guard"
+            | "security.credential_guard.evaluated"
+            | "security.credential_guard.codex_refreshed"
+            | "gateway.allow"
+            | "gateway.deny"
+            | "gateway.refresh_failed"
+            | "gateway.https_redirect"
+            | "gateway.http_injection_allowed"
+    )
+}
+
+/// A partial scope must be validated, never treated as an unscoped decision.
+pub(super) fn is_scoped(record: &Value) -> bool {
+    let name = record["event"].as_str().unwrap_or_default();
+    is_event(name)
+        || (is_request_decision(name)
+            && [
+                "instance_id",
+                "runtime_id",
+                "client_connection_id",
+                "sandbox_run",
+            ]
+            .iter()
+            .any(|key| record["details"].get(key).is_some()))
+}
+
+fn request_decision_valid(record: &Value) -> bool {
+    let details = &record["details"];
+    let name = record["event"].as_str().unwrap_or_default();
+    let addon = match name {
+        "security.network_guard" | "security.network_guard.evaluated" => "network-guard",
+        "security.credential_guard"
+        | "security.credential_guard.evaluated"
+        | "security.credential_guard.codex_refreshed" => "credential-guard",
+        _ => "service-gateway",
+    };
+    let evaluated = name.ends_with(".evaluated");
+    ["instance_id", "runtime_id", "client_connection_id"]
+        .iter()
+        .all(|key| details[key].as_str().is_some_and(|id| required(&[id])))
+        && ["request_id", "event_id", "host"]
+            .iter()
+            .all(|key| record[key].as_str().is_some_and(|id| required(&[id])))
+        && ((evaluated && record.get("addon").is_none() && record.get("control").is_none())
+            || (record["addon"] == addon && record.get("control").is_none())
+            || (record["control"] == crate::policy::native::control_label(addon)
+                && record.get("addon").is_none()))
+        && (if evaluated {
+            record.get("decision").is_none()
+                && matches!(
+                    details["outcome"].as_str(),
+                    Some("allowed" | "blocked" | "warned" | "bypassed" | "no_detection")
+                )
+                && if name == "security.network_guard.evaluated" {
+                    details["outcome"] != "no_detection"
+                        && details
+                            .get("pdp")
+                            .is_some_and(|pdp| pdp.is_null() || pdp.is_object())
+                } else {
+                    details["evaluations"].is_array()
+                }
+        } else {
+            matches!(
+                record["decision"].as_str(),
+                Some("allow" | "deny" | "warn" | "require_approval" | "budget_exceeded" | "log")
+            )
+        })
+        && ((addon == "service-gateway" && details.get("connection_id").is_none())
+            || details["connection_id"] == details["client_connection_id"])
 }
 
 #[derive(Deserialize)]
@@ -46,6 +121,7 @@ struct Connection {
     route: Option<String>,
     tls_server_name: Option<String>,
     tls_client_hello: Option<crate::tls_identity::ClientHello>,
+    tls_server_hello: Option<crate::tls_identity::ServerHelloObservation>,
     tls_sessions: Option<Vec<crate::tls_identity::TlsSession>>,
     ingress: String,
 }
@@ -130,6 +206,10 @@ impl Connection {
                     && sessions.iter().all(crate::tls_identity::TlsSession::valid)
             })
             && self
+                .tls_server_hello
+                .as_ref()
+                .is_none_or(|hello| self.leg == "proxy_to_upstream" && hello.valid())
+            && self
                 .route
                 .as_deref()
                 .is_none_or(|route| matches!(route, "direct" | "parent" | "provider"))
@@ -162,41 +242,34 @@ pub(super) fn validate(record: &Value) -> Result<()> {
         "network.connection" => "network",
         "traffic.flow" => "traffic",
         "security.indicator" => "security",
+        name if is_request_decision(name) => {
+            if name.starts_with("gateway.") {
+                "gateway"
+            } else {
+                "security"
+            }
+        }
         _ => return Err(invalid()),
     };
-    if record["kind"] != expected_kind
-        || record["ts"]
-            .as_str()
-            .is_none_or(|ts| OffsetDateTime::parse(ts, &Rfc3339).is_err())
-        || record.as_object().ok_or_else(invalid)?.keys().any(|key| {
-            !matches!(
-                key.as_str(),
-                "schema_version"
-                    | "event_id"
-                    | "ts"
-                    | "event"
-                    | "kind"
-                    | "severity"
-                    | "summary"
-                    | "request_id"
-                    | "agent"
-                    | "addon"
-                    | "control"
-                    | "decision"
-                    | "host"
-                    | "approval"
-                    | "details"
-            )
-        })
-    {
+    if record["kind"] != expected_kind {
         return Err(invalid());
     }
     let mut details = record["details"].as_object().ok_or_else(invalid)?.clone();
-    // Attribution has one authority and one wire location for both versions.
+    // Attribution has one authority and one wire location.
     if let Some(attribution) = details.remove("attribution")
         && !attribution.is_object()
     {
         return Err(invalid());
+    }
+    if let Some(run) = details.remove("sandbox_run").filter(|run| !run.is_null()) {
+        let run: crate::host_runs::AgentRun = decode(run)?;
+        if !required(&[&run.agent, &run.agent_id])
+            || record["agent"] != run.agent
+            || run.run_id.len() != 32
+            || !run.run_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(invalid());
+        }
     }
     let details = Value::Object(details);
     let valid = match name {
@@ -247,6 +320,7 @@ pub(super) fn validate(record: &Value) -> Result<()> {
                 && record.get("decision").is_none()
                 && record.get("approval").is_none()
         }
+        name if is_request_decision(name) => request_decision_valid(record),
         _ => false,
     };
     if valid { Ok(()) } else { Err(invalid()) }

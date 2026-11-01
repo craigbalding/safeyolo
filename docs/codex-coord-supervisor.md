@@ -71,6 +71,18 @@ the configured room, sender, message-type, brief, and handoff checks, and
 atomically checkpoints the result. Empty, brief-only, and irrelevant pages
 re-arm the wait without launching a harness.
 
+The configured `page_limit` is an upper bound (default 16). Each wait requests
+at most the free slots in the 16-object in-flight checkpoint. If the checkpoint
+is full, the supervisor continues the retained work before receiving another
+page. The turn can recover missing downstream information from canonical room
+history; that history read does not advance the attention cursor. Unconsumed
+attention remains available after the turn frees space. A completed turn that
+consumes informational objects counts as progress while remaining tasks are
+suspended on unanswered handoffs and there is no unresolved send or prior
+uncertainty. Informational consumption and empty waits do not clear uncertainty;
+canonical progress or terminal recovery can resolve it. If the turn makes no
+progress, the existing uncertainty and failure backoff apply.
+
 An actionable page launches the selected harness and creates one session.
 Later actionable pages resume that exact session while an inbound request or
 outbound handoff remains pending. Once both lists are empty, the supervisor

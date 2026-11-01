@@ -1,11 +1,11 @@
 ---
 name: safeyolo-lab-controller
-description: Run controlled, operator-visible experiments from inside a SafeYolo Codex agent using persistent tmux shell panes, reversible fault injection, UTC evidence capture, baseline restoration, and explicit teardown. Use when the operator asks to set up, drive, observe, or retain evidence from an interactive lab; do not use for ordinary one-command shell work or SafeYolo troubleshooting that does not need a tmux lab.
+description: Run controlled, operator-visible experiments from inside a SafeYolo agent using persistent tmux shell panes, reversible fault injection, UTC evidence capture, baseline restoration, and explicit teardown. Use when the operator asks to set up, drive, observe, or retain evidence from an interactive lab; do not use for ordinary one-command shell work or SafeYolo troubleshooting that does not need a tmux lab.
 ---
 
 # SafeYolo lab controller
 
-Use tmux as an inspectable Codex lab UI while SafeYolo remains the security boundary.
+Use tmux as an inspectable lab UI while SafeYolo remains the security boundary.
 Keep the operator able to watch, intervene, authenticate interactively, and
 inspect every transition.
 
@@ -20,11 +20,21 @@ below; do not invoke a Demo-specific workflow.
 
 ## Respect the controller bootstrap
 
-The operator runs the installed `safeyolo lab` entry. It asks for the
-objective, provisions or selects the owned guest, checks Codex authentication,
+For a Codex Lab, the operator runs the installed `safeyolo lab` entry. It asks
+for the objective, provisions or selects the owned guest, checks Codex authentication,
 and enters the viewer. Repeating the command reattaches to the same controller
 and evidence. `--recover` restarts an owned dead controller; `--relaunch`
 explicitly replaces it. No pane discovery or guest-shell bootstrap is required.
+
+For a Claude Lab, prepare an owned agent with the installed instance's executable
+`assets/contrib/claude-host-setup.sh`. Pass its absolute path to
+`agent create --host-script`, or `agent configure --host-script` for a stopped
+agent. See the [host-script guide](https://github.com/craigbalding/safeyolo/blob/master/contrib/HOST_SCRIPT_GUIDE.md)
+for setup and host-state copying.
+Check `claude auth status` in that guest before starting the Lab. From its
+pre-lab shell, run `safeyolo-lab --harness claude --objective "OBJECTIVE"`,
+using the operator's objective. The shared runner uses the staged Claude
+command. The native host `safeyolo lab` command still provisions Codex Labs.
 
 The guest `safeyolo-lab` helper remains internal terminal plumbing. It starts
 one persistent controller shell and injects the recorded objective with the

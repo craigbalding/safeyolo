@@ -9,55 +9,92 @@ Issue #582 defines these contracts. Issue #583 adds emission from actual
 client and upstream transport owners. Issue #584 adds native Transport Layer
 Security (TLS) client fingerprints and upstream certificate identity. Issue
 #585 adds the first reusable indicator producer and a bounded prompt-injection
-sensor. The destination/TLS history sensor adds first-observation and upstream
-certificate-change clues under issue #581.
+sensor. The connection history sensor adds destination, measured origin Internet
+Protocol (IP) address, client-fingerprint and upstream TLS change clues under
+issue #581.
 
-## Version and reader compatibility
+## Current audit contract
 
-Existing events keep `schema_version: 1` and their existing wire representation.
-The three NSM events use `schema_version: 2`. The new `network` kind is valid
-only in version 2. Event prefixes must still match their kind. Version 2
-currently accepts only the three NSM event names. A producer cannot label an
-NSM payload as version 1 to avoid validation.
+All native audit families use `schema_version: 2`: security, gateway, traffic,
+operations, admin, agent, plumb, Coord and network events. This number identifies
+an audit format generation, not a SafeYolo product release. Event prefixes match
+their kind. A current control event does not become scoped NSM evidence merely
+because it uses the same envelope generation.
 
-Producers use the existing `audit::Event` and `audit::Writer`. The writer selects
-the version from the event name and kind, and validates the NSM fields before
-queueing. Invalid input follows the existing audit validation failure path:
-a diagnostic and an unversioned minimal fallback. The fallback is not a valid
-NSM record and cannot establish a correlation relationship.
+Producers use `audit::Event` and `audit::Writer`. Coord's transactional audit
+outbox uses the same current envelope. Scoped connection, flow, indicator and
+request-decision publications also validate their NSM fields before queueing.
+An unscoped decision remains an ordinary audit record. A partial request scope
+fails validation; missing namespace or run context is never invented.
 
-The native `audit::parse_record` reader accepts historical version 1 records
-and validates version 2 records. The `safeyolo logs` command uses this reader.
-Unknown schema versions and invalid version 2 contracts fail explicitly; the
-raw log remains inspectable. Historical unversioned JSON, including writer
-fallbacks, remains readable without being promoted to a validated schema.
-Strict version 1 consumers reject version 2. Upgrade those consumers before
-using NSM data; do not reinterpret `network.connection` as a traffic event.
-The historical Python test reference is not the native product reader.
+If a producer cannot construct an event, the writer emits a current
+`ops.audit_validation_failed` diagnostic. Its `details` contain only the failed
+publication's event name, kind and summary. The diagnostic preserves the
+publication's severity and records its own timestamp. It carries no request
+scope, approval, attribution or original payload. It cannot establish an NSM
+relationship. A file-write failure retains the existing categorical diagnostic
+and stderr event output; it does not establish successful retained publication.
 
-The #583 producer adds optional route, origin-peer, owning-client and Server
-Name Indication (SNI) fields, plus `transport: stream`. A strict reader built against the earlier
-version 2 field list must update before reading these producer records.
-The current reader still accepts earlier version 2 payloads that omit the
-new fields.
-
-Issue #584 adds optional `tls_client_hello` and `tls_sessions` fields and the
-`updated` connection state. Earlier strict version 2 readers need these additions.
-The current reader continues to accept earlier records that omit TLS metadata.
-
-The destination/TLS history sensor adds optional `novelty` evidence to indicators.
-Earlier strict version 2 readers need this field before reading the new records.
-The current reader continues to accept indicators that omit it.
-Negotiation-change records add the optional `negotiation` object inside each
-novelty observation. Earlier strict readers need this addition; the current
-reader still accepts certificate and destination observations that omit it.
+The native `audit::parse_record` reader and `safeyolo logs` validate the current
+envelope and the applicable scoped contract. Earlier generations, unversioned
+JSON and invalid current records fail explicitly. The selected-file bytes remain
+unchanged. The reader does not migrate or reinterpret them.
 
 All NSM payload fields below are in `details`, except `request_id`, which
 uses the existing envelope field. Existing `ts`, `event_id`, `severity`,
 `summary`, `agent`, and `addon`/`control` fields retain their envelope roles.
 `ts` is the record time; it does not replace a connection's observed start/end
-times. Version 2 accepts only the documented payload fields and existing
-envelope fields.
+times. The three NSM contracts accept only their documented payload fields and
+existing envelope fields. Scoped request decisions preserve their existing
+decision-specific details in addition to the required binding below.
+
+## Scoped request decisions
+
+The connection owner binds the following existing publications to its actual
+instance, runtime and ingress connection:
+
+- `security.network_guard` and `security.network_guard.evaluated`;
+- `security.credential_guard`, `security.credential_guard.evaluated` and
+  `security.credential_guard.codex_refreshed`;
+- `gateway.allow`, `gateway.deny`, `gateway.refresh_failed`,
+  `gateway.https_redirect` and `gateway.http_injection_allowed`.
+
+These version 2 events require nonempty envelope `request_id`, `event_id` and
+`host`, plus `details.instance_id`, `details.runtime_id` and
+`details.client_connection_id`. The binding is supplied by the same owner as
+connection evidence and survives policy reload. Guard records also retain
+`details.connection_id`, which must equal the bound ingress connection.
+The original decision, approval fields and decision-specific details remain
+available. Decision records require an existing `decision` value and the matching
+`addon` label, or its native `control` label (`network`, `credentials` or
+`services`). Guard evaluation records instead retain `outcome` and `pdp` or
+`evaluations`; they do not acquire an invented envelope decision. An allowed
+ordinary request may have an evaluation record without a separate
+`security.network_guard` intent. Evaluations do not imply that a credential was
+detected. The confirmed Codex response event describes an observed authorized
+refresh, not an arbitrary upstream response.
+
+Use `logs list` to find the bound request or connection, then use the ordinary
+request/connection pivots. Both configured-file and explicit multi-file views
+show the unchanged event and its physical source lines. Decision links resolve
+only to a same-namespace, same-resolved-agent ingress connection and to that
+request's `traffic.flow` with the same client owner. An upstream pivot includes
+decisions for the requests whose flows actually name that upstream connection.
+One level of recorded support is followed. Approval IDs, control IDs and
+co-location in a file do not establish traffic relationships.
+
+A denial may have no upstream flow or connection. The view retains the decision
+and available ingress evidence; missing flow support is `unavailable`. Conflicting
+event copies, request/client owners or attribution cannot establish a decision
+link. Unscoped events never acquire scope from a matching ID.
+Missing, filtered, outside-window, queued or lost events leave policy and
+credential handling unknown. Schema validation does not authenticate the
+producer or operator-selected inputs.
+
+An indication, policy decision, credential handling event and observed traffic
+are different evidence. An allow or injection event does not prove upstream
+delivery, model receipt, malicious intent or compromise. This binding adds no
+credential policy, content retention or enforcement decision.
 
 ## Correlation and trusted attribution
 
@@ -76,19 +113,209 @@ is unavailable or invalid, the proxy reports that diagnostic and omits NSM
 records rather than claiming a different installed identity. Ordinary traffic
 and audit behavior continue.
 
+When existing host-run authority is available at Unix domain socket (UDS)
+accept, the connection owner retains `sandbox_run` with `agent`, `agent_id` and
+`run_id`. These are the host-owned agent name, immutable agent identity and
+sandbox generation bound to that ingress. The run ID has 32 hexadecimal
+characters. The name must match the envelope agent; the agent identity must be
+nonempty. The optional object accepts only those three fields. Absent or null
+bindings mean run-unavailable, including standalone traffic and ingress without
+host-run authority.
+Schema checks establish representation and consistency, not producer identity.
+
+The snapshot is carried through connection lifecycle, flow, indicator and
+scoped request-decision publications. It is never read from HTTP headers or
+reconstructed from mutable host files when displaying retained records.
+Closing or late events keep their original ingress run after that generation
+stops or is replaced. Historical provenance does not renew current authority;
+the existing stale-run request check remains in force. A sandbox run is distinct
+from the proxy runtime, host launch/terminal and coding task. It establishes
+neither executable/process attribution nor current liveness.
+
 The connection key is `(instance_id, runtime_id, connection_id)`. Connection
 IDs must identify real transport ownership and be unique across both legs
 within that namespace. The transaction key is
 `(instance_id, runtime_id, request_id)`. Local IDs may repeat in another
 instance or runtime. Every reference in one record uses that record's namespace.
 Never join records across instances or restarts using only a local ID.
-Legacy version 1 records without this namespace need trusted source context
-before a collector can join them to NSM records.
+
+The live `safeyolo observations` view identifies the same observation-owner
+namespace. Use `--instance ID --runtime ID` to check whether a retained
+namespace is still the responding runtime. Its counters and histograms are
+runtime aggregates; they cannot be attached to a particular historical agent,
+request or connection. A restart mismatch fails instead of returning historical
+totals. See the [live measurement workflow](operator-guide.md#read-current-observation-measurements).
+
+The local operator can start with `logs list` to discover retained namespaces,
+agent context and concrete connection/request/indicator references without
+reading raw JSON. Optional `--instance`, `--runtime` and `--agent` filters narrow
+that listing. Run groups expose the exact `sandbox_run` object and `run_context`:
+`recorded`, `unavailable`, `unknown` or `conflicting`. Optional `--sandbox-run ID`
+selects recorded run IDs in the listing and scoped pivots. It never matches an
+absent binding. Run selection follows conflict detection, so selecting one claim
+cannot hide an incompatible owner of the same local ID. Namespace counts still
+describe the retained namespace before run selection. Entries preserve physical
+source locations and distinguish recorded resolved agent context from unknown attribution and conflicting
+records. A name alone does not establish trusted attribution. References name
+retained keys, not verified relationships or live sessions. The listing
+collapses equal parsed records in configured and selected-file modes, preserves
+all retained locations, and reports retained distinct-record/copy counts.
+Unscoped current records remain visible through ordinary logs without becoming
+NSM choices.
+
+The operator can use `logs connection ID` or `logs request ID` with
+`--instance ID --runtime ID` to inspect these relationships. See the
+[operator workflow](operator-guide.md#follow-local-nsm-evidence) for complete
+commands. The read-only view uses the ordinary logs reader. By default it reads
+the configured local file. Repeated `--file PATH` options instead select retained
+files for offline inspection without installed config, proxy or Admin API.
+The operator supplies those files through an existing trusted operational route;
+the CLI neither acquires remote logs nor authenticates them through schema
+validation. Provenance comes from source selection and the original trusted
+producer, never from filenames or arbitrary identity claims.
+
+An optional `--capture FILE` on these connection/request pivots reads current
+classic `pcap:compat` observation metadata. Audit instance/runtime, connection
+and recorded agent attribution must agree before metadata can join. Request
+observations require the recorded request ID; lower-layer references use only
+recorded input ancestry and can describe shared input or parser read-ahead.
+Each result identifies the supporting audit lines and capture packet/byte offset.
+The reader returns no payload. Runtime-wide loss remains separate from
+connection/request attribution. Missing input, missing lineage, retained-window
+omissions and malformed/truncated input remain unavailable or partial evidence.
+Successful scanning does not establish complete coverage. Synthetic packet
+headers remain representation. See the same operator workflow for capture
+selection, limits and failure behaviour.
+
+With capture selected, each prompt-exposure `source_transport` and
+`model_transport` includes a `behaviour` summary for its verified connections.
+The summary groups retained stream chunks by connection, point, layer and
+direction, using canonical observed lengths and runtime monotonic timestamps.
+Each group reports chunk counts, observed-byte sums, size ranges and intervals
+between retained chunks. Each chunk preserves its observation ID, timestamp and
+resolution, stream offset, capture packet/byte offset and supporting audit lines.
+Reversed observation order or decreasing monotonic time leaves intervals unavailable.
+Unknown clock resolution remains null without discarding same-runtime durations.
+Known lengths supply byte sums and ranges; `chunks_with_observed_length` counts
+those chunks. Intervals can span missing chunks. These measurements follow the fixed transport
+metric meanings; wire-packet segmentation is excluded. Layers must not be added
+as application bytes. The summaries describe connection-wide retained evidence,
+including shared input and read-ahead, rather than exclusive request totals or
+anomaly scores. The selected and correlated connections share one observation
+window; omissions and runtime loss can leave partial or unavailable summaries.
+
+A pivot keeps the last `--lines` selected-agent rows (default 100) per input,
+then selects validated version 2 records within the requested namespace. Total
+retention is at most input count times `--lines`, before duplicate removal.
+Each selected input reports its supplied path, physical line range, rows read
+and omitted rows. Total counts include input copies. File-mode line references
+use `{"input":N,"line":L}`; `inputs` identifies the corresponding file and
+`locations` preserves every retained copy of an original record. Equal parsed
+records share evidence across repeated or overlapping inputs. Conflicting event
+copies or transport owners cannot establish a join. Different lifecycle snapshots
+with consistent owners remain distinct records. Input order and wall timestamps
+do not establish a global chronological order.
+
+Audit records at both ends of a cross-file join must agree on instance/runtime, agent and the
+recorded reference fields. They must also have the same complete `sandbox_run`
+binding, or both lack one. Missing context is never filled from a matching
+agent, request or connection ID. Different run claims for one connection or
+request owner are conflicts, even when a run selector excludes one claim.
+Source and novelty references into another run remain visible but cannot
+complete that run's supporting links or transport correlations. Run-unavailable
+records retain their namespace and local-ID relationships and remain explicitly
+unavailable for run selection. The audit reader validates every audit row
+to end of file. If any selected audit file is malformed, unsupported or unreadable,
+the command fails with an input-number diagnostic and no partial output.
+Audit windows apply before namespace selection, and no additional output limit hides
+related or supporting audit evidence. The audit view displays one level of recorded links
+within those windows; unselected files, rotation, queues and loss can leave
+support unavailable. It preserves input bytes and never fetches content.
+Request pivots include their connections and those connections' indications;
+connection indications can describe other requests on the same transport.
+These are recorded relationships, not a verdict about an agent.
+
+Each link reports `available` with matching file lines, or `unavailable`.
+File-mode links with conflicting support identify `conflicting_record_lines`;
+matching candidate records remain visible without establishing availability.
+Novelty links match both connection ID and exact source event ID. Prompt source
+links match the recorded request ID, connection ID and evidence hash of a
+response indication. A coincident local ID or an unscoped record cannot
+establish availability. Agent filtering also applies to supporting records.
+The original records are returned unchanged inside `records[].record`.
+Rotation, drops, queued writes, an unavailable file and the selected window
+limit the evidence; missing evidence is not proof of absence. Unselected rotated files
+and FlowStore bodies are not read by this view. The view makes no additional
+retention or completeness guarantee.
+
+For retained `prompt_injection_exposure` records, the view also derives
+`correlations[]`. Each explanation names its exposure line/event ID and exact
+source indication lines. The source must match the recorded request, client
+connection, response direction, host and evidence hash. All participating records
+must share the selected instance/runtime and resolved trusted agent attribution;
+omitting `--agent` does not permit cross-agent joins.
+
+`source_transport` and `model_transport` distinguish the fetched response's
+transport from the authenticated model request's transport. Each uses that
+request's retained `traffic.flow`, its client connection, and its upstream
+connection with the matching client owner. Conflicting flow ownership cannot
+establish a transport relationship. Connection lifecycle snapshots are listed
+together rather than multiplied into combinations. Each companion novelty entry
+names its client/server connection role, original indicator line/event ID,
+exact current/previous/client observation links, availability and reason. Only a
+current observation on that transport establishes the relationship; a previous
+observation alone does not. The view consumes the recorded novelty indication
+without running the detector again. Each entry also retains the recorded rule,
+indicator type and novelty evidence. Its `fact` names the actual observation or
+change within the recorded bounded history. An unsupported rule/type/connection
+role or missing required current, previous or client observation leaves that
+novelty unavailable.
+
+A correlation is `linked` when its source indication and both transports are
+available, at least one companion novelty indication has complete support, and
+all listed novelty support is available. It is `partial` when the recognized,
+trusted exposure lacks part of that evidence. It is `unavailable` when the
+exposure lacks resolved trusted attribution or the recognized exposure
+sensor/rule/direction, or when selected copies of the exposure conflict. The original exposure remains visible in every case.
+Per-source, transport and novelty statuses explain which evidence is missing.
+No available novelty in the searched window means unavailable evidence, not a
+clean verdict.
+
+Each correlation also has a separate `warning`. Its status is `investigate`
+when the exact source indication supports the native source-text overlap
+exposure and at least one connection-history novelty indication has complete
+support on an owned source or model transport. Its reason names the side,
+client/server role, connection and actual novelty fact. The combination merits
+investigation because indicated response text reached a model-bound request
+and an owned transport also has a recorded novelty indication. Exposure alone,
+novelty alone, policy/credential activity and capture measurements cannot
+establish this warning.
+
+`warning.supported_novelty[]` points to each contributing transport entry by
+side, original indicator line and event ID when recorded. The parent correlation
+retains the exposure, source, flow, connection and exact novelty support references. Selected
+inputs use `{input, line}` references to the original physical lines. A warning
+can accompany a `partial` relationship: missing additional novelty, the other
+transport's context or optional capture does not erase a fully supported
+combination. Missing or conflicting essential support leaves the warning
+`unavailable`, with the retained evidence and omissions still visible. Recorded
+run checks continue to apply when present; a run is not mandatory for standalone
+traffic. Capture adds measurements and observation/packet/offset references;
+it is not a warning prerequisite. No score or transport threshold is applied.
+
+This is a read-only connection relationship, not request-level novelty. A
+connection-wide indication can predate or serve multiple requests, including
+both the source and model exchange. Quoted instructions and legitimate text
+reuse can produce the underlying prompt indications. Even a `linked` result
+does not prove malicious intent, model receipt, instruction following or causal
+compromise. The exposure sensor's [bounded visibility](#initial-network-to-model-exposure-signal)
+and the reader's window/loss limits still apply. No content is fetched or stored
+by this explanation, and no new audit event is emitted.
 
 Reuse `audit::Attribution`. Its wire location remains `details.attribution`:
 `evidence_owner`, `trusted_transport_identity`, `initiator`,
 `attribution_status`, and `attribution_provenance`. The writer's attribution
-argument takes precedence over compatibility fields in `details`.
+argument supplies these fields; payload claims in `details` are removed first.
 Do not duplicate these fields in the NSM payload or obtain them from headers.
 For an agent Unix domain socket (UDS), reuse the accepted listener identity.
 For an upstream connection, reuse the owning client's trusted attribution
@@ -189,14 +416,100 @@ Its extension hash sorts non-GREASE extension types excluding SNI and ALPN,
 then appends signature algorithms in offered order. SHA-256 hash sections keep
 12 lowercase hex digits. Empty sorted lists produce twelve zeroes. Unknown
 versions use `00`. These values characterize client behavior; they are not
-cryptographic process or executable identities. JA3S and JA4S are out of scope.
+cryptographic process or executable identities.
+
+`tls_server_hello` records bytes read immediately below the origin TLS handshake,
+after any parent CONNECT. It contains `status`, `hello`, and
+`hello_retry_request`. Each hello contains the unsigned wire `legacy_version`,
+`supported_version` from the supported_versions extension when present, selected
+`cipher_suite`, `alpn` when present in that hello, ordered `extension_types`,
+`extension_count`, `truncated`, `ja3s`, and `ja4s`. The optional values are null
+when absent. Extension summaries keep the first 64 types; both fingerprints
+use the complete list. The selected ALPN is displayed with the same byte escaping
+as the client offers. Its protocol limit is 255 bytes, or at most 1,020 displayed
+bytes. `truncated` refers to the extension-type summary.
+
+JA3S is the MD5 digest of the decimal
+`legacy_version,cipher_suite,extension-types` tuple, with extension types joined
+by hyphens. An absent extension vector leaves the third segment empty.
+As in the [Salesforce JA3S implementation](https://github.com/salesforce/ja3/blob/502cc6395811c54743b0561419d61900a6df3ff7/python/ja3s.py),
+all server extension types participate in their wire order, including GREASE
+values. No upstream implementation source is imported.
+
+JA4S uses TLS over the observed origin stream (`t`), `supported_version` when
+present (otherwise `legacy_version`), the extension count saturated at 99,
+the selected plaintext ALPN code, the four-digit lowercase hexadecimal cipher,
+and the first 12 lowercase hexadecimal digits of SHA-256 over the ordered,
+comma-separated, four-digit lowercase hexadecimal extension types. The server
+list retains GREASE and is not sorted. An empty list produces twelve zeroes.
+Version codes match JA4, including `00` for an unknown version. As in the
+[FoxIO JA4S implementation](https://github.com/FoxIO-LLC/ja4/blob/c6469a7b0dbf8fe963810162429fbfd9d1acc4d5/rust/ja4/src/tls.rs),
+the ALPN code uses the first and last ASCII characters, doubles a single
+character, and substitutes `9` for a non-ASCII endpoint. An absent ALPN uses
+`00`. This is separate from the JA4 client hexadecimal fallback.
+
+JA4S is subject to [FoxIO License 1.1](../proxy/licenses/ja4s-FoxIO-1.1.txt),
+with its [JA4S notice](../proxy/licenses/ja4s-NOTICE.txt), alongside SafeYolo's
+MIT license. FoxIO restricts direct and indirect monetization, hosted or managed
+services for others, and maintenance, support or development services. These
+notices do not grant OEM or other commercial rights. Native bundles include the
+license and notice in `assets/licenses`; source releases retain `proxy/licenses`.
+
+The observer reassembles a ServerHello across records and read boundaries.
+Under [RFC 8446 section 4.1.3](https://www.rfc-editor.org/rfc/rfc8446#section-4.1.3),
+a TLS 1.3 ServerHello has wire `legacy_version: 771` (0x0303).
+The hello's supported_versions extension supplies `supported_version: 772`
+(0x0304), so JA4S uses `13` while JA3S retains the legacy version.
+The independently negotiated session version remains `TLSv1_3` (0x0304).
+TLS 1.3 sends its selected ALPN later in encrypted extensions. The ServerHello
+therefore has `alpn: null` and a JA4S ALPN code of `00`; the observer does not
+borrow ALPN from the negotiated session, client offers or parent handshake.
+The observer recognizes HelloRetryRequest by its specified random value, records
+it separately, and waits for the final ServerHello. A retry fingerprint does
+not substitute for the final server fingerprint. TLS 1.3 compatibility
+ChangeCipherSpec records can separate these messages.
+
+The observation status describes wire availability, separately from connection
+success or certificate verification:
+
+| Status | Meaning |
+|---|---|
+| `complete` | A complete final ServerHello was parsed. `hello` is present. |
+| `incomplete` | The stream ended or the handshake was dropped before a complete final hello. A parsed retry can remain. |
+| `invalid` | The observed record, handshake, supported_versions or ALPN framing was malformed, or extension types were duplicated. |
+| `unavailable` | Non-handshake bytes prevented observation, such as an alert or opaque/encrypted record. |
+| `limit_exceeded` | A declared ServerHello exceeded its bounded observation size. |
+
+For every status except `complete`, `hello` is null. An absent
+`tls_server_hello` means no observation was recorded; it does not prove absence
+of a handshake. The observer holds at most one bounded ServerHello message and
+one record header transiently. It drops raw bytes after classification and
+stores no extension payloads. Observation does not reject or change traffic.
+
+The server responds to SafeYolo's upstream ClientHello. This fingerprint does
+not describe the intercepted agent's original ClientHello. The outer parent's
+TLS handshake cannot supply `tls_server_hello`; its negotiated evidence stays
+in the separate parent session. A provider route can supply observed TLS bytes
+over the named guest-port stream. Those bytes do not establish an independently
+measured external origin or origin IP. The existing route, endpoint and trusted
+attribution fields retain those distinctions.
+
+A complete hello emits an update on the actual upstream connection key before
+the negotiated-session update. An unavailable or incomplete observation also
+emits an update when classification finishes. Terminal snapshots retain these
+facts even if TLS verification subsequently fails. Existing `logs connection`
+and `logs request` pivots expose these records in their instance/runtime
+namespace through the recorded connection and flow IDs. Audit queue loss,
+rotation and selected read windows can still make evidence unavailable.
+Observation happens before optional, lossy payload retention and requires no
+packet/content capture. Existing capture controls remain unchanged.
 
 Each `tls_sessions` entry contains `peer`, `sni`, `version`, `cipher`, `alpn`,
 `handshake_kind`, and `leaf_certificate`. The native rustls session supplies negotiated values;
 absent values remain null. SNI is absent for IP verification names. DNS names
 omit the trailing root dot, as rustls encodes them. A parent session and an
 origin session remain separate entries, even though the
-compatibility `tls_server_name` field names the latest completed session.
+`tls_server_name` field names the latest completed session.
 The leaf entry contains `cert_sha256` over the full certificate DER and
 `spki_sha256` over the DER-encoded SubjectPublicKeyInfo (SPKI). A renewed
 certificate can change the certificate hash while retaining the same SPKI hash.
@@ -221,7 +534,11 @@ in memory and does not change TLS admission. Failed upstream handshakes do not
 produce an established-session entry: tokio-rustls does not return that TLS
 session on failure. No negotiated values or certificates are fabricated.
 If a preceding parent TLS handshake succeeded, its evidence remains when the
-origin handshake fails. Raw ClientHello bytes, extension payloads, certificates,
+origin handshake fails. A complete observed ServerHello can survive that failure
+without an established origin-session entry. Resumption observes a fresh
+ServerHello, while rustls can still supply cached certificates in `tls_sessions`;
+the new hello does not make those certificates fresh wire observations.
+Raw ClientHello or ServerHello bytes, extension payloads, certificates,
 TLS secrets and HTTP content are not stored in these sparse records.
 
 The deterministic fixtures in `proxy/src/tls_identity/tests.rs` encode the two
@@ -236,6 +553,18 @@ records and reads. The JA3 expected value for that synthetic JA4 body is
 decimal preimage with Python's `hashlib.md5`. The local MD5 implementation also
 checks the [RFC 1321 test vectors](https://www.rfc-editor.org/rfc/rfc1321).
 No reference implementation source or fingerprint dependency is imported.
+
+The ServerHello tests in `proxy/src/tls_identity/server/tests.rs` cover ordered
+tuples, the [published FoxIO JA4S vector](https://github.com/FoxIO-LLC/ja4/blob/c6469a7b0dbf8fe963810162429fbfd9d1acc4d5/technical_details/JA4S.png)
+(`t120400_c030_4e8089b08790`), selected versions, ALPN codes, fragmentation,
+coalescing, retries, summary limits and unavailable or invalid evidence.
+Owned TLS 1.2/1.3 endpoints exercise the production handshake
+path, including full and resumed sessions. A test-only endpoint tap supplies
+the emitted wire bytes to an independent field reader and OpenSSL MD5/SHA-256
+oracle for both server fingerprints. The nested-parent fixture applies the same
+oracle to inner origin bytes,
+including certificate-verification failure. These tests require OpenSSL in
+the test host's command path.
 
 The two public PEM fixtures in `proxy/tests/fixtures/tls-identity-*.pem` were
 generated with OpenSSL using the same P-256 key and serials 58401 and 58402.
@@ -301,21 +630,24 @@ Issue #585 adds optional `content_type`, `inspected_bytes`, and
 `prefix_truncated` metadata. `content_type` is a nonempty media type of at most
 128 bytes. `inspected_bytes` is an unsigned byte count. `prefix_truncated` is a
 Boolean that reports whether inspection omitted a suffix. The byte count and
-truncation flag require `evidence_hash`. Earlier strict version 2 readers need
-these optional fields and the optional `source` link below before reading the
-new sensor records. The current
-reader still accepts earlier records that omit them.
+truncation flag require `evidence_hash`. The optional `source` link below names
+recorded supporting evidence.
 
 ### Destination and upstream TLS history
 
-The native connection owners run `connection-history.v1`. The sensor emits three
+The native connection owners run `connection-history.v1`. The sensor emits eight
 low-severity rules through the shared indicator producer:
 
 | Stable rule | Observable condition |
 | --- | --- |
 | `destination.first_observation.v1` | The first native upstream record for an agent/destination/route absent from the bounded runtime cache. |
+| `origin_ip.first_observation.v1` | An established native socket measures an origin IP absent from that trusted agent's bounded runtime history. |
 | `tls.origin_identity_changed.v1` | A later full origin TLS handshake has a different certificate hash, or two available SPKI hashes differ. |
 | `tls.origin_negotiation_changed.v1` | A later successful origin TLS handshake has a different measured TLS version or negotiated Application-Layer Protocol Negotiation (ALPN) result. |
+| `tls.client_fingerprint_first_observation.v1` | The first complete supported ClientHello for a trusted agent absent from bounded runtime history. |
+| `tls.client_fingerprint_changed.v1` | A later observed ClientHello for that agent has a different JA3 or JA4 fingerprint. |
+| `tls.origin_spki_new_ip.v1` | A full origin handshake measures an already retained SPKI at an IP absent from that trusted agent/key's retained associations. |
+| `tls.client_destination_first_observation.v1` | A measured client JA3/JA4 pair and logical destination/route combination for a trusted agent is absent from retained runtime history. |
 
 These rules have confidence 1.0 in the stated metadata comparison. They do not
 estimate the probability of compromise. Certificate renewal, key rotation,
@@ -324,6 +656,17 @@ can explain a TLS change. Negotiation changes use indicator type
 `tls_negotiation_change`; certificate changes retain `tls_identity_change`.
 When both change, the sensor emits separate records with their own comparable
 baselines.
+Client-fingerprint rules use indicator types `tls_client_fingerprint_novelty`
+and `tls_client_fingerprint_change`. Client library updates, TLS settings and
+randomized extension order can explain changes. Fingerprints describe observed
+client TLS behavior; they do not identify an executable or prove compromise.
+Origin key/IP reuse uses indicator type `tls_spki_new_origin_ip`. It describes
+an observed public key at another measured IP. It does not establish address
+ownership, hosting location, executable identity or compromise.
+Client/destination pairing uses indicator type `tls_client_destination_novelty`.
+It reports observed novelty, with no rarity threshold or score.
+First origin-IP observation uses indicator type `origin_ip_novelty`. It makes
+no claim about ownership, geography, executable identity, rarity or compromise.
 
 On the operator host, with the native CLI installed, replace `AGENT` with an
 existing configured agent name. This command reads recent audit records:
@@ -338,13 +681,16 @@ Find `security.indicator` records whose `details.sensor` is
 | Field | Meaning |
 | --- | --- |
 | `history_scope` | `runtime_fifo`: process-local history with first-in, first-out eviction. |
-| `history_capacity` | At most 4096 distinct agent/destination/route entries across the runtime. |
-| `destination` | Logical requested host and explicit port, including the effective default port. DNS names use ASCII lowercase without the root dot. Parsed IP addresses use canonical spelling; IPv6 addresses have brackets. |
-| `route` | `direct`, `parent`, or `provider`. Each route has separate comparison state. |
-| `verification_name` | The normalized origin TLS verification name for a TLS change; null for a first destination observation. |
-| `current` | Supporting `connection_id`, `event_id`, optional `cert_sha256`/`spki_sha256` hashes, and optional `negotiation`. |
-| `previous` | The previous comparable observation for the same rule, with the same fields as `current`; null for a first destination observation. |
+| `history_capacity` | At most 4096 entries shared by agent/destination/route history, client-agent history, agent/IP observations, agent/SPKI/IP associations and client/destination pairings across the runtime. Each client agent, agent/IP observation, key/IP association and distinct pairing use one entry. |
+| `destination` | Logical requested host and explicit port, including the effective default port. DNS names use ASCII lowercase without the root dot. Parsed IP addresses use canonical spelling; IPv6 addresses have brackets. Absent for client-fingerprint and first origin-IP observations. |
+| `route` | `direct`, `parent`, or `provider`. Each route has separate destination/TLS comparison state. Absent for client-fingerprint and first origin-IP observations. |
+| `verification_name` | The normalized origin TLS verification name for an upstream TLS change; null for destination, first origin-IP and client-fingerprint observations. |
+| `current` | Supporting `connection_id`, `event_id`, optional `cert_sha256`/`spki_sha256` hashes, optional `negotiation`, optional `client_fingerprint`, and optional `origin_ip`. |
+| `previous` | The previous comparable observation for the same rule, with the same fields as `current`; null for a first destination, origin-IP or client-fingerprint observation. |
 | `current.negotiation`, `previous.negotiation` | Measured `version` and `alpn` from the completed origin handshake. Present only for negotiation-change records; their certificate hashes are null. |
+| `current.client_fingerprint`, `previous.client_fingerprint` | The observed `ja3` and `ja4` from the client ClientHello. Certificate hashes are null and negotiation evidence is absent. |
+| `current.origin_ip`, `previous.origin_ip` | Canonical measured origin IPs. For first origin-IP observation, only `current` is present and its certificate hashes are null. For key/IP reuse, both observations have the same available SPKI hash, distinct IPs and their measured certificate hashes. |
+| `client` | Present only for client/destination pairing. An observation with the measured ClientHello's `connection_id`, `event_id` and `client_fingerprint`. `current` links the associated upstream attempt; `previous` is null. |
 
 Join each observation to its exact `network.connection` event by `event_id`
 and connection key in the indicator's instance/runtime namespace. The outer
@@ -371,6 +717,24 @@ explicit, including `unknown`. Unattributed connections retain their native
 records and do not enter this agent comparison cache. External ingress is not
 an input to this UDS-owned producer.
 
+First origin-IP history keys only the trusted agent and canonical measured IP.
+Stable retained IPs stay quiet across requested hostnames, ports and routes.
+Another agent has separate history. IPv6 spelling is canonicalized;
+IPv4-mapped IPv6 uses its IPv4 form. The current direct TCP owner supplies the
+actual `resolved_origin_peer` from the established socket. A requested numeric
+target, DNS result, synthetic capture address or immediate parent/provider
+endpoint cannot establish an origin observation. Missing measurements and
+failed connections that never establish a socket supply no IP baseline.
+
+This transport observation occurs before origin TLS or application processing.
+It qualifies for plaintext and TLS connections without a certificate or a
+successful application response. If TLS verification, negotiation or later
+application work fails, the earlier measurement remains a first origin-IP
+observation. Follow `current.event_id` to the actual `proxy_to_upstream` open
+record and its full measured endpoint, then use the connection ID to inspect
+later updates and terminal failure. Closing a connection or updating its TLS
+metadata does not compare that IP again after eviction.
+
 Certificate comparison uses only `peer: origin` sessions from full native rustls
 handshakes. Parent TLS, resumed sessions with potentially cached certificates,
 failed handshakes, and missing certificates do not advance the certificate
@@ -391,14 +755,82 @@ and one certificate baseline. A different verification name resets the affected
 baseline without comparing names. Neither baseline mixes origin observations
 with parent/provider transport TLS.
 
-Cache operations serialize concurrent observations. Identical comparable observations
-advance the supporting baseline without another indicator. Closing an older
-connection does not replay its TLS snapshot into the comparison. Reconnects
+Client-fingerprint comparison uses the trusted UDS agent identity alone, across
+destinations and routes. Request headers and claimed process/tool names cannot
+select this identity. Each observation links to the `client_to_proxy` update
+that records the actual ClientHello. The proxy's own upstream TLS never enters
+this baseline. A complete supported ClientHello can establish an observation
+even if the handshake later fails. Missing, malformed, incomplete or unsupported
+hellos and unknown attribution supply no baseline or measured change. External
+ingress does not enter this UDS-owned comparison. Stable fingerprint pairs
+advance the prior-event link without another indication. A change to either
+fingerprint emits one change indication containing both values.
+
+Client/destination history keys the trusted agent, both JA3 and JA4 values,
+normalized logical destination and route. Each first pairing emits an indication,
+including the first pairing for an agent. A different fingerprint or destination
+can establish another pairing. Returning to any retained pairing stays quiet,
+even when other fingerprints or destinations were observed between requests.
+The separate fingerprint and destination rules keep their existing meaning.
+
+Pairing uses the actual ingress connection that owns each upstream attempt.
+It never borrows the agent's most recently observed fingerprint from another
+connection. One TLS client can own several application transactions and upstream
+attempts. Each new attempt uses that client's measured hello, including after a
+policy reload changes the route. Plaintext clients, unknown attribution and
+missing, incomplete or unsupported hellos establish no pair. Upstream or parent
+TLS cannot substitute for a client fingerprint.
+
+A pair is observed when both a complete supported ClientHello and its owned
+upstream attempt have native connection records. A CONNECT attempt can connect
+before the hello arrives; observing the hello then compares the pair using
+that attempt's existing connection record. Later attempts compare on connection
+or final failure if they never connect. A complete hello followed by an aborted client
+handshake can establish a pair. The indication proves an observed attempt,
+not a successful TLS handshake, application exchange, origin reachability,
+executable identity or compromise. Parent/provider routes retain the logical
+destination; their physical endpoints are not the destination key.
+
+Follow `client.event_id` to the exact `client_to_proxy` hello update and
+`current.event_id` to the `proxy_to_upstream` record. That record's
+`client_connection_id` identifies the same client. Both links use the indicator's
+instance/runtime namespace and existing audit availability limits. Closing an
+attempt does not compare that attempt's pair again after history eviction.
+
+Origin key/IP comparison uses the trusted agent, measured SPKI and canonical IP,
+across requested destinations, verification names, ports and routes. A new port
+at a retained IP is stable. The first association for a key supplies a baseline;
+a new IP for that key emits one indication. Returning to a retained association
+updates its supporting event without another indication. For a new association,
+`previous` is the latest observation at the most recently inserted retained IP
+for that key. Stable repeats do not change that selection's FIFO age.
+The top-level destination, route and verification name describe the current
+connection. Follow each supporting event to inspect its own requested target,
+verification name and full measured endpoint, including its port.
+
+Only a successful full origin handshake with both certificate and SPKI hashes
+and a measured `resolved_origin_peer` establishes a key/IP association. The
+current native direct TCP owner supplies this peer from the connected socket.
+Parent and provider routes do not measure an origin address, even when origin
+TLS succeeds. Their immediate peer, a requested numeric target, DNS results and
+synthetic capture addresses cannot substitute for measured origin evidence.
+Resumed or failed handshakes, missing hashes and unknown attribution supply no
+association. IPv6 spelling is canonicalized; IPv4-mapped IPv6 uses its IPv4 form.
+No network location lookup or persistent history query is performed.
+
+Cache operations serialize concurrent observations. For change comparisons,
+identical observations advance the supporting baseline without another indicator.
+Closing an older connection does not replay its TLS snapshot into the comparison. Reconnects
 compare while their entry remains cached. Repetition does not refresh FIFO age.
-Eviction discards destination, certificate and negotiation state; a later attempt can
-produce a new first observation. If eviction occurs before an in-flight TLS
-handshake completes, that handshake supplies no comparison. Policy reloads
-preserve the cache; process restart clears it, even when JSONL files remain.
+Eviction discards the evicted entry's state; a later observation can produce
+a new first observation. An evicted key/IP association can produce another
+reuse indication if another IP for that key remains; loss of all associations
+leaves a fresh baseline. Destination/TLS, client-agent, agent/IP, key/IP and pairing entries
+compete for the same capacity. If a destination entry is evicted before an in-flight origin
+TLS handshake completes, that handshake supplies no destination certificate or
+negotiation comparison. Its measured key/IP association remains independent.
+Policy reloads preserve the cache; process restart clears it, even when JSONL
+files remain.
 First observation therefore means first in this bounded runtime history, never
 first over the agent's lifetime.
 

@@ -2242,10 +2242,11 @@ fn spawn_vz(
         control.to_str().unwrap_or_default(),
         "--no-terminal",
     ]);
+    if !job || share.join("network").is_dir() {
+        command.arg("--proxy-socket").arg(proxy);
+    }
     if !job {
         command
-            .arg("--proxy-socket")
-            .arg(proxy)
             .arg("--share")
             .arg(format!("{}:status:rw", status_dir.display()))
             .arg("--share")

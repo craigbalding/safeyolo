@@ -1,5 +1,5 @@
 //! Connection-scoped TLS observations. Wire bytes are transient and never
-//! serialized. Fingerprints describe client behavior, not executable identity.
+//! serialized. Fingerprints describe TLS behavior, not executable identity.
 
 use std::{
     pin::Pin,
@@ -13,6 +13,8 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use crate::{connection_events::Connection, tunnels::BoxStream};
 
 mod md5;
+mod server;
+pub(crate) use server::{ServerHelloObservation, observe_server};
 
 const LIST_LIMIT: usize = 64;
 const ALPN_LIMIT: usize = 16;
@@ -317,6 +319,17 @@ fn short_hash(values: &[u16], suffix: &[u16]) -> String {
     }
     sha256(text.as_bytes())[..12].into()
 }
+fn version_code(version: u16) -> &'static str {
+    match version {
+        0x0304 => "13",
+        0x0303 => "12",
+        0x0302 => "11",
+        0x0301 => "10",
+        0x0300 => "s3",
+        0x0002 => "s2",
+        _ => "00",
+    }
+}
 fn alpn_code(value: &[u8]) -> String {
     let (Some(first), Some(last)) = (value.first(), value.last()) else {
         return "00".into();
@@ -434,15 +447,7 @@ fn client_hello(body: &[u8]) -> Option<ClientHello> {
     } else {
         legacy_version
     };
-    let version = match version {
-        0x0304 => "13",
-        0x0303 => "12",
-        0x0302 => "11",
-        0x0301 => "10",
-        0x0300 => "s3",
-        0x0002 => "s2",
-        _ => "00",
-    };
+    let version = version_code(version);
     let mut sorted_ciphers: Vec<_> = ciphers.iter().copied().filter(|v| !grease(*v)).collect();
     sorted_ciphers.sort_unstable();
     let ext_count = extensions.iter().filter(|v| !grease(**v)).count();
@@ -556,14 +561,20 @@ impl Capture {
 struct ObservedClient {
     stream: BoxStream,
     connection: Connection,
+    upstream: Option<Connection>,
     capture: Option<Capture>,
 }
 
-pub(crate) fn observe_client(stream: BoxStream, connection: Option<Connection>) -> BoxStream {
+pub(crate) fn observe_client(
+    stream: BoxStream,
+    connection: Option<Connection>,
+    upstream: Option<Connection>,
+) -> BoxStream {
     match connection {
         Some(connection) => Box::new(ObservedClient {
             stream,
             connection,
+            upstream,
             capture: Some(Capture::default()),
         }),
         None => stream,
@@ -580,8 +591,13 @@ impl AsyncRead for ObservedClient {
         if let Some(capture) = &mut self.capture {
             capture.feed(&buffer.filled()[start..]);
             if capture.done {
-                if let Some(hello) = capture.parsed() {
+                let hello = capture.parsed();
+                let upstream = self.upstream.take();
+                if let Some(hello) = hello {
                     self.connection.client_hello(hello);
+                    if let Some(upstream) = upstream {
+                        upstream.observe_client_destination();
+                    }
                 }
                 self.capture = None;
             }

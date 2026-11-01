@@ -10,6 +10,25 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[path = "native_coord/attestations.rs"]
+mod attestations;
+#[path = "native_coord/catch_up.rs"]
+mod catch_up;
+#[path = "native_coord/federation.rs"]
+mod federation;
+#[path = "native_coord/github.rs"]
+mod github;
+#[path = "native_coord/inventory.rs"]
+mod inventory;
+#[path = "native_coord/room_status.rs"]
+mod room_status;
+#[path = "native_coord/signals.rs"]
+mod signals;
+#[path = "native_coord/stage0.rs"]
+mod stage0;
+#[path = "native_coord/work.rs"]
+mod work;
+
 struct NatsCleanup(PathBuf);
 impl Drop for NatsCleanup {
     fn drop(&mut self) {
@@ -194,6 +213,7 @@ async fn brief_input_requires_an_explicit_revision_and_exactly_one_source() {
     let help = coord_cli(&root, &["brief", "--help"]).await;
     assert!(help.status.success());
     assert!(String::from_utf8_lossy(&help.stdout).contains("--expected-revision"));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("--operation-id"));
     assert!(!root.exists());
     assert!(host_cli(&root, &["init"]).await.status.success());
     coord_rooms::bootstrap(&root).unwrap();
@@ -203,6 +223,34 @@ async fn brief_input_requires_an_explicit_revision_and_exactly_one_source() {
         [],
     )
     .unwrap();
+    // A real room and exact diagnostics distinguish parser refusal from an
+    // incidental failure to open the missing instance used by the matrix above.
+    for (suffix, diagnostic) in [
+        (vec!["--operation-id"], "--operation-id requires a value"),
+        (
+            vec!["--operation-id", "one", "--operation-id", "two"],
+            "duplicate --operation-id option",
+        ),
+        (vec!["--operation-id", " "], "operation ID must be nonempty"),
+    ] {
+        let mut arguments = vec!["brief", "set", "shared", "text", "--expected-revision", "0"];
+        arguments.extend(suffix);
+        let output = coord_cli(&root, &arguments).await;
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(diagnostic));
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM coord_brief_revisions", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM coord_operations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
     // The retained limit counts encoded bytes rather than Unicode characters.
     let limit = "é".repeat(32 * 1024);
     let file = temp.path().join("limit.md");
@@ -348,12 +396,15 @@ responses=['DONE','BLOCKED','FAILED']
     let counts = || -> (i64, i64, i64, i64) {
         db.query_row("SELECT (SELECT count(*) FROM coord_brief_revisions), (SELECT count(*) FROM coord_attention_edges), (SELECT count(*) FROM coord_outbox), (SELECT count(*) FROM coord_operations)", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap()
     };
+    // Room creation and grants already have immutable outcomes and audit rows.
+    let initial = counts();
     let proxy = Proxy::start(native_config::read(&root.join("config.toml")).unwrap())
         .await
         .unwrap();
     let client = |name: &str| Client {
         socket: Some(root.join(format!("{name}.sock"))),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let alice = client("alice");
     let bob = client("bob");
@@ -452,7 +503,10 @@ responses=['DONE','BLOCKED','FAILED']
     assert_eq!((&*actor.0, &*actor.1), ("operator", "operator"));
     let history_actor: (String,String,String) = db.query_row("SELECT actor_kind,actor_id,operation_id FROM coord_brief_revisions WHERE room_id=?1 AND revision=1",[room["room_id"].as_str().unwrap()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
     assert_eq!(actor, history_actor);
-    assert_eq!(counts(), (1, 2, 3, 1));
+    assert_eq!(
+        counts(),
+        (initial.0 + 1, initial.1 + 2, initial.2 + 3, initial.3 + 1)
+    );
     let payloads:Vec<String>=db.prepare("SELECT payload_json FROM coord_outbox UNION ALL SELECT outcome_json FROM coord_operations").unwrap().query_map([],|row|row.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
     assert!(
         payloads
@@ -606,7 +660,10 @@ responses=['DONE','BLOCKED','FAILED']
         coord_json(root, &["brief", "show", "shared"]).await["revision"],
         3
     );
-    assert_eq!(counts(), (3, 6, 9, 3));
+    assert_eq!(
+        counts(),
+        (initial.0 + 3, initial.1 + 6, initial.2 + 9, initial.3 + 3)
+    );
 
     proxy.shutdown().await;
     coord_json(root, &["stop"]).await;
@@ -990,6 +1047,7 @@ async fn repeated_host_start_recovers_coord_without_replacing_the_proxy_or_state
     let alice = Client {
         socket: Some(root.join("alice.sock")),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let bob = Client {
         socket: Some(root.join("bob.sock")),
@@ -1389,6 +1447,7 @@ async fn explicit_listener_ports_isolate_instances_and_refuse_conflicts() {
     let client = |root: &Path| Client {
         socket: Some(root.join("alice.sock")),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let a_client = client(&a);
     let b_client = client(&b);
@@ -1987,15 +2046,17 @@ async fn send_receipt_identifies_each_recipient_request() {
     let _cleanup = NatsCleanup(root.into());
     coord_rooms::create_room(root, "shared").await.unwrap();
     for agent in ["alice", "bob"] {
-        coord_rooms::grant(&root.join("config.toml"), "shared", agent, &[], false).unwrap();
+        coord_rooms::grant(&root.join("config.toml"), "shared", agent, &[], false, None).unwrap();
     }
     let alice = Client {
         socket: Some(root.join("alice.sock")),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let bob = Client {
         socket: Some(root.join("bob.sock")),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let proxy = Proxy::start(native_config::read(&root.join("config.toml")).unwrap())
         .await
@@ -2087,16 +2148,18 @@ async fn fresh_rooms_restart_authorization_mcp_and_nats_failure() {
     let room = coord_rooms::create_room(root, "shared").await.unwrap();
     coord_rooms::create_room(root, "private").await.unwrap();
     for agent in ["alice", "bob"] {
-        coord_rooms::grant(&config_path, "shared", agent, &[], false).unwrap();
+        coord_rooms::grant(&config_path, "shared", agent, &[], false, None).unwrap();
     }
-    coord_rooms::grant(&config_path, "private", "bob", &[], false).unwrap();
+    coord_rooms::grant(&config_path, "private", "bob", &[], false, None).unwrap();
     let alice = Client {
         socket: Some(root.join("alice.sock")),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let bob = Client {
         socket: Some(root.join("bob.sock")),
         token_file: root.join("data/agent_token"),
+        home: None,
     };
     let proxy = Proxy::start(native_config::read(&config_path).unwrap())
         .await

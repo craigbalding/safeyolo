@@ -19,6 +19,32 @@ KEYGEN = shutil.which("ssh-keygen")
 INSTALL = shutil.which("install")
 
 
+@pytest.mark.parametrize("chmod_status", [0, 37])
+def test_job_overlay_root_traversal_preserves_private_directories(tmp_path, chmod_status):
+    source = (REPO_ROOT / "proxy/src/jobs/vz-exec.sh").read_text()
+    setup = source.split("mount --make-rprivate /", 1)[1].split('mkdir -p "$root"', 1)[0]
+    private = tmp_path / "job-private"
+    private.mkdir(mode=0o700)
+    setup = setup.replace("/run/job-private", str(private))
+    commands = """
+set -euo pipefail
+umask 077
+mount() { printf 'mount:%s\\n' "$*"; }
+chmod() { if (( TEST_CHMOD_STATUS )); then return "$TEST_CHMOD_STATUS"; fi; command chmod "$@"; }
+"""
+    result = subprocess.run(
+        ["/bin/bash", "-c", commands + setup],
+        env=os.environ | {"TEST_CHMOD_STATUS": str(chmod_status)},
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == chmod_status, result.stdout + result.stderr
+    assert stat.S_IMODE(private.stat().st_mode) == 0o700
+    assert stat.S_IMODE((private / "work").stat().st_mode) == 0o700
+    assert stat.S_IMODE((private / "root").stat().st_mode) == 0o700
+    assert stat.S_IMODE((private / "upper").stat().st_mode) == (0o700 if chmod_status else 0o755)
+    assert ("mount:-t overlay" in result.stdout) == (chmod_status == 0)
+
+
 @pytest.mark.parametrize("loopback_status", [0, 37])
 def test_job_loopback_is_required_before_ssh_startup(loopback_status):
     source = (REPO_ROOT / "proxy/src/jobs/vz-guest-init.sh").read_text()

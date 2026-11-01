@@ -432,6 +432,7 @@ class TestServiceRegistry:
         assert {service.name for service in reg.list_services()} == {
             "claude",
             "codex",
+            "github",
             "gmail",
             "minifuse",
             "slack",

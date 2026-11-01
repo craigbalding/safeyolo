@@ -3,6 +3,7 @@
 mod input;
 #[cfg(target_os = "macos")]
 mod macos;
+pub(crate) mod network;
 
 use crate::{Error, host_platform, host_runs};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -26,7 +27,7 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-pub const HELP: &str = "safeyolo [--root ROOT] job run SPEC.json [--input DIRECTORY]\nRun fixed argv from a trusted host-supplied JSON spec in a disposable sandbox.\nOnly the host caller selects DIRECTORY. Inputs are copied without following symlinks and mounted read-only at /input.\n/work and /home/agent are transient. Jobs have no Agent API, Coord, harness or host-script authority.\nSpec fields: gate_id, argv, timeout_seconds, max_input_bytes, max_input_entries, retain_bytes.\nOptional: memory_mb (default 4096), privilege (unprivileged or guest-root; default unprivileged).\nThis profile has no network or credential delegation. gate_principal is provenance; authorization_principal is null.\nPrint observed execution evidence as JSON. A PASS string from a job is ordinary output.\nThe command returns 0 only for an observed exit 0 with complete evidence, 124 for timeout, and 1 for other job outcomes.\nIf observation fails, observation_error explains the failure. Captured streams and any exact outcome remain in the JSON; outcome is null when no exact result is available. The command returns 1.\nStartup or cleanup failures return an error without a successful job result.";
+pub const HELP: &str = "safeyolo [--root ROOT] job run SPEC.json [--input DIRECTORY]\nRun fixed argv from a trusted host-supplied JSON spec in a disposable sandbox.\nOnly the host caller selects DIRECTORY. Inputs are copied without following symlinks and mounted read-only at /input.\n/work and /home/agent are transient. Jobs have no Agent API, Coord, harness or host-script authority.\nSpec fields: gate_id, argv, timeout_seconds, max_input_bytes, max_input_entries, retain_bytes.\nOptional: memory_mb (default 4096), privilege (unprivileged or guest-root; default unprivileged), network (default false).\nWith network=true, the host caller delegates gate:<gate_id> through the running proxy. Existing network, credential and Service Gateway policy applies to that principal. SAFEYOLO_GATEWAY_TOKENS contains its scoped service-token JSON; provider credentials stay on the host. No saved access is created by a job.\nWithout network, gate_principal is provenance and authorization_principal is null.\nPrint observed execution evidence as JSON. A PASS string from a job is ordinary output.\nThe command returns 0 only for an observed exit 0 with complete evidence, 124 for timeout, and 1 for other job outcomes.\nIf observation fails, observation_error explains the failure. Captured streams and any exact outcome remain in the JSON; outcome is null when no exact result is available. The command returns 1.\nStartup or cleanup failures return an error without a successful job result.";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -55,6 +56,9 @@ pub struct JobSpec {
     pub memory_mb: u64,
     #[serde(default)]
     pub privilege: Privilege,
+    /// Explicit host delegation of the saved gate policy through the proxy.
+    #[serde(default)]
+    pub network: bool,
 }
 
 impl JobSpec {
@@ -96,7 +100,7 @@ pub struct JobResult {
     pub run_id: String,
     pub gate_id: String,
     pub gate_definition_sha256: String,
-    /// Stable provenance name. Credential delegation is not active in this mode.
+    /// Stable gate name; network jobs also use it for policy authorization.
     pub gate_principal: String,
     pub authorization_principal: Option<String>,
     pub rootfs: Value,
@@ -278,6 +282,7 @@ fn stage(
             "mkdir -p /run /work /home/agent\n",
             "chown 1000:1000 /work /home/agent\n",
             "ln -s /workspace /input\n",
+            "if [[ -f /safeyolo/network/start ]]; then source /safeyolo/network/start; fi\n",
             "touch /run/job-ready\n",
             "exec /bin/sleep infinity\n",
         ),
@@ -464,12 +469,33 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
     let name = format!("job-{generation}");
     let directory = root.join("agents").join(&name);
     fs::create_dir_all(&directory)?;
+    let delegation = if spec.network {
+        Some(network::Client::connect(&config, &directory, spec, &generation).await?)
+    } else {
+        None
+    };
+    let environment = zeroize::Zeroizing::new(
+        delegation
+            .as_ref()
+            .map_or_else(Vec::new, network::Client::environment),
+    );
     let started_unix_ms = now()?;
     let mut cleanup_failed = false;
-    let result: Result<(Value, Option<Outcome>, Output, Output, Option<String>), Error> = host_platform::in_config(root.join("config.toml"), async {
+    let result = host_platform::in_config(root.join("config.toml"), async {
         #[cfg(target_os = "linux")]
         {
             stage(&root, &directory, &guest, spec, &generation)?;
+            if spec.network {
+                network::stage(&directory.join("config-share"), &host, installation)?;
+                let path = directory.join("process.json");
+                let mut process: Value = serde_json::from_slice(&fs::read(&path)?)?;
+                process["env"].as_array_mut().ok_or("job process environment is missing")?.extend(environment.iter().map(|value| json!(value)));
+                crate::guest_commands::write_json(&path, &process)?;
+                let path = directory.join("config.json");
+                let mut oci: Value = serde_json::from_slice(&fs::read(&path)?)?;
+                oci["mounts"].as_array_mut().ok_or("job mounts are missing")?.push(json!({"source":directory.join("proxy"),"destination":"/safeyolo/proxy","type":"bind","options":["rbind","ro","nosuid","nodev"]}));
+                crate::guest_commands::write_json(&path, &oci)?;
+            }
             host_runs::save(&name, &json!({"name":name,"agent_id":name,"run_id":generation,"state":"starting"}))?;
             let mut child = None;
             let mut stdout = None;
@@ -516,11 +542,22 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
         #[cfg(target_os = "macos")]
         {
             macos::run(&name, &root, &directory, &host, &guest, spec, &generation,
-                &mut interrupt, &mut terminate, &mut cleanup_failed).await
+                &environment, installation, &mut interrupt, &mut terminate, &mut cleanup_failed).await
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         { let _ = (host, guest); Err::<(Value, Option<Outcome>, Output, Output, Option<String>), Error>("jobs require Linux or macOS".into()) }
     }).await;
+    let result = if let Some(delegation) = delegation {
+        match delegation.close().await {
+            Ok(()) => result,
+            Err(error) => {
+                cleanup_failed = true;
+                Err(cleanup_error(&result, error, &root))
+            }
+        }
+    } else {
+        result
+    };
     // Never erase the only remaining verified handles after a cleanup failure.
     let (rootfs, outcome, stdout, stderr, observation_error) = match result {
         Ok(result) => result,
@@ -550,7 +587,7 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
         gate_id: spec.gate_id.clone(),
         gate_definition_sha256: digest(&serde_json::to_vec(spec)?),
         gate_principal: format!("gate:{}", spec.gate_id),
-        authorization_principal: None,
+        authorization_principal: spec.network.then(|| format!("gate:{}", spec.gate_id)),
         rootfs,
         input_sha256,
         started_unix_ms,
@@ -560,6 +597,24 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
         stdout,
         stderr,
     })
+}
+
+pub async fn command(config: &Path, args: &[String]) -> Result<i32, Error> {
+    if args == ["--help"] {
+        println!("{HELP}");
+        return Ok(0);
+    }
+    let (spec, input) = match args {
+        [run, spec] if run == "run" => (spec, None),
+        [run, spec, flag, input] if run == "run" && flag == "--input" => {
+            (spec, Some(Path::new(input)))
+        }
+        _ => return Err(HELP.into()),
+    };
+    let spec: JobSpec = serde_json::from_slice(&fs::read(spec)?)?;
+    let result = run(config, &spec, input).await?;
+    println!("{}", serde_json::to_string(&result)?);
+    Ok(command_status(result.outcome, result.observation_error))
 }
 
 #[cfg(test)]
@@ -758,22 +813,4 @@ mod tests {
             ["guest-init", "host-launch-context.json", "job.json"]
         );
     }
-}
-
-pub async fn command(config: &Path, args: &[String]) -> Result<i32, Error> {
-    if args == ["--help"] {
-        println!("{HELP}");
-        return Ok(0);
-    }
-    let (spec, input) = match args {
-        [run, spec] if run == "run" => (spec, None),
-        [run, spec, flag, input] if run == "run" && flag == "--input" => {
-            (spec, Some(Path::new(input)))
-        }
-        _ => return Err(HELP.into()),
-    };
-    let spec: JobSpec = serde_json::from_slice(&fs::read(spec)?)?;
-    let result = run(config, &spec, input).await?;
-    println!("{}", serde_json::to_string(&result)?);
-    Ok(command_status(result.outcome, result.observation_error))
 }

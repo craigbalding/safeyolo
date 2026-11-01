@@ -264,7 +264,7 @@ impl Traffic {
         };
         let facts = self.request_facts(hooks.started);
         let logged = runtime.request_logger.request(
-            runtime.policy.as_ref(),
+            runtime.policy.as_deref(),
             &mut hooks.exchange,
             &facts,
             decoded_size,

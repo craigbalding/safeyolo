@@ -991,12 +991,13 @@ fn parent_for_destination<'a>(
     identity: &ConnectionIdentity,
     destination: &Destination,
 ) -> Option<&'a crate::config::ParentProxy> {
+    let agent = identity
+        .authorization_principal
+        .as_ref()
+        .unwrap_or(&identity.agent_id);
     runtime.parent.as_ref().filter(|parent| {
         (runtime.config.parent_proxy_agents.is_empty()
-            || runtime
-                .config
-                .parent_proxy_agents
-                .contains(&identity.agent_id))
+            || runtime.config.parent_proxy_agents.contains(agent))
             && (parent.destination_hosts.is_empty()
                 || parent.destination_hosts.iter().any(|host| {
                     host.eq_ignore_ascii_case(
@@ -1076,6 +1077,7 @@ async fn open_egress_for_flow(
             (&destination.host, destination.port),
             route_name,
             "tcp",
+            allowed.tasks.ingress.get(),
         )
     });
     if let Some(recording) = allowed.recording {
@@ -1120,10 +1122,6 @@ async fn open_egress_for_flow(
     });
     #[cfg(test)]
     wait_test_dial_barrier(&destination.host, destination.port).await;
-    let protect_addresses = runtime.admin_shield.protects_port(port)
-        || runtime
-            .admin_address
-            .is_some_and(|bound| bound.port() == port);
     let mut recorded = false;
     let connecting: Result<TcpStream, Error> = resolve_and_connect_egress(
         phase_timeout,
@@ -1139,6 +1137,12 @@ async fn open_egress_for_flow(
         },
         |address| async move { TcpStream::connect(address).await.map_err(Into::into) },
         |address| {
+            // Reload can add an ingress while DNS is pending. Consult the
+            // shared endpoint set when checking each resolved address.
+            let protect_addresses = runtime.admin_shield.protects_port(port)
+                || runtime
+                    .admin_address
+                    .is_some_and(|bound| bound.port() == port);
             !(protect_addresses
                 && (runtime.admin_shield.blocks_address(address)
                     || runtime.admin_address.is_some_and(|bound| {
@@ -1454,6 +1458,7 @@ async fn open_outbound(
                     (&destination.host, destination.port),
                     "provider",
                     "stream",
+                    allowed.tasks.ingress.get(),
                 )
             });
             if let Some(recording) = allowed.recording {
@@ -1532,6 +1537,9 @@ async fn open_outbound(
             "pending",
             json!({"verification_name": destination.host}),
         );
+        // After parent CONNECT, these are the inner TLS bytes. Do not observe
+        // the outer parent handshake as origin ServerHello evidence.
+        stream = crate::tls_identity::observe_server(stream, connection.network.clone());
         let tls = refresh_origin_tls_phase(phase_timeout, async {
             TlsConnector::from(Arc::new(config))
                 .connect(name, stream)
@@ -1647,6 +1655,9 @@ async fn decide(
             crate::policy::current_time_ms(),
             |intent| {
                 let mut event = intent.event(identity.audit_attribution());
+                if let Some(events) = &runtime.connection_events {
+                    events.bind_request(identity, &mut event);
+                }
                 crate::approvals::network_action::bind(&mut event, policy);
                 if let crate::circuits::CircuitValue::Object(fields) = &mut event.details
                     && let Some(action) = fields
@@ -1727,7 +1738,7 @@ async fn decide(
         }
         // Keep guard evaluation metadata without copying canonical audit intents.
         // URL queries and application bytes stay excluded.
-        runtime.audit.emit(identity.request_event(
+        let mut event = identity.request_event(
             "security.network_guard.evaluated",
             crate::audit::Kind::Security,
             request.request_id,
@@ -1745,7 +1756,11 @@ async fn decide(
             "approval_id": (outcome.kind == OutcomeKind::Allowed).then(||
                 policy.network_approval(identity.request_agent(), request.host, request.port)).flatten()
             }),
-        ))?;
+        );
+        if let Some(events) = &runtime.connection_events {
+            events.bind_request(identity, &mut event);
+        }
+        runtime.audit.emit(event)?;
         let allow = outcome.kind != OutcomeKind::Blocked;
         let (status, headers, body) = match outcome.response {
             Some(response) => {
@@ -1900,7 +1915,9 @@ where
         client_ip: identity.source_id.as_deref(),
         request_id,
     };
-    let mut outcome = if runtime.config.agent_api_enabled {
+    let agent_api_enabled =
+        runtime.config.agent_api_enabled && identity.authorization_principal.is_none();
+    let mut outcome = if agent_api_enabled {
         let token_path = if runtime.config.native_product {
             runtime.config.data_dir()
         } else {
@@ -1959,6 +1976,7 @@ where
                 coord: Some(agent_api::CoordContext {
                     client: &runtime.coord,
                     cancellation: upgrades.cancellation_receiver.clone(),
+                    runtime: Some(state),
                 }),
             },
             agent_api::RequestBody {
@@ -2279,9 +2297,11 @@ fn publish_gateway_evidence(
     evidence: &crate::credential_injection::Evidence,
 ) -> Result<(), Error> {
     for intent in &evidence.audit {
-        runtime
-            .audit
-            .emit(intent.event(identity.audit_attribution()))?;
+        let mut event = intent.event(identity.audit_attribution());
+        if let Some(events) = &runtime.connection_events {
+            events.bind_request(identity, &mut event);
+        }
+        runtime.audit.emit(event)?;
     }
     runtime.audit.emit(identity.request_event(
         "gateway.evaluated",
@@ -2546,7 +2566,7 @@ where
     B: HttpBody<Data = Bytes> + Unpin + Send + Sync + 'static,
     B::Error: std::error::Error + Send + Sync + 'static,
 {
-    if identity.run.as_ref().is_some_and(|run| {
+    if identity.current_agent_run().is_some_and(|run| {
         runtime
             .policy
             .as_ref()
@@ -2770,7 +2790,7 @@ where
     if request.method() == Method::CONNECT {
         if runtime
             .policy
-            .as_ref()
+            .as_deref()
             .and_then(crate::policy::Policy::gateway)
             .and_then(|gateway| gateway.provider_for_host(&destination.policy_host))
             .is_some()
@@ -2864,7 +2884,11 @@ where
                     _ = stop.changed() => return Ok(()),
                     result = upgrade => Box::new(TokioIo::new(result?)),
                 };
-                let client = crate::tls_identity::observe_client(client, descendants.ingress.get().cloned());
+                let client = crate::tls_identity::observe_client(
+                    client,
+                    descendants.ingress.get().cloned(),
+                    connected.as_ref().and_then(|connection| connection.network.clone()),
+                );
                 let (stream, connection_facts) = match connected {
                     Some(Connected { stream, h1_request_form, peer, observation, network }) => (Some(stream), Some((h1_request_form, peer, observation, network))),
                     None => (None, None),
@@ -2904,7 +2928,7 @@ where
                     if runtime.admin_shield.blocks_request_destination(&destination.host, destination.port) {
                         return Err(AdminPortAccess.into());
                     }
-                    if runtime.policy.as_ref().and_then(crate::policy::Policy::gateway)
+                    if runtime.policy.as_deref().and_then(crate::policy::Policy::gateway)
                         .and_then(|gateway| gateway.provider_for_host(&destination.policy_host)).is_some() {
                         return Err("provider destination cannot use an ordinary selected-IP tunnel".into());
                     }
@@ -3232,10 +3256,16 @@ where
         let mut events: Vec<_> = outcome
             .audit
             .iter()
-            .map(|intent| intent.event(identity.audit_attribution()))
+            .map(|intent| {
+                let mut event = intent.event(identity.audit_attribution());
+                if let Some(events) = &runtime.connection_events {
+                    events.bind_request(identity, &mut event);
+                }
+                event
+            })
             .collect();
         let pending = crate::approvals::pending::bind_credentials(
-            identity.run.as_ref(),
+            identity.current_agent_run(),
             &runtime.audit,
             policy,
             &mut events,
@@ -3271,7 +3301,7 @@ where
         if let Some(record) = pending.as_ref() {
             crate::approvals::pending::delegation::notify(&runtime, record).await;
         }
-        runtime.audit.emit(identity.request_event(
+        let mut event = identity.request_event(
             "security.credential_guard.evaluated",
             crate::audit::Kind::Security,
             request_id,
@@ -3286,7 +3316,11 @@ where
             "body_scope": if codex_refresh.is_some() { "codex_refresh_token" } else { "headers_only" },
             "query_scope": "policy_context_only"
             }),
-        ))?;
+        );
+        if let Some(events) = &runtime.connection_events {
+            events.bind_request(identity, &mut event);
+        }
+        runtime.audit.emit(event)?;
         if codex_routing::routing_discovery(request.method(), &destination.path)
             && let Some(record) = pending.as_ref()
             && codex_routing::wait_for_decision(&state, &record.approval_id, upgrades.stop.clone())
@@ -3382,7 +3416,7 @@ where
             .has_scope(crate::inspection::Direction::Request, "body")?;
     let contract_needs_body = runtime
         .policy
-        .as_ref()
+        .as_deref()
         .and_then(crate::policy::Policy::gateway)
         .is_some_and(|gateway| gateway.requires_request_body(&gateway_request));
     let buffer_required = client_version != hyper::Version::HTTP_2
@@ -3404,7 +3438,7 @@ where
     let gateway_trace = trace
         .as_ref()
         .and_then(|trace| trace.hook("service-gateway", "request"));
-    if let Some(policy) = runtime.policy.as_ref() {
+    if let Some(policy) = runtime.policy.as_deref() {
         let snapshot = policy.gateway();
         let provider_name = snapshot
             .and_then(|snapshot| snapshot.provider_for_host(&destination.policy_host))
@@ -3554,7 +3588,7 @@ where
                                     path: risky_path,
                                 },
                                 time::OffsetDateTime::now_utc(),
-                                identity.run.as_ref().map(|run| {
+                                identity.current_agent_run().map(|run| {
                                     (
                                         policy,
                                         run,
@@ -3639,7 +3673,7 @@ where
                             let pending = if risk.effect == crate::policy::Effect::Prompt {
                                 let pending = crate::approvals::pending::bind_risky(
                                     &runtime,
-                                    identity.run.as_ref(),
+                                    identity.current_agent_run(),
                                     &mut audit,
                                     crate::policy::NetworkRequest {
                                         agent: Some(agent),
@@ -3958,10 +3992,16 @@ where
         let mut events: Vec<_> = outcome
             .audit
             .iter()
-            .map(|intent| intent.event(identity.audit_attribution()))
+            .map(|intent| {
+                let mut event = intent.event(identity.audit_attribution());
+                if let Some(events) = &runtime.connection_events {
+                    events.bind_request(identity, &mut event);
+                }
+                event
+            })
             .collect();
         let pending = crate::approvals::pending::bind_credentials(
-            identity.run.as_ref(),
+            identity.current_agent_run(),
             &runtime.audit,
             policy,
             &mut events,
@@ -3997,7 +4037,7 @@ where
         if let Some(record) = pending.as_ref() {
             crate::approvals::pending::delegation::notify(&runtime, record).await;
         }
-        runtime.audit.emit(identity.request_event(
+        let mut event = identity.request_event(
             "security.credential_guard.evaluated",
             crate::audit::Kind::Security,
             request_id,
@@ -4012,7 +4052,11 @@ where
             "body_scope": "headers_only",
             "query_scope": "policy_context_only"
             }),
-        ))?;
+        );
+        if let Some(events) = &runtime.connection_events {
+            events.bind_request(identity, &mut event);
+        }
+        runtime.audit.emit(event)?;
         if let Some(enforcement) = outcome.response {
             let body = enforcement.body_bytes();
             let mut blocked = Response::builder()
@@ -4660,6 +4704,9 @@ where
                             );
                             event.addon = Some("credential-guard".into());
                             event.decision = Some(crate::audit::Decision::Allow);
+                            if let Some(events) = &runtime.connection_events {
+                                events.bind_request(identity, &mut event);
+                            }
                             runtime.audit.emit_confirmed(event).await?;
                         }
                     }
@@ -4897,8 +4944,12 @@ pub(crate) fn serve_request(
             let source = connection.source();
             // Plain CONNECT replays a prefix from the outer HTTP connection;
             // its new parser offsets cannot identify that older stream range.
-            let parser_offsets_match_source =
-                !(tunnel.is_some() && source.point == crate::observations::Point::AgentUds);
+            let parser_offsets_match_source = !(tunnel.is_some()
+                && matches!(
+                    source.point,
+                    crate::observations::Point::AgentUds
+                        | crate::observations::Point::ExternalIngress
+                ));
             let byte_range = request
                 .extensions()
                 .get::<hyper::ext::RequestByteRange>()
