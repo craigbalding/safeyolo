@@ -352,6 +352,7 @@ async fn reusable_producer_does_not_require_a_prompt_sensor_or_request() {
     let proxy = Proxy::start(config(directory.path())).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
     let identity = ConnectionIdentity {
+        authorization_principal: None,
         ingress_binding: None,
         agent_id: "alice".into(),
         source_id: Some("192.0.2.30".into()),

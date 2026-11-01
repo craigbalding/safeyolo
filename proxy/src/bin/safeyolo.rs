@@ -344,6 +344,13 @@ async fn run() -> Result<(), Error> {
     if arguments.first().is_some_and(|value| value == "host") {
         return safeyolo_proxy::linux_host::run(&root, &arguments[1..]);
     }
+    if arguments.first().is_some_and(|value| value == "job") {
+        let code = safeyolo_proxy::jobs::command(&config, &arguments[1..]).await?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
     if arguments.first().is_some_and(|value| value == "demo") {
         return safeyolo_proxy::demo::run(&config, &arguments[1..]).await;
     }

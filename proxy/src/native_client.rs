@@ -155,7 +155,7 @@ async fn json(
     Ok(value?)
 }
 
-async fn operator_socket(
+pub(crate) async fn operator_socket(
     config_path: &Path,
 ) -> Result<(tokio::net::TcpStream, String, Zeroizing<String>), Error> {
     let config = native_config::read(config_path)?;

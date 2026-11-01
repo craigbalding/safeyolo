@@ -833,7 +833,7 @@ pub(crate) fn runsc_root() -> PathBuf {
 }
 
 #[cfg(target_os = "linux")]
-fn userns_command(name: &str, program: &str) -> io::Result<Command> {
+pub(crate) fn userns_command(name: &str, program: &str) -> io::Result<Command> {
     let mut command = Command::new("nsenter");
     if let Some(pid) = userns_pid(name) {
         command.args(["--user", "--net", "--target", &pid.to_string(), "--"]);
@@ -1066,6 +1066,24 @@ pub(crate) async fn start_sandbox(
     memory_mb: u64,
     ephemeral: bool,
 ) -> io::Result<()> {
+    start_linux_sandbox(name, ip, memory_mb, ephemeral, false).await
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) async fn start_job_sandbox(name: &str, memory_mb: u64) -> io::Result<()> {
+    // Job result interpretation uses the tested runtime's raw wait-status log.
+    crate::linux_host::verify_selected_runtime().map_err(io::Error::other)?;
+    start_linux_sandbox(name, "127.0.0.1", memory_mb, true, true).await
+}
+
+#[cfg(target_os = "linux")]
+async fn start_linux_sandbox(
+    name: &str,
+    ip: &str,
+    memory_mb: u64,
+    ephemeral: bool,
+    job: bool,
+) -> io::Result<()> {
     if !valid_agent_name(name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1142,14 +1160,16 @@ pub(crate) async fn start_sandbox(
         if !set_loopback.success() {
             return Err(io::Error::other("could not activate sandbox loopback"));
         }
-        let address = userns_command(name, "ip")?
-            .args(["addr", "add", &format!("{ip}/32"), "dev", "lo"])
-            .status()
-            .await?;
-        if !address.success() {
-            return Err(io::Error::other(
-                "could not assign sandbox attribution address",
-            ));
+        if !job {
+            let address = userns_command(name, "ip")?
+                .args(["addr", "add", &format!("{ip}/32"), "dev", "lo"])
+                .status()
+                .await?;
+            if !address.success() {
+                return Err(io::Error::other(
+                    "could not assign sandbox attribution address",
+                ));
+            }
         }
         let id = crate::host_runs::id(name).map_err(io::Error::other)?;
         let _ = runsc_command(name)?
@@ -1237,15 +1257,28 @@ pub(crate) async fn start_sandbox(
                 .unwrap_or(0)
                 .to_string(),
         )?;
-        crate::linux_host::shares::attach_startup(name)
-            .await
-            .map_err(io::Error::other)?;
+        if !job {
+            crate::linux_host::shares::attach_startup(name)
+                .await
+                .map_err(io::Error::other)?;
+        }
         // Linux extras must be mounted before guest-init performs static
         // setup or launches any workload. The OCI entry shell waits here.
         std::fs::write(share.join("per-run-go"), b"")?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
         while tokio::time::Instant::now() < deadline && backend_pid(name).is_some() {
-            if status_dir.join("per-run-started").is_file() {
+            let ready = if job {
+                runsc_command(name)?
+                    .args(["exec", &id, "/usr/bin/test", "-f", "/run/job-ready"])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .kill_on_drop(true)
+                    .status().await?.success()
+            } else {
+                status_dir.join("per-run-started").is_file()
+            };
+            if ready {
                 let mut run = crate::host_runs::read(name).map_err(io::Error::other)?
                     .ok_or_else(|| io::Error::other("sandbox record disappeared before readiness"))?;
                 if run["run_id"].as_str().map(|generation| format!("safeyolo-{generation}")) != Some(id.clone()) {
@@ -2104,6 +2137,16 @@ pub(crate) fn spawn_vz_helper(
     memory_mb: u64,
     ephemeral: bool,
 ) -> io::Result<tokio::process::Child> {
+    spawn_vz(name, memory_mb, ephemeral, false)
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_vz(
+    name: &str,
+    memory_mb: u64,
+    ephemeral: bool,
+    job: bool,
+) -> io::Result<tokio::process::Child> {
     if !valid_agent_name(name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2131,8 +2174,10 @@ pub(crate) fn spawn_vz_helper(
             ));
         }
     }
-    std::fs::create_dir_all(&status_dir)?;
-    std::fs::create_dir_all(directory.join("home"))?;
+    if !job {
+        std::fs::create_dir_all(&status_dir)?;
+        std::fs::create_dir_all(directory.join("home"))?;
+    }
     let shell = config
         .join("data/shell-sockets")
         .join(format!("{name}.sock"));
@@ -2149,10 +2194,12 @@ pub(crate) fn spawn_vz_helper(
             Err(error) => return Err(error),
         }
     }
-    for marker in ["static-init-done", "per-run-started", "vm-status"] {
-        let _ = std::fs::remove_file(status_dir.join(marker));
+    if !job {
+        for marker in ["static-init-done", "per-run-started", "vm-status"] {
+            let _ = std::fs::remove_file(status_dir.join(marker));
+        }
+        std::fs::write(share.join("per-run-go"), b"")?;
     }
-    std::fs::write(share.join("per-run-go"), b"")?;
     let proxy = agent_proxy_dir(name).join("proxy.sock");
     let runner = std::env::var_os("SAFEYOLO_VZ_TEST_RUNNER");
     let runner_timeout = std::env::var_os("SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS");
@@ -2182,25 +2229,29 @@ pub(crate) fn spawn_vz_helper(
         "--memory",
         &memory_mb.to_string(),
         "--share",
-        &format!("{workspace}:workspace:rw"),
+        &format!("{workspace}:workspace:{}", if job { "ro" } else { "rw" }),
         "--share",
         &format!("{}:config:ro", share.display()),
-        "--share",
-        &format!("{}:status:rw", status_dir.display()),
-        "--share",
-        &format!("{}:home:rw", directory.join("home").display()),
         "--serial-log",
         &directory.join("console.log").display().to_string(),
         "--cmdline",
         &cmdline,
-        "--proxy-socket",
-        proxy.to_str().unwrap_or_default(),
         "--shell-socket",
         shell.to_str().unwrap_or_default(),
         "--control-socket",
         control.to_str().unwrap_or_default(),
         "--no-terminal",
     ]);
+    if !job || share.join("network").is_dir() {
+        command.arg("--proxy-socket").arg(proxy);
+    }
+    if !job {
+        command
+            .arg("--share")
+            .arg(format!("{}:status:rw", status_dir.display()))
+            .arg("--share")
+            .arg(format!("{}:home:rw", directory.join("home").display()));
+    }
     if let Some(shares) = launch_context
         .get("extra_shares")
         .and_then(serde_json::Value::as_array)
@@ -2251,6 +2302,23 @@ pub(crate) fn spawn_vz_helper(
 
 #[cfg(target_os = "macos")]
 pub(crate) async fn wait_vz_start(name: &str, mut child: tokio::process::Child) -> io::Result<()> {
+    wait_vz(name, &mut child, true).await
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn start_job_sandbox(name: &str, memory_mb: u64) -> io::Result<()> {
+    let mut child = spawn_vz(name, memory_mb, true, true)?;
+    // Identity comes from the private VM control socket. Job readiness is
+    // subsequently established by authenticated SSH, without a writable share.
+    wait_vz(name, &mut child, false).await
+}
+
+#[cfg(target_os = "macos")]
+async fn wait_vz(
+    name: &str,
+    child: &mut tokio::process::Child,
+    require_guest_marker: bool,
+) -> io::Result<()> {
     let config = config_dir();
     let directory = config.join("agents").join(name);
     let status_dir = directory.join("status");
@@ -2285,7 +2353,9 @@ pub(crate) async fn wait_vz_start(name: &str, mut child: tokio::process::Child) 
                     identity = Some(observed);
                 }
             }
-            if identity.is_some() && status_dir.join("per-run-started").is_file() {
+            if identity.is_some()
+                && (!require_guest_marker || status_dir.join("per-run-started").is_file())
+            {
                 return Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -2297,7 +2367,7 @@ pub(crate) async fn wait_vz_start(name: &str, mut child: tokio::process::Child) 
         // Stop the independently verified helper when available. Also stop
         // the owned launch process if identity persistence itself failed.
         let sandbox_stop = stop_sandbox(name).await;
-        return Err(cleanup_failed_vz_start(error, sandbox_stop, &mut child).await);
+        return Err(cleanup_failed_vz_start(error, sandbox_stop, child).await);
     }
     started
 }
@@ -2971,7 +3041,13 @@ mod tests {
                         directory.display()
                     ),
                 ),
-                ("ip", "#!/bin/sh\nexit 0\n".to_owned()),
+                (
+                    "ip",
+                    format!(
+                        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}/fixture-ip'\nif [ \"$*\" = 'addr add 127.0.0.1/32 dev lo' ]; then exit 17; fi\n",
+                        directory.display(),
+                    ),
+                ),
                 ("systemctl", "#!/bin/sh\nexit 1\n".to_owned()),
                 (
                     "unshare",
@@ -3022,7 +3098,8 @@ esac
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
             in_instance(root.clone(), async {
-                let starting = start_sandbox("alice", "10.200.0.1", 4096, true);
+                let job = stop == "job-loopback";
+                let starting = start_linux_sandbox("alice", if job { "127.0.0.1" } else { "10.200.0.1" }, 4096, true, job);
                 let inspect = async {
                     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
                     while !directory.join("fixture-running").exists() {
@@ -3115,6 +3192,13 @@ esac
                     "runsc create failed: fixture boot failure"
                 };
                 assert!(error.contains(expected), "{error}");
+                let ip = std::fs::read_to_string(directory.join("fixture-ip")).unwrap();
+                assert!(ip.contains("link set lo up\n"), "{ip}");
+                if job {
+                    assert!(!ip.contains("addr add"), "{ip}");
+                } else {
+                    assert!(ip.contains("addr add 10.200.0.1/32 dev lo\n"), "{ip}");
+                }
                 if let Some((observed, exec, ready, legacy)) = observation {
                     assert_eq!(observed["backend"]["status"], "running", "{observed}");
                     assert_eq!(observed["runtime_state"], "starting", "{observed}");
@@ -3145,6 +3229,7 @@ esac
             return;
         }
         for (launch, stop) in [
+            ("direct", "job-loopback"),
             ("direct", "after-running"),
             ("native", "succeeded"),
             ("native", "failed"),

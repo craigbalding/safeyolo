@@ -556,6 +556,7 @@ mod tests {
                 http2,
                 self.state.clone(),
                 ConnectionIdentity {
+                    authorization_principal: None,
                     ingress_binding: None,
                     run: None,
                     agent_id: "alice".into(),
@@ -652,6 +653,7 @@ mod tests {
                 runtime.audit.poison_for_test();
             }
             let identity = ConnectionIdentity {
+                authorization_principal: None,
                 ingress_binding: None,
                 run: None,
                 agent_id: "alice".into(), connection_id: "owned-connection".into(), source_id: None,
@@ -818,6 +820,7 @@ mod tests {
             false,
             fixture.state.clone(),
             ConnectionIdentity {
+                authorization_principal: None,
                 ingress_binding: None,
                 run: None,
                 agent_id: "alice".into(),
@@ -1256,6 +1259,7 @@ mod tests {
             true,
             fixture.state.clone(),
             ConnectionIdentity {
+                authorization_principal: None,
                 ingress_binding: None,
                 run: None,
                 agent_id: "alice".into(),
