@@ -1240,18 +1240,22 @@ impl Supervisor {
             .config
             .page_limit
             .min(MAX_PENDING - self.state.in_flight.len());
-        if self.state.repair_selection.is_none()
-            && page_limit > 0
-            && (self.state.in_flight.is_empty()
-                || (!self.state.awaiting_handoffs.is_empty() && !self.state.has_ready_work()))
-        {
+        let ready_work = self.state.has_ready_work();
+        if self.state.repair_selection.is_none() && page_limit > 0 {
             let previous: BTreeSet<_> = self
                 .state
                 .in_flight
                 .iter()
                 .map(|p| p.attention_id.clone())
                 .collect();
-            let page=self.client.call("wait_for_coord",&json!({"since_sequence":self.state.safe_cursor,"timeout_seconds":self.config.wait_seconds,"limit":page_limit})).await?;
+            // Receive scope corrections at the next safe cycle boundary,
+            // without making runnable work wait for new attention.
+            let timeout = if ready_work {
+                0
+            } else {
+                self.config.wait_seconds
+            };
+            let page=self.client.call("wait_for_coord",&json!({"since_sequence":self.state.safe_cursor,"timeout_seconds":timeout,"limit":page_limit})).await?;
             let added = self.accept_page(&page, &rooms)?;
             for p in self
                 .state
@@ -1282,7 +1286,7 @@ impl Supervisor {
                 };
                 if let Ok(Err(error))=tokio::time::timeout(Duration::from_secs(5),self.client.call("send",&json!({"room_name":p.room_name,"body":body,"declared_content_type":"text/plain","notify":notify}))).await {eprintln!("protocol diagnostic unavailable: {error}");}
             }
-            if added == 0 {
+            if added == 0 && !ready_work {
                 // An empty wait cannot resolve an earlier uncertain turn.
                 // Preserve its backoff without redispatching suspended work.
                 if self.state.phase == "uncertain" {

@@ -840,6 +840,90 @@ def retained_tasks(binary, fixture, count):
     return coord, state, harness, capture, saved
 
 
+@pytest.mark.parametrize("pi", [False, True])
+@pytest.mark.parametrize("sender,extra_fields", [("relay", ""), ("lens", ""), ("relay", " extra=invalid")])
+def test_runnable_task_receives_context_at_next_cycle(binary, fixture, pi, sender, extra_fields):
+    coord, state, harness, capture, original = retained_tasks(binary, fixture, 1)
+    config = fixture[2]
+    settings = json.loads(config.read_text())
+    settings.update(wait_seconds=60, page_limit=1, harness="pi" if pi else "codex")
+    config.write_text(json.dumps(settings))
+    original["awaiting_handoffs"] = []
+    subprocess.run([str(binary), "write-state", str(state)], input=json.dumps(original), text=True, check=True)
+    coord.backlog = []
+    harness_script(harness, binary, capture, terminal=False, pi=pi)
+    args = ["--provider", "fixture", "--model", "fixture"] if pi else []
+
+    # An empty receive must still invoke the harness for the runnable task.
+    first = run(binary, fixture, *args, confirm_fresh_identity=False)
+    assert first.returncode != 0  # No terminal or downstream handoff was sent.
+    assert prompt_checkpoint(capture)["in_flight"] == original["in_flight"]
+    assert json.loads(state.read_text())["in_flight"] == original["in_flight"]
+    previous = set(capture.glob("prompt-*"))
+
+    info_id = f"attn-{2000:032x}"
+    edge = {**EDGE, "attention_id": info_id, "object_id": "msg-context", "revision_or_sequence": 43}
+    body = f"CONTEXT target={TARGET}{extra_fields}\nApply the scope correction."
+    coord.objects[info_id] = {"edge": edge, "object": {
+        **OBJECT, "msg_id": edge["object_id"], "sequence": 43,
+        "sender_agent_name": sender, "sender_agent_id": "ag-" + sender, "body": body}}
+    coord.backlog = [(8, edge)]
+    second = run(binary, fixture, *args, confirm_fresh_identity=False)
+    assert second.returncode != 0
+    prompt, = set(capture.glob("prompt-*")) - previous
+    checkpoint = json.loads(prompt.read_text().split("Supervisor checkpoint:\n", 1)[1])
+    task, context = checkpoint["in_flight"]
+    assert task == original["in_flight"][0]
+    assert context["attention_id"] == info_id
+    assert context["sender_agent_name"] == sender
+    assert context["sender_agent_id"] == "ag-" + sender
+    assert context["sequence"] == 43 and context["room_name"] == "backlog"
+    assert context["body"] == body and context["requires_terminal"] is False
+    invalid = sender != "relay" or bool(extra_fields)
+    assert bool(context.get("protocol_warning")) == invalid
+    saved = json.loads(state.read_text())
+    assert saved["in_flight"] == original["in_flight"]
+    assert saved["safe_cursor"] == 8 and info_id in saved["recent_attention_ids"]
+    assert saved["awaiting_handoffs"] == []
+    waits = [parse_qs(urlsplit(path).query) for _, path in coord.requests
+             if urlsplit(path).path == "/api/coord/attention/wait"]
+    assert [(q["since"], q["timeout"], q["limit"]) for q in waits] == [(["7"], ["0"], ["1"]), (["7"], ["0"], ["1"])]
+    assert coord.sends == int(invalid)  # Only the existing protocol diagnostic.
+    assert not any("/work" in path for _, path in coord.requests)
+
+
+def test_runnable_context_survives_launch_failure_and_restart(binary, fixture):
+    coord, state, harness, capture, original = retained_tasks(binary, fixture, 1)
+    original["awaiting_handoffs"] = []
+    subprocess.run([str(binary), "write-state", str(state)], input=json.dumps(original), text=True, check=True)
+    info_id = f"attn-{2000:032x}"
+    edge = {**EDGE, "attention_id": info_id, "object_id": "msg-context", "revision_or_sequence": 43}
+    coord.objects[info_id] = {"edge": edge, "object": {
+        **OBJECT, "msg_id": edge["object_id"], "sequence": 43,
+        "body": f"CONTEXT target={TARGET}\nKeep the original task."}}
+    coord.backlog = [(8, edge)]
+    harness.chmod(0o600)
+    assert run(binary, fixture, confirm_fresh_identity=False).returncode != 0
+    saved = json.loads(state.read_text())
+    assert saved["safe_cursor"] == 8
+    assert saved["in_flight"][0] == original["in_flight"][0]
+    assert saved["in_flight"][1]["attention_id"] == info_id
+    assert not list(capture.iterdir()) and coord.sends == 0
+
+    harness_script(harness, binary, capture, terminal=False)
+    assert run(binary, fixture, confirm_fresh_identity=False).returncode != 0
+    assert prompt_checkpoint(capture)["in_flight"] == saved["in_flight"]
+    after = json.loads(state.read_text())
+    assert after["in_flight"] == original["in_flight"]
+    assert after["safe_cursor"] == 8 and info_id in after["recent_attention_ids"]
+    previous = set(capture.glob("prompt-*"))
+    assert run(binary, fixture, confirm_fresh_identity=False).returncode != 0
+    prompt, = set(capture.glob("prompt-*")) - previous
+    assert json.loads(prompt.read_text().split("Supervisor checkpoint:\n", 1)[1])["in_flight"] == original["in_flight"]
+    assert coord.sends == 0
+    assert sum(path.endswith(f"/{info_id}/object") for _, path in coord.requests) == 1
+
+
 def capacity_harness(harness, binary, *, recover_history=False):
     # The full-checkpoint continuation uses the existing canonical history
     # recovery path. It does not receive or acknowledge new attention.
