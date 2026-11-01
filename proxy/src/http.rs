@@ -3423,6 +3423,12 @@ where
         .as_deref()
         .and_then(crate::policy::Policy::gateway)
         .is_some_and(|gateway| gateway.requires_request_body(&gateway_request));
+    let provider_name = runtime
+        .policy
+        .as_deref()
+        .and_then(crate::policy::Policy::gateway)
+        .and_then(|snapshot| snapshot.provider_for_request(&gateway_request))
+        .map(str::to_owned);
     let buffer_required = client_version != hyper::Version::HTTP_2
         || pipeline_probe
         || request.body().is_end_stream()
@@ -3444,9 +3450,6 @@ where
         .and_then(|trace| trace.hook("service-gateway", "request"));
     if let Some(policy) = runtime.policy.as_deref() {
         let snapshot = policy.gateway();
-        let provider_name = snapshot
-            .and_then(|snapshot| snapshot.provider_for_host(&destination.policy_host))
-            .map(str::to_owned);
         if provider_name.is_some() && destination.selected_ip.is_some() {
             return Ok((
                 prior_block(gateway_response(

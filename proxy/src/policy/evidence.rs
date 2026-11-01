@@ -216,8 +216,7 @@ impl Policy {
     pub(crate) fn delegated_gateway_revision(&self, agent: &str, service: &str) -> Option<String> {
         let mut value = self.gateway_approval_definition(agent, service)?;
         value["host_map"] = json!(
-            self.gateway()?
-                .operator_host_map()
+            self.gateway()?.canonical_gateway()["host_map"]
                 .as_object()
                 .into_iter()
                 .flatten()

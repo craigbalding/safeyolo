@@ -148,6 +148,10 @@ the gateway bearer on an explicit retry to the service host. This token is
 scoped gateway access; the host resolves and injects the upstream credential.
 The reviewer receives neither token nor credential.
 
+Routing supplied by a service grant applies only to that grant's token after
+the worker run and scope checks. It does not change the operator's shared host
+routing or enable another agent's independently configured service token.
+
 `resources` contains exact paths or supported path patterns. Query parameters
 and request bodies are outside this bound. An exact path can fit an envelope
 pattern; a requested pattern must equal an acknowledged envelope pattern.

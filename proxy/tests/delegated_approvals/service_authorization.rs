@@ -94,6 +94,106 @@ async fn permitted(f: &Fixture, token: &str, path: &str) {
 }
 
 #[tokio::test]
+async fn service_grant_routing_never_enables_reviewers_or_unrelated_operator_tokens() {
+    for inactive in ["stopped", "expired"] {
+        let (mut f, _backend, _vault) = setup().await;
+        let mut source = f.source();
+        for agent in ["helper", "peer"] {
+            source.push_str(&format!(
+                "\n[agents.{agent}.services]\nscoped={{capability='reader',token='provider',account='work-account'}}\n"
+            ));
+        }
+        f.apply(&source).await;
+        for phase in ["before", "active", "inactive"] {
+            if phase == "active" {
+                let mut envelope = service_proposal(&f);
+                envelope["delegation"]["scopes"][0]["resources"] = json!(["/data/allowed/*"]);
+                if inactive == "expired" {
+                    envelope["delegation"]["grant_seconds"] = json!(1);
+                }
+                delegate(&f, envelope).await;
+                let id = request(&f, json!(["/data/allowed/*"])).await.id();
+                assert_eq!(
+                    decide(&f, "helper", &id, "approve", "run").await.status,
+                    200
+                );
+                no_origin(&f).await;
+                let services = f
+                    .agent("worker", "GET", "/gateway/services", None)
+                    .await
+                    .json();
+                assert_eq!(
+                    services["authorized"]["scoped"]["host"],
+                    f.address.ip().to_string()
+                );
+                let selected = services["authorized"]["scoped"]["token"].as_str().unwrap();
+                permitted(&f, selected, "/data/allowed/control").await;
+            } else if phase == "inactive" {
+                if inactive == "stopped" {
+                    let path = f.root.path().join("agents/worker/runtime.json");
+                    let mut run: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                    run["state"] = json!("stopped");
+                    fs::write(path, run.to_string()).unwrap();
+                } else {
+                    tokio::time::sleep(Duration::from_millis(1100)).await;
+                }
+                // Retaining and recompiling an inactive record must not add routing.
+                f = f.restart().await;
+                let selected = token(&f).await;
+                assert_eq!(
+                    f.request(
+                        "worker",
+                        f.address,
+                        "GET",
+                        "/data/allowed/control",
+                        &format!("Authorization: Bearer {selected}\r\n")
+                    )
+                    .await
+                    .status,
+                    403
+                );
+                no_origin(&f).await;
+            }
+            for agent in ["helper", "peer"] {
+                let services = f
+                    .agent(agent, "GET", "/gateway/services", None)
+                    .await
+                    .json();
+                let selected = services["authorized"]["scoped"]["token"].as_str().unwrap();
+                let listener = f.origin.clone();
+                let observer = tokio::spawn(async move {
+                    timeout(Duration::from_millis(200), origin(listener))
+                        .await
+                        .ok()
+                });
+                let reply = f
+                    .request(
+                        agent,
+                        f.address,
+                        "GET",
+                        "/data/other/control",
+                        &format!("Authorization: Bearer {selected}\r\n"),
+                    )
+                    .await;
+                let observed = observer.await.unwrap();
+                assert_eq!(
+                    reply.status,
+                    503,
+                    "{inactive}/{phase}/{agent}: {}",
+                    String::from_utf8_lossy(&reply.body)
+                );
+                assert!(
+                    observed.is_none(),
+                    "worker grant changed {agent}'s reachability"
+                );
+                assert_eq!(services["authorized"]["scoped"]["host"], "");
+            }
+        }
+        f.stop().await;
+    }
+}
+
+#[tokio::test]
 async fn delegated_service_race_scope_risk_revocation_and_operator_access() {
     let (f, _backend, _vault) = setup().await;
     let mut envelope = service_proposal(&f);

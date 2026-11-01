@@ -1,6 +1,7 @@
 //! Pure service-definition snapshots and gateway route selection. A selection is
 //! not authorization to dial: risky-route policy and credential lifecycle still follow.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -391,8 +392,6 @@ pub struct GatewaySnapshot {
     contract_issues: ContractIssues,
     routes: Vec<CompiledRoute>,
     canonical: Value,
-    // Expanded operator routing before run-bound service grants add routes.
-    operator_host_map: Value,
     token_issue: Option<GatewayCompatibility>,
     canonical_timestamps: TimestampPaths,
     token_timestamps: Vec<TokenTimestamps>,
@@ -416,14 +415,9 @@ impl Drop for GatewayJson {
 impl Drop for GatewaySnapshot {
     fn drop(&mut self) {
         wipe_json(&mut self.canonical);
-        wipe_json(&mut self.operator_host_map);
     }
 }
 impl GatewaySnapshot {
-    pub(crate) fn operator_host_map(&self) -> &Value {
-        &self.operator_host_map
-    }
-
     /// Consume the same normalized, expiry-pruned and list-expanded document as
     /// Policy. IAM gateway objects retain their supplied tokens and extra fields;
     /// host-format documents mint exactly once here, including without a registry.
@@ -440,7 +434,7 @@ impl GatewaySnapshot {
         registry: Option<Arc<Registry>>,
         timestamps: &TimestampPaths,
     ) -> Result<Self, Error> {
-        let (canonical, canonical_timestamps, operator_host_map) = if host_centric {
+        let (canonical, canonical_timestamps) = if host_centric {
             compile_gateway_document(document, timestamps)?
         } else {
             (
@@ -449,11 +443,6 @@ impl GatewaySnapshot {
                     .cloned()
                     .unwrap_or_else(|| Value::Object(Map::new())),
                 timestamps.projected(&["gateway"]),
-                document
-                    .get("gateway")
-                    .and_then(|gateway| gateway.get("host_map"))
-                    .cloned()
-                    .unwrap_or(Value::Null),
             )
         };
         // Construct the wiping owner before validating any token-bearing data.
@@ -484,7 +473,6 @@ impl GatewaySnapshot {
             contract_issues: ContractIssues::default(),
             routes: Vec::new(),
             canonical,
-            operator_host_map,
             token_issue: None,
             canonical_timestamps,
             token_timestamps: Vec::new(),
@@ -635,6 +623,13 @@ impl GatewaySnapshot {
         let name = self.hosts.get(&host.to_lowercase())?;
         (self.registry.as_ref()?.services.contains_key(name) && self.agents.contains_key(name))
             .then_some(name.as_str())
+    }
+
+    pub(crate) fn provider_for_request(&self, request: &GatewayRequest<'_>) -> Option<&str> {
+        let hosts = self.hosts_for_request(request);
+        let name = hosts.get(&request.host.to_lowercase())?;
+        let (name, _) = self.registry.as_ref()?.services.get_key_value(name)?;
+        self.agents.contains_key(name).then_some(name.as_str())
     }
 
     pub(crate) fn configured_agent_id(&self, name: &str) -> Option<&str> {
@@ -811,9 +806,15 @@ impl GatewaySnapshot {
                 .filter_map(|binding| {
                     let encoded = self.canonical["token_map"][binding.token.expose_secret()]["delegated"].as_str()?;
                     let issued: crate::policy::delegation::IssuedAccess = serde_json::from_str(encoded).ok()?;
-                    Some(json!({"approval_id":issued.approval_id,"token":binding.token.expose_secret(),"capability":binding.capability,
+                    Some(json!({"approval_id":issued.approval_id,"token":binding.token.expose_secret(),"capability":binding.capability,"host":issued.action["host"],
                         "account":binding.account,"resources":issued.action["resources"],"expires_at":issued.expires_at}))
                 }).collect();
+            if let Some(authorization) = authorizations
+                .iter()
+                .find(|authorization| authorization["token"] == binding.token.expose_secret())
+            {
+                service.insert("host".into(), authorization["host"].clone());
+            }
             if !authorizations.is_empty() {
                 service.insert("authorizations".into(), json!(authorizations));
             }
@@ -843,11 +844,48 @@ impl GatewaySnapshot {
         registry.available_services(&authorized)
     }
 
+    // A grant can route only its own token. Selection below still checks its
+    // current beneficiary/run and resources before using this request-local map.
+    fn hosts_for_request(&self, request: &GatewayRequest<'_>) -> Cow<'_, HostMap> {
+        if let Some(registry) = self.registry.as_deref() {
+            for binding in &self.tokens {
+                let Some(encoded) =
+                    self.canonical["token_map"][binding.token.expose_secret()]["delegated"]
+                        .as_str()
+                else {
+                    continue;
+                };
+                let Ok(issued) =
+                    serde_json::from_str::<crate::policy::delegation::IssuedAccess>(encoded)
+                else {
+                    continue;
+                };
+                let (Some(host), Some(service)) = (
+                    issued.action["host"].as_str(),
+                    issued.action["service"].as_str(),
+                ) else {
+                    continue;
+                };
+                if !host.eq_ignore_ascii_case(request.host) {
+                    continue;
+                }
+                let hosts = HostMap::from([(host.to_lowercase(), service.to_owned())]);
+                if extract_token(registry, &hosts, request)
+                    .is_some_and(|token| token.expose_secret() == binding.token.expose_secret())
+                {
+                    return Cow::Owned(hosts);
+                }
+            }
+        }
+        Cow::Borrowed(&self.hosts)
+    }
+
     pub fn select(&self, request: GatewayRequest<'_>) -> GatewayDecision {
+        let hosts = self.hosts_for_request(&request);
         let issued = self
             .registry
             .as_deref()
-            .and_then(|registry| extract_token(registry, &self.hosts, &request))
+            .and_then(|registry| extract_token(registry, &hosts, &request))
             .and_then(|token| {
                 self.canonical["token_map"][token.expose_secret()]["delegated"].as_str()
             })
@@ -892,7 +930,7 @@ impl GatewaySnapshot {
         let mut decision = match self.registry.as_deref() {
             Some(registry) => select_route_inner(
                 registry,
-                &self.hosts,
+                &hosts,
                 &self.tokens,
                 &self.contracts,
                 &self.contract_issues,
@@ -922,7 +960,8 @@ impl GatewaySnapshot {
         let Some(registry) = self.registry.as_deref() else {
             return false;
         };
-        let Some(token) = extract_token(registry, &self.hosts, request) else {
+        let hosts = self.hosts_for_request(request);
+        let Some(token) = extract_token(registry, &hosts, request) else {
             return false;
         };
         self.tokens
@@ -1132,7 +1171,7 @@ fn mint_gateway_token() -> Result<Secret, Error> {
 fn compile_gateway_document(
     document: &Map<String, Value>,
     timestamps: &TimestampPaths,
-) -> Result<(Value, TimestampPaths, Value), Error> {
+) -> Result<(Value, TimestampPaths), Error> {
     let mut typed = TimestampPaths::default();
     let mut hosts = Map::new();
     if let Some(raw_hosts) = document.get("hosts").and_then(Value::as_object) {
@@ -1151,7 +1190,6 @@ fn compile_gateway_document(
             }
         }
     }
-    let operator_host_map = Value::Object(hosts.clone());
     let mut gateway = Map::new();
     if document.contains_key("agents") || document.contains_key("services") || !hosts.is_empty() {
         let mut tokens = GatewayJson(Value::Object(Map::new()));
@@ -1256,8 +1294,6 @@ fn compile_gateway_document(
                     issued.validate()?;
                     let action = &issued.action;
                     let service = action["service"].as_str().ok_or("service unavailable")?;
-                    let host = action["host"].as_str().ok_or("service host unavailable")?;
-                    hosts.entry(host).or_insert_with(|| service.into());
                     let token = mint_gateway_token()?;
                     tokens.0.as_object_mut().expect("tokens").insert(token.expose_secret().into(), json!({
                         "agent":agent,"service":service,"capability":action["capability"],"account":action["account"],
@@ -1284,7 +1320,7 @@ fn compile_gateway_document(
             timestamps.copy_under(&["gateway", "grant_ttl_seconds"], &["grant_ttl_seconds"]),
         );
     }
-    Ok((Value::Object(gateway), typed, operator_host_map))
+    Ok((Value::Object(gateway), typed))
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CompiledRoute {
