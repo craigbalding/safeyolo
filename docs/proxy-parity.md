@@ -260,7 +260,7 @@ checked.
 | Operation | Status | Owner or evidence |
 |---|---|---|
 | GET `/health`, `/stats`, `/modes`, `/plugins/{name}/mode` | Implemented | Native `admin_api`; the retained `AdminAPI` mode workflow is covered by `tests/proxy_migration/test_operator_modes_and_listeners.py`. |
-| GET `/admin/runtime-identity`, `/admin/approvals` | Implemented | Native `admin_api` keeps the process runtime identity separate from the durable host identity and reads pending approvals from the canonical audit owner. |
+| GET `/admin/runtime-identity`, `/admin/approvals` | Implemented | Native `admin_api` keeps the process runtime identity separate from the durable host identity. Approval listing reads the host-owned pending store and streams current plumb and desktop audit views within the existing 50,000-line window. |
 | GET `/admin/instance`, `/admin/agents` | Implemented for installed host use | Native `admin_api` reads the existing `sy-*` Coord identity file and Rust host inventory. The installed loopback witness in `proxy/tests/command_centre_installed.rs` checks the Mac client's required agent fields and a stable host ID across proxy restarts. The physical Mac app journey remains open in #640 B2. |
 | GET `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/budgets` | Implemented | Native policy, task registry and budget owners. |
 | GET/PUT `/admin/traffic/scope` | Implemented | Native traffic-scope owner; traffic effect proof remains with the traffic lane. |

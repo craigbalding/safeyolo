@@ -11,6 +11,69 @@ mod shared_approval_fixture;
 mod test_owned_endpoint;
 use shared_approval_fixture::*;
 
+/// Run alone to keep other tests' allocations out of the RSS measurement.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore = "resource control: run alone with --ignored --exact --nocapture"]
+async fn listing_unrelated_audit_history_has_bounded_resident_growth() {
+    fn resident_kib() -> u64 {
+        fs::read_to_string("/proc/self/status")
+            .unwrap()
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("VmRSS:")?
+                    .split_whitespace()
+                    .next()?
+                    .parse()
+                    .ok()
+            })
+            .unwrap()
+    }
+
+    let fixture = Fixture::new().await;
+    assert_eq!(
+        fixture.admin("GET", "/admin/approvals", None).await.json()["approvals"],
+        json!([])
+    );
+    let path = fixture.root.path().join("audit.jsonl");
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .unwrap();
+    let mut history = std::io::BufWriter::new(file);
+    let event = json!({"schema_version":2,"ts":"2026-10-17T10:00:00Z",
+        "event":"traffic.completed","kind":"traffic","severity":"low","summary":"Synthetic unrelated history",
+        "details":{"padding":"x".repeat(768),"values":[1,2,3,4]}}).to_string();
+    for _ in 0..50_000 {
+        writeln!(history, "{event}").unwrap();
+    }
+    history.flush().unwrap();
+    drop(history);
+    let bytes = fs::metadata(&path).unwrap().len();
+    let before = resident_kib();
+    let start = std::time::Instant::now();
+    let listed = fixture.admin("GET", "/admin/approvals", None).await;
+    let elapsed = start.elapsed();
+    let after = resident_kib();
+    println!(
+        "synthetic audit bytes={bytes}, elapsed={elapsed:?}, RSS KiB before={before} after={after} growth={}",
+        after.saturating_sub(before)
+    );
+    assert_eq!(listed.status, 200);
+    assert_eq!(listed.json()["approvals"], json!([]));
+    assert_eq!(
+        fs::metadata(path).unwrap().len(),
+        bytes,
+        "history rotated during the measurement"
+    );
+    assert!(
+        after.saturating_sub(before) < 32 * 1024,
+        "listing retained more than 32 MiB after reading unrelated history"
+    );
+    fixture.stop().await;
+}
+
 #[tokio::test]
 async fn prepared_request_remains_selectable_with_equivalent_retries_and_helper_requests() {
     let fixture = Fixture::new().await;
@@ -712,12 +775,7 @@ async fn lost_committed_response_reads_canonical_state_and_missing_evidence_keep
         .admin("GET", &format!("/admin/approvals/{id}"), None)
         .await
         .json();
-    fs::rename(
-        fixture.root.path().join("audit.jsonl"),
-        fixture.root.path().join("held-audit.jsonl"),
-    )
-    .unwrap();
-    fs::create_dir(fixture.root.path().join("audit.jsonl")).unwrap();
+    fixture.make_audit_unavailable();
     assert!(fs::read(fixture.root.path().join("audit.jsonl")).is_err());
     let recovered = fixture
         .admin("GET", &format!("/admin/approvals/{id}"), None)
@@ -839,7 +897,7 @@ async fn terminal_approval_replay_does_not_restore_changed_policy_even_without_a
         }
         let source = toml::to_string(&policy).unwrap();
         fixture.apply(&source).await;
-        // Flush the earlier writes before making this sink unavailable.
+        // Check the terminal view before making the audit sink unavailable.
         assert_eq!(
             fixture
                 .admin("GET", &format!("/admin/approvals/{id}"), None)
@@ -847,12 +905,7 @@ async fn terminal_approval_replay_does_not_restore_changed_policy_even_without_a
                 .status,
             200
         );
-        fs::rename(
-            fixture.root.path().join("audit.jsonl"),
-            fixture.root.path().join("held-audit.jsonl"),
-        )
-        .unwrap();
-        fs::create_dir(fixture.root.path().join("audit.jsonl")).unwrap();
+        fixture.make_audit_unavailable();
         let view = fixture
             .admin("GET", &format!("/admin/approvals/{id}"), None)
             .await;
@@ -875,71 +928,97 @@ async fn terminal_approval_replay_does_not_restore_changed_policy_even_without_a
 }
 
 #[tokio::test]
-async fn credential_lookup_preserves_scope_staleness_and_evidence_refusals() {
+async fn desktop_denial_resolves_only_its_request_beside_canonical_approvals() {
     let fixture = Fixture::new().await;
-    let id = fixture.network("worker", fixture.address).await.id();
-    let network = fixture
+    let network = fixture.network("worker", fixture.address).await.id();
+    fixture.network("worker", fixture.address).await;
+    let desktop = fixture
+        .agent("worker", "POST", "/desktop/present", Some(json!({})))
+        .await;
+    assert_eq!(desktop.status, 202);
+    let id = desktop.json()["request_id"].as_str().unwrap().to_owned();
+    let listed = fixture.admin("GET", "/admin/approvals", None).await.json();
+    let approvals = listed["approvals"].as_array().unwrap();
+    assert_eq!(approvals.len(), 2);
+    assert_eq!(approvals[0]["request_id"], network);
+    let denial = json!({"destination":approvals[1]["approval"]["target"],
+        "cred_id":"desktop.present","approval_request_id":"req-an-older-request"});
+    assert_eq!(
+        fixture
+            .admin("POST", "/admin/policy/baseline/deny", Some(denial.clone()))
+            .await
+            .status,
+        200
+    );
+    assert_eq!(
+        fixture.admin("GET", "/admin/approvals", None).await.json()["approvals"],
+        listed["approvals"]
+    );
+    let mut denial = denial;
+    denial["approval_request_id"] = json!(id);
+    assert_eq!(
+        fixture
+            .admin("POST", "/admin/policy/baseline/deny", Some(denial))
+            .await
+            .status,
+        200
+    );
+    let listed = fixture.admin("GET", "/admin/approvals", None).await.json();
+    assert_eq!(listed["approvals"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["approvals"][0]["request_id"], network);
+    let retry = fixture
+        .agent("worker", "POST", "/desktop/present", Some(json!({})))
+        .await;
+    assert_eq!(retry.status, 202);
+    let listed = fixture.admin("GET", "/admin/approvals", None).await.json();
+    assert_eq!(listed["approvals"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        listed["approvals"][1]["request_id"],
+        retry.json()["request_id"]
+    );
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn credential_action_binding_uses_current_canonical_request() {
+    let fixture = Fixture::new().await;
+    let source = fixture
+        .source()
+        .replace("egress='prompt'", "egress='allow'")
+        .replace("enabled=false", "enabled=true");
+    fixture.apply(&source).await;
+    let blocked = fixture
+        .request(
+            "worker",
+            fixture.address,
+            "GET",
+            "/credential",
+            &format!("Authorization: Bearer {SECRET}\r\n"),
+        )
+        .await;
+    assert_eq!(blocked.status, 428, "{}", blocked.json());
+    let id = blocked.id();
+    let view = fixture
         .admin("GET", &format!("/admin/approvals/{id}"), None)
         .await
         .json();
-    let credential_id = "req-cccccccccccccccccccccccccccccccc";
-    let event = |id: &str, host: &str, key: &str| {
-        json!({"schema_version":2,"ts":"2026-10-17T10:00:00Z","event":"security.credential_guard",
-            "summary":"Credential approval required",
-            "kind":"security","severity":"high","request_id":id,"agent":"worker",
-            "details":{"agent_id":WORKER_ID},
-            "approval":{"required":true,"approval_type":"credential","key":key,"target":host,"scope_hint":{}}})
-    };
-    let mut audit = fs::OpenOptions::new()
-        .append(true)
-        .open(fixture.root.path().join("audit.jsonl"))
-        .unwrap();
-    for key in ["hmac:second", "hmac:first"] {
-        audit
-            .write_all(format!("{}\n", event(credential_id, "credential.example", key)).as_bytes())
-            .unwrap();
-    }
-    let view = fixture
-        .admin("GET", &format!("/admin/approvals/{credential_id}"), None)
-        .await;
-    assert_eq!(view.status, 200);
-    let view = view.json();
-    assert_eq!(view["status"], "pending");
     assert_eq!(view["action"]["kind"], "credential_allow");
-    assert_eq!(view["action"]["host"], "credential.example");
-    assert_eq!(
-        view["action"]["credentials"],
-        json!(["hmac:first", "hmac:second"])
-    );
-    assert_eq!(view["action"]["agent_id"], WORKER_ID);
-    assert_eq!(network["action"]["kind"], "network_allow");
-    assert_eq!(fixture.resolve(credential_id, "approve").await.status, 404);
-    let source = fixture.source();
-    let decision = json!({"destination":"credential.example","cred_id":view["action"]["credentials"],
-        "approval_request_id":credential_id,"approval_action":view["action"]});
-    let mut wrong_destination = decision.clone();
-    wrong_destination["destination"] = network["action"]["host"].clone();
+    let decision = json!({"destination":view["action"]["host"],"cred_id":view["action"]["credentials"],
+        "approval_request_id":id,"approval_action":view["action"]});
+    let mut wrong = decision.clone();
+    wrong["approval_action"]["agent_id"] = json!(HELPER_ID);
     assert_eq!(
         fixture
-            .admin(
-                "POST",
-                "/admin/policy/baseline/approve",
-                Some(wrong_destination)
-            )
+            .admin("POST", "/admin/policy/baseline/approve", Some(wrong))
             .await
             .status,
         409
     );
     assert_eq!(fixture.source(), source);
-    let recreated = source.replace(WORKER_ID, "ag-44444444444444444444444444444444");
-    fixture.apply(&recreated).await;
-    assert_eq!(
-        fixture
-            .admin("GET", &format!("/admin/approvals/{credential_id}"), None)
-            .await
-            .json()["status"],
-        "stale"
-    );
+    // Replacing the owner invalidates the original action even though its
+    // request ID and credential fingerprints have not changed.
+    let replaced = source.replace(WORKER_ID, "ag-44444444444444444444444444444444");
+    fixture.apply(&replaced).await;
     assert_eq!(
         fixture
             .admin(
@@ -951,44 +1030,79 @@ async fn credential_lookup_preserves_scope_staleness_and_evidence_refusals() {
             .status,
         409
     );
-    assert_eq!(fixture.source(), recreated);
+    assert_eq!(fixture.source(), replaced);
     fixture.apply(&source).await;
+    let approved = fixture
+        .admin("POST", "/admin/policy/baseline/approve", Some(decision))
+        .await;
+    assert_eq!(approved.status, 200, "{}", approved.json());
+    assert_eq!(
+        fixture.admin("GET", "/admin/approvals", None).await.json()["approvals"],
+        json!([])
+    );
+    fixture.stop().await;
+}
 
-    // Audit text cannot change the separate host-owned network authority,
-    // even when it reuses that traffic request ID.
-    for host in ["first.example", "second.example"] {
+#[tokio::test]
+async fn audit_only_credentials_cannot_replace_canonical_approval_authority() {
+    let fixture = Fixture::new().await;
+    let id = fixture.network("worker", fixture.address).await.id();
+    let network = fixture
+        .admin("GET", &format!("/admin/approvals/{id}"), None)
+        .await
+        .json();
+    let credential_id = "req-cccccccccccccccccccccccccccccccc";
+    let event = |id: &str, host: &str| {
+        json!({"schema_version":2,"ts":"2026-10-17T10:00:00Z","event":"security.credential_guard",
+            "summary":"Credential approval required",
+            "kind":"security","severity":"high","request_id":id,"agent":"worker",
+            "details":{"agent_id":WORKER_ID},
+            "approval":{"required":true,"approval_type":"credential","key":"hmac:synthetic","target":host,"scope_hint":{}}})
+    };
+    let mut audit = fs::OpenOptions::new()
+        .append(true)
+        .open(fixture.root.path().join("audit.jsonl"))
+        .unwrap();
+    for (request, host) in [
+        (credential_id, "credential.example"),
+        (&id, "first.example"),
+        (&id, "second.example"),
+    ] {
         audit
-            .write_all(format!("{}\n", event(&id, host, "hmac:conflicting")).as_bytes())
+            .write_all(format!("{}\n", event(request, host)).as_bytes())
             .unwrap();
     }
-    assert_eq!(
-        fixture
-            .admin("GET", &format!("/admin/approvals/{id}"), None)
-            .await
-            .status,
-        200
-    );
-    assert_eq!(fixture.source(), source);
-    drop(audit);
-    fs::rename(
-        fixture.root.path().join("audit.jsonl"),
-        fixture.root.path().join("held-audit.jsonl"),
-    )
-    .unwrap();
-    fs::create_dir(fixture.root.path().join("audit.jsonl")).unwrap();
     assert_eq!(
         fixture
             .admin("GET", &format!("/admin/approvals/{credential_id}"), None)
             .await
             .status,
-        503
+        404
     );
+    assert_eq!(fixture.resolve(credential_id, "approve").await.status, 404);
+    let listed = fixture.admin("GET", "/admin/approvals", None).await.json();
+    assert_eq!(listed["approvals"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        listed["approvals"][0]["approval_id"],
+        network["approval_id"]
+    );
+    assert_eq!(
+        fixture
+            .admin("GET", &format!("/admin/approvals/{id}"), None)
+            .await
+            .json(),
+        network
+    );
+    let source = fixture.source();
+    let decision = json!({"destination":"credential.example","cred_id":["hmac:synthetic"],
+        "approval_request_id":credential_id,"approval_action":{"kind":"credential_allow",
+            "host":"credential.example","credentials":["hmac:synthetic"],"agent":"worker","agent_id":WORKER_ID}});
     assert_eq!(
         fixture
             .admin("POST", "/admin/policy/baseline/approve", Some(decision))
             .await
             .status,
-        503
+        409
     );
     assert_eq!(fixture.source(), source);
     fixture.stop().await;
