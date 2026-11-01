@@ -16,7 +16,7 @@ mount -t virtiofs -o ro workspace /input
 stage='mount read-only base'
 mount -t ext4 -o ro,noload /dev/vda /run/job-base
 stage='mount mapped base'
-mount --bind -o X-mount.idmap=b:65536:0:65536 /run/job-base /run/job-lower
+mount --bind -o X-mount.idmap=b:0:65536:65536 /run/job-base /run/job-lower
 stage='read mapped root ownership'
 mapped_owner=$(stat -c '%u:%g' /run/job-lower)
 stage="check mapped root ownership (expected 65536:65536, observed $mapped_owner)"

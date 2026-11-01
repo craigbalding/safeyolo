@@ -112,7 +112,7 @@ exit "$status"
 @pytest.mark.parametrize(("failed", "stage"), [
     ("mount -t virtiofs -o ro workspace {root}/input", "mount read-only input"),
     ("mount -t ext4 -o ro,noload /dev/vda {root}/run/job-base", "mount read-only base"),
-    ("mount --bind -o X-mount.idmap=b:65536:0:65536 {root}/run/job-base {root}/run/job-lower",
+    ("mount --bind -o X-mount.idmap=b:0:65536:65536 {root}/run/job-base {root}/run/job-lower",
      "mount mapped base"),
     ("stat -c %u:%g {root}/run/job-lower", "read mapped root ownership"),
     ("chown 65536:65536 {root}/run/job-private", "set private directory owner"),
