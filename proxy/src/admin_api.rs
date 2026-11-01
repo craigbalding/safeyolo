@@ -724,274 +724,6 @@ async fn get_baseline(policy: Option<&Policy>, path: Option<&Path>) -> Outcome {
     }
 }
 
-fn read_audit_events(path: &Path) -> Vec<Value> {
-    let Ok(source) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    source
-        .lines()
-        .rev()
-        .take(50_000)
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect()
-}
-
-fn network_approval_key(event: &Value) -> Option<String> {
-    if event.pointer("/details/network_action/kind")?.as_str()? != "network_allow" {
-        return None;
-    }
-    let request_id = event.get("request_id")?.as_str()?;
-    Some(format!("network:{request_id}"))
-}
-
-fn approval_key(event: &Value) -> Option<String> {
-    if let Some(key) = network_approval_key(event) {
-        return Some(key);
-    }
-    let approval = event.get("approval")?.as_object()?;
-    let key = approval.get("key")?.as_str()?;
-    let target = approval.get("target")?.as_str()?;
-    Some(format!("{key}:{target}"))
-}
-
-fn credential_resolution_key(credential: &str, destination: &str) -> String {
-    if let Some(service) = destination.strip_prefix("gateway:") {
-        let mut parts = credential.splitn(3, ':');
-        if let (Some(agent), Some(method), Some(path)) = (parts.next(), parts.next(), parts.next())
-        {
-            return format!("gw:{agent}:{service}:{method}:{path}:{service}");
-        }
-    }
-    format!("{credential}:{destination}")
-}
-
-fn resolved_approval_keys(event: &Value) -> Vec<String> {
-    let Some(event_name) = event.get("event").and_then(Value::as_str) else {
-        return Vec::new();
-    };
-    let Some(details) = event.get("details").and_then(Value::as_object) else {
-        return Vec::new();
-    };
-    match event_name {
-        "admin.approval_added" | "admin.denial" => {
-            let destination = details.get("destination").and_then(Value::as_str);
-            let Some(destination) = destination else {
-                return Vec::new();
-            };
-            match details.get("cred_id") {
-                Some(Value::String(credential)) => {
-                    vec![credential_resolution_key(credential, destination)]
-                }
-                Some(Value::Array(credentials)) => credentials
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(|credential| credential_resolution_key(credential, destination))
-                    .collect(),
-                _ => Vec::new(),
-            }
-        }
-        "admin.gateway_grant" => {
-            let agent = details
-                .get("agent")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let service = details
-                .get("service")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if agent.is_empty() || service.is_empty() {
-                return Vec::new();
-            }
-            let method = details
-                .get("method")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let path = details
-                .get("path")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            vec![format!("gw:{agent}:{service}:{method}:{path}:{service}")]
-        }
-        "admin.agent_service_authorized" | "admin.agent_service_revoked" => {
-            let agent = details
-                .get("agent")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let service = details
-                .get("service")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if agent.is_empty() || service.is_empty() {
-                Vec::new()
-            } else {
-                vec![format!("{agent}:{service}:{service}")]
-            }
-        }
-        "admin.contract_binding_approved" => {
-            let agent = details
-                .get("agent")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let service = details
-                .get("service")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let capability = details
-                .get("capability")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if agent.is_empty() || service.is_empty() || capability.is_empty() {
-                Vec::new()
-            } else {
-                vec![format!("{agent}:{service}:{capability}:{service}")]
-            }
-        }
-        "admin.host_allowed" | "admin.host_denied" | "admin.network_action_rejected" => {
-            if let Some(key) = network_approval_key(event) {
-                return vec![key];
-            }
-            let Some(host) = details.get("host").and_then(Value::as_str) else {
-                return Vec::new();
-            };
-            let agent = details.get("agent").and_then(Value::as_str);
-            let port = details
-                .get("port")
-                .and_then(Value::as_u64)
-                .and_then(|port| u16::try_from(port).ok());
-            crate::approvals::NetworkScope::new(host, agent, port)
-                .ok()
-                .and_then(|scope| scope.resolved_key().ok())
-                .into_iter()
-                .collect()
-        }
-        "plumb.approved" | "plumb.denied" => {
-            let Some(request_id) = details.get("request_id").and_then(Value::as_str) else {
-                return Vec::new();
-            };
-            let Some(participants) = details.get("participants").and_then(Value::as_array) else {
-                return Vec::new();
-            };
-            let participants = participants
-                .iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>();
-            if participants.is_empty() {
-                Vec::new()
-            } else {
-                vec![format!("{request_id}:{}", participants.join(","))]
-            }
-        }
-        "admin.desktop_presented" => details
-            .get("agent_id")
-            .and_then(Value::as_str)
-            .filter(|agent_id| !agent_id.is_empty())
-            .map(|agent_id| format!("desktop.present:desktop:{agent_id}"))
-            .into_iter()
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn pending_approvals(path: &Path) -> Value {
-    let events = read_audit_events(path);
-    let mut pending = pending_approval_events(&events);
-    let mut events_by_request: std::collections::HashMap<&str, Vec<&Value>> =
-        std::collections::HashMap::new();
-    for event in &events {
-        if event["event"] == "security.credential_guard"
-            && event["approval"]["approval_type"] == "credential"
-            && let Some(id) = event["request_id"].as_str()
-        {
-            events_by_request.entry(id).or_default().push(event);
-        }
-    }
-    let credential_actions: std::collections::HashMap<_, _> = events_by_request
-        .into_iter()
-        .filter_map(|(id, events)| {
-            approvals::credential_view(events, id)
-                .ok()
-                .flatten()
-                .map(|mut view| (id, view["action"].take()))
-        })
-        .collect();
-    for event in pending.as_array_mut().expect("pending approval array") {
-        if let Some(action) = event["request_id"]
-            .as_str()
-            .and_then(|id| credential_actions.get(id))
-        {
-            event["action"] = action.clone();
-        }
-    }
-    pending
-}
-
-fn pending_approval_events(events: &[Value]) -> Value {
-    let mut durable_resolutions = std::collections::HashSet::new();
-    let mut pending: std::collections::HashMap<String, (usize, Value)> =
-        std::collections::HashMap::new();
-    // Walk newest-first audit input chronologically. Typed network requests
-    // retain their own decisions; unbound legacy prompts coalesce by scope.
-    for (sequence, event) in events.iter().rev().enumerate() {
-        for key in resolved_approval_keys(event) {
-            let repeatable = key.starts_with("desktop.present:desktop:")
-                || event.pointer("/details/network_action").is_some();
-            if repeatable {
-                let Some((_, prompt)) = pending.get(&key) else {
-                    continue;
-                };
-                let request_matches = event
-                    .get("details")
-                    .and_then(Value::as_object)
-                    .and_then(|details| details.get("approval_request_id"))
-                    .and_then(Value::as_str)
-                    .is_none_or(|request_id| {
-                        prompt.get("request_id").and_then(Value::as_str) == Some(request_id)
-                    });
-                if request_matches {
-                    pending.remove(&key);
-                }
-            } else {
-                durable_resolutions.insert(key.clone());
-                pending.remove(&key);
-            }
-        }
-        let Some(approval) = event.get("approval") else {
-            continue;
-        };
-        if event["event"] == "agent.network_action_prepared" {
-            if let Some(key) = network_approval_key(event)
-                && let Some((_, prompt)) = pending.get_mut(&key)
-                && prompt.pointer("/details/network_action")
-                    == event.pointer("/details/network_action")
-                && let Some(reason) = event.pointer("/details/untrusted_reason_text")
-            {
-                // Keep the original required prompt and immutable action. A
-                // preparation only annotates pending work, never reopens it.
-                prompt["details"]["untrusted_reason_text"] = reason.clone();
-            }
-            continue;
-        }
-        if !approval
-            .get("required")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        let Some(key) = approval_key(event) else {
-            continue;
-        };
-        if durable_resolutions.contains(&key) && event.pointer("/details/network_action").is_none()
-        {
-            continue;
-        }
-        pending.insert(key, (sequence, event.clone()));
-    }
-    let mut pending = pending.into_values().collect::<Vec<_>>();
-    pending.sort_unstable_by_key(|(sequence, _)| *sequence);
-    Value::Array(pending.into_iter().map(|(_, event)| event).collect())
-}
-
 fn json_toml_value(value: &Value) -> std::result::Result<toml_edit::Value, ()> {
     Ok(match value {
         Value::String(value) => toml_edit::Value::from(value.clone()),
@@ -1604,23 +1336,9 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                         }
                     }
                 }
-                // Plumb and desktop keep their existing owners. Historical
-                // prompts stay readable, but canonical requests appear once.
-                if let Some(events) = pending_approvals(writer.path()).as_array() {
-                    views.extend(
-                        events
-                            .iter()
-                            .filter(|event| {
-                                event["details"]["approval_id"].is_null()
-                                    && (policy.native_controls().is_none()
-                                        || matches!(
-                                            event["approval"]["approval_type"].as_str(),
-                                            Some("plumb" | "desktop_present")
-                                        ))
-                            })
-                            .cloned(),
-                    );
-                }
+                // Plumb and desktop keep their existing owners. The audit
+                // cannot create a second view of a canonical request.
+                views.extend(approvals::plumb_and_desktop(writer.path()));
                 Ok(response(StatusCode::OK, json!({"approvals":views})))
             })
             .await
@@ -1628,7 +1346,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         }
         return Ok(response(
             StatusCode::OK,
-            json!({"approvals":audit.map(|writer| pending_approvals(writer.path())).unwrap_or_else(|| Value::Array(Vec::new()))}),
+            json!({"approvals":audit.map(|writer| approvals::plumb_and_desktop(writer.path())).unwrap_or_default()}),
         ));
     }
     if path.starts_with("/admin/approvals/") {
@@ -2208,13 +1926,24 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 fields.get("approval_request_id").and_then(Value::as_str),
             ) {
                 (Some(writer), Some(policy), Some(id)) => {
-                    approvals::credential_record(writer, policy, id)
+                    crate::approvals::pending::lookup(writer, id)
+                        .and_then(|record| {
+                            record
+                                .map(|record| {
+                                    crate::approvals::pending::current_view(
+                                        writer, policy, &record, task_state,
+                                    )
+                                })
+                                .transpose()
+                        })
+                        .map_err(|_| "credential approval state unavailable")
                 }
                 _ => Err("credential approval evidence unavailable"),
             };
             match current {
                 Ok(Some(view))
                     if view["status"] == "pending"
+                        && view["action"]["kind"] == "credential_allow"
                         && view["action"] == *expected
                         && view["action"]["host"] == destination
                         && view["action"]["credentials"] == json!(credentials) => {}
@@ -3497,7 +3226,7 @@ mod tests {
             writer.emit(event).unwrap();
         }
         assert!(writer.shutdown(std::time::Duration::from_secs(2)).unwrap());
-        assert_eq!(pending_approvals(&path), json!([]));
+        assert_eq!(json!(approvals::plumb_and_desktop(&path)), json!([]));
 
         let denied_request = owner
             .request_chat("alice", &[json!("bob")], None, None, None)
@@ -3542,97 +3271,7 @@ mod tests {
                 .shutdown(std::time::Duration::from_secs(2))
                 .unwrap()
         );
-        assert_eq!(pending_approvals(&denied_path), json!([]));
-    }
-
-    #[test]
-    fn resolved_keys_match_retained_operator_consumers() {
-        assert_eq!(
-            resolved_approval_keys(&json!({
-                "event":"admin.denial",
-                "details":{"cred_id":"alice:POST:/send","destination":"gateway:gmail"}
-            })),
-            vec!["gw:alice:gmail:POST:/send:gmail"]
-        );
-        assert_eq!(
-            resolved_approval_keys(&json!({
-                "event":"admin.gateway_grant",
-                "details":{"agent":"alice","service":"gmail","method":"POST","path":"/send"}
-            })),
-            vec!["gw:alice:gmail:POST:/send:gmail"]
-        );
-        assert_eq!(
-            resolved_approval_keys(&json!({
-                "event":"admin.agent_service_authorized",
-                "details":{"agent":"alice","service":"gmail"}
-            })),
-            vec!["alice:gmail:gmail"]
-        );
-        assert_eq!(
-            resolved_approval_keys(&json!({
-                "event":"admin.agent_service_revoked",
-                "details":{"agent":"alice","service":"gmail"}
-            })),
-            vec!["alice:gmail:gmail"]
-        );
-        assert_eq!(
-            resolved_approval_keys(&json!({
-                "event":"admin.contract_binding_approved",
-                "details":{"agent":"alice","service":"gmail","capability":"mail"}
-            })),
-            vec!["alice:gmail:mail:gmail"]
-        );
-    }
-
-    #[test]
-    fn preparation_annotates_only_its_existing_pending_request() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("audit.jsonl");
-        let action = json!({"kind":"network_allow","agent":"worker","port":443});
-        let prompt = json!({
-            "event":"security.network_guard","request_id":"req-selected",
-            "approval":{"required":true,"approval_type":"network_egress","key":"worker:origin:443","target":"origin:443"},
-            "details":{"network_action":action}
-        });
-        let preparation = json!({
-            "event":"agent.network_action_prepared","request_id":"req-selected",
-            "approval":{"required":false,"approval_type":"network_egress","key":"worker:origin:443","target":"origin:443"},
-            "details":{"network_action":action,"untrusted_reason_text":"Helper reason"}
-        });
-        std::fs::write(&path, format!("{preparation}\n")).unwrap();
-        assert_eq!(pending_approvals(&path), json!([]));
-        std::fs::write(&path, format!("{prompt}\n{preparation}\n")).unwrap();
-        let mut annotated = prompt.clone();
-        annotated["details"]["untrusted_reason_text"] = json!("Helper reason");
-        assert_eq!(pending_approvals(&path), json!([annotated]));
-        let resolution = json!({
-            "event":"admin.network_action_rejected","request_id":"req-selected",
-            "details":{"network_action":action,"approval_request_id":"req-selected"}
-        });
-        std::fs::write(&path, format!("{prompt}\n{resolution}\n{preparation}\n")).unwrap();
-        assert_eq!(pending_approvals(&path), json!([]));
-    }
-
-    #[test]
-    fn credential_denial_suppresses_a_later_retry() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("audit.jsonl");
-        let prompt = json!({
-            "event":"security.credential",
-            "request_id":"first",
-            "approval":{"required":true,"approval_type":"credential","key":"hmac:xyz","target":"api.openai.com"}
-        });
-        let denial = json!({
-            "event":"admin.denial",
-            "details":{"destination":"api.openai.com","cred_id":"hmac:xyz","reason":"user_denied"}
-        });
-        let retry = json!({
-            "event":"security.credential",
-            "request_id":"second",
-            "approval":{"required":true,"approval_type":"credential","key":"hmac:xyz","target":"api.openai.com"}
-        });
-        std::fs::write(&path, format!("{}\n{}\n{}\n", prompt, denial, retry)).unwrap();
-        assert_eq!(pending_approvals(&path), json!([]));
+        assert_eq!(json!(approvals::plumb_and_desktop(&denied_path)), json!([]));
     }
 
     #[test]
@@ -3650,7 +3289,7 @@ mod tests {
             }
         });
         std::fs::write(&path, format!("{}\n", request)).unwrap();
-        assert_eq!(pending_approvals(&path), json!([request]));
+        assert_eq!(json!(approvals::plumb_and_desktop(&path)), json!([request]));
 
         let presented = json!({
             "event": "admin.desktop_presented",
@@ -3660,7 +3299,7 @@ mod tests {
             }
         });
         std::fs::write(&path, format!("{}\n{}\n", request, presented)).unwrap();
-        assert_eq!(pending_approvals(&path), json!([]));
+        assert_eq!(json!(approvals::plumb_and_desktop(&path)), json!([]));
 
         let retry = json!({
             "event": "agent.desktop_present_requested",
@@ -3673,7 +3312,53 @@ mod tests {
             }
         });
         std::fs::write(&path, format!("{}\n{}\n{}\n", request, presented, retry)).unwrap();
-        assert_eq!(pending_approvals(&path), json!([retry]));
+        assert_eq!(json!(approvals::plumb_and_desktop(&path)), json!([retry]));
+
+        // An older presentation or another agent cannot resolve this retry.
+        let mut foreign = presented.clone();
+        foreign["details"]["agent_id"] = json!("bob");
+        foreign["details"]["approval_request_id"] = json!("req-two");
+        std::fs::write(
+            &path,
+            format!("{request}\n{presented}\n{retry}\n{presented}\n{foreign}\n"),
+        )
+        .unwrap();
+        assert_eq!(json!(approvals::plumb_and_desktop(&path)), json!([retry]));
+    }
+
+    #[test]
+    fn audit_approval_selection_preserves_window_coalescing_and_order() {
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("audit.jsonl");
+        let desktop = |id: &str, agent: &str| {
+            json!({
+                "event":"agent.desktop_present_requested","request_id":id,
+                "approval":{"required":true,"approval_type":"desktop_present","key":"desktop.present","target":format!("desktop:{agent}")}
+            })
+        };
+        let mut file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+        writeln!(file, "{}", desktop("outside-window", "old")).unwrap();
+        // Every line counts towards the old window, even invalid/unrelated rows.
+        for _ in 0..50_000 {
+            writeln!(file, "unrelated malformed line").unwrap();
+        }
+        let alice = desktop("alice-old", "alice");
+        let bob = desktop("bob", "bob");
+        let latest = desktop("alice-new", "alice");
+        let mut canonical = desktop("canonical", "carol");
+        canonical["details"] = json!({"approval_id":"apr-owned"});
+        for row in [&alice, &bob, &latest, &canonical] {
+            writeln!(file, "{row}").unwrap();
+        }
+        // A legacy audit-only prompt cannot supply canonical authority.
+        writeln!(file, "{}", json!({"event":"security.network_guard",
+            "approval":{"required":true,"approval_type":"network_egress","key":"legacy","target":"example"}})).unwrap();
+        file.flush().unwrap();
+        assert_eq!(
+            json!(approvals::plumb_and_desktop(&path)),
+            json!([bob, latest])
+        );
     }
 
     // Source35 results SHA256: 6d86bb348eaf0657690a3221f59c149f47c3fba0c9bf1bc934d8f7279919be35.

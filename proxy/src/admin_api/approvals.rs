@@ -1,121 +1,125 @@
-//! Operator reads retain canonical request scope across credential retries.
+//! Operator reads and decisions use canonical request scope. Plumb and desktop
+//! keep their audit-backed presentation and their separate decision owners.
 
 use super::*;
 use crate::approvals::network_action;
 use crate::approvals::pending;
 
-pub(super) fn credential_view<'a>(
-    events: impl IntoIterator<Item = &'a Value>,
-    id: &str,
-) -> Result<Option<Value>, &'static str> {
-    let matching: Vec<_> = events
-        .into_iter()
-        .filter(|event| {
-            event["request_id"] == id
-                && event["event"] == "security.credential_guard"
-                && event["approval"]["approval_type"] == "credential"
-        })
-        .collect();
-    let Some(first) = matching.first() else {
-        return Ok(None);
-    };
-    if matching
-        .iter()
-        .any(|event| event.pointer("/details/approval_id").is_some())
-    {
-        return Err(
-            "canonical approval state unavailable; audit text cannot replace its authority",
-        );
-    }
-    let agent = first["agent"]
-        .as_str()
-        .ok_or("credential request has no agent")?;
-    let agent_id = first["details"]["agent_id"].as_str().ok_or("credential request predates identity binding; use direct credential policy controls or make a new request")?;
-    let host = first["approval"]["target"]
-        .as_str()
-        .ok_or("credential request has no destination")?;
-    let mut credentials = Vec::new();
-    for event in &matching {
-        if event["agent"] != agent
-            || event["details"]["agent_id"] != agent_id
-            || event["approval"]["target"] != host
-        {
-            return Err("credential request has conflicting scope; use direct policy controls");
-        }
-        let key = event["approval"]["key"]
-            .as_str()
-            .filter(|key| key.starts_with("hmac:") && key.len() > 5)
-            .ok_or("credential request has no fingerprint")?;
-        if !credentials.iter().any(|saved| saved == key) {
-            credentials.push(key.to_owned());
-        }
-    }
-    credentials.sort();
-    Ok(Some(json!({"request_id":id,"status":"pending",
-        "action":{"kind":"credential_allow","agent":agent,"agent_id":agent_id,"host":host,"credentials":credentials},
-        "effect":format!("Allow these credential fingerprints to {} for all agents in this instance, including future agents. This changes shared persistent policy until explicitly removed. Existing network rules still apply.", crate::network_guard::sanitize(host))})))
-}
+/// Plumb and desktop still publish audit prompts. Other approval types use
+/// the canonical store. Select these events before decoding their payloads.
+pub(super) fn plumb_and_desktop(path: &Path) -> Vec<Value> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    use std::io::BufRead;
 
-// The retained audit supplies the selected request's original identity. The
-// pending reducer supplies its current state; a newer representative is usable
-// only when its entire action still matches that original identity.
-pub(super) fn credential_record(
-    writer: &crate::audit::Writer,
-    policy: &Policy,
-    id: &str,
-) -> Result<Option<Value>, &'static str> {
-    let mut document = writer
-        .approval_events(id)
-        .map_err(|_| "credential approval evidence unavailable")?;
-    let rendered = document.render_json(false);
-    crate::audit::wipe(&mut document);
-    let rendered =
-        Zeroizing::new(rendered.map_err(|_| "credential approval evidence unavailable")?);
-    let events = Json(
-        serde_json::from_str(&rendered).map_err(|_| "credential approval evidence unavailable")?,
-    );
-    let Some(mut view) = credential_view(
-        events
-            .0
-            .as_array()
-            .ok_or("credential approval evidence unavailable")?,
-        id,
-    )?
-    else {
-        return Ok(None);
+    #[derive(serde::Deserialize)]
+    struct EventName<'a> {
+        #[serde(borrow)]
+        event: std::borrow::Cow<'a, str>,
+    }
+
+    let Ok(file) = std::fs::File::open(path) else {
+        return Vec::new();
     };
-    let current = read_audit_events(writer.path());
-    let pending = pending_approval_events(&current);
-    let action = &view["action"];
-    let mut matches = policy.evidence_agent_id(
-        action["agent"]
-            .as_str()
-            .ok_or("credential request has no agent")?,
-    ) == action["agent_id"].as_str();
-    for credential in action["credentials"]
-        .as_array()
-        .ok_or("credential request has no fingerprints")?
-    {
-        let representative = pending.as_array().and_then(|events| {
-            events.iter().find(|event| {
-                event["event"] == "security.credential_guard"
-                    && event["approval"]["key"] == *credential
-                    && event["approval"]["target"] == action["host"]
-            })
-        });
-        matches &= match representative.and_then(|event| event["request_id"].as_str()) {
-            Some(current_id) => credential_view(&current, current_id)?
-                .is_some_and(|current| current["action"] == *action),
-            None => false,
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = String::new();
+    let mut events = VecDeque::new();
+    let mut sequence = 0usize;
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(_) => return Vec::new(),
+        }
+        sequence += 1;
+        // Keep the existing 50,000-line window, including malformed and
+        // unrelated lines, without retaining their text or JSON values.
+        while events
+            .front()
+            .is_some_and(|(saved, _)| sequence - saved >= 50_000)
+        {
+            events.pop_front();
+        }
+        let Ok(name) = serde_json::from_str::<EventName<'_>>(&line) else {
+            continue;
         };
+        if matches!(
+            name.event.as_ref(),
+            "plumb.requested"
+                | "plumb.approved"
+                | "plumb.denied"
+                | "agent.desktop_present_requested"
+                | "admin.desktop_presented"
+        ) && let Ok(event) = serde_json::from_str::<Value>(&line)
+        {
+            events.push_back((sequence, event));
+        }
     }
-    if !matches {
-        view["status"] = json!("stale");
-        view["effect"] = json!(
-            "This credential request is resolved or changed, or its current evidence is unavailable. Inspect the pending requests again before deciding."
-        );
+
+    let mut resolved = HashSet::new();
+    let mut prompts: HashMap<String, (usize, Value)> = HashMap::new();
+    for (sequence, event) in events {
+        match event["event"].as_str() {
+            Some("plumb.approved" | "plumb.denied") => {
+                let Some(id) = event["details"]["request_id"].as_str() else {
+                    continue;
+                };
+                let Some(participants) = event["details"]["participants"].as_array() else {
+                    continue;
+                };
+                let participants = participants
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>();
+                if !participants.is_empty() {
+                    let key = format!("{id}:{}", participants.join(","));
+                    prompts.remove(&key);
+                    resolved.insert(key);
+                }
+            }
+            Some("admin.desktop_presented") => {
+                let Some(agent_id) = event["details"]["agent_id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                else {
+                    continue;
+                };
+                let key = format!("desktop.present:desktop:{agent_id}");
+                if prompts.get(&key).is_some_and(|(_, prompt)| {
+                    event["details"]["approval_request_id"]
+                        .as_str()
+                        .is_none_or(|id| prompt["request_id"] == id)
+                }) {
+                    prompts.remove(&key);
+                }
+            }
+            Some("plumb.requested" | "agent.desktop_present_requested") => {
+                if event["approval"]["required"] != true
+                    || !event["details"]["approval_id"].is_null()
+                    || !matches!(
+                        event["approval"]["approval_type"].as_str(),
+                        Some("plumb" | "desktop_present")
+                    )
+                {
+                    continue;
+                }
+                let (Some(key), Some(target)) = (
+                    event["approval"]["key"].as_str(),
+                    event["approval"]["target"].as_str(),
+                ) else {
+                    continue;
+                };
+                let key = format!("{key}:{target}");
+                if !resolved.contains(&key) {
+                    prompts.insert(key, (sequence, event));
+                }
+            }
+            _ => {}
+        }
     }
-    Ok(Some(view))
+    let mut prompts = prompts.into_values().collect::<Vec<_>>();
+    prompts.sort_unstable_by_key(|(sequence, _)| *sequence);
+    prompts.into_iter().map(|(_, prompt)| prompt).collect()
 }
 
 #[derive(serde::Deserialize)]
@@ -220,18 +224,6 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
                 Ok(None) if id.starts_with("apr-") => return Ok(response(StatusCode::NOT_FOUND, json!({"error":"approval unavailable"}))),
                 Ok(None) => {},
                 Err(error) => return Ok(response(StatusCode::SERVICE_UNAVAILABLE, json!({"error":error.to_string()}))),
-            }
-            match credential_record(&writer, &policy, &id) {
-                Ok(Some(view)) => return Ok(response(StatusCode::OK, view)),
-                Ok(None) => {},
-                Err(error) => {
-                    // A credential evidence failure cannot hide a committed
-                    // network grant. Audit-only records cannot supply this fallback.
-                    return Ok(match network_action::committed_record(&policy, &id) {
-                        Ok(Some(record)) => response(StatusCode::OK, record.view(&id, true)),
-                        _ => response(StatusCode::SERVICE_UNAVAILABLE, json!({"error":error})),
-                    });
-                },
             }
             Ok(match network_action::record(&writer, &policy, &id) {
                 Ok(Some(record)) => response(StatusCode::OK, record.view(&id, true)),
