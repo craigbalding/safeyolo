@@ -37,7 +37,8 @@ chmod 600 /run/job-host-key /run/job-authorized-keys
 stage='lock root password'
 usermod -p '*' root
 stage='start SSH observer'
-/usr/sbin/sshd -D -e -f /safeyolo/sshd_config >/run/job-sshd.log 2>&1 &
+# Keep DEBUG1 in the protected log when the session installs command stdio.
+/usr/sbin/sshd -D -E /run/job-sshd.log -f /safeyolo/sshd_config >/run/job-sshd.log 2>&1 &
 sshd_pid=$!
 stage='start SSH bridge'
 socat VSOCK-LISTEN:2220,reuseaddr,fork TCP:127.0.0.1:22 >/run/job-bridge.log 2>&1 &

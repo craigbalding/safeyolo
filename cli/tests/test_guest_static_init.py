@@ -109,9 +109,10 @@ fi
         path.chmod(0o755)
     child = """#!/bin/bash
 name=${0##*/}
+printf '%s %s\\n' "$name" "$*" >> "$TEST_ROOT/calls"
 printf '%s-started\\n' "$name" >&"$TEST_EVENTS_FD"
 if [[ $name = sshd && ${TEST_REAL_SSHD-0} = 1 ]]; then
-    exec /usr/sbin/sshd -D -e -f "$TEST_ROOT/sshd_config"
+    exec /usr/sbin/sshd -D -E "$TEST_ROOT/run/job-sshd.log" -f "$TEST_ROOT/sshd_config"
 fi
 printf '/safeyolo/guest-init: line 1: controlled %s launch error\\n' "$name"
 if [[ $name = sshd ]]; then
@@ -250,6 +251,7 @@ def test_job_reports_first_child_and_preserves_its_status(job_guest, first, stat
         assert process.poll() is not None
     assert "private session and wait record" in (job_guest / "run/job-sshd.log").read_text()
     assert "private unrelated log content" in (job_guest / "run/job-bridge.log").read_text()
+    assert f"sshd -D -E {job_guest}/run/job-sshd.log -f {job_guest}/safeyolo/sshd_config" in (job_guest / "calls").read_text().splitlines()
 
 
 def test_job_preserves_real_sshd_startup_error_on_console(job_guest):
