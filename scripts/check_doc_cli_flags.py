@@ -133,7 +133,9 @@ def _native_cli_surface() -> dict[str, set[str]]:
     for relative in (
         "proxy/src/bin/safeyolo.rs", "proxy/src/host_commands.rs", "proxy/src/host_launch.rs", "proxy/src/demo.rs", "proxy/src/lab.rs", "proxy/src/factory.rs",
         "proxy/src/bin/safeyolo/credential_commands.rs",
-        "proxy/src/coord_rooms.rs", "proxy/src/coord_rooms/inventory.rs", "proxy/src/coord_operator.rs", "proxy/src/mattermost.rs",
+        "proxy/src/coord_rooms.rs", "proxy/src/coord_rooms/inventory.rs",
+        "proxy/src/coord_rooms/work_cli.rs", "proxy/src/coord_rooms/signals_cli.rs",
+        "proxy/src/coord_rooms/room_status.rs", "proxy/src/coord_operator.rs", "proxy/src/mattermost.rs",
         "proxy/src/dispatch.rs", "proxy/src/dispatch/request.rs",
         "proxy/src/coord_operator/catch_up.rs",
         "proxy/src/factory_proposals/commands.rs", "proxy/src/operator_commands.rs",
