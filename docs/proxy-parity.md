@@ -3351,6 +3351,13 @@ sockets, and then verifies that Carol's permitted wait receives a later Alice
 publication. This is an explicit client-disconnect cleanup witness; it does
 not claim restart persistence or a load/concurrency matrix.
 
+Before a native Plumb read releases a message page, the owner rechecks current
+participant access and conversation expiry after the SQLite read. If access
+ended after admission, the read returns an empty page, `has_more=false` and the
+original input cursor. New reads still return 403. Leave and operator close do
+not wake pending polls. This check prevents new disclosure; it does not retract
+content already returned while the participant had access.
+
 The companion running-client control
 `backing_state_failure_is_truthful_and_other_member_recovers` holds the real
 SQLite writer lock while Alice attempts a message. The native route returns
