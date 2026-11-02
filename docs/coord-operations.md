@@ -454,14 +454,22 @@ checks. A Coord startup failure warns and leaves a healthy proxy available.
 The first-agent launch also checks Coord readiness before starting the sandbox
 and coding client.
 
-When the proxy is already running, `start` reconciles Coord. It leaves healthy
-NATS running or starts the absent managed process, bootstraps the registry and
-recovers pending attention. It preserves the instance identity, credentials,
-rooms, memberships, control state and retained JetStream history.
+When the proxy is already running, `start` bootstraps the Coord store and checks
+the managed NATS runtime. It leaves healthy NATS running or starts the absent
+managed process. It preserves the instance identity, credentials, rooms,
+memberships, control state and retained JetStream history.
 
-If NATS startup, Coord bootstrap or attention recovery fails, the command
-reports degraded Coord with diagnostic commands and log paths. It leaves the
-proxy running. Run `safeyolo doctor` and inspect the reported log before retrying.
+If NATS startup or Coord bootstrap fails, `start` reports `Coord unavailable`
+and leaves the running proxy available. Use `safeyolo coord status` and
+`safeyolo doctor` to inspect the runtime before retrying. If a managed NATS log
+exists, inspect `nats/nats-server.log` under the configured Coord data directory.
+
+An agent's attention wait reads recorded attention first. When no recorded
+attention remains at its cursor, the wait recovers pending message projections
+from retained room messages. Recovery failures are reported through that wait.
+The startup message `Coord ready` establishes managed runtime readiness;
+it does not establish successful attention recovery.
+
 Do not launch a second NATS server or edit its generated configuration. See
 [runtime files and credential protection](coord-reference.md#runtime-files-and-credentials)
 for private paths; deleting Coord data is not a repair procedure.
