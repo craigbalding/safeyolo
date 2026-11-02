@@ -100,7 +100,8 @@ Native [approval tests](../proxy/tests/approvals.rs) include scoped persistence,
 activation rollback, invalid edits and concurrent writers. Native policy
 decisions have separate Rust checks in [`proxy/tests/policy.rs`](../proxy/tests/policy.rs).
 These focused examples do not establish generated transaction sequences,
-coverage of every mutation/failure stage or abrupt disposable-VM death.
+multiprocess mutation races, coverage of every mutation/failure stage or abrupt
+disposable-VM death.
 Those broader assurance claims remain unproved.
 
 **Host-side proxy tests** (`tests/blackbox/host/`):
