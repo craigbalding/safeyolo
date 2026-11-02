@@ -39,9 +39,15 @@ def test_controlled_codex_selected_offline_by_shipped_wrapper(tmp_path, completi
     environment.update(HOME=str(home), PATH=f"{tools}:/usr/bin:/bin", REAL_MISE=mise,
                        MISE_CALLS=str(tmp_path / "mise-calls"))
     wrapper = Path(__file__).resolve().parents[1] / "contrib/codex-command.sh"
-    for action in (["--version"], ["login", "status"]):
-        ready = subprocess.run([str(wrapper), *action], env=environment, capture_output=True, text=True, timeout=15)
-        assert ready.returncode == 0, ready.stderr
+    ready = subprocess.run([str(wrapper), "--version"], env=environment, capture_output=True, text=True, timeout=15)
+    assert ready.returncode == 0, ready.stderr
+    # Demo runs authentication in a new process without the wrapper's PATH.
+    login_environment = {**environment, "MISE_DATA_DIR": str(home / ".mise"),
+                         "MISE_CONFIG_DIR": str(home / ".mise"), "MISE_CACHE_DIR": str(home / ".mise/cache"),
+                         "PATH": f"{home}/.local/bin:{home}/.mise/shims:{environment['PATH']}"}
+    login = subprocess.run(["/bin/sh", "-c", "codex login status"], env=login_environment,
+                           capture_output=True, text=True, timeout=15)
+    assert login.returncode == 0, login.stderr
     if completion:
         demo.stage_controlled_codex(home, completion=True)
     result = subprocess.run([str(wrapper), "exec", "-C", str(tmp_path)], env=environment,
@@ -51,6 +57,7 @@ def test_controlled_codex_selected_offline_by_shipped_wrapper(tmp_path, completi
     imported = home / ".safeyolo/codex-package/payload"
     selected = home / ".mise/installs/github-openai-codex/0.0.0"
     assert selected.samefile(imported)
+    assert (home / ".local/bin/codex").samefile(selected / "bin/codex")
     calls = (tmp_path / "mise-calls").read_text().splitlines()
     assert calls[0].startswith("link --force github:openai/codex[asset_pattern=codex-package-")
     assert calls[0].endswith(f"]@0.0.0 {imported}")

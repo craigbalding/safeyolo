@@ -168,6 +168,11 @@ def stage_controlled_codex(home: Path, *, completion: bool = False) -> None:
         binary.chmod(0o755)
     # The shipped wrapper publishes the complete payload into mise's selection.
     (imported / "version").write_text(version)
+    # Demo also runs Codex login directly in a separate guest process.
+    command = home / ".local/bin/codex"
+    command.parent.mkdir(parents=True, exist_ok=True)
+    command.unlink(missing_ok=True)
+    command.symlink_to("../../.safeyolo/codex-package/payload/bin/codex")
 
 
 def run(args: argparse.Namespace) -> None:
