@@ -348,6 +348,7 @@ fn show_explanation(view: &Value) -> Result<(), Error> {
         safe(text(&view["approval_id"])),
         safe(text(&view["status"]))
     );
+    show_request_history(view)?;
     let facts = &view["observed"];
     for (label, key) in [
         ("Agent", "agent"),
@@ -455,6 +456,7 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
     if let Some(id) = view["approval_id"].as_str() {
         println!("Approval: {}", safe(id));
     }
+    show_request_history(view)?;
     if view["action"]["kind"] == "operator_action" {
         if let Some(audit) = view["audit_status"].as_str() {
             println!("Audit: {}", safe(audit));
@@ -468,7 +470,7 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
         if let Some(url) = view["action"]["parameters"]["browser_url"].as_str() {
             println!(
                 "Guest browser URL (agent-selected data): {}",
-                serde_json::to_string(url)?
+                context_json(&json!(url))?
             );
         }
         if let Some(status) = view["result"]["status"].as_str() {
@@ -527,8 +529,30 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
             } else {
                 "Helper reason"
             },
-            serde_json::to_string(reason)?
+            context_json(&json!(reason))?
         );
+    }
+    Ok(())
+}
+
+fn show_request_history(view: &Value) -> Result<(), Error> {
+    if let Some(count) = view["request_history"]["equivalent_request_count"].as_u64() {
+        println!(
+            "Equivalent requests: {count} | Approvals: {} | First requested: {} | Last requested: {} (Unix seconds)",
+            view["request_history"]["approval_count"],
+            view["request_history"]["first_requested_at"],
+            view["request_history"]["last_requested_at"]
+        );
+        if let Some(id) = view["request_history"]["last_refusal"]["approval_id"].as_str() {
+            println!(
+                "Last equivalent refusal: {} at {} (Unix seconds)",
+                safe(id),
+                view["request_history"]["last_refusal"]["decided_at"]
+            );
+        }
+    }
+    if let Some(status) = view["attention"]["operator"]["status"].as_str() {
+        println!("Operator attention: {}", safe(status));
     }
     Ok(())
 }
@@ -674,7 +698,7 @@ pub(crate) async fn pending(root: &Path, agent: Option<&str>) -> Result<Value, E
     }
     // Routine projections contain only the canonical summary and identity.
     for view in approvals {
-        *view = json!({"approval_id":view.get("approval_id").unwrap_or(&view["request_id"]),"request_id":view["request_id"],"status":view.get("status").unwrap_or(&json!("pending")),"agent":view["agent"],"summary":view["summary"],"target":view["approval"]["target"],"action":view["action"],"options":view["options"]});
+        *view = json!({"approval_id":view.get("approval_id").unwrap_or(&view["request_id"]),"request_id":view["request_id"],"status":view.get("status").unwrap_or(&json!("pending")),"agent":view["agent"],"summary":view["summary"],"target":view["approval"]["target"],"action":view["action"],"options":view["options"],"request_history":view["request_history"],"attention":view["attention"]});
     }
     Ok(value)
 }
@@ -701,6 +725,7 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
                 index + 1,
                 serde_json::to_string(&entry["summary"])?
             );
+            show_request_history(entry)?;
         }
         let Some(answer) = crate::host_launch::input("Request number (Enter returns): ")? else {
             return Ok(());

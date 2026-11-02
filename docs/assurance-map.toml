@@ -238,7 +238,7 @@ decision = "Retain. Knockout saves zero packages. An estimated 30-60 lines plus 
 
 [[libraries]]
 name = "pulldown-cmark"
-version = "0.13.5"
+version = "0.13.6"
 features = []
 default_features = false
 handoff = "mattermost/render.rs."

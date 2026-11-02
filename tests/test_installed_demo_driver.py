@@ -3,12 +3,63 @@
 import argparse
 import copy
 import json
+import os
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from tests.blackbox import installed_demo as demo
+
+
+@pytest.mark.parametrize("completion", [False, True])
+def test_controlled_codex_selected_offline_by_shipped_wrapper(tmp_path, completion):
+    mise = shutil.which("mise")
+    assert mise, "the native Codex package selection needs mise"
+    home = tmp_path / "home"
+    demo.stage_controlled_codex(home)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    # Use real mise for local selection. Refuse remote resolution and client
+    # installation; completion stops at the controlled Python workload boundary.
+    (tools / "mise").write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$MISE_CALLS"\n'
+        'case "$1" in\n'
+        '  link|where|settings) exec "$REAL_MISE" "$@";;\n'
+        '  latest) [ "$2" = --installed ] && exec "$REAL_MISE" "$@";;\n'
+        '  use) [ "$*" = "use -g python@3.12" ] && exit 0;;\n'
+        'esac\nexit 97\n'
+    )
+    (tools / "mise").chmod(0o755)
+    (tools / "python3").write_text('#!/bin/sh\n[ "$*" = app.py ] || exit 98\necho controlled-python-workload\n')
+    (tools / "python3").chmod(0o755)
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith(("MISE_", "SAFEYOLO_CODEX_")) and key not in {"BASH_ENV", "SAFEYOLO_MIN_RELEASE_AGE"}}
+    environment.update(HOME=str(home), PATH=f"{tools}:/usr/bin:/bin", REAL_MISE=mise,
+                       MISE_CALLS=str(tmp_path / "mise-calls"))
+    wrapper = Path(__file__).resolve().parents[1] / "contrib/codex-command.sh"
+    for action in (["--version"], ["login", "status"]):
+        ready = subprocess.run([str(wrapper), *action], env=environment, capture_output=True, text=True, timeout=15)
+        assert ready.returncode == 0, ready.stderr
+    if completion:
+        demo.stage_controlled_codex(home, completion=True)
+    result = subprocess.run([str(wrapper), "exec", "-C", str(tmp_path)], env=environment,
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == (0 if completion else 41), result.stderr
+    assert "codex-host-setup: codex 0.0.0" in result.stderr
+    imported = home / ".safeyolo/codex-package/payload"
+    selected = home / ".mise/installs/github-openai-codex/0.0.0"
+    assert selected.samefile(imported)
+    calls = (tmp_path / "mise-calls").read_text().splitlines()
+    assert calls[0].startswith("link --force github:openai/codex[asset_pattern=codex-package-")
+    assert calls[0].endswith(f"]@0.0.0 {imported}")
+    assert not any(call.startswith(("install ", "use ")) and call != "use -g python@3.12" for call in calls)
+    if completion:
+        assert result.stdout.strip() == "controlled-python-workload"
+        assert (tmp_path / "app.py").read_text() == demo.COMPLETION_APP
+    else:
+        assert (tmp_path / "harness-started").read_text().strip() == "reached"
 
 
 @pytest.mark.parametrize("finish_exit,peer_failure", [(0, False), (1, False), (0, True)])
@@ -58,9 +109,9 @@ def test_completion_retains_source_before_failure_and_observes_peer_after_finish
         return subprocess.CompletedProcess(command, status, output, "controlled peer failure")
 
     class Process:
-        def __init__(self, command):
-            from pathlib import Path
+        diagnostics = demo.DemoProcess.diagnostics
 
+        def __init__(self, command):
             self.workspace = Path(command[command.index("--workspace") + 1])
             self.workspace.mkdir()
             self.keep = "--keep" in command
@@ -117,7 +168,8 @@ def test_completion_retains_source_before_failure_and_observes_peer_after_finish
     monkeypatch.setattr(demo.tomllib, "loads", lambda *a: {"agents": copy.deepcopy(agents)})
     monkeypatch.setattr(demo, "DemoProcess", Process)
     monkeypatch.setattr(demo.socket.socket, "connect_ex", lambda *a: 111)
-    args = argparse.Namespace(config_dir=root, commit="candidate", real_agent=None, deterministic_completion=True)
+    args = argparse.Namespace(config_dir=root, commit="candidate", guest_commit=None,
+                              preview=False, real_agent=None, deterministic_completion=True)
     if finish_exit or peer_failure:
         with pytest.raises(AssertionError):
             demo.run(args)

@@ -176,7 +176,10 @@ extension ModelTests {
 
     private static func pendingApprovals(_ keys: [String]) -> Data {
         let approvals: [[String: Any]] = keys.map { key in
-            [
+            StubURLProtocol.responsesByPath["/admin/approvals/apr-\(key)/attention"] = (200, Data(#"{"notify":true}"#.utf8))
+            StubURLProtocol.responsesByPath["/admin/approvals/apr-\(key)"] = (200, try! JSONSerialization.data(withJSONObject: ["approval_id":"apr-\(key)","request_id":"req-\(key)","status":"pending","effect":"Credential needs approval"]))
+            return [
+                "approval_id": "apr-\(key)", "request_id": "req-\(key)",
                 "event": "security.credential_guard", "summary": "Credential needs approval",
                 "agent": "forge", "host": "api.example.com",
                 "approval": [
@@ -306,6 +309,7 @@ extension ModelTests {
                  }]
             }
             func publish(status: String = "pending", effect: String) throws {
+                StubURLProtocol.responsesByPath[path + "/attention"] = (200, Data(#"{"notify":true}"#.utf8))
                 StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": status == "pending" ? [prompt()] : []]))
                 StubURLProtocol.responsesByPath[path] = (200, try JSONSerialization.data(withJSONObject: [
                     "approval_id": id, "request_id": "req-effect-\(kind)", "status": status, "effect": effect,
@@ -413,6 +417,7 @@ extension ModelTests {
         let helper = prompt("req-helper", agent: "helper")
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [selected, newer, helper]]))
         for id in ["req-selected", "req-newer", "req-helper"] {
+            StubURLProtocol.responsesByPath["/admin/approvals/apr-\(id.dropFirst(4))/attention"] = (200, Data(#"{"notify":true}"#.utf8))
             StubURLProtocol.responsesByPath["/admin/approvals/apr-\(id.dropFirst(4))"] = (200, try record(id, agent: id == "req-helper" ? "helper" : "worker"))
         }
         let socket = StubEventSocket()
@@ -451,9 +456,9 @@ extension ModelTests {
         precondition(NSApp.windows.first { $0.identifier?.rawValue == "apr-selected" } === selectedWindow)
         precondition(presentations == 3, "Preparation updates the open window without another prompt")
         precondition(hosting.rootView.displayedEffect == effect)
-        precondition(hosting.rootView.quotedUntrustedReason == "\"\(reason)\"")
+        precondition(hosting.rootView.quotedUntrustedReason == quotedRequesterText(reason))
         precondition(client.approvalOutcomes["apr-newer"]?.untrustedReasonText == nil)
-        try await checkApprovalLayout(selectedWindow, text: [effect, "\"\(reason)\""])
+        try await checkApprovalLayout(selectedWindow, text: [effect, quotedRequesterText(reason)])
 
         // A different request's decision cannot invent this request's outcome.
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [selected, helper]]))
@@ -532,6 +537,7 @@ extension ModelTests {
             Data("{\"approval_id\":\"apr-reconcile\",\"request_id\":\"req-reconcile\",\"status\":\"\(status)\",\"effect\":\"\(effect)\"}".utf8)
         }
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, Data("{\"approvals\":[\(pending)]}".utf8))
+        StubURLProtocol.responsesByPath[path + "/attention"] = (200, Data(#"{"notify":true}"#.utf8))
         StubURLProtocol.responsesByPath[path] = (200, record("pending"))
         let gate = RetryGate()
         let first = StubEventSocket()
@@ -595,7 +601,7 @@ extension ModelTests {
         client.onNewApproval = { presented.append($0.id) }
         client.start()
         try await until { socket.receiving }
-        precondition(presented == ["one:api.example.com", "two:api.example.com"])
+        precondition(presented == ["apr-one", "apr-two"])
         precondition(client.approvals.map(\.id) == presented, "Every presentation callback must have a pending menu item")
 
         socket.messages.append(approvalEvent)
@@ -604,7 +610,7 @@ extension ModelTests {
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["two"]))
         socket.messages.append(approvalEvent)
         try await until { client.approvals.count == 1 }
-        precondition(client.approvals[0].id == "two:api.example.com" && presented.count == 2,
+        precondition(client.approvals[0].id == "apr-two" && presented.count == 2,
                      "A resolved approval must leave the menu without another window")
     }
 
@@ -636,7 +642,7 @@ extension ModelTests {
         client.onNewApproval = { presented.append($0.id) }
         client.start()
         try await until { first.receiving }
-        precondition(presented == ["gap:api.example.com"] && client.approvals.map(\.id) == presented,
+        precondition(presented == ["apr-gap"] && client.approvals.map(\.id) == presented,
                      "A pending approval in the subscribe gap must be presented and appear in the menu")
 
         first.receiveError = URLError(.networkConnectionLost)
@@ -651,7 +657,7 @@ extension ModelTests {
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["during-outage"]))
         gate.release()
         try await until { third.receiving }
-        precondition(presented == ["gap:api.example.com", "during-outage:api.example.com"],
+        precondition(presented == ["apr-gap", "apr-during-outage"],
                      "Reconnect must present a still-pending approval missed during the outage")
     }
 
@@ -684,7 +690,7 @@ extension ModelTests {
         gate.release()
         try await until { second.receiving }
         precondition(client.connectionState == .connected)
-        precondition(presented == ["recovered:api.example.com"] && client.approvals.map(\.id) == presented)
+        precondition(presented == ["apr-recovered"] && client.approvals.map(\.id) == presented)
         precondition(client.requestErrors["Pending approvals"] == nil && client.requestErrors["Live events"] == nil)
     }
 
@@ -709,7 +715,7 @@ extension ModelTests {
         client.onNewApproval = { presented.append($0.id) }
         client.start()
         try await until { socket.receiving }
-        precondition(client.connectionState == .connected && presented == ["first:api.example.com"])
+        precondition(client.connectionState == .connected && presented == ["apr-first"])
         precondition(client.requestErrors["Agent status"] != nil && client.requestErrors["Live events"] == nil)
 
         socket.messages.append(agentEvent)
@@ -719,7 +725,7 @@ extension ModelTests {
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["first", "second"]))
         socket.messages.append(approvalEvent)
         try await until { presented.count == 2 }
-        precondition(presented == ["first:api.example.com", "second:api.example.com"])
+        precondition(presented == ["apr-first", "apr-second"])
         precondition(client.approvals.map(\.id) == presented)
     }
 

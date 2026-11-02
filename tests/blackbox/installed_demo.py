@@ -132,6 +132,44 @@ class DemoProcess:
             self.finish()
 
 
+def stage_controlled_codex(home: Path, *, completion: bool = False) -> None:
+    """Stage the no-model fixture through the launcher's native package import."""
+    imported = home / ".safeyolo/codex-package"
+    payload = imported / "payload"
+    for directory in ("bin", "codex-path", "codex-resources"):
+        (payload / directory).mkdir(parents=True, exist_ok=True)
+    version = "0.0.0"
+    machine = os.uname()
+    architecture = {"arm64": "aarch64", "amd64": "x86_64"}.get(machine.machine, machine.machine)
+    platform = "apple-darwin" if machine.sysname == "Darwin" else "unknown-linux-musl"
+    (imported / "target").write_text(f"{architecture}-{platform}")
+    action = "echo reached > harness-started; exit 41"
+    if completion:
+        (payload / "bin/demo-completion-app.py").write_text(COMPLETION_APP)
+        action = ('mise use -g python@3.12 >&2\n'
+                  'cp "$(dirname "$0")/demo-completion-app.py" app.py\n'
+                  'exec python3 app.py')
+    scripts = {
+        "bin/codex": (
+            "#!/bin/sh\nset -e\nmode=\nworkspace=/workspace\n"
+            'while [ "$#" -gt 0 ]; do\n'
+            '  case "$1" in\n'
+            f'    --version) echo "codex-cli {version}"; exit 0;;\n'
+            '    login) exit 0;; exec) mode=exec;; -C) workspace="$2"; shift;;\n'
+            '  esac\n  shift\ndone\n'
+            '[ "$mode" = exec ] || exit 42\ncd "$workspace"\n' + action + "\n"
+        ),
+        "bin/codex-code-mode-host": "#!/bin/sh\nexit 42\n",
+        "codex-path/rg": '#!/bin/sh\n[ "$1" = --version ] || exit 42\necho "controlled ripgrep fixture"\n',
+    }
+    for name, source in scripts.items():
+        binary = payload / name
+        binary.write_text(source)
+        binary.chmod(0o755)
+    # The shipped wrapper publishes the complete payload into mise's selection.
+    (imported / "version").write_text(version)
+
+
 def run(args: argparse.Namespace) -> None:
     root = args.config_dir.resolve(strict=True)
     executable = root / "bin/safeyolo"
@@ -234,16 +272,7 @@ def run(args: argparse.Namespace) -> None:
                 cli("agent", "create", fixture_name, "--workspace", str(prior))
                 owned.append(fixture_name)
                 home = root / "agents" / fixture_name / "home"
-                binary = home / ".local/bin/codex"
-                binary.parent.mkdir(parents=True)
-                binary.write_text(
-                    "#!/bin/sh\n"
-                    'for arg in "$@"; do\n'
-                    '  case "$arg" in --version) echo deterministic-codex-startup-fixture; exit 0;;\n'
-                    '    login) exit 0;; exec) echo reached >/workspace/harness-started; exit 41;; esac\n'
-                    "done\nexit 42\n"
-                )
-                binary.chmod(0o755)
+                stage_controlled_codex(home)
                 auth = home / ".codex"
                 auth.mkdir(mode=0o700)
                 (auth / "auth.json").write_text("synthetic deterministic authentication fixture")
@@ -276,14 +305,7 @@ def run(args: argparse.Namespace) -> None:
                 if args.deterministic_completion:
                     # Reuse this owned, stopped startup fixture and synthetic
                     # authentication. No provisioned model login is read or changed.
-                    (binary.parent / "demo-completion-app.py").write_text(COMPLETION_APP)
-                    binary.write_text(
-                        "#!/bin/sh\n"
-                        'for arg in "$@"; do\n'
-                        '  case "$arg" in --version) echo deterministic-codex-completion-fixture; exit 0;;\n'
-                        '    login) exit 0;; exec) mise use -g python@3.12 >&2; cp /home/agent/.local/bin/demo-completion-app.py /workspace/app.py; exec python3 /workspace/app.py;; esac\n'
-                        "done\nexit 42\n"
-                    )
+                    stage_controlled_codex(home, completion=True)
                     completion_agent = fixture_name
 
             if completion_agent:

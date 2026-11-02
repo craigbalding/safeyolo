@@ -58,6 +58,7 @@ user_facing_docs = [
     "docs/harness-attention.md",
     "docs/coord-completion-notes.md",
     "docs/coord-operations.md",
+    "docs/coord-reference.md",
     "docs/coord-mattermost.md",
     "docs/coord-wake-test.md",
     "docs/nested-linux-lab.md",

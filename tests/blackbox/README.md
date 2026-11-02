@@ -65,6 +65,52 @@ The [hardware deployment guide](hardware/README.md) uses the same selector and
 installed runner for independent KVM and physical VZ execution. Craig owns cron
 installation; the source scripts and examples do not establish deployment.
 
+### Native Claude tool smoke
+
+The optional `claude` section checks shipped Claude setup, the native executable,
+baseline, configuration and readable SafeYolo skill. It runs one headless task
+through the unchanged staged command and the `claude` / `inference` gateway.
+The task reads a fresh marker and the skill, then writes a known workspace file.
+Success requires completed client and tool results, independently checked file
+contents, and a matching current agent/run decision from the native gateway.
+The report exports observations and hashes, without client messages or tokens.
+
+Use a dedicated Ubuntu AMD64/systrap host and a clean pinned checkout with its
+frozen development environment. First complete the credential-free retained
+installed run above. Reuse its frozen `selection.json` and the prepared root
+printed by that run. That prepared root must have no prior agent homes.
+Keep the root private and outside uploaded reports.
+
+Before the Claude section, provision the selected host-held subscription in that
+root's encrypted store through the supported
+[coding-client gateway setup](../../docs/coding-client-gateway.md).
+Provider login files must stay outside guest mounts. Keep existing policy,
+consent and first-request approvals; service authorization does not replace them.
+The section does not import a login, approve requests or retry a model task.
+
+From the checkout root, replace `/owned/inputs/selection.json` with the frozen
+selection, `/owned/prepared` with the dedicated installed root, and
+`claude-account` with its existing host credential name. `/owned/claude-reports`
+must be a new private report directory on disk. This command creates a fresh
+agent home and workspace and stops its owned agent and services after the attempt:
+
+```sh
+SAFEYOLO_CLAUDE_SMOKE_CREDENTIAL=claude-account .venv/bin/python tests/blackbox/retained_inputs.py run --lane systrap --selection /owned/inputs/selection.json --prepared-config /owned/prepared --section claude --artifacts /owned/claude-reports
+```
+
+Expected success: exit zero, `guest/claude/claude-smoke.json` reports `passed`,
+and `guest/installed-sections.json` reports stopped cleanup. Failures retain
+their step, exit, timeout and available HTTP status categories. An authentication
+or approval failure is a failed attempt. Inspect that request through the existing
+host approval controls. Do not infer tool completion from a model reply or HTTP
+status alone. Preserve the reached failure when preparing a corrected run.
+
+The credential-free defaults remain unchanged. This section currently requires
+manual provisioned execution. The joined real-client witness and trusted
+nightly/default-branch deployment binding remain outstanding under
+[#356](https://github.com/craigbalding/safeyolo/issues/356). No fresh-install speed,
+interactive channel, Codex or other-platform result follows from this section.
+
 ## Build and test a contributor checkout
 
 For source-based acceptance, use a disposable supported host and a clean checkout

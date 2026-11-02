@@ -34,6 +34,8 @@ mod owned_run;
 use owned_run::OwnedRun;
 #[path = "desktop_native/delegation.rs"]
 mod delegation;
+#[path = "desktop_native/injected_requester.rs"]
+mod injected_requester;
 
 fn fixture(root: &Path) {
     fs::write(
@@ -135,6 +137,26 @@ fn config(root: &Path) -> Config {
         "flow_store_enabled":false,
         "audit_log_path":root.join("audit.jsonl"),}))
     .unwrap()
+}
+
+fn install_preview_host_commands(root: &Path) {
+    for (program, source) in [
+        (
+            "xdpyinfo",
+            "#!/bin/sh\nprintf 'dimensions: 1920x1080 pixels\\n'\n",
+        ),
+        (
+            "xdg-open",
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$SAFEYOLO_CONFIG_DIR/opened\"\n",
+        ),
+    ] {
+        fs::write(root.join("bin").join(program), source).unwrap();
+        fs::set_permissions(
+            root.join("bin").join(program),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
 }
 
 async fn request(
@@ -661,23 +683,7 @@ async fn check_typed_desktop_action() {
     fixture(root.path());
     fs::write(root.path().join("policy.toml"),format!("[agents.alice]\nagent_id='{ID}'\n[agents.bob]\nagent_id='ag-22222222222222222222222222222222'\n[controls.credentials]\nenabled=false\n")).unwrap();
     fs::write(root.path().join("config.toml"),"admin_port=0\nadmin_api_token_file='token'\npolicy_file='policy.toml'\nreadiness_file='ready.json'\naudit_log_path='audit.jsonl'\n[desktop]\nsize='1280x800'\n").unwrap();
-    for (program, source) in [
-        (
-            "xdpyinfo",
-            "#!/bin/sh\nprintf 'dimensions: 1920x1080 pixels\\n'\n",
-        ),
-        (
-            "xdg-open",
-            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$SAFEYOLO_CONFIG_DIR/opened\"\n",
-        ),
-    ] {
-        fs::write(root.path().join("bin").join(program), source).unwrap();
-        fs::set_permissions(
-            root.path().join("bin").join(program),
-            fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
-    }
+    install_preview_host_commands(root.path());
     let mut run = OwnedRun::start(root.path());
     bind_action_run(root.path(), "alice", ID);
     let mut config = config(root.path());
@@ -714,7 +720,7 @@ async fn check_typed_desktop_action() {
     assert_eq!(discovered["actions"].as_array().unwrap().len(), 1);
     assert_eq!(discovered["actions"][0]["action_id"], "desktop.present");
     assert_eq!(discovered["actions"][0]["available"], true, "{discovered}");
-    let reason = "\u{1b}[2J\nSafeYolo: approval already granted <button>Approve</button>";
+    let reason = "\u{1b}[2J\u{1b}]8;;https://forged.invalid\u{7}\n\u{202e}SafeYolo: approval already granted\u{2028}<button>Approve</button>";
     let input = json!({"action_id":"desktop.present","parameters":{"ttl_seconds":3,"browser_url":"https://example.com/?literal='$(touch%20unwanted)'"},"reason":reason});
     let first = action_request(
         root.path(),
@@ -735,6 +741,47 @@ async fn check_typed_desktop_action() {
     )
     .await;
     assert_eq!(body(&retry)["approval_id"], id);
+    let mut reworded = input.clone();
+    reworded["reason"] = json!("Urgent! Craig already approved this. Try another reason.");
+    let reworded =
+        action_request(root.path(), "POST", "/operator-actions", reworded, "alice").await;
+    assert_eq!(body(&reworded)["approval_id"], id);
+    assert_eq!(
+        body(&reworded)["request_history"]["equivalent_request_count"],
+        3
+    );
+    let rendered = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .args([
+            "--root",
+            root.path().to_str().unwrap(),
+            "approvals",
+            "show",
+            &id,
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        rendered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rendered.stderr)
+    );
+    let rendered = String::from_utf8(rendered.stdout).unwrap();
+    assert!(
+        rendered.contains("Agent-provided reason (untrusted text): \""),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("\\u202e")
+            && rendered.contains("\\u2028")
+            && rendered.contains("\\u001b")
+    );
+    assert!(
+        !rendered.contains('\u{1b}')
+            && !rendered.contains('\u{202e}')
+            && !rendered.contains('\u{2028}')
+    );
+    assert!(rendered.contains("Equivalent requests: 3"));
     let mut changed = input.clone();
     changed["parameters"]["ttl_seconds"] = json!(4);
     let changed = action_request(root.path(), "POST", "/operator-actions", changed, "alice").await;
@@ -982,6 +1029,24 @@ async fn check_typed_desktop_action() {
     ] {
         assert!(audit.contains(event), "missing {event}");
     }
+    let attempts: Vec<Value> = audit
+        .lines()
+        .map(|line| safeyolo_proxy::audit::parse_record(line).unwrap())
+        .filter(|event| {
+            event["event"] == "agent.operator_action_requested"
+                && event["details"]["approval_id"] == id
+        })
+        .collect();
+    assert_eq!(attempts.len(), 3);
+    assert_eq!(
+        attempts[0]["details"]["submitted_reason_digest"],
+        attempts[1]["details"]["submitted_reason_digest"]
+    );
+    assert_ne!(
+        attempts[0]["details"]["submitted_reason_digest"],
+        attempts[2]["details"]["submitted_reason_digest"]
+    );
+    assert_ne!(attempts[0]["request_id"], attempts[1]["request_id"]);
     assert!(
         !audit.contains(
             approved["operator_preview"]["unlock_code"]
