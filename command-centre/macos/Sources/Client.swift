@@ -410,7 +410,7 @@ final class SafeYoloClient: ObservableObject {
     }
 
     @discardableResult
-    private func refreshApprovals() async -> Bool {
+    func refreshApprovals() async -> Bool {
         do {
             let data = try await request(path: "/admin/approvals")
             let fresh = try JSONDecoder().decode(PendingApprovals.self, from: data).approvals
@@ -433,12 +433,22 @@ final class SafeYoloClient: ObservableObject {
             let newApprovals = fresh.filter { !knownApprovalIDs.contains($0.id) }
             knownApprovalIDs = Set(fresh.map(\.id))
             for approval in newApprovals {
-                onNewApproval?(approval)
+                guard let id = approval.approvalID ?? approval.requestID, let encoded = encodePathComponent(id) else { continue }
+                do {
+                    let data = try await request(path: "/admin/approvals/\(encoded)/attention", method: "POST", json: [:])
+                    let claim = try JSONDecoder().decode(ApprovalAttentionClaim.self, from: data)
+                    if claim.notify { onNewApproval?(approval) }
+                } catch {
+                    // A lost claim reply must not repeat the interruption.
+                    // The pending menu and explicit decisions remain available.
+                    setRequestError("Approval attention", error)
+                }
             }
             setRequestError("Pending approvals", nil)
             return true
         } catch {
             guard !Task.isCancelled else { return false }
+            unavailableApprovalOutcomes.formUnion(approvalOutcomes.keys)
             setRequestError("Pending approvals", error)
             return false
         }

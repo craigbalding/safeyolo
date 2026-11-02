@@ -451,6 +451,7 @@ private final class ConcurrentInstanceEndpoints: @unchecked Sendable {
     private var remoteID = "sy-remote-test"
     private var states = ["local": "stopped", "remote": "stopped"]
     private var decisions = ["local": "pending", "remote": "pending"]
+    private var attentionClaims = Set<String>()
 
     func remote(status: Int = 200, instanceID: String = "sy-remote-test") {
         lock.withLock { remoteStatus = status; remoteID = instanceID }
@@ -494,6 +495,8 @@ private final class ConcurrentInstanceEndpoints: @unchecked Sendable {
                     "event": "proxy.network_guard", "agent": "worker", "summary": "\(key) network access",
                     "approval": ["required": true, "approval_type": "network_egress", "key": "same-target", "target": "example.test:443"]]
                 return try json(["approvals": decisions[key] == "pending" ? [approval] : []])
+            case "/admin/approvals/apr-shared/attention":
+                return try json(["notify": attentionClaims.insert(key).inserted])
             case "/admin/approvals/apr-shared":
                 if method == "POST" {
                     let stream = request.httpBodyStream
@@ -589,7 +592,7 @@ extension ModelTests {
         _ = try localDecision!.get(); _ = try remoteDecision!.get()
         precondition(local.approvalOutcomes["apr-shared"]?.status == "rejected"
             && remote.approvalOutcomes["apr-shared"]?.status == "approved" && !controller.hasPendingApprovals)
-        precondition(endpoints.posts.count == 6 && endpoints.posts.allSatisfy {
+        precondition(endpoints.posts.count == 8 && endpoints.posts.allSatisfy {
             $0.authorization == "Bearer synthetic-\($0.host == "remote.example" ? "remote" : "local")-token"
         }, "Each action must use the selected endpoint and its own credential")
 

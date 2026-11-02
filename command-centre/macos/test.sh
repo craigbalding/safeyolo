@@ -34,7 +34,7 @@ codesign --force --sign - --timestamp=none "$TEST_APP"
 "$TEST_APP/Contents/MacOS/ModelTests"
 
 # Focused credential controls use synthetic stores, without native item changes.
-if [[ "${SAFEYOLO_COMMAND_CENTRE_TEST_FILTER:-}" == "credential-startup" ]]; then
+if [[ "${SAFEYOLO_COMMAND_CENTRE_TEST_FILTER:-}" == "credential-startup" || "${SAFEYOLO_COMMAND_CENTRE_TEST_FILTER:-}" == "approval-attention" ]]; then
   exit 0
 fi
 

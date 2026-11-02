@@ -27,7 +27,7 @@ num-bigint = "0.4"
 oci-client = { version = "=0.18.0", default-features = false, features = ["rustls-tls-no-provider"] }
 pkcs8 = { version = "0.10", features = ["std"] }
 percent-encoding = "2"
-pulldown-cmark = { version = "=0.13.5", default-features = false }
+pulldown-cmark = { version = "=0.13.6", default-features = false }
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }
 rand = "=0.10.2"
 regex = "1"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import subprocess
 
 import pytest
@@ -13,6 +14,35 @@ from tests.blackbox import installed_sections, retained_inputs
 
 SOURCE = "a" * 40
 RUNTIME = {"name": "bbtest", "agent_id": "agent-fixture", "run_id": "b" * 32}
+
+
+def test_gateway_launch_finds_jq_in_the_guest_tool_path(tmp_path):
+    guest_home = tmp_path / "guest"
+    guest_tools = guest_home / ".local/bin"
+    inherited_tools = tmp_path / "inherited"
+    guest_tools.mkdir(parents=True)
+    inherited_tools.mkdir()
+    programs = {
+        inherited_tools / "cat": "printf 'fixture-agent\\n'\n",
+        inherited_tools / "curl": "IFS= read -r header\nprintf '{}\\n'\n",
+        guest_tools / "jq": (
+            "while IFS= read -r input; do :; done\n"
+            "printf 'guest jq reached\\n' >&2\nexit 42\n"
+        ),
+    }
+    for path, script in programs.items():
+        path.write_text("#!/bin/sh\n" + script)
+        path.chmod(0o700)
+
+    result = subprocess.run(
+        ["/bin/sh", "-c", smoke.GATEWAY_LAUNCH],
+        env=dict(os.environ, HOME=str(guest_home), PATH=str(inherited_tools)),
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    # Stop in the fixture jq before any staged client can run. All token and
+    # gateway operations above are local fakes, with no credential access.
+    assert result.returncode == 42, result.stderr
+    assert "guest jq reached" in result.stderr
 
 
 def events(tool="Bash"):

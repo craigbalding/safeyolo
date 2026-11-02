@@ -15,6 +15,7 @@ use crate::{
     policy::Policy,
 };
 
+pub(crate) mod attention;
 pub(crate) mod context;
 pub(crate) mod coord;
 pub(crate) mod delegation;
@@ -127,6 +128,10 @@ pub(crate) struct Record {
     pub(crate) option: Option<String>,
     pub(crate) result: Value,
     pub(crate) untrusted_reason_text: Option<String>,
+    pub(crate) request_count: u64,
+    pub(crate) last_requested_at: i64,
+    pub(crate) decided_at: Option<i64>,
+    pub(crate) attention: std::collections::BTreeMap<String, attention::Delivery>,
     #[serde(default)]
     pub(crate) reviewer_delivery: std::collections::BTreeMap<String, String>,
 }
@@ -219,7 +224,14 @@ impl Store {
              CREATE TABLE IF NOT EXISTS approval_requests (
                request_id TEXT PRIMARY KEY, approval_id TEXT NOT NULL REFERENCES approvals(approval_id));
              CREATE TABLE IF NOT EXISTS approval_context (
-               approval_id TEXT PRIMARY KEY REFERENCES approvals(approval_id), record TEXT NOT NULL);"
+               approval_id TEXT PRIMARY KEY REFERENCES approvals(approval_id), record TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS approval_attention (
+               approval_id TEXT NOT NULL,
+               recipient TEXT NOT NULL, agent_id TEXT NOT NULL,
+               authority_digest TEXT NOT NULL, attempted_at INTEGER NOT NULL,
+               PRIMARY KEY(approval_id, recipient));
+             CREATE INDEX IF NOT EXISTS approval_attention_time ON approval_attention(attempted_at);
+             CREATE INDEX IF NOT EXISTS approval_attention_equivalent ON approval_attention(authority_digest, recipient);"
         ).map_err(unavailable)?;
         Ok(())
     }
@@ -274,7 +286,7 @@ impl Store {
             }
         }
         drop(statement);
-        let record = selected.unwrap_or_else(|| Record {
+        let mut record = selected.unwrap_or_else(|| Record {
             approval_id: format!("apr-{}", uuid::Uuid::new_v4().simple()),
             request_id: request_id.into(),
             authority,
@@ -284,8 +296,14 @@ impl Store {
             option: None,
             result: Value::Null,
             untrusted_reason_text: None,
+            request_count: 0,
+            last_requested_at: 0,
+            decided_at: None,
+            attention: Default::default(),
             reviewer_delivery: Default::default(),
         });
+        record.request_count = record.request_count.saturating_add(1);
+        record.last_requested_at = time::OffsetDateTime::now_utc().unix_timestamp();
         save(&transaction, &record)?;
         transaction
             .execute(
@@ -305,41 +323,13 @@ impl Store {
     /// refusal. A fresh traffic request can stay pending without repeatedly
     /// waking a reviewer for the same run and permission. Canonical list and
     /// ordinary operator decisions remain available.
-    pub(crate) fn claim_reviewer_delivery(&self, id: &str, reviewer: &str) -> Result<bool> {
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(unavailable)?;
-        let Some(mut record) = read(&transaction, id)? else {
-            return Ok(false);
-        };
-        if record.status != "pending" || record.reviewer_delivery.contains_key(reviewer) {
-            return Ok(false);
-        }
-        let mut statement = transaction
-            .prepare("SELECT record FROM approvals WHERE authority_digest=?1")
-            .map_err(unavailable)?;
-        let records = statement
-            .query_map([&record.authority_digest], |row| row.get::<_, String>(0))
-            .map_err(unavailable)?;
-        let mut duplicate = false;
-        for prior in records {
-            let prior = decode_record(&prior.map_err(unavailable)?)?;
-            duplicate |= prior.reviewer_delivery.contains_key(reviewer);
-        }
-        drop(statement);
-        record.reviewer_delivery.insert(
-            reviewer.into(),
-            if duplicate {
-                "coalesced with prior equivalent authority; reconcile the canonical list"
-            } else {
-                "attempted; publication may be unknown"
-            }
-            .into(),
-        );
-        save(&transaction, &record)?;
-        transaction.commit().map_err(unavailable)?;
-        Ok(!duplicate)
+    pub(crate) fn claim_reviewer_delivery(
+        &self,
+        id: &str,
+        reviewer: &str,
+        policy: &Policy,
+    ) -> Result<bool> {
+        self.claim_attention(id, &format!("reviewer:{reviewer}"), policy)
     }
 
     pub(crate) fn list(&self) -> Result<Vec<Record>> {
@@ -369,7 +359,11 @@ impl Store {
         let Some(mut record) = read(&transaction, id)? else {
             return Ok(None);
         };
+        let status = record.status.clone();
         resolve(&mut record)?;
+        if record.status != status && record.status != "pending" {
+            record.decided_at = Some(time::OffsetDateTime::now_utc().unix_timestamp());
+        }
         save(&transaction, &record)?;
         transaction.commit().map_err(unavailable)?;
         Ok(Some(record))
@@ -782,6 +776,8 @@ pub(crate) fn current_view(
             view = saved;
         }
     }
+    view["request_history"] = writer.approvals().request_history(record)?;
+    view["attention"] = json!(record.attention);
     if view["status"] == "pending"
         && record.authority.action["kind"] == "operator_action"
         && state.is_some_and(|state| {

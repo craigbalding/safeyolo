@@ -39,6 +39,7 @@ TASK = (
 # scoped token is interpolated by the host or passed on the command line.
 GATEWAY_LAUNCH = r'''set -eu
 set +x
+export PATH="$HOME/.local/bin:$PATH"
 agent_token=$(cat /app/agent_token)
 services=$(printf 'Authorization: Bearer %s\n' "$agent_token" |
   curl --fail --silent --show-error --max-time 15 --header @- \

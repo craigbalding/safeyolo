@@ -130,6 +130,9 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
     if let Some(path) = path.strip_suffix("/context") {
         return context(request, path, policy, audit, state).await;
     }
+    if let Some(path) = path.strip_suffix("/attention") {
+        return attention(request, path, policy, audit, state).await;
+    }
     let (path, explain) = path
         .strip_suffix("/explain")
         .map_or((path, false), |path| (path, true));
@@ -267,6 +270,103 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
                 Err(_) => response(StatusCode::SERVICE_UNAVAILABLE, json!({"error":"resolution unavailable; read canonical outcome before retrying; direct policy controls remain available"})),
         })
     }).await?.await.map_err(|_| Error::ServiceMutation)?
+}
+
+/// This endpoint claims only an interruption. It cannot decide an approval.
+async fn attention<B: Body<Data = Bytes>>(
+    request: Request<B>,
+    path: &str,
+    policy: Option<&Arc<Policy>>,
+    audit: Option<&Arc<crate::audit::Writer>>,
+    state: Option<&crate::RuntimeState>,
+) -> Result<Outcome, Error> {
+    if request.method() != Method::POST {
+        return Ok(unsupported(request.method()));
+    }
+    let Some(id) = path
+        .strip_prefix("/admin/approvals/")
+        .filter(|id| !id.contains('/') && pending::valid_id(id))
+    else {
+        return Ok(response(
+            StatusCode::NOT_FOUND,
+            json!({"error":"approval unavailable"}),
+        ));
+    };
+    let id = id.to_owned();
+    match read_json(request).await? {
+        ParsedBody::Absent => {}
+        ParsedBody::Value(data) if data.0.as_object().is_some_and(|fields| fields.is_empty()) => {}
+        ParsedBody::Terminal(outcome) => return Ok(outcome),
+        _ => {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"attention takes no requester-selected fields"}),
+            ));
+        }
+    }
+    let (Some(policy), Some(writer)) = (policy, audit) else {
+        return Ok(response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"approval state unavailable"}),
+        ));
+    };
+    let (policy, writer, state) = (policy.clone(), writer.clone(), state.cloned());
+    tokio::task::spawn_blocking(move || {
+        let claim = || -> crate::approvals::Result<_> {
+            let Some(record) = writer.approvals().get(&id)? else {
+                if let Some(prompt) = plumb_prompts(writer.path()).into_iter().find(|prompt| prompt["request_id"] == id) {
+                    let agent = prompt["agent"].as_str().unwrap_or("");
+                    if let Some(agent_id) = policy.evidence_agent_id(agent) {
+                        let authority_digest = pending::digest(&json!({"agent_id":agent_id,"kind":"plumb","participants":prompt["details"]["participants"],"ttl_seconds":prompt["details"]["ttl_seconds"]}));
+                        let notify = writer.approvals().claim_plumb_attention(&id,agent_id,&authority_digest)?;
+                        let mut event = crate::audit::Event::new("security.approval_attention",crate::audit::Kind::Security,crate::audit::Severity::Medium,"Plumb approval attention claimed or suppressed");
+                        event.agent=Some(agent.into());
+                        event.request_id=Some(id.clone());
+                        event.details=json!({"approval_id":id,"authority_digest":authority_digest,"recipient":"operator","admitted":notify}).into();
+                        let _=tokio::runtime::Handle::current().block_on(writer.emit_confirmed(event));
+                        return Ok((notify,None));
+                    }
+                }
+                return Ok((false, None));
+            };
+            let current = pending::current_view(&writer, &policy, &record, state.as_ref())?;
+            if current["status"] != "pending" {
+                return Ok((false, None));
+            }
+            if record.attention.contains_key("operator") {
+                return Ok((false, None));
+            }
+            let notify = writer
+                .approvals()
+                .claim_attention(&id, "operator", &policy)?;
+            let record = writer.approvals().get(&id)?;
+            Ok((notify, record))
+        };
+        Ok(match claim() {
+            Ok((notify, record)) => {
+                let mut value = json!({"notify":notify,"approval_id":id});
+                if let Some(record) = record {
+                    value["attention"] = json!(record.attention);
+                    if tokio::runtime::Handle::current()
+                        .block_on(
+                            writer.emit_confirmed(pending::attention::event(&record, "operator")),
+                        )
+                        .is_err()
+                    {
+                        value["audit_status"] =
+                            json!("unavailable; delivery claim is saved and will not be replayed");
+                    }
+                }
+                response(StatusCode::OK, value)
+            }
+            Err(error) => response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":error.to_string()}),
+            ),
+        })
+    })
+    .await
+    .map_err(|_| Error::ServiceMutation)?
 }
 
 async fn context<B: Body<Data = Bytes>>(
