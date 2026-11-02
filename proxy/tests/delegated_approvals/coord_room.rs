@@ -765,7 +765,8 @@ async fn real_nats_room_approval_attention_objects_and_pending_connections() {
         last = sent.json()["sequence"].as_u64().unwrap();
         assert!(!finish_wait(message_wait).await.contains(&marker));
         let feed = finish_wait(attention_wait).await;
-        assert!(feed.contains("\"edges\":[]"), "{cause}: {feed}");
+        let body: Value = serde_json::from_str(feed.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["edges"], json!([]), "{cause}: {feed}");
         assert!(matches!(
             f.agent("worker", "GET", &attention_path, None).await.status,
             403 | 404
