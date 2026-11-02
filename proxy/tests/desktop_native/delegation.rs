@@ -1,6 +1,7 @@
 //! Controlled commands exercise the real approval and preview transport. These
 //! checks do not establish graphical presentation or model-visible attention.
 use super::*;
+use std::os::fd::AsRawFd;
 
 pub(super) const BOB: &str = "ag-22222222222222222222222222222222";
 
@@ -272,6 +273,59 @@ async fn check() {
     let facts = body(&facts);
     assert_eq!(facts["observed"]["worker_run"], run);
     assert_eq!(facts["choices"][0]["option"], "once");
+
+    // Require the reviewer's confirmed explanation write while retaining
+    // the same pending request, run and delegation through sink recovery.
+    let audit = root.path().join("audit.jsonl");
+    let held_audit = root.path().join("held-audit.jsonl");
+    // Serialize each replacement with the live writer's existing file lock.
+    let lock = fs::File::open(root.path().join("audit.jsonl.lock")).unwrap();
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+    fs::rename(&audit, &held_audit).unwrap();
+    fs::create_dir(&audit).unwrap();
+    drop(lock);
+    let unavailable = action_request(
+        root.path(),
+        "GET",
+        &format!("/approvals/{id}"),
+        Value::Null,
+        "bob",
+    )
+    .await;
+    assert_eq!(status(&unavailable), 503);
+    assert_eq!(body(&unavailable)["error"], "approval state unavailable");
+    assert_eq!(inspect(port, &id).await["status"], "pending");
+    let explanation = request(
+        port,
+        "POST",
+        &format!("/admin/approvals/{id}/explain"),
+        &[("Authorization", format!("Bearer {TOKEN}"))],
+        br#"{"option":"once"}"#,
+    )
+    .await;
+    assert_eq!(status(&explanation), 503);
+    assert_eq!(
+        body(&explanation)["error"],
+        "explanation audit unavailable; no permission was changed"
+    );
+    let lock = fs::File::open(root.path().join("audit.jsonl.lock")).unwrap();
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+    fs::remove_dir(&audit).unwrap();
+    fs::rename(held_audit, audit).unwrap();
+    drop(lock);
+    let recovered = action_request(
+        root.path(),
+        "GET",
+        &format!("/approvals/{id}"),
+        Value::Null,
+        "bob",
+    )
+    .await;
+    assert_eq!(status(&recovered), 200);
+    assert_eq!(body(&recovered)["status"], "pending");
+    assert_eq!(body(&recovered)["choices"][0]["option"], "once");
+    assert!(!root.path().join("opened").exists());
+
     let outside = ask(root.path(), 30, Some("https://outside.invalid/")).await;
     assert_eq!(
         status(&decide(root.path(), &outside, "approve", "desktop").await),
