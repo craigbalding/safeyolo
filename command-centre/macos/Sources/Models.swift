@@ -284,11 +284,17 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
         let reason: String?
         let networkAction: NetworkAction?
         let untrustedReasonText: String?
+        let browserURL: String?
+        let presentation: String?
+        let ttlSeconds: Int?
 
         enum CodingKeys: String, CodingKey {
             case service, method, path, reason
             case networkAction = "network_action"
             case untrustedReasonText = "untrusted_reason_text"
+            case browserURL = "browser_url"
+            case presentation
+            case ttlSeconds = "ttl_seconds"
         }
     }
 
@@ -365,7 +371,6 @@ struct DesktopPresentation: Decodable, Equatable {
 struct MutationPlan: Equatable {
     let path: String
     let body: [String: String]
-    let expectsDesktop: Bool
     var payload: [String: Any] { body.mapValues { $0 as Any } }
 
     static func forApproval(_ event: ApprovalEvent, allow: Bool, option: String? = nil) throws -> MutationPlan {
@@ -385,67 +390,45 @@ struct MutationPlan: Equatable {
                     throw ClientError.invalidApproval("Select one of this approval's fixed options")
                 }
             }
-            return MutationPlan(path: "/admin/approvals/\(encodedID)", body: body, expectsDesktop: false)
+            return MutationPlan(path: "/admin/approvals/\(encodedID)", body: body)
         }
         if ["network_egress", "credential"].contains(event.approval.approvalType) {
             throw ClientError.invalidApproval("Historical approval is read-only. Make a new request or use explicit policy controls.")
         }
-        if event.approval.approvalType == "desktop_present", allow {
-            guard let agentID = event.approval.scopeHint?.agentID,
-                  let encodedAgentID = encodePathComponent(agentID)
-            else {
-                throw ClientError.invalidApproval("Desktop presentation is missing agent_id")
-            }
-            return MutationPlan(
-                path: "/admin/agents/\(encodedAgentID)/desktop/present",
-                body: event.requestID.map { ["approval_request_id": $0] } ?? [:],
-                expectsDesktop: true
-            )
-        }
-
-        guard event.approval.approvalType == "desktop_present"
-        else {
-            throw ClientError.invalidApproval(
-                "Commander does not handle \(event.approval.approvalType)"
-            )
-        }
-
-        var body = [
-            "destination": event.approval.target,
-            "cred_id": event.approval.key,
-        ]
-        if !allow {
-            body["reason"] = "user_denied"
-        }
-        if event.approval.approvalType == "desktop_present",
-           let requestID = event.requestID {
-            body["approval_request_id"] = requestID
-        }
-        return MutationPlan(
-            path: allow ? "/admin/policy/baseline/approve" : "/admin/policy/baseline/deny",
-            body: body,
-            expectsDesktop: false
-        )
+        throw ClientError.invalidApproval("A canonical approval ID is required. Make a new request or use explicit operator controls.")
     }
 }
 
 struct ApprovalResolution: Decodable, Equatable {
+    struct ActionResult: Decodable, Equatable {
+        struct Diagnostic: Decodable, Equatable { let message: String }
+        let status: String?
+        let diagnostic: Diagnostic?
+    }
     let approvalID: String?
     let requestID: String
     let status: String
     let effect: String
     let untrustedReasonText: String?
+    let result: ActionResult?
+    let operatorPreview: DesktopPresentation?
 
     enum CodingKeys: String, CodingKey {
         case approvalID = "approval_id"
         case requestID = "request_id"
         case status, effect
         case untrustedReasonText = "untrusted_reason_text"
+        case result
+        case operatorPreview = "operator_preview"
     }
 
     var id: String { approvalID ?? requestID }
     var terminal: Bool { ["approved", "rejected", "expired", "superseded"].contains(status) }
-    var display: String { "\(status.capitalized). \(effect)" }
+    var display: String {
+        let action = result?.status.map { " Preview result: \($0)." } ?? ""
+        let diagnostic = result?.diagnostic.map { " \($0.message)" } ?? ""
+        return "\(status.capitalized). \(effect)\(action)\(diagnostic)"
+    }
     var quotedUntrustedReason: String? { untrustedReasonText.map { "\"\($0)\"" } }
 }
 

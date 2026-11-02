@@ -783,7 +783,18 @@ async fn pending_gateway_approval_uses_existing_grants_and_survives_restart_with
     let id = view["approval_id"].as_str().unwrap().to_owned();
     assert_eq!(view["action"]["kind"], "gateway_route");
     assert!(!view.to_string().contains(&token));
-    assert_eq!(view["options"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        view["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|option| option["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["once", "session", "remembered", "run", "delegated_once"]
+    );
+    for option in &view["options"].as_array().unwrap()[3..] {
+        assert_eq!(option["status"], "superseded");
+    }
     answered_context_unchanged(&fixture, &id).await;
     for option in ["once", "session", "remembered"] {
         let explanation = explained_unchanged(&fixture, &id, Some(option)).await;

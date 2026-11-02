@@ -223,8 +223,9 @@ async fn actual_source_dispatch_and_body_projection() {
                 // error bytes; account only for the current approval routes.
                 let expected = row["text"].as_str().unwrap().replace(
                     "\"/explain\", \"/trace\"",
-                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals\", \"/approvals/{approval_id}/resolve (POST)\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
+                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals\", \"/approvals/{approval_id}/resolve (POST)\", \"/api/coord/request-access (POST)\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
                 );
+                let expected = expected.replace("\"/desktop/present\",", "\"/desktop/present\", \"/operator-actions\", \"/operator-actions/{action_request_id}\",");
                 assert_eq!(row["status"], 404, "{name}");
                 assert_eq!(outcome.response.status, 404, "{name}");
                 assert_eq!(

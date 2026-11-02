@@ -35,6 +35,18 @@ pub(crate) fn authorize(
             "this complete approval option does not fit one current delegation",
         ));
     }
+    if record.authority.action["kind"] == "operator_action" {
+        let path = policy
+            .identity_root()
+            .ok_or_else(|| invalid("desktop host configuration unavailable"))?
+            .join("config.toml");
+        if !crate::host_platform::with_config(path, || {
+            crate::desktop_present::configuration_revision()
+                .is_ok_and(|revision| record.authority.action["configuration_revision"] == revision)
+        }) {
+            return Err(invalid("desktop host configuration changed"));
+        }
+    }
     issue(policy, record, name, Some(decider), option)
 }
 
@@ -66,6 +78,11 @@ pub(crate) fn issue(
                 .find_map(|o| o.parameters["ttl_seconds"].as_u64())
         })
         .flatten();
+    let gateway_seconds = gateway_seconds.or_else(|| {
+        (record.authority.action["kind"] == "operator_action")
+            .then(|| record.authority.action["parameters"]["ttl_seconds"].as_u64())
+            .flatten()
+    });
     let seconds = match (delegation.and_then(|d| d.grant_seconds), gateway_seconds) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
@@ -124,8 +141,9 @@ pub(crate) fn eligible(
         .collect()
 }
 
-/// A reviewer sees trusted, bounded facts. Raw URL paths, queries, request
-/// headers, bodies and agent prose are not copied into this projection.
+/// A reviewer sees bounded canonical facts. Traffic paths, queries, headers,
+/// bodies and agent prose are omitted. A desktop browser URL is an explicitly
+/// validated action parameter, shown as requester-selected data.
 pub(crate) fn view(
     writer: &crate::audit::Writer,
     policy: &Policy,

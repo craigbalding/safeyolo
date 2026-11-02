@@ -182,8 +182,9 @@ async fn actual_source_diff_tag_status_types_state_and_order() {
                 // Update that historical 404 inventory; keep all other error bytes.
                 let mut expected = row["text"].as_str().unwrap().replace(
                     "\"/explain\", \"/trace\"",
-                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals\", \"/approvals/{approval_id}/resolve (POST)\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
+                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals\", \"/approvals/{approval_id}/resolve (POST)\", \"/api/coord/request-access (POST)\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
                 );
+                expected = expected.replace("\"/desktop/present\",", "\"/desktop/present\", \"/operator-actions\", \"/operator-actions/{action_request_id}\",");
                 if name == "detail_after_tag" {
                     // #1150 added this nullable detail column after the capture.
                     expected = expected.replace(

@@ -32,6 +32,7 @@ mod explain;
 mod flows;
 mod gateway;
 mod memory;
+mod operator_actions;
 pub(crate) mod plumb;
 mod trace;
 pub use gateway::GatewayContext;
@@ -83,6 +84,8 @@ const ENDPOINTS: &[&str] = &[
     "/gateway/request-access",
     "/gateway/submit-binding",
     "/desktop/present",
+    "/operator-actions",
+    "/operator-actions/{action_request_id}",
     "/api/flows/{id}",
     "/api/flows/{id}/request-body",
     "/api/flows/{id}/response-body",
@@ -162,7 +165,6 @@ pub enum AuditKind {
     TestContextCleared,
     GatewayAccessRequested,
     GatewayBindingSubmitted,
-    DesktopPresentRequested,
     PlumbRequested,
     PlumbMessageBlocked,
     PlumbMessageFlagged,
@@ -258,13 +260,6 @@ impl AuditIntent {
                 "gateway.submit_binding",
                 Kind::Gateway,
                 Severity::Critical,
-                "agent-api",
-                Some(Decision::RequireApproval),
-            ),
-            AuditKind::DesktopPresentRequested => (
-                "agent.desktop_present_requested",
-                Kind::Agent,
-                Severity::High,
                 "agent-api",
                 Some(Decision::RequireApproval),
             ),
@@ -459,7 +454,6 @@ impl Outcome<'_> {
                 AuditKind::GatewayAccessRequested
                 | AuditKind::GatewayBindingSubmitted
                 | AuditKind::CoordAccessRequested
-                | AuditKind::DesktopPresentRequested
                 | AuditKind::PlumbRequested
                 | AuditKind::FlowReadAll,
             ) => {
@@ -705,6 +699,7 @@ async fn authorize(request: Request<'_>, token_path: &Path) -> Result<AuthScope,
             || path.starts_with("/api/coord/")
             || path == "/api/test-context/current"
             || path == "/desktop/present")
+        && !path.starts_with("/operator-actions")
         && !path.starts_with("/approvals/")
     {
         return Err(response(

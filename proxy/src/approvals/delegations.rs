@@ -38,6 +38,57 @@ pub(crate) fn preview(
         .map_err(|_| invalid("runtime unavailable"))?
         .clone();
     for scope in &mut candidate.scopes {
+        if let crate::policy::delegation::Scope::DesktopPresent {
+            presentation,
+            instance_id,
+            configuration_revision,
+            ..
+        } = scope
+        {
+            let path = crate::operator_actions::config_path(state)?;
+            let revision = crate::host_platform::with_config(
+                path,
+                crate::desktop_present::configuration_revision,
+            )
+            .map_err(|_| invalid("host desktop configuration unavailable"))?;
+            if configuration_revision
+                .as_ref()
+                .is_some_and(|saved| saved != &revision)
+            {
+                return Err(invalid(
+                    "host desktop configuration changed; preview without the old configuration_revision and acknowledgment",
+                ));
+            }
+            // The route is an explicit operator selection. Execution also checks
+            // actual readiness and the current configured route.
+            let settings = crate::host_platform::with_config(
+                crate::operator_actions::config_path(state)?,
+                crate::native_config::host_settings,
+            )
+            .map_err(|_| invalid("host desktop settings unavailable"))?;
+            if (*presentation == crate::desktop_present::Route::Tailnet)
+                != (settings.command_centre.share == "tailnet")
+            {
+                return Err(invalid(
+                    "select the host's configured desktop presentation route",
+                ));
+            }
+            *configuration_revision = Some(revision);
+            let current_instance = crate::host_platform::with_config(
+                crate::operator_actions::config_path(state)?,
+                crate::desktop_present::instance_id,
+            )
+            .map_err(|_| invalid("desktop instance identity unavailable"))?;
+            if instance_id
+                .as_ref()
+                .is_some_and(|saved| saved != &current_instance)
+            {
+                return Err(invalid(
+                    "desktop instance changed; preview without the old instance_id and acknowledgment",
+                ));
+            }
+            *instance_id = Some(current_instance);
+        }
         if let crate::policy::delegation::Scope::ServiceAuthorization {
             service,
             capability,
@@ -140,8 +191,8 @@ pub(crate) fn preview(
         acknowledgment: revision.clone(),
         revision,
         warnings,
-        effect: "Any one named reviewer may select a canonical option wholly inside this delegation. Network, credential, service authorization, contract binding and Coord room access is bounded to the current worker run. Optional grant expiry is separate from delegation validity and pending-request expiry. Gateway once uses the existing reservation and response-completion rules.",
-        revocation: "Changing or revoking this delegation invalidates its derived access. Independently sourced permission remains. Future authorizations are rechecked. An admitted opaque tunnel may continue; revocation cannot undo upstream effects. Inspect network, credential and service permissions for residual access."
+        effect: "Any one named reviewer may select a canonical option wholly inside this delegation. Network, credential, service authorization, contract binding, Coord room access and desktop presentation are bounded to the current worker run. Optional grant expiry is separate from delegation validity and pending-request expiry. Desktop presentation adds a separately expiring preview source. Gateway once uses the existing reservation and response-completion rules.",
+        revocation: "Changing or revoking this delegation invalidates its derived access. Independently sourced permission remains. Future authorizations are rechecked. An admitted opaque tunnel may continue; revocation cannot undo upstream effects. Desktop viewers disconnect when the last valid preview source ends; opening a browser cannot be undone. Inspect network, credential and service permissions for residual access."
     });
     preview["independent_access"] = json!(independent);
     Ok(preview)
@@ -213,6 +264,7 @@ fn remove_issued(document: &mut toml_edit::DocumentMut, source: &str, name: &str
             "service_grants",
             "binding_grants",
             "coord_grants",
+            "desktop_grants",
         ] {
             for (id, raw) in fields[collection].as_object().into_iter().flatten() {
                 let issued = raw.as_str().and_then(|s| {

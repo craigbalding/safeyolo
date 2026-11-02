@@ -223,16 +223,19 @@ final class SafeYoloClient: ObservableObject {
             do {
                 let plan = try MutationPlan.forApproval(event, allow: allow, option: option)
                 if plan.path.hasPrefix("/admin/approvals/") { approvalPath = plan.path }
-                let data = try await request(path: plan.path, method: "POST", json: plan.payload)
+                let data = try await request(path: plan.path, method: "POST", json: plan.payload,
+                    timeout: event.approvalID != nil && event.approval.approvalType == "desktop_present" ? 150 : nil)
                 let result: ResolutionResult
-                if plan.expectsDesktop {
-                    result = .desktop(try JSONDecoder().decode(DesktopPresentation.self, from: data))
-                } else if plan.path.hasPrefix("/admin/approvals/") {
+                if plan.path.hasPrefix("/admin/approvals/") {
                     let resolution = try JSONDecoder().decode(ApprovalResolution.self, from: data)
                     guard resolution.id == event.outcomeID, resolution.requestID == event.requestID, resolution.terminal else { throw ClientError.invalidResponse }
                     approvalOutcomes[resolution.id] = resolution
                     unavailableApprovalOutcomes.remove(resolution.id)
-                    result = .decided(resolution.display)
+                    if let preview = resolution.operatorPreview, resolution.status == "approved", resolution.result?.status == "started" {
+                        result = .desktop(preview)
+                    } else {
+                        result = .decided(resolution.display)
+                    }
                 } else {
                     result = .decided(allow ? "Allowed" : "Denied")
                 }
@@ -567,7 +570,8 @@ final class SafeYoloClient: ObservableObject {
     private func request(
         path: String,
         method: String = "GET",
-        json: [String: Any]? = nil
+        json: [String: Any]? = nil,
+        timeout: TimeInterval? = nil
     ) async throws -> Data {
         if method == "POST" {
             guard !stopping, await refreshInstance(), !stopping else { throw ClientError.connectionUnavailable }
@@ -580,6 +584,7 @@ final class SafeYoloClient: ObservableObject {
         if method == "POST" && path.hasPrefix("/admin/agents/") {
             request.timeoutInterval = 130
         }
+        if let timeout { request.timeoutInterval = timeout }
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if let json {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")

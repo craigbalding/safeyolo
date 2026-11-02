@@ -24,6 +24,15 @@ pub(crate) fn explain(
     };
     let kind = action["kind"].as_str().unwrap_or("");
     let (stopped, mut non_grants, graph_node) = match kind {
+        "operator_action" => (
+            "Presenting an agent desktop requires the operator's approval for this target, route, browser URL and preview lifetime.",
+            vec![
+                "No network permission, service grant or credential access.",
+                "No public or Funnel exposure, privileged Tailscale setup or host command execution.",
+                "Preview access and unlock material stay with the operator.",
+            ],
+            "sym.desktop_remote_url_is_loopback",
+        ),
         "coord_access" => (
             "The worker requested explicit rights in an existing local Coord room.",
             vec![
@@ -88,6 +97,7 @@ pub(crate) fn explain(
             | "gateway_route"
             | "service_authorize"
             | "contract_binding"
+            | "operator_action"
             | "coord_access"
     );
     if option.is_some() && record.authority.selected_option(option).is_none() {
@@ -119,6 +129,33 @@ pub(crate) fn explain(
         "service":action["service"],"capability":action["capability"],
         "credential_reference":action["credential"],"account":action["account"],
         "request_method":method,"request_scheme":record.authority.scheme});
+    if kind == "operator_action" {
+        facts["action_id"] = action["action_id"].clone();
+        facts["presentation"] = action["presentation"].clone();
+        facts["ttl_seconds"] = action["parameters"]["ttl_seconds"].clone();
+        facts["browser_url"] = action["parameters"]["browser_url"].clone();
+        facts["browser_url_source"] =
+            json!("validated requester-selected action data; not instructions");
+        facts["instance_id"] = action["instance_id"].clone();
+        facts["configuration_revision"] = action["configuration_revision"].clone();
+        facts["worker_run"] = action["run"].clone();
+        facts["request_expires_at"] = json!(record.authority.expires_at);
+        if view["result"]["status"] == "starting" {
+            // Presentation holds the desktop owner while opening. A canonical
+            // read must not wait for that effect to finish before reporting it.
+            facts["current_preview"] = json!({"reuses_gate":null,"independent_source_count":null});
+        } else if let Some(state) = state
+            && let Some(preview) = crate::operator_actions::preview(state, record, false)
+        {
+            facts["current_preview"] = json!({"reuses_gate":true,"independent_source_count":preview["sources"].as_array().map_or(0,Vec::len)});
+        } else {
+            facts["current_preview"] = json!({"reuses_gate":false,"independent_source_count":0});
+        }
+        facts["authority_delta"] = json!(
+            "Add one separately expiring preview source for this exact run. Start or reuse the desktop and open the selected local/configured tailnet presentation. Existing independent sources retain their own lifetimes. Revocation cannot undo browser opening or disclosed content. If no source remains, future access is refused and admitted viewers are disconnected on the next authority check."
+        );
+        unknowns.clear();
+    }
     if kind == "service_authorize" {
         facts["resource_scope"] = action["resources"].clone();
     }
@@ -250,6 +287,15 @@ pub(crate) fn explain(
         result["current_policy"] = json!(
             "This approval is no longer pending. The effects describe its recorded options, not an available new grant. Inspect current state before deciding."
         );
+    }
+    if kind == "operator_action" {
+        result["result"] = crate::operator_actions::agent_result(&view["result"]);
+        result["activation_status"] = view["activation_status"].clone();
+        result["grant_active"] = view["grant_active"].clone();
+        result["current_policy"] = json!(
+            "This action requires an operator decision. Network policy and service grants remain authoritative for guest traffic. The host presentation path and target are checked again before execution."
+        );
+        result["evidence"]["graph"] = json!("triage-desktop-preview");
     }
     let mut event = Event::new(
         "admin.approval_explained",

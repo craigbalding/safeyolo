@@ -207,12 +207,6 @@ async fn approval_claims_require_operator_visible_audit_and_recover_in_one_proce
             "contract_binding",
             "gateway.submit_binding",
         ),
-        (
-            "/desktop/present",
-            br#"{"target":"fixture"}"#.as_slice(),
-            "desktop_present",
-            "agent.desktop_present_requested",
-        ),
     ];
 
     let policy = fs::read_to_string(root.join("policy.toml")).unwrap();
@@ -224,7 +218,6 @@ async fn approval_claims_require_operator_visible_audit_and_recover_in_one_proce
     }
     // Canonical requests survive failed audit delivery. They remain pending,
     // without a permission effect or a successful response to the requester.
-    // Desktop presentation still requires its audit-backed prompt.
     let retained = admin(port).await;
     assert_eq!(retained.as_array().unwrap().len(), 2, "{retained}");
     for approval_type in ["service", "contract_binding"] {
@@ -250,15 +243,11 @@ async fn approval_claims_require_operator_visible_audit_and_recover_in_one_proce
     assert!(audit_path.is_dir());
 
     fs::remove_dir(&audit_path).unwrap();
-    let mut desktop_request_id = None;
     for (path, body, _, _) in cases {
         let (status, response) = agent(&socket, path, body).await;
         assert_eq!(status, 202, "{path}: {response}");
         assert_eq!(response["status"], "pending");
         assert_eq!(response["agent"], "alice");
-        if path == "/desktop/present" {
-            desktop_request_id = response["request_id"].as_str().map(str::to_owned);
-        }
     }
     let pending = admin(port).await;
     let listed = operator_pending(root).await;
@@ -268,9 +257,9 @@ async fn approval_claims_require_operator_visible_audit_and_recover_in_one_proce
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .filter(|event| event["approval"]["required"] == true)
         .collect();
-    assert_eq!(pending.as_array().unwrap().len(), 3, "{pending}");
-    assert_eq!(listed.as_array().unwrap().len(), 3, "{listed}");
-    assert_eq!(audit.len(), 3, "{audit:?}");
+    assert_eq!(pending.as_array().unwrap().len(), 2, "{pending}");
+    assert_eq!(listed.as_array().unwrap().len(), 2, "{listed}");
+    assert_eq!(audit.len(), 2, "{audit:?}");
     for (_, _, approval_type, event_name) in cases {
         let event = audit
             .iter()
@@ -287,34 +276,27 @@ async fn approval_claims_require_operator_visible_audit_and_recover_in_one_proce
             .unwrap();
         assert_eq!(record["agent"], "alice");
         assert_eq!(record["approval"]["required"], true);
-        let id = if approval_type == "desktop_present" {
-            assert_eq!(record["event"], event_name);
-            assert_eq!(event["request_id"], desktop_request_id.as_deref().unwrap());
-            assert_eq!(record["request_id"], event["request_id"]);
-            &record["request_id"]
+        let canonical_event = if approval_type == "contract_binding" {
+            "gateway.contract_binding_requested"
         } else {
-            let canonical_event = if approval_type == "contract_binding" {
-                "gateway.contract_binding_requested"
-            } else {
-                event_name
-            };
-            assert_eq!(record["event"], canonical_event);
-            assert_eq!(record["status"], "pending");
-            assert_eq!(
-                record["action"]["agent_id"],
-                "ag-11111111111111111111111111111111"
-            );
-            assert_eq!(event["details"]["approval_id"], record["approval_id"]);
-            let prior = retained
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|prior| prior["approval_id"] == record["approval_id"])
-                .unwrap();
-            assert_eq!(record["request_id"], prior["request_id"]);
-            assert_eq!(record["authority_digest"], prior["authority_digest"]);
-            &record["approval_id"]
+            event_name
         };
+        assert_eq!(record["event"], canonical_event);
+        assert_eq!(record["status"], "pending");
+        assert_eq!(
+            record["action"]["agent_id"],
+            "ag-11111111111111111111111111111111"
+        );
+        assert_eq!(event["details"]["approval_id"], record["approval_id"]);
+        let prior = retained
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|prior| prior["approval_id"] == record["approval_id"])
+            .unwrap();
+        assert_eq!(record["request_id"], prior["request_id"]);
+        assert_eq!(record["authority_digest"], prior["authority_digest"]);
+        let id = &record["approval_id"];
         let visible = listed
             .as_array()
             .unwrap()
