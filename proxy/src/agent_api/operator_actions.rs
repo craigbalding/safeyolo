@@ -77,7 +77,10 @@ where
                                 record.status =
                                     view["status"].as_str().unwrap_or("unavailable").into();
                                 record.result = view["result"].clone();
-                                response(200, operator_actions::agent_view(&record))
+                                let mut result = operator_actions::agent_view(&record);
+                                result["request_history"] = view["request_history"].clone();
+                                result["attention"] = view["attention"].clone();
+                                response(200, result)
                             }
                             Err(_) => response(503, json!({"error":"action state unavailable"})),
                         }

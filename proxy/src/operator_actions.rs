@@ -153,6 +153,8 @@ pub(crate) async fn request(
             options:vec![pending::OptionScope {id:"once".into(),effect,session_id:None,parameters:Value::Null}],
             expires_at:None,credential_bindings:Default::default(),
         };
+        let submitted_reason_digest = input.reason.as_ref().map(|reason| pending::digest(&json!(reason)));
+        let submitted_reason_bytes = input.reason.as_ref().map(String::len);
         let (work_writer, work_policy, work_id) = (writer.clone(), policy.clone(), request_id.to_owned());
         let record = tokio::task::spawn_blocking(move || {
             let record = work_writer.approvals().submit(authority, &work_id, &work_policy)?;
@@ -164,6 +166,7 @@ pub(crate) async fn request(
             })?.ok_or_else(|| invalid("approval unavailable"))
         }).await.map_err(|_| invalid("pending action unavailable"))??;
         let mut event = event(&record, "agent.operator_action_requested", "Operator preview requested");
+        event.request_id = Some(request_id.into());
         event.approval = Some(crate::audit::Approval {
             required: record.status == "pending",
             approval_type: crate::audit::ApprovalType::DesktopPresent,
@@ -172,8 +175,12 @@ pub(crate) async fn request(
         });
         event.details = json!({"approval_id":record.approval_id,"authority_digest":record.authority_digest,
             "action_id":DESKTOP_PRESENT,"validated_action":record.authority.action,
-            "untrusted_reason_text":record.untrusted_reason_text}).into();
+            "untrusted_reason_text":record.untrusted_reason_text,
+            "submitted_reason_digest":submitted_reason_digest,"submitted_reason_bytes":submitted_reason_bytes,
+            "request_count":record.request_count,"last_requested_at":record.last_requested_at}).into();
         let mut view = agent_view(&record);
+        view["request_history"] = writer.approvals().request_history(&record)?;
+        view["attention"] = json!(record.attention);
         if writer.emit_confirmed(event).await.is_err() {
             view["audit_status"] = json!("unavailable; the canonical pending request is saved");
         }

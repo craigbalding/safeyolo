@@ -152,7 +152,7 @@ pub(crate) async fn bind_risky(
         .ok_or_else(|| invalid("gateway grant store unavailable"))?
         .approval_ttl_seconds()?;
     let mut options: Vec<_> = ["once", "session", "remembered"].into_iter().map(|id| OptionScope {
-        id:id.into(), effect:format!("Allow {agent} to use {} at the exact path {} on {} with a {id} grant. The grant expires {ttl} seconds after approval. A successful response consumes once; proxy restart also ends session.", request.method, path, selection.service),
+        id:id.into(), effect:format!("Allow {agent} to use {} at the exact requester-selected path {path:?} on {} with a {id} grant. The grant expires {ttl} seconds after approval. A successful response consumes once; proxy restart also ends session.", request.method, selection.service),
         session_id:(id == "session").then(|| runtime.audit.approvals().session_id.clone()),
         parameters:json!({"lifetime":id,"ttl_seconds":ttl,"path_match":"literal"}) }).collect();
     options.push(super::run_option("Run-bound reusable access to the canonical service, capability, binding, method and exact path. Gateway expiry and all contract checks remain. This is not payload-bound approval."));

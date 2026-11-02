@@ -6,6 +6,8 @@ use tokio::{
     net::TcpStream,
     time::timeout,
 };
+#[path = "shared_approvals/attention.rs"]
+mod attention;
 #[path = "shared_approvals/policy_allocations.rs"]
 mod policy_allocations;
 #[path = "support/shared_approvals.rs"]
