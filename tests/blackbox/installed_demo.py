@@ -100,16 +100,21 @@ class DemoProcess:
         self.process.stdin.write(value.encode())
         self.process.stdin.flush()
 
+    def diagnostics(self) -> str:
+        # The normal operator renderer prints access material on these lines.
+        # Keep that host-only material out of retained failure diagnostics.
+        return re.sub(r"(?m)^(?:Operator preview|Unlock code):[^\n]*", "[operator preview access omitted]", self.output)[-1500:]
+
     def until(self, text: str, timeout: float = 150) -> str:
         assert self.process.stdout is not None
         deadline = time.monotonic() + timeout
         while text not in self.output:
             remaining = deadline - time.monotonic()
-            assert remaining > 0, f"Demo did not reach {text!r}: {self.output[-1500:]}"
+            assert remaining > 0, f"Demo did not reach {text!r}: {self.diagnostics()}"
             readable, _, _ = select.select([self.process.stdout], [], [], min(remaining, 1))
             if readable:
                 chunk = os.read(self.process.stdout.fileno(), 4096)
-                assert chunk, f"Demo ended before {text!r}: {self.output[-1500:]}"
+                assert chunk, f"Demo ended before {text!r}: {self.diagnostics()}"
                 self.output = (self.output + chunk.decode(errors="replace"))[-65536:]
         return self.output
 
@@ -327,7 +332,7 @@ def run(args: argparse.Namespace) -> None:
                     assert confirmation == "interacted", "viewer interaction was not reported"
                     result["preview"]["interaction"] = "operator_reported"
                 active.send("\n")
-                assert active.finish() == 0, active.output[-1500:]
+                assert active.finish() == 0, active.diagnostics()
                 stopped(name)
                 closed(port)
                 peer_survives()
