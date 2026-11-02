@@ -80,7 +80,7 @@ actual platform, result, owned cleanup and sanitized publication.
 An occupied shared resource, stale ref or another owner's process is not a
 valid setup. Release acceptance retains exact-release-commit results for each
 actual mechanism. The [independent hardware entries](../tests/blackbox/hardware/README.md)
-do not establish deployed schedules or reopen historical #640 acceptance.
+do not establish deployed schedules or release acceptance.
 
 ## Security observations
 
@@ -92,14 +92,40 @@ firewall. The operator can inspect the owned origin/control API independently;
 the guest cannot acquire that operator authority by sending an HTTP header.
 
 Guest root is intentional for package administration and repair. The default
-shell is UID 1000; guest sudo and operator-mediated `agent shell --root` reach
-UID 0 inside the sandbox. Linux maps it to subordinate host UID 100000; VZ
-contains it inside the microVM. Tests positively observe root and a local
-package transaction, then probe host configuration/key/device, filesystem and
-egress boundaries under that identity. A UID transition alone is not an escape.
+shell runs as user ID (UID) 1000. On the operator host, with the installed
+`safeyolo` on `PATH`, replace `NAME` with an owned running agent whose guest
+image includes sudo. From any host directory, inspect the ordinary and
+guest-root identities:
+
+```sh
+safeyolo agent shell NAME -c 'id -u'
+safeyolo agent shell NAME -c 'sudo -n id -u'
+```
+
+The expected UIDs are 1000 and 0 respectively. The native shell starts an
+ordinary guest process; guest sudo performs the UID transition. The
+[guest administration reference](agent-debugging.md#what-the-sandbox-provides)
+explains the Linux capability shim, the VZ sudo path and custom images without
+sudo. If the native shell is unavailable, use the
+[diagnostics and recovery procedure](agent-debugging.md#failure-triage).
+
+On Linux, guest UID 0 maps to the installation's selected subordinate host
+UID; guest UID 1000 maps to the operator. Group IDs (GIDs) use an independently
+selected subordinate base. The archive base 100000 is not a fixed runtime
+mapping. VZ contains guest root inside the microVM. See the
+[runtime mapping and storage reference](ARCHITECTURE.md#linux-runtime-and-storage).
+
+The [installed test driver](../tests/blackbox/guest_exec.py) uses the native
+shell and guest sudo for its root pass on both platforms.
+[Root capability and containment tests](../tests/blackbox/isolation/test_root_containment.py)
+positively observe root and a local package transaction, then probe host
+configuration/key/device, filesystem and egress boundaries under that identity.
+A UID transition alone is not an escape.
 The root pass repeats private-key scans so ordinary-user permissions cannot hide
-fixture private material. Approved operator mounts remain outside any claim
-that arbitrary writable workspace data is harmless.
+fixture private material. Writable operator mounts can contain real data that
+an agent can change or delete. Isolation does not make those writes harmless.
+These test procedures do not
+establish a pass on an untested isolation mechanism.
 
 Private fixture keys are generated in disposable config outside the mounted
 repository. Only public certificates and the guest trust fixture are exposed
@@ -119,11 +145,11 @@ a local fixture stop cannot establish a physical Mac's ports are free.
 Current installed continuity owns flow/body/tag/audit, circuit,
 catalog/revocation/grant, Coord/attention/provider lease/Plumb, private file
 modes, OAuth stored use and task reset. The named installed sections retain
-their guest/operator boundaries. Completed comparator executors, migration
-wrappers and frozen defaults are retired after Lens's bounded replacement
-assessments, under the
-[approved finite disposition](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5942642868).
-The [state inventory](state-compatibility.md) preserves historical writers,
-receipts and explicit package recovery; it does not add recurring migration
-gates. Physical observations and their unexecuted assertions remain attributed
-in the [VZ replacement assessment](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5961923767).
+their guest/operator boundaries. Use the
+[installed selection reference](../tests/blackbox/README.md#what-each-installed-selection-observes)
+for their current scope and the
+[installation guide](installation.md#upgrade-host-and-guest-components) for
+package recovery.
+Record physical observations and unexecuted assertions in the actual
+platform's acceptance receipt. Source inventories and results from another
+mechanism do not establish a physical-platform pass.
