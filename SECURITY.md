@@ -70,7 +70,12 @@ You decide what gets through. SafeYolo enforces your decisions — agents reques
 
 Think of agents like an eager intern: confident, fast, helpful, and occasionally wrong in ways that matter. An intern might email the wrong client or paste credentials into a public channel — not malicious, just moving fast without experience. AI agents have the same failure mode. SafeYolo ensures a human is in the loop for trust decisions, while giving agents clear machine-readable feedback (HTTP 428) so they can self-correct obvious mistakes without operator intervention.
 
-Service capabilities scope what an agent can do within a service. Risky routes (destructive actions, data export, privilege changes) require explicit operator approval, with irreversible actions demanding typed confirmation. Grants can be scoped to once, session, or remembered.
+Service capabilities scope what an agent can do within a service. Risky-route
+declarations identify actions such as deletion, data export and privilege
+changes. Without a matching risk grant, authored risk policy can allow, deny or
+require approval for a declared risky route. The `irreversible` flag is a policy
+signal; it does not impose typed confirmation. Risk grants can use the `once`,
+`session` or `remembered` lifetime. They do not widen the service capability.
 
 ### Auditability
 
@@ -79,7 +84,7 @@ Behind the scenes, every request gets a unique ID. Every security decision — c
 ## Enforcement Layers
 
 **Granting agents access to your online data.**
-Agents call APIs on your behalf, but not every operation carries the same risk. Services are described in terms of capabilities — named groups of related operations like "manage categories" or "read feeds." You grant specific capabilities to each agent; everything else in that service is off-limits. Within a granted capability, a contract constrains exactly which endpoints, methods, and parameters the agent can use. Actions flagged as risky — deleting data, bulk export, changing permissions — require your approval, which you can scope to once, for the session, or permanently. Service files are generated from API specifications and ship with SafeYolo — you don't need to write them yourself, but you can if you like. If a service you use isn't covered yet, open a [GitHub issue](https://github.com/craigbalding/safeyolo/issues) or submit a PR.
+Agents call APIs on your behalf, but not every operation carries the same risk. Services are described in terms of capabilities — named groups of related operations like "manage categories" or "read feeds." You grant specific capabilities to each agent; everything else in that service is off-limits. Within a granted capability, a contract constrains exactly which endpoints, methods, and parameters the agent can use. Service files are generated from API specifications and ship with SafeYolo — you don't need to write them yourself, but you can if you like. If a service you use isn't covered yet, open a [GitHub issue](https://github.com/craigbalding/safeyolo/issues) or submit a PR.
 
 **Credential isolation.**
 The service gateway keeps vaulted service credentials outside the agent
@@ -187,4 +192,4 @@ We welcome security research on SafeYolo.
 - [Security verification](docs/security-verification.md) — VM isolation, dependency trust, automated testing, build verification
 - [Policy file assurance](docs/policy-assurance-threat-model.md) — threat-model-driven priorities and security invariants for policy mutation testing
 - [Architecture](docs/ARCHITECTURE.md)
-- [Service gateway v2 design](docs/service-gateway-v2-design.md)
+- [Service permissions and trust](docs/service-gateway-v2-yaml-spec.md#permissions-and-trust)
