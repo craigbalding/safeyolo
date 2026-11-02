@@ -78,8 +78,7 @@ safeyolo agent diagnostics NAME
 These observations distinguish runtime/control/command and proxy state. They
 are not by themselves isolation acceptance. Apply the actual
 [host prerequisites](installation.md#guest-prerequisites), including AppArmor
-and subordinate UID/GID mapping where required. The retired Python setup
-command is not an installed operation.
+and subordinate UID/GID mapping where required.
 
 ## Automated Security Testing
 
@@ -89,28 +88,20 @@ on macOS. Follow that reference for host prerequisites, retained inputs or a
 contributor build, lane selection, reports and owned cleanup. Host-side proxy
 and guest-side isolation tests observe different boundaries:
 
-Policy-file assurance is scoped separately in
-[Policy File Assurance: Threat-Model Decision](policy-assurance-threat-model.md).
-Because agents cannot directly write the host-owned policy file, that strategy
-prioritizes semantic permission deltas, cross-agent isolation, concurrent
-mutation integrity, and fail-closed behavior over generic parser fuzzing.
+The [security model](../SECURITY.md#security-model) trusts the host-owned policy
+file; agents cannot write it directly. The relevant policy assurance properties
+are semantic permission deltas, cross-agent isolation, concurrent mutation
+integrity and fail-closed behavior. Parser conformance alone does not establish
+those properties.
 
-The current tree retains focused policy command and transaction tests in
-`tests/proxy_contracts/test_native_policy_cli.py` and `tests/test_policy_transaction_regressions.py`.
-Native policy decisions have separate Rust checks in `proxy/tests/policy.rs`.
-These checks do not replace generated native transaction sequences, concurrent
-mutations, failure-stage injection, or abrupt disposable-VM death. Those
-assurance claims remain open for the post-deletion release candidate.
-
-The pre-cutover `tools.policy_chaos` runner, its `tests/test_policy_chaos.py`
-checks, and its scheduled workflow were retired because they import the removed
-Python policy engine and proxy addons. The historical runner and experiment
-sources remain available from the pinned pre-cutover checkout
-`2ca598ce11d7c375a024b38eb3e7b4104a795d84`. Run them only with that
-checkout's locked Python environment. Their results cannot establish native
-policy behavior for the current release candidate. The former acceptance-graph
-route now reports a coverage gap when generated native policy assurance is
-material.
+Focused native policy command tests live in
+[`test_native_policy_cli.py`](../tests/proxy_contracts/test_native_policy_cli.py).
+Native [approval tests](../proxy/tests/approvals.rs) include scoped persistence,
+activation rollback, invalid edits and concurrent writers. Native policy
+decisions have separate Rust checks in [`proxy/tests/policy.rs`](../proxy/tests/policy.rs).
+These focused examples do not establish generated transaction sequences,
+coverage of every mutation/failure stage or abrupt disposable-VM death.
+Those broader assurance claims remain unproved.
 
 **Host-side proxy tests** (`tests/blackbox/host/`):
 
@@ -121,7 +112,7 @@ material.
 | Access control | Allowed domains pass, rate limits enforced |
 | Header stripping | Proxy-Authorization removed before forwarding |
 
-**VM-side isolation tests** (`tests/blackbox/isolation/`):
+**Guest-side isolation tests** (`tests/blackbox/isolation/`):
 
 | Test | Verifies |
 |------|----------|
@@ -143,8 +134,6 @@ actual platform and unexecuted assertions.
 
 ## Dependency Trust
 
-The 2026-01-05 dependency ratings covered the pre-cutover implementation.
-
 The native host CLI, proxy and guest executables use
 [proxy/Cargo.toml](../proxy/Cargo.toml) and [proxy/Cargo.lock](../proxy/Cargo.lock).
 The root [pyproject.toml](../pyproject.toml) declares a non-package test
@@ -155,11 +144,9 @@ has its own [lock](../tools/acceptance/uv.lock). Use the
 [development setup](DEVELOPERS.md#development-setup) and
 [acceptance tooling guidance](DEVELOPERS.md#acceptance-tooling) for those
 environments and the [guest build reference](../guest/README.md) for guest OS
-inputs. The removed mitmproxy, tenacity and confusable-homoglyphs packages are
-outside the current product runtime closure. Audit each applicable exact
-closure at release time; historical ratings and source inventories do not
-establish a current scan result. Missing supplemental scanner results remain
-unknown coverage.
+inputs. Audit each applicable exact closure at release time; source inventories
+do not establish a current scan result. Missing supplemental scanner results
+remain unknown coverage.
 
 ## Code Pointers
 
@@ -179,4 +166,4 @@ unknown coverage.
 | Request logging | [request_logger.rs](../proxy/src/request_logger.rs) |
 | Proxy startup | [host_commands.rs](../proxy/src/host_commands.rs), [main.rs](../proxy/src/main.rs) |
 | Blackbox tests | [tests/blackbox/](../tests/blackbox/) |
-| Policy assurance threat model | [policy-assurance-threat-model.md](policy-assurance-threat-model.md) |
+| Source drift and snapshot limits | [assurance.md](assurance.md) |

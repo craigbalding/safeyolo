@@ -80,7 +80,7 @@ actual platform, result, owned cleanup and sanitized publication.
 An occupied shared resource, stale ref or another owner's process is not a
 valid setup. Release acceptance retains exact-release-commit results for each
 actual mechanism. The [independent hardware entries](../tests/blackbox/hardware/README.md)
-do not establish deployed schedules or reopen historical #640 acceptance.
+do not establish deployed schedules or release acceptance.
 
 ## Security observations
 
@@ -145,11 +145,11 @@ a local fixture stop cannot establish a physical Mac's ports are free.
 Current installed continuity owns flow/body/tag/audit, circuit,
 catalog/revocation/grant, Coord/attention/provider lease/Plumb, private file
 modes, OAuth stored use and task reset. The named installed sections retain
-their guest/operator boundaries. Completed comparator executors, migration
-wrappers and frozen defaults are retired after Lens's bounded replacement
-assessments, under the
-[approved finite disposition](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5942642868).
-The [state inventory](state-compatibility.md) preserves historical writers,
-receipts and explicit package recovery; it does not add recurring migration
-gates. Physical observations and their unexecuted assertions remain attributed
-in the [VZ replacement assessment](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5961923767).
+their guest/operator boundaries. Use the
+[installed selection reference](../tests/blackbox/README.md#what-each-installed-selection-observes)
+for their current scope and the
+[installation guide](installation.md#upgrade-host-and-guest-components) for
+package recovery.
+Record physical observations and unexecuted assertions in the actual
+platform's acceptance receipt. Source inventories and results from another
+mechanism do not establish a physical-platform pass.
