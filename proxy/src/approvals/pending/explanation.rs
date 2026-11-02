@@ -111,6 +111,18 @@ pub(crate) fn explain(
     if kind == "service_authorize" {
         facts["resource_scope"] = action["resources"].clone();
     }
+    if kind == "contract_binding" {
+        facts["template"] = action["template"].clone();
+        facts["grantable_operations"] = action["grantable_operations"].clone();
+        facts["bound_value_digests"] = json!(
+            action["bindings"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(name, value)| (name, super::digest(value)))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        );
+    }
     if kind == "credential_allow" {
         facts["credential_fingerprints"] = action["credentials"].clone();
     }

@@ -542,6 +542,7 @@ impl Policy {
                 "agent_id",
                 "services",
                 "service_grants",
+                "binding_grants",
                 "contract_bindings",
             ] {
                 if !same(&["agents", agent, field]) {

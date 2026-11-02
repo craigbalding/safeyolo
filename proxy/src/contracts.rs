@@ -41,6 +41,86 @@ const TIERS: &[&str] = &[
 ];
 
 impl ContractTemplate {
+    pub(crate) fn validate_bound_value(&self, name: &str, value: &Value) -> bool {
+        let Some(definition) = self.bindings.get(name).and_then(Value::as_object) else {
+            return false;
+        };
+        let kind = definition
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("string");
+        match kind {
+            "enum" => definition
+                .get("options")
+                .and_then(Value::as_array)
+                .is_some_and(|options| options.contains(value)),
+            "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+            "boolean" => value.is_boolean(),
+            "string_list" => value
+                .as_array()
+                .is_some_and(|items| items.iter().all(Value::is_string)),
+            _ => value.as_str().is_some_and(|value| {
+                definition
+                    .get("pattern")
+                    .and_then(Value::as_str)
+                    .is_none_or(|pattern| {
+                        regex::Regex::new(pattern).map_or(true, |regex| regex.is_match(value))
+                    })
+            }),
+        }
+    }
+
+    pub(crate) fn binding_errors(
+        &self,
+        values: &Map<String, Value>,
+        operations: &[String],
+    ) -> Vec<String> {
+        let mut errors = Vec::new();
+        for (name, definition) in &self.bindings {
+            let required = definition
+                .get("required_if")
+                .and_then(Value::as_object)
+                .is_some_and(|conditions| {
+                    conditions
+                        .iter()
+                        .all(|(key, expected)| values.get(key) == Some(expected))
+                });
+            if required && values.get(name).is_none_or(Value::is_null) {
+                errors.push(format!("'{name}' is required"));
+            }
+        }
+        for (name, value) in values {
+            if !self.validate_bound_value(name, value) {
+                errors.push(format!(
+                    "'{name}' has unknown binding name, invalid type or value"
+                ));
+            }
+        }
+        if operations.is_empty() {
+            errors.push("select at least one grantable operation".into());
+        }
+        for name in operations {
+            let mut selected = self
+                .grantable_operations()
+                .filter(|operation| &operation.name == name)
+                .peekable();
+            if selected.peek().is_none() {
+                errors.push(format!("Operation '{name}' cannot be granted"));
+            }
+            for operation in selected {
+                for name in operation.bound_value_references() {
+                    if values.get(name).is_none_or(Value::is_null) {
+                        errors.push(format!(
+                            "'{name}' is required by operation '{}'",
+                            operation.name
+                        ));
+                    }
+                }
+            }
+        }
+        errors
+    }
+
     pub fn validate(&self) -> Result<(), Error> {
         for tier in TIERS {
             if let Some(value) = self.enforcement.get(*tier)

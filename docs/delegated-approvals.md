@@ -95,6 +95,7 @@ Each `scopes` entry uses one of these shapes:
 | `network_egress` | `host` is a supported destination pattern. `ports` and `all_ports` are required. Select either a nonempty port list with `all_ports: false`, or an empty list with `all_ports: true`. `actions` contains `request`, `connect`, or both. Each decision issues the canonical destination, port and action, rather than the whole envelope. Ordinary requests can reuse that permission across methods and paths. Existing budgets remain. |
 | `credential` | `host` is an exact destination. `fingerprints` contains exact `hmac:` fingerprints. Each decision permits those observed fingerprints only for the worker's current run. It covers all ports, methods and paths at that host. It does not change the shared baseline credential approval. Port, operation, family and once bounds are unsupported and rejected. Network and service controls still apply. |
 | `service_authorization` | `service`, `capability`, `account`, `credential` and `resources` bound the envelope. The credential is an exact host-store reference, or an empty string for a credential-free service. Preview fills `credential_binding` with the current definition fingerprint. Each grant authorizes only the selected worker run and resource paths. Capability routes, network policy, credential resolution, contract binding and risky-route approval remain separate checks. |
+| `contract_binding` | `service`, `capability` and `template` are exact. `bound_values` maps each permitted binding field to a nonempty list of complete JSON choices. `grantable_operations` lists supported operation names. One scope must contain every submitted value and selected operation. Only the worker run receives the derived binding. Existing operator bindings and all other access checks remain. |
 | `gateway_route` | `service`, `capability`, `method`, `path` and optional `binding_id` bound the envelope. Supported method/path patterns can cover several routes. Each issued grant binds the canonical method and literal path, current service/capability/binding definitions and worker run. It does not bind an exact payload. Existing service authorization and contract checks remain. |
 
 Wildcard destinations, all ports, reusable access, multiple reviewers and
@@ -184,10 +185,97 @@ checks attention, canonical decision, explicit retry, injected-origin digest,
 resource/risk refusals and reviewer isolation, then removes the credential and
 stops its owned guests, proxy and origins. It does not require 1Password.
 
+## Delegate contract binding
+
+On the host, configure the service and its contract template first. Service
+access, network access, credential resolution and risky-route permissions remain
+separate. The reviewer does not need any of that access. Replace the proposal's
+`scopes` with the intended binding envelope. For example, a `tickets` service
+with a `reader` capability and template `tickets.read.v1` can use:
+
+```json
+[{"type":"contract_binding","service":"tickets","capability":"reader",
+  "template":"tickets.read.v1","bound_values":{"project":["alpha","beta"]},
+  "grantable_operations":["read_ticket"]}]
+```
+
+Each field lists alternative exact values. Choices across fields can be
+combined, and the reviewer can approve all listed operations together.
+For a `string_list` field, use
+nested lists, such as `"labels":[["urgent","assigned"],["backlog"]]`. The host
+checks each choice against the template's binding type and each operation
+against its enforced tiers and required values. Unsupported operations, values
+and path bounds fail preview. Arbitrary value ranges and value patterns are
+unsupported; enumerate the intended choices. A supported large choice list
+remains usable after acknowledgment. Use the same preview, acknowledgment and
+apply commands as for other delegations.
+
+In the worker guest, save the intended request as `binding-request.json`:
+
+```json
+{"service":"tickets","capability":"reader","bindings":{"project":"alpha"},
+ "grantable_operations":["read_ticket"]}
+```
+
+With the normal guest proxy and the worker's own Agent API token, submit it:
+
+```sh
+(
+  agent_token=$(cat /app/agent_token) || exit
+  printf 'Authorization: Bearer %s\n' "$agent_token" |
+    curl --fail-with-body --header @- \
+      -H 'Content-Type: application/json' --data-binary @binding-request.json \
+      http://_safeyolo.proxy.internal/gateway/submit-binding
+)
+```
+
+The host returns 202 and `x-safeyolo-approval-id`. If the worker omits
+`grantable_operations`, the host selects all currently grantable operations,
+as for ordinary operator binding requests. An explicit list must name supported
+operations. The selected values and operations form one fixed approval option;
+the reviewer cannot edit them. The reviewer selects `run` through the normal
+read and resolve tools. The worker then refreshes its gateway token through
+`GET /gateway/services` and explicitly retries the intended service request.
+The host does not replay any upstream request during approval or recovery.
+Request comparisons retain the contract owner's value semantics. A binding does
+not approve a byte-for-byte payload or add constraints absent from its template.
+
+For a supported two-guest demonstration, stage
+`tests/blackbox/fixtures/delegated-contract-binding.yaml` in the disposable
+instance's configured service directory before starting the selected proxy.
+Run the maintained `installed_shared_approvals.py` driver with
+`--interfaces --real-helper --delegated-binding` and the exact executable
+source commit. Use the same prepared Ubuntu/systrap guests, authenticated
+reviewer and current attention cutoff as the service-authorization journey.
+The driver separately configures service access and a synthetic host credential,
+then checks attention, canonical decision, explicit retry, injected-origin
+digest, forbidden values and operations, reviewer isolation and revocation.
+It removes its credential and stops the owned guests, proxy and origins.
+
+The reviewer projection identifies the template, selected operation names and
+value digests. Each eligible choice also identifies its `scope_index` and
+`bound_value_choice_indices` in the acknowledged delegation revision. These
+zero-based indices identify the operator's exact choices without exposing raw
+contract values, which can contain secrets. They establish containment, not the
+worker's intent. The operator can inspect the original values with
+`approvals show ID --json` on the host. Guest prose remains untrusted evidence.
+
+Derived bindings are additive. The gateway first tries the independent operator
+binding, then current derived bindings through the same contract request checks.
+A complete request must fit one binding, including its selected operations.
+Changing or revoking a delegation removes only its derived bindings. Expiry,
+worker stop or recreation, changed reviewer identity, and relevant service or
+template definitions invalidate derived authority before future use. A reused
+template name does not preserve an earlier definition's authority. Preview and
+acknowledge again after a relevant definition changes. Proxy restart retains a
+binding only while its recorded run, delegation and definitions remain current.
+Independent operator bindings retain their ordinary replacement and removal
+behavior.
+
 ## Reviewer workflow
 
 The worker receives 428 for a blocked traffic request, or 202 for a service
-access request, with an `x-safeyolo-approval-id` header. The request is not held
+access or binding request, with an `x-safeyolo-approval-id` header. The request is not held
 for automatic replay. The existing Coord attention path
 sends eligible reviewers a reference in their configured `NAME-agent` room.
 It sends no secret evidence or permission in the message. Other room members
@@ -203,7 +291,8 @@ In the reviewer's normal native Coord MCP session:
    `option`, and `decision: approve`, `reject`, or `defer`.
 5. Use `list_approvals` to reconcile after reconnect or unavailable attention.
 
-Network, credential and service-authorization decisions use the offered `run` option. Gateway decisions
+Network, credential, service-authorization and contract-binding decisions use
+the offered `run` option. Gateway decisions
 can use `run`, or `delegated_once` when the delegation permits it. Routine
 in-envelope decisions require no further human confirmation. The reviewer
 cannot replace the destination, identity, fingerprint, service, payload or

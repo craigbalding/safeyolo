@@ -2743,8 +2743,15 @@ fn toml_value(value: &toml_edit::Value, context: &LargeIntegerContext) -> Result
     }
 }
 
-/// Preserve source object structure with arbitrary precision numbers enabled.
-/// Request bodies reject duplicates; operator policy files retain last-key-wins.
+/// Keep canonical approval actions distinct from serde's private number marker.
+pub(crate) fn deserialize_json_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Value, D::Error> {
+    let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+    parse_json(raw.get(), true).map_err(serde::de::Error::custom)
+}
+
+/// Preserve source objects and arbitrary precision numbers; optionally reject duplicates.
 pub(crate) fn parse_json(source: &str, reject_duplicates: bool) -> serde_json::Result<Value> {
     json_value(source, reject_duplicates, 0)
 }

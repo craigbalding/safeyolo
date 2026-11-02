@@ -140,9 +140,23 @@ pub(crate) fn view(
     let mut view = super::explain(writer, policy, record, Some(state), Some(&choices[0].1))?;
     let choices: Vec<_>=choices.iter().map(|(name,option)| {
         let issued=authorize(policy,record,reviewer,name,option)?;
-        Ok(json!({"delegation":name,"delegation_revision":issued.delegation_revision,"option":option,
+        let mut choice = json!({"delegation":name,"delegation_revision":issued.delegation_revision,"option":option,
             "grant_expires_if_issued_now":issued.expires_at,"grant_seconds":policy.delegations()[name].grant_seconds,"worker_run":issued.beneficiary,
-            "delegation_expires_at":policy.delegations()[name].expires_at}))
+            "delegation_expires_at":policy.delegations()[name].expires_at});
+        if issued.action["kind"] == "contract_binding" {
+            let delegation = &policy.delegations()[name];
+            choice["binding_envelopes"] = json!(delegation.scopes.iter().enumerate().filter_map(|(index, scope)| {
+                if !matches!(scope, crate::policy::delegation::Scope::ContractBinding { .. }) { return None; }
+                let mut single = delegation.clone();
+                single.scopes = vec![scope.clone()];
+                if !single.contains(record, option) { return None; }
+                let crate::policy::delegation::Scope::ContractBinding { bound_values, .. } = scope else { return None; };
+                Some(json!({"scope_index":index,"bound_value_choice_indices":issued.action["bindings"].as_object().into_iter().flatten()
+                    .map(|(field,value)| (field, bound_values[field].iter().position(|choice| choice == value).expect("contained value")))
+                    .collect::<std::collections::BTreeMap<_,_>>() }))
+            }).collect::<Vec<_>>());
+        }
+        Ok(choice)
     }).collect::<Result<Vec<_>>>()?;
     view["choices"] = json!(choices);
     // Explain includes all operator options; guests may select only the choices

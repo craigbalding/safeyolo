@@ -2,7 +2,7 @@
 use super::*;
 use safeyolo_proxy::credentials::{Credential, Secret, Vault};
 
-async fn setup() -> (Fixture, Backend, Vault) {
+pub(super) async fn setup() -> (Fixture, Backend, Vault) {
     let f = Fixture::new().await;
     let backend = Backend(runs(&f));
     fs::write(f.root.path().join("services/scoped.yaml"), format!(
