@@ -2,19 +2,40 @@
 
 ## Status
 
-Design document. Agreed 2026-03-23.
+Historical design, agreed 2026-03-23. It replaced an earlier role-based gateway
+design. “v2” names that redesign; current service YAML uses `schema_version: 1`.
+Audit schema versions are independent.
 
-Supersedes the current role-based service gateway design (v1).
+For current authoring, use the [Service YAML reference](service-gateway-v2-yaml-spec.md).
+For host credential storage, authorization, binding and risk approval, use
+[credentials and service access](credentials.md). The design decisions and
+future work below retain the original rationale and alternatives. They are not
+a statement that every proposed interface or guarantee is implemented.
+
+Current boundaries:
+
+- Capabilities, grouped risky-route signals, account labels and risk rules have
+  current implementations. Labels do not set automatic risk levels. A rule
+  matching a tag cannot detect that tag's omission from a definition.
+- Request contracts enforce supported request constraints. State capture,
+  state enforcement and response validators remain declarations.
+- Inspect and approve pending service/risk requests with `services approvals`
+  and the [current operator commands](credentials.md#authorization-binding-and-risk-approval).
+  The watch group/persona prompts and reason-first passive fallback below are
+  design intent, not the current operator procedure.
+- A `once` risk grant reserves one in-flight use and consumes on 2xx. The
+  current proxy does not follow upstream redirects. The route-pair and
+  time-bound same-host override tiers below are proposals.
 
 Companion documents:
 - [Service YAML Spec](service-gateway-v2-yaml-spec.md) — schema reference,
   full examples, ATT&CK vocabulary
 - [Implementation Plan](service-gateway-v2-implementation.md) — build order,
-  file changes, migration, staging
+  historical file changes, terminology transition and staging dependencies
 
 ## Motivation
 
-The v1 service gateway uses **roles** with hard allow/deny route rules.
+The earlier service gateway used **roles** with hard allow/deny route rules.
 This has three problems:
 
 1. **Deny rules assume persona.** Blocking `/settings/filters` makes sense
@@ -59,9 +80,12 @@ how to authenticate.
 **Policy** = authoritative appetite. Operator's risk posture. Cannot be
 weakened by service files.
 
-**PDP** = contextual decisions. Resolves service facts against policy
+**Policy decision point (PDP)** = contextual decisions. Resolves service facts against policy
 appetite with runtime context (agent identity, credential ownership,
 recent activity).
+
+Recent-activity context in this architecture is design intent; current risk
+conditions are listed in the YAML reference.
 
 **Gateway** = enforcement. Routes, credentials, redirects.
 
@@ -139,10 +163,12 @@ so operators can reason about them at a glance:
 
 ### 5. Service files are advisory, policy is authoritative
 
-A malicious service file can omit risky routes or understate signals.
-Policy floor rules catch this: "anything tagged `exfiltration` always
-requires approval, regardless of what the service file says." Service files
-enrich the operator's decision — they cannot weaken protections.
+A malicious service file can omit risky routes or understate signals. The
+original proposal used policy floors for minimum protections. A rule matching
+`exfiltration` can require approval for that tag, but cannot detect an omitted
+tag or risky route. The current risk compiler does not implement the proposed
+`minimum` key. Operators must review service definitions as trusted inputs;
+other network, credential and authored route policy retains its authority.
 
 ### 6. Account persona
 
@@ -214,8 +240,8 @@ rule's glob. Approving `POST /settings/filters` does not unlock
   credential scoping (optional). Three independent layers.
 - **Facts vs appetite**: service files declare what routes can do. Policy
   says what the operator tolerates. PDP resolves in context.
-- **Policy over service files**: floor rules ensure minimum protections
-  regardless of service file content.
+- **Policy over service files**: intended minimum protections. Tag-based rules
+  do not detect omitted signals; see the correction in decision 5.
 - **ATT&CK vocabulary**: industry-standard, familiar, googlable.
 - **Redirect safety**: default deny, scoped overrides, time-bound.
 - **Once means once**: timing-attack resistant. Only 2xx consumes.
@@ -274,7 +300,7 @@ data to complete tasks without accessing sensitive content. A future
 
 ### Passive fallback refinement (v2.0.1)
 
-The v2.0 watch always prompts on risky route blocks. The intended design
+The original Python v2.0 watch prompted on risky route blocks. The intended design
 (§2 above) distinguishes:
 
 - **Agent submitted request-access with reason** → approval prompt

@@ -3,9 +3,30 @@
 Companion to [Service Gateway v2 Design](service-gateway-v2-design.md) and
 [Service YAML Spec](service-gateway-v2-yaml-spec.md).
 
+## Status
+
+Historical implementation plan for the gateway redesign agreed in March 2026.
+The Python file lists, versioned stages and migration step below record the
+original build order and dependencies. They are not current file locations,
+release commitments or a migration procedure. Current service definitions use
+`schema_version: 1`; “Gateway v2” and audit schema numbers do not change that.
+
+Use the [current authoring reference](service-gateway-v2-yaml-spec.md) and
+[credential/service guide](credentials.md) for setup. Current definition and
+route parsing is in [services.rs](../proxy/src/services.rs); request contract
+checks are in [contracts.rs](../proxy/src/contracts.rs).
+
+Capabilities, risky-route rules, access requests and once-grant response handling
+are implemented. Runtime state/response checks, watch persona/group prompts,
+redirect override tiers and the maturity nudges below are not established by
+this plan. The [design status](service-gateway-v2-design.md#status) distinguishes
+current behavior from those proposals. Unknown bearer detection has current
+[credential controls](credentials.md#unknown-bearer-credentials); the original
+unknown-service triage workflow below is a separate proposal.
+
 ## Staging
 
-The implementation is staged. Each stage is independently shippable.
+The original plan made each stage independently shippable.
 
 ### v2.0 — Core (capabilities + risky routes + request flow)
 
