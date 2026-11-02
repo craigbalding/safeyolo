@@ -168,7 +168,8 @@ unavailable; use the implementation limits below when choosing a contract.
 | `request.body.allow` | Supplied body values can be checked with `equals_var`. `deny_unknown` defaults to true. Nonempty POST, PUT and PATCH bodies must be JSON objects. |
 | `request.transport` | `require_no_body` defaults to false. Optional `allow_headers` must be a list. With no list, Accept and User-Agent are permitted in addition to implicit transport/auth headers; an empty list does not add them. |
 | `enforcement` | Tier status values are `enforced` or `declared`. A missing tier does not make its operations grantable. |
-| `state`, operation `response` | Retained declarations. State sets, response captures and validators do not run. |
+| `state` | Retained as an untyped value; it creates no runtime sets or capture. |
+| Operation `response` | Declarations in the definition; the request executor does not run response captures or validators. |
 
 | Tier | Current implementation |
 |---|---|
@@ -176,7 +177,47 @@ unavailable; use the implementation limits below when choosing a contract.
 | `transport_hygiene` | Supported request transport checks. |
 | `state_capture` | No runtime capture; operations requiring this tier cannot be granted. |
 | `state_enforcement` | No runtime state enforcement; operations requiring this tier or using `in_state_set` cannot be granted. |
-| `response_validators` | Response validators are declarations, not response checks. Marking a tier `enforced` in YAML does not implement it. |
+| `response_validators` | A required tier marked `enforced` can leave an operation grantable, but validators still do not run. Approval does not establish response enforcement. |
+
+### Grantable operations and binding
+
+An operation's required tier must be marked `enforced`, and the runtime must
+support its requirements. Operations requiring `state_capture` or
+`state_enforcement`, or using `in_state_set` in path, query or body constraints,
+cannot be granted even if their tier is marked `enforced`. The definition can
+still load, and supported operations in the same contract remain available.
+These checks do not reject a `response_validators` requirement on the same
+basis; that declaration can therefore accompany a grant without any runtime
+response check.
+
+For a contract capability, the running policy compiles routes from supported,
+selected operations. The broad `capability.routes` list is not a fallback grant
+for unsupported operations. Operations that use approved values need a matching
+binding before those routes can activate. Before binding, only grantable
+operations with a literal path, no path wildcard or template parameter, and no
+binding or state references can contribute routes. The gateway applies their
+request checks even in this discovery subset.
+
+For example, the shipped Gmail `read_messages` contract can check a supplied
+`labelIds` value in `list_messages` against an approved category. Its
+`get_message` operation uses `in_state_set`, so it contributes no executable
+route. Request bindings do not classify response content, track a list-before-get
+sequence, or detect conflicts with another capability that can mutate the
+selected data.
+
+Binding does not grant service access. Use the host-side
+[binding workflow](credentials.md#authorization-binding-and-risk-approval) to
+approve values and selected operations, wait for policy activation and fetch
+the current gateway token. The host checks binding names, value types and
+values required by the selected operations. An agent's reason remains
+untrusted task context; it does not establish the requested scope's safety.
+
+### Request checks and limits
+
+Among grantable operations with the requested method, the request executor
+prefers a literal path over a parameterized path, then a wildcard path. If no
+operation matches, the request is refused. Compiled policy supplies the
+agent, service, capability and selected-operation scope before these checks.
 
 Request constraint `type` labels and body `integer_range` fields are parsed but
 do not enforce value types or body ranges. Allowing a field does not require
@@ -188,14 +229,19 @@ headers/query keys, method overrides and path tricks can therefore still be
 refused when it is false. These limits matter when choosing a contract; a
 declaration cannot supply a missing enforcement guarantee.
 
-For a contract capability, the running policy compiles routes from supported,
-selected operations. The broad `capability.routes` list is not a fallback grant
-for unsupported operations. Operations that use approved values need a matching
-binding before those routes can activate. A concrete operation with no binding
-references or state requirement can be available before binding. Binding does
-not grant service access. Use the host-side
-[binding workflow](credentials.md#authorization-binding-and-risk-approval) to
-approve values, wait for policy activation and fetch the current gateway token.
+The header allowlist is case-insensitive and adds to the implicit transport
+headers: Host, Connection, Content-Length, Content-Type, Transfer-Encoding,
+Accept-Encoding, Via and Proxy-Connection. The service's configured
+authentication header is also permitted. An explicit empty `allow_headers`
+list removes the default Accept and User-Agent additions; it cannot remove
+the implicit headers.
+
+Request checks reject duplicate header names and decoded query keys,
+method-override headers and `_method`, dot path segments, doubled path
+separators, encoded path separators and ambiguous percent encodings.
+Nonempty POST, PUT and PATCH bodies require an `application/json` object;
+duplicate JSON keys and fields supplied in both query and body are refused.
+These are request checks, not a response-content or workflow guarantee.
 
 ## ATT&CK Tactics Vocabulary
 
