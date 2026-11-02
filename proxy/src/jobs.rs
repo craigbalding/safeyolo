@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::{
     fs, io,
     os::unix::fs::symlink,
-    path::{Path, PathBuf},
+    path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
 #[cfg(target_os = "linux")]
@@ -22,6 +22,7 @@ use std::{
         fd::AsRawFd,
         unix::fs::{OpenOptionsExt, PermissionsExt},
     },
+    path::PathBuf,
     process::{ExitStatus, Stdio},
     time::Duration,
 };
