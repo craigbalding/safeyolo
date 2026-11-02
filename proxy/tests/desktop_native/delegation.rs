@@ -2,7 +2,7 @@
 //! checks do not establish graphical presentation or model-visible attention.
 use super::*;
 
-const BOB: &str = "ag-22222222222222222222222222222222";
+pub(super) const BOB: &str = "ag-22222222222222222222222222222222";
 
 #[test]
 fn delegated_desktop_preserves_independent_sources_and_disconnects_revoked_viewers() {
@@ -32,7 +32,7 @@ async fn admin(port: u16, path: &str, input: Value) -> Value {
     body(&reply)
 }
 
-async fn delegate(port: u16, name: &str, mut input: Value) -> (Value, String) {
+pub(super) async fn delegate(port: u16, name: &str, mut input: Value) -> (Value, String) {
     let preview = admin(
         port,
         &format!("/admin/approval-delegations/{name}/preview"),
@@ -64,7 +64,7 @@ async fn ask(root: &Path, ttl: u32, url: Option<&str>) -> String {
     body(&reply)["approval_id"].as_str().unwrap().into()
 }
 
-async fn decide(root: &Path, id: &str, decision: &str, delegation: &str) -> Vec<u8> {
+pub(super) async fn decide(root: &Path, id: &str, decision: &str, delegation: &str) -> Vec<u8> {
     action_request(
         root,
         "POST",
@@ -277,6 +277,26 @@ async fn check() {
         status(&decide(root.path(), &outside, "approve", "desktop").await),
         409
     );
+    let failed = ask(root.path(), 31, None).await;
+    fs::write(root.path().join("start-fails"), "").unwrap();
+    let failed_decision = decide(root.path(), &failed, "approve", "desktop").await;
+    assert_eq!(status(&failed_decision), 200);
+    let failed_result = body(&failed_decision)["result"].clone();
+    assert_eq!(failed_result["status"], "failed");
+    assert_eq!(failed_result["preview_active"], false);
+    assert!(failed_result["expires_at"].is_string());
+    assert!(failed_result["diagnostic"]["code"].is_string());
+    let failed_read = action_request(
+        root.path(),
+        "GET",
+        &format!("/approvals/{failed}"),
+        Value::Null,
+        "bob",
+    )
+    .await;
+    assert_eq!(status(&failed_read), 200);
+    assert_eq!(body(&failed_read)["result"], failed_result);
+    fs::remove_file(root.path().join("start-fails")).unwrap();
     let denied = ask(root.path(), 29, None).await;
     assert_eq!(
         status(&decide(root.path(), &denied, "reject", "desktop").await),
@@ -291,6 +311,10 @@ async fn check() {
         String::from_utf8_lossy(&accepted)
     );
     assert!(!String::from_utf8_lossy(&accepted).contains("unlock_code"));
+    let accepted_result = body(&accepted)["result"].clone();
+    assert_eq!(accepted_result["status"], "started");
+    assert_eq!(accepted_result["preview_active"], true);
+    assert!(accepted_result["expires_at"].is_string());
     let (view, mut connected, cookie) = viewer(port, &id).await;
     assert_eq!(view["result"]["status"], "started");
     assert_eq!(
@@ -298,11 +322,33 @@ async fn check() {
         revision
     );
     let opened = fs::read(root.path().join("opened")).unwrap();
+    let reviewer = action_request(
+        root.path(),
+        "GET",
+        &format!("/approvals/{id}"),
+        Value::Null,
+        "bob",
+    )
+    .await;
+    assert_eq!(status(&reviewer), 200);
+    assert_eq!(body(&reviewer)["result"], accepted_result);
+    for response in [&accepted, &reviewer, &failed_decision, &failed_read] {
+        let text = String::from_utf8_lossy(response);
+        for secret in [
+            "operator_preview",
+            "unlock_code",
+            "issued_access",
+            "execution_session_id",
+            view["operator_preview"]["url"].as_str().unwrap(),
+            view["operator_preview"]["unlock_code"].as_str().unwrap(),
+        ] {
+            assert!(!text.contains(secret), "presentation material leaked");
+        }
+    }
     for _ in 0..3 {
-        assert_eq!(
-            status(&decide(root.path(), &id, "approve", "desktop").await),
-            200
-        );
+        let retry = decide(root.path(), &id, "approve", "desktop").await;
+        assert_eq!(status(&retry), 200);
+        assert_eq!(body(&retry)["result"], accepted_result);
     }
     assert_eq!(
         fs::read(root.path().join("opened")).unwrap(),

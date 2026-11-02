@@ -140,7 +140,11 @@ pub(crate) fn explain(
         facts["configuration_revision"] = action["configuration_revision"].clone();
         facts["worker_run"] = action["run"].clone();
         facts["request_expires_at"] = json!(record.authority.expires_at);
-        if let Some(state) = state
+        if view["result"]["status"] == "starting" {
+            // Presentation holds the desktop owner while opening. A canonical
+            // read must not wait for that effect to finish before reporting it.
+            facts["current_preview"] = json!({"reuses_gate":null,"independent_source_count":null});
+        } else if let Some(state) = state
             && let Some(preview) = crate::operator_actions::preview(state, record, false)
         {
             facts["current_preview"] = json!({"reuses_gate":true,"independent_source_count":preview["sources"].as_array().map_or(0,Vec::len)});
@@ -285,6 +289,9 @@ pub(crate) fn explain(
         );
     }
     if kind == "operator_action" {
+        result["result"] = crate::operator_actions::agent_result(&view["result"]);
+        result["activation_status"] = view["activation_status"].clone();
+        result["grant_active"] = view["grant_active"].clone();
         result["current_policy"] = json!(
             "This action requires an operator decision. Network policy and service grants remain authoritative for guest traffic. The host presentation path and target are checked again before execution."
         );

@@ -53,6 +53,16 @@ at the canonical decision and includes desktop startup. `preview_active` reports
 current source activation, or null while execution is busy. A saved `started`
 receipt alone does not prove that the preview is still available.
 
+An eligible reviewer reads the same nonsecret execution facts in `result` from
+`GET /approvals/APPROVAL_ID` and decision responses. Replace `APPROVAL_ID` with
+the canonical approval ID. The approval status `approved` records the decision;
+it does not establish successful execution. Inspect `result.status` for
+`starting`, `started`, `failed` or `outcome_unknown`, and inspect `preview_active`
+and `expires_at` for current activation and lifetime. An interrupted execution
+reports `outcome_unknown` with a diagnostic. Reads and decision retries do not
+replay that execution. The operator must inspect the preview before a new request.
+A source that ends can later report `expired` or `revoked`.
+
 Requests bind the current trusted sandbox run and durable SafeYolo instance.
 Do not supply identity, route, command or approval overrides. `POST /desktop/present`
 accepts the typed parameters directly and uses the same approval owner.

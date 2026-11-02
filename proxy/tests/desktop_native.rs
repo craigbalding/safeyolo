@@ -398,6 +398,7 @@ fn interrupted_desktop_action_reports_unknown_without_replaying() {
 async fn check_interrupted_desktop_action() {
     let root = TempDir::new().unwrap();
     fixture(root.path());
+    fs::write(root.path().join("policy.toml"),format!("[agents.alice]\nagent_id='{ID}'\n[agents.bob]\nagent_id='{}'\n[controls.credentials]\nenabled=false\n", delegation::BOB)).unwrap();
     fs::write(root.path().join("config.toml"), "admin_port=0\nadmin_api_token_file='token'\npolicy_file='policy.toml'\nreadiness_file='ready.json'\n").unwrap();
     for (program, source) in [
         (
@@ -418,10 +419,24 @@ async fn check_interrupted_desktop_action() {
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
     let _run = OwnedRun::start(root.path());
-    bind_action_run(root.path(), "alice", ID);
+    let run = bind_action_run(root.path(), "alice", ID);
+    let _reviewer = OwnedRun::start_agent(root.path(), "bob");
+    bind_action_run(root.path(), "bob", delegation::BOB);
+    unsafe {
+        std::env::set_var(
+            "FAKE_RUN_ID",
+            format!("safeyolo-{}", run["run_id"].as_str().unwrap()),
+        );
+    }
     let mut config = config(root.path());
     config.native_product = true;
     config.policy_file = Some(root.path().join("policy.toml"));
+    config.listeners.push(
+        serde_json::from_value(
+            json!({"agent_id":"bob","socket_path":root.path().join("bob.sock")}),
+        )
+        .unwrap(),
+    );
     let proxy = DesktopProxyProcess::start(root.path(), &config).await;
     let port = || {
         let ready: Value =
@@ -429,6 +444,10 @@ async fn check_interrupted_desktop_action() {
         ready["admin_port"].as_u64().unwrap() as u16
     };
     let auth = [("Authorization", format!("Bearer {TOKEN}"))];
+    delegation::delegate(port(), "desktop", json!({"expected_revision":null,"delegation":{
+        "reviewers":[{"name":"bob","agent_id":delegation::BOB}],"beneficiaries":[{"name":"alice","agent_id":ID}],
+        "scopes":[{"type":"desktop_present","run":run,"presentation":"local","browser_urls":["https://example.com/interrupt"],"any_browser_url":false,"max_ttl_seconds":60}],
+        "expires_at":null,"grant_seconds":null,"gateway_once":false,"acknowledgment":null}})).await;
     let requested = action_request(root.path(), "POST", "/operator-actions",
         json!({"action_id":"desktop.present","parameters":{"browser_url":"https://example.com/interrupt","ttl_seconds":60}}), "alice").await;
     assert_eq!(
@@ -440,19 +459,9 @@ async fn check_interrupted_desktop_action() {
     let id = body(&requested)["approval_id"].as_str().unwrap().to_owned();
     let approval_path = format!("/admin/approvals/{id}");
     let approval = tokio::spawn({
-        let path = approval_path.clone();
-        let auth = auth.clone();
-        let port = port();
-        async move {
-            request(
-                port,
-                "POST",
-                &path,
-                &auth,
-                br#"{"decision":"approve","option":"once"}"#,
-            )
-            .await
-        }
+        let root = root.path().to_owned();
+        let id = id.clone();
+        async move { delegation::decide(&root, &id, "approve", "desktop").await }
     });
     tokio::time::timeout(Duration::from_secs(10), async {
         while !root.path().join("opened").exists() {
@@ -498,6 +507,20 @@ async fn check_interrupted_desktop_action() {
     let current = request(port(), "GET", &approval_path, &auth, b"").await;
     assert_eq!(body(&current)["result"]["status"], "starting");
     assert!(body(&current)["result"]["diagnostic"].is_null());
+    let reviewer_path = format!("/approvals/{id}");
+    let current = tokio::time::timeout(
+        Duration::from_secs(2),
+        action_request(root.path(), "GET", &reviewer_path, Value::Null, "bob"),
+    )
+    .await
+    .expect("reviewer inspection waited for the held opener");
+    assert_eq!(status(&current), 200);
+    let current = body(&current);
+    assert_eq!(current["status"], "approved");
+    assert_eq!(current["result"]["status"], "starting");
+    assert!(current["result"]["preview_active"].is_null());
+    assert!(current["result"]["expires_at"].is_string());
+    assert!(current["observed"]["current_preview"]["reuses_gate"].is_null());
     // Kill after the saved decision and the real controlled opener call. Never
     // edit the saved result to manufacture an interrupted execution.
     proxy.interrupt();
@@ -519,6 +542,52 @@ async fn check_interrupted_desktop_action() {
             view["result"]["diagnostic"]["code"],
             "preview_execution_interrupted"
         );
+    }
+    for decision in [
+        None,
+        Some("approve"),
+        Some("approve"),
+        Some("approve"),
+        Some("defer"),
+    ] {
+        let response = match decision {
+            Some(decision) => delegation::decide(root.path(), &id, decision, "desktop").await,
+            None => action_request(root.path(), "GET", &reviewer_path, Value::Null, "bob").await,
+        };
+        assert_eq!(
+            status(&response),
+            200,
+            "{}",
+            String::from_utf8_lossy(&response)
+        );
+        let view = body(&response);
+        assert_eq!(view["status"], "approved");
+        assert_eq!(view["result"]["status"], "outcome_unknown", "{view}");
+        assert_eq!(view["result"]["preview_active"], false);
+        assert_eq!(view["grant_active"], false);
+        assert_eq!(
+            view["result"]["expires_at"],
+            record["result"]["issued_access"]["expires_at"]
+        );
+        assert_eq!(
+            view["result"]["diagnostic"]["code"],
+            "preview_execution_interrupted"
+        );
+        assert!(
+            view["result"]["diagnostic"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("inspect the preview")
+        );
+        assert_eq!(view["result"].as_object().unwrap().len(), 6);
+        for secret in [
+            "operator_preview",
+            "unlock_code",
+            "issued_access",
+            "execution_session_id",
+        ] {
+            assert!(!String::from_utf8_lossy(&response).contains(secret));
+        }
     }
     for method in ["GET", "POST", "POST", "POST"] {
         let view = request(

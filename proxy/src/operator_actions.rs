@@ -84,24 +84,29 @@ pub(crate) async fn discover(state: &RuntimeState, policy: &Policy, caller: &str
 }
 
 pub(crate) fn agent_view(record: &pending::Record) -> Value {
-    // Whitelist the result. Never return a general approval view: operator
-    // results may contain a URL/unlock code and browser parameters are data.
-    let mut result = json!({"action_id":DESKTOP_PRESENT,"action_request_id":record.approval_id,
+    json!({"action_id":DESKTOP_PRESENT,"action_request_id":record.approval_id,
         "approval_id":record.approval_id,"request_id":record.request_id,
         "status":if record.status == "pending" {"pending_approval"} else {record.status.as_str()},
-        "result":{"status":record.result["status"],"presentation":record.result["presentation"],
-            "preview_active":record.result["preview_active"],
-            "reused":record.result["reused"],"expires_at":record.result["expires_at"],
-            "diagnostic":record.result["diagnostic"]}});
-    if record.result["status"] == "started"
-        && record.result["expires_at"]
+        "result":agent_result(&record.result)})
+}
+
+/// Project only nonsecret execution facts from the reconciled canonical result.
+pub(crate) fn agent_result(result: &Value) -> Value {
+    let expires_at = result
+        .get("expires_at")
+        .unwrap_or(&result["issued_access"]["expires_at"]);
+    let mut view = json!({"status":result["status"],"presentation":result["presentation"],
+        "preview_active":result["preview_active"],"reused":result["reused"],
+        "expires_at":expires_at,"diagnostic":result["diagnostic"]});
+    if result["status"] == "started"
+        && expires_at
             .as_str()
             .and_then(crate::policy::parse_expiry)
             .is_some_and(|expiry| time::OffsetDateTime::now_utc() >= expiry)
     {
-        result["result"]["status"] = json!("expired");
+        view["status"] = json!("expired");
     }
-    result
+    view
 }
 
 pub(crate) async fn request(

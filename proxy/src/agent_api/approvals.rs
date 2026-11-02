@@ -464,13 +464,25 @@ async fn delegated<B: Body<Data = Bytes> + Unpin>(
                 let policy=state.read().map_err(|_| crate::approvals::invalid("runtime unavailable"))?.policy.clone().ok_or_else(||crate::approvals::invalid("policy unavailable"))?;
                 let record=pending::lookup(&writer,&id)?.ok_or_else(||crate::approvals::invalid("approval unavailable"))?;
                 delegation::authorize(&policy,&record,&reviewer,&input.delegation,&input.option)?;
-                return Ok((200,json!({"approval_id":record.approval_id,"status":record.current_status(&policy)?,"permission_changed":false})));
+                let mut view=json!({"approval_id":record.approval_id,"status":record.current_status(&policy)?,"permission_changed":false});
+                if record.authority.action["kind"]=="operator_action" {
+                    let current=pending::current_view(&writer,&policy,&record,Some(&state))?;
+                    view["status"]=current["status"].clone();
+                    view["result"]=crate::operator_actions::agent_result(&current["result"]);
+                    view["activation_status"]=current["activation_status"].clone();
+                    view["grant_active"]=current["grant_active"].clone();
+                }
+                return Ok((200,view));
             }
             let decision=if input.decision=="approve" {crate::approvals::network_action::Decision::Approve} else {crate::approvals::network_action::Decision::Reject};
             let (status,value)=pending::resolve_as(&state,&writer,&id,decision,Some(&input.option),Some((&reviewer,&input.delegation)))?.ok_or_else(||crate::approvals::invalid("approval unavailable"))?;
             // Never return the operator projection, which can contain secret
-            // URL path values. Read the authorized trusted projection anew.
-            Ok((status,json!({"approval_id":value["approval_id"],"status":value["status"],"option":value["option"],"authority_digest":value["authority_digest"],"audit_status":value["audit_status"],"activation_status":value["activation_status"],"grant_active":value["grant_active"]})))
+            // URL path values. Project only explicit nonsecret desktop facts.
+            let mut view=json!({"approval_id":value["approval_id"],"status":value["status"],"option":value["option"],"authority_digest":value["authority_digest"],"audit_status":value["audit_status"],"activation_status":value["activation_status"],"grant_active":value["grant_active"]});
+            if value["action"]["kind"]=="operator_action" {
+                view["result"]=crate::operator_actions::agent_result(&value["result"]);
+            }
+            Ok((status,view))
         };
         Ok(match execute() { Ok(value)=>value,Err(_)=>(409,json!({"error":"decision unavailable or authority changed; read the canonical approval before retrying"})) })
     }).await;
