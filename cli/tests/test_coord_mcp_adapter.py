@@ -79,7 +79,7 @@ def test_discovery_and_rpc_errors(adapter):
     by_name = {tool["name"]: tool for tool in tools}
     assert len(tools) == len(by_name)
     assert set(by_name) == {
-        "join_room", "read_brief", "get_room_state", "declare_capabilities",
+        "join_room", "read_brief", "get_room_state", "declare_capabilities", "request_room_access",
         "send", "send_task", "read_room", "wait_for_coord", "wait_for_attention",
         "read_attention", "wait_for_message",
         "list_approvals", "read_approval", "resolve_approval",
@@ -89,6 +89,7 @@ def test_discovery_and_rpc_errors(adapter):
         "import_github_work", "read_github_work",
     }
     for name, required in {
+        "request_room_access": ["room_name", "permissions", "operation_id"],
         "list_approvals": [],
         "read_approval": ["approval_id"],
         "resolve_approval": ["approval_id", "decision", "delegation", "option"],
@@ -98,6 +99,11 @@ def test_discovery_and_rpc_errors(adapter):
         assert schema["required"] == required
         assert set(schema["properties"]) == set(required)
     assert by_name["resolve_approval"]["inputSchema"]["properties"]["decision"]["enum"] == ["approve", "reject", "defer"]
+    assert by_name["request_room_access"]["inputSchema"]["properties"] == {
+        "room_name": {"type": "string"},
+        "permissions": {"type": "array", "items": {"type": "string", "enum": ["send", "receive", "page_operator"]}, "minItems": 1},
+        "operation_id": {"type": "string"},
+    }
     assert results[None]["error"]["code"] == -32600
     assert results[3]["error"]["code"] == -32601
     assert calls == []

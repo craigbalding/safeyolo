@@ -17,6 +17,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 KEYGEN = shutil.which("ssh-keygen")
 INSTALL = shutil.which("install")
+# CI supplies current Bash and GNU stat for the Linux job-init script.
+JOB_BASH = shutil.which("bash")
+GNU_STAT = shutil.which("gstat") or shutil.which("stat")
 
 
 @pytest.mark.parametrize("chmod_status", [0, 37])
@@ -81,6 +84,7 @@ ip() { printf 'ip:%s\\n' "$*"; return "$TEST_LOOPBACK_STATUS"; }
 
 @pytest.fixture
 def job_guest(tmp_path):
+    assert JOB_BASH and GNU_STAT, "Job-init controls require Bash and GNU stat"
     for directory in ("bin", "run", "safeyolo"):
         (tmp_path / directory).mkdir()
     source = (REPO_ROOT / "proxy/src/jobs/vz-guest-init.sh").read_text()
@@ -98,7 +102,7 @@ if [[ "$name $*" = "${TEST_FAIL_SETUP-}" ]]; then
 fi
 if [[ $name = stat ]]; then
     if [[ ${TEST_REAL_OWNER-0} = 1 ]]; then
-        exec /usr/bin/stat -c '%u:%g' "$TEST_ROOT"
+        exec "$TEST_STAT" -c '%u:%g' "$TEST_ROOT"
     fi
     printf '65536:65536\\n'
 fi
@@ -153,7 +157,7 @@ exit "$status"
 def test_job_setup_failure_reports_first_stage_and_status(job_guest, failed, stage):
     failed = failed.format(root=job_guest)
     result = subprocess.run(
-        ["/bin/bash", str(job_guest / "guest-init")],
+        [JOB_BASH, str(job_guest / "guest-init")],
         env=os.environ | {
             "PATH": f"{job_guest}/bin:{os.environ['PATH']}",
             "TEST_ROOT": str(job_guest), "TEST_FAIL_SETUP": failed,
@@ -171,10 +175,10 @@ def test_job_setup_failure_reports_first_stage_and_status(job_guest, failed, sta
 
 def test_job_wrong_mapped_owner_reports_actual_stat_and_stops(job_guest):
     result = subprocess.run(
-        ["/bin/bash", str(job_guest / "guest-init")],
+        [JOB_BASH, str(job_guest / "guest-init")],
         env=os.environ | {
             "PATH": f"{job_guest}/bin:{os.environ['PATH']}",
-            "TEST_ROOT": str(job_guest), "TEST_REAL_OWNER": "1",
+            "TEST_ROOT": str(job_guest), "TEST_REAL_OWNER": "1", "TEST_STAT": GNU_STAT,
         }, capture_output=True, text=True, timeout=10,
     )
     owner = job_guest.stat()
@@ -191,16 +195,20 @@ def test_job_wrong_mapped_owner_reports_actual_stat_and_stops(job_guest):
 def test_job_directory_creation_failure_reports_stage(job_guest):
     (job_guest / "run/sshd").touch()
     result = subprocess.run(
-        ["/bin/bash", str(job_guest / "guest-init")],
+        [JOB_BASH, str(job_guest / "guest-init")],
         env=os.environ | {
             "PATH": f"{job_guest}/bin:{os.environ['PATH']}", "TEST_ROOT": str(job_guest),
         }, capture_output=True, text=True, timeout=10,
     )
     assert result.returncode == 1
     assert not result.stdout
-    assert "File exists" in result.stderr
+    assert "mkdir:" in result.stderr
+    assert str(job_guest / "run/sshd") in result.stderr
     assert result.stderr.endswith("safeyolo job startup: create job directories failed (status 1)\n")
     assert (job_guest / "calls").read_text().splitlines() == ["ip link set lo up"]
+    assert (job_guest / "run/sshd").is_file()
+    assert not (job_guest / "run/job-sshd.log").exists()
+    assert not (job_guest / "run/job-bridge.log").exists()
 
 
 @contextmanager
@@ -212,7 +220,7 @@ def _boot_job(root, *, real_sshd=False):
                 stack.callback(os.close, descriptor)
         (events, events_write), (sshd, sshd_release), (bridge, bridge_release) = pipes
         process = subprocess.Popen(
-            ["/bin/bash", str(root / "guest-init")],
+            [JOB_BASH, str(root / "guest-init")],
             env=os.environ | {
                 "PATH": f"{root}/bin:{os.environ['PATH']}", "TEST_ROOT": str(root),
                 "TEST_EVENTS_FD": str(events_write), "TEST_SSHD_GATE": str(sshd),

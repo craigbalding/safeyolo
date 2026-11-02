@@ -1,7 +1,8 @@
 """Executable proposal for #394; no production cleanup is installed.
 
-The fixture loads the native schema and executes the native authorization
-queries. Only the proposed floor/cleanup and provider observations are models.
+The fixture loads the native schema and executes the native edge and operator
+membership queries. It models operator membership filtering, the proposed
+floor/cleanup and provider observations. No approval-issued grants are created.
 Use small caps to challenge the contract without compiling the native product.
 """
 
@@ -28,16 +29,20 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / "proxy/src/agent_api/coord.rs").read_text()
 
 
-def native_query(function: str, beginning: str) -> str:
+def native_query(function: str, beginning: str, *, source: str = SOURCE) -> str:
     """Take the actual SQL literal from the named native function, or fail."""
-    body = SOURCE.split(f"fn {function}(", 1)[1].split("\nfn ", 1)[0]
+    body = source.split(f"fn {function}(", 1)[1].split("\nfn ", 1)[0]
     matches = re.findall(r'"(' + re.escape(beginning) + r'[^"\\]*)"', body)
     assert len(matches) == 1, (function, matches)
     return matches[0]
 
 
-FEED_QUERY = native_query("read_attention_feed", "SELECT e.attention_id")
-EDGE_QUERY = native_query("read_attention_edge", "SELECT e.attention_id")
+FEED_QUERY = native_query("read_attention_feed", "SELECT attention_id")
+EDGE_QUERY = native_query("read_attention_edge", "SELECT attention_id")
+MEMBERSHIP_QUERY = native_query(
+    "independent", "SELECT principal_kind",
+    source=(ROOT / "proxy/src/coord_rooms/membership.rs").read_text(),
+)
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -133,11 +138,28 @@ def append(path: Path, number: int, *, cap: int | None = None, room: str = "rm-a
         return sequence
 
 
+def attention_member(db: sqlite3.Connection, edge: dict | sqlite3.Row, agent: str) -> bool:
+    """Model attention_member for this fixture's operator-only memberships."""
+    return any(
+        member["principal_kind"] == "agent" and member["principal_id"] == agent
+        and "receive" in member["permissions"].split(",")
+        and member["granted_at"] == edge["membership_granted_at"]
+        for member in db.execute(MEMBERSHIP_QUERY, (edge["room_id"],))
+    )
+
+
 def native_page(db: sqlite3.Connection, since: int, limit: int, agent: str = "ag-bob") -> dict:
     """Run the native query and its current caller-owned cursor calculation."""
     feed = db.execute("SELECT last_sequence FROM coord_attention_feeds WHERE recipient_agent_id=?", (agent,)).fetchone()
     highwater = feed[0] if feed else 0
-    edges = [dict(row) for row in db.execute(FEED_QUERY, (agent, since, limit))]
+    edges = []
+    for row in db.execute(FEED_QUERY, (agent, since)):
+        if attention_member(db, row, agent):
+            edge = dict(row)
+            del edge["membership_granted_at"]  # The grant is internal to the native reader.
+            edges.append(edge)
+        if len(edges) == limit:
+            break
     if len(edges) == limit:
         next_cursor = db.execute("SELECT feed_sequence FROM coord_attention_edges WHERE attention_id=?",
                                  (edges[-1]["attention_id"],)).fetchone()[0]
@@ -162,13 +184,13 @@ def resolve(path: Path, attention: str, observation: str, *, agent: str = "ag-bo
     """Model classification around the native pre/post-provider access query."""
     with closing(connect(path)) as db:
         before = db.execute(EDGE_QUERY, (agent, attention)).fetchone()
-    if before is None:
-        return {"status": 404}
+        if before is None or not attention_member(db, before, agent):
+            return {"status": 404}
     after_probe()
     with closing(connect(path)) as db, db:
         db.execute("BEGIN")
         after = db.execute(EDGE_QUERY, (agent, attention)).fetchone()
-        if after is None or tuple(after) != tuple(before):
+        if after is None or not attention_member(db, after, agent) or tuple(after) != tuple(before):
             return {"status": 404}
         sequence = db.execute("SELECT feed_sequence FROM coord_attention_edges WHERE attention_id=?", (attention,)).fetchone()[0]
     if observation == "missing_message":
@@ -288,6 +310,23 @@ def test_revoke_regrant_and_superseded_active_generations_do_not_resurrect(ledge
     assert "room_id" not in loss and "edge" not in loss
     with closing(connect(ledger)) as db:
         assert db.execute("SELECT count(*) FROM memberships WHERE room_id='rm-a' AND principal_id='ag-bob'").fetchone()[0] == 3
+
+
+def test_feed_limit_counts_only_current_receive_memberships(ledger):
+    append(ledger, 1, room="rm-a")
+    with closing(connect(ledger)) as db, db:
+        db.execute("INSERT INTO memberships VALUES('rm-a','agent','ag-bob','send','retained',2,NULL)")
+    append(ledger, 2, room="rm-b")
+    append(ledger, 3, room="rm-b")
+    first = page(ledger, 0, 1)
+    assert first["next_cursor"] == 2
+    assert first["edges"] == [{
+        "attention_id": "attn-ag-bob-rm-b-2", "room_id": "rm-b", "kind": "message",
+        "object_id": "msg-rm-b-2", "revision_or_sequence": 2,
+    }]
+    second = page(ledger, first["next_cursor"], 1)
+    assert second["next_cursor"] == 3
+    assert [edge["revision_or_sequence"] for edge in second["edges"]] == [3]
 
 
 @pytest.mark.parametrize("regrant", [False, True])
