@@ -446,7 +446,7 @@ fn show_explanation(view: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-fn show_approval(view: &Value) -> Result<(), Error> {
+pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
     println!(
         "Request: {}\nStatus: {}\nSafeYolo effect: {}",
         safe(text(&view["request_id"])),

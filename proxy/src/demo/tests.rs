@@ -49,6 +49,42 @@ async fn request(socket: &Path, url: &str) -> (u16, String, Value) {
 }
 
 #[tokio::test]
+async fn preview_approval_must_match_the_demo_app_and_current_run() {
+    let root = instance();
+    host_platform::in_instance(root.path().into(), async {
+        let mut demo = Demo::prepare(&Options::default()).await.unwrap();
+        demo.run_id = Some("selected-demo-run".into());
+        let view = json!({"action":{"kind":"operator_action","action_id":"desktop.present",
+            "agent":demo.agent.name,"agent_id":demo.agent.id,
+            "run":{"agent":demo.agent.name,"agent_id":demo.agent.id,"run_id":"selected-demo-run"},
+            "parameters":{"browser_url":"http://127.0.0.1:8000/app","ttl_seconds":900}}});
+        assert!(preview_matches(&view, &demo));
+        for (path, replacement) in [
+            ("/action/kind", json!("network_egress")),
+            ("/action/action_id", json!("another.action")),
+            ("/action/agent", json!("peer")),
+            ("/action/agent_id", json!("ag-replaced")),
+            ("/action/run/agent", json!("peer")),
+            ("/action/run/agent_id", json!("ag-replaced")),
+            ("/action/run/run_id", json!("earlier-demo-run")),
+            (
+                "/action/parameters/browser_url",
+                json!("https://example.com"),
+            ),
+            ("/action/parameters/ttl_seconds", json!(86400)),
+        ] {
+            let mut changed = view.clone();
+            *changed.pointer_mut(path).unwrap() = replacement;
+            assert!(!preview_matches(&changed, &demo), "accepted changed {path}");
+        }
+        demo.run_id = None;
+        assert!(!preview_matches(&view, &demo));
+        demo.cleanup().await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn owned_json_requires_real_native_approval_and_cleanup_preserves_peer() {
     let root = instance();
     host_platform::in_instance(root.path().into(), async {
