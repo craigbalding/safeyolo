@@ -6,11 +6,54 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from tests.blackbox import installed_demo as demo
+
+
+def test_cli_preserves_operator_input_and_demo_pipe(tmp_path):
+    executable = tmp_path / "bin/safeyolo"
+    executable.parent.mkdir()
+    # Reproduce a noninteractive child consuming input and changing its shared
+    # file status flags. The observer must retain its own blocking input.
+    executable.write_text(
+        "#!/usr/bin/env python3\nimport os\nos.set_blocking(0, False)\nos.read(0, 4096)\n"
+    )
+    executable.chmod(0o755)
+    observer = '''import argparse, os, sys
+from pathlib import Path
+from tests.blackbox import installed_demo as demo
+
+assert os.get_blocking(0)
+try:
+    demo.run(argparse.Namespace(config_dir=Path(sys.argv[1]), commit="candidate"))
+except AssertionError as error:
+    # The probe stops at the version check, before any installed runtime work.
+    assert str(error) == "installed native CLI is not this candidate", str(error)
+else:
+    raise AssertionError("the controlled CLI must stop at the version check")
+assert os.get_blocking(0), "CLI changed the observer's input flags"
+assert input("Preview decision: ") == "approve"
+assert input("Viewer interaction: ") == "interacted"
+process = demo.DemoProcess([sys.executable, "-c", "print(input(), flush=True)"])
+try:
+    process.send("finish\\n")
+    process.until("finish", timeout=5)
+    assert process.finish() == 0
+finally:
+    process.cancel()
+print("operator input preserved; Demo input delivered")
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", observer, str(tmp_path)],
+        input="approve\ninteracted\n", capture_output=True, text=True, timeout=15,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.endswith("operator input preserved; Demo input delivered\n")
 
 
 @pytest.mark.parametrize("completion", [False, True])

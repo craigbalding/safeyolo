@@ -188,7 +188,10 @@ def run(args: argparse.Namespace) -> None:
         command = [discovered]
 
     def cli(*arguments: str, timeout: float = 150) -> str:
-        result = subprocess.run(command + list(arguments), capture_output=True, text=True, timeout=timeout)
+        # These commands need no input. Keep the observer's operator input out
+        # of child commands that can consume it or change its file status flags.
+        result = subprocess.run(command + list(arguments), stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=timeout)
         assert result.returncode == 0, result.stderr[-1500:]
         return result.stdout
 
