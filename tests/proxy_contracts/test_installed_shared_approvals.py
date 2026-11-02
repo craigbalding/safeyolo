@@ -161,6 +161,10 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
     service = control in {"delegated_service", "delegated_service_cutoff"}
     binding = control == "delegated_binding"
     room = control == "delegated_room"
+    if room:
+        # Unlike the traffic modes, this journey retains the initial policy.
+        # Activate the newly created fixture identities before its preflight.
+        instance.apply(instance.policy.read_text())
     if control == "delegated" or service or binding or lifecycle or clients or room:
         if sys.platform != "linux":
             pytest.skip("controlled run backend uses the Linux birth/argv boundary")

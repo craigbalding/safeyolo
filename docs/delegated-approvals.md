@@ -180,6 +180,27 @@ receipt and expiry govern a recovered publication. An approved record with
 saved policy and source before making a new request. Neither a retry nor an
 approved receipt recreates a missing or revoked source.
 
+For an installed acceptance run, use the owned Ubuntu/systrap venue described
+under [Exercise the real reviewer workflow](#exercise-the-real-reviewer-workflow).
+Prepare two running owned guests with matching native guest and Coord assets,
+the reviewer's existing attention room, and an existing target room containing
+only its operator member. Replace `ROOT`, `FULL_COMMIT` and `ROOM` with the
+disposable installation, verified installed source and target room. From the
+driver checkout, run:
+
+```sh
+python3 tests/blackbox/installed_shared_approvals.py \
+  --config-dir ROOT --transport-cli ROOT/bin/safeyolo \
+  --native-cli ROOT/bin/safeyolo --native-proxy ROOT/bin/safeyolo-proxy \
+  --commit FULL_COMMIT --delegated-room ROOM
+```
+
+The driver uses actual guest requests and native approval tools. It starts no
+model session. It checks reference-only attention, history, receive-only refusal, message exchange,
+paging, revocation and worker restart. The driver restores policy and stops
+the owned guests and proxy after the run. Source tests separately exercise
+races, publication failures, narrowing, expiry and pending waits.
+
 ## Delegate service authorization
 
 On the host, configure the service definition and store its credential through
