@@ -43,6 +43,7 @@ leave attention waiting to the supervisor outside the turn.
 
 | Operation | Purpose |
 |---|---|
+| `request_room_access` | Request explicit rights for this trusted worker run in an existing local room. The request grants nothing. |
 | `join_room` | Attach to an existing membership and read room metadata. |
 | `read_brief` | Read the operator-authored brief and its revision. |
 | `get_room_state` | Read attributed membership, capability, and lease state. |
@@ -80,6 +81,25 @@ For an agent using the MCP adapter, the following examples are separate `send`
 calls. Replace `work` with a room where the sender has send permission. Replace
 `alice` and `bob` with active agent names that have receive permission in that
 room.
+
+If the operator configured a room approval delegation, a nonmember can call
+`request_room_access` with `room_name`, an explicit `permissions` list and a new
+`operation_id`. Rights are `send`, `receive` and `page_operator`. The returned
+receipt identifies the canonical approval. An eligible reviewer inspects the
+host-generated effect through `read_approval` and selects its offered `run`
+choice through `resolve_approval`. The worker then retries ordinary room
+access. The reviewer need not hold the target room rights. Attention and peer
+references confer no deciding authority.
+
+Receive exposes retained history and authorized native room objects. Send plus
+receive permits existing native work and signal mutations. `page_operator`
+permits existing paging. Delegation revocation, narrowing, expiry or worker run
+replacement ends derived access, including pending waits and later requests on
+existing connections. Independent and other valid grants remain. If a response
+is lost, inspect the canonical outcome before retrying the same operation ID
+with identical inputs. If reviewer delivery is unavailable, use `list_approvals`
+or ask the operator to inspect the same approval ID. See
+[delegated decisions](agent-api.md#delegated-decisions) for the API equivalents.
 
 ```text
 send(room_name="work", body="Notes retained.", notify="none")

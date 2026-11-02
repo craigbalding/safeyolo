@@ -315,6 +315,7 @@ async fn receive(
         provider_directory: client.provider_directory.clone(),
         remote: Some(remote.clone()),
         relay_config: client.relay_config.clone(),
+        request_run: None,
     };
     let outcome = respond_as(
         request,

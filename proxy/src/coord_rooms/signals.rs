@@ -451,8 +451,17 @@ fn can_page(conn: &Connection, room: &str, actor: Actor<'_>) -> Result<bool, Sig
     if matches!(actor, Actor::Operator) {
         return Ok(true);
     }
-    let permissions:String=conn.query_row("SELECT permissions FROM memberships WHERE room_id=?1 AND principal_kind='agent' AND principal_id=?2 AND revoked_at IS NULL ORDER BY granted_at DESC LIMIT 1",params![room,actor.id()],|r|r.get(0))?;
-    Ok(permissions.split(',').any(|p| p == "page_operator"))
+    Ok(super::membership::effective(conn, room)
+        .map_err(|e| SignalError(503, e.to_string()))?
+        .iter()
+        .any(|m| {
+            m.participant.principal_kind == "agent"
+                && m.participant.principal_id == actor.id()
+                && m.participant
+                    .permissions
+                    .iter()
+                    .any(|p| p == "page_operator")
+        }))
 }
 fn page_limited(
     conn: &Connection,

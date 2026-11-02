@@ -24,6 +24,14 @@ pub(crate) fn explain(
     };
     let kind = action["kind"].as_str().unwrap_or("");
     let (stopped, mut non_grants, graph_node) = match kind {
+        "coord_access" => (
+            "The worker requested explicit rights in an existing local Coord room.",
+            vec![
+                "Only the selected worker run receives the canonical rights in this room.",
+                "New rooms and retained Plumb effects remain operator-only. Independent room grants remain in force.",
+            ],
+            "ev.accept_coord_lane",
+        ),
         "network_allow" => (
             "The network policy required approval for this agent, destination and port.",
             vec![
@@ -80,6 +88,7 @@ pub(crate) fn explain(
             | "gateway_route"
             | "service_authorize"
             | "contract_binding"
+            | "coord_access"
     );
     if option.is_some() && record.authority.selected_option(option).is_none() {
         return Err(invalid("select one of this approval's fixed options"));
@@ -88,7 +97,9 @@ pub(crate) fn explain(
     if kind == "credential_allow" && selected.is_some_and(|option| option.id == "run") {
         non_grants[1] = "No permission for other workers, reviewers, credential fingerprints or destinations. This leaves shared baseline credential approval unchanged.";
     }
-    let mut unknowns = vec![if kind == "service_authorize" {
+    let mut unknowns = vec![if kind == "coord_access" {
+        "Room content and participants' intent are not established by an approval. Retained history can contain untrusted peer text."
+    } else if kind == "service_authorize" {
         "The requested resource scope is supplied by the guest. It is not proof of an upstream request, intent or payload effects."
     } else {
         "The target resource cannot be established from safe retained metadata. Raw request paths, queries and contract values are omitted because they can contain secrets."
@@ -110,6 +121,34 @@ pub(crate) fn explain(
         "request_method":method,"request_scheme":record.authority.scheme});
     if kind == "service_authorize" {
         facts["resource_scope"] = action["resources"].clone();
+    }
+    if kind == "coord_access" {
+        for field in ["room_id", "room_name", "permissions", "participants"] {
+            facts[field] = action[field].clone();
+        }
+        let participants = crate::coord_rooms::membership::participants(
+            policy,
+            action["room_id"].as_str().unwrap_or(""),
+        )
+        .ok();
+        let before = participants.as_ref().and_then(|members| {
+            members.iter().find(|member| {
+                member.principal_kind == "agent" && action["agent_id"] == member.principal_id
+            })
+        });
+        facts["new_permissions"] = json!(
+            action["permissions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|right| before
+                    .is_none_or(|member| !member.permissions.iter().any(|p| *right == p)))
+                .collect::<Vec<_>>()
+        );
+        facts["current_participants"] = json!(participants);
+        facts["authority_delta"] = json!(
+            "A separately sourced membership for only this worker's trusted run and offered rights. Existing independent grants remain. Receive exposes retained history and native room objects; send plus receive permits native work/signal mutations; page_operator permits paging."
+        );
     }
     if kind == "contract_binding" {
         facts["template"] = action["template"].clone();
@@ -205,7 +244,7 @@ pub(crate) fn explain(
         "selected_option":selection,"options":options,"non_grants":non_grants,"unknowns":unknowns,
         "interpretation":"The effects describe the offered approval, not a recommendation to approve. An explanation grants no permission and does not establish the agent's intent.",
         "evidence":{"source":"canonical pending approval recorded at enforcement",
-            "graph":"triage-approval-required","node":graph_node,
+            "graph":if kind == "coord_access" { "accept-safeyolo" } else { "triage-approval-required" },"node":graph_node,
             "details_command":format!("safeyolo approvals show {} --json", record.approval_id)}});
     if view["status"] != "pending" {
         result["current_policy"] = json!(

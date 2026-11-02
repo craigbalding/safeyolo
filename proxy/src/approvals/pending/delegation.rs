@@ -143,6 +143,15 @@ pub(crate) fn view(
         let mut choice = json!({"delegation":name,"delegation_revision":issued.delegation_revision,"option":option,
             "grant_expires_if_issued_now":issued.expires_at,"grant_seconds":policy.delegations()[name].grant_seconds,"worker_run":issued.beneficiary,
             "delegation_expires_at":policy.delegations()[name].expires_at});
+        if issued.action["kind"] == "coord_access" {
+            let delegation = &policy.delegations()[name];
+            choice["room_envelopes"] = json!(delegation.scopes.iter().filter(|scope| {
+                if !matches!(scope, crate::policy::delegation::Scope::CoordRoom { .. }) { return false; }
+                let mut single = delegation.clone();
+                single.scopes = vec![(*scope).clone()];
+                single.contains(record, option)
+            }).collect::<Vec<_>>());
+        }
         if issued.action["kind"] == "contract_binding" {
             let delegation = &policy.delegations()[name];
             choice["binding_envelopes"] = json!(delegation.scopes.iter().enumerate().filter_map(|(index, scope)| {

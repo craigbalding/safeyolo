@@ -52,6 +52,11 @@ pub(crate) enum Scope {
         method: String,
         path: String,
     },
+    CoordRoom {
+        room_id: String,
+        participants: Vec<crate::coord_rooms::membership::Participant>,
+        permissions: Vec<String>,
+    },
 }
 
 // Decode choice data before the internally tagged enum buffers JSON values.
@@ -150,6 +155,7 @@ impl Delegation {
                     if method=="*" || path.contains(['*','?','[']) { warnings.push("The gateway envelope includes multiple or future matching routes. Each issued grant still binds the canonical method and exact path; payload effects remain unknown.".into()); }
                     warnings.push("A gateway route grant covers its supported method and path. It does not bind a payload or undo an upstream write. Capability and contract checks still apply.".into());
                 }
+                Scope::CoordRoom { .. } => warnings.push("Coord receive exposes retained room history and authorized native work, signals, state and brief objects. Send plus receive permits existing native work and signal mutations. page_operator permits existing operator paging. Any named beneficiary may receive the selected rights for its trusted worker run. All listed participants and their rights bound the audience; a changed audience is rechecked. Independent room grants survive delegation revocation. Regrant exposes retained history; already disclosed content cannot be retracted.".into()),
             }
         }
         warnings
@@ -202,6 +208,33 @@ impl Delegation {
         }
         for scope in &self.scopes {
             match scope {
+                Scope::CoordRoom {
+                    room_id,
+                    participants,
+                    permissions,
+                } => {
+                    if !room_id.starts_with("rm-")
+                        || !crate::coord_rooms::membership::valid_permissions(permissions)
+                        || participants.is_empty()
+                        || participants.iter().any(|p| {
+                            !matches!(p.principal_kind.as_str(), "agent" | "operator")
+                                || p.principal_id.is_empty()
+                                || !crate::coord_rooms::membership::valid_permissions(
+                                    &p.permissions,
+                                )
+                        })
+                        || participants.iter().enumerate().any(|(i, p)| {
+                            participants[..i].iter().any(|other| {
+                                other.principal_kind == p.principal_kind
+                                    && other.principal_id == p.principal_id
+                            })
+                        })
+                    {
+                        return Err(invalid(
+                            "Coord room scope requires an exact existing room_id, explicit participant identities and send/receive/page_operator rights",
+                        ));
+                    }
+                }
                 Scope::NetworkEgress {
                     host,
                     ports,
@@ -345,6 +378,31 @@ impl Delegation {
             }));
         }
         self.scopes.iter().any(|scope| match scope {
+            Scope::CoordRoom {
+                room_id,
+                participants,
+                permissions,
+            } => {
+                a["kind"] == "coord_access"
+                    && option == "run"
+                    && a["room_id"] == *room_id
+                    && serde_json::from_value::<Vec<String>>(a["permissions"].clone()).is_ok_and(
+                        |actual| {
+                            crate::coord_rooms::membership::valid_permissions(&actual)
+                                && actual.iter().all(|p| permissions.contains(p))
+                        },
+                    )
+                    && serde_json::from_value::<Vec<crate::coord_rooms::membership::Participant>>(
+                        a["participants"].clone(),
+                    )
+                    .is_ok_and(|actual| {
+                        !actual.is_empty()
+                            && crate::coord_rooms::membership::audience_contains(
+                                participants,
+                                &actual,
+                            )
+                    })
+            }
             Scope::NetworkEgress {
                 host,
                 ports,
@@ -530,6 +588,7 @@ impl IssuedAccess {
             Some("credential_allow") => "credential_grants",
             Some("service_authorize") => "service_grants",
             Some("contract_binding") => "binding_grants",
+            Some("coord_access") => "coord_grants",
             // Gateway permissions belong to the gateway grant store. Its
             // caller checks the recorded grant and this authority together.
             Some("gateway_route") => return true,
@@ -639,7 +698,7 @@ impl Policy {
             return vec![];
         };
         native.authored["agents"].as_object().into_iter().flat_map(|agents| agents.keys())
-            .flat_map(|agent| ["network_grants","credential_grants","service_grants","binding_grants"].into_iter().flat_map(move |kind| {
+            .flat_map(|agent| ["network_grants","credential_grants","service_grants","binding_grants","coord_grants"].into_iter().flat_map(move |kind| {
                 self.issued_access(agent,kind).into_iter().map(move |grant| json!({"kind":kind,"active":grant.active(self),"permission":grant}))
             })).collect()
     }
@@ -649,6 +708,16 @@ impl IssuedAccess {
     pub(crate) fn validate(&self) -> Result<()> {
         let kind = self.action["kind"].as_str().unwrap_or("");
         let allowed: &[&str] = match kind {
+            "coord_access" => &[
+                "kind",
+                "agent",
+                "agent_id",
+                "run",
+                "room_id",
+                "room_name",
+                "permissions",
+                "participants",
+            ],
             "network_allow" => &[
                 "kind",
                 "agent",
@@ -755,6 +824,33 @@ impl IssuedAccess {
         if kind == "contract_binding" {
             self.contract_binding()?;
         }
+        if kind == "coord_access" {
+            let permissions: Vec<String> =
+                serde_json::from_value(self.action["permissions"].clone())
+                    .map_err(|_| invalid("explicit Coord permissions required"))?;
+            let audience: Vec<crate::coord_rooms::membership::Participant> =
+                serde_json::from_value(self.action["participants"].clone())
+                    .map_err(|_| invalid("explicit Coord audience required"))?;
+            if self.action["room_id"]
+                .as_str()
+                .is_none_or(|id| !id.starts_with("rm-"))
+                || self.action["room_name"].as_str().is_none_or(str::is_empty)
+                || !crate::coord_rooms::membership::valid_permissions(&permissions)
+                || !crate::coord_rooms::membership::audience_contains(
+                    &audience,
+                    &[crate::coord_rooms::membership::Participant {
+                        principal_kind: "agent".into(),
+                        principal_id: self.beneficiary.agent_id.clone(),
+                        permissions,
+                    }],
+                )
+                || self.reviewer.agent_id == self.beneficiary.agent_id
+            {
+                return Err(invalid(
+                    "invalid Coord room effect, rights, audience or self-benefit",
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -810,6 +906,7 @@ pub(crate) fn validate_grants(document: &Value) -> Result<()> {
             ("credential_grants", "credential_allow"),
             ("service_grants", "service_authorize"),
             ("binding_grants", "contract_binding"),
+            ("coord_grants", "coord_access"),
         ] {
             if let Some(values) = fields.get(collection) {
                 for (id, value) in super::object(values, collection)? {
@@ -885,6 +982,42 @@ impl Delegation {
     pub(crate) fn dependencies(&self, policy: &Policy) -> Result<BTreeMap<String, String>> {
         let mut result = BTreeMap::new();
         for scope in &self.scopes {
+            if let Scope::CoordRoom {
+                room_id,
+                participants,
+                permissions,
+            } = scope
+            {
+                let basis = crate::coord_rooms::membership::room_basis(policy, room_id)
+                    .map_err(|e| invalid(e.to_string()))?;
+                let independent: Vec<crate::coord_rooms::membership::Participant> =
+                    basis["independent_members"]
+                        .as_array()
+                        .ok_or_else(|| invalid("room audience unavailable"))?
+                        .iter()
+                        .map(|m| {
+                            serde_json::from_value(m["participant"].clone())
+                                .map_err(|e| invalid(e.to_string()))
+                        })
+                        .collect::<Result<_>>()?;
+                if !crate::coord_rooms::membership::audience_contains(participants, &independent)
+                    || self.beneficiaries.iter().any(|b| {
+                        !crate::coord_rooms::membership::audience_contains(
+                            participants,
+                            &[crate::coord_rooms::membership::Participant {
+                                principal_kind: "agent".into(),
+                                principal_id: b.agent_id.clone(),
+                                permissions: permissions.clone(),
+                            }],
+                        )
+                    })
+                {
+                    return Err(invalid(
+                        "Coord envelope omits an existing participant or a beneficiary's maximum rights",
+                    ));
+                }
+                result.insert(format!("coord:{room_id}"), digest(&basis));
+            }
             if let Scope::GatewayRoute { service, .. }
             | Scope::ServiceAuthorization { service, .. }
             | Scope::ContractBinding { service, .. } = scope
@@ -1055,6 +1188,7 @@ impl Policy {
         for beneficiary in &delegation.beneficiaries {
             for scope in &delegation.scopes {
                 match scope {
+                    Scope::CoordRoom {room_id,..}=>access.push(json!({"beneficiary":beneficiary,"type":"coord_room","room_id":room_id,"independent_access":crate::coord_rooms::membership::room_basis(self,room_id).ok(),"effective_participants":crate::coord_rooms::membership::participants(self,room_id).ok()})),
                     Scope::NetworkEgress {host,ports,all_ports,actions} if !host.contains(['*','?','[']) && !all_ports => {
                         for port in ports { for action in actions {
                             let method=if action=="connect" {"CONNECT"} else {"GET"};

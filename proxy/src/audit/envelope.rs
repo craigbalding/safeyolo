@@ -21,7 +21,7 @@ macro_rules! names {
 names!(Kind { Security=>"security", Gateway=>"gateway", Traffic=>"traffic", Ops=>"ops", Admin=>"admin", Agent=>"agent", Plumb=>"plumb", Coord=>"coord", Network=>"network" });
 names!(Severity { Critical=>"critical", High=>"high", Medium=>"medium", Low=>"low" });
 names!(Decision { Allow=>"allow", Deny=>"deny", Warn=>"warn", RequireApproval=>"require_approval", BudgetExceeded=>"budget_exceeded", Log=>"log" });
-names!(ApprovalType { Credential=>"credential", NetworkEgress=>"network_egress", GatewayRoute=>"gateway_route", Service=>"service", ContractBinding=>"contract_binding", Plumb=>"plumb", DesktopPresent=>"desktop_present" });
+names!(ApprovalType { Credential=>"credential", NetworkEgress=>"network_egress", GatewayRoute=>"gateway_route", Service=>"service", ContractBinding=>"contract_binding", CoordRoom=>"coord_room", Plumb=>"plumb", DesktopPresent=>"desktop_present" });
 names!(Initiator { Agent=>"agent", Operator=>"operator", External=>"external", Unknown=>"unknown" });
 names!(AttributionStatus { Resolved=>"resolved", Delegated=>"delegated", Unavailable=>"unavailable", Conflict=>"conflict" });
 

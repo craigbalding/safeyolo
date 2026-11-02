@@ -65,6 +65,7 @@ const ENDPOINTS: &[&str] = &[
     "/approvals/{request_id}",
     "/approvals",
     "/approvals/{approval_id}/resolve (POST)",
+    "/api/coord/request-access (POST)",
     "/approvals/{request_id}/prepare (POST)",
     "/trace",
     "/memory",
@@ -168,6 +169,7 @@ pub enum AuditKind {
     PlumbMessageAllowed,
     PlumbConversationClosed,
     CoordPublishOutcomeUnknown,
+    CoordAccessRequested,
 }
 
 /// The approval envelope accepted by the existing audit writer. This is an
@@ -242,6 +244,13 @@ impl AuditIntent {
                 "gateway.request_access",
                 Kind::Gateway,
                 Severity::Critical,
+                "agent-api",
+                Some(Decision::RequireApproval),
+            ),
+            AuditKind::CoordAccessRequested => (
+                "coord.access_requested",
+                Kind::Coord,
+                Severity::High,
                 "agent-api",
                 Some(Decision::RequireApproval),
             ),
@@ -449,6 +458,7 @@ impl Outcome<'_> {
             Some(
                 AuditKind::GatewayAccessRequested
                 | AuditKind::GatewayBindingSubmitted
+                | AuditKind::CoordAccessRequested
                 | AuditKind::DesktopPresentRequested
                 | AuditKind::PlumbRequested
                 | AuditKind::FlowReadAll,

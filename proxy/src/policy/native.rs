@@ -579,6 +579,16 @@ impl Policy {
         }
     }
 
+    pub(crate) fn identity_root(&self) -> Option<&Path> {
+        self.native
+            .as_ref()
+            .map(|native| native.identity_root.as_path())
+    }
+
+    pub(crate) fn source_path(&self) -> Option<&Path> {
+        self.baseline_path.as_deref()
+    }
+
     pub fn agent_run(&self, name: &str) -> Option<crate::host_runs::AgentRun> {
         crate::host_runs::authority(
             &self.native.as_ref()?.identity_root,
