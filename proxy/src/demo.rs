@@ -23,7 +23,7 @@ use tokio::{
 };
 use toml_edit::{DocumentMut, Item, value};
 
-pub const HELP: &str = "safeyolo [--root ROOT | --config FILE] demo [--task tiny-web-app] [--workspace PATH] [--agent NAME] [--auth-file FILE] [--keep]\n\nBuild and run a tiny web app in a real guest, then approve its owned JSON request.\nThe SafeYolo installation needs its prepared guest runtime and normal Codex model access.\nChoose an empty workspace, or use the disposable default. --agent reuses that stopped guest's own configured authentication; its authentication stays in that guest home.\n--auth-file selects an existing Codex auth.json to copy privately into a guest with no login. The interactive default offers your configured host login. A new guest can also use normal Codex device login. Missing authentication is reported before a model task starts.\nDemo stops its selected runtime and removes its fixture permission on exit. By default it removes the disposable workspace and any newly created guest home. --keep retains these files after stopping. A reused guest's home and prior workspace setting remain.\nThe fixture request record and normal proxy audit remain in the instance logs. Ctrl-C or cancel stops the Demo. Lab and tmux are not required.";
+pub const HELP: &str = "safeyolo [--root ROOT | --config FILE] demo [--task tiny-web-app] [--workspace PATH] [--agent NAME] [--auth-file FILE] [--keep]\n\nBuild and run a tiny web app in a real guest, then approve its owned JSON request.\nAfter the verified result, type preview to request the normal desktop.present approval for the app. Preview requires the host's existing local display or configured tailnet presentation route and guest desktop packages.\nThe SafeYolo installation needs its prepared guest runtime and normal Codex model access.\nChoose an empty workspace, or use the disposable default. --agent reuses that stopped guest's own configured authentication; its authentication stays in that guest home.\n--auth-file selects an existing Codex auth.json to copy privately into a guest with no login. The interactive default offers your configured host login. A new guest can also use normal Codex device login. Missing authentication is reported before a model task starts.\nDemo stops its selected runtime and removes its fixture permission on exit. By default it removes the disposable workspace and any newly created guest home. --keep retains these files after stopping. A reused guest's home and prior workspace setting remain.\nThe fixture request record and normal proxy audit remain in the instance logs. Ctrl-C or cancel stops the Demo. Lab and tmux are not required.";
 
 const CODEX_COMMAND: &[u8] = include_bytes!("../../contrib/codex-command.sh");
 const GUEST_CODEX: &str = "/home/agent/.safeyolo/demo-codex-command";
@@ -673,7 +673,7 @@ fn codex_auth(home: &Path) -> Result<bool, Error> {
 
 fn task(fixture: &Fixture) -> String {
     format!(
-        "Build and run a tiny Python standard-library web application in /workspace/app.py. It must fetch JSON from {} using HTTP_PROXY (keep the proxy configured; remove NO_PROXY exclusions for that fixture fetch). Input has a title, items with minutes, and a marker. Serve JSON at http://127.0.0.1:{APP_PORT}/ with keys title, count, total_minutes and marker calculated from that input. Do not hard-code the fixture data or marker into the response. Start the app in this guest and keep its process running. Initially SafeYolo returns HTTP 428 for the fixture request. Show the actual response, then retry the same request while the human operator decides through the normal host approval path. Never change policy or approve your own request. The app may return 503 until the JSON is available. Continue after approval, independently fetch your app's response, and report the actual result. Use a bounded retry (up to ten minutes) and stop if the operator rejects or cancels. Do not claim success from narration, create a fake model/fixture, or start another model. Leave the app running for the host's independent read. The host owns cleanup. No API key, Lab, tmux, public preview or password manager is needed.",
+        "Build and run a tiny Python standard-library web application in /workspace/app.py. It must fetch JSON from {} using HTTP_PROXY (keep the proxy configured; remove NO_PROXY exclusions for that fixture fetch). Input has a title, items with minutes, and a marker. Serve JSON at http://127.0.0.1:{APP_PORT}/ with keys title, count, total_minutes and marker calculated from that input. Also serve an HTML page at /app that displays the summary from / and has a Refresh button to fetch and display it again. Show the number of successful refreshes so the operator can see the button's effect. Do not hard-code the fixture data or marker into the response. Start the app in this guest and keep its process running. Initially SafeYolo returns HTTP 428 for the fixture request. Show the actual response, then retry the same request while the human operator decides through the normal host approval path. Never change policy or approve your own request. The app may return 503 until the JSON is available. Continue after approval, independently fetch your app's response, and report the actual result. Use a bounded retry (up to ten minutes) and stop if the operator rejects or cancels. Do not claim success from narration, create a fake model/fixture, or start another model. Leave the app running for the host's independent read and optional desktop preview. Demo offers the preview after verifying the app; do not start a browser or request a preview yourself. The host owns cleanup. No API key, Lab, tmux, public preview or password manager is needed.",
         fixture.url()
     )
 }
@@ -737,6 +737,98 @@ fn app_code(workspace: &Path) -> Result<(), Error> {
     if code.is_empty() || code.len() > 128 * 1024 {
         return Err("app.py source is empty or exceeds the diagnostic limit".into());
     }
+    Ok(())
+}
+
+fn preview_parameters() -> crate::desktop_present::Parameters {
+    crate::desktop_present::Parameters {
+        browser_url: Some(format!("http://127.0.0.1:{APP_PORT}/app")),
+        ..Default::default()
+    }
+}
+
+fn preview_matches(view: &Value, demo: &Demo) -> bool {
+    let action = &view["action"];
+    action["kind"] == "operator_action"
+        && action["action_id"] == crate::operator_actions::DESKTOP_PRESENT
+        && action["agent"] == demo.agent.name
+        && action["agent_id"] == demo.agent.id
+        && demo.run_id.as_deref().is_some_and(|run| {
+            action["run"]["run_id"] == run
+                && action["run"]["agent"] == demo.agent.name
+                && action["run"]["agent_id"] == demo.agent.id
+        })
+        && action["parameters"] == serde_json::to_value(preview_parameters()).unwrap()
+}
+
+async fn preview(
+    demo: &Demo,
+    input: &mut mpsc::Receiver<std::io::Result<String>>,
+) -> Result<(), Error> {
+    // Submit from the current guest through its ordinary authenticated Agent
+    // API. Capture only the nonsecret agent projection; the host resolver owns
+    // the decision and operator-only presentation material.
+    let body = json!({"action_id":crate::operator_actions::DESKTOP_PRESENT,
+        "parameters":preview_parameters(),"reason":"Preview the running Demo app and use its Refresh button."});
+    let command = format!(
+        "(agent_token=$(cat /app/agent_token) || exit; printf 'Authorization: Bearer %s\\n' \"$agent_token\" | curl -sS --max-time 10 --max-filesize 65536 --header @- --header 'Content-Type: application/json' --data {} http://_safeyolo.proxy.internal/operator-actions) < /dev/null",
+        quote(&serde_json::to_string(&body)?)
+    );
+    let output = host_platform::guest_command_output(&demo.agent.name, &command, Duration::from_secs(15))
+        .await.map_err(|_| "Preview request outcome is unverified. Inspect normal pending approvals before a new request; Demo did not retry.")?;
+    if !output.status.success() {
+        return Err("Preview request outcome is unverified. Inspect normal pending approvals before a new request; Demo did not retry.".into());
+    }
+    let request: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "Preview request response is unavailable. Inspect normal pending approvals before a new request; Demo did not retry.")?;
+    if request["status"] == "unavailable" {
+        return Err(format!(
+            "Demo preview unavailable: {}",
+            safe(&request["diagnostic"].to_string())
+        )
+        .into());
+    }
+    let id = request["action_request_id"].as_str()
+        .ok_or("Preview request has no canonical action ID; inspect normal pending approvals before a new request")?;
+    let root = host_platform::config_dir();
+    let mut view = operator_commands::approval(&root, id, Some(&demo.agent.name)).await?;
+    if !preview_matches(&view, demo) {
+        return Err(
+            "Preview approval does not match this Demo app and runtime; no decision was sent"
+                .into(),
+        );
+    }
+    operator_commands::show_approval(&view)?;
+    while view["status"] == "pending" {
+        match prompt(
+            input,
+            "Preview: type approve, reject, evidence, or cancel: ",
+        )
+        .await?
+        .as_str()
+        {
+            decision @ ("approve" | "reject") => {
+                view =
+                    operator_commands::resolve(&root, id, decision, Some(&demo.agent.name)).await?;
+            }
+            "evidence" => {
+                view = operator_commands::approval(&root, id, Some(&demo.agent.name)).await?;
+                operator_commands::show_approval(&view)?;
+            }
+            "cancel" => return Err("Demo cancelled before preview approval".into()),
+            _ => println!("Enter an explicit decision or open evidence."),
+        }
+    }
+    operator_commands::show_approval(&view)?;
+    if view["status"] != "approved"
+        || view["result"]["status"] != "started"
+        || view["result"]["preview_active"] != true
+    {
+        return Err("Demo preview did not become active. Inspect the saved approval and desktop diagnostics before a new request; Demo did not retry.".into());
+    }
+    println!(
+        "Observation: the normal desktop.present action started this Demo app's gated preview. Use the app's Refresh button in the viewer. Browser opening alone does not verify interaction."
+    );
     Ok(())
 }
 
@@ -932,8 +1024,21 @@ async fn session(
             if let Some(status) = exit {
                 println!("Codex command exit: {status}");
             }
-            if prompt(input, "Result is ready. Enter to finish, or cancel: ").await? == "cancel" {
+            let choice = prompt(input, "Result is ready. Type preview to request the app's desktop preview, Enter to finish, or cancel: ").await?;
+            if choice == "cancel" {
                 return Err("Demo cancelled after the app result".into());
+            }
+            if choice == "preview" {
+                preview(demo, input).await?;
+                if prompt(
+                    input,
+                    "Preview is ready. Enter to finish and stop the Demo, or cancel: ",
+                )
+                .await?
+                    == "cancel"
+                {
+                    return Err("Demo cancelled after the preview".into());
+                }
             }
             return Ok(());
         }

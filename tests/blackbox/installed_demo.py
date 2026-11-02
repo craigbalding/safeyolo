@@ -11,6 +11,9 @@ its stopped test guest homes remain until the owner removes that disposable
 instance through the existing harness teardown.
 --deterministic-completion extends the no-model controls through final input
 and peer checks with a controlled guest app. That result is not a W1 model run.
+--preview pauses that completion for normal desktop.present approval and viewer
+interaction. The operator must observe the actual viewer; the driver's prompt
+records an operator report, not independent graphical acceptance.
 """
 
 from __future__ import annotations
@@ -50,12 +53,32 @@ while True:
         time.sleep(0.2)
 summary = {"title": data["title"], "count": len(data["items"]),
            "total_minutes": sum(item["minutes"] for item in data["items"]), "marker": data["marker"]}
+page = b"""<!doctype html><title>Demo tasks</title>
+<h1>Demo tasks</h1><button id="refresh">Refresh</button>
+<p id="count">Successful refreshes: 0</p><pre id="summary"></pre>
+<script>
+let refreshes = 0;
+async function refresh() {
+    try {
+        const response = await fetch('/');
+        if (!response.ok) throw new Error('App HTTP ' + response.status);
+        const summary = await response.json();
+        document.querySelector('#summary').textContent = JSON.stringify(summary, null, 2);
+        document.querySelector('#count').textContent = 'Successful refreshes: ' + (++refreshes);
+    } catch (error) {
+        document.querySelector('#summary').textContent = String(error);
+    }
+}
+document.querySelector('#refresh').addEventListener('click', refresh);
+refresh();
+</script>"""
 
 class App(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        body = json.dumps(summary).encode()
+        html = self.path == '/app'
+        body = page if html else json.dumps(summary).encode()
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "text/html; charset=utf-8" if html else "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -134,10 +157,11 @@ def run(args: argparse.Namespace) -> None:
     identity = cli("--version").strip()
     assert f"commit={args.commit} " in identity, "installed native CLI is not this candidate"
     assert f"commit={args.commit} " in subprocess.check_output([str(root / "bin/safeyolo-proxy"), "--version"], text=True)
-    assert f"commit={args.commit} " in (root / "assets/guest/safeyolo-guest.version").read_text()
+    guest_commit = args.guest_commit or args.commit
+    assert f"commit={guest_commit} " in (root / "assets/guest/safeyolo-guest.version").read_text()
     before = json.loads(cli("status"))
     owned: list[str] = []
-    result = {"commit": args.commit, "native_cli": identity, "real_model": False}
+    result = {"commit": args.commit, "guest_commit": guest_commit, "native_cli": identity, "real_model": False}
     completion_agent = args.real_agent
     with tempfile.TemporaryDirectory(prefix="demo-proof-", dir=root / "data") as temporary:
         directory = Path(temporary)
@@ -283,6 +307,22 @@ def run(args: argparse.Namespace) -> None:
                 # fail and Demo removes its disposable workspace.
                 result.update({"real_model":bool(args.real_agent), "deterministic_completion":args.deterministic_completion, "app_response":app, "fixture_records":records, "app_code_created":True, "app_source":source, "zero_preapproval_deliveries":True, "demo_finish_completed":False, "peer_after_finish_verified":False})
                 print(json.dumps(result), flush=True)
+                if args.preview:
+                    active.send("preview\n")
+                    active.until("Preview: type approve, reject, evidence, or cancel:")
+                    print(active.output, flush=True)  # Pending approval has no viewer secrets.
+                    decision = input("Inspect the desktop action above. Type approve or reject: ").strip()
+                    assert decision in {"approve", "reject"}, "an explicit preview decision is required"
+                    active.send(decision + "\n")
+                    assert decision == "approve", "operator rejected preview; do not count it as a pass"
+                    active.until("Preview is ready.")
+                    ids = re.findall(r"Approval: (apr-[a-f0-9]+)", active.output)
+                    assert ids, "canonical preview approval ID is missing"
+                    result["preview"] = {"approval_id": ids[-1], "started": True, "interaction": "unverified"}
+                    print(json.dumps(result), flush=True)
+                    confirmation = input(f"Use approvals show {ids[-1]} on the host to recover the unlock code. Use Refresh in the actual gated viewer. Type interacted after observing the changed refresh count: ").strip()
+                    assert confirmation == "interacted", "viewer interaction was not reported"
+                    result["preview"]["interaction"] = "operator_reported"
                 active.send("\n")
                 assert active.finish() == 0, active.output[-1500:]
                 stopped(name)
@@ -308,10 +348,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config-dir", required=True, type=Path)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--guest-commit", help="explicit retained guest producer when its affected source is qualified equivalent; host binaries still require --commit")
+    parser.add_argument("--preview", action="store_true", help="request the normal desktop preview after completion, then pause for actual viewer interaction")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--real-agent", help="existing stopped Demo guest with its own configured Codex authentication")
     selection.add_argument("--deterministic-completion", action="store_true", help="use the owned no-model guest fixture to check final input and cleanup; does not accept W1")
-    run(parser.parse_args())
+    args = parser.parse_args()
+    if args.preview and not (args.real_agent or args.deterministic_completion):
+        parser.error("--preview requires --real-agent or --deterministic-completion")
+    run(args)
 
 
 if __name__ == "__main__":
