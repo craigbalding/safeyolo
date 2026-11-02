@@ -27,16 +27,7 @@ async fn check() {
         "[desktop]\nsize='1280x800'\n",
     )
     .unwrap();
-    fs::write(
-        root.path().join("bin/xdpyinfo"),
-        "#!/bin/sh\nprintf 'dimensions: 1920x1080 pixels\\n'\n",
-    )
-    .unwrap();
-    fs::set_permissions(
-        root.path().join("bin/xdpyinfo"),
-        fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
+    install_preview_host_commands(root.path());
     let _run = OwnedRun::start(root.path());
     let run = bind_action_run(root.path(), "alice", ID);
     let mut config = config(root.path());

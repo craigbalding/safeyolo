@@ -139,6 +139,26 @@ fn config(root: &Path) -> Config {
     .unwrap()
 }
 
+fn install_preview_host_commands(root: &Path) {
+    for (program, source) in [
+        (
+            "xdpyinfo",
+            "#!/bin/sh\nprintf 'dimensions: 1920x1080 pixels\\n'\n",
+        ),
+        (
+            "xdg-open",
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$SAFEYOLO_CONFIG_DIR/opened\"\n",
+        ),
+    ] {
+        fs::write(root.join("bin").join(program), source).unwrap();
+        fs::set_permissions(
+            root.join("bin").join(program),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+}
+
 async fn request(
     port: u16,
     method: &str,
@@ -663,23 +683,7 @@ async fn check_typed_desktop_action() {
     fixture(root.path());
     fs::write(root.path().join("policy.toml"),format!("[agents.alice]\nagent_id='{ID}'\n[agents.bob]\nagent_id='ag-22222222222222222222222222222222'\n[controls.credentials]\nenabled=false\n")).unwrap();
     fs::write(root.path().join("config.toml"),"admin_port=0\nadmin_api_token_file='token'\npolicy_file='policy.toml'\nreadiness_file='ready.json'\naudit_log_path='audit.jsonl'\n[desktop]\nsize='1280x800'\n").unwrap();
-    for (program, source) in [
-        (
-            "xdpyinfo",
-            "#!/bin/sh\nprintf 'dimensions: 1920x1080 pixels\\n'\n",
-        ),
-        (
-            "xdg-open",
-            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$SAFEYOLO_CONFIG_DIR/opened\"\n",
-        ),
-    ] {
-        fs::write(root.path().join("bin").join(program), source).unwrap();
-        fs::set_permissions(
-            root.path().join("bin").join(program),
-            fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
-    }
+    install_preview_host_commands(root.path());
     let mut run = OwnedRun::start(root.path());
     bind_action_run(root.path(), "alice", ID);
     let mut config = config(root.path());
