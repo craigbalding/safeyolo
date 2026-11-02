@@ -417,6 +417,230 @@ async fn canonical_races_and_interrupted_publication_are_recoverable_without_ren
     f.proxy.shutdown().await;
 }
 
+#[tokio::test]
+async fn independent_receive_attention_survives_unrelated_sources_but_not_regrant() {
+    let f = Fixture::new().await;
+    let _backend = Backend(runs(&f));
+    rooms(&f);
+    coord_rooms::grant(
+        &f.root.path().join("config.toml"),
+        "delegated",
+        "worker",
+        &["receive".into()],
+        false,
+        Some("independent-receive"),
+    )
+    .unwrap();
+    let (_, revision) = delegate(&f, envelope()).await;
+    approve(&f, &["send"], "unrelated-send").await;
+    let brief = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--root")
+        .arg(f.root.path())
+        .args([
+            "coord",
+            "brief",
+            "set",
+            "delegated",
+            "Retained receiving authority",
+            "--expected-revision",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        brief.status.success(),
+        "{}",
+        String::from_utf8_lossy(&brief.stderr)
+    );
+    let attention: String = db(&f).query_row("SELECT attention_id FROM coord_attention_edges WHERE recipient_agent_id=?1 AND kind='brief_changed'", [WORKER_ID], |r| r.get(0)).unwrap();
+    let path = format!("/api/coord/attention/{attention}/object");
+    assert_eq!(f.agent("worker", "GET", &path, None).await.status, 200);
+    // A newly added send/page source also cannot hide an earlier receive edge.
+    approve(&f, &["page_operator"], "unrelated-page").await;
+    assert_eq!(f.agent("worker", "GET", &path, None).await.status, 200);
+    revoke(&f, &revision).await;
+    assert_eq!(joined(&f).await.json()["permissions"], json!(["receive"]));
+    assert_eq!(
+        f.agent("worker", "GET", "/api/coord/rooms/delegated/brief", None)
+            .await
+            .status,
+        200
+    );
+    assert_eq!(f.agent("worker", "GET", &path, None).await.status, 200);
+    let feed = f
+        .agent(
+            "worker",
+            "GET",
+            "/api/coord/attention/wait?since=0&timeout=0",
+            None,
+        )
+        .await
+        .json();
+    assert!(
+        feed["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["attention_id"] == attention)
+    );
+    coord_rooms::grant(
+        &f.root.path().join("config.toml"),
+        "delegated",
+        "worker",
+        &[],
+        true,
+        Some("remove-receive"),
+    )
+    .unwrap();
+    assert_eq!(f.agent("worker", "GET", &path, None).await.status, 404);
+    coord_rooms::grant(
+        &f.root.path().join("config.toml"),
+        "delegated",
+        "worker",
+        &["receive".into()],
+        false,
+        Some("later-receive"),
+    )
+    .unwrap();
+    assert_eq!(joined(&f).await.status, 200);
+    assert_eq!(
+        f.agent("worker", "GET", &path, None).await.status,
+        404,
+        "a later receive grant must not revive the old edge"
+    );
+    f.proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn operator_finishes_inert_reviewer_preparation_without_renewing_or_requiring_reviewer() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new().await;
+    let _backend = Backend(runs(&f));
+    rooms(&f);
+    let mut input = envelope();
+    input["delegation"]["grant_seconds"] = json!(60);
+    let (_, revision) = delegate(&f, input).await;
+    let id = access(&f, &["send"], "operator-recovery").await.json()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let original = fs::metadata(f.root.path()).unwrap().permissions();
+    fs::set_permissions(f.root.path(), fs::Permissions::from_mode(0o555)).unwrap();
+    let failed = decide(&f, "helper", &id, "approve", "run").await;
+    fs::set_permissions(f.root.path(), original).unwrap();
+    assert_eq!(failed.status, 409);
+    assert_eq!(joined(&f).await.status, 404, "preparation must be inert");
+    let before: (String, i64) = db(&f)
+        .query_row(
+            "SELECT issued_json,granted_at FROM coord_membership_grants WHERE approval_id=?1",
+            [&id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let reviewer_path = f.root.path().join("agents/helper/runtime.json");
+    let mut reviewer: Value = serde_json::from_slice(&fs::read(&reviewer_path).unwrap()).unwrap();
+    reviewer["state"] = json!("stopped");
+    fs::write(&reviewer_path, reviewer.to_string()).unwrap();
+    let result = f
+        .admin(
+            "POST",
+            &format!("/admin/approvals/{id}"),
+            Some(json!({"decision":"approve","option":"run"})),
+        )
+        .await;
+    assert_eq!(result.status, 200, "{}", result.json());
+    assert_eq!(result.json()["status"], "approved");
+    assert_eq!(
+        result.json()["result"]["issued_access"],
+        serde_json::from_str::<Value>(&before.0).unwrap()
+    );
+    assert_eq!(
+        result.json()["result"]["decider"],
+        json!({"kind":"operator"})
+    );
+    assert_eq!(result.json()["grant_active"], true);
+    assert_eq!(joined(&f).await.json()["permissions"], json!(["send"]));
+    let after: (String, i64) = db(&f)
+        .query_row(
+            "SELECT issued_json,granted_at FROM coord_membership_grants WHERE approval_id=?1",
+            [&id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        before, after,
+        "recovery must preserve the source and original expiry"
+    );
+    let source = f.source();
+    assert_eq!(
+        f.admin(
+            "POST",
+            &format!("/admin/approvals/{id}"),
+            Some(json!({"decision":"approve","option":"run"}))
+        )
+        .await
+        .status,
+        200
+    );
+    assert_eq!(
+        f.source(),
+        source,
+        "terminal retries must not renew the recovered grant"
+    );
+    revoke(&f, &revision).await;
+    assert_eq!(
+        joined(&f).await.status,
+        404,
+        "operator recovery retains the original delegation's revocation boundary"
+    );
+    // An expired preparation cannot be renewed through operator recovery.
+    // The documented replacement request remains an ordinary supported path.
+    reviewer["state"] = json!("running");
+    fs::write(&reviewer_path, reviewer.to_string()).unwrap();
+    let mut expiring = envelope();
+    expiring["delegation"]["grant_seconds"] = json!(1);
+    delegate(&f, expiring).await;
+    let expired = access(&f, &["send"], "expired-preparation").await.json()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let original = fs::metadata(f.root.path()).unwrap().permissions();
+    fs::set_permissions(f.root.path(), fs::Permissions::from_mode(0o555)).unwrap();
+    let failed = decide(&f, "helper", &expired, "approve", "run").await;
+    fs::set_permissions(f.root.path(), original).unwrap();
+    assert_eq!(failed.status, 409);
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let refused = f
+        .admin(
+            "POST",
+            &format!("/admin/approvals/{expired}"),
+            Some(json!({"decision":"approve","option":"run"})),
+        )
+        .await;
+    assert_ne!(
+        refused.status, 200,
+        "expired preparation must not become usable"
+    );
+    assert_eq!(joined(&f).await.status, 404);
+    let fresh = access(&f, &["send"], "replacement-after-expiry")
+        .await
+        .json()["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(expired, fresh);
+    let granted = f
+        .admin(
+            "POST",
+            &format!("/admin/approvals/{fresh}"),
+            Some(json!({"decision":"approve","option":"run"})),
+        )
+        .await;
+    assert_eq!(granted.status, 200, "{}", granted.json());
+    assert_eq!(granted.json()["grant_active"], true);
+    f.proxy.shutdown().await;
+}
+
 struct NatsCleanup(std::path::PathBuf);
 impl Drop for NatsCleanup {
     fn drop(&mut self) {

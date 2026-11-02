@@ -421,7 +421,7 @@ nodes:
         - path: proxy/tests/native_coord/federation.rs
           sha256: b4f44c1465fd834f467ca5fb4f703efb3c372a57d327644deb8a8e2545e81578
         - path: proxy/src/agent_api/coord.rs
-          sha256: e81b346ae4138e3883db6e183c1823e8fbbd1cba7b6ed0a4cb5645c432f8cdc2
+          sha256: 864e1fb3cf11b410056837273f48606ff8880473ecdf446fdf53a027e54e2785
         - path: proxy/src/agent_api/coord/federation.rs
           sha256: db953429fbeba489fd1aaa0e6d37ab841030de8f7b85874dc43e4fa0d396a0c9
         - path: proxy/src/agent_api/coord/federation/tests.rs
@@ -433,7 +433,7 @@ nodes:
         - path: proxy/src/coord_federation_schema.sql
           sha256: 342a5fb315c9b2013afb291b0223ab2c83312af3f5a8ee2b7dfda6f6b493d12b
         - path: proxy/src/coord_rooms/membership.rs
-          sha256: e84d8d75c1f04150ceb958495464038c1124b3162989010437406ad8ced2174e
+          sha256: 6c52140ef2fe7c02a3c68492296b1c8ae09e22598b83bce180b0989b8177b457
         - path: proxy/tests/native_coord/github.rs
           sha256: aa411d76472321e1813fa59d9aa5a4d1d375a9371df344271a5b2d6574a54c10
         - path: proxy/src/coord_rooms/work/github.rs
@@ -463,7 +463,7 @@ nodes:
         - path: proxy/src/coord_rooms/work/attestation_tests.rs
           sha256: bf8f97d6dd3175aae8cd4a7448effa67d02fda8037e6952116f9e97c861156f7
         - path: proxy/src/coord_rooms/work.rs
-          sha256: 188c8eba1aa7da80e2c352888e610f59213df476b8c54a1f9cbb84f5bd2aaf86
+          sha256: 6070753cea742f0ea3574f16378e895bbf9e56ab3f4e74d0982d03c468b55f19
         - path: proxy/src/coord_rooms/work/tests.rs
           sha256: 0052a9f8e099d600f3e222872740020e6ba7cf5339a385ce5be7fb388c4bcd26
         - path: proxy/src/coord_rooms/work_cli.rs

@@ -57,10 +57,7 @@ pub(super) fn change(
         }
         return Ok(serde_json::from_str(&result)?);
     }
-    let latest: Option<i64> = transaction.query_row(
-        "SELECT MAX(granted_at) FROM memberships WHERE room_id=?1 AND principal_kind=?2 AND principal_id=?3",
-        params![room_id,kind,principal], |row| row.get(0),
-    )?;
+    let latest = latest_generation(transaction)?;
     let active: Option<(String, i64)> = transaction.query_row(
         "SELECT permissions,granted_at FROM memberships WHERE room_id=?1 AND principal_kind=?2 AND principal_id=?3 AND revoked_at IS NULL ORDER BY granted_at DESC LIMIT 1",
         params![room_id,kind,principal], |row| Ok((row.get(0)?,row.get(1)?)),
@@ -76,7 +73,6 @@ pub(super) fn change(
     } else if active.as_ref().map(|(p, _)| p.as_str()) != Some(permissions.join(",").as_str()) {
         let next = changed_at.max(
             latest
-                .unwrap_or(0)
                 .checked_add(1)
                 .ok_or("membership generation cannot advance")?,
         );
@@ -132,6 +128,13 @@ pub(crate) struct Participant {
 pub(crate) struct EffectiveMember {
     pub participant: Participant,
     pub granted_at: i64,
+    // Attention binds an exact receiving source, independently of send/page
+    // grants and of which source is currently oldest or newest.
+    pub receive_generations: Vec<i64>,
+}
+
+fn latest_generation(conn: &Connection) -> Result<i64, Error> {
+    Ok(conn.query_row("SELECT max(v) FROM (SELECT coalesce(max(granted_at),0) AS v FROM memberships UNION ALL SELECT coalesce(max(granted_at),0) FROM coord_membership_grants)", [], |r| r.get(0))?)
 }
 
 pub(crate) fn valid_permissions(permissions: &[String]) -> bool {
@@ -162,6 +165,7 @@ fn independent(conn: &Connection, room: &str) -> Result<Vec<EffectiveMember>, Er
         .query_map([room], |row| Ok(EffectiveMember {
             participant:Participant {principal_kind:row.get(0)?,principal_id:row.get(1)?,permissions:row.get::<_,String>(2)?.split(',').filter(|p|!p.is_empty()).map(str::to_owned).collect()},
             granted_at:row.get(3)?,
+            receive_generations: if row.get::<_,String>(2)?.split(',').any(|p|p=="receive") { vec![row.get(3)?] } else { vec![] },
         }))?.collect::<rusqlite::Result<_>>()?)
 }
 
@@ -177,6 +181,11 @@ fn merge(members: &mut Vec<EffectiveMember>, member: EffectiveMember) {
         existing.participant.permissions.sort();
         existing.participant.permissions.dedup();
         existing.granted_at = existing.granted_at.max(member.granted_at);
+        existing
+            .receive_generations
+            .extend(member.receive_generations);
+        existing.receive_generations.sort();
+        existing.receive_generations.dedup();
     } else {
         members.push(member);
     }
@@ -294,6 +303,12 @@ fn effective_with_sources(
                     permissions: permissions.split(',').map(str::to_owned).collect(),
                 },
                 granted_at,
+                receive_generations: permissions
+                    .split(',')
+                    .any(|p| p == "receive")
+                    .then_some(granted_at)
+                    .into_iter()
+                    .collect(),
             },
             audiences,
         ));
@@ -369,9 +384,10 @@ pub(crate) fn participants(
 
 /// Prepare the source, retry receipt and outbox in one existing Coord
 /// transaction. Only subsequent publication of the matching policy receipt
-/// activates it. An interrupted retry reuses the original expiry and decider.
+/// activates it. An interrupted retry reuses the original expiry and reviewer.
 pub(crate) fn prepare(
     policy: &crate::policy::Policy,
+    saved: &crate::policy::Policy,
     record: &crate::approvals::pending::Record,
     issued: &crate::policy::delegation::IssuedAccess,
 ) -> Result<crate::policy::delegation::IssuedAccess, Error> {
@@ -387,10 +403,28 @@ pub(crate) fn prepare(
         .optional()?;
     if let Some((digest, encoded, revoked)) = prior {
         let prior: crate::policy::delegation::IssuedAccess = serde_json::from_str(&encoded)?;
+        let has_grant = |policy: &crate::policy::Policy| {
+            policy
+                .issued_access(&prior.beneficiary.agent, "coord_grants")
+                .iter()
+                .any(|grant| grant.approval_id == record.approval_id)
+        };
+        // The operator can finish the original reviewer's proven-inert
+        // preparation. Reuse its exact expiry and provenance, rather than
+        // replacing it with a fresh independent permission. A receipt or
+        // published grant instead requires ordinary canonical readback.
+        let operator_recovery = issued.delegation.is_empty()
+            && issued.active_snapshot(policy)
+            && record.committed(policy)?.is_none()
+            && record.committed(saved)?.is_none()
+            && !has_grant(policy)
+            && !has_grant(saved);
         if digest != record.authority_digest
             || prior.action != issued.action
-            || prior.delegation != issued.delegation
-            || prior.delegation_revision != issued.delegation_revision
+            || prior.option != issued.option
+            || (!operator_recovery
+                && (prior.delegation != issued.delegation
+                    || prior.delegation_revision != issued.delegation_revision))
         {
             return Err("membership operation conflicts with its original approval".into());
         }
@@ -422,6 +456,7 @@ pub(crate) fn prepare(
                 permissions: permissions.clone(),
             },
             granted_at: 0,
+            receive_generations: vec![],
         },
     );
     if !audience_contains(
@@ -434,7 +469,7 @@ pub(crate) fn prepare(
         return Err("room audience changed before membership preparation".into());
     }
     let changed_at = now();
-    let latest: i64 = tx.query_row("SELECT max(v) FROM (SELECT coalesce(max(granted_at),0) AS v FROM memberships UNION ALL SELECT coalesce(max(granted_at),0) FROM coord_membership_grants)",[],|r|r.get(0))?;
+    let latest = latest_generation(&tx)?;
     let generation = changed_at.max(
         latest
             .checked_add(1)

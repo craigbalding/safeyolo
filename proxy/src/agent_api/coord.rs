@@ -941,7 +941,7 @@ pub struct CoordContext<'a> {
 struct Membership {
     principal_kind: String,
     principal_id: String,
-    granted_at: i64,
+    receive_generations: Vec<i64>,
     permissions: Vec<String>,
 }
 
@@ -1087,7 +1087,16 @@ fn recipient_generation(access: &RoomAccess, agent_id: &str) -> Option<i64> {
                     .iter()
                     .any(|permission| permission == "receive")
         })
-        .map(|member| member.granted_at)
+        .and_then(|member| member.receive_generations.first().copied())
+}
+
+fn recipient_receives(access: &RoomAccess, agent_id: &str, generation: i64) -> bool {
+    access.members.iter().any(|member| {
+        member.principal_kind == "agent"
+            && member.principal_id == agent_id
+            && member.permissions.iter().any(|p| p == "receive")
+            && member.receive_generations.contains(&generation)
+    })
 }
 
 fn message_wakes_waiter(
@@ -1122,13 +1131,12 @@ fn message_wakes_waiter(
         "none" => Ok(false),
         "agents" => Ok(manifest.recipients.iter().any(|recipient| {
             recipient.agent_id == principal
-                && recipient_generation(access, principal) == Some(recipient.membership_granted_at)
+                && recipient_receives(access, principal, recipient.membership_granted_at)
         })),
         "room" => Ok((!exclude_self || !sender_is_self)
             && manifest.recipients.iter().any(|recipient| {
                 recipient.agent_id == principal
-                    && recipient_generation(access, principal)
-                        == Some(recipient.membership_granted_at)
+                    && recipient_receives(access, principal, recipient.membership_granted_at)
             })),
         "legacy_room" => {
             Ok((!exclude_self || !sender_is_self)
@@ -1241,7 +1249,7 @@ fn attention_member(
         .any(|member| {
             member.participant.principal_kind == "agent"
                 && member.participant.principal_id == principal
-                && member.granted_at == generation
+                && member.receive_generations.contains(&generation)
                 && member
                     .participant
                     .permissions
@@ -2011,7 +2019,7 @@ fn read_access_from(
         .map(|member| Membership {
             principal_kind: member.participant.principal_kind,
             principal_id: member.participant.principal_id,
-            granted_at: member.granted_at,
+            receive_generations: member.receive_generations,
             permissions: member.participant.permissions,
         })
         .collect::<Vec<_>>();
@@ -3375,7 +3383,7 @@ async fn prepare_send(
             Some(Recipient {
                 attention_id: format!("attn-{}", uuid::Uuid::new_v4().simple()),
                 agent_id: agent_id.clone(),
-                membership_granted_at: member.granted_at,
+                membership_granted_at: *member.receive_generations.first()?,
             })
         })
         .collect::<Vec<_>>();
@@ -3489,12 +3497,11 @@ async fn publish_prepared(
         Err(error) => return error_response(error),
     };
     if recipients.iter().any(|recipient| {
-        !access.members.iter().any(|member| {
-            member.principal_kind == "agent"
-                && member.principal_id == recipient.agent_id
-                && member.granted_at == recipient.membership_granted_at
-                && member.permissions.iter().any(|p| p == "receive")
-        })
+        !recipient_receives(
+            &access,
+            &recipient.agent_id,
+            recipient.membership_granted_at,
+        )
     }) {
         return error_response(CoordError::Forbidden);
     }
@@ -3512,12 +3519,11 @@ async fn publish_prepared(
         || latest.instance_id != access.instance_id
         || !latest.permissions.iter().any(|p| p == "send")
         || recipients.iter().any(|recipient| {
-            !latest.members.iter().any(|member| {
-                member.principal_kind == "agent"
-                    && member.principal_id == recipient.agent_id
-                    && member.granted_at == recipient.membership_granted_at
-                    && member.permissions.iter().any(|p| p == "receive")
-            })
+            !recipient_receives(
+                &latest,
+                &recipient.agent_id,
+                recipient.membership_granted_at,
+            )
         })
     {
         return error_response(CoordError::Forbidden);
@@ -4158,7 +4164,7 @@ mod tests {
             members: vec![Membership {
                 principal_kind: "agent".to_owned(),
                 principal_id: "ag-alice".to_owned(),
-                granted_at: 7,
+                receive_generations: vec![7],
                 permissions: vec!["receive".to_owned()],
             }],
             instance_id: "instance".to_owned(),
@@ -4171,7 +4177,9 @@ mod tests {
                 .expect("valid manifest")
         );
         let mut stale = access;
-        stale.members[0].granted_at = 8;
+        stale.members[0].receive_generations = vec![6, 7, 8];
+        assert!(message_wakes_waiter(Some(&headers), &value, "ag-alice", &stale, false).unwrap());
+        stale.members[0].receive_generations = vec![6, 8];
         assert!(
             !message_wakes_waiter(Some(&headers), &value, "ag-alice", &stale, false,)
                 .expect("valid manifest")
@@ -4187,7 +4195,7 @@ mod tests {
             members: vec![Membership {
                 principal_kind: "agent".to_owned(),
                 principal_id: "ag-alice".to_owned(),
-                granted_at: 7,
+                receive_generations: vec![7],
                 permissions: vec!["receive".to_owned()],
             }],
             instance_id: "instance".to_owned(),
@@ -4530,7 +4538,7 @@ mod tests {
         let access = read_access(&db, "shared", "ag-alice").unwrap();
         assert_eq!(access.permissions, vec!["send"]);
         assert_eq!(access.members.len(), 1);
-        assert_eq!(access.members[0].granted_at, 8);
+        assert!(access.members[0].receive_generations.is_empty());
     }
 
     #[test]

@@ -116,7 +116,12 @@ pub(crate) fn set(
             m.participant.principal_kind == "agent"
                 && m.participant.permissions.iter().any(|p| p == "receive")
         })
-        .map(|m| (m.participant.principal_id, m.granted_at))
+        .filter_map(|m| {
+            m.receive_generations
+                .first()
+                .copied()
+                .map(|generation| (m.participant.principal_id, generation))
+        })
         .collect::<Vec<_>>();
     for (agent_id, granted_at) in &recipients {
         let suffix = uuid::Uuid::new_v4().simple().to_string();

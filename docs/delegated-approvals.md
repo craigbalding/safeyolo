@@ -175,7 +175,12 @@ resolve the same ID with `approvals show`, `approvals explain` and
 `approvals approve ID --option run`. Use `approvals list` to recover an ID.
 After a lost response, inspect the canonical approval before another decision.
 A membership prepared before policy publication is inert. The original
-receipt and expiry govern a recovered publication. An approved record with
+reviewer preparation and expiry govern a recovered publication. The operator
+can finish the same pending ID while that original authority remains valid,
+even when the reviewer is offline. The canonical result identifies the final
+decider separately from the grant's original reviewer provenance. If the
+preparation expired or its authority changed, request a new approval with a
+new operation ID. An approved record with
 `grant_active: false` does not establish current room access; inspect the
 saved policy and source before making a new request. Neither a retry nor an
 approved receipt recreates a missing or revoked source.

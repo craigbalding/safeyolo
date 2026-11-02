@@ -476,7 +476,12 @@ fn stage_attention(
             m.participant.principal_kind == "agent"
                 && m.participant.permissions.iter().any(|p| p == "receive")
         })
-        .map(|m| (m.participant.principal_id, m.granted_at))
+        .filter_map(|m| {
+            m.receive_generations
+                .first()
+                .copied()
+                .map(|generation| (m.participant.principal_id, generation))
+        })
         .collect::<Vec<_>>();
     for (agent, granted_at) in recipients {
         if !matches!(actor, Actor::Operator) && actor.id() == agent {

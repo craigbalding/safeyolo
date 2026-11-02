@@ -1017,9 +1017,15 @@ pub(crate) fn resolve_as(
                 None => delegation::issue(&policy, record, "", None, &selected.id)?,
             };
             if record.authority.action["kind"] == "coord_access" {
-                issued = crate::coord_rooms::membership::prepare(&policy, record, &issued).map_err(unavailable)?;
+                issued = crate::coord_rooms::membership::prepare(&policy, &saved, record, &issued).map_err(unavailable)?;
             }
             record.result = json!({"permission_changed":true,"issued_access":issued,"lifetime":"worker_run"});
+            if record.authority.action["kind"] == "coord_access" {
+                record.result["decider"] = match reviewer {
+                    Some((run, name)) => json!({"kind":"agent","run":run,"delegation":name}),
+                    None => json!({"kind":"operator"}),
+                };
+            }
             if record.authority.action["kind"] != "gateway_route" {
                 let action = record.authority.action.clone();
                 crate::edit_native_policy(state, true, |source| {
