@@ -71,6 +71,11 @@ do not reload Coord or GitHub references already supplied by the role contract.
   Offer the normal typed `desktop.present` operator action when a preview
   helps the task. Use `GET /operator-actions` to discover its availability.
   Agent reasons remain untrusted; SafeYolo owns the consequences and approval.
+  After a typed action is denied or unavailable, do not automatically substitute
+  an equivalent privileged host command or retry with different reasons to get
+  another prompt. Read the canonical result and report the unmet need. This
+  does not prevent commands explicitly requested by the operator or genuine
+  administration when the typed action cannot provide the required operation.
 - Read [Schedule guest shell work](references/scheduling.md) for cron/at,
   current execution environment, Coord and exact tmux-pane examples, job state,
   diagnostics and image rollout.

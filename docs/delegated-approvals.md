@@ -487,6 +487,25 @@ same reviewer, run and permission is coalesced, including after a refusal.
 A later traffic request can remain pending in the canonical list without
 repeated notifications. A terminal ID cannot issue another permission.
 
+Canonical approval views show equivalent request counts, first and latest request
+times, and the last equivalent refusal. Equivalence follows the immutable
+authority, including the requester and worker run. A different reason cannot
+change that authority. A changed effect needs a separate approval. Rejection
+remains terminal for its ID; a later request can still be inspected and decided.
+
+Automatic approval notices share a durable limit of five per requester and
+twenty per instance within sixty seconds. The limit covers Command Centre and
+delegated reviewer notices across canonical approval types. Command Centre
+claims each notice before opening a window. A reconnect, restart or lost reply
+does not repeat that claim. Equivalent operator notices also coalesce within
+sixty seconds; reviewer notices retain the run and permission coalescing above.
+Suppressed requests stay in the pending list. Their attention status explains
+the suppression. Open a listed request or use `approvals show`, `approve` or
+`reject` to decide without waiting for another notice. The limit does not approve,
+reject, expire or replay a request. Claimed or suppressed delivery metadata is
+retained in the canonical record and audit. Typed action attempts also audit the
+submitted reason's digest and byte count without retaining each changed reason.
+
 ## Change, revoke and recover
 
 Inspect `approvals delegations --json` for revisions and issued access. For a

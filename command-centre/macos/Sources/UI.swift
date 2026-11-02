@@ -497,7 +497,7 @@ struct ApprovalView: View {
                 Image(systemName: "exclamationmark.shield.fill")
                     .font(.system(size: 26))
                     .foregroundStyle(.pink)
-                Text(verbatim: displayedEffect)
+                Text(verbatim: approvalDisplayText(displayedEffect))
                     .font(.headline)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -510,22 +510,29 @@ struct ApprovalView: View {
                 if let id = currentEvent.approvalID { row("Approval", id) }
                 if let id = currentEvent.requestID { row("Request", id) }
                 if let method = currentEvent.details?.method { row("Method", method) }
-                if let path = currentEvent.details?.path { row("Path", path) }
+                if let path = currentEvent.details?.path { row("Path (request data)", quotedRequesterText(path)) }
                 if let presentation = currentEvent.details?.presentation { row("Presentation", presentation) }
                 if let ttl = currentEvent.details?.ttlSeconds { row("Preview lifetime", "\(ttl) seconds") }
-                if let url = currentEvent.details?.browserURL { row("Guest browser URL (agent-selected data)", url) }
+                if let url = currentEvent.details?.browserURL { row("Guest browser URL (agent-selected data)", quotedRequesterText(url)) }
+            }
+
+            if let history = approvalOutcome?.requestHistory ?? currentEvent.requestHistory {
+                Text(verbatim: history.display).textSelection(.enabled)
+            }
+            if let delivery = (approvalOutcome?.attention ?? currentEvent.attention)?["operator"] {
+                Text(verbatim: "Operator attention: \(delivery.status)").foregroundStyle(.secondary)
             }
 
             if let options = currentEvent.options, options.count > 1 {
                 ForEach(options) { option in
-                    Text(verbatim: "\(option.id): \(option.effect)")
+                    Text(verbatim: approvalDisplayText("\(option.id): \(option.effect)"))
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
             if let reason = quotedUntrustedReason {
-                Text("Helper reason (untrusted)").foregroundStyle(.secondary)
+                Text("Agent-provided reason (untrusted)").foregroundStyle(.secondary)
                 Text(verbatim: reason)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -537,7 +544,7 @@ struct ApprovalView: View {
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             } else if let outcome = approvalOutcome, outcome.terminal {
-                Text(verbatim: outcome.display)
+                Text(verbatim: approvalDisplayText(outcome.display))
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -562,7 +569,7 @@ struct ApprovalView: View {
     private func row(_ label: String, _ value: String) -> some View {
         GridRow {
             Text(label).foregroundStyle(.secondary)
-            Text(value)
+            Text(verbatim: approvalDisplayText(value))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }

@@ -246,6 +246,7 @@ pub(crate) fn explain(
                 match action["path"].as_str().filter(|path| !path.is_empty()) {
                     Some(path) => offered
                         .effect
+                        .replace(&format!("{path:?}"), "[selected exact request path; value omitted]")
                         .replace(path, "[selected exact request path; value omitted]"),
                     None => "Exact path and grant meaning unavailable.".into(),
                 }
@@ -275,6 +276,7 @@ pub(crate) fn explain(
         .and_then(|selected| options.iter().find(|option| option["id"] == selected.id))
         .cloned();
     let mut result = json!({"approval_id":record.approval_id,"request_id":record.request_id,
+        "request_history":view["request_history"],"attention":view["attention"],
         "authority_digest":record.authority_digest,"status":view["status"],
         "observed":facts,"why_stopped":stopped,
         "current_policy":"The recorded request still requires a decision under the current saved and active policy. Each option shows its current availability. A later decision checks the policy and credentials again.",

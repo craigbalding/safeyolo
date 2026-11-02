@@ -226,13 +226,28 @@ pub(crate) async fn notify(runtime: &crate::Runtime, record: &Record) {
         }
     }
     for (id, (name, delivery_key)) in reviewers {
+        let audit_key = format!("reviewer:{delivery_key}");
+        if record.attention.contains_key(&audit_key) {
+            continue;
+        }
         let store = runtime.audit.approvals().clone();
+        let current_policy = std::sync::Arc::clone(policy);
         let (approval, recipient) = (record.approval_id.clone(), delivery_key.clone());
         let attempted = tokio::task::spawn_blocking(move || {
-            store.claim_reviewer_delivery(&approval, &recipient)
+            let admitted = store.claim_reviewer_delivery(&approval, &recipient, &current_policy)?;
+            let event = store
+                .get(&approval)?
+                .map(|current| super::attention::event(&current, &audit_key));
+            Ok::<_, super::super::ApprovalError>((admitted, event))
         })
         .await;
-        if !matches!(attempted, Ok(Ok(true))) {
+        let Ok(Ok((admitted, event))) = attempted else {
+            continue;
+        };
+        if let Some(event) = event {
+            let _ = runtime.audit.emit_confirmed(event).await;
+        }
+        if !admitted {
             continue;
         }
         let body = format!(

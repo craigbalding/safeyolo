@@ -243,6 +243,60 @@ struct SecurityObservation: Hashable, Identifiable {
     }
 }
 
+// Quoting contains line, terminal and Unicode direction controls. SwiftUI must
+// also render this value verbatim so requester markup stays plain data.
+func quotedRequesterText(_ value: String) -> String {
+    var result = "\""
+    for unit in value.utf16 {
+        switch unit {
+        case 0x22: result += "\\\""
+        case 0x5c: result += "\\\\"
+        case 0x20...0x7e: result += String(UnicodeScalar(unit)!)
+        default: result += String(format: "\\u%04x", unit)
+        }
+    }
+    return result + "\""
+}
+
+func approvalDisplayText(_ value: String) -> String {
+    value.unicodeScalars.map { scalar in
+        switch scalar.properties.generalCategory {
+        case .control, .format, .lineSeparator, .paragraphSeparator:
+            return String(scalar).utf16.map { String(format: "\\u%04x", $0) }.joined()
+        default: return String(scalar)
+        }
+    }.joined()
+}
+
+struct ApprovalRequestHistory: Decodable, Hashable {
+    struct Refusal: Decodable, Hashable {
+        let approvalID: String
+        let decidedAt: Int?
+        enum CodingKeys: String, CodingKey { case approvalID = "approval_id", decidedAt = "decided_at" }
+    }
+    let equivalentRequestCount: Int
+    let approvalCount: Int
+    let firstRequestedAt: Int
+    let lastRequestedAt: Int
+    let lastRefusal: Refusal?
+    enum CodingKeys: String, CodingKey {
+        case equivalentRequestCount = "equivalent_request_count", approvalCount = "approval_count"
+        case firstRequestedAt = "first_requested_at", lastRequestedAt = "last_requested_at", lastRefusal = "last_refusal"
+    }
+    var display: String {
+        var text = "Equivalent requests: \(equivalentRequestCount) across \(approvalCount) approvals."
+        text += " First: \(Date(timeIntervalSince1970: TimeInterval(firstRequestedAt)).formatted()). Last: \(Date(timeIntervalSince1970: TimeInterval(lastRequestedAt)).formatted())."
+        if let refusal = lastRefusal {
+            text += " Last refusal: \(refusal.approvalID)."
+            if let at = refusal.decidedAt { text += " Refused: \(Date(timeIntervalSince1970: TimeInterval(at)).formatted())." }
+        }
+        return text
+    }
+}
+
+struct ApprovalAttentionDelivery: Decodable, Hashable { let status: String }
+struct ApprovalAttentionClaim: Decodable { let notify: Bool }
+
 struct ApprovalEvent: Decodable, Hashable, Identifiable {
     struct Option: Decodable, Hashable, Identifiable {
         let id: String
@@ -308,6 +362,8 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
     let host: String?
     let approval: Request
     let details: Details?
+    let requestHistory: ApprovalRequestHistory?
+    let attention: [String: ApprovalAttentionDelivery]?
 
     enum CodingKeys: String, CodingKey {
         case approvalID = "approval_id"
@@ -320,6 +376,8 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
         case host
         case approval
         case details
+        case requestHistory = "request_history"
+        case attention
     }
 
     var outcomeID: String? {
@@ -335,7 +393,7 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
     }
 
     var quotedUntrustedReason: String? {
-        details?.untrustedReasonText.map { "\"\($0)\"" }
+        details?.untrustedReasonText.map(quotedRequesterText)
     }
 
     var title: String {
@@ -412,6 +470,8 @@ struct ApprovalResolution: Decodable, Equatable {
     let untrustedReasonText: String?
     let result: ActionResult?
     let operatorPreview: DesktopPresentation?
+    let requestHistory: ApprovalRequestHistory?
+    let attention: [String: ApprovalAttentionDelivery]?
 
     enum CodingKeys: String, CodingKey {
         case approvalID = "approval_id"
@@ -420,6 +480,8 @@ struct ApprovalResolution: Decodable, Equatable {
         case untrustedReasonText = "untrusted_reason_text"
         case result
         case operatorPreview = "operator_preview"
+        case requestHistory = "request_history"
+        case attention
     }
 
     var id: String { approvalID ?? requestID }
@@ -429,7 +491,7 @@ struct ApprovalResolution: Decodable, Equatable {
         let diagnostic = result?.diagnostic.map { " \($0.message)" } ?? ""
         return "\(status.capitalized). \(effect)\(action)\(diagnostic)"
     }
-    var quotedUntrustedReason: String? { untrustedReasonText.map { "\"\($0)\"" } }
+    var quotedUntrustedReason: String? { untrustedReasonText.map(quotedRequesterText) }
 }
 
 enum ResolutionResult: Equatable {
