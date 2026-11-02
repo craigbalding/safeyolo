@@ -95,6 +95,18 @@ credential run access is reusable within its declared scope. Credential
 approval does not limit an API operation or change shared baseline approval.
 A gateway route grant is not an approval of an exact payload.
 
+For an existing local Coord room, the worker calls `request_room_access` with
+`room_name`, explicit `permissions` (`receive`, `send`, `page_operator`) and a new
+`operation_id`. The equivalent route is `POST /api/coord/request-access`.
+Trusted ingress binds the request to that worker's current run. The host records
+the exact room, audience and rights. A nonmember receives only the approval
+receipt. The eligible reviewer inspects the canonical effect, current audience,
+new rights, maximum envelope and lifetime, then selects the offered `run`
+choice. The worker retries ordinary Coord access after approval. Receive
+exposes retained history and native room objects; send plus receive permits
+existing work and signal mutations; `page_operator` permits paging. The reviewer
+need not hold those room rights. New rooms and Plumb effects remain operator-only.
+
 For contract binding, submit the requested values to
 `POST /gateway/submit-binding` with `service`, `capability`, `bindings` and an
 optional `grantable_operations` list. Omission selects all grantable operations;

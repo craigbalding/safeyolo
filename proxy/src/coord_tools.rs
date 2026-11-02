@@ -154,6 +154,19 @@ impl Client {
     }
 
     async fn call_scoped(&self, name: &str, args: &Value) -> Result<Value, Error> {
+        if name == "request_room_access" {
+            if self.home.is_some() {
+                return Err("room approval requests belong to the local SafeYolo".into());
+            }
+            return self
+                .request(
+                    Method::POST,
+                    "/api/coord/request-access",
+                    args.clone(),
+                    Duration::from_secs(60),
+                )
+                .await;
+        }
         if name == "read_github_work" {
             return github::read(self, args).await;
         }
@@ -563,6 +576,12 @@ pub fn tools() -> Vec<Value> {
         );
     }
     add(
+        "request_room_access",
+        "Request explicit rights for your own trusted current run in an existing local room. The host records the whole effect for an eligible reviewer or operator. Reuse the operation_id only with identical inputs after canonical readback. After approval retry ordinary room access. This creates no room and grants nothing by itself.",
+        json!({"room_name":string,"permissions":{"type":"array","items":{"type":"string","enum":["send","receive","page_operator"]},"minItems":1},"operation_id":string}),
+        &["room_name", "permissions", "operation_id"],
+    );
+    add(
         "list_approvals",
         "List canonical pending approvals inside your current deciding delegation. Room references confer no authority.",
         json!({}),
@@ -649,7 +668,7 @@ pub fn tools() -> Vec<Value> {
     for tool in &mut result {
         if !matches!(
             tool["name"].as_str(),
-            Some("list_approvals" | "read_approval" | "resolve_approval")
+            Some("list_approvals" | "read_approval" | "resolve_approval" | "request_room_access")
         ) {
             tool["inputSchema"]["properties"]["home"] = json!({"type":"string","description":"Explicit configured home SafeYolo. Omit for local operations. Attention cursors belong to the selected home."});
         }

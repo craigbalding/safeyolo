@@ -110,21 +110,14 @@ pub(crate) fn set(
         params![room_id,revision,markdown,content_hash,operation_id,changed_at],
     )?;
     let object_id = format!("brief-{}", room_id.trim_start_matches("rm-"));
-    let recipients = transaction
-        .prepare(
-            "SELECT principal_id, granted_at FROM memberships AS m
-         WHERE room_id=?1 AND principal_kind='agent' AND revoked_at IS NULL
-           AND instr(',' || permissions || ',', ',receive,') > 0
-           AND NOT EXISTS(SELECT 1 FROM memberships AS newer
-             WHERE newer.room_id=m.room_id AND newer.principal_kind=m.principal_kind
-               AND newer.principal_id=m.principal_id AND newer.revoked_at IS NULL
-               AND newer.granted_at > m.granted_at)
-         ORDER BY principal_id",
-        )?
-        .query_map([&room_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+    let recipients = super::membership::effective(&transaction, &room_id)?
+        .into_iter()
+        .filter(|m| {
+            m.participant.principal_kind == "agent"
+                && m.participant.permissions.iter().any(|p| p == "receive")
+        })
+        .map(|m| (m.participant.principal_id, m.granted_at))
+        .collect::<Vec<_>>();
     for (agent_id, granted_at) in &recipients {
         let suffix = uuid::Uuid::new_v4().simple().to_string();
         let attention_id = format!("attn-{suffix}");

@@ -14,6 +14,8 @@ Delegated-service mode proves one scoped service authorization with a synthetic
 host credential, the same attention tools and an explicit guest retry.
 Delegated-binding mode uses that path for a fixed contract binding, verifies
 forbidden values and operations, then revokes its derived binding.
+Delegated-room mode uses an existing local room, real guest requests and
+reviewer decisions, message/history access, paging and actual worker turnover.
 Fresh delegated model journeys start at the current attention cutoff. Older
 edges are recorded without reading or resolving their payloads. An explicit
 --attention-cutoff must match the current cutoff on the owned instance.
@@ -60,6 +62,7 @@ if __package__:
     )
     from .installed_ingress import runsc_identity
     from .installed_lifecycle import start_guest, stop_guest
+    from .installed_room_approvals import room_exchange
     from .installed_sections import surviving_processes
 else:
     from guest_exec import guest_command_args
@@ -76,6 +79,7 @@ else:
     )
     from installed_ingress import runsc_identity
     from installed_lifecycle import start_guest, stop_guest
+    from installed_room_approvals import room_exchange
     from installed_sections import surviving_processes
 
 
@@ -349,6 +353,7 @@ def run(args: argparse.Namespace) -> None:
     delegated_clients = getattr(args, "delegated_clients", False)
     delegated_service = getattr(args, "delegated_service", False)
     delegated_binding = getattr(args, "delegated_binding", False)
+    delegated_room = getattr(args, "delegated_room", None)
     delegated_mode = getattr(args, "delegated", False) or delegated_clients or delegated_service or delegated_binding
     names = (args.worker, args.helper)
     assert len(set(names)) == 2, "Worker and Helper must be distinct guests"
@@ -450,6 +455,31 @@ def run(args: argparse.Namespace) -> None:
         helper_state = json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.helper]))
         assert helper_state["agent_state"] in {"stopped", "exited", "failed"}, "preserve Helper's existing coding session"
     try:
+        if delegated_room:
+            for name in names:
+                guest_versions[name] = checked(guest_command_args(args.transport_cli, name, "/safeyolo/safeyolo-guest --version"))
+                assert expected in guest_versions[name], "guest executable is not the selected source"
+                coord_version = checked(guest_command_args(args.transport_cli, name, "/home/agent/.safeyolo/safeyolo-coord --version"))
+                assert expected in coord_version, "Coord executable is not the selected source"
+            def turnover_worker(identifier):
+                before = json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.worker]))
+                stop_guest(args.transport_cli, root, args.worker)
+                stopped = native("approvals", "show", identifier)
+                assert stopped["grant_active"] is False, "stopping the actual guest must invalidate its room source"
+                start_guest(args.transport_cli, root, args.worker)
+                after = json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.worker]))
+                assert after["agent_id"] == before["agent_id"] and after["run_id"] != before["run_id"]
+                return {"before": before, "stopped_approval": stopped, "after": after}
+            journey = room_exchange(args, ids, guest,
+                lambda name, operation, arguments: guest_coord(args.transport_cli, name, operation, arguments),
+                operator, native,
+                lambda text: checked([str(cli), "--root", str(root), "coord", "send", delegated_room, text]),
+                lambda: checked([str(cli), "--root", str(root), "coord", "history", delegated_room]),
+                turnover_worker)
+            result = {"commit": args.commit, "native_cli": cli_version, "proxy": proxy_version,
+                "guests": guests, "guest_native_versions": guest_versions, "room_journey": journey,
+                "limitations": "One existing local room and two actual systrap guests. Reuse source tests for races, interruption, narrowing, expiry and pending waits."}
+            return
         if getattr(args, "delegated_lifecycle", False) or delegated_clients:
             coord_command = [str(cli), "--root", str(root), "coord", "status"]
             coord_before = json.loads(checked(coord_command))
@@ -1294,6 +1324,7 @@ def main() -> None:
     parser.add_argument("--delegated", action="store_true", help="With --interfaces --real-helper, exercise three delegated decisions without a human decision; requires the fixture service and Helper's existing agent room")
     parser.add_argument("--delegated-service", action="store_true", help="With --interfaces --real-helper, exercise one scoped service authorization with a synthetic host credential; requires delegated-service-authorization.yaml and the Helper agent room")
     parser.add_argument("--delegated-binding", action="store_true", help="With --interfaces --real-helper, exercise one contract binding, value/operation refusals and revocation; requires delegated-contract-binding.yaml and the Helper agent room")
+    parser.add_argument("--delegated-room", metavar="ROOM", help="Exercise an existing local room with only its operator member; requires the existing Helper agent room, two running owned guests and matching native Coord executables; no model session")
     parser.add_argument("--delegated-lifecycle", action="store_true", help="Exercise delegated network authority across real guest and proxy restarts, stale launch context and same-name replacement; no model session")
     parser.add_argument("--delegated-lifecycle-remainder", action="store_true", help="With --delegated-lifecycle, use one ordinary grant and worker turnover, then check only stale context, reviewer restart and same-name replacement; skip the proxy crash")
     parser.add_argument("--delegated-lifecycle-crash-only", action="store_true", help="With --delegated-lifecycle, record only the same approval, receipt, grant and origin effects across an owned proxy crash and one explicit retry; skip guest turnover and model exchanges")
@@ -1306,6 +1337,8 @@ def main() -> None:
     parser.add_argument("--helper-events", type=Path, help="New private raw Codex output file; default: unique file in the owned root's logs directory")
     parser.add_argument("--attention-cutoff", type=int, help="For a fresh --delegated, --delegated-service or --delegated-binding journey, require this current attention cursor; older edges are recorded without reading or resolving their payloads. Default: discover the current cutoff across all metadata pages")
     args = parser.parse_args()
+    if args.delegated_room and (args.delegated or args.delegated_service or args.delegated_binding or args.delegated_lifecycle or args.delegated_clients or args.real_helper or args.model_unavailable or args.wait_for_operator or args.shared_room):
+        parser.error("--delegated-room runs separately from other delegated and model modes")
     if (args.real_helper or args.model_unavailable) and not args.interfaces:
         parser.error("model modes require --interfaces")
     if args.real_helper and args.model_unavailable:

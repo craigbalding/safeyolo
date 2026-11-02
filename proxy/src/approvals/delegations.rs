@@ -140,7 +140,7 @@ pub(crate) fn preview(
         acknowledgment: revision.clone(),
         revision,
         warnings,
-        effect: "Any one named reviewer may select a canonical option wholly inside this delegation. Network, credential, service authorization and contract binding access is bounded to the current worker run. Optional grant expiry is separate from delegation validity and pending-request expiry. Gateway once uses the existing reservation and response-completion rules.",
+        effect: "Any one named reviewer may select a canonical option wholly inside this delegation. Network, credential, service authorization, contract binding and Coord room access is bounded to the current worker run. Optional grant expiry is separate from delegation validity and pending-request expiry. Gateway once uses the existing reservation and response-completion rules.",
         revocation: "Changing or revoking this delegation invalidates its derived access. Independently sourced permission remains. Future authorizations are rechecked. An admitted opaque tunnel may continue; revocation cannot undo upstream effects. Inspect network, credential and service permissions for residual access."
     });
     preview["independent_access"] = json!(independent);
@@ -212,6 +212,7 @@ fn remove_issued(document: &mut toml_edit::DocumentMut, source: &str, name: &str
             "credential_grants",
             "service_grants",
             "binding_grants",
+            "coord_grants",
         ] {
             for (id, raw) in fields[collection].as_object().into_iter().flatten() {
                 let issued = raw.as_str().and_then(|s| {

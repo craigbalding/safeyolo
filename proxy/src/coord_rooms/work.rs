@@ -147,16 +147,13 @@ pub(super) fn authorize(
 }
 
 fn member(conn: &Connection, room_id: &str, agent: &str, write: bool) -> Result<(), WorkError> {
-    let permissions: String = conn
-        .query_row(
-            "SELECT permissions FROM memberships WHERE room_id=?1 AND principal_kind='agent'
-         AND principal_id=?2 AND revoked_at IS NULL ORDER BY granted_at DESC LIMIT 1",
-            params![room_id, agent],
-            |r| r.get(0),
-        )
-        .optional()?
+    let permissions = super::membership::effective(conn, room_id)
+        .map_err(|e| WorkError(503, e.to_string()))?
+        .into_iter()
+        .find(|m| m.participant.principal_kind == "agent" && m.participant.principal_id == agent)
+        .map(|m| m.participant.permissions)
         .ok_or_else(|| WorkError(404, "room not found or not accessible".into()))?;
-    let permits = |p| permissions.split(',').any(|v| v == p);
+    let permits = |p| permissions.iter().any(|v| v == p);
     if !permits("receive") || (write && !permits("send")) {
         return Err(WorkError(
             403,
@@ -472,8 +469,15 @@ fn stage_attention(
     actor: Actor<'_>,
     changed_at: i64,
 ) -> Result<(), WorkError> {
-    let recipients = conn.prepare("SELECT principal_id,granted_at FROM memberships AS m WHERE room_id=?1 AND principal_kind='agent' AND revoked_at IS NULL AND instr(',' || permissions || ',', ',receive,')>0 AND NOT EXISTS(SELECT 1 FROM memberships AS n WHERE n.room_id=m.room_id AND n.principal_kind=m.principal_kind AND n.principal_id=m.principal_id AND n.revoked_at IS NULL AND n.granted_at>m.granted_at)")?
-        .query_map([&work.room_id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
+    let recipients = super::membership::effective(conn, &work.room_id)
+        .map_err(|e| WorkError(503, e.to_string()))?
+        .into_iter()
+        .filter(|m| {
+            m.participant.principal_kind == "agent"
+                && m.participant.permissions.iter().any(|p| p == "receive")
+        })
+        .map(|m| (m.participant.principal_id, m.granted_at))
+        .collect::<Vec<_>>();
     for (agent, granted_at) in recipients {
         if !matches!(actor, Actor::Operator) && actor.id() == agent {
             continue;

@@ -80,7 +80,11 @@ pub(super) async fn respond(
     let room = room.to_owned();
     let principal = principal.to_owned();
     let remote = client.remote.clone();
+    let caller = client.clone();
     let result = tokio::task::spawn_blocking(move || {
+        caller
+            .bound_current()
+            .map_err(|_| SignalError(403, "requester run changed".into()))?;
         let mut conn = open_db(&db, mutation.is_some())
             .map_err(|_| SignalError(503, "signal store unavailable".into()))?;
         let actor = remote
