@@ -19,6 +19,17 @@ pub(crate) struct Agent {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Scope {
+    DesktopPresent {
+        run: AgentRun,
+        #[serde(default)]
+        instance_id: Option<String>,
+        presentation: crate::desktop_present::Route,
+        browser_urls: Vec<Option<String>>,
+        any_browser_url: bool,
+        max_ttl_seconds: u32,
+        #[serde(default)]
+        configuration_revision: Option<String>,
+    },
     NetworkEgress {
         host: String,
         ports: Vec<u16>,
@@ -139,6 +150,12 @@ impl Delegation {
         }
         for scope in &self.scopes {
             match scope {
+                Scope::DesktopPresent { any_browser_url, .. } => {
+                    warnings.push("Desktop presentation starts or reuses the named worker run's gated desktop. It opens the host's local browser or uses the configured tailnet route and can navigate the guest browser to an allowed URL. Delegation validity, pending-request expiry and finite preview lifetime are separate. Preview URLs, unlock codes and sessions stay on the operator path. Each approval adds a separate preview authority source; independent sources survive revocation. When no valid source remains, future access is refused and connected viewers are disconnected on the next authority check. Browser opening and disclosed content cannot be undone.".into());
+                    if *any_browser_url {
+                        warnings.push("Any browser URL accepted by the desktop presenter is allowed, including future destinations. This can show arbitrary guest-selected content and navigate the guest browser; network and credential controls still apply.".into());
+                    }
+                }
                 Scope::NetworkEgress { host, all_ports, .. } => {
                     if host.contains(['*','?','[']) { warnings.push(format!("Network destination pattern {host} permits matching destinations, including future matches.")); }
                     if *all_ports { warnings.push(format!("Network destination {host} permits every destination port. Port 443 does not establish safe use.")); }
@@ -208,6 +225,39 @@ impl Delegation {
         }
         for scope in &self.scopes {
             match scope {
+                Scope::DesktopPresent {
+                    run,
+                    instance_id,
+                    browser_urls,
+                    any_browser_url,
+                    max_ttl_seconds,
+                    configuration_revision,
+                    ..
+                } => {
+                    if !self
+                        .beneficiaries
+                        .iter()
+                        .any(|agent| agent.name == run.agent && agent.agent_id == run.agent_id)
+                        || run.run_id.len() != 32
+                        || !run.run_id.bytes().all(|b| b.is_ascii_hexdigit())
+                        || !(1..=86400).contains(max_ttl_seconds)
+                        || configuration_revision.as_deref().is_none_or(str::is_empty)
+                        || instance_id.as_deref().is_none_or(str::is_empty)
+                        || (*any_browser_url != browser_urls.is_empty())
+                        || browser_urls.iter().any(|url| {
+                            crate::desktop_present::Parameters {
+                                browser_url: url.clone(),
+                                ttl_seconds: *max_ttl_seconds,
+                            }
+                            .validate()
+                            .is_err()
+                        })
+                    {
+                        return Err(invalid(
+                            "desktop_present requires an exact beneficiary run, presentation, host configuration revision, supported finite maximum lifetime, and explicit browser_urls choices or any_browser_url",
+                        ));
+                    }
+                }
                 Scope::CoordRoom {
                     room_id,
                     participants,
@@ -357,6 +407,34 @@ impl Delegation {
         {
             return false;
         }
+        if a["kind"] == "operator_action" {
+            return option == "once"
+                && a["action_id"] == crate::operator_actions::DESKTOP_PRESENT
+                && self.scopes.iter().any(|scope| match scope {
+                    Scope::DesktopPresent {
+                        run,
+                        instance_id,
+                        presentation,
+                        browser_urls,
+                        any_browser_url,
+                        max_ttl_seconds,
+                        configuration_revision,
+                    } => serde_json::from_value::<crate::desktop_present::Parameters>(
+                        a["parameters"].clone(),
+                    )
+                    .is_ok_and(|parameters| {
+                        parameters.validate().is_ok()
+                            && parameters.ttl_seconds <= *max_ttl_seconds
+                            && (*any_browser_url || browser_urls.contains(&parameters.browser_url))
+                            && a["run"] == json!(run)
+                            && a["instance_id"].as_str() == instance_id.as_deref()
+                            && a["presentation"] == json!(presentation)
+                            && a["configuration_revision"].as_str()
+                                == configuration_revision.as_deref()
+                    }),
+                    _ => false,
+                });
+        }
         if !matches!(option, "run" | "delegated_once")
             || (option == "delegated_once" && !self.gateway_once)
         {
@@ -378,6 +456,7 @@ impl Delegation {
             }));
         }
         self.scopes.iter().any(|scope| match scope {
+            Scope::DesktopPresent { .. } => false,
             Scope::CoordRoom {
                 room_id,
                 participants,
@@ -589,6 +668,7 @@ impl IssuedAccess {
             Some("service_authorize") => "service_grants",
             Some("contract_binding") => "binding_grants",
             Some("coord_access") => "coord_grants",
+            Some("operator_action") => "desktop_grants",
             // Gateway permissions belong to the gateway grant store. Its
             // caller checks the recorded grant and this authority together.
             Some("gateway_route") => return true,
@@ -698,7 +778,7 @@ impl Policy {
             return vec![];
         };
         native.authored["agents"].as_object().into_iter().flat_map(|agents| agents.keys())
-            .flat_map(|agent| ["network_grants","credential_grants","service_grants","binding_grants","coord_grants"].into_iter().flat_map(move |kind| {
+            .flat_map(|agent| ["network_grants","credential_grants","service_grants","binding_grants","coord_grants","desktop_grants"].into_iter().flat_map(move |kind| {
                 self.issued_access(agent,kind).into_iter().map(move |grant| json!({"kind":kind,"active":grant.active(self),"permission":grant}))
             })).collect()
     }
@@ -708,6 +788,17 @@ impl IssuedAccess {
     pub(crate) fn validate(&self) -> Result<()> {
         let kind = self.action["kind"].as_str().unwrap_or("");
         let allowed: &[&str] = match kind {
+            "operator_action" => &[
+                "instance_id",
+                "kind",
+                "action_id",
+                "agent",
+                "agent_id",
+                "run",
+                "parameters",
+                "presentation",
+                "configuration_revision",
+            ],
             "coord_access" => &[
                 "kind",
                 "agent",
@@ -790,7 +881,8 @@ impl IssuedAccess {
             || !self.approval_id.starts_with("apr-")
             || !crate::approvals::pending::valid_id(&self.approval_id)
             || self.policy_revision.len() != 64
-            || !matches!(self.option.as_str(), "run" | "delegated_once")
+            || !(matches!(self.option.as_str(), "run" | "delegated_once")
+                || (kind == "operator_action" && self.option == "once"))
             || (self.option == "delegated_once" && kind != "gateway_route")
             || self
                 .expires_at
@@ -800,6 +892,28 @@ impl IssuedAccess {
             return Err(invalid(
                 "issued permission has unsupported scope, identity or lifetime",
             ));
+        }
+        if kind == "operator_action" {
+            let parameters: crate::desktop_present::Parameters =
+                serde_json::from_value(self.action["parameters"].clone())
+                    .map_err(|_| invalid("invalid desktop parameters"))?;
+            parameters.validate().map_err(invalid)?;
+            if self.option != "once"
+                || self.action["action_id"] != crate::operator_actions::DESKTOP_PRESENT
+                || serde_json::from_value::<crate::desktop_present::Route>(
+                    self.action["presentation"].clone(),
+                )
+                .is_err()
+                || self.action["configuration_revision"]
+                    .as_str()
+                    .is_none_or(|value| value.len() != 64)
+                || self.expires_at.is_none()
+                || self.reviewer.agent_id == self.beneficiary.agent_id
+            {
+                return Err(invalid(
+                    "invalid desktop action, presentation, lifetime or self-benefit",
+                ));
+            }
         }
         if kind == "service_authorize" {
             let text = |key: &str| self.action[key].as_str();
@@ -907,6 +1021,7 @@ pub(crate) fn validate_grants(document: &Value) -> Result<()> {
             ("service_grants", "service_authorize"),
             ("binding_grants", "contract_binding"),
             ("coord_grants", "coord_access"),
+            ("desktop_grants", "operator_action"),
         ] {
             if let Some(values) = fields.get(collection) {
                 for (id, value) in super::object(values, collection)? {
@@ -982,6 +1097,14 @@ impl Delegation {
     pub(crate) fn dependencies(&self, policy: &Policy) -> Result<BTreeMap<String, String>> {
         let mut result = BTreeMap::new();
         for scope in &self.scopes {
+            if let Scope::DesktopPresent { run, .. } = scope {
+                if !run.current(policy) {
+                    return Err(invalid(
+                        "desktop delegation target run was stopped or replaced",
+                    ));
+                }
+                result.insert(format!("desktop:{}", run.agent_id), digest(&json!(run)));
+            }
             if let Scope::CoordRoom {
                 room_id,
                 participants,
@@ -1188,6 +1311,7 @@ impl Policy {
         for beneficiary in &delegation.beneficiaries {
             for scope in &delegation.scopes {
                 match scope {
+                    Scope::DesktopPresent { .. }=>access.push(json!({"beneficiary":beneficiary,"type":"desktop_present","independent_access":"Independent operator and other valid preview sources remain. Closing the operator preview explicitly closes all sources; revoking this delegation removes only its sources."})),
                     Scope::CoordRoom {room_id,..}=>access.push(json!({"beneficiary":beneficiary,"type":"coord_room","room_id":room_id,"independent_access":crate::coord_rooms::membership::room_basis(self,room_id).ok(),"effective_participants":crate::coord_rooms::membership::participants(self,room_id).ok()})),
                     Scope::NetworkEgress {host,ports,all_ports,actions} if !host.contains(['*','?','[']) && !all_ports => {
                         for port in ports { for action in actions {

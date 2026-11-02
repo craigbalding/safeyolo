@@ -7,9 +7,24 @@
 - [Diagnostics and policy](#diagnostics-and-policy)
 - [Delegated decisions](#delegated-decisions)
 - [Approval context](#approval-context)
+- [Operator actions](#operator-actions)
 - [Flow inspection](#flow-inspection)
 - [Service gateway](#service-gateway)
 - [Legacy agent collaboration with plumb](#legacy-agent-collaboration-with-plumb)
+
+## Operator actions
+
+`GET /operator-actions` discovers the bounded SafeYolo action vocabulary for
+the requesting agent. `POST /operator-actions` accepts `action_id`, typed
+`parameters` and optional untrusted `reason`. The first action is
+`desktop.present`. See [Desktop and operator preview](desktop.md) for the
+request and its local or configured tailnet prerequisites.
+
+`GET /operator-actions/ACTION_REQUEST_ID` reads the requesting agent's result.
+Use the stable ID returned by the request. The operator decides through the
+existing approval interface. The request cannot choose another agent, change
+approval requirements or supply host commands. Network and service policy
+remain authoritative. Preview access material is returned only to the operator.
 
 ## Model
 
@@ -95,6 +110,19 @@ credential run access is reusable within its declared scope. Credential
 approval does not limit an API operation or change shared baseline approval.
 A gateway route grant is not an approval of an exact payload.
 
+For `desktop.present`, the worker uses the typed request described in
+[Desktop and operator preview](desktop.md). The host fixes its target instance,
+current sandbox run and configured presentation route. An eligible reviewer
+selects the offered `once` action option; it cannot replace parameters or
+extend the finite lifetime. The existing presenter executes that decision.
+Requester and reviewer results exclude preview URLs, unlock codes and sessions.
+The operator can recover those through the existing approval read path without
+replaying an action. Revocation removes only the derived source. If no valid
+source remains, the gate disconnects admitted viewers on its next authority
+check. `started` records completed execution; `preview_active` separately
+reports current activation. Lost responses and interrupted executions require
+canonical inspection and never automatically replay an opener or browser.
+
 For an existing local Coord room, the worker calls `request_room_access` with
 `room_name`, explicit `permissions` (`receive`, `send`, `page_operator`) and a new
 `operation_id`. The equivalent route is `POST /api/coord/request-access`.
@@ -124,8 +152,10 @@ The equivalent Agent API routes are `GET /approvals`,
 The decision JSON contains only `decision`, `delegation` and `option`.
 Reconcile through the canonical list after reconnect. If a reply is lost, read
 the canonical outcome before another decision. Refusal installs no policy deny
-rule. Deferral leaves the request pending. The worker must retry after an
-approval; the host does not replay its request.
+rule. Deferral leaves the request pending. For traffic, service and binding
+requests, the worker must retry after an approval; the host does not replay
+its request. Desktop presentation executes its fixed action once through the
+shared approval resolver.
 
 The host operator configures and inspects delegations with
 `approvals delegation preview|check|apply|revoke` and `approvals delegations`.

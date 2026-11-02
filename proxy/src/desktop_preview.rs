@@ -76,9 +76,64 @@ pub(crate) struct Access {
     stop: watch::Sender<bool>,
     connections: Arc<tokio::sync::Semaphore>,
     named_host: bool,
+    authorities: StdMutex<BTreeMap<String, PreviewAuthority>>,
+}
+
+#[derive(Clone)]
+pub(crate) enum PreviewAuthority {
+    Operator,
+    Action {
+        issued: Box<crate::policy::delegation::IssuedAccess>,
+        state: crate::RuntimeState,
+        store: crate::approvals::pending::Store,
+    },
+}
+
+impl PreviewAuthority {
+    fn id(&self) -> String {
+        match self {
+            Self::Operator => "operator".into(),
+            Self::Action { issued, .. } => issued.approval_id.clone(),
+        }
+    }
+
+    pub(crate) fn active(&self) -> bool {
+        match self {
+            Self::Operator => true,
+            Self::Action {
+                issued,
+                state,
+                store,
+            } => {
+                let policy = state.read().ok().and_then(|runtime| runtime.policy.clone());
+                policy.is_some_and(|policy| issued.active(&policy))
+                    && crate::desktop_present::configuration_revision()
+                        .is_ok_and(|revision| issued.action["configuration_revision"] == revision)
+                    && store
+                        .get(&issued.approval_id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|record| {
+                            record.status == "approved"
+                                && matches!(
+                                    record.result["status"].as_str(),
+                                    Some("starting" | "started")
+                                )
+                                && record.result["issued_access"] == json!(issued)
+                        })
+            }
+        }
+    }
 }
 
 impl Access {
+    fn authorized(&self) -> bool {
+        self.authorities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .any(PreviewAuthority::active)
+    }
     // Permission to inspect a configured target does not depend on its readiness.
     // Each preview retains the agent and sandbox generation captured at opening.
     pub(crate) fn check_target(&self) -> std::io::Result<()> {
@@ -123,7 +178,8 @@ pub(crate) struct Preview {
     access: Arc<Access>,
     task: Option<JoinHandle<()>>,
     shared: Option<Arc<SharedListener>>,
-    tailnet: Option<crate::tailnet::Session>,
+    tailnet: Arc<Mutex<Option<crate::tailnet::Session>>>,
+    authority_task: JoinHandle<()>,
     tailnet_port: Option<u16>,
     opened: bool,
 }
@@ -173,6 +229,7 @@ impl Preview {
         host_port: u16,
         tailnet_port: Option<u16>,
         shared: Option<Arc<SharedListener>>,
+        authority: PreviewAuthority,
     ) -> Result<Self, Error> {
         let named_host = host_port != 0 && tailnet_port.is_none();
         let (listener, shared, port) = if named_host {
@@ -210,6 +267,42 @@ impl Preview {
             stop,
             connections: Arc::new(tokio::sync::Semaphore::new(64)),
             named_host,
+            authorities: StdMutex::new(BTreeMap::from([(authority.id(), authority)])),
+        });
+        let tailnet = Arc::new(Mutex::new(None::<crate::tailnet::Session>));
+        let weak_access = Arc::downgrade(&access);
+        let active_tailnet = tailnet.clone();
+        let authority_task = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                let Some(access) = weak_access.upgrade() else {
+                    break;
+                };
+                let valid = crate::host_platform::in_config(access.config.clone(), async {
+                    access.authorized()
+                })
+                .await;
+                if !valid || *access.stop.borrow() {
+                    access.stop.send_replace(true);
+                    if !valid {
+                        crate::host_platform::in_config(access.config.clone(), async {
+                            crate::host_events::write(
+                                &access.agent,
+                                "agent.preview_expired",
+                                "agent",
+                                "No valid preview authority remains; viewers disconnected".into(),
+                                Some("agent-preview"),
+                                json!({"agent_id":access.agent_id,"host_port":access.host_port}),
+                            );
+                        })
+                        .await;
+                    }
+                    break;
+                }
+            }
+            if let Some(mut session) = active_tailnet.lock().await.take() {
+                session.stop().await;
+            }
         });
         let task = listener.map(|listener| {
             tokio::spawn(accept(listener, Target::Single(access.clone()), receiver))
@@ -231,7 +324,8 @@ impl Preview {
             access,
             task,
             shared,
-            tailnet: None,
+            tailnet,
+            authority_task,
             tailnet_port,
             opened: false,
         };
@@ -239,7 +333,7 @@ impl Preview {
             match crate::tailnet::Session::start(port, tailnet_port).await {
                 Ok(session) => {
                     preview.url = session.url("/_safeyolo_desktop/");
-                    preview.tailnet = Some(session);
+                    *preview.tailnet.lock().await = Some(session);
                 }
                 Err(error) => {
                     preview.close().await;
@@ -261,7 +355,11 @@ impl Preview {
     }
 
     pub(crate) fn is_running(&mut self) -> bool {
-        self.task.as_ref().is_none_or(|task| !task.is_finished())
+        !*self.access.stop.borrow()
+            && crate::host_platform::with_config(self.access.config.clone(), || {
+                self.access.authorized()
+            })
+            && self.task.as_ref().is_none_or(|task| !task.is_finished())
             && self
                 .shared
                 .as_ref()
@@ -270,10 +368,68 @@ impl Preview {
                 .access
                 .check_target()
                 .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            && self.tailnet.try_lock().is_ok_and(|mut session| {
+                session
+                    .as_mut()
+                    .is_none_or(crate::tailnet::Session::is_running)
+            })
+    }
+
+    pub(crate) fn add_authority(&self, authority: PreviewAuthority) {
+        self.access
+            .authorities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(authority.id(), authority);
+    }
+
+    pub(crate) fn is_tailnet(&self) -> bool {
+        self.tailnet_port.is_some()
+    }
+
+    pub(crate) fn authority_view(&self, approval_id: Option<&str>) -> Option<serde_json::Value> {
+        let authorities = self
+            .access
+            .authorities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if approval_id.is_some_and(|id| {
+            authorities
+                .get(id)
+                .is_none_or(|authority| !authority.active())
+        }) {
+            return None;
+        }
+        let sources: Vec<_> = authorities
+            .values()
+            .filter(|authority| authority.active())
+            .map(|authority| match authority {
+                PreviewAuthority::Operator => json!({"kind":"operator"}),
+                PreviewAuthority::Action { issued, .. } => {
+                    json!({"kind":"action","authority":issued})
+                }
+            })
+            .collect();
+        Some(json!({"agent_id":self.access.agent_id,"agent":self.access.agent,"sources":sources}))
+    }
+
+    pub(crate) fn authority_active(&self, approval_id: &str) -> bool {
+        !*self.access.stop.borrow()
             && self
-                .tailnet
-                .as_mut()
-                .is_none_or(crate::tailnet::Session::is_running)
+                .access
+                .authorities
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(approval_id)
+                .is_some_and(PreviewAuthority::active)
+    }
+
+    pub(crate) fn remove_authority(&self, approval_id: &str) {
+        self.access
+            .authorities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(approval_id);
     }
 
     pub(crate) async fn issue_unlock_code(&self) -> String {
@@ -292,6 +448,7 @@ impl Preview {
 
     pub(crate) async fn close(&mut self) {
         self.access.stop.send_replace(true);
+        let _ = (&mut self.authority_task).await;
         if let Some(task) = &mut self.task {
             let _ = task.await;
         }
@@ -304,7 +461,7 @@ impl Preview {
             let _ = listener.stop.send(true);
             let _ = (&mut listener.task).await;
         }
-        if let Some(mut tailnet) = self.tailnet.take() {
+        if let Some(mut tailnet) = self.tailnet.lock().await.take() {
             tailnet.stop().await;
         }
         if self.opened {
@@ -328,6 +485,8 @@ impl Preview {
 impl Drop for Preview {
     fn drop(&mut self) {
         self.access.stop.send_replace(true);
+        // The authority task observes stop and retires only this preview's Serve
+        // session. Its weak reference cannot keep a retired preview alive.
     }
 }
 
@@ -711,6 +870,16 @@ async fn connection(
         return Ok(());
     }
     crate::host_platform::in_config(access.config.clone(), async {
+        if !access.authorized() {
+            return reply(
+                &mut socket,
+                "403 Forbidden",
+                &[("Content-Type", "application/json".into())],
+                b"{\"error\":\"preview authority expired or revoked\"}",
+                false,
+            )
+            .await;
+        }
         tokio::select! {
             result = serve(socket, request, access.clone()) => result,
             _ = stop.changed() => Ok(()),

@@ -1,13 +1,13 @@
-//! Operator reads and decisions use canonical request scope. Plumb and desktop
-//! keep their audit-backed presentation and their separate decision owners.
+//! Operator reads and decisions use canonical request scope. Retained Plumb
+//! prompts use their existing audit-backed owner.
 
 use super::*;
 use crate::approvals::network_action;
 use crate::approvals::pending;
 
-/// Plumb and desktop still publish audit prompts. Other approval types use
+/// Plumb still publishes audit prompts. Other approval types use
 /// the canonical store. Select these events before decoding their payloads.
-pub(super) fn plumb_and_desktop(path: &Path) -> Vec<Value> {
+pub(super) fn plumb_prompts(path: &Path) -> Vec<Value> {
     use std::collections::{HashMap, HashSet, VecDeque};
     use std::io::BufRead;
 
@@ -15,14 +15,6 @@ pub(super) fn plumb_and_desktop(path: &Path) -> Vec<Value> {
     struct EventName<'a> {
         #[serde(borrow)]
         event: std::borrow::Cow<'a, str>,
-        #[serde(borrow)]
-        details: Option<Destination<'a>>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct Destination<'a> {
-        #[serde(borrow)]
-        destination: Option<std::borrow::Cow<'a, str>>,
     }
 
     let Ok(file) = std::fs::File::open(path) else {
@@ -51,19 +43,10 @@ pub(super) fn plumb_and_desktop(path: &Path) -> Vec<Value> {
         let Ok(name) = serde_json::from_str::<EventName<'_>>(&line) else {
             continue;
         };
-        let selected =
-            matches!(
-                name.event.as_ref(),
-                "plumb.requested"
-                    | "plumb.approved"
-                    | "plumb.denied"
-                    | "agent.desktop_present_requested"
-                    | "admin.desktop_presented"
-            ) || (matches!(name.event.as_ref(), "admin.denial" | "admin.approval_added")
-                && name
-                    .details
-                    .and_then(|details| details.destination)
-                    .is_some_and(|destination| destination.starts_with("desktop:")));
+        let selected = matches!(
+            name.event.as_ref(),
+            "plumb.requested" | "plumb.approved" | "plumb.denied"
+        );
         if selected && let Ok(event) = serde_json::from_str::<Value>(&line) {
             events.push_back((sequence, event));
         }
@@ -90,41 +73,10 @@ pub(super) fn plumb_and_desktop(path: &Path) -> Vec<Value> {
                     resolved.insert(key);
                 }
             }
-            Some("admin.desktop_presented" | "admin.denial" | "admin.approval_added") => {
-                let key = if event["event"] == "admin.desktop_presented" {
-                    event["details"]["agent_id"]
-                        .as_str()
-                        .filter(|id| !id.is_empty())
-                        .map(|id| format!("desktop.present:desktop:{id}"))
-                } else {
-                    let credentials = &event["details"]["cred_id"];
-                    let desktop = credentials == "desktop.present"
-                        || credentials.as_array().is_some_and(|values| {
-                            values.iter().any(|value| value == "desktop.present")
-                        });
-                    event["details"]["destination"]
-                        .as_str()
-                        .filter(|_| desktop)
-                        .map(|destination| format!("desktop.present:{destination}"))
-                };
-                let Some(key) = key else {
-                    continue;
-                };
-                if prompts.get(&key).is_some_and(|(_, prompt)| {
-                    event["details"]["approval_request_id"]
-                        .as_str()
-                        .is_none_or(|id| prompt["request_id"] == id)
-                }) {
-                    prompts.remove(&key);
-                }
-            }
-            Some("plumb.requested" | "agent.desktop_present_requested") => {
+            Some("plumb.requested") => {
                 if event["approval"]["required"] != true
                     || !event["details"]["approval_id"].is_null()
-                    || !matches!(
-                        event["approval"]["approval_type"].as_str(),
-                        Some("plumb" | "desktop_present")
-                    )
+                    || !matches!(event["approval"]["approval_type"].as_str(), Some("plumb"))
                 {
                     continue;
                 }

@@ -319,7 +319,10 @@ impl Writer {
                         }
                         drop(reservation);
                         healthy &= write.is_ok();
-                        if stop || write.is_err() {
+                        // A failed sink and stderr fallback fail this batch's
+                        // receipts, but must not strand later events in a
+                        // queue whose worker has exited. Do not replay it.
+                        if stop {
                             break;
                         }
                     }

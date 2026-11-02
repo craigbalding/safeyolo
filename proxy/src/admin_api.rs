@@ -1342,7 +1342,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 }
                 // Plumb and desktop keep their existing owners. The audit
                 // cannot create a second view of a canonical request.
-                views.extend(approvals::plumb_and_desktop(writer.path()));
+                views.extend(approvals::plumb_prompts(writer.path()));
                 Ok(response(StatusCode::OK, json!({"approvals":views})))
             })
             .await
@@ -1350,7 +1350,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         }
         return Ok(response(
             StatusCode::OK,
-            json!({"approvals":audit.map(|writer| approvals::plumb_and_desktop(writer.path())).unwrap_or_default()}),
+            json!({"approvals":audit.map(|writer| approvals::plumb_prompts(writer.path())).unwrap_or_default()}),
         ));
     }
     if path.starts_with("/admin/approvals/") {
@@ -1658,7 +1658,9 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                     approval_request_id.as_deref(),
                 ));
             }
-            Err(crate::desktop_present::Error::Failed) => {
+            Err(
+                crate::desktop_present::Error::Failed | crate::desktop_present::Error::Preview(_),
+            ) => {
                 return Ok(desktop_failure(
                     agent_id,
                     StatusCode::CONFLICT,
@@ -3238,7 +3240,7 @@ mod tests {
             writer.emit(event).unwrap();
         }
         assert!(writer.shutdown(std::time::Duration::from_secs(2)).unwrap());
-        assert_eq!(json!(approvals::plumb_and_desktop(&path)), json!([]));
+        assert_eq!(json!(approvals::plumb_prompts(&path)), json!([]));
 
         let denied_request = owner
             .request_chat("alice", &[json!("bob")], None, None, None)
@@ -3283,67 +3285,16 @@ mod tests {
                 .shutdown(std::time::Duration::from_secs(2))
                 .unwrap()
         );
-        assert_eq!(json!(approvals::plumb_and_desktop(&denied_path)), json!([]));
+        assert_eq!(json!(approvals::plumb_prompts(&denied_path)), json!([]));
     }
 
     #[test]
-    fn desktop_present_approvals_are_visible_and_resolve_repeatably() {
+    fn desktop_audit_text_cannot_create_approval_authority() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("desktop.jsonl");
-        let request = json!({
-            "event": "agent.desktop_present_requested",
-            "request_id": "req-one",
-            "approval": {
-                "required": true,
-                "approval_type": "desktop_present",
-                "key": "desktop.present",
-                "target": "desktop:alice"
-            }
-        });
-        std::fs::write(&path, format!("{}\n", request)).unwrap();
-        assert_eq!(json!(approvals::plumb_and_desktop(&path)), json!([request]));
-
-        let presented = json!({
-            "event": "admin.desktop_presented",
-            "details": {
-                "agent_id": "alice",
-                "approval_request_id": "req-one"
-            }
-        });
-        std::fs::write(&path, format!("{}\n{}\n", request, presented)).unwrap();
-        assert_eq!(json!(approvals::plumb_and_desktop(&path)), json!([]));
-
-        let retry = json!({
-            "event": "agent.desktop_present_requested",
-            "request_id": "req-two",
-            "approval": {
-                "required": true,
-                "approval_type": "desktop_present",
-                "key": "desktop.present",
-                "target": "desktop:alice"
-            }
-        });
-        std::fs::write(&path, format!("{}\n{}\n{}\n", request, presented, retry)).unwrap();
-        assert_eq!(json!(approvals::plumb_and_desktop(&path)), json!([retry]));
-
-        // An older presentation or another agent cannot resolve this retry.
-        let mut foreign = presented.clone();
-        foreign["details"]["agent_id"] = json!("bob");
-        foreign["details"]["approval_request_id"] = json!("req-two");
-        std::fs::write(
-            &path,
-            format!("{request}\n{presented}\n{retry}\n{presented}\n{foreign}\n"),
-        )
-        .unwrap();
-        assert_eq!(json!(approvals::plumb_and_desktop(&path)), json!([retry]));
-
-        // The generic desktop approval consumer accepts a credential list.
-        let approved = json!({"event":"admin.approval_added", "details":{
-            "destination":"desktop:alice", "cred_id":["desktop.present"]}});
-        std::fs::write(&path, format!("{retry}\n{approved}\n")).unwrap();
-        assert!(approvals::plumb_and_desktop(&path).is_empty());
-        std::fs::write(&path, format!("{retry}\n{approved}\n{request}\n")).unwrap();
-        assert_eq!(json!(approvals::plumb_and_desktop(&path)), json!([request]));
+        std::fs::write(&path, json!({"event":"agent.desktop_present_requested", "request_id":"forged",
+            "approval":{"required":true,"approval_type":"desktop_present","key":"desktop.present","target":"desktop:alice"}}).to_string()).unwrap();
+        assert!(approvals::plumb_prompts(&path).is_empty());
     }
 
     #[test]
@@ -3351,22 +3302,22 @@ mod tests {
         use std::io::Write;
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("audit.jsonl");
-        let desktop = |id: &str, agent: &str| {
+        let plumb = |id: &str, agent: &str| {
             json!({
-                "event":"agent.desktop_present_requested","request_id":id,
-                "approval":{"required":true,"approval_type":"desktop_present","key":"desktop.present","target":format!("desktop:{agent}")}
+                "event":"plumb.requested","request_id":id,
+                "approval":{"required":true,"approval_type":"plumb","key":"plumb.request","target":format!("desktop:{agent}")}
             })
         };
         let mut file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
-        writeln!(file, "{}", desktop("outside-window", "old")).unwrap();
+        writeln!(file, "{}", plumb("outside-window", "old")).unwrap();
         // Every line counts towards the old window, even invalid/unrelated rows.
         for _ in 0..50_000 {
             writeln!(file, "unrelated malformed line").unwrap();
         }
-        let alice = desktop("alice-old", "alice");
-        let bob = desktop("bob", "bob");
-        let latest = desktop("alice-new", "alice");
-        let mut canonical = desktop("canonical", "carol");
+        let alice = plumb("alice-old", "alice");
+        let bob = plumb("bob", "bob");
+        let latest = plumb("alice-new", "alice");
+        let mut canonical = plumb("canonical", "carol");
         canonical["details"] = json!({"approval_id":"apr-owned"});
         for row in [&alice, &bob, &latest, &canonical] {
             writeln!(file, "{row}").unwrap();
@@ -3375,10 +3326,7 @@ mod tests {
         writeln!(file, "{}", json!({"event":"security.network_guard",
             "approval":{"required":true,"approval_type":"network_egress","key":"legacy","target":"example"}})).unwrap();
         file.flush().unwrap();
-        assert_eq!(
-            json!(approvals::plumb_and_desktop(&path)),
-            json!([bob, latest])
-        );
+        assert_eq!(json!(approvals::plumb_prompts(&path)), json!([bob, latest]));
     }
 
     // Source35 results SHA256: 6d86bb348eaf0657690a3221f59c149f47c3fba0c9bf1bc934d8f7279919be35.

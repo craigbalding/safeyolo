@@ -266,7 +266,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: 3f90bda1c828ea04f73c768b501c022f93044bef605d9329650c0310c95b9992
         - path: proxy/src/lib.rs
-          sha256: ea22eed26249af480f105212d08fc47006023276b2683254122bce031b30d373
+          sha256: acec18fc71e48f4053bede37d8f2945732425602921dc503430d850b6fdd6446
         - path: proxy/src/bin/safeyolo.rs
           sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
       setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
@@ -320,7 +320,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: 3f90bda1c828ea04f73c768b501c022f93044bef605d9329650c0310c95b9992
         - path: proxy/src/lib.rs
-          sha256: ea22eed26249af480f105212d08fc47006023276b2683254122bce031b30d373
+          sha256: acec18fc71e48f4053bede37d8f2945732425602921dc503430d850b6fdd6446
         - path: proxy/src/bin/safeyolo.rs
           sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
         - path: proxy/src/jobs/vz-guest-init.sh

@@ -489,6 +489,7 @@ impl Record {
             Some("credential_allow") => ("security.credential_guard", "credential"),
             Some("gateway_route") => ("gateway.risky_route", "gateway_risky_route"),
             Some("service_authorize") => ("gateway.request_access", "service"),
+            Some("operator_action") => ("agent.operator_action_requested", "desktop_present"),
             Some("coord_access") => ("coord.access_requested", "coord_room"),
             _ => ("gateway.contract_binding_requested", "contract_binding"),
         };
@@ -498,6 +499,7 @@ impl Record {
             .get("host")
             .or_else(|| self.authority.action.get("service"))
             .or_else(|| self.authority.action.get("room_name"))
+            .or_else(|| self.authority.action.get("agent_id"))
             .and_then(Value::as_str)
             .unwrap_or("");
         let mut view = json!({"approval_id":self.approval_id,"request_id":self.request_id,
@@ -524,6 +526,14 @@ impl Record {
                 view["details"]["untrusted_reason_text"] = json!(reason);
             }
         }
+        if self.authority.action["kind"] == "operator_action" {
+            view["details"]["untrusted_reason_text"] = json!(self.untrusted_reason_text);
+            view["details"]["browser_url"] =
+                self.authority.action["parameters"]["browser_url"].clone();
+            view["details"]["presentation"] = self.authority.action["presentation"].clone();
+            view["details"]["ttl_seconds"] =
+                self.authority.action["parameters"]["ttl_seconds"].clone();
+        }
         Ok(view)
     }
 
@@ -539,7 +549,13 @@ pub(crate) fn save_receipt(document: &mut toml_edit::DocumentMut, record: &Recor
 }
 
 pub(crate) fn revision(policy: &Policy, action: &Value) -> Option<String> {
-    if action["kind"] == "coord_access" {
+    if action["kind"] == "operator_action" {
+        Some(digest(
+            &json!({"action_id":crate::operator_actions::DESKTOP_PRESENT,
+            "configuration_revision":action["configuration_revision"],
+            "agent_id":policy.evidence_agent_id(action["agent"].as_str()?)?}),
+        ))
+    } else if action["kind"] == "coord_access" {
         Some(digest(
             &crate::coord_rooms::membership::room_basis(policy, action["room_id"].as_str()?)
                 .ok()?,
@@ -766,6 +782,14 @@ pub(crate) fn current_view(
             view = saved;
         }
     }
+    if view["status"] == "pending"
+        && record.authority.action["kind"] == "operator_action"
+        && state.is_some_and(|state| {
+            !crate::operator_actions::configuration_current(state, &record.authority.action)
+        })
+    {
+        view["status"] = json!("superseded");
+    }
     let runtime = state
         .map(|state| {
             state
@@ -815,6 +839,14 @@ pub(crate) fn current_view(
         };
     }
     view["approval"]["required"] = json!(view["status"] == "pending");
+    if record.authority.action["kind"] == "operator_action"
+        && view["result"]["status"] == "starting"
+        && view["result"]["execution_session_id"].as_str() != Some(&writer.approvals().session_id)
+    {
+        view["result"]["status"] = json!("outcome_unknown");
+        view["result"]["diagnostic"] = json!({
+            "code":"preview_execution_interrupted","message":"The preview execution was interrupted. The operator must inspect the preview before a new request; SafeYolo did not replay it.","graph":"triage-desktop-preview"});
+    }
     // Policy publication locks the grant store before the runtime. Release
     // this runtime read before inspecting that store in the same order.
     let gateway_grants = runtime
@@ -861,6 +893,41 @@ pub(crate) fn current_view(
         };
         view["grant_active"] =
             json!(stored && issued.active(policy) && service_credentials_current);
+        if issued.action["kind"] == "operator_action" {
+            view["grant_active"] = json!(
+                view["grant_active"] == true
+                    && state.is_some_and(|state| crate::operator_actions::configuration_current(
+                        state,
+                        &issued.action
+                    ))
+            );
+            if view["result"]["status"] == "started" && view["grant_active"] == false {
+                view["result"]["status"] = json!(if expired_at(
+                    issued.expires_at.as_deref(),
+                    time::OffsetDateTime::now_utc()
+                ) {
+                    "expired"
+                } else {
+                    "revoked"
+                });
+            }
+            let active = state
+                .and_then(|state| crate::operator_actions::config_path(state).ok())
+                .and_then(|path| {
+                    crate::host_platform::with_config(path, || {
+                        crate::desktop_present::source_active(
+                            &issued.beneficiary.agent_id,
+                            &issued.approval_id,
+                        )
+                    })
+                });
+            view["grant_active"] = match active {
+                Some(active) => json!(active && view["grant_active"] == true),
+                None if view["grant_active"] == false => json!(false),
+                None => Value::Null,
+            };
+            view["result"]["preview_active"] = view["grant_active"].clone();
+        }
         if policy
             .approval_result(&record.approval_id)
             .map_err(invalid)?
@@ -882,6 +949,13 @@ pub(crate) fn inspect(
     state: Option<&crate::RuntimeState>,
 ) -> Result<Value> {
     let mut view = current_view(writer, policy, record, state)?;
+    if record.authority.action["kind"] == "operator_action"
+        && view["result"]["status"] == "started"
+        && let Some(state) = state
+        && let Some(preview) = crate::operator_actions::preview(state, record, true)
+    {
+        view["operator_preview"] = preview;
+    }
     let mut event = Event::new(
         "admin.approval_inspected",
         crate::audit::Kind::Admin,
@@ -974,8 +1048,13 @@ pub(crate) fn resolve_as(
     option: Option<&str>,
     reviewer: Option<(&crate::host_runs::AgentRun, &str)>,
 ) -> Result<Option<(u16, Value)>> {
-    if lookup(writer, id)?.is_none() {
-        return Ok(None);
+    match lookup(writer, id)? {
+        Some(record) if record.authority.action["kind"] == "operator_action" => {
+            return crate::operator_actions::resolve(state, writer, id, decision, option, reviewer)
+                .map(Some);
+        }
+        Some(_) => {}
+        None => return Ok(None),
     }
     let mut changed = false;
     let selected = writer.approvals().decide(id, |record| {

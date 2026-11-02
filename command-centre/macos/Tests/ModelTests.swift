@@ -664,27 +664,12 @@ struct ModelTests: App {
             }
             """.utf8)
         )
-        let desktopAllow = try MutationPlan.forApproval(desktop, allow: true)
-        precondition(
-            desktopAllow == MutationPlan(
-                path: "/admin/agents/ag-lens/desktop/present",
-                body: ["approval_request_id": "req-desktop"],
-                expectsDesktop: true
-            )
-        )
-        let desktopDeny = try MutationPlan.forApproval(desktop, allow: false)
-        precondition(
-            desktopDeny == MutationPlan(
-                path: "/admin/policy/baseline/deny",
-                body: [
-                    "destination": "desktop:ag-lens",
-                    "cred_id": "desktop.present",
-                    "reason": "user_denied",
-                    "approval_request_id": "req-desktop",
-                ],
-                expectsDesktop: false
-            )
-        )
+        for allow in [true, false] {
+            do {
+                _ = try MutationPlan.forApproval(desktop, allow: allow)
+                preconditionFailure("Audit text must not provide desktop approval authority")
+            } catch ClientError.invalidApproval(_) {}
+        }
     }
 
     private static func testCredentialFileAndReload() throws {

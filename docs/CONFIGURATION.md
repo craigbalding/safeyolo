@@ -37,6 +37,12 @@ delivery. The requesting agent can read the same event through
 `traffic.request_outcome` records the response prepared by the proxy. Response
 preparation does not establish that the body reached the client.
 
+If appending fails, the audit writer attempts stderr output. A delegated
+approval read requires its explanation in the canonical audit file and returns
+an error if that write fails. The writer keeps processing later events even if
+stderr also fails. After restoring the audit destination, retry the read
+explicitly; the writer does not replay failed batches.
+
 Older generated configurations can contain `event_log`. The native TOML loader
 and the internal JSON launcher ignore that retired setting. Remove it when
 maintaining those configurations. SafeYolo does not open, append or delete the

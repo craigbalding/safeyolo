@@ -1,8 +1,8 @@
 # Delegate approval decisions
 
 A host operator can let named local reviewer agents decide network, credential,
-service authorization, contract binding, gateway route and existing local Coord
-room access requests for named workers. Any one eligible reviewer can
+service authorization, contract binding, gateway route, existing local Coord
+room access and desktop presentation requests for named workers. Any one eligible reviewer can
 decide. This does not give the reviewer policy administration, a worker's
 credentials, or the permissions that it can issue.
 
@@ -45,8 +45,9 @@ Save `proposal.json`:
 `expires_at` bounds the delegation. A null value leaves it configured until
 change or revocation. `grant_seconds` optionally bounds each issued permission,
 starting at its decision. A null value permits the worker's current run.
-Stopping or replacing that run ends its access. Gateway grants also retain the
-existing gateway expiry. Pending-request expiry is separate from both limits.
+Stopping or replacing that run ends its access. Gateway grants retain their
+existing expiry; desktop preview sources always have a finite lifetime.
+Pending-request expiry is separate from both limits.
 Checks reject a `grant_seconds` value whose expiry cannot fit the supported
 timestamp range. Supported long lifetimes remain available.
 
@@ -99,12 +100,80 @@ Each `scopes` entry uses one of these shapes:
 | `contract_binding` | `service`, `capability` and `template` are exact. `bound_values` maps each permitted binding field to a nonempty list of complete JSON choices. `grantable_operations` lists supported operation names. One scope must contain every submitted value and selected operation. Only the worker run receives the derived binding. Existing operator bindings and all other access checks remain. |
 | `gateway_route` | `service`, `capability`, `method`, `path` and optional `binding_id` bound the envelope. Supported method/path patterns can cover several routes. Each issued grant binds the canonical method and literal path, current service/capability/binding definitions and worker run. It does not bind an exact payload. Existing service authorization and contract checks remain. |
 | `coord_room` | `room_id` selects one existing local room. `participants` lists exact `principal_kind`, `principal_id` and explicit `permissions` for the maximum audience. Include every existing participant and each beneficiary's maximum rights. `permissions` bounds newly issued worker rights: `send`, `receive`, `page_operator`, or an explicit combination. Each decision grants only the selected rights for that worker's trusted run. |
+| `desktop_present` | `run` selects one exact worker incarnation. `presentation` selects the host's configured `local` or `tailnet` route. `browser_urls` lists exact optional URLs; `null` permits no navigation. Alternatively, select `any_browser_url: true` with an empty URL list. `max_ttl_seconds` bounds the finite preview lifetime, from 1 through 86400 seconds. Setup preview fills the current `instance_id` and `configuration_revision`. One scope must contain the entire action. |
 
 Wildcard destinations, all ports, reusable access, multiple reviewers and
 reciprocal approval relationships have specific preview warnings. They remain
 usable after the proposal is acknowledged. The selected request must fit
 entirely within one current delegation. Two partial delegations cannot be
 combined to approve it.
+
+## Delegate desktop presentation
+
+On the owning host, configure a working local display and browser opener, or
+the existing gated Tailscale presentation route. Prepare the worker's managed
+desktop capability. The reviewer needs its own current run and existing
+attention room. It does not receive a desktop URL, unlock code or viewer session.
+
+Use `safeyolo --root ROOT agent status worker` to obtain the worker's current
+`run_id`. Use the durable agent ID from the configured worker. In the proposal
+above, replace `scopes` with this shape and replace the example identity and run:
+
+```json
+[{"type":"desktop_present",
+  "run":{"agent":"worker","agent_id":"ag-11111111111111111111111111111111",
+         "run_id":"0123456789abcdef0123456789abcdef"},
+  "presentation":"local","browser_urls":[null,"about:blank"],
+  "any_browser_url":false,"max_ttl_seconds":900}]
+```
+
+Preview and apply this proposal through the existing commands. Copy the host's
+complete `after` projection, including instance and configuration revisions,
+before acknowledging it. For broader browser navigation, explicitly select
+`any_browser_url: true` and `browser_urls: []`. The preview explains that this
+permits every URL the presenter validates, including future destinations.
+Network and credential controls still apply inside the guest.
+
+The worker requests `desktop.present` through `POST /operator-actions`, using
+its own Agent API token and typed parameters. `POST /desktop/present` accepts
+the same parameters without an action wrapper and uses the same canonical
+record. An eligible reviewer reads the reference and selects the offered
+`once` option. The host rechecks the full action, exact run, instance, exposure,
+URL, lifetime and current configuration. It then starts or reuses the existing
+desktop and gate, optionally navigates the guest browser, and opens the local
+host browser or uses the configured tailnet route. A refused decision creates
+no lasting policy deny and leaves existing preview sources unchanged.
+
+The decision preview reports whether a gate can be reused and how many active
+sources it already has. The new source expires at the earliest of the requested
+TTL, `grant_seconds`, delegation expiry and any pending-request expiry. Its
+finite interval starts at the canonical decision; desktop startup consumes
+part of that interval. These limits remain distinct in setup and decision
+previews. A null delegation expiry does not make a desktop source permanent.
+
+On the operator host, use `approvals show ID` to recover an active presentation's
+URL and current unlock code. This read neither replays the action nor extends
+its authority. If the code has already been consumed, the existing authenticated
+browser session remains usable. The explicit `safeyolo --root ROOT agent present worker`
+command remains the operator recovery path when the reviewer is offline;
+it adds an independent operator source. `started` records that execution
+completed. `preview_active` reports current source activation, or null while
+the owner is busy; the saved receipt alone does not prove current access.
+
+Each source retains its approval, delegation/revision, worker run and expiry.
+Narrowing, revocation, expiry, run replacement and relevant host configuration
+changes invalidate derived authority. Other independently valid sources remain.
+Each new preview HTTP request checks authority. The owner checks active sources
+every 250 ms. When no valid source remains, it refuses future access, disconnects
+admitted viewers and retires its Tailscale session on the next check. It does
+not stop an independently running guest desktop. Browser opening and disclosed
+content cannot be undone.
+
+Proxy restart does not recreate a preview from its receipt. An interrupted
+execution reports `outcome_unknown`; inspect the preview and guest before a
+new request. Duplicate decisions and lost-response retries do not replay an
+opener, browser navigation or Serve mutation. Presentation secrets remain on
+the operator path in every case.
 
 ## Delegate existing local room access
 
@@ -395,7 +464,9 @@ In the reviewer's normal native Coord MCP session:
 
 Network, credential, service authorization, contract binding and room access decisions use
 the offered `run` option. Gateway decisions
-can use `run`, or `delegated_once` when the delegation permits it. Routine
+can use `run`, or `delegated_once` when the delegation permits it. Desktop
+presentation uses its fixed `once` option and the finite source lifetime
+described above. Routine
 in-envelope decisions require no further human confirmation. The reviewer
 cannot replace the destination, identity, fingerprint, service, payload or
 policy fields. Direct reads and decisions each recheck authority.
@@ -440,6 +511,8 @@ Revocation and expiry apply to new authorizations, including later inspected
 requests on the same client connection and new CONNECT admissions. An already
 admitted opaque tunnel can continue. Revocation cannot reverse upstream writes
 or recover disclosed data.
+Desktop viewer streams are explicitly disconnected when the final valid
+preview source ends, as described under desktop presentation.
 
 A proxy restart retains issued run permissions only while the same worker run,
 delegation, definitions and expiry remain valid. Gateway once grants use the
