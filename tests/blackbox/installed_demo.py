@@ -11,9 +11,10 @@ its stopped test guest homes remain until the owner removes that disposable
 instance through the existing harness teardown.
 --deterministic-completion extends the no-model controls through final input
 and peer checks with a controlled guest app. That result is not a W1 model run.
---preview pauses that completion for normal desktop.present approval and viewer
-interaction. The operator must observe the actual viewer; the driver's prompt
-records an operator report, not independent graphical acceptance.
+--preview selects only the completion and preview journey. It pauses for normal
+desktop.present approval and viewer interaction. The operator must observe the
+actual viewer; the driver's prompt records an operator report, not independent
+graphical acceptance. Prior cancellation and startup controls are not repeated.
 """
 
 from __future__ import annotations
@@ -207,17 +208,18 @@ def run(args: argparse.Namespace) -> None:
                 return process, name, int(port), record
 
             if not args.real_agent:
-                # W2: actual native workspace and runtime creation, then cancellation.
-                cancelled_workspace = directory / "cancel"
-                active, name, port, record = start(cancelled_workspace)
-                active.send("cancel\n")
-                assert active.finish() != 0 and "cancelled after runtime creation" in active.output
-                assert name not in policy()["agents"]
-                assert not cancelled_workspace.exists()
-                assert record.read_text() == ""
-                closed(port)
-                peer_survives()
-                result["cancel_after_runtime"] = {"owned_runtime_removed": True, "zero_deliveries": True, "peer_unchanged": True}
+                if not args.preview:
+                    # W2: actual native workspace and runtime creation, then cancellation.
+                    cancelled_workspace = directory / "cancel"
+                    active, name, port, record = start(cancelled_workspace)
+                    active.send("cancel\n")
+                    assert active.finish() != 0 and "cancelled after runtime creation" in active.output
+                    assert name not in policy()["agents"]
+                    assert not cancelled_workspace.exists()
+                    assert record.read_text() == ""
+                    closed(port)
+                    peer_survives()
+                    result["cancel_after_runtime"] = {"owned_runtime_removed": True, "zero_deliveries": True, "peer_unchanged": True}
 
                 # W2: controlled Codex executable succeeds readiness/auth, then fails
                 # its real guest exec after setup. No model is invoked for this case.
@@ -243,27 +245,28 @@ def run(args: argparse.Namespace) -> None:
                 (auth / "auth.json").chmod(0o600)
                 (auth / ".safeyolo-provenance.json").write_text(json.dumps({"schema":"safeyolo.codex-provenance/v1", "state":"agent-local"}))
                 (auth / ".safeyolo-provenance.json").chmod(0o600)
-                failed_workspace = directory / "failure"
-                active, name, port, record = start(failed_workspace, ["--agent", fixture_name, "--keep"])
-                active.send("\n")
-                assert active.finish() != 0 and "Codex harness failed after setup" in active.output
-                assert (failed_workspace / "harness-started").read_text().strip() == "reached"
-                stopped(name)
-                assert policy()["agents"][name]["folder"] == str(prior)
-                assert not policy()["agents"][name].get("hosts")
-                assert record.read_text() == ""
-                closed(port)
-                peer_survives()
-                result["startup_failure"] = {"actual_guest_exec_exit":41, "owned_runtime_stopped":True, "keep_observed":True, "permission_removed":True, "peer_unchanged":True}
+                if not args.preview:
+                    failed_workspace = directory / "failure"
+                    active, name, port, record = start(failed_workspace, ["--agent", fixture_name, "--keep"])
+                    active.send("\n")
+                    assert active.finish() != 0 and "Codex harness failed after setup" in active.output
+                    assert (failed_workspace / "harness-started").read_text().strip() == "reached"
+                    stopped(name)
+                    assert policy()["agents"][name]["folder"] == str(prior)
+                    assert not policy()["agents"][name].get("hosts")
+                    assert record.read_text() == ""
+                    closed(port)
+                    peer_survives()
+                    result["startup_failure"] = {"actual_guest_exec_exit":41, "owned_runtime_stopped":True, "keep_observed":True, "permission_removed":True, "peer_unchanged":True}
 
-                fresh_workspace = directory / "fresh"
-                active, name, port, record = start(fresh_workspace)
-                active.send("cancel\n")
-                assert active.finish() != 0 and "cancelled after runtime creation" in active.output
-                assert name not in policy()["agents"] and not fresh_workspace.exists()
-                closed(port)
-                peer_survives()
-                result["fresh_start"] = True
+                    fresh_workspace = directory / "fresh"
+                    active, name, port, record = start(fresh_workspace)
+                    active.send("cancel\n")
+                    assert active.finish() != 0 and "cancelled after runtime creation" in active.output
+                    assert name not in policy()["agents"] and not fresh_workspace.exists()
+                    closed(port)
+                    peer_survives()
+                    result["fresh_start"] = True
 
                 if args.deterministic_completion:
                     # Reuse this owned, stopped startup fixture and synthetic
