@@ -4,8 +4,10 @@
 
 Design document. Draft 2026-03-25.
 
-Extends the [Service Gateway v2 Design](service-gateway-v2-design.md) and the
-[Service YAML v2 Spec](service-gateway-v2-yaml-spec.md).
+For supported authoring and enforcement limits, use the
+[current Service YAML reference](service-gateway-v2-yaml-spec.md#capability-contracts).
+The current implementation enforces supported request constraints only; the
+state and response behavior described below is not runtime enforcement.
 
 ## Overview
 

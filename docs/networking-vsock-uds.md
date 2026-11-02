@@ -88,6 +88,44 @@ The external-ingress exploration in
 [issue #580](https://github.com/craigbalding/safeyolo/issues/580) uses the same
 native request driver and configured listener owners.
 
+## Names, durable identity and sandbox runs
+
+An agent name selects host configuration and policy and locates its state
+directory. Name validation checks syntax; it does not authenticate a caller.
+In a managed listener entry, `agent_id` contains this agent name. It differs
+from the durable `ag-...` value stored in `[agents.<name>].agent_id` in
+`policy.toml`. The [host agent configuration](../proxy/src/host_agents.rs)
+mints that durable ID when creating an agent and retains it during configuration
+updates. Removing and re-adding a name creates a different durable identity.
+A request-body target name is a reference for the receiving API to authorize;
+it cannot replace the sender established by the listener.
+
+The host records the current sandbox generation in
+`agents/<name>/runtime.json` and stages matching launch context in
+`config-share/host-launch-context.json`. A fresh sandbox start mints a `run_id`;
+reusing a live sandbox does not create a new sandbox generation. Proxy restart
+reconciles listeners with the existing sandbox rather than minting its run.
+The network slot, source IP and socket path are allocations and locators,
+not proof of a particular run.
+
+The [run authority check](../proxy/src/host_runs.rs) requires matching name,
+durable ID and generation in the host records, a starting or running state,
+and the verified backend process identity. The proxy's `AgentRun` carries the
+name, durable ID and run ID. Current-run checks compare that captured value
+with current policy and runtime authority. A stopped or replaced generation
+cannot supply current-run authority even while an old client connection remains
+open. Trusted listener attribution alone does not establish a current sandbox
+run: explicitly configured standalone traffic and external ingress can have
+listener identity without run authority.
+
+Lifecycle inspection distinguishes proven stopped state from an unknown or
+degraded backend. A PID or leftover socket alone cannot prove ownership or
+absence. An uncertain backend retains its records for diagnosis and recovery;
+it must not be reported as successfully stopped. Use
+[agent diagnostics](#diagnose-a-broken-path) to inspect runtime, control,
+coding-agent, terminal and proxy attachment separately. These observations do
+not by themselves prove guest egress or a completed upstream request.
+
 ## Operator-bound external ingress prototype
 
 This source prototype lets an operator name a TCP HTTP-proxy ingress and

@@ -142,14 +142,15 @@ triggers = [
   "macos vm",
   "linux sandbox",
 ]
-advice = "Reuse the shared lifecycle command path, then verify both Linux/gVisor and macOS/VZ platform adapters. Persistent home/workspace and disposable runtime/rootfs state are intentionally different boundaries."
+advice = "Reuse the shared host lifecycle path, then verify the affected Linux/gVisor and macOS/VZ paths. Distinguish listener attribution, durable agent identity, sandbox generation and observed backend health. Persistent home/workspace and disposable runtime/rootfs state are different boundaries."
 paths = [
-  "cli/src/safeyolo/commands/agent.py",
-  "cli/src/safeyolo/platform/linux.py",
-  "cli/src/safeyolo/platform/darwin.py",
+  "proxy/src/host_lifecycle.rs",
+  "proxy/src/host_platform.rs",
+  "proxy/src/host_runs.rs",
+  "docs/networking-vsock-uds.md",
   "docs/microvm-architecture.md",
 ]
-source = "docs/agent-lifecycle-identity-plan.md; docs/microvm-architecture.md"
+source = "docs/networking-vsock-uds.md; docs/microvm-architecture.md"
 
 [[hints]]
 id = "lab-lifecycle"

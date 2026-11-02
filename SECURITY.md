@@ -187,4 +187,4 @@ We welcome security research on SafeYolo.
 - [Security verification](docs/security-verification.md) — VM isolation, dependency trust, automated testing, build verification
 - [Policy file assurance](docs/policy-assurance-threat-model.md) — threat-model-driven priorities and security invariants for policy mutation testing
 - [Architecture](docs/ARCHITECTURE.md)
-- [Service gateway v2 design](docs/service-gateway-v2-design.md)
+- [Service permissions and trust](docs/service-gateway-v2-yaml-spec.md#permissions-and-trust)

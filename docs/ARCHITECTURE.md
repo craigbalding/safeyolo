@@ -3,8 +3,7 @@
 This document describes the software architecture of SafeYolo, an egress control proxy for AI coding agents.
 
 The [networking reference](networking-vsock-uds.md) describes current listener
-identity. The [earlier lifecycle plan](agent-lifecycle-identity-plan.md) records
-the former Python design at its named source revision.
+identity, durable agent IDs and sandbox run boundaries.
 
 ## Overview
 

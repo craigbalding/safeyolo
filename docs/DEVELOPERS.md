@@ -4,10 +4,8 @@ This guide is for developers who contribute to the host CLI, Rust proxy,
 agent sandbox, and operator integrations.
 
 Before changing agent attribution or sandbox lifecycle, read the current
-[networking and listener-lifecycle reference](networking-vsock-uds.md#agent-identity-and-listener-updates).
-The [historical Python identity and run-lifecycle plan](agent-lifecycle-identity-plan.md)
-retains the earlier name/identity distinction and restart rationale; it is not
-the current implementation guide.
+[networking and listener-lifecycle reference](networking-vsock-uds.md#agent-identity-and-listener-updates)
+and its [name, durable identity and run boundaries](networking-vsock-uds.md#names-durable-identity-and-sandbox-runs).
 
 ## Architecture Overview
 
