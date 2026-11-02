@@ -1,51 +1,92 @@
-# Service YAML v2 — Schema Reference
+# Service YAML — Schema Reference
 
-Companion to [Service Gateway v2 Design](service-gateway-v2-design.md).
+This reference describes the [current service loader](../proxy/src/services.rs). The historical
+[Service Gateway v2 design](service-gateway-v2-design.md) names a gateway
+redesign, not a service schema version. Service definitions use
+`schema_version: 1`. Audit events have an independent schema; their version
+number does not select the service format.
 
 ## Minimum Viable Service File
 
+Before writing a definition, identify the application programming interface
+(API) hostname, authentication header, and the methods and paths the agent
+needs. For authenticated use, obtain the provider credential for the intended
+account. The YAML declares how to inject a credential;
+it contains no secret value and grants no access by itself.
+
+This example is a complete, loadable definition. Replace `example`,
+`api.example.com`, and `/v1/items` with your service's values before using it
+with an upstream API. Its `reader` capability permits only the listed route.
+
 ```yaml
-schema_version: 2
-name: gmail
-description: "Gmail API"
-default_host: gmail.googleapis.com
+schema_version: 1
+name: example
+description: "Example API"
+default_host: api.example.com
 auth:
   type: bearer
+capabilities:
+  reader:
+    description: "List items"
+    routes:
+      - methods: [GET]
+        path: /v1/items
 ```
 
-Five fields. The gateway knows this host is a service and can inject
-credentials. No capabilities = agent gets access to all routes on this
-host. No risky routes = all risk decisions come from policy alone.
+On the operator host, save a top-level `*.yaml` file in the instance's configured
+operator service directory. Installed instances normally use `data/services`;
+standalone `safeyolo init` uses `services`. Paths are relative to the instance
+root. Operator definitions replace builtins with the same `name`.
+Use [catalogue changes](credentials.md#catalogue-changes-and-removals) to check
+activation with `services list` and `services show NAME`. A malformed change
+leaves the previous accepted catalogue active.
+
+Then follow [credential and service setup](credentials.md) to store the
+credential and authorize an existing agent for `reader`. Authorization selects
+the account and host mapping. Network permission and credential policy remain
+separate. Loading YAML alone proves neither authorization nor an upstream API
+call. Fetch the agent's current gateway token after catalogue activation.
+
+The loader requires only `schema_version` and `name`. Omitting `capabilities`
+or its routes creates no implicit route permission. Omitting `auth` describes
+a credential-free service. An omitted `default_host` needs an explicit host
+when authorizing access.
 
 ## Full Schema
 
+The following is a field/type sketch, not a definition to install. Descriptions
+are recommended for operator decisions but are not required by the loader.
+Unknown fields can remain in the raw document without being enforced; parser
+acceptance alone does not establish support for a proposed feature.
+
 ```yaml
-schema_version: int        # required — currently 2
-name: string              # required — unique service identifier
-description: string       # required — human-readable summary
-default_host: string      # optional — primary API hostname
+schema_version: 1          # required — integer 1
+name: string              # required — service identifier
+description: string       # optional — human-readable summary
+default_host: string      # optional — defaults to ""
 
-auth:                      # required — how to inject credentials
-  type: string             # "bearer" or "api_key"
-  header: string           # default: "Authorization"
-  scheme: string           # default: "Bearer" (for type: bearer)
-  refresh_on_401: bool     # default: false
+auth:                     # optional — omit for credential-free services
+  type: string            # required within auth: bearer or api_key for injection
+  header: string          # default: Authorization
+  scheme: string          # default: Bearer; used only for bearer
+  refresh_on_401: bool    # default: false; expiry refresh before injection
+  allow_http: bool        # default: false
 
-risky_routes:              # optional — routes that need runtime approval
-  - group: string          # optional — group name (clusters related routes)
-    description: string    # required — the "so what" (security consequence)
-    tactics: [string]      # ATT&CK tactics (see vocabulary below)
-    enables: [string]      # what attack stages this unlocks
-    irreversible: bool     # default: false
-    routes:                # required if group is present
-      - path: string       # glob pattern
-        methods: [string]  # default: ["*"]
-        description: string  # optional — override group description
-        tactics: [string]  # optional — override/extend group tactics
-        enables: [string]  # optional — override/extend group enables
-        irreversible: bool # optional — override group value
+risky_routes:             # optional — defaults to []
+  - group: string         # optional — expands the routes below
+    description: string   # optional — defaults to ""
+    tactics: [string]     # optional — defaults to []
+    enables: [string]     # optional — defaults to []
+    irreversible: bool    # optional — defaults to false
+    routes:               # optional — defaults to []
+      - path: string      # required for each route — glob pattern
+        methods: [string] # optional — defaults to ["*"]; scalar also accepted
+        description: string # optional — replaces group description
+        tactics: [string] # optional — adds to group tactics, without duplicates
+        enables: [string] # optional — adds to group enables, without duplicates
+        irreversible: bool # optional — overrides group value
 
-  # Ungrouped routes also valid:
+  # A route without a group is also valid:
   - path: string
     methods: [string]
     description: string
@@ -53,18 +94,90 @@ risky_routes:              # optional — routes that need runtime approval
     enables: [string]
     irreversible: bool
 
-capabilities:              # optional — named sets of allowed routes
+capabilities:             # optional — defaults to {}
   capability_name:
-    description: string    # required
-    scopes: [string]       # optional — informational, recommended API scopes
-    routes:                # required
-      - methods: [string]  # required
-        path: string       # required — glob pattern
+    description: string   # optional — displayed during discovery
+    scopes: [string]      # optional — informational provider scope guidance
+    routes:               # optional — defaults to []
+      - methods: [string] # required for each route; scalar also accepted
+        path: string      # required for each route — glob pattern
+    contract: {}          # optional — see Capability Contracts
 ```
+
+`auth.type: bearer` injects the stored value as `scheme + space + value`.
+`api_key` injects the value directly into `header`; set the provider's header
+explicitly when it is not `Authorization`. Use these two types for authenticated
+services; an arbitrary type string can parse without implementing an injector.
+With `allow_http: false`, a selected authenticated Hypertext Transfer Protocol
+(HTTP) request is redirected to secure HTTP (HTTPS) without injecting the
+secret. Setting `allow_http: true` permits
+injection over HTTP. `refresh_on_401` is the retained field name: an expired
+OAuth credential is refreshed before delivery when configured, rather than by
+replaying a request after an upstream 401.
+
+Methods are matched without case sensitivity. Route paths are case-sensitive.
+`*` spans `/`; it is not limited to one path segment. `/**` also covers the
+parent path. Ordinary routes match method and path, not query values or bodies
+in JavaScript Object Notation (JSON). `scopes` does not restrict the
+provider token or filter response fields.
+Use contracts for supported request constraints and provider scopes for the
+provider's own limits.
+
+## Capability Contracts
+
+A capability's optional `contract` describes its request checks and any declared
+state or response work. The [current implementation](../proxy/src/contracts.rs)
+enforces requests only.
+See the shipped [Gmail read contract](../cli/src/safeyolo/services/gmail.yaml)
+and [MiniFuse category contract](../cli/src/safeyolo/services/minifuse.yaml)
+for complete loadable examples. The
+[API contract design](design-api-capability-contracts.md) records the broader
+proposal; it does not establish runtime state or response enforcement.
+
+| Field | Current meaning |
+|---|---|
+| `template` | Template identifier matched against the approved binding. |
+| `bindings` | Named values with type `string` (default), `enum` with nonempty `options`, `integer`, `boolean`, or `string_list`. String definitions can supply `pattern`; `required_if` can make a value required by other supplied values. |
+| `operations` | Named operations. `requires_enforcement` defaults to `request_shape`; the named tier must be marked `enforced` to be grantable. |
+| `operations[].request` | `method` defaults to GET. `path` selects the operation; `{name}` path parameters use `path_params` constraints. |
+| `request.path_params` | `equals_var` resolves a path parameter from an approved binding. |
+| `request.query.allow` | Supplied query values can be checked with `equals_var` or `integer_range`. `deny_unknown` defaults to true. |
+| `request.body.allow` | Supplied body values can be checked with `equals_var`. `deny_unknown` defaults to true. Nonempty POST, PUT and PATCH bodies must be JSON objects. |
+| `request.transport` | `require_no_body` defaults to false. Optional `allow_headers` must be a list. With no list, Accept and User-Agent are permitted in addition to implicit transport/auth headers; an empty list does not add them. |
+| `enforcement` | Tier status values are `enforced` or `declared`. A missing tier does not make its operations grantable. |
+| `state`, operation `response` | Retained declarations. State sets, response captures and validators do not run. |
+
+| Tier | Current implementation |
+|---|---|
+| `request_shape` | Supported request constraints. |
+| `transport_hygiene` | Supported request transport checks. |
+| `state_capture` | No runtime capture; operations requiring this tier cannot be granted. |
+| `state_enforcement` | No runtime state enforcement; operations requiring this tier or using `in_state_set` cannot be granted. |
+| `response_validators` | Response validators are declarations, not response checks. Marking a tier `enforced` in YAML does not implement it. |
+
+Request constraint `type` labels and body `integer_range` fields are parsed but
+do not enforce value types or body ranges. Allowing a field does not require
+its presence. Binding-definition types are checked separately when binding
+values are approved. Binding `source` and `visible_to_operator` fields are
+retained metadata; they do not authorize a value. `deny_ambiguous_encoding` is a parsed transport field with
+default false; current ambiguity checks run regardless of that flag. Duplicate
+headers/query keys, method overrides and path tricks can therefore still be
+refused when it is false. These limits matter when choosing a contract; a
+declaration cannot supply a missing enforcement guarantee.
+
+For a contract capability, the running policy compiles routes from supported,
+selected operations. The broad `capability.routes` list is not a fallback grant
+for unsupported operations. Operations that use approved values need a matching
+binding before those routes can activate. A concrete operation with no binding
+references or state requirement can be available before binding. Binding does
+not grant service access. Use the host-side
+[binding workflow](credentials.md#authorization-binding-and-risk-approval) to
+approve values, wait for policy activation and fetch the current gateway token.
 
 ## ATT&CK Tactics Vocabulary
 
-Service file authors pick from this list. No technique IDs needed.
+Use these MITRE ATT&CK tactic labels to describe risk. The loader accepts string
+labels without checking this vocabulary. No technique identifiers are needed.
 
 | Tactic | Meaning | Example |
 |--------|---------|---------|
@@ -84,8 +197,9 @@ stages a route unlocks. Reading email (tactic: `collection`) enables
 
 ## Route Groups
 
-Groups cluster related risky routes for operator UX. The group carries
-shared signals; individual routes can override.
+Groups cluster related risky routes for operator decisions. The loader expands
+each group into routes. A route replaces the group description or irreversible
+value when supplied. Tactics and enables are combined with the group values.
 
 ```yaml
 risky_routes:
@@ -105,46 +219,50 @@ risky_routes:
         enables: [lateral_movement]      # adds to group
 ```
 
-In watch, the operator sees: "Mail routing (3 routes) — controls where
-email goes" with option to drill into individual routes.
+The group name and merged signals accompany a risky-route decision. Inspect
+pending requests with `services approvals`. Group summaries and drill-in in
+watch are part of the historical design, not this schema's runtime guarantee.
 
 ## Credential Binding and Account Persona
 
-When an operator grants access (in watch or via `agent authorize`), the
-binding includes an **account persona** — whose account the credential
-belongs to. This flows to the PDP and drives context-dependent decisions.
+When the operator authorizes a service, `services authorize` selects a
+capability, credential reference and `--account` label. That label reaches risk
+policy as `account`. It is independent of the service's auth format.
 
-```yaml
-# agents.yaml — bindings with persona
-boris:
-  services:
-    gmail:
-      capability: read_and_send
-      token: gmail-personal-cred
-      account: operator           # operator's personal inbox
-    gmail-support:
-      capability: read_and_send
-      token: team-gmail-cred
-      account: team-support       # functional team inbox
-    github:
-      capability: create_pr
-      token: github-cred
-      account: agent              # agent's own github account
+For an existing agent named `boris`, a host policy binding can have this form.
+The credential names refer to host-stored records. This is a policy fragment,
+not a service definition; use the [operator commands](credentials.md) for setup
+and activation.
+
+```toml
+[agents.boris.services.gmail]
+capability = "read_and_send"
+token = "gmail-personal-cred"
+account = "operator"
+
+[agents.boris.services.github]
+capability = "read_work"
+token = "github-cred"
+account = "agent"
 ```
 
-Standard personas:
-- `agent` — the agent's own account. Least restrictive by default.
-- `operator` — the operator's personal account. Most restrictive by default.
-- Custom labels (`team-support`, `billing`, etc.) — operator-defined, with
-  matching policy rules.
-
-Watch prompts for persona when first binding a credential: "Whose account
-is this? (agent / operator / custom label)"
+Conventional personas are `agent` for the agent's account, `operator` for a
+personal operator account, and custom labels such as `team-support` or `billing`
+for functional accounts. These labels do not assign an automatic risk level.
+A host service binding that omits `account` defaults to `agent`; specify the
+intended owner rather than relying on that label. The original design proposed
+a watch persona prompt and least/most restrictive defaults. Those are not
+properties of the current service parser or risk compiler.
 
 ## Policy: Risk Appetite
 
 Service files declare facts. Policy expresses what the operator tolerates,
-using risky route signals and account persona.
+using risky-route signals and the account label. In host `policy.toml`, the
+current `[[risk]]` compiler accepts `account`, `agent`, `service`, `tactics`,
+`enables`, `irreversible`, and `decision`. Decisions are `allow`, `deny`, or
+`require_approval` (the default). Different conditions combine; a list of
+tactics or enables matches any listed value. These rules apply only after a
+request matches a declared risky route.
 
 ```toml
 # policy.toml — operator risk appetite
@@ -154,7 +272,6 @@ using risky route signals and account persona.
 account = "operator"
 enables = ["credential_access"]
 decision = "require_approval"
-approval_default = "once"
 
 # Agent's own account: collection is routine
 [[risk]]
@@ -168,16 +285,15 @@ account = "team-support"
 tactics = ["impact"]
 decision = "require_approval"
 
-# Exfiltration + persistence together = always require approval
+# Either exfiltration or persistence needs approval
 [[risk]]
 tactics = ["exfiltration", "persistence"]
 decision = "require_approval"
 
-# Irreversible actions need explicit "yes" confirmation
+# Irreversible actions need approval
 [[risk]]
 irreversible = true
 decision = "require_approval"
-confirm = true
 
 # Trust boris with github privilege_escalation
 [[risk]]
@@ -185,26 +301,35 @@ agent = "boris"
 service = "github"
 tactics = ["privilege_escalation"]
 decision = "allow"
-
-# Floor: no service file can make exfiltration routes safe
-[[risk]]
-tactics = ["exfiltration"]
-minimum = "require_approval"
 ```
 
-Policy is authoritative. A malicious service file that omits `tactics` on
-a dangerous route is caught by floor rules. Service files cannot weaken
-policy.
+Without a matching allow rule or an existing risk grant, risky-route policy
+defaults to an approval request (HTTP 428). An explicit risk denial returns 403.
+The operator can inspect `services approvals` and approve the exact agent,
+service, method and path with `services approve`. A matching risk grant is
+checked before risk policy. It does not widen service routes, replace a contract
+binding, or grant network or credential permission. A `once` grant reserves one
+in-flight use; a 2xx response consumes it and other outcomes release it for retry.
+
+The original design proposed `approval_default`, `confirm`, and `minimum` keys.
+The current risk compiler does not implement them. In particular, `irreversible`
+is a policy signal, not a schema-enforced typed-confirmation prompt. A rule
+matching `exfiltration` cannot catch an omitted tag, and a route omitted from
+`risky_routes` does not enter this risk check. Review service definitions as
+operator-controlled inputs; do not assume an independent floor detects omissions.
+Other network, credential and authored route policy still applies.
 
 ## Complete Example: Gmail
 
-Gmail is the canonical example because it surfaces the ownership question.
-The same route is routine on the agent's own account and dangerous on the
-operator's inbox. The service file declares facts; the PDP evaluates them
-against policy in context.
+Gmail illustrates the ownership question: reading an operator's inbox exposes
+password resets and two-factor codes. Account-specific policy can therefore
+make a different decision for the same route. The example below uses route
+capabilities. The shipped [Gmail definition](../cli/src/safeyolo/services/gmail.yaml)
+also includes a `read_messages` request contract with declared response/state
+fields; inspect that definition before selecting a shipped capability.
 
 ```yaml
-schema_version: 2
+schema_version: 1
 name: gmail
 description: "Gmail API — email read/send via Google OAuth2"
 default_host: gmail.googleapis.com
@@ -271,7 +396,7 @@ capabilities:
         path: "/gmail/v1/users/me/labels/**"
 
   search_headers:
-    description: "Search message metadata (subject, from, date — no body access)"
+    description: "List messages; provider metadata scope limits content"
     scopes: ["gmail.metadata"]
     routes:
       - methods: [GET]
@@ -296,20 +421,23 @@ capabilities:
         path: "/gmail/v1/users/me/**"
 ```
 
-On an **agent-owned account**, policy might allow the "Message content"
-group freely. On an **operator-owned account**, policy requires per-request
-approval because `enables: [credential_access]` intersects with the
-operator's risk appetite. Same service file, different policy, different
-outcome.
+With the example risk rules, the `collection` allow rule can permit message
+reads for account `agent`. The `credential_access` rule requires approval for
+account `operator`, unless an applicable grant exists. This difference comes
+from authored policy, not from the account label alone.
 
 ## Complete Example: GitHub
 
-A service where agent access is natural. Risky routes focus on supply
-chain, access control, and persistence.
+This extended authoring example preserves the supply-chain, access-control and
+persistence risks from the original design. It is not the shipped GitHub grant.
+The shipped [GitHub definition](../cli/src/safeyolo/services/github.yaml) has only
+`read_work` for individual issue and pull-request metadata. The example uses a
+different name so it does not replace that definition by name. Its broad
+capabilities need an explicit operator choice and suitable provider permissions.
 
 ```yaml
-schema_version: 2
-name: github
+schema_version: 1
+name: github-example
 description: "GitHub API — repository and issue management"
 default_host: api.github.com
 
@@ -364,7 +492,6 @@ risky_routes:
 capabilities:
   search_issues:
     description: "Search and read issues and comments"
-    scopes: ["repo:read", "issues:read"]
     routes:
       - methods: [GET]
         path: "/repos/*/issues/**"
@@ -372,8 +499,7 @@ capabilities:
         path: "/search/issues"
 
   create_pr:
-    description: "Create pull requests and push branches"
-    scopes: ["repo:write", "pull_requests:write"]
+    description: "Create pull requests and access the Git data API"
     routes:
       - methods: [GET]
         path: "/repos/*/pulls/**"
@@ -384,21 +510,18 @@ capabilities:
 
   manage_issues:
     description: "Create, update, close, and comment on issues"
-    scopes: ["issues:write"]
     routes:
       - methods: [GET, POST, PATCH]
         path: "/repos/*/issues/**"
 
   repo_read:
     description: "Read-only access to repository contents"
-    scopes: ["repo:read"]
     routes:
       - methods: [GET]
         path: "/repos/**"
 
   repo_full_access:
     description: "Full read/write access to repositories"
-    scopes: ["repo"]
     routes:
       - methods: [GET, POST, PUT, DELETE, PATCH]
         path: "/repos/**"
@@ -406,7 +529,13 @@ capabilities:
 
 ## Migration from v1
 
-| v1 concept | v2 concept |
+This is the historical terminology comparison for the gateway redesign. It is
+not a current migration procedure or a service-schema 1-to-2 upgrade. SafeYolo
+is pre-v1; author current definitions directly with schema 1. The old `roles`
+format is not a supported authoring path. Unknown keys can parse without
+creating capabilities or permissions.
+
+| Earlier role-based design | Capability-based design |
 |-----------|-----------|
 | `roles:` | `capabilities:` |
 | `role.auth` | `service.auth` (top-level) |
@@ -420,15 +549,17 @@ capabilities:
 
 ### Breaking changes
 
-- `roles:` key no longer recognised. Use `capabilities:`.
-- `effect` field removed from route rules. All capability routes are allow.
-- `deny` routes must be moved to `risky_routes`.
-- `auth` moves from role to service level.
+The redesign replaced `roles` with `capabilities`, moved auth to service level,
+and made capability routes a positive list. A risky route is a separate approval
+signal, not an unconditional deny. Moving a deny route into `risky_routes`
+therefore changes its meaning; policy determines the current risk decision.
 
 ## Future Schema Extensions
 
-These are planned extensions. The current schema is designed to accommodate
-them without breaking changes.
+The sections below preserve proposals from the original design. Their YAML
+fragments are not supported configuration and do not establish enforcement or
+promise compatibility. Ordinary capability routes still match method and path;
+contracts provide the current request constraints described above.
 
 ### Parameter-aware route matching
 
@@ -462,16 +593,16 @@ risky_routes:
     tactics: [collection]
 ```
 
-The `match` field is additive — `path` and `methods` still apply. `match`
-adds conditions on query parameters (`query_params`) or request body fields
-(`body_json` with glob/regex support). Routes without `match` continue to
-work as today.
+In the proposal, `match` would add conditions to `path` and `methods` for query
+parameters (`query_params`) and body fields (`body_json` with glob/regex support).
+The current route parser does not implement `match`. For current request checks,
+use `capability.contract`; do not rely on an ignored field to limit access.
 
 ### Response tokenisation
 
-The gateway can transform responses before the agent sees them — redact
-PII, mask account numbers, swap real names for synthetic values. The agent
-gets enough data to do its job without seeing sensitive content.
+The proposed gateway transformation would redact personally identifiable
+information (PII), mask account numbers, or replace names with synthetic values
+before the agent sees a response. This transformation is not implemented.
 
 A future `response_policy` field on capabilities:
 
@@ -501,8 +632,8 @@ planned for a future version.
 
 ### Response assertions (post-hoc anomaly detection)
 
-Path-based capability matching controls which routes an agent can call but
-cannot enforce payload constraints (e.g., "only operate on category 137").
+Path-based capability matching alone controls which routes an agent can call
+but cannot enforce payload constraints (e.g., "only operate on category 137").
 Request-side validation is fragile — a prompt-injected agent can encode,
 obfuscate, or creatively chain requests to defeat inspection. But the
 **response** is authoritative: the upstream API reports what actually happened.
@@ -521,10 +652,10 @@ capabilities:
         equals: 137
 ```
 
-The gateway inspects the upstream response body (JSON path extraction),
-checks each assertion, and emits a `gateway.assertion_failed` security
-event on mismatch. The response still reaches the agent — the request
-already executed — but the operator sees the anomaly immediately in watch.
+The proposal would inspect upstream response bodies with JSON path extraction
+and emit `gateway.assertion_failed` on mismatch. The response would still reach
+the agent because the request already executed. This event and watch behavior
+are proposed; current contracts do not perform these response checks.
 
 This is detection, not prevention: assume clean requests under normal
 operation, flag deviations as a signal that something unexpected happened.
