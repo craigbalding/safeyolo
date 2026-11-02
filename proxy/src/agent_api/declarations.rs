@@ -174,13 +174,13 @@ where
         }
         return Ok(explain::respond(request, controls.audit).await);
     }
-    if route(request).starts_with("/approvals/") {
+    if route(request) == "/approvals" || route(request).starts_with("/approvals/") {
         let PolicyState::Ready(policy) = &policy else {
             return Ok(response(503, json!({"error":"policy unavailable"})));
         };
         return approvals::respond(request, controls.audit, policy, state, body).await;
     }
-    if route(request).starts_with("/operator-actions") {
+    if route(request).starts_with("/operator-actions") || route(request) == "/desktop/present" {
         let PolicyState::Ready(policy) = &policy else {
             return Ok(response(503, json!({"error":"policy unavailable"})));
         };
@@ -207,41 +207,6 @@ where
             Err(error) => return Ok(content_error(error)),
         };
         return Ok(gateway::submit_binding(request, controls.gateway, &content));
-    }
-    if route(request) == "/desktop/present" {
-        let Some(agent_name) = agent(request.identity) else {
-            return Ok(response(403, json!({"error":"Could not identify agent"})));
-        };
-        let agent_id = agent_name.to_owned();
-        let mut outcome = response(
-            202,
-            json!({
-                "status":"pending",
-                "agent":agent_name,
-                "agent_id":agent_id,
-                "request_id":request.request_id,
-                "message":"Desktop presentation submitted for operator approval."
-            }),
-        );
-        outcome.audit = Some(AuditIntent {
-            kind: AuditKind::DesktopPresentRequested,
-            event: "agent.desktop_present_requested",
-            severity: "high",
-            addon: "agent-api",
-            summary: format!("{} requests desktop presentation", agent_name),
-            agent: Some(agent_name.to_owned()),
-            request_id: Some(request.request_id.to_owned()),
-            host: None,
-            details: json!({"agent_id":agent_id}),
-            approval: Some(AuditApproval {
-                required: true,
-                approval_type: crate::audit::ApprovalType::DesktopPresent,
-                key: "desktop.present".into(),
-                target: format!("desktop:{agent_id}"),
-                scope_hint: json!({"agent_id":agent_id}),
-            }),
-        });
-        return Ok(outcome);
     }
     if route(request).starts_with("/plumb") {
         return plumb::respond(request, body, plumb, controls.audit.cloned()).await;

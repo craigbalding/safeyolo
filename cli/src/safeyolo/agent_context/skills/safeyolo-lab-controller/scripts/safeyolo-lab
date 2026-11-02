@@ -28,6 +28,7 @@ owner_marker="safeyolo:$agent_name"
 objective=
 action=attach
 json_status=0
+harness=
 
 usage() {
   cat <<'EOF'
@@ -41,6 +42,7 @@ It does not start a second controller.
 
 Options:
   --objective TEXT  Record the operator's objective before starting a Lab.
+  --harness NAME    Use codex (default) or claude when starting a Lab.
   --status          Report the owned session and controller state.
   --json            Emit JSON with --status.
   --recover         Relaunch an owned dead controller.
@@ -62,6 +64,12 @@ while [ "$#" -gt 0 ]; do
     --objective)
       [ "$#" -ge 2 ] || { usage >&2; exit 2; }
       objective=$2
+      shift 2
+      ;;
+    --harness)
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+      harness=$2
+      case "$harness" in codex|claude) ;; *) usage >&2; exit 2 ;; esac
       shift 2
       ;;
     --status)
@@ -264,6 +272,12 @@ if session_exists && [ "$session_owned" -ne 1 ]; then
   exit 3
 fi
 
+if session_exists; then
+  harness=${harness:-$(session_option @safeyolo_lab_harness)}
+fi
+harness=${harness:-codex}
+case "$harness" in codex|claude) ;; *) printf 'The owned Lab harness is invalid.\n' >&2; exit 2 ;; esac
+
 configure_session() {
   tmux set-option -t "$session" @safeyolo_lab_owner "$owner_marker" || return
   tmux set-option -t "$session" @safeyolo_lab_agent "$agent_name" || return
@@ -278,7 +292,8 @@ configure_session() {
 start_controller() {
   local pane=$1
   local controller_line
-  controller_line=$(printf '%q --startup-file %q' "$controller_runner" "$startup_instructions")
+  controller_line=$(printf '%q --harness %q --startup-file %q' "$controller_runner" "$harness" "$startup_instructions")
+  tmux set-option -t "$session" @safeyolo_lab_harness "$harness" || return
   tmux set-option -p -t "$pane" @safeyolo_lab_role controller || return
   tmux set-option -p -t "$pane" @safeyolo_lab_controller 1 || return
   tmux select-pane -t "$pane" -T controller || return

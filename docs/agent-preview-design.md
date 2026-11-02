@@ -1,5 +1,24 @@
 # Agent Preview: explicit host access to agent-local HTTP
 
+## Current native desktop access
+
+The native operator command is `safeyolo agent present NAME`. The running proxy
+owns the presentation. With `desktop.present_host_port = 0`, each presentation
+uses a separate available loopback port. With a nonzero port, explicitly opened
+local presentations share that port and use separate `<agent>.localhost`
+browser origins. One static SSH forward can carry all of these presentations.
+See [SSH preview setup](CONFIGURATION.md#preview-through-one-ssh-forward).
+
+This shared listener starts with the first explicit presentation. Proxy startup
+does not create an ambient listener or open agent routes. Each presentation
+keeps its own unlock, session, audit and agent/run binding. Proxy shutdown
+closes the shared listener and all of its connections. Tailscale sharing keeps
+its existing per-agent transport.
+
+The remaining sections record the earlier per-command preview design and its
+MVP scope. Their no-ambient-listener requirement does not exclude the explicitly
+opened native endpoint described here.
+
 ## Problem
 
 Agents often run local development servers inside their sandbox. Operators need

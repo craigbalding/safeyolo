@@ -104,6 +104,9 @@ pub struct Config {
     #[serde(default)]
     pub native_product: bool,
     pub listeners: Vec<AgentListener>,
+    /// Operator-owned TCP ingress into an existing listener's policy partition.
+    #[serde(default)]
+    pub ingress_bindings: Vec<crate::external_ingress::Binding>,
     /// Per-process state directory for credential HMAC and local Agent API
     /// material. The key itself is never part of Config serialization.
     pub data_dir: Option<PathBuf>,
@@ -309,6 +312,11 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), Error> {
+        if let Some(settings) = &self.native_settings {
+            settings
+                .packet_capture
+                .validate(self.admin_port.is_some())?;
+        }
         if self.flow_pruner_max == 0 || self.flow_pruner_max_body_bytes == 0 {
             return Err("flow_pruner_max and flow_pruner_max_body_bytes must be positive".into());
         }
@@ -329,6 +337,7 @@ impl Config {
                 return Err("listeners need an agent identity and a unique socket path".into());
             }
         }
+        crate::external_ingress::validate(self)?;
         for path in [&self.readiness_file]
             .into_iter()
             .chain(self.policy_file.iter())

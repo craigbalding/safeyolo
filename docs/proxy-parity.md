@@ -260,7 +260,7 @@ checked.
 | Operation | Status | Owner or evidence |
 |---|---|---|
 | GET `/health`, `/stats`, `/modes`, `/plugins/{name}/mode` | Implemented | Native `admin_api`; the retained `AdminAPI` mode workflow is covered by `tests/proxy_migration/test_operator_modes_and_listeners.py`. |
-| GET `/admin/runtime-identity`, `/admin/approvals` | Implemented | Native `admin_api` keeps the process runtime identity separate from the durable host identity and reads pending approvals from the canonical audit owner. |
+| GET `/admin/runtime-identity`, `/admin/approvals` | Implemented | Native `admin_api` keeps the process runtime identity separate from the durable host identity. Approval listing reads the host-owned pending store and streams current plumb and desktop audit views within the existing 50,000-line window. |
 | GET `/admin/instance`, `/admin/agents` | Implemented for installed host use | Native `admin_api` reads the existing `sy-*` Coord identity file and Rust host inventory. The installed loopback witness in `proxy/tests/command_centre_installed.rs` checks the Mac client's required agent fields and a stable host ID across proxy restarts. The physical Mac app journey remains open in #640 B2. |
 | GET `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/budgets` | Implemented | Native policy, task registry and budget owners. |
 | GET/PUT `/admin/traffic/scope` | Implemented | Native traffic-scope owner; traffic effect proof remains with the traffic lane. |
@@ -1063,33 +1063,26 @@ atomic snapshot or durable storage guarantee.
 
 The reader uses the process writer's startup path and backup settings, including
 the development audit-path override. Reload keeps the same writer and reader
-source. File reads and the bounded drain run off async workers. Malformed JSON
-lines are skipped; unreadable retained files mark the result as `error` while
-other files can still contribute events. Exceptions from valid non-object JSON
-or undecodable text remain handler failures. The trace and diagnostic probe
-implementations are described separately below.
+source. File reads and the bounded drain run off async workers. Both the agent
+explanation and private approval lookup use the current audit validator.
+Invalid envelopes, unsupported generations and undecodable text fail with
+categorical handler errors. Unreadable retained files mark the explanation as
+`error` while other files can still contribute events. Approval lookup fails
+when a selected file cannot be read.
 
-The [source controls](../proxy/tests/agent_api_explain_source.py) capture actual
-handler, scanner and serializer results. The [reader tests](../proxy/src/audit/explain/tests.rs)
-compare retained-file recipes and exercise the real writer's bounded drain.
+The [reader tests](../proxy/src/audit/explain/tests.rs) exercise current native
+events, ownership, retained-file windows and the real writer's bounded drain.
 The [API tests](../proxy/tests/agent_api_explain.rs) check authentication, identity,
 query ordering and typed error responses. The [HTTP test](../proxy/src/http/agent_audit_tests.rs)
 uses two private agent sockets and checks shared-writer continuity after reload.
 
-Matching records retain NaN and integers larger than 64 bits. Escaped lone
-surrogates remain unsupported by the existing native JSON representation and
-produce a local compatibility failure. A missing reader preserves the previous
-handler-owned development 503 without an additional guard event. The reader
-preserves Python's empty-path and parent-directory suffix behavior; the existing
-writer's parent-directory rotation behavior is unchanged. These controls do not
-establish parity for arbitrary filesystem races. The native typed parser uses
-iterative traversal and does not reproduce Python's JSON recursion limit.
-
-Validation for this change passed 57 selected Rust tests and 22 actual-source
-controls. The joined HTTP test passed with the process writer supplied by the
-runtime. Four inherited opt-in source oracles remained ignored; existing live
-audit oracles ran in their selected targets. These results are implementation
-evidence and do not establish complete API or migration acceptance.
+Matching records preserve current JSON values, including integers larger than
+64 bits. The writer normalizes nonfinite numbers to JSON null; the reader does
+not accept nonstandard NaN or Infinity tokens. A missing reader retains the
+handler-owned development 503 without an additional guard event. Existing
+empty-path, backup suffix, file ordering and drain/status behavior remain.
+These controls do not establish an atomic snapshot, arbitrary filesystem-race
+behavior or durable storage.
 
 The authenticated `/budgets` response reads the existing shared rate-limit
 timestamps and current policy matcher. It does not evaluate requests, spend
@@ -2139,12 +2132,13 @@ operator inspection, remaining audit producers and independent acceptance remain
 
 ### Canonical traffic audit and runtime ownership
 
-The [audit writer](../proxy/src/audit.rs) emits schema-version-1 JSON Lines for
-reached request logger hooks. Its typed envelope retains source field order,
-optional fields, nested attribution, temporal values, nonfinite-number behavior
-and minimal serialization fallback. The existing Python audit consumer reads
-native output. These comparisons cover the represented native value domain;
-arbitrary Python objects and lone-surrogate strings remain outside it.
+The [audit writer](../proxy/src/audit.rs) emits the current schema-version-2
+JSON Lines envelope for all native audit families. Current producers and the
+native reader evolve together; earlier and unversioned formats are rejected.
+The typed envelope retains optional fields, nested attribution, temporal values
+and nonfinite-number behavior. Invalid event construction emits a current
+`ops.audit_validation_failed` diagnostic without the original payload or trusted
+scope. See the [current audit contract](nsm-events.md#current-audit-contract).
 
 One lazy writer belongs to the process and survives configuration reloads.
 `audit_log_path` is a development startup override; otherwise the process uses
@@ -2294,8 +2288,8 @@ check response and denial ordering, early-response field omissions and later
 response hooks after synchronous submission failure. [Owned Agent API tests](../proxy/src/http/agent_audit_tests.rs)
 check actual shared-writer ordering through ordinary HTTP/1 dispatch.
 [Operator tests](../proxy/tests/admin_transport.rs) compare parsed source auth
-facts with owned listener records; their source parser control is not a source
-listener comparison. This evidence does not establish OS thread-start exhaustion,
+facts with current owned listener records. Accepted source payload specimens
+do not impose their retired audit envelope generation. This evidence does not establish OS thread-start exhaustion,
 file durability, source-container auth exception continuation, rejected HTTP/2
 API mutation-completion behavior, inactive service/credential producers or
 independent acceptance.
@@ -2490,18 +2484,20 @@ step. A response that completes before request application can record
 
 Completed local denial/API replies carrying the existing traffic marker reach TestContext's
 `not_applicable` response observation after circuit response succeeds and before
-local recording and logging. Early local request returns still omit the native
-request hooks they skip; they do not reproduce the source's later
-`prior_response` request steps. Opt-in activation uses the existing local
+local recording and logging. For early local responses, native tracing records
+unreached request controls as `bypassed/prior_response`. The HTTP owner uses
+per-request call-site reachability, independently of retained trace steps. Opt-in activation uses the existing local
 header-hygiene boundary. The trace join adds no request drain or completion
 observer. Typed source-compatible errors retain their class names; native-only
 runtime, audit, allocation and poisoned-state errors remain native categories.
 Trace-store failures cannot change hook continuation or evidence-error flags.
 
 The source `not_loaded` field lists expected addon names absent from all retained
-steps; it is not a runtime installation inventory. HTTP service gateway,
-credential and pattern stages remain inactive. A stored CONNECT hook narrows
-the source expected set to NetworkGuard. Outer CONNECT and enclosed HTTP retain
+steps; it is not a runtime installation inventory. Native tracing instead
+requires explicit call-site evidence for `not_loaded` and marks missing request
+observations as incomplete. HTTP service, credential and pattern stages report
+their actual request outcomes. A stored CONNECT hook narrows the expected set
+to network admission. Outer CONNECT and enclosed HTTP retain
 separate request IDs and share the transport connection ID. Reserved local
 replies and the temporary Python policy adapter do not fabricate native guard
 traces. The diagnostic probe uses the real native producers described below.
@@ -2524,8 +2520,8 @@ ID, then records `probe-sink / evaluated / probe_terminated`. No inactive
 producer is reported as evaluated or disabled. A prior local reply whose empty
 request and logger/metrics hooks completed retains its status and records
 `probe_preempted`. Body-bearing early replies without that completion marker
-still return before the sink. Neither path fabricates the later source security
-request-hook observations skipped by native early returns.
+still return before the sink. The native HTTP owner records later controls as
+`bypassed/prior_response`; it does not claim that those controls executed.
 
 The generated response uses the same memory, circuit, TestContext, recorder and
 logger operations as a completed HTTP response. Applied context produces a real
@@ -2553,19 +2549,25 @@ The native [probe tests](../proxy/src/http/probe/tests.rs) compare source sink
 bytes and steps and exercise owned HTTP/1 requests, context response evidence,
 memory accounting and flow exclusion. [Upload controls](../proxy/src/http/probe/tests/body.rs)
 cover held chunked input, threshold crossing, truncated requests and request-hook
-errors. The opt-in [doctor/API test](../proxy/src/http/probe/tests/doctor_api.rs)
-uses synthetic tokens and owned UDS listeners, fetches the actual native trace,
-rejects a foreign agent's read, and feeds the fetched response to the source
-doctor classifier. It requires the retained Python source environment; ordinary
-probe tests use the pinned corpus without running Python.
+errors. The active [doctor/API test](../proxy/src/http/probe/tests/doctor_api.rs)
+uses synthetic tokens and owned Unix-domain socket (UDS) listeners. It runs
+native doctor, checks the actual trace and injects missing-control and trace-store
+failures. It needs no retained Python doctor. The native command tests in
+[test_native_skill_trace.py](../tests/proxy_contracts/test_native_skill_trace.py)
+run the executable with native binaries on its PATH. They cover all configured
+agent listeners, known disablement, incomplete traces, unavailable sockets and
+a pattern block before the probe sink. The probe uses the same request-inspection
+enforcement helper as ordinary requests.
 
-The production six-name doctor manifest
-remains unchanged. A native 200 with network, circuit and context receipts still
-fails doctor while service-gateway, credential-guard and pattern-scanner are
-missing. The source classifier inspects only the first request step for each
-expected producer; a later error from the same producer can remain hidden from
-its verdict. This consumer limitation is preserved in the oracle and does not
-justify fabricating a passing pipeline.
+Native doctor checks the first request observation of each expected control in
+the current native order: network, circuits, credentials, services, patterns,
+test context. It also checks every error observation, including later errors
+from a control already seen. A clean probe needs a local sink 200, complete
+evidence and every expected control accounted for. The historical source
+classifier cases remain in the corpus; they no longer define the native
+command's verdict. The store reports `not_loaded` only for explicit call-site
+observations of unavailable controls. Missing retained observations instead
+make the trace incomplete.
 
 The [source corpus](../proxy/tests/trace_source.py) exercises actual trace
 storage and Agent API dispatch. [Native API tests](../proxy/tests/agent_api_trace.rs)
@@ -3348,6 +3350,13 @@ native 64-waiter bound through Bob's accepted listener, drops those client
 sockets, and then verifies that Carol's permitted wait receives a later Alice
 publication. This is an explicit client-disconnect cleanup witness; it does
 not claim restart persistence or a load/concurrency matrix.
+
+Before a native Plumb read releases a message page, the owner rechecks current
+participant access and conversation expiry after the SQLite read. If access
+ended after admission, the read returns an empty page, `has_more=false` and the
+original input cursor. New reads still return 403. Leave and operator close do
+not wake pending polls. This check prevents new disclosure; it does not retract
+content already returned while the participant had access.
 
 The companion running-client control
 `backing_state_failure_is_truthful_and_other_member_recovers` holds the real

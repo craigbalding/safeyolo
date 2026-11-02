@@ -241,14 +241,19 @@ host target as the production input producers for Clippy, tests and builds.
 It retains the host target's Coord test runner. Production compilation, test
 compilation and test execution have separate bounded steps. A successful
 Clippy check does not supply the executable outputs needed by those steps.
-Overnight test compilation first prepares the shared library, library/bin tests
-and host binaries selected by the version integration test. A second step keeps
+Overnight test compilation prepares the library test, then binary tests and
+host binaries selected by the version integration test. A separate step prepares
+the agent API and native integration tests. The final compilation step keeps
 the complete default target selection, including examples, and reuses those
-outputs. Both steps use the unchanged release profile and flags. The dependency
+outputs. All steps use the unchanged release profile and flags. The dependency
 cache does not supply these workspace executables. Completed Cargo timing
 reports are retained even when a later compilation step fails; an interrupted
 compiler can leave no report for its unfinished command. The verbose job log
 still identifies the targets started before interruption.
+Linux library acquisition tests use the built CLI for the privileged rootfs
+remapper. Build `safeyolo` with the selected profile, then set
+`SAFEYOLO_NATIVE_CLI` to its absolute path when running those tests. Both Rust
+CI lanes supply this input.
 The input producers and native checks share the existing quick-job dependency
 cache namespace for each profile. The pinned cache action still separates
 operating systems, architectures, Rust toolchains, flags and lockfile inputs.
@@ -329,6 +334,11 @@ artifacts without this receipt also require a build. Damaged downloads or invali
 receipts fail the job. Consumer tests, terminal-input checks and complete package
 assembly still run.
 
+Linux input producers use Ubuntu 24.04 on both architectures. Complete Linux
+packages acquire tmux and its private libraries on that same runner. The packager
+derives the minimum glibc version from all shipped host executables and runtime
+libraries, so a floating runner can raise the package's runtime requirement.
+
 Use the `packages_only` input of `proxy-rust.yml` to produce complete host
 bundles without the contract matrix. It calls the existing
 `guest-test-inputs.yml` producer with production profile and package retention.
@@ -383,6 +393,28 @@ Start waits for readiness. Status and doctor use the owned process
 record and distinguish process, endpoint, sandbox and command state. Startup
 success does not prove a working guest or policy scenario. Stop shuts down the
 proxy and its Coord runtime; stop each disposable agent separately.
+For a fresh start, managed NATS and the proxy initialize concurrently. The
+command waits for both starts to finish. A Coord failure is reported and does
+not prevent proxy startup. With `SAFEYOLO_STARTUP_TIMINGS=1`, the proxy writes
+`startup` JSON records to `logs/proxy.log`, with source, profile, monotonic stage and elapsed seconds,
+and process CPU seconds for configuration, policy, credentials, flow recording,
+inspection, TLS and readiness publication. Listener projection separates the
+configuration read, reconciliation, writing, file sync and directory sync.
+Unchanged listeners keep the existing configuration file and reload identifier.
+Credential preparation separates grants, HMAC key loading and detector compilation.
+Vault unlock is deferred to credential-consuming operations and does not delay
+proxy readiness. Initialization and read-only credential commands create no store.
+Launcher and NATS-start timings go to the command's standard error.
+CPU time covers all threads in the emitting process and excludes its children.
+Component timings are nested;
+do not add their elapsed values to obtain total startup time.
+Doctor also sends a traced request through every configured agent Unix-domain
+socket. The reserved probe runs the normal request controls and terminates
+locally without external network access. The `pipeline` result lists each
+agent's control states and findings. Known disablement passes with its state
+shown. Missing controls, execution errors, incomplete evidence or an unavailable
+socket fail the check and make doctor exit with status 1. With no configured
+agent listener, doctor warns that it could not test the request pipeline.
 The Admin client reads the configured private token and the live readiness
 port, including an automatically assigned port. Stale ownership or an
 unavailable endpoint fails visibly. Token-file changes require a restart.
@@ -1088,8 +1120,9 @@ non-blocking. The command supplements the configured lint and static checks;
 it does not replace independent acceptance of the behaviour being changed.
 
 For a Python dependency repair, run the focused dependency controls from a
-Linux repository checkout with Python 3.12 or 3.13 and Bash. Install fish to
-exercise its activation control; the test reports a skip when fish is absent.
+Linux repository checkout with Python 3.12 or 3.13 and Bash. Install fish and
+zsh to exercise their activation controls; the tests report skips when a shell
+is absent. Run as an ordinary user; root skips the failed-deletion control.
 Use the configured proxy and certificate authority for package downloads.
 These commands create the two frozen environments and run the controls:
 
@@ -1103,17 +1136,50 @@ uv run --frozen --no-sync python -m unittest discover -s tools/acceptance/tests 
 Expected result: both test runs pass. The controls exercise JSON Web Token
 (JWT) verification, Semgrep and Model Context Protocol (MCP) authentication,
 HTTPS proxy certificate policy, chunked response parsing, virtualenv
-configuration and shell activation. HTTP fixtures listen on disposable
-loopback ports and close after each test. The seed-wheel test downloads the
-pip version in the acceptance lockfile from the default index, verifies its
+configuration, repeated activation-template substitution, fish quoting, zsh
+prompt substitution and Bash prompt decoding and expansion. The virtualenv
+controls also execute generated POSIX launchers at paths with spaces, long
+shebangs, quotes and backslashes through both seeders. They check rewritten
+pip-seeder RECORD hashes, failed symlink deletion as an ordinary user, and
+creation over prepared executable and library directory links. The filesystem
+controls also exercise existing, dangling and hard-linked generated files,
+current umask after a warm seed cache, metadata deletion paths, and
+stdlib-venv configuration boundaries. External target content and modes must
+stay unchanged. Activation controls cover Bash 4.2 compatibility and xonsh
+literals decoded as UTF-8, GBK and Big5. The xonsh control checks generated
+literals; it does not run a xonsh shell. Download controls reject altered bytes
+before cache promotion or pip-seeder installation, even when the downloader
+reports a different, valid file in its output.
+The acceptance dependency controls also exercise
+OpenTelemetry propagation limits, whitespace parsing and Semgrep trace/log
+export with requests and threading instrumentation. HTTP fixtures
+listen on disposable loopback ports and close after each test. The seed-wheel
+test downloads the pip version in the acceptance lockfile from the default index, verifies its
 published PyPI digest, and checks rejection after altering the downloaded
 file. The tests remove their temporary files.
 
+A lockfile update changes the tool selected by the next frozen sync. It does
+not replace activation scripts or launchers in existing environments. After
+the development sync, run `uv run --frozen --no-sync pre-commit clean`, then
+the normal hook command to recreate cached hook environments. Recreate other
+environments made by virtualenv with the updated tool and their normal
+creation command.
+
+Virtualenv repairs initial seed launchers. It does not patch pip's vendored
+distlib. Virtualenv 21.14.13 bundles pip 26.2.2 with vendored distlib 0.4.2.
+A later pip installation,
+reinstallation or upgrade can generate an unsafe POSIX launcher again when an
+attacker-influenced interpreter path contains shell syntax and needs a shell
+wrapper. Spaces or a long shebang select that wrapper. Running the launcher
+then interprets the path as shell syntax. Environment recreation repairs the
+initial launchers only; it does not protect later pip writes.
+
 These Linux controls do not execute Windows batch activation. Upstream
-virtualenv skips downloaded-wheel digest verification for custom indexes or
-missing PyPI digest metadata. A passing seed-wheel control establishes the
-default-index path with published metadata; it does not establish integrity
-for those skipped paths.
+virtualenv retains its custom-index exceptions to PyPI digest comparison.
+Missing default-index digest metadata refuses the downloaded bytes; a bundle
+request can then fall back to the verified embedded wheel. The controls check
+that fallback and the default-index path with published metadata. They do not
+establish integrity for custom-index exceptions.
 
 ### HTTP/2 gate verification
 

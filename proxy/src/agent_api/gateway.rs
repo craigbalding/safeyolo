@@ -131,7 +131,55 @@ pub(super) fn request_access(
         );
     };
 
-    if let Some(contract) = &capability.contract {
+    let scoped = ["account", "credential", "resources"]
+        .iter()
+        .any(|key| fields.contains_key(*key));
+    let requested_scope = if scoped {
+        if fields.keys().any(|key| {
+            ![
+                "service",
+                "capability",
+                "account",
+                "credential",
+                "resources",
+                "reason",
+            ]
+            .contains(&key.as_str())
+        }) {
+            return response(
+                400,
+                json!({"error":"unsupported service authorization field or bound"}),
+            );
+        }
+        let resources = fields.get("resources").and_then(|value| value.json().ok());
+        let (Some(account), Some(credential), Some(resources)) = (
+            required_text(fields, "account"),
+            optional_text(fields, "credential"),
+            resources,
+        ) else {
+            return response(
+                400,
+                json!({"error":"run service authorization requires account, credential reference and resources"}),
+            );
+        };
+        if resources.as_array().is_none_or(|paths| {
+            paths.is_empty()
+                || paths.iter().any(|path| {
+                    path.as_str()
+                        .is_none_or(|path| !crate::policy::delegation::valid_resource(path))
+                })
+        }) || service.auth.is_some() == credential.is_empty()
+        {
+            return response(
+                400,
+                json!({"error":"select explicit resource paths or patterns and a credential matching the service authentication"}),
+            );
+        }
+        Some(json!({"account":account,"credential":credential,"resources":resources}))
+    } else {
+        None
+    };
+    if !scoped && let Some(contract) = &capability.contract {
         return contract_challenge(service_name, capability_name, contract);
     }
     let description = service
@@ -148,7 +196,7 @@ pub(super) fn request_access(
         .and_then(|capability| capability.get("description"))
         .cloned()
         .unwrap_or_else(|| Value::String(String::new()));
-    let scope_hint = json!({
+    let mut scope_hint = json!({
         "service":service_name,
         "capability":capability_name,
         "description":description,
@@ -156,6 +204,12 @@ pub(super) fn request_access(
         "reason":reason,
         "proposed_lifetime":"session",
     });
+    if let Some(scope) = requested_scope {
+        scope_hint
+            .as_object_mut()
+            .expect("scope")
+            .extend(scope.as_object().expect("scope").clone());
+    }
     let summary = if reason.is_empty() {
         format!("{agent_name} requests {service_name}/{capability_name}")
     } else {
@@ -331,77 +385,33 @@ pub(super) fn submit_binding(
             json!({"decision":"contract_not_enforceable","missing_tiers":["request_shape"]}),
         );
     }
-    let mut errors = Vec::new();
-    for (name, definition) in &contract.bindings {
-        let object = definition.as_object();
-        let kind = object
-            .and_then(|o| o.get("type"))
-            .and_then(Value::as_str)
-            .unwrap_or("string");
-        let value = bindings.get(name);
-        let required = object
-            .and_then(|o| o.get("required_if"))
-            .and_then(Value::as_object)
-            .is_some_and(|conditions| {
-                conditions
-                    .iter()
-                    .all(|(key, expected)| bindings.get(key) == Some(expected))
-            });
-        if required && value.is_none_or(Value::is_null) {
-            errors.push(format!("'{name}' is required"));
-            continue;
-        }
-        let Some(value) = value else { continue };
-        let valid = match kind {
-            "enum" => object
-                .and_then(|o| o.get("options"))
-                .and_then(Value::as_array)
-                .is_some_and(|options| options.iter().any(|candidate| candidate == value)),
-            "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
-            "boolean" => value.is_boolean(),
-            "string_list" => value
-                .as_array()
-                .is_some_and(|items| items.iter().all(Value::is_string)),
-            _ => value.is_string(),
-        };
-        if !valid {
-            errors.push(format!("'{name}' has invalid type or value"));
-        }
-        if kind == "string"
-            && let Some(pattern) = object
-                .and_then(|o| o.get("pattern"))
-                .and_then(Value::as_str)
-            && let Some(value) = value.as_str()
-            && regex::Regex::new(pattern).is_ok_and(|regex| !regex.is_match(value))
-        {
-            errors.push(format!("'{name}' does not match pattern"));
-        }
-    }
-    for name in bindings.keys() {
-        if !contract.bindings.contains_key(name) {
-            errors.push(format!("Unknown binding variable '{name}'"));
-        }
-    }
-    for operation in contract.grantable_operations() {
-        for name in operation.bound_value_references() {
-            if bindings.get(name).is_none_or(Value::is_null) {
-                errors.push(format!(
-                    "'{name}' is required by operation '{}'",
-                    operation.name
-                ));
+    let grantable_operations: Vec<String> = match fields.get("grantable_operations") {
+        None => contract
+            .grantable_operations()
+            .map(|operation| operation.name.clone())
+            .collect(),
+        Some(value) => match value.as_array().and_then(|names| {
+            names
+                .iter()
+                .map(|name| name.as_str().map(str::to_owned))
+                .collect()
+        }) {
+            Some(names) => names,
+            None => {
+                return response(
+                    400,
+                    json!({"error":"grantable_operations must be a list of operation names"}),
+                );
             }
-        }
-    }
+        },
+    };
+    let errors = contract.binding_errors(bindings, &grantable_operations);
     if !errors.is_empty() {
         return response(
             200,
             json!({"decision":"denied_out_of_scope","errors":errors}),
         );
     }
-    let grantable_operations: Vec<String> = contract
-        .grantable_operations()
-        .map(|operation| operation.name.clone())
-        .collect();
     let reason = fields
         .get("purpose_code")
         .and_then(Value::as_str)
@@ -414,7 +424,7 @@ pub(super) fn submit_binding(
             "service":service_name,
             "capability":capability_name,
             "bindings":bindings,
-            "message":"Contract binding submitted. Operator will review in watch.",
+            "message":"Contract binding submitted. An eligible delegated reviewer or the operator can decide; retry explicitly after approval.",
         }),
     );
     outcome.audit = Some(AuditIntent {

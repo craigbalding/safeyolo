@@ -941,6 +941,14 @@ impl PlumbOwner {
                 };
             }
         }
+        // SQLite reads yield, so access can end during either snapshot or the
+        // long poll. Check the current grant at release, under the same lock
+        // as leave/close. Preserve an admitted read's empty completion without
+        // exposing message bodies, metadata, or a cursor from the fetched page.
+        let memory = self.memory.lock().await;
+        if !Self::member(&memory, conversation_id, agent_name) {
+            page = (Vec::new(), false, None);
+        }
         json!({
             "status":200,
             "messages":page.0,
@@ -1947,9 +1955,13 @@ mod tests {
     }
 
     async fn raw_agent_request(socket: &Path, body: &[u8]) -> Vec<u8> {
+        raw_plumb_request(socket, "POST", "/plumb/request-chat", body).await
+    }
+
+    async fn raw_plumb_request(socket: &Path, method: &str, path: &str, body: &[u8]) -> Vec<u8> {
         let mut stream = UnixStream::connect(socket).await.unwrap();
         let request = format!(
-            "POST http://_safeyolo.proxy.internal/plumb/request-chat HTTP/1.1\r\n\
+            "{method} http://_safeyolo.proxy.internal{path} HTTP/1.1\r\n\
              Host: _safeyolo.proxy.internal\r\nAuthorization: Bearer {SHUTDOWN_AGENT_TOKEN}\r\n\
              Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
@@ -2174,6 +2186,217 @@ mod tests {
             .read_messages("1alice", &conversation_id, None, 0, DEFAULT_PAGE_LIMIT)
             .await;
         assert_eq!(page["limit"], 1);
+    }
+
+    #[tokio::test]
+    async fn pending_client_read_after_leave_hides_new_messages_from_former_member() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        std::fs::create_dir_all(root.join("data")).unwrap();
+        std::fs::write(root.join("data/agent_token"), SHUTDOWN_AGENT_TOKEN).unwrap();
+        std::fs::write(root.join("operator-token"), SHUTDOWN_OPERATOR_TOKEN).unwrap();
+        let mut config = shutdown_config(root);
+        config.listeners = ["alice", "bob", "carol"]
+            .into_iter()
+            .map(|name| AgentListener {
+                agent_id: name.into(),
+                socket_path: root.join(format!("{name}.sock")),
+                source_id: None,
+            })
+            .collect();
+        let proxy = Proxy::start(config).await.unwrap();
+        let owner = proxy.runtime.read().unwrap().plumb.clone();
+        let requested = raw_agent_request(
+            &root.join("alice.sock"),
+            br#"{"participants":["bob","carol"]}"#,
+        )
+        .await;
+        assert_eq!(response_status(&requested), 202);
+        let approved = raw_admin_approval(
+            proxy.admin.as_ref().unwrap().address().port(),
+            &text(&response_json(&requested), "request_id"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response_status(&approved), 200);
+        let conversation_id = text(&response_json(&approved), "conversation_id");
+        let messages_path = format!("/plumb/conversations/{conversation_id}/messages");
+
+        let mut waiters = Vec::new();
+        for name in ["bob", "carol"] {
+            let socket = root.join(format!("{name}.sock"));
+            let path = format!("{messages_path}?wait=30");
+            waiters.push(tokio::spawn(async move {
+                raw_plumb_request(&socket, "GET", &path, b"").await
+            }));
+            tokio::time::timeout(Duration::from_secs(1), owner.waiter_started.notified())
+                .await
+                .expect("the accepted client's empty read must enter the wait");
+        }
+        let left = raw_plumb_request(
+            &root.join("bob.sock"),
+            "POST",
+            &format!("/plumb/conversations/{conversation_id}/leave"),
+            b"{}",
+        )
+        .await;
+        assert_eq!(response_status(&left), 200);
+        let sent = raw_plumb_request(
+            &root.join("alice.sock"),
+            "POST",
+            &messages_path,
+            br#"{"body":"only current participants may read this"}"#,
+        )
+        .await;
+        assert_eq!(response_status(&sent), 200);
+
+        let bob = waiters.remove(0).await.unwrap();
+        let carol = waiters.remove(0).await.unwrap();
+        assert_eq!(response_status(&bob), 200);
+        assert_eq!(response_status(&carol), 200);
+        assert_eq!(response_json(&bob)["messages"], json!([]));
+        assert_eq!(response_json(&bob)["has_more"], false);
+        assert_eq!(response_json(&bob)["next_after"], Value::Null);
+        assert_eq!(
+            response_json(&carol)["messages"][0]["id"],
+            response_json(&sent)["id"]
+        );
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn pending_read_rechecks_leave_close_and_expiry_before_releasing_a_page() {
+        for access_loss in ["leave", "last participant left", "operator close", "expiry"] {
+            let directory = tempfile::tempdir().unwrap();
+            let owner = PlumbOwner::for_data_dir(directory.path());
+            let participants = if access_loss == "last participant left" {
+                vec![json!("bob")]
+            } else {
+                vec![json!("bob"), json!("carol")]
+            };
+            let requested = owner
+                .request_chat("alice", &participants, None, None, None)
+                .await;
+            let approved = owner
+                .approve(
+                    &text(&requested, "request_id"),
+                    (access_loss == "expiry").then_some(1),
+                )
+                .await;
+            let conversation_id = text(&approved, "conversation_id");
+            let first = owner
+                .post_message("alice", &conversation_id, "already received", json!([]))
+                .await;
+            let after = text(&first, "id");
+            let mut reading = Box::pin(owner.read_messages(
+                "bob",
+                &conversation_id,
+                Some(after.clone()),
+                MAX_WAIT_SECONDS,
+                1,
+            ));
+            tokio::time::timeout(Duration::from_secs(1), async {
+                tokio::select! {
+                    result = reading.as_mut() => panic!("read did not wait: {result}"),
+                    _ = owner.waiter_started.notified() => {}
+                }
+            })
+            .await
+            .expect("the empty read must enter the wait");
+
+            // Do not poll the reader again until the real mutations finish.
+            // Two queued messages also exercise removal of has_more/cursor.
+            for body in ["first undisclosed message", "second undisclosed message"] {
+                assert_eq!(
+                    owner
+                        .post_message("alice", &conversation_id, body, json!([]))
+                        .await["status"],
+                    200
+                );
+            }
+            match access_loss {
+                "leave" => assert_eq!(owner.leave("bob", &conversation_id).await["status"], 200),
+                "last participant left" => {
+                    assert_eq!(owner.leave("alice", &conversation_id).await["status"], 200);
+                }
+                "operator close" => assert_eq!(owner.close(&conversation_id).await["status"], 200),
+                "expiry" => {
+                    // Resume the woken reader, but hold its next store call
+                    // until expiry. A check only before the snapshot is stale.
+                    let calls = owner.calls.lock().await;
+                    assert!(futures_util::poll!(reading.as_mut()).is_pending());
+                    let expires_at = approved["expires_at"].as_f64().unwrap();
+                    tokio::time::sleep(
+                        Duration::from_secs_f64((expires_at - now()).max(0.0))
+                            + Duration::from_millis(10),
+                    )
+                    .await;
+                    assert!(now() >= expires_at);
+                    drop(calls);
+                }
+                _ => unreachable!(),
+            }
+            let result = tokio::time::timeout(Duration::from_secs(1), reading)
+                .await
+                .expect("publication must release the pending read");
+            assert_eq!(
+                result,
+                json!({
+                    "status":200, "messages":[], "has_more":false,
+                    "next_after":after, "limit":1,
+                }),
+                "{access_loss}"
+            );
+            assert_eq!(owner.waiters.load(std::sync::atomic::Ordering::Acquire), 0);
+            assert_eq!(
+                owner
+                    .read_messages("bob", &conversation_id, None, 0, 1)
+                    .await["status"],
+                403
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn immediate_read_rechecks_expiry_after_awaiting_the_store() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = PlumbOwner::for_data_dir(directory.path());
+        let requested = owner
+            .request_chat("alice", &[json!("bob")], None, None, None)
+            .await;
+        let approved = owner
+            .approve(&text(&requested, "request_id"), Some(1))
+            .await;
+        let conversation_id = text(&approved, "conversation_id");
+        assert_eq!(
+            owner
+                .post_message("alice", &conversation_id, "not yet received", json!([]))
+                .await["status"],
+            200
+        );
+
+        // Hold the existing store-call admission lock, so the initial membership
+        // check succeeds but the snapshot cannot run until after real expiry.
+        let calls = owner.calls.lock().await;
+        let mut reading = Box::pin(owner.read_messages("bob", &conversation_id, None, 0, 1));
+        assert!(futures_util::poll!(reading.as_mut()).is_pending());
+        let expires_at = approved["expires_at"].as_f64().unwrap();
+        tokio::time::sleep(
+            Duration::from_secs_f64((expires_at - now()).max(0.0)) + Duration::from_millis(10),
+        )
+        .await;
+        assert!(now() >= expires_at);
+        drop(calls);
+        let result = tokio::time::timeout(Duration::from_secs(1), reading)
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "status":200, "messages":[], "has_more":false,
+                "next_after":null, "limit":1,
+            })
+        );
     }
 
     #[tokio::test]

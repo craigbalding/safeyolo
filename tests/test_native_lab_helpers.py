@@ -43,6 +43,9 @@ def lab(tmp_path: Path, guest_binary: Path):
         '#!/bin/bash\n'
         'printf "%s:%s\\n" "$$" "$(awk \'{print $22}\' /proc/$$/stat)" >> "$HOME/command-identities"\n'
         'printf "started\\n" >> "$HOME/starts"\n'
+        'if [ -n "${SAFEYOLO_LAB_STARTUP_FILE:-}" ]; then\n'
+        '  cat "$SAFEYOLO_LAB_STARTUP_FILE" > "$HOME/received-context"\n'
+        'fi\n'
         'printf "public-marker\\nAuthorization: Bearer fake-only-secret\\n"\n'
         'while :; do sleep 1; done\n'
     )
@@ -115,10 +118,11 @@ def lab(tmp_path: Path, guest_binary: Path):
     assert not python_calls.exists(), "Reached Lab helpers executed Python"
 
 
-def test_concurrent_entry_reattach_recovery_intervention_and_teardown(lab):
+@pytest.mark.parametrize("harness", ["codex", "claude"])
+def test_concurrent_entry_reattach_recovery_intervention_and_teardown(lab, harness):
     home, env, tmux, run = lab
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda _: run("--objective", "compare the same request"), range(2)))
+        results = list(pool.map(lambda _: run("--harness", harness, "--objective", "compare the same request"), range(2)))
     assert all(result.returncode == 0 for result in results), [(r.stdout, r.stderr) for r in results]
     for _ in range(50):
         if (home / "starts").exists():
@@ -127,6 +131,9 @@ def test_concurrent_entry_reattach_recovery_intervention_and_teardown(lab):
     else:
         pytest.fail(tmux("capture-pane", "-p", "-t", "lab", "-S", "-"))
     assert (home / "starts").read_text().splitlines() == ["started"]
+    assert tmux("show-options", "-qv", "-t", "lab", "@safeyolo_lab_harness") == harness
+    if harness == "claude":
+        assert "compare the same request" in (home / "received-context").read_text()
     status = json.loads(run("--status", "--json").stdout)
     assert status["owned"] is True and status["controller_alive"] is True
     controller = status["controller_pane"]
@@ -169,6 +176,7 @@ def test_concurrent_entry_reattach_recovery_intervention_and_teardown(lab):
             break
         time.sleep(0.05)
     assert (home / "starts").read_text().splitlines() == ["started", "started"]
+    assert tmux("show-options", "-qv", "-t", "lab", "@safeyolo_lab_harness") == harness
     # A failed native export must leave the owned session intact.
     failed_env = dict(env, SAFEYOLO_GUEST_EXECUTABLE="/nonexistent/native-helper")
     failed = subprocess.run([str(SKILL / "scripts/safeyolo-lab"), "--teardown"], env=failed_env, capture_output=True, text=True, timeout=15, check=False)

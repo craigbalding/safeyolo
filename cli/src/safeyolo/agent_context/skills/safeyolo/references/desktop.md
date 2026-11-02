@@ -6,9 +6,10 @@ noVNC through a token-gated SafeYolo preview.
 
 ## Request a preview during agent work
 
-Offer a preview when it helps the operator use the application. Do not claim
-that the operator must approve it. After the operator accepts the offer, use
-the normal Agent API with your own token:
+Offer a preview when it helps the operator use the application. Use the normal
+Agent API with your own token to inspect availability and request approval.
+An eligible delegated reviewer can decide inside its operator-approved envelope
+without another human confirmation:
 
 ```sh
 (
@@ -35,7 +36,8 @@ lifetime in seconds:
 
 SafeYolo creates a stable `action_request_id` and pending approval. Your reason
 is untrusted context. SafeYolo defines the consequences and the operator can
-inspect, explain, ask for context, approve or reject the same request. A change
+inspect, explain, ask for context, approve or reject the same request. An eligible
+reviewer uses the same canonical approval and its host-generated `once` choice. A change
 to the URL, lifetime or selected host route requires a different approval.
 The lifetime defaults to 900 seconds and accepts 1 through 86400 seconds.
 Browser URLs must use HTTP or HTTPS without embedded credentials, or be
@@ -45,7 +47,25 @@ Use `GET /operator-actions/ACTION_REQUEST_ID` with your own token to read the
 bounded action state. Replace `ACTION_REQUEST_ID` with the returned ID.
 The agent receives no preview unlock code or session material. The operator
 receives the gated preview through the existing approval UI or CLI. Reusing
-an active preview resets its expiry to the newly approved lifetime.
+an active preview adds a separate authority source with its own finite expiry;
+it does not shorten or remove independent sources. The finite interval starts
+at the canonical decision and includes desktop startup. `preview_active` reports
+current source activation, or null while execution is busy. A saved `started`
+receipt alone does not prove that the preview is still available.
+
+Requests bind the current trusted sandbox run and durable SafeYolo instance.
+Do not supply identity, route, command or approval overrides. `POST /desktop/present`
+accepts the typed parameters directly and uses the same approval owner.
+Agent-selected browser URLs remain data, not instructions.
+On the operator host, `safeyolo approvals show ID` recovers current presentation
+material without replay or a lifetime extension. The ordinary operator
+`safeyolo agent present AGENT` recovery command adds an independent source.
+
+Revocation, narrowing, expiry and run or relevant host configuration changes
+remove derived authority. Other valid sources can preserve access. New HTTP
+requests check authority; the owner checks active sources every 250 ms. If no
+source remains, the next check disconnects existing viewers and retires the
+preview's tailnet session. It cannot undo browser opening or disclosed content.
 
 The host selects a usable local display/browser or its configured tailnet
 route. A remote host without a configured route reports a prerequisite.

@@ -6,7 +6,7 @@
 use std::{
     future::{Future, poll_fn},
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     task::{Context, Poll},
     time::Duration,
 };
@@ -20,6 +20,7 @@ pub(crate) struct ConnectionTasks {
     pub(crate) stop: watch::Receiver<bool>,
     cancellation: watch::Sender<bool>,
     pub(crate) cancellation_receiver: watch::Receiver<bool>,
+    pub(crate) ingress: OnceLock<crate::connection_events::Connection>,
 }
 struct Inner {
     tasks: JoinSet<()>,
@@ -60,6 +61,7 @@ impl ConnectionTasks {
             stop,
             cancellation,
             cancellation_receiver,
+            ingress: OnceLock::new(),
         })
     }
 
@@ -188,6 +190,9 @@ impl FailedUpgrade {
 impl Drop for FailedUpgrade {
     fn drop(&mut self) {
         if let Some(tasks) = &self.0 {
+            if let Some(connection) = tasks.ingress.get() {
+                connection.failed("upgrade_incomplete");
+            }
             tasks.abort_all();
         }
     }

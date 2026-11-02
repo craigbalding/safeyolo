@@ -3,7 +3,7 @@
 
 use std::{
     fmt,
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
 
 use indexmap::IndexMap;
@@ -130,12 +130,14 @@ impl Drop for State {
 }
 
 pub struct Metrics {
+    pub(crate) observations: OnceLock<Arc<crate::observations::Counters>>,
     state: Mutex<State>,
 }
 impl Metrics {
     /// Sample the source uptime origin once at process-owner creation.
     pub fn new(clock: impl FnOnce() -> f64) -> Self {
         Self {
+            observations: OnceLock::new(),
             state: Mutex::new(State {
                 started: clock(),
                 total: 0.into(),
@@ -370,7 +372,11 @@ impl Metrics {
                 fixed(value, 1)
             ));
         }
-        Ok(lines.join("\n") + "\n")
+        let mut output = lines.join("\n") + "\n";
+        if let Some(observations) = self.observations.get() {
+            output += &observations.prometheus();
+        }
+        Ok(output)
     }
 }
 

@@ -17,6 +17,7 @@ use std::{
     io::Read,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
+    sync::Arc,
 };
 
 use serde_json::{Value, json};
@@ -63,6 +64,9 @@ const ENDPOINTS: &[&str] = &[
     "/config",
     "/explain",
     "/approvals/{request_id}",
+    "/approvals",
+    "/approvals/{approval_id}/resolve (POST)",
+    "/api/coord/request-access (POST)",
     "/approvals/{request_id}/prepare (POST)",
     "/trace",
     "/memory",
@@ -115,9 +119,12 @@ pub struct Request<'a> {
 /// NoEngine does not distinguish a remote client from a corrupted local client;
 /// provider-specific status behavior remains a development compatibility gap.
 pub enum PolicyState<'a> {
-    Ready(&'a Policy),
+    /// Retain the selected generation when a route enters a blocking worker.
+    Ready(&'a Arc<Policy>),
     Unavailable,
-    NoEngine { healthy: bool },
+    NoEngine {
+        healthy: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,13 +165,13 @@ pub enum AuditKind {
     TestContextCleared,
     GatewayAccessRequested,
     GatewayBindingSubmitted,
-    DesktopPresentRequested,
     PlumbRequested,
     PlumbMessageBlocked,
     PlumbMessageFlagged,
     PlumbMessageAllowed,
     PlumbConversationClosed,
     CoordPublishOutcomeUnknown,
+    CoordAccessRequested,
 }
 
 /// The approval envelope accepted by the existing audit writer. This is an
@@ -242,17 +249,17 @@ impl AuditIntent {
                 "agent-api",
                 Some(Decision::RequireApproval),
             ),
+            AuditKind::CoordAccessRequested => (
+                "coord.access_requested",
+                Kind::Coord,
+                Severity::High,
+                "agent-api",
+                Some(Decision::RequireApproval),
+            ),
             AuditKind::GatewayBindingSubmitted => (
                 "gateway.submit_binding",
                 Kind::Gateway,
                 Severity::Critical,
-                "agent-api",
-                Some(Decision::RequireApproval),
-            ),
-            AuditKind::DesktopPresentRequested => (
-                "agent.desktop_present_requested",
-                Kind::Agent,
-                Severity::High,
                 "agent-api",
                 Some(Decision::RequireApproval),
             ),
@@ -293,7 +300,7 @@ impl AuditIntent {
             ),
             AuditKind::CoordPublishOutcomeUnknown => (
                 "coord.publish_outcome_unknown",
-                Kind::Security,
+                Kind::Coord,
                 Severity::High,
                 "agent-api",
                 Some(Decision::Deny),
@@ -446,7 +453,7 @@ impl Outcome<'_> {
             Some(
                 AuditKind::GatewayAccessRequested
                 | AuditKind::GatewayBindingSubmitted
-                | AuditKind::DesktopPresentRequested
+                | AuditKind::CoordAccessRequested
                 | AuditKind::PlumbRequested
                 | AuditKind::FlowReadAll,
             ) => {
@@ -462,6 +469,7 @@ impl Outcome<'_> {
 fn agent(identity: Identity<'_>) -> Option<&str> {
     match identity {
         Identity::Resolved(value) => Some(value),
+        Identity::Current(run) => Some(&run.agent),
         _ => None,
     }
 }
@@ -1220,6 +1228,7 @@ mod tests {
         let policy = Policy::parse_at("{}", crate::policy::Format::Json, 1_000_000.)
             .unwrap()
             .with_baseline_path_for_test(valid_path);
+        let policy = Arc::new(policy);
         let positive = respond_read(
             request,
             &token,
@@ -1237,7 +1246,8 @@ mod tests {
             .join(OsString::from_vec(b"private-policy-\xff.json".to_vec()));
         assert!(invalid_path.to_str().is_none());
         assert!(!invalid_path.exists());
-        let policy = policy.with_baseline_path_for_test(invalid_path);
+        let policy =
+            Arc::new(Arc::unwrap_or_clone(policy).with_baseline_path_for_test(invalid_path));
         assert_eq!(policy.engine_stats(), Err(EngineStatsError::PathEncoding));
 
         for (method, authorization, status) in

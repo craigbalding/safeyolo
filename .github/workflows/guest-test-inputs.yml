@@ -25,7 +25,8 @@ permissions:
 
 jobs:
   build:
-    runs-on: ${{ inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    # Build host executables and acquire tmux on the supported glibc baseline.
+    runs-on: ${{ inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     env:
       CARGO_BUILD_JOBS: "1"
       SAFEYOLO_BUILD_REVISION: ${{ inputs.revision }}
@@ -87,6 +88,12 @@ jobs:
           python3 scripts/select_blackbox_artifacts.py --native-input guest \
             --platform "$INPUT_PLATFORM" --profile "$SAFEYOLO_BUILD_PROFILE" --revision "$SAFEYOLO_BUILD_REVISION" \
             --branch "$DEFAULT_BRANCH" --output "guest/command/target/$directory" "${qualification[@]}"
+      - name: Install Linux guest build tools
+        if: steps.reuse_guest.outputs.reused != 'true'
+        run: |
+          sudo -n apt-get update -qq
+          sudo -n apt-get install -y -qq --no-install-recommends musl-tools
+          rustup target add "$(uname -m)-unknown-linux-musl"
       - name: Build Linux guest executables and receipts
         if: steps.reuse_guest.outputs.reused != 'true'
         run: scripts/build_guest_command.sh

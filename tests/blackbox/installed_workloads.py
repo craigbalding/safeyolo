@@ -162,7 +162,7 @@ def owned_ssh(directory: Path, config_dir: Path, agent: str, marker: str):
 
 def guest_args(cli: str, agent: str, marker: str, phase: str, *extra: str) -> list[str]:
     command = shlex.join([
-        "python3", "-m", "tests.blackbox.isolation.installed_workloads",
+        "/usr/bin/python3", "-m", "tests.blackbox.isolation.installed_workloads",
         "--phase", phase, "--agent", agent, "--marker", marker, *extra,
     ])
     return guest_command_args(cli, agent, f"cd /workspace && {command}", guest_root=True)

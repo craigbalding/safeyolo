@@ -25,7 +25,7 @@ struct Fixture {
     directory: tempfile::TempDir,
     path: PathBuf,
     registry: Arc<crate::services::Registry>,
-    policy: Policy,
+    policy: Arc<Policy>,
     writer: Arc<crate::audit::Writer>,
     mutation_owner: crate::admin_api::ServiceMutationOwner,
 }
@@ -67,7 +67,7 @@ impl Fixture {
             directory,
             path,
             registry,
-            policy,
+            policy: Arc::new(policy),
             mutation_owner: crate::admin_api::ServiceMutationOwner::default(),
         }
     }

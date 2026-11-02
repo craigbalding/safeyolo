@@ -92,28 +92,63 @@ where
             },
         );
     }
-    if path != "/operator-actions" {
+    if path != "/operator-actions" && path != "/desktop/present" {
         return Ok(response(404, json!({"error":"action unavailable"})));
     }
     if request.method != "POST" {
         return Ok(response(405, json!({"error":"Method Not Allowed"})));
     }
+    let Some(run) = request.identity.run().filter(|run| run.current(policy)) else {
+        return Ok(response(
+            403,
+            json!({"error":"trusted current-run requester identity required"}),
+        ));
+    };
     let content = match super::declarations::read_content(body).await? {
         Ok(content) => content,
         Err(error) => return Ok(super::declarations::content_error(error)),
     };
-    let input = match serde_json::from_slice::<operator_actions::Request>(&content) {
-        Ok(input) => input,
-        Err(_) => {
-            return Ok(response(
-                400,
-                json!({"error":"supply action_id, typed parameters and optional untrusted reason only"}),
-            ));
+    let input = if path == "/desktop/present" {
+        let parameters = if content.is_empty() {
+            Ok(crate::desktop_present::Parameters::default())
+        } else {
+            serde_json::from_slice(&content)
+        };
+        match parameters {
+            Ok(parameters) => operator_actions::Request {
+                action_id: operator_actions::DESKTOP_PRESENT.into(),
+                parameters,
+                reason: None,
+            },
+            Err(_) => {
+                return Ok(response(
+                    400,
+                    json!({"error":"supply typed desktop parameters only"}),
+                ));
+            }
+        }
+    } else {
+        match serde_json::from_slice::<operator_actions::Request>(&content) {
+            Ok(input) => input,
+            Err(_) => {
+                return Ok(response(
+                    400,
+                    json!({"error":"supply action_id, typed parameters and optional untrusted reason only"}),
+                ));
+            }
         }
     };
     Ok(
-        match operator_actions::request(state, writer, policy, caller, request.request_id, input)
-            .await
+        match operator_actions::request(
+            state,
+            writer,
+            policy,
+            caller,
+            run,
+            request.request_id,
+            input,
+        )
+        .await
         {
             Ok(value) => response(
                 if value["status"] == "unavailable" {

@@ -19,6 +19,7 @@ use crate::policy::{
     restore_large_toml_integers, split_destination,
 };
 
+pub(crate) mod delegations;
 pub(crate) mod network_action;
 pub(crate) mod pending;
 

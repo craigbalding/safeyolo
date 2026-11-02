@@ -1231,7 +1231,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     set +e
     python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" "$AGENT_NAME" -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} -v -rs --tb=short --timeout=60 --ignore=test_root_containment.py"
+        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 /usr/bin/python3 -m pytest${PYTEST_FORWARD_SHELL} -v -rs --tb=short --timeout=60 --ignore=test_root_containment.py"
     ISOLATION_RESULT=$?
     set -e
     echo ""
@@ -1240,7 +1240,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     set +e
     python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" "$AGENT_NAME" --user root -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} -v -rs --tb=short --timeout=60 test_root_containment.py test_key_isolation.py::TestPrivateKeyAbsent"
+        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 /usr/bin/python3 -m pytest${PYTEST_FORWARD_SHELL} -v -rs --tb=short --timeout=60 test_root_containment.py test_key_isolation.py::TestPrivateKeyAbsent"
     ROOT_ISOLATION_RESULT=$?
     set -e
     echo ""

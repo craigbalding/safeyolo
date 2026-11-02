@@ -57,7 +57,7 @@ fn registry(defaults: &Value, kind: &str) -> Option<Arc<Registry>> {
     Some(Arc::new(Registry::from_sources(&builtin, &user).unwrap()))
 }
 
-fn policy(defaults: &Value, spec: &Value) -> Policy {
+fn policy(defaults: &Value, spec: &Value) -> Arc<Policy> {
     let mut bindings = spec["bindings"].as_array().unwrap().clone();
     if let Some(extra) = spec.get("extra_binding") {
         bindings.push(extra.clone());
@@ -93,23 +93,28 @@ fn policy(defaults: &Value, spec: &Value) -> Policy {
         }
         Format::Yaml
     };
-    Policy::parse_with_registry_at(
-        &document,
-        format,
-        registry(defaults, spec["registry"].as_str().unwrap()),
-        0.,
+    Arc::new(
+        Policy::parse_with_registry_at(
+            &document,
+            format,
+            registry(defaults, spec["registry"].as_str().unwrap()),
+            0.,
+        )
+        .unwrap(),
     )
-    .unwrap()
 }
 
-fn access_policy(service: &str) -> Policy {
+fn access_policy(service: &str) -> Arc<Policy> {
     let registry =
         Arc::new(Registry::from_sources(&[("demo.yaml".into(), service.into())], &[]).unwrap());
-    Policy::parse_with_registry_at(r#"{"gateway":{}}"#, Format::Json, Some(registry), 0.).unwrap()
+    Arc::new(
+        Policy::parse_with_registry_at(r#"{"gateway":{}}"#, Format::Json, Some(registry), 0.)
+            .unwrap(),
+    )
 }
 
 async fn access<'a>(
-    policy: &'a Policy,
+    policy: &'a Arc<Policy>,
     body: &str,
     identity: Identity<'_>,
 ) -> agent_api::Outcome<'a> {
@@ -117,7 +122,7 @@ async fn access<'a>(
 }
 
 async fn gateway_call<'a>(
-    policy: &'a Policy,
+    policy: &'a Arc<Policy>,
     path: &str,
     body: &str,
     identity: Identity<'_>,
@@ -512,8 +517,9 @@ async fn request_access_checks_catalog_and_identity_after_body_validation() {
         serde_json::from_slice::<Value>(&identity.response.body_bytes()).unwrap(),
         json!({"error":"Could not identify agent"})
     );
-    let empty_catalog =
-        Policy::parse_with_registry_at(r#"{"gateway":{}}"#, Format::Json, None, 0.).unwrap();
+    let empty_catalog = Arc::new(
+        Policy::parse_with_registry_at(r#"{"gateway":{}}"#, Format::Json, None, 0.).unwrap(),
+    );
     let unavailable = access(
         &empty_catalog,
         r#"{"service":"demo","capability":"read"}"#,

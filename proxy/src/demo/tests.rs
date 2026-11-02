@@ -367,6 +367,27 @@ async fn explicit_provisioning_preserves_source_and_refuses_guest_redirects() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
+async fn spool_cleanup_failure_preserves_demo_configuration_and_workspace() {
+    let root = instance();
+    host_platform::in_instance(root.path().into(), async {
+        let demo = Demo::prepare(&Options::default()).await.unwrap();
+        let directory = root.path().join("agents").join(&demo.agent.name);
+        fs::write(directory.join("overlay"), "not a directory").unwrap();
+        let policy = fs::read(root.path().join("policy.toml")).unwrap();
+        let error = demo.cleanup().await.unwrap_err().to_string();
+        assert!(error.contains("Not a directory"), "{error}");
+        assert_eq!(fs::read(root.path().join("policy.toml")).unwrap(), policy);
+        assert!(demo.workspace.is_dir());
+        fs::remove_file(directory.join("overlay")).unwrap();
+        demo.cleanup().await.unwrap();
+        assert!(!directory.exists());
+        assert!(!demo.workspace.exists());
+    })
+    .await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
 async fn retained_live_owner_is_preserved_and_proven_dead_owner_can_retry() {
     let root = instance();
     host_platform::in_instance(root.path().into(), async {
@@ -383,6 +404,13 @@ async fn retained_live_owner_is_preserved_and_proven_dead_owner_can_retry() {
         let run = json!({"run_id":"abcdefabcdefabcdefabcdefabcdefab",
             "backend_pid":pid,"backend_token":token,"state":"running"});
         crate::host_runs::save(&demo.agent.name, &run).unwrap();
+        let crontabs = root
+            .path()
+            .join("agents")
+            .join(&demo.agent.name)
+            .join("overlay/var/spool/cron/crontabs");
+        fs::create_dir_all(&crontabs).unwrap();
+        fs::write(crontabs.join("agent"), "preserve the live owner's queue").unwrap();
         let policy = fs::read(root.path().join("policy.toml")).unwrap();
         // A live unrelated process does not authorize sandbox adoption or
         // signalling. Both the login caller and existing-agent selection hold.
@@ -396,6 +424,10 @@ async fn retained_live_owner_is_preserved_and_proven_dead_owner_can_retry() {
             .is_err()
         );
         assert!(demo.cleanup().await.is_err());
+        assert_eq!(
+            fs::read_to_string(crontabs.join("agent")).unwrap(),
+            "preserve the live owner's queue"
+        );
         assert!(owner.try_wait().unwrap().is_none());
         assert_eq!(fs::read(root.path().join("policy.toml")).unwrap(), policy);
         assert_eq!(

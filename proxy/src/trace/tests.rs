@@ -445,10 +445,23 @@ fn actual_source_store_workflows_preserve_order_reports_and_partial_errors() {
                             expected["found"].as_bool().unwrap(),
                             "{name}/{index}"
                         );
-                        if let Some(report) = report {
+                        if let Some(mut report) = report {
+                            // Retain the historical storage oracle. Native
+                            // execution evidence now reports absence explicitly;
+                            // the old inferred not_loaded list is no longer a
+                            // valid oracle for the diagnostic envelope.
+                            let mut expected_report: Value =
+                                serde_json::from_str(expected["report_json"].as_str().unwrap())
+                                    .unwrap();
+                            report.as_object_mut().unwrap().remove("not_loaded");
+                            report.as_object_mut().unwrap().remove("incomplete");
+                            expected_report
+                                .as_object_mut()
+                                .unwrap()
+                                .remove("not_loaded");
                             assert_eq!(
                                 crate::python_json::encode(&report),
-                                expected["report_json"].as_str().unwrap(),
+                                crate::python_json::encode(&expected_report),
                                 "{name}/{index}"
                             );
                         }
@@ -463,4 +476,28 @@ fn actual_source_store_workflows_preserve_order_reports_and_partial_errors() {
         }
     }
     assert_eq!(replayed, 13, "source core workflow selection changed");
+}
+
+#[test]
+fn absent_receipts_are_incomplete_and_only_explicit_absence_is_not_loaded() {
+    let store = TraceStore::new(Settings::default());
+    store
+        .append("owned", Some("alice"), step(1.0), 1.0)
+        .unwrap();
+    let partial = store.get("owned", Some("alice"), 1.0).unwrap().unwrap();
+    assert_eq!(partial["incomplete"], true);
+    assert_eq!(partial["not_loaded"], json!([]));
+    store
+        .append(
+            "owned",
+            Some("alice"),
+            Step::new("credential-guard", "request", "not_loaded", 1.0),
+            1.0,
+        )
+        .unwrap();
+    let absent = store.get("owned", Some("alice"), 1.0).unwrap().unwrap();
+    assert_eq!(
+        absent["not_loaded"],
+        json!([{"addon":"credential-guard", "state":"not_loaded"}])
+    );
 }

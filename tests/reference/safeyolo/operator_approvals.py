@@ -15,6 +15,46 @@ class ApprovalActionError(NotImplementedError):
     """The audit event doesn't contain enough data for the requested action."""
 
 
+def _gateway_approval(event: dict, api: AdminAPI) -> dict:
+    """Read the same native gateway request before applying its fixed scope."""
+    action = event.get("action", {})
+    kind = {
+        "service": "service_authorize",
+        "contract_binding": "contract_binding",
+        "gateway_risky_route": "gateway_route",
+    }[event["approval"]["approval_type"]]
+    if (
+        not event.get("approval_id") or not event.get("request_id")
+        or not all(action.get(key) for key in ("agent", "agent_id", "service", "capability"))
+        or event.get("agent") != action["agent"] or action.get("kind") != kind
+    ):
+        raise ApprovalActionError("Gateway approval is missing its canonical request or action scope")
+    current = api.approval(event["approval_id"])
+    if any(current.get(key) != event.get(key) for key in ("approval_id", "request_id", "agent", "action")):
+        raise ApprovalActionError("Gateway approval no longer matches the selected request and action")
+    return current
+
+
+def _approve_gateway(event: dict, api: AdminAPI, credential: str | None) -> str:
+    """Choose an offered option and resolve the exact native gateway approval."""
+    current = _gateway_approval(event, api)
+    kind = current["action"]["kind"]
+    if kind == "service_authorize":
+        options = [option["id"] for option in current["options"]
+                   if option.get("parameters", {}).get("credential") == (credential or "")]
+    else:
+        selected = "persistent" if kind == "contract_binding" else "once"
+        options = [option["id"] for option in current["options"] if option["id"] == selected]
+    if len(options) != 1:
+        raise ApprovalActionError("Gateway approval does not offer the selected credential or lifetime")
+    resolved = api.resolve_approval(current["approval_id"], "approve", option=options[0])
+    if resolved.get("status") != "approved" or resolved.get("option") != options[0]:
+        raise ApprovalActionError(f"Canonical gateway approval is {resolved.get('status')}; this decision did not grant access")
+    if kind == "gateway_route":
+        return resolved["result"]["grant_id"]
+    return "bound" if kind == "contract_binding" else "authorized"
+
+
 def network_scope(event: dict) -> dict:
     """Return the narrow destination scope recorded by the network sensor."""
     port = event.get("approval", {}).get("scope_hint", {}).get("port")
@@ -57,7 +97,7 @@ def approve(
 
     if approval_type == "network_egress":
         if details.get("network_action", {}).get("kind") == "network_allow":
-            status = api.resolve_network_approval(event["request_id"], "approve").get("status")
+            status = api.resolve_approval(event["request_id"], "approve").get("status")
             if status != "approved":
                 raise ApprovalActionError(f"Canonical network approval is {status}; this decision did not grant access")
             return status
@@ -65,37 +105,8 @@ def approve(
         result = api.allow_host(host=host, rate=600, **network_scope(event))
         return result.get("status", "ok")
 
-    if approval_type == "service":
-        scope = approval.get("scope_hint", {})
-        agent = event.get("agent", "")
-        service = approval.get("target", "")
-        capability = scope.get("capability", "")
-        if not agent or not service or not capability or not service_credential:
-            raise ApprovalActionError("Service approval is missing agent, service, capability, or credential")
-        result = api.authorize_service(
-            agent=agent,
-            service=service,
-            capability=capability,
-            credential=service_credential,
-        )
-        return result.get("status", "authorized")
-
-    if approval_type == "contract_binding":
-        scope = approval.get("scope_hint", {})
-        agent = event.get("agent", "")
-        service = approval.get("target", "")
-        capability = scope.get("capability", "")
-        if not agent or not service or not capability:
-            raise ApprovalActionError("Contract binding event missing agent, service, or capability")
-        result = api.approve_contract_binding(
-            agent=agent,
-            service=service,
-            capability=capability,
-            template=scope.get("template", ""),
-            bindings=scope.get("bindings", {}),
-            grantable_operations=scope.get("grantable_operations", []),
-        )
-        return result.get("status", "bound")
+    if approval_type in {"service", "contract_binding", "gateway_risky_route"}:
+        return _approve_gateway(event, api, service_credential)
 
     if approval_type == "plumb":
         result = api.plumb_approve(request_id=approval.get("key", ""))
@@ -139,7 +150,7 @@ def deny(event: dict, api: AdminAPI) -> None:
 
     if approval_type == "network_egress":
         if details.get("network_action", {}).get("kind") == "network_allow":
-            status = api.resolve_network_approval(event["request_id"], "reject").get("status")
+            status = api.resolve_approval(event["request_id"], "reject").get("status")
             if status != "rejected":
                 raise ApprovalActionError(f"Canonical network approval is {status}; this decision did not reject it")
             return
@@ -148,13 +159,11 @@ def deny(event: dict, api: AdminAPI) -> None:
         api.deny_host(host=host, expires=expires, **network_scope(event))
         return
 
-    if approval_type in {"service", "contract_binding"}:
-        suffix = "service_access" if approval_type == "service" else "contract_binding"
-        api.log_denial(
-            destination=f"gateway:{approval.get('target', 'unknown')}",
-            cred_id=f"{event.get('agent', 'unknown')}:{suffix}",
-            reason="user_denied",
-        )
+    if approval_type in {"service", "contract_binding", "gateway_risky_route"}:
+        current = _gateway_approval(event, api)
+        status = api.resolve_approval(current["approval_id"], "reject").get("status")
+        if status != "rejected":
+            raise ApprovalActionError(f"Canonical gateway approval is {status}; this decision did not reject it")
         return
 
     if approval_type == "plumb":

@@ -24,10 +24,10 @@ fn request(path: &str) -> Request<'_> {
         request_id: RID,
     }
 }
-fn policy(document: Value) -> Policy {
-    Policy::parse(&document.to_string(), Format::Json).unwrap()
+fn policy(document: Value) -> Arc<Policy> {
+    Arc::new(Policy::parse(&document.to_string(), Format::Json).unwrap())
 }
-fn allow() -> Policy {
+fn allow() -> Arc<Policy> {
     policy(json!({"permissions":[{"action":"network:request","resource":"*","effect":"allow"}]}))
 }
 fn token() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -124,7 +124,7 @@ async fn sensor_config_reads_the_shared_authorized_snapshot_with_source_bytes() 
     .await;
     assert_eq!(remote.response.status, 503);
     assert_eq!(remote.failure, Some(Failure::DevelopmentEndpoint));
-    let unconfigured = Policy::unconfigured();
+    let unconfigured = Arc::new(Policy::unconfigured());
     let empty = respond_read(
         request("/config"),
         &token_path,
@@ -150,7 +150,7 @@ async fn sensor_config_temporal_errors_follow_the_projection_and_preserve_enforc
         let source = format!(
             "permissions:\n  - {{action: 'network:request', resource: '*', effect: budget, budget: 1}}\n{extra}"
         );
-        let policy = Policy::parse(&source, Format::Yaml).unwrap();
+        let policy = Arc::new(Policy::parse(&source, Format::Yaml).unwrap());
         let charge = NetworkRequest {
             agent: Some("alice"),
             host: "alpha.invalid",
@@ -294,7 +294,7 @@ async fn budgets_read_shared_counters_after_auth_without_evaluating_or_charging(
     .await;
     assert_eq!(remote.response.status, 503);
     assert_eq!(remote.failure, Some(Failure::DevelopmentEndpoint));
-    let unconfigured = Policy::unconfigured();
+    let unconfigured = Arc::new(Policy::unconfigured());
     let empty = respond_read(
         request("/budgets"),
         &token_path,
@@ -336,9 +336,11 @@ async fn budget_report_errors_are_local_handler_responses_and_leave_counters_int
         let source = format!(
             r#"{{"permissions":[{{"action":"network:request","resource":"*","effect":"allow","budget":{rate},"condition":{{}}}}]}}"#
         );
-        let replacement = policy
-            .reload_from_source_at(&source, Format::Json, 1_000_000.)
-            .unwrap();
+        let replacement = Arc::new(
+            policy
+                .reload_from_source_at(&source, Format::Json, 1_000_000.)
+                .unwrap(),
+        );
         let outcome = respond_read(
             request("/budgets"),
             &token_path,
@@ -402,11 +404,13 @@ async fn budget_report_errors_are_local_handler_responses_and_leave_counters_int
 #[tokio::test]
 async fn budgets_do_not_serialize_unrelated_temporal_baseline_values() {
     let (_dir, token_path) = token();
-    let policy = Policy::parse(
-        "addons:\n  fixture:\n    settings:\n      observed: 2001-02-03\n",
-        Format::Yaml,
-    )
-    .unwrap();
+    let policy = Arc::new(
+        Policy::parse(
+            "addons:\n  fixture:\n    settings:\n      observed: 2001-02-03\n",
+            Format::Yaml,
+        )
+        .unwrap(),
+    );
     let outcome = respond_read(
         request("/budgets"),
         &token_path,
@@ -444,7 +448,7 @@ async fn policy_reads_borrow_the_loaded_baseline_without_identity_filter_or_budg
         "gateway":{"token_map":{"synthetic-display-only":{"agent":"alice"}}},
     });
     std::fs::write(&path, document.to_string()).unwrap();
-    let policy = Policy::from_path(&path).unwrap();
+    let policy = Arc::new(Policy::from_path(&path).unwrap());
     // Reads use the loaded view even after its source has become unavailable.
     std::fs::remove_file(&path).unwrap();
     for identity in [
@@ -494,7 +498,7 @@ async fn policy_reads_borrow_the_loaded_baseline_without_identity_filter_or_budg
     )
     .await;
     assert_eq!(body(&lookup.response)["effect"], "allow");
-    let unconfigured = Policy::unconfigured();
+    let unconfigured = Arc::new(Policy::unconfigured());
     let null_baseline = respond_read(
         request("/policy"),
         &token_path,
@@ -565,7 +569,7 @@ async fn policy_yaml_timestamps_preserve_source_load_and_response_failures() {
         ),
         ("ignored: 2001-02-03\n", 200),
     ] {
-        let policy = Policy::parse(source, Format::Yaml).unwrap();
+        let policy = Arc::new(Policy::parse(source, Format::Yaml).unwrap());
         let outcome = respond_read(
             request("/policy"),
             &path,
@@ -934,7 +938,7 @@ async fn policy_method_conditions_share_pinned_uppercase() {
 async fn concurrent_previews_do_not_charge_and_reload_keeps_consumed_budget() {
     let (_dir, path) = token();
     let document = json!({"permissions":[{"action":"network:request","resource":"*","effect":"budget","budget":1}],"budgets":{"network:request":1}});
-    let policy = Arc::new(policy(document.clone()));
+    let policy = policy(document.clone());
     let mut tasks = tokio::task::JoinSet::new();
     for _ in 0..40 {
         let path = path.clone();
@@ -973,9 +977,11 @@ async fn concurrent_previews_do_not_charge_and_reload_keeps_consumed_budget() {
         policy.evaluate(charge, 1000., true).unwrap().effect,
         Effect::BudgetExceeded
     );
-    let reloaded = policy
-        .reload_from_source_at(&document.to_string(), Format::Json, 1000.)
-        .unwrap();
+    let reloaded = Arc::new(
+        policy
+            .reload_from_source_at(&document.to_string(), Format::Json, 1000.)
+            .unwrap(),
+    );
     let outcome = respond_read(
         request("/lookup?host=limited.invalid"),
         &path,
@@ -998,9 +1004,11 @@ async fn concurrent_previews_do_not_charge_and_reload_keeps_consumed_budget() {
     )
     .await;
     assert_eq!(body(&outcome.response)["effect"], "allow");
-    let reloaded = reloaded
-        .reload_from_source_at(r#"{"permissions":[]}"#, Format::Json, 1000.)
-        .unwrap();
+    let reloaded = Arc::new(
+        reloaded
+            .reload_from_source_at(r#"{"permissions":[]}"#, Format::Json, 1000.)
+            .unwrap(),
+    );
     let outcome = respond_read(
         request("/lookup?host=limited.invalid"),
         &path,

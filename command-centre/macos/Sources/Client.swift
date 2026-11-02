@@ -108,7 +108,7 @@ final class SafeYoloClient: ObservableObject {
     private let adminURL: URL
     private let eventsURL: URL
     private let token: String
-    private let expectedInstanceID: String
+    let expectedInstanceID: String
     private let session: URLSession
     private let isLocalConnection: Bool
     private let makeEventSocket: (URLRequest) -> any EventSocket
@@ -226,9 +226,7 @@ final class SafeYoloClient: ObservableObject {
                 let data = try await request(path: plan.path, method: "POST", json: plan.payload,
                     timeout: event.approvalID != nil && event.approval.approvalType == "desktop_present" ? 150 : nil)
                 let result: ResolutionResult
-                if plan.expectsDesktop {
-                    result = .desktop(try JSONDecoder().decode(DesktopPresentation.self, from: data))
-                } else if plan.path.hasPrefix("/admin/approvals/") {
+                if plan.path.hasPrefix("/admin/approvals/") {
                     let resolution = try JSONDecoder().decode(ApprovalResolution.self, from: data)
                     guard resolution.id == event.outcomeID, resolution.requestID == event.requestID, resolution.terminal else { throw ClientError.invalidResponse }
                     approvalOutcomes[resolution.id] = resolution
@@ -247,7 +245,7 @@ final class SafeYoloClient: ObservableObject {
             } catch {
                 // The host may have committed before the connection failed.
                 // Read once, and report its actual decision without replay.
-                if let path = approvalPath,
+                if adminConnected, !stopping, let path = approvalPath,
                    let outcome = try? await readApprovalOutcome(path),
                    outcome.id == event.outcomeID, outcome.requestID == event.requestID, outcome.terminal {
                     approvalOutcomes[outcome.id] = outcome
@@ -575,6 +573,9 @@ final class SafeYoloClient: ObservableObject {
         json: [String: Any]? = nil,
         timeout: TimeInterval? = nil
     ) async throws -> Data {
+        if method == "POST" {
+            guard !stopping, await refreshInstance(), !stopping else { throw ClientError.connectionUnavailable }
+        }
         guard let url = URL(string: path, relativeTo: adminURL)?.absoluteURL else {
             throw ClientError.invalidURL(path)
         }

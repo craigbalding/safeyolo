@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use crate::{desktop_preview::Preview, host_agents, host_platform};
+use crate::{
+    desktop_preview::{Preview, PreviewAuthority},
+    host_agents, host_platform,
+};
 
 #[derive(Debug)]
 pub(crate) enum Error {
@@ -68,6 +71,38 @@ impl Parameters {
 pub(crate) enum Route {
     Local,
     Tailnet,
+}
+
+/// Bind the selected exposure, listener and desktop settings. Display readiness
+/// is checked separately; a temporarily unavailable display does not change policy.
+pub(crate) fn configuration_revision() -> Result<String, Diagnostic> {
+    let settings = crate::native_config::host_settings().map_err(|_| {
+        diagnostic(
+            "host_settings_unavailable",
+            "The host desktop settings are unavailable.",
+        )
+    })?;
+    Ok(crate::approvals::pending::digest(&json!({
+        "action_id":crate::operator_actions::DESKTOP_PRESENT,
+        "semantics":2,"instance_id":instance_id()?,"desktop":settings.desktop,"share":settings.command_centre.share
+    })))
+}
+
+pub(crate) fn instance_id() -> Result<String, Diagnostic> {
+    crate::native_config::read(&host_platform::config_path())
+        .ok()
+        .and_then(|config| {
+            crate::command_centre::Host::from_config(&config)
+                .ok()
+                .flatten()
+        })
+        .and_then(|host| host.instance_id().ok())
+        .ok_or_else(|| {
+            diagnostic(
+                "instance_unavailable",
+                "The durable SafeYolo instance identity is unavailable.",
+            )
+        })
 }
 
 #[derive(Debug)]
@@ -342,6 +377,31 @@ fn response(id: &str, name: &str, preview: &Preview, code: String, reused: bool)
     json!({"agent_id":id, "agent":name, "url":preview.url, "unlock_code":code, "reused":reused})
 }
 
+/// Recover operator presentation material without adding authority or replaying
+/// an opener. No guest-facing projection calls this function.
+pub(crate) async fn inspect(agent_id: &str, approval_id: Option<&str>) -> Option<Value> {
+    let mut presentations = PRESENTATIONS.lock().await;
+    let presentation = presentations.get_mut(agent_id)?;
+    if !presentation.preview.is_running() {
+        return None;
+    }
+    let mut value = presentation.preview.authority_view(approval_id)?;
+    value["url"] = json!(presentation.preview.url);
+    value["unlock_code"] = json!(presentation.preview.unlock_code().await);
+    Some(value)
+}
+
+/// An in-progress presentation owns this lock. Report unknown rather than
+/// waiting for its external effect or mistaking a saved receipt for activation.
+pub(crate) fn source_active(agent_id: &str, approval_id: &str) -> Option<bool> {
+    let presentations = PRESENTATIONS.try_lock().ok()?;
+    Some(
+        presentations
+            .get(agent_id)
+            .is_some_and(|p| p.preview.authority_active(approval_id)),
+    )
+}
+
 async fn desktop_command_status(name: &str, command: &str) -> std::io::Result<i32> {
     // Captured commands have kill-on-drop on both supported host platforms.
     // Discard their output without accumulating guest-controlled bytes.
@@ -367,9 +427,15 @@ async fn desktop_command_status(name: &str, command: &str) -> std::io::Result<i3
 
 pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Result<Value, Error> {
     let mut presentations = PRESENTATIONS.lock().await;
-    present_locked(agent_id, allow_listener_name, &mut presentations, None)
-        .await
-        .map(|(result, _)| result)
+    present_locked(
+        agent_id,
+        allow_listener_name,
+        &mut presentations,
+        None,
+        PreviewAuthority::Operator,
+    )
+    .await
+    .map(|(result, _)| result)
 }
 
 async fn present_locked(
@@ -377,6 +443,7 @@ async fn present_locked(
     allow_listener_name: bool,
     presentations: &mut BTreeMap<String, Presentation>,
     route: Option<Route>,
+    authority: PreviewAuthority,
 ) -> Result<(Value, bool), Error> {
     if !valid_agent_id(&agent_id) {
         return Err(Error::Failed);
@@ -405,6 +472,7 @@ async fn present_locked(
             return Err(Error::Failed);
         }
         let code = presentation.preview.issue_unlock_code().await;
+        presentation.preview.add_authority(authority);
         return Ok((
             response(&id, &name, &presentation.preview, code, true),
             false,
@@ -467,9 +535,19 @@ async fn present_locked(
     } else {
         Ok(Err(std::io::Error::other("runtime unavailable")))
     };
-    let preview = Preview::start(&name, &id, host_port, tailnet.map(|(port, _)| port))
-        .await
-        .map_err(Error::Preview);
+    let shared = presentations
+        .values()
+        .find_map(|presentation| presentation.preview.shared_listener(host_port));
+    let preview = Preview::start(
+        &name,
+        &id,
+        host_port,
+        tailnet.map(|(port, _)| port),
+        shared,
+        authority,
+    )
+    .await
+    .map_err(Error::Preview);
     let preview = match preview {
         Ok(preview) => preview,
         Err(error) => {
@@ -509,6 +587,7 @@ pub(crate) async fn present_action(
     parameters: &Parameters,
     route: Route,
     approval_id: &str,
+    authority: PreviewAuthority,
 ) -> Result<Value, Diagnostic> {
     parameters
         .validate()
@@ -535,13 +614,22 @@ pub(crate) async fn present_action(
             )
         })?;
     action_prerequisites(&agent.name).await?;
+    if !authority.active() {
+        return Err(diagnostic(
+            "authority_changed",
+            "Preview authority expired or changed before execution. No effect was replayed.",
+        ));
+    }
     let mut presentations = PRESENTATIONS.lock().await;
-    let (result, guest_started) = present_locked(agent_id.to_owned(), false, &mut presentations, Some(route)).await.map_err(|error| match error {
+    let (result, guest_started) = present_locked(agent_id.to_owned(), false, &mut presentations, Some(route), authority.clone()).await.map_err(|error| match error {
         Error::Preview(error) if route == Route::Tailnet => tailnet_diagnostic(&error.to_string()),
         _ => diagnostic("desktop_presentation_failed", "The managed desktop preview could not start. Inspect this agent's desktop diagnostics."),
     })?;
     let name = &agent.name;
     let operation = async {
+        if !authority.active() {
+            return Err(diagnostic("authority_changed", "Preview authority expired or changed during desktop startup. Inspect the desktop before a new request."));
+        }
         if !matches!(tokio::time::timeout(std::time::Duration::from_secs(8), desktop_command_status(name, "/safeyolo/guest-desktop status >/dev/null 2>&1")).await, Ok(Ok(0))) {
             return Err(diagnostic("desktop_not_ready", "The guest desktop did not become ready. Run /safeyolo/guest-desktop status and use the desktop preview graph."));
         }
@@ -552,6 +640,9 @@ pub(crate) async fn present_action(
             }
         }
         if route == Route::Local {
+            if !authority.active() {
+                return Err(diagnostic("authority_changed", "Preview authority expired before opening the host browser."));
+            }
             #[cfg(target_os = "macos")]
             let program = "open";
             #[cfg(not(target_os = "macos"))]
@@ -567,6 +658,9 @@ pub(crate) async fn present_action(
         Ok(())
     }.await;
     if let Err(error) = operation {
+        if let Some(presentation) = presentations.get(agent_id) {
+            presentation.preview.remove_authority(approval_id);
+        }
         if result["reused"] == false
             && let Some(mut presentation) = presentations.remove(agent_id)
         {
@@ -581,22 +675,13 @@ pub(crate) async fn present_action(
         }
         return Err(error);
     }
-    let presentation = presentations.get_mut(agent_id).ok_or_else(|| {
+    presentations.get_mut(agent_id).ok_or_else(|| {
         diagnostic(
             "preview_closed",
             "The preview closed before the action completed.",
         )
     })?;
-    presentation.preview.expire_after(
-        std::time::Duration::from_secs(parameters.ttl_seconds.into()),
-        approval_id,
-    );
-    let expires_at = (time::OffsetDateTime::now_utc()
-        + time::Duration::seconds(parameters.ttl_seconds.into()))
-    .format(&time::format_description::well_known::Rfc3339)
-    .expect("valid preview expiry");
     let mut result = result;
-    result["expires_at"] = json!(expires_at);
     result["presentation"] = json!(route);
     Ok(result)
 }

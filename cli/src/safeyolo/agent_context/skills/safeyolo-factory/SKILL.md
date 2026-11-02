@@ -23,10 +23,15 @@ state, and supervisors remain authoritative.
   Complete that graph path before changing a brief, contract, route,
   supervisor, capability, recovery action, or agent direction.
 - When a controlled tmux lab is appropriate, invoke
-  `$safeyolo-lab-controller` for the lab mechanics. Say when that skill changes
-  or pauses the work.
+  the `safeyolo-lab-controller` skill for the lab mechanics. Say when that
+  skill changes or pauses the work.
 - For SafeYolo Agent API, proxy, Coord, approval, or in-sandbox diagnostics,
-  invoke `$safeyolo` and follow its security boundary.
+  invoke the `safeyolo` skill and follow its security boundary.
+
+Use each harness's native skill invocation: `$skill-name` in Codex or
+`/skill-name` in Claude Code. Both discover the same bundled skill trees.
+Using this operator skill from Claude does not require Claude as a supervised
+Factory worker. Keep the factory's configured role and harness contracts.
 
 Read every selected reference completely before acting.
 

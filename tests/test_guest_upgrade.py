@@ -43,7 +43,7 @@ def installed(binary, root, store, environment, metadata):
     result = command(binary, root, environment, "init")
     assert result.returncode == 0, result.stderr
     result = command(binary, root, {**environment, "GUEST_UPGRADE_TEST_CREDENTIAL": "synthetic-kept-credential"},
-                     "credentials", "add", "kept", "--value-env", "GUEST_UPGRADE_TEST_CREDENTIAL")
+                     "credentials", "add", "kept", "--storage", "local", "--value-env", "GUEST_UPGRADE_TEST_CREDENTIAL")
     assert result.returncode == 0, result.stderr
     home = root / "agents/retained/home"
     home.mkdir(parents=True)
@@ -346,7 +346,7 @@ def test_verified_bundle_guest_updates_preserve_running_proxy_host_and_restart_s
     config = root / "config.toml"
     config.write_text(config.read_text().replace("admin_port = 9090", "admin_port = 0"))
     result = command(cli, root, {**environment, "GUEST_UPGRADE_TEST_CREDENTIAL": "synthetic-kept-credential"},
-                     "credentials", "add", "kept", "--value-env", "GUEST_UPGRADE_TEST_CREDENTIAL")
+                     "credentials", "add", "kept", "--storage", "local", "--value-env", "GUEST_UPGRADE_TEST_CREDENTIAL")
     assert result.returncode == 0, result.stderr
     (root / "agents/retained/home").mkdir(parents=True)
     (root / "agents/retained/home/keep").write_bytes(b"persistent agent home")

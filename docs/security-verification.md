@@ -29,7 +29,7 @@ Each agent runs in an isolated sandbox with **no external network interface**.
 | Platform | Runtime | Rootfs | Isolation |
 |----------|---------|--------|-----------|
 | macOS (Apple Silicon) | `safeyolo-vm` on Apple Virtualization.framework | per-agent ext4 disk image | Hardware-backed microVM |
-| Linux (x86_64 / arm64) | `runsc` (gVisor) in an unprivileged user namespace | shared directory tree at `~/.safeyolo/share/rootfs-tree/` used as gVisor's OCI `root.path`; a per-agent file-backed overlay persists across stop and run by default; `rootfs_overlay = "memory"` selects a memory-backed overlay that is discarded on stop | Sentry-emulated kernel; optional KVM hardware platform |
+| Linux (x86_64 / arm64) | `runsc` (gVisor) in an unprivileged user namespace | shared directory tree at `~/.safeyolo/share/rootfs-tree/` used as gVisor's OCI `root.path`; a temporary file-backed tmpfs overlay by default, or memory-backed with `rootfs_overlay = "memory"`; both lose rootfs writes on stop. Home, caches and the default-mode native scheduler spool use separate per-agent binds | Sentry-emulated kernel; optional KVM hardware platform |
 
 ### Sandbox Hardening
 
@@ -42,7 +42,7 @@ Each agent runs in an isolated sandbox with **no external network interface**.
 | Agent and guest-root identities | Starts as uid 1000; Linux may intentionally enter sandbox uid 0 for package installation. Userns maps UID 1000 to the operator and UID 0 to the selected subordinate host UID, never host root; GIDs use their independently selected base | [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
 | Capability boundary | The Linux OCI process receives the capabilities needed for guest init and namespace-root package management, but no CAP_SYS_ADMIN; host authority remains bounded by the outer userns and gVisor | [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
 | Read-only config share | `/safeyolo` mounted `ro` | [proxy/src/host_boot.rs](../proxy/src/host_boot.rs) |
-| Rootfs overlay (Linux) | Shared directory tree at `~/.safeyolo/share/rootfs-tree/` used as gVisor's OCI `root.path`; the default per-agent file-backed overlay persists across stop and run; `rootfs_overlay = "memory"` selects a memory-backed overlay that is discarded on stop | [guest/build-rootfs.sh](../guest/build-rootfs.sh), [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
+| Rootfs overlay (Linux) | Shared tree used as gVisor's OCI `root.path`; both the default file-backed tmpfs and `rootfs_overlay = "memory"` lose rootfs writes on stop. Default-mode cron/at queues persist through a separate per-agent spool bind. Memory mode omits that bind | [guest/build-rootfs.sh](../guest/build-rootfs.sh), [proxy/src/host_boot.rs](../proxy/src/host_boot.rs), [proxy/src/host_platform.rs](../proxy/src/host_platform.rs) |
 
 ### Build Verification
 

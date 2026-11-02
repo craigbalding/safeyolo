@@ -31,7 +31,7 @@ impl Sink {
         fs::read_to_string(&self.path)
             .unwrap_or_default()
             .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
+            .map(|line| crate::audit::parse_record(line).unwrap())
             .collect()
     }
 }
@@ -272,11 +272,16 @@ fn actual_source_twenty_four_hook_workflows() {
             for (actual, expected) in actual[before_events..].iter().zip(accepted) {
                 let mut actual = actual.clone();
                 actual["ts"] = expected["event"]["ts"].clone();
-                assert_eq!(
-                    crate::python_json::encode(&actual),
-                    crate::python_json::encode(&expected["event"]),
-                    "{name} step {index}"
-                );
+                actual
+                    .as_object_mut()
+                    .unwrap()
+                    .shift_remove("schema_version");
+                let mut expected = expected["event"].clone();
+                expected
+                    .as_object_mut()
+                    .unwrap()
+                    .shift_remove("schema_version");
+                assert_eq!(actual, expected, "{name} step {index}");
             }
         }
         assert!(!sink._directory.path().join("never-written.jsonl").exists());

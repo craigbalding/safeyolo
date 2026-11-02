@@ -71,6 +71,9 @@ do not reload Coord or GitHub references already supplied by the role contract.
   Offer the normal typed `desktop.present` operator action when a preview
   helps the task. Use `GET /operator-actions` to discover its availability.
   Agent reasons remain untrusted; SafeYolo owns the consequences and approval.
+- Read [Schedule guest shell work](references/scheduling.md) for cron/at,
+  current execution environment, Coord and exact tmux-pane examples, job state,
+  diagnostics and image rollout.
 - Read [Contributing to the SafeYolo repo](references/contributing-to-safeyolo.md)
   when editing files in the SafeYolo checkout itself: any pre-commit or CI
   drift check firing (`check_skill_markers`, `check_doc_cli_flags`,

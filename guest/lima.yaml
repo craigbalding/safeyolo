@@ -1,12 +1,9 @@
 # Lima VM config for SafeYolo guest-artifact builds on macOS.
 #
-# Two workflows share this VM:
-#   1. guest/build-all.sh — builds the default Debian-trixie base rootfs,
-#      kernel, and initramfs using mmdebstrap + native Linux cross-compile.
-#   2. `safeyolo agent add --rootfs-script …` — invokes a user's rootfs
-#      builder script inside this VM, with the script dir + target agent
-#      dir added as extra mounts at `limactl start` time (see
-#      cli/src/safeyolo/vm.py::_run_rootfs_script_lima).
+# guest/build-all.sh builds the default Debian-trixie rootfs, kernel and
+# initramfs here. The native CLI consumes prepared artifacts; it does not
+# invoke custom rootfs scripts or add mounts for them. For explicit contrib
+# builds and their required inputs, see contrib/ROOTFS_SCRIPT_GUIDE.md.
 #
 # SECURITY: mounts are explicit and narrow. Lima's default template mounts
 # ~/ read-only into the VM, which would expose SSH keys, browser data, and
@@ -90,7 +87,7 @@ containerd:
   user: false
 
 # Pre-install build dependencies so subsequent `./build-all.sh` invocations
-# and `--rootfs-script` runs are fast. First-run provision takes ~2-3 min.
+# and custom rootfs builds are fast. First-run provision takes ~2-3 min.
 #
 # Toolchain split:
 #   mmdebstrap, gcc-aarch64-linux-gnu, busybox-static, cpio, pax-utils,

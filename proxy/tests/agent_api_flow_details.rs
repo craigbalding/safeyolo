@@ -178,19 +178,20 @@ async fn actual_source_diff_tag_status_types_state_and_order() {
                     row["status"].as_u64().unwrap(),
                     "{name}"
                 );
-                // The pinned Python receipt predates native shared approvals
-                // and typed operator actions. Extend its route inventory.
-                let expected = row["text"].as_str().unwrap().replace(
+                // The pinned Python oracle predates the current approval routes.
+                // Update that historical 404 inventory; keep all other error bytes.
+                let mut expected = row["text"].as_str().unwrap().replace(
                     "\"/explain\", \"/trace\"",
-                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
+                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals\", \"/approvals/{approval_id}/resolve (POST)\", \"/api/coord/request-access (POST)\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
                 );
-                let expected = expected.replace("\"/desktop/present\",", "\"/desktop/present\", \"/operator-actions\", \"/operator-actions/{action_request_id}\",");
-                // #1150 added a nullable connection record after the pinned
-                // Python receipt. Its absent input must still produce null.
-                let expected = expected.replace(
-                    "\"reason\": null,",
-                    "\"reason\": null, \"connection_json\": null,",
-                );
+                expected = expected.replace("\"/desktop/present\",", "\"/desktop/present\", \"/operator-actions\", \"/operator-actions/{action_request_id}\",");
+                if name == "detail_after_tag" {
+                    // #1150 added this nullable detail column after the capture.
+                    expected = expected.replace(
+                        "\"reason\": null, \"request_content_type\"",
+                        "\"reason\": null, \"connection_json\": null, \"request_content_type\"",
+                    );
+                }
                 assert_eq!(actual.render_json(false).unwrap(), expected, "{name}");
             }
         }

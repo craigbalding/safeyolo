@@ -13,6 +13,21 @@ lets the operator recheck after host/session-manager failure, which cannot
 reliably emit its own final event. These are observations, not a heartbeat or
 a new recovery manager.
 
+The macOS Command Centre connects to local SafeYolo and its saved remote
+instance together. Each instance has its own menu, connection status, agents,
+approvals and diagnostics. Approval windows show the instance name and ID.
+Local connections use loopback; adding a remote connection does not publish
+the local instance or change its shell transport. Saved Admin credentials remain
+in Keychain.
+If one instance is unavailable, the other remains usable.
+
+In **Connection Settings**, **Connect Local SafeYolo** reconnects the local
+instance while keeping the remote connection. **Remove Saved Remote** removes
+the remote profile and disconnects that instance. Existing saved remote profiles
+remain usable when SafeYolo is not installed locally. When both `--admin-url`
+and `--events-url` are passed to the Command Centre executable, launch connects
+only to those endpoints instead of restoring the saved remote profile.
+
 Agent rows keep the status icon on the left and show a harness mark beside the
 name: `>_` for Codex, `π` for Pi, and `✳` for Claude Code. The configured bundled
 setup script supplies this identity; it is not a process-liveness check. Shells

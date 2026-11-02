@@ -218,11 +218,12 @@ async fn actual_source_dispatch_and_body_projection() {
             | "detail_percent_digits"
             | "detail_bad_suffix"
             | "post_only_get" => {
-                // The pinned Python receipt predates shared approvals and
-                // typed operator actions. Extend its advertised routes only.
+                // The retained Python-source receipt predates the supported
+                // shared approval routes. Keep that receipt and all other
+                // error bytes; account only for the current approval routes.
                 let expected = row["text"].as_str().unwrap().replace(
                     "\"/explain\", \"/trace\"",
-                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
+                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals\", \"/approvals/{approval_id}/resolve (POST)\", \"/api/coord/request-access (POST)\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
                 );
                 let expected = expected.replace("\"/desktop/present\",", "\"/desktop/present\", \"/operator-actions\", \"/operator-actions/{action_request_id}\",");
                 assert_eq!(row["status"], 404, "{name}");
@@ -234,24 +235,24 @@ async fn actual_source_dispatch_and_body_projection() {
                 );
             }
             _ => {
-                assert_eq!(
-                    u64::from(outcome.response.status),
-                    row["status"].as_u64().unwrap(),
-                    "{name}"
-                );
-                // #1150 added nullable connection metadata after this pinned
-                // Python receipt. Both summary forms must retain a null value.
+                // #1150 added this nullable column to detail, search and FTS
+                // projections. Keep the historical body and its exact order.
                 let expected = row["text"]
                     .as_str()
                     .unwrap()
                     .replace(
-                        "\"reason\": null,",
-                        "\"reason\": null, \"connection_json\": null,",
+                        "\"reason\": null, \"request_content_type\"",
+                        "\"reason\": null, \"connection_json\": null, \"request_content_type\"",
                     )
                     .replace(
                         "\"flow_state\": \"complete\", \"snippet\"",
                         "\"flow_state\": \"complete\", \"connection_json\": null, \"snippet\"",
                     );
+                assert_eq!(
+                    u64::from(outcome.response.status),
+                    row["status"].as_u64().unwrap(),
+                    "{name}"
+                );
                 assert_eq!(
                     outcome.response.body_bytes().as_ref(),
                     expected.as_bytes(),

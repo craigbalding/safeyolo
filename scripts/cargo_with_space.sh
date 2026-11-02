@@ -147,10 +147,21 @@ cargo_stop_grace_seconds=5
 
 cargo_target_alive() {
   if (( process_group )); then
-    # In setsid mode the process group is the owned Cargo target.  The leader
-    # may exit while a child still owns Cargo's output pipes, so probe the
-    # group instead of the leader PID.
-    kill -0 -- "-$cargo_pid" 2>/dev/null
+    # The launcher may be live before setsid creates its process group. After
+    # the leader exits, live children may still own Cargo's output pipes.
+    # Zombies remain present until another parent reaps them, but cannot work
+    # or hold pipes open. Read state for both the launcher and its owned group.
+    local process_states
+    if ! process_states=$(ps -A -o pid= -o pgid= -o stat=); then
+      # A failed query does not establish completion. Keep monitoring while
+      # the launcher or owned group remains present.
+      kill -0 "$cargo_pid" 2>/dev/null || kill -0 -- "-$cargo_pid" 2>/dev/null
+      return
+    fi
+    awk -v cargo_pid="$cargo_pid" '
+      ($1 == cargo_pid || $2 == cargo_pid) && $3 !~ /^[ZX]/ { alive = 1 }
+      END { exit !alive }
+    ' <<< "$process_states"
   else
     # Without setsid this is necessarily the narrower leader-only check.
     kill -0 "$cargo_pid" 2>/dev/null

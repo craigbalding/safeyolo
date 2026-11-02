@@ -1,8 +1,11 @@
-//! Source AuditEvent envelopes and one lazy JSONL writer. The caller retains
+//! Current audit envelopes and one lazy JSONL writer. The caller retains
 //! one writer across runtime snapshots; this module performs no global setup.
 
 mod envelope;
 mod explain;
+mod nsm;
+pub(crate) mod pivot;
+mod reader;
 mod writer;
 
 pub(crate) use envelope::wipe;
@@ -11,9 +14,13 @@ pub use envelope::{
     Severity,
 };
 pub use explain::{ExplainError, ExplainErrorKind};
+pub use reader::parse_record;
+pub(crate) use reader::{local_tail, selected_tails};
 pub use writer::{Settings, Submission, Writer};
 
 use std::fmt;
+
+pub(crate) const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorKind {

@@ -33,6 +33,7 @@ fn config(root: &Path) -> Config {
     std::fs::write(root.join("policy.json"), r#"{"permissions":[]}"#).unwrap();
     Config {
         native_product: false,
+        ingress_bindings: vec![],
         native_settings: None,
         native_config_dir: None,
         native_config_path: None,
@@ -227,6 +228,17 @@ async fn real_clients_share_operator_approval_membership_and_messages() {
     assert_eq!(pending.status, 200);
     assert_eq!(pending.body["pending"][0]["request_id"], request_id);
     assert_eq!(pending.body["pending"][0]["requester"], "alice");
+    let approvals = exchange_admin(
+        operator_port,
+        &admin_request("GET", "/admin/approvals", b""),
+    )
+    .await;
+    assert_eq!(approvals.status, 200);
+    assert_eq!(approvals.body["approvals"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        approvals.body["approvals"][0]["approval"]["key"],
+        request_id
+    );
     observations
         .push(json!({"step":"operator_pending","status":pending.status,"body":pending.body}));
 
@@ -315,6 +327,13 @@ async fn real_clients_share_operator_approval_membership_and_messages() {
     )
     .await;
     assert_eq!(approved.status, 200);
+    let approvals = exchange_admin(
+        operator_port,
+        &admin_request("GET", "/admin/approvals", b""),
+    )
+    .await;
+    assert_eq!(approvals.status, 200);
+    assert_eq!(approvals.body["approvals"], json!([]));
     let conversation_id = approved.body["conversation_id"]
         .as_str()
         .unwrap()
@@ -467,12 +486,12 @@ async fn real_clients_share_operator_approval_membership_and_messages() {
     );
     observations.push(json!({"step":"message_exchange_and_long_poll","first_message":first_message.body,"bob_read":bob_read.body,"second_message":second_message.body,"waited":waited.body}));
 
-    // Bob leaves while Alice and Carol remain. His outstanding wait is allowed
-    // to finish with the source-compatible empty page; subsequent membership
-    // checks reject him, while Alice remains able to publish.
+    // Bob leaves while Alice and Carol remain. Alice publishes before Bob's
+    // pending read completes. His read must return an empty page, while Alice
+    // retains permission to publish and subsequent reads reject Bob.
     let bob_wait_socket = bob.clone();
     let leave_wait_path = format!(
-        "/plumb/conversations/{conversation_id}/messages?after={}&wait=1",
+        "/plumb/conversations/{conversation_id}/messages?after={}&wait=4",
         second_message.body["id"].as_str().unwrap()
     );
     let leave_waiter = tokio::spawn(async move {
@@ -494,9 +513,6 @@ async fn real_clients_share_operator_approval_membership_and_messages() {
     )
     .await;
     assert_eq!(left.status, 200);
-    let leave_wait = leave_waiter.await.unwrap();
-    assert_eq!(leave_wait.status, 200);
-    assert!(leave_wait.body["messages"].as_array().unwrap().is_empty());
     let bob_after_leave = exchange_unix(
         &bob,
         &request("GET", "/plumb/conversations", AGENT_TOKEN, b""),
@@ -521,6 +537,10 @@ async fn real_clients_share_operator_approval_membership_and_messages() {
             .len(),
         1
     );
+    assert!(
+        !leave_waiter.is_finished(),
+        "Bob's read must still be pending before publication"
+    );
     let after_leave_message = exchange_unix(
         &alice,
         &request(
@@ -532,6 +552,11 @@ async fn real_clients_share_operator_approval_membership_and_messages() {
     )
     .await;
     assert_eq!(after_leave_message.status, 200);
+    let leave_wait = leave_waiter.await.unwrap();
+    assert_eq!(leave_wait.status, 200);
+    assert!(leave_wait.body["messages"].as_array().unwrap().is_empty());
+    assert_eq!(leave_wait.body["has_more"], false);
+    assert_eq!(leave_wait.body["next_after"], second_message.body["id"]);
     observations.push(json!({"step":"leave_membership_and_wait","left":left.body,"wait":leave_wait.body,"bob_after_leave":bob_after_leave.body,"alice_after_leave":alice_after_leave.body,"post_after_leave":after_leave_message.body}));
 
     // Malformed JSON is contained at the local API boundary and does not

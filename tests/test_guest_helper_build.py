@@ -1,0 +1,99 @@
+"""Check guest build targets and the artifact paths used by package consumers."""
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_focused_guest_tests_finish_before_helper_staging():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/proxy-rust.yml").read_text())
+    steps = workflow["jobs"]["focused-pr"]["steps"]
+    staging = next(i for i, step in enumerate(steps) if step.get("id") == "linux_guest_inputs")
+    guest_checks = [(i, step) for i, step in enumerate(steps)
+                    if "--manifest-path guest/command/Cargo.toml" in step.get("run", "")]
+    assert len(guest_checks) == 1
+    index, check = guest_checks[0]
+    # GNU integration tests rebuild the ordinary release binary without
+    # updating the musl producer's sidecars. The last writer must be staging.
+    assert index < staging
+    assert check["if"] == "steps.changes.outputs.guest == 'true'"
+    assert check["run"].splitlines() == [
+        "scripts/cargo_with_space.sh test --release --manifest-path guest/command/Cargo.toml --locked",
+        "scripts/cargo_with_space.sh clippy --release --manifest-path guest/command/Cargo.toml --locked --all-targets -- -D warnings",
+    ]
+
+
+@pytest.mark.parametrize("architecture", ["x86_64", "aarch64"])
+@pytest.mark.parametrize("profile", ["production", "debug"])
+@pytest.mark.parametrize("explicit_target", [False, True])
+@pytest.mark.parametrize("host_libc", ["gnu", "musl"])
+def test_guest_build_stages_matching_helpers(tmp_path, architecture, profile, explicit_target, host_libc):
+    source = tmp_path / "source"
+    scripts = source / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts/build_guest_command.sh", scripts)
+    log = tmp_path / "calls.jsonl"
+    (scripts / "cargo_with_space.sh").write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib, sys\n"
+        "args = sys.argv[1:]\n"
+        "target = args[args.index('--target') + 1]\n"
+        "name = 'safeyolo-coord' if '--bin' in args else 'safeyolo-guest'\n"
+        "directory = 'release' if '--release' in args else 'debug'\n"
+        "output = pathlib.Path(os.environ['CARGO_TARGET_DIR']) / target / directory / name\n"
+        "output.parent.mkdir(parents=True, exist_ok=True)\n"
+        "output.write_bytes(name.encode())\n"
+        "keys = ('CC_' + target.replace('-', '_'), 'CARGO_TARGET_' + target.upper().replace('-', '_') + '_LINKER')\n"
+        "with open(os.environ['BUILD_CALLS'], 'a') as stream:\n"
+        "    stream.write(json.dumps({'args': args, 'environment': {key: os.environ.get(key) for key in keys}}) + '\\n')\n"
+    )
+    (scripts / "cargo_with_space.sh").chmod(0o755)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "uname").write_text(f"#!/bin/sh\ncase $1 in -s) echo Linux;; -m) echo {architecture};; esac\n")
+    (tools / "uname").chmod(0o755)
+    (tools / "rustc").write_text(f"#!/bin/sh\nprintf 'host: {architecture}-unknown-linux-{host_libc}\\n'\n")
+    (tools / "rustc").chmod(0o755)
+    target = f"{architecture}-unknown-linux-" + ("gnu" if explicit_target else "musl")
+    environment = os.environ | {
+        "PATH": f"{tools}:{os.environ['PATH']}",
+        "RUSTC": str(tools / "rustc"),
+        "SAFEYOLO_BUILD_PROFILE": profile,
+        "SAFEYOLO_BUILD_REVISION": "a" * 40,
+        "SAFEYOLO_GUEST_TARGET_DIR": str(tmp_path / "guest-target"),
+        "CARGO_TARGET_DIR": str(tmp_path / "proxy-target"),
+        "BUILD_CALLS": str(log),
+    }
+    environment.pop("SAFEYOLO_GUEST_TARGET", None)
+    if explicit_target:
+        environment["SAFEYOLO_GUEST_TARGET"] = target
+    result = subprocess.run([str(scripts / "build_guest_command.sh")], env=environment,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(calls) == 2
+    for call in calls:
+        assert call["args"][call["args"].index("--target") + 1] == target
+        if not explicit_target:
+            compiler = "cc" if host_libc == "musl" else "musl-gcc"
+            assert call["environment"]["CC_" + target.replace("-", "_")] == compiler
+            assert call["environment"]["CARGO_TARGET_" + target.upper().replace("-", "_") + "_LINKER"] == compiler
+    directory = "release" if profile == "production" else "debug"
+    output = tmp_path / "guest-target"
+    if explicit_target:
+        output /= target
+    output /= directory
+    assert result.stdout.splitlines() == [str(output / name) for name in ("safeyolo-guest", "safeyolo-coord")]
+    for name in ("safeyolo-guest", "safeyolo-coord"):
+        assert (output / name).read_bytes() == name.encode()
+        assert (output / f"{name}.version").read_text() == f"{name} 0.1.0 commit={'a' * 40} profile={profile}\n"
+        assert (output / f"{name}.sha256").read_text() == hashlib.sha256(name.encode()).hexdigest() + "\n"

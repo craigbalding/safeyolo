@@ -153,13 +153,16 @@ if [ -x /safeyolo/guest-shell-bridge ]; then
     setsid nohup /safeyolo/guest-shell-bridge >/var/log/shell-bridge.log 2>&1 </dev/null &
     SB_PID=$!
     echo "[per-run] started guest-shell-bridge (pid=$SB_PID)" > /dev/console 2>/dev/null || true
-    sleep 0.5
-    if kill -0 "$SB_PID" 2>/dev/null; then
-        echo "[per-run] guest-shell-bridge alive" > /dev/console
-    else
-        echo "[per-run] guest-shell-bridge EXITED; log:" > /dev/console
-        cat /var/log/shell-bridge.log > /dev/console 2>/dev/null || true
-    fi
+    # This liveness diagnostic is not a readiness check. Let boot continue.
+    (
+        sleep 0.5
+        if kill -0 "$SB_PID" 2>/dev/null; then
+            echo "[per-run] guest-shell-bridge alive" > /dev/console
+        else
+            echo "[per-run] guest-shell-bridge EXITED; log:" > /dev/console
+            cat /var/log/shell-bridge.log > /dev/console 2>/dev/null || true
+        fi
+    ) &
 fi
 
 # --------------------------------------------------------------------------
@@ -169,6 +172,19 @@ if [ -f /safeyolo/agent_token ]; then
     mkdir -p /app
     cp /safeyolo/agent_token /app/agent_token
     chmod 644 /app/agent_token
+fi
+
+# Start scheduling only after the snapshot gate, time/environment setup and
+# credential refresh. Custom images may deliberately omit this integration.
+if [ -r /usr/local/lib/safeyolo/scheduling.sh ]; then  # DOC: cli/src/safeyolo/agent_context/skills/safeyolo/references/scheduling.md
+    . /usr/local/lib/safeyolo/scheduling.sh
+    start_guest_schedulers
+else
+    mkdir -p /var/log
+    echo 'cron/at unsupported in this image: rebuild with the standard Debian scheduling tools' \
+        >> /var/log/safeyolo-scheduling.log
+    check_guest_schedulers() { :; }
+    stop_guest_schedulers() { :; }
 fi
 
 # --------------------------------------------------------------------------
@@ -203,6 +219,7 @@ PID1_IDLE_CHILD=""
 
 graceful_shutdown() {
     trap - TERM INT
+    stop_guest_schedulers
     if [ -n "${PID1_IDLE_CHILD:-}" ]; then
         kill "$PID1_IDLE_CHILD" 2>/dev/null || true
         wait "$PID1_IDLE_CHILD" 2>/dev/null || true
@@ -286,6 +303,7 @@ start_command_supervisor_if_needed() {
 
 keep_pid1_alive() {
     while :; do
+        check_guest_schedulers
         start_command_supervisor_if_needed
         sleep 0.25 &
         PID1_IDLE_CHILD=$!
@@ -337,6 +355,7 @@ fi
 # We are PID 1, so /sbin/{reboot,poweroff,halt} don't work: they signal init,
 # which is us. Call the reboot() syscall directly via busybox, which relies
 # on PSCI (CONFIG_ARM_PSCI_FW=y) to hand off to VZ.
+stop_guest_schedulers
 sync
 /usr/bin/busybox poweroff -f 2>/dev/null || true
 # Unreachable if poweroff succeeded. The fallback keeps PID 1 alive. The host
