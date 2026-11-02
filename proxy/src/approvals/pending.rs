@@ -16,6 +16,7 @@ use crate::{
 };
 
 pub(crate) mod context;
+pub(crate) mod coord;
 pub(crate) mod delegation;
 mod explanation;
 mod gateway;
@@ -488,6 +489,7 @@ impl Record {
             Some("credential_allow") => ("security.credential_guard", "credential"),
             Some("gateway_route") => ("gateway.risky_route", "gateway_risky_route"),
             Some("service_authorize") => ("gateway.request_access", "service"),
+            Some("coord_access") => ("coord.access_requested", "coord_room"),
             _ => ("gateway.contract_binding_requested", "contract_binding"),
         };
         let target = self
@@ -495,6 +497,7 @@ impl Record {
             .action
             .get("host")
             .or_else(|| self.authority.action.get("service"))
+            .or_else(|| self.authority.action.get("room_name"))
             .and_then(Value::as_str)
             .unwrap_or("");
         let mut view = json!({"approval_id":self.approval_id,"request_id":self.request_id,
@@ -536,7 +539,12 @@ pub(crate) fn save_receipt(document: &mut toml_edit::DocumentMut, record: &Recor
 }
 
 pub(crate) fn revision(policy: &Policy, action: &Value) -> Option<String> {
-    if action["kind"] == "network_allow" {
+    if action["kind"] == "coord_access" {
+        Some(digest(
+            &crate::coord_rooms::membership::room_basis(policy, action["room_id"].as_str()?)
+                .ok()?,
+        ))
+    } else if action["kind"] == "network_allow" {
         policy.network_action_revision(action["agent"].as_str()?)
     } else {
         policy.approval_revision(
@@ -826,7 +834,9 @@ pub(crate) fn current_view(
     if view["status"] == "approved" && view["result"].get("issued_access").is_some() {
         let issued: crate::policy::delegation::IssuedAccess =
             serde_json::from_value(view["result"]["issued_access"].clone()).map_err(unavailable)?;
-        let stored = if issued.action["kind"] == "gateway_route" {
+        let stored = if issued.action["kind"] == "coord_access" {
+            crate::coord_rooms::membership::issued_effective(policy, &issued).unwrap_or(false)
+        } else if issued.action["kind"] == "gateway_route" {
             match gateway_grants {
                 Some(store) => store
                     .list_grants_for_agent(
@@ -1002,17 +1012,20 @@ pub(crate) fn resolve_as(
         }
         record.option = Some(selected.id.clone());
         if matches!(selected.id.as_str(), "run" | "delegated_once") {
-            let issued = match delegated {
+            let mut issued = match delegated {
                 Some(issued) => issued,
                 None => delegation::issue(&policy, record, "", None, &selected.id)?,
             };
+            if record.authority.action["kind"] == "coord_access" {
+                issued = crate::coord_rooms::membership::prepare(&policy, record, &issued).map_err(unavailable)?;
+            }
             record.result = json!({"permission_changed":true,"issued_access":issued,"lifetime":"worker_run"});
             if record.authority.action["kind"] != "gateway_route" {
                 let action = record.authority.action.clone();
                 crate::edit_native_policy(state, true, |source| {
                     if !check_saved(state, source, record)? { return Err(invalid("approval or delegation changed before commit")); }
                     let (mut document, context) = crate::policy::parse_toml_for_edit(source).map_err(unavailable)?;
-                    let kind = match action["kind"].as_str() { Some("network_allow") => "network_grants", Some("credential_allow") => "credential_grants", Some("service_authorize") => "service_grants", Some("contract_binding") => "binding_grants", _ => return Err(invalid("unsupported run permission")) };
+                    let kind = match action["kind"].as_str() { Some("network_allow") => "network_grants", Some("credential_allow") => "credential_grants", Some("service_authorize") => "service_grants", Some("contract_binding") => "binding_grants", Some("coord_access") => "coord_grants", _ => return Err(invalid("unsupported run permission")) };
                     document["agents"][action["agent"].as_str().ok_or_else(|| invalid("agent unavailable"))?][kind][&record.approval_id] = toml_edit::value(serde_json::to_string(&issued).map_err(unavailable)?);
                     save_receipt(&mut document, record)?;
                     Ok(((), crate::policy::restore_large_toml_integers(&document.to_string(), &context)))

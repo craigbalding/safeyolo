@@ -352,6 +352,9 @@ fn show_explanation(view: &Value) -> Result<(), Error> {
     for (label, key) in [
         ("Agent", "agent"),
         ("Agent ID", "agent_id"),
+        ("Worker run", "run_id"),
+        ("Room", "room_name"),
+        ("Room ID", "room_id"),
         ("Destination", "destination"),
         ("Method", "request_method"),
         ("Service", "service"),
@@ -364,6 +367,17 @@ fn show_explanation(view: &Value) -> Result<(), Error> {
     }
     if let Some(port) = facts["port"].as_u64() {
         println!("  Port: {port}");
+    }
+    if facts.get("room_id").is_some() {
+        for (label, key) in [
+            ("Requested rights", "permissions"),
+            ("New rights", "new_permissions"),
+            ("Decision audience", "participants"),
+            ("Current participants", "current_participants"),
+        ] {
+            println!("  {label}: {}", context_json(&facts[key])?);
+        }
+        println!("  {}", safe(text(&facts["authority_delta"])));
     }
     if let Some(routes) = facts["configured_routes"].as_array() {
         for route in routes.iter().take(3) {
@@ -440,6 +454,20 @@ fn show_approval(view: &Value) -> Result<(), Error> {
     );
     if let Some(id) = view["approval_id"].as_str() {
         println!("Approval: {}", safe(id));
+    }
+    if view["action"]["kind"] == "coord_access" {
+        for (label, field) in [
+            ("Room", "room_name"),
+            ("Room ID", "room_id"),
+            ("Worker run", "run"),
+            ("Rights", "permissions"),
+            ("Participants", "participants"),
+        ] {
+            println!("{label}: {}", context_json(&view["action"][field])?);
+        }
+        println!(
+            "Receive exposes retained history and native room objects. Send plus receive permits native work and signal mutations. page_operator permits paging. The offered run lifetime ends when the trusted worker run ends; delegation and grant expiry can end it earlier."
+        );
     }
     if let Some(options) = view["options"].as_array() {
         for option in options {

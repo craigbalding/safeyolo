@@ -135,7 +135,7 @@ def test_helper_consumer_refuses_unowned_runtime_before_guest_effects(helper_ins
 
 
 @pytest.mark.parametrize("control", ["clean", "different_launch", "wrong_guest_profile", "guest_cleanup_failure", "delegated", "delegated_lifecycle",
-    "lifecycle_remainder", "lifecycle_crash_only", "delegated_clients", "delegated_service", "delegated_service_cutoff", "delegated_binding"])
+    "lifecycle_remainder", "lifecycle_crash_only", "delegated_clients", "delegated_service", "delegated_service_cutoff", "delegated_binding", "delegated_room"])
 def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(helper_instance, monkeypatch, capsys, control, request):
     instance, args = helper_instance
     root = instance.root
@@ -160,12 +160,14 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
     clients = control == "delegated_clients"
     service = control in {"delegated_service", "delegated_service_cutoff"}
     binding = control == "delegated_binding"
-    if control == "delegated" or service or binding or lifecycle or clients:
+    room = control == "delegated_room"
+    if control == "delegated" or service or binding or lifecycle or clients or room:
         if sys.platform != "linux":
             pytest.skip("controlled run backend uses the Linux birth/argv boundary")
         args.delegated = control == "delegated"
         args.delegated_service = service
         args.delegated_binding = binding
+        args.delegated_room = "delegated-room" if room else None
         args.attention_cutoff = 8 if control == "delegated_service_cutoff" else None
         args.delegated_lifecycle = lifecycle
         args.delegated_lifecycle_remainder = remaining
@@ -196,10 +198,13 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
         nats = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
         started = instance.cli("coord", "start", *(["--binary", nats] if nats else []))
         assert started.returncode == 0, started.stderr
-        if control == "delegated" or service or binding or clients:
+        if control == "delegated" or service or binding or clients or room:
             for operands in (("coord", "room", "create", "helper-agent"),
                              ("coord", "grant", "helper-agent", args.helper)):
                 assert instance.cli(*operands).returncode == 0
+            if room:
+                created = instance.cli("coord", "room", "create", args.delegated_room)
+                assert created.returncode == 0, created.stderr
             if service or binding:
                 for index in range(8):
                     prior = instance.cli("coord", "send", "helper-agent", f"Prior journey {index}", "--to", args.helper)
@@ -234,6 +239,8 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
                 if control == "wrong_guest_profile":
                     return version.replace("profile=debug", "profile=production") if "profile=debug" in version else version.replace("profile=production", "profile=debug")
                 return version
+            if operands[0].endswith("safeyolo-coord") and operands[1:] == ["--version"]:
+                return checked([str(root / "bin/safeyolo-coord"), "--version"])
             if operands[0].endswith(".safeyolo-interactive-command"):
                 return "codex-cli controlled" if operands[-1] == "--version" else "controlled login readiness"
             if operands[:2] == ["printf", "%s"] and operands[4].endswith(".safeyolo/safeyolo-coord"):
@@ -246,6 +253,10 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
             return checked([str(staged), *operands[1:], "--socket", instance.paths[name],
                             "--token-file", str(root / "data/agent_token")] if operands[1] == "helper"
                            else [str(staged), *operands[1:]])
+        if room and arguments[3:5] == ["agent", "status"]:
+            name = arguments[5]
+            current = json.loads((root / "agents" / name / "runtime.json").read_text())
+            return json.dumps({"agent_id": ids[name], "run_id": current["run_id"]})
         if arguments[3:] == ["agent", "status", args.helper]:
             return json.dumps(state)
         if crashing and arguments[3:] == ["start"]:
@@ -335,7 +346,7 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
         stopped.append(name)
         if control == "guest_cleanup_failure" and name == args.worker:
             raise AssertionError("controlled guest stop failed")
-        if lifecycle:
+        if lifecycle or room:
             path = root / "agents" / name / "runtime.json"
             record = json.loads(path.read_text())
             record["state"] = "stopped"
@@ -378,7 +389,7 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
         monkeypatch.setattr(approvals, "wait_for_operator", operator_choice)
     original = instance.policy.read_bytes()
     try:
-        successful = control in {"clean", "delegated", "delegated_lifecycle", "lifecycle_remainder", "lifecycle_crash_only", "delegated_clients"} or service or binding
+        successful = control in {"clean", "delegated", "delegated_lifecycle", "lifecycle_remainder", "lifecycle_crash_only", "delegated_clients"} or service or binding or room
         if successful:
             approvals.run(args)
         else:
@@ -391,7 +402,15 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
         assert bool(final) == successful
         if final:
             result = final[0]
-            if service or binding:
+            if room:
+                journey = result["room_journey"]
+                assert len(set(journey["approval_ids"])) == 3
+                assert journey["receive_only_send_status"] == 403
+                assert journey["revoked_approval"]["grant_active"] is False
+                assert journey["worker_turnover"]["before"]["run_id"] != journey["worker_turnover"]["after"]["run_id"]
+                assert journey["canonical_inspection"]["observed"]["new_permissions"] == ["receive"]
+                assert journey["reviewer_target_membership"] == "absent before and after decisions"
+            elif service or binding:
                 assert result["attention_start"]["since_sequence"] == 8
                 assert result["attention_start"]["expected_cutoff"] == args.attention_cutoff
                 assert len(result["attention_start"]["prior_attention_edges"]) == 8
@@ -472,7 +491,7 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
                 assert len(result["origin_hits"]) == 2 and result["origin_hits"][0] == result["origin_hits"][1]
                 assert result["scope_controls"] == "Helper and second port refused"
         assert stopped == ([args.worker, args.helper, args.worker, args.worker, args.helper]
-                           if lifecycle and not crash_only else [args.worker, args.helper])
+                           if lifecycle and not crash_only else [args.worker, args.worker, args.helper] if room else [args.worker, args.helper])
         assert instance.process.wait(timeout=5) == (-9 if crashing else 0)
         assert (root / "data/proxy-process.json").is_file()
         assert not (root / "data/selected-ready.json").exists()

@@ -1,7 +1,8 @@
 # Delegate approval decisions
 
 A host operator can let named local reviewer agents decide network, credential,
-service-authorization and gateway-route requests for named workers. Any one eligible reviewer can
+service authorization, contract binding, gateway route and existing local Coord
+room access requests for named workers. Any one eligible reviewer can
 decide. This does not give the reviewer policy administration, a worker's
 credentials, or the permissions that it can issue.
 
@@ -97,12 +98,87 @@ Each `scopes` entry uses one of these shapes:
 | `service_authorization` | `service`, `capability`, `account`, `credential` and `resources` bound the envelope. The credential is an exact host-store reference, or an empty string for a credential-free service. Preview fills `credential_binding` with the current definition fingerprint. Each grant authorizes only the selected worker run and resource paths. Capability routes, network policy, credential resolution, contract binding and risky-route approval remain separate checks. |
 | `contract_binding` | `service`, `capability` and `template` are exact. `bound_values` maps each permitted binding field to a nonempty list of complete JSON choices. `grantable_operations` lists supported operation names. One scope must contain every submitted value and selected operation. Only the worker run receives the derived binding. Existing operator bindings and all other access checks remain. |
 | `gateway_route` | `service`, `capability`, `method`, `path` and optional `binding_id` bound the envelope. Supported method/path patterns can cover several routes. Each issued grant binds the canonical method and literal path, current service/capability/binding definitions and worker run. It does not bind an exact payload. Existing service authorization and contract checks remain. |
+| `coord_room` | `room_id` selects one existing local room. `participants` lists exact `principal_kind`, `principal_id` and explicit `permissions` for the maximum audience. Include every existing participant and each beneficiary's maximum rights. `permissions` bounds newly issued worker rights: `send`, `receive`, `page_operator`, or an explicit combination. Each decision grants only the selected rights for that worker's trusted run. |
 
 Wildcard destinations, all ports, reusable access, multiple reviewers and
 reciprocal approval relationships have specific preview warnings. They remain
 usable after the proposal is acknowledged. The selected request must fit
 entirely within one current delegation. Two partial delegations cannot be
 combined to approve it.
+
+## Delegate existing local room access
+
+On the owning host, prepare the room with the ordinary `coord room create`
+command if needed. Room creation remains operator-only. Obtain its exact ID
+with `safeyolo --root ROOT coord room list`. Inspect the current participants
+with `safeyolo --root ROOT coord status ROOM`; the JSON agent entries include
+`room_permissions`. Replace the example room
+ID and worker ID below. The operator entry and every current agent participant
+must appear with their existing rights. Add the intended worker's maximum
+rights. A reviewer needs deciding authority and its existing `REVIEWER-agent`
+attention room; the reviewer need not join the target room.
+
+Use this scope in the proposal from the configuration procedure:
+
+```json
+{
+  "type": "coord_room",
+  "room_id": "rm-33333333333333333333333333333333",
+  "permissions": ["receive", "send", "page_operator"],
+  "participants": [
+    {"principal_kind": "operator", "principal_id": "operator", "permissions": ["receive", "send", "page_operator"]},
+    {"principal_kind": "agent", "principal_id": "ag-11111111111111111111111111111111", "permissions": ["receive", "send", "page_operator"]}
+  ]
+}
+```
+
+Preview, acknowledge and apply the proposal through the existing commands.
+The preview shows the maximum rights, audience, lifetime and independent
+access. A reviewer cannot also be a newly authorized beneficiary. Unchanged
+independent reviewer membership is permitted. Other approval scope types
+cannot authorize room access.
+
+In the worker's native Coord MCP session, replace `ROOM` with that existing
+room's name and choose a new operation ID. For receive-only access, call:
+
+```text
+request_room_access(room_name="ROOM", permissions=["receive"], operation_id="room-access-1")
+```
+
+The Agent API equivalent is `POST /api/coord/request-access` with those three
+fields. Ingress supplies the worker identity and run. A caller cannot request
+another agent's membership or supply its own audience. The response contains
+the canonical approval ID and status. It does not expose room contents or
+participants to the nonmember. The eligible reviewer receives a reference,
+then uses `read_approval` and `resolve_approval` with the offered `run` option.
+Canonical inspection shows requested and newly added rights, the actual
+audience, current participants, matching maximum envelopes and lifetime.
+After approval, the worker retries `join_room`, `read_room` or `send`.
+
+Receive exposes retained history and authorized native work, signals, state
+and brief objects. Send plus receive enables the existing work and signal
+mutations. `page_operator` enables existing operator paging. Regrant exposes
+history that remains retained, including messages from before the grant.
+Already disclosed content cannot be retracted.
+
+Changing or revoking a delegation removes its own derived sources. Other
+valid sources and independent operator grants remain. Ordinary `coord revoke`
+removes all room sources for the selected agent. Current policy, audience,
+durable identities, worker run and expiry are checked at each disclosure or
+mutation boundary, including pending waits and existing connections. A new
+run does not inherit a previous run's grant. A proxy restart does not renew
+the recorded lifetime. A changed independent room roster requires a new
+delegation preview before further delegated decisions.
+
+If attention or the reviewer is unavailable, the operator can inspect and
+resolve the same ID with `approvals show`, `approvals explain` and
+`approvals approve ID --option run`. Use `approvals list` to recover an ID.
+After a lost response, inspect the canonical approval before another decision.
+A membership prepared before policy publication is inert. The original
+receipt and expiry govern a recovered publication. An approved record with
+`grant_active: false` does not establish current room access; inspect the
+saved policy and source before making a new request. Neither a retry nor an
+approved receipt recreates a missing or revoked source.
 
 ## Delegate service authorization
 
@@ -291,7 +367,7 @@ In the reviewer's normal native Coord MCP session:
    `option`, and `decision: approve`, `reject`, or `defer`.
 5. Use `list_approvals` to reconcile after reconnect or unavailable attention.
 
-Network, credential, service-authorization and contract-binding decisions use
+Network, credential, service authorization, contract binding and room access decisions use
 the offered `run` option. Gateway decisions
 can use `run`, or `delegated_once` when the delegation permits it. Routine
 in-envelope decisions require no further human confirmation. The reviewer

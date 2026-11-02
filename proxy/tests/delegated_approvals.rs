@@ -9,6 +9,8 @@ use tokio::{
 };
 #[path = "delegated_approvals/contract_binding.rs"]
 mod contract_binding;
+#[path = "delegated_approvals/coord_room.rs"]
+mod coord_room;
 #[path = "delegated_approvals/service_authorization.rs"]
 mod service_authorization;
 #[allow(dead_code)]
@@ -26,6 +28,17 @@ impl Drop for Backend {
     }
 }
 fn runs(fixture: &Fixture) -> std::process::Child {
+    bound_runs(
+        fixture,
+        "0123456789abcdef0123456789abcdef",
+        &[
+            ("worker", WORKER_ID),
+            ("helper", HELPER_ID),
+            ("peer", PEER_ID),
+        ],
+    )
+}
+fn bound_runs(fixture: &Fixture, generation: &str, agents: &[(&str, &str)]) -> std::process::Child {
     use std::os::unix::process::CommandExt;
     let mut command = std::process::Command::new("python3");
     command
@@ -34,7 +47,7 @@ fn runs(fixture: &Fixture) -> std::process::Child {
             "-c",
             "import time; time.sleep(300)",
             "boot",
-            "safeyolo-0123456789abcdef0123456789abcdef",
+            &format!("safeyolo-{generation}"),
             "--root",
         ])
         .arg(fixture.root.path().join("run"));
@@ -54,17 +67,13 @@ fn runs(fixture: &Fixture) -> std::process::Child {
             .unwrap()
             .trim()
     );
-    for (name, id) in [
-        ("worker", WORKER_ID),
-        ("helper", HELPER_ID),
-        ("peer", PEER_ID),
-    ] {
+    for (name, id) in agents {
         let directory = fixture.root.path().join("agents").join(name);
         fs::create_dir_all(directory.join("config-share")).unwrap();
-        fs::write(directory.join("runtime.json"),json!({"name":name,"agent_id":id,"run_id":"0123456789abcdef0123456789abcdef","state":"running","backend_pid":pid,"backend_token":token}).to_string()).unwrap();
+        fs::write(directory.join("runtime.json"),json!({"name":name,"agent_id":id,"run_id":generation,"state":"running","backend_pid":pid,"backend_token":token}).to_string()).unwrap();
         fs::write(
             directory.join("config-share/host-launch-context.json"),
-            json!({"agent_id":id,"generation":"0123456789abcdef0123456789abcdef"}).to_string(),
+            json!({"agent_id":id,"generation":generation}).to_string(),
         )
         .unwrap();
     }

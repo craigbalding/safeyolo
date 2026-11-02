@@ -22,15 +22,17 @@ pub(crate) mod work;
 mod work_cli;
 pub use inventory::HELP as INVENTORY_HELP;
 pub(crate) mod federation;
-mod membership;
-fn directory(root: &Path) -> Result<PathBuf, Error> {
+pub(crate) mod membership;
+fn read_config(root: &Path) -> Result<crate::Config, Error> {
     let config_path = if root == crate::host_platform::config_dir() {
         crate::host_platform::config_path()
     } else {
         root.join("config.toml")
     };
-    let config = crate::native_config::read(&config_path)?;
-    Ok(config
+    crate::native_config::read(&config_path)
+}
+fn directory(root: &Path) -> Result<PathBuf, Error> {
+    Ok(read_config(root)?
         .data_dir
         .ok_or("data directory is missing")?
         .join("coord"))
@@ -72,6 +74,7 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
     transaction.execute_batch(include_str!("coord_work_schema.sql"))?;
     transaction.execute_batch(include_str!("coord_signal_schema.sql"))?;
     transaction.execute_batch(include_str!("coord_federation_schema.sql"))?;
+    transaction.execute_batch(include_str!("coord_membership_grants.sql"))?;
     let stored: String = transaction.query_row("SELECT id FROM instance", [], |row| row.get(0))?;
     if stored != id.trim() {
         return Err("Coord identity differs from this SafeYolo instance; preserve the store and select its owning root".into());
@@ -91,7 +94,7 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn open(root: &Path) -> Result<Connection, Error> {
+pub(crate) fn open(root: &Path) -> Result<Connection, Error> {
     open_with_flags(root, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
 }
 fn open_with_flags(root: &Path, flags: rusqlite::OpenFlags) -> Result<Connection, Error> {
@@ -912,11 +915,14 @@ pub(crate) fn factory_access(root: &Path, room: &str, agent_id: &str) -> Result<
         })
         .map_err(|error| format!("room {room}: {error}"))?;
     for (kind, id) in [("operator", "operator"), ("agent", agent_id)] {
-        let permissions:Option<String>=connection.query_row("SELECT permissions FROM memberships WHERE room_id=?1 AND principal_kind=?2 AND principal_id=?3 AND revoked_at IS NULL ORDER BY granted_at DESC LIMIT 1",params![room_id,kind,id],|row|row.get(0)).optional()?;
+        let permissions = membership::effective(&connection, &room_id)?
+            .into_iter()
+            .find(|m| m.participant.principal_kind == kind && m.participant.principal_id == id)
+            .map(|m| m.participant.permissions);
         for required in ["send", "receive"] {
             if !permissions
-                .as_deref()
-                .is_some_and(|p| p.split(',').any(|p| p == required))
+                .as_ref()
+                .is_some_and(|p| p.iter().any(|p| p == required))
             {
                 return Err(format!("room {room}: {kind} {id} missing {required} permission; factory prepare repairs declared grants after stopping roles").into());
             }

@@ -109,7 +109,14 @@ fn change(
     }
     let changed_at = now();
     if let Some(agent) = agent {
-        if advertise && !tx.query_row("SELECT EXISTS(SELECT 1 FROM memberships WHERE room_id=?1 AND principal_kind='agent' AND principal_id=?2 AND revoked_at IS NULL)",params![room_id,agent],|r| r.get::<_,bool>(0))? {
+        if advertise
+            && !super::membership::effective(&tx, &room_id)?
+                .iter()
+                .any(|member| {
+                    member.participant.principal_kind == "agent"
+                        && member.participant.principal_id == agent
+                })
+        {
             return Err("capability subject is not a current room member".into());
         }
         if advertise {
