@@ -389,6 +389,7 @@ pub struct GatewaySnapshot {
     tokens: Vec<TokenBinding>,
     hosts: HostMap,
     contracts: Vec<ContractBinding>,
+    delegated_contracts: Vec<(ContractBinding, crate::policy::delegation::IssuedAccess)>,
     contract_issues: ContractIssues,
     routes: Vec<CompiledRoute>,
     canonical: Value,
@@ -470,6 +471,7 @@ impl GatewaySnapshot {
             tokens: Vec::new(),
             hosts: HostMap::new(),
             contracts: Vec::new(),
+            delegated_contracts: Vec::new(),
             contract_issues: ContractIssues::default(),
             routes: Vec::new(),
             canonical,
@@ -580,6 +582,28 @@ impl GatewaySnapshot {
                     .contract_issues
                     .annotations
                     .push(annotation.clone());
+            }
+        }
+        for fields in document
+            .get("agents")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|agents| agents.values())
+        {
+            for encoded in fields["binding_grants"]
+                .as_object()
+                .into_iter()
+                .flat_map(|grants| grants.values())
+            {
+                let issued: crate::policy::delegation::IssuedAccess = serde_json::from_str(
+                    encoded
+                        .as_str()
+                        .ok_or("binding grant must be an encoded host record")?,
+                )?;
+                issued.validate()?;
+                snapshot
+                    .delegated_contracts
+                    .push((issued.contract_binding()?, issued));
             }
         }
         // IAM already contains its authored/compiled permissions. Only the
@@ -941,6 +965,66 @@ impl GatewaySnapshot {
             // It still contains the reserved token prefix before ordinary traffic.
             None => unresolved_token(request.request.headers),
         };
+        // Independent operator bindings keep their existing selection order.
+        // A derived binding is another source of access, checked at each use;
+        // it never replaces the operator's values or enables another agent's token.
+        if matches!(decision, GatewayDecision::Deny { .. })
+            && let (Some(registry), RouteMode::CompiledPolicy(policy)) =
+                (self.registry.as_deref(), request.route_mode)
+        {
+            for (binding, authority) in &self.delegated_contracts {
+                if !matches!(request.identity, TrustedIdentity::Agent(agent) if agent == binding.agent)
+                    || !authority.active(policy)
+                {
+                    continue;
+                }
+                let Some(service) = registry.services.get(&binding.service) else {
+                    continue;
+                };
+                let independent = policy.evaluate_gateway_request(crate::policy::GatewayRequest {
+                    service: &binding.service,
+                    capability: &binding.capability,
+                    agent: &binding.agent,
+                    method: request.request.method,
+                    path: request.request.target.split('?').next().unwrap_or_default(),
+                });
+                if independent.matched_resource.is_some() && independent.effect != Effect::Allow {
+                    continue;
+                }
+                let routes: Vec<_> = self
+                    .tokens
+                    .iter()
+                    .filter(|token| {
+                        token.agent == binding.agent
+                            && token.service == binding.service
+                            && token.capability == binding.capability
+                    })
+                    .flat_map(|token| compile_routes(service, token, std::slice::from_ref(binding)))
+                    .collect();
+                // Use the existing generated-route replacement owner. Routes
+                // from another binding cannot make this binding's operations
+                // available. Authored rules, task rules and denials remain.
+                let scoped = policy.with_gateway_routes(&routes);
+                let candidate = select_route_inner(
+                    registry,
+                    &hosts,
+                    &self.tokens,
+                    std::slice::from_ref(binding),
+                    &ContractIssues::default(),
+                    &self.token_timestamps,
+                    GatewayRequest {
+                        route_mode: RouteMode::CompiledPolicy(&scoped),
+                        ..request
+                    },
+                );
+                if matches!(&candidate, GatewayDecision::Selected { credential } if credential.binding_id.as_deref() == Some(binding.binding_id.as_str())
+                    && credential.contract_operation.as_ref().is_some_and(|operation| binding.grantable_operations.contains(operation)))
+                {
+                    decision = candidate;
+                    break;
+                }
+            }
+        }
         if let (GatewayDecision::Selected { credential }, Some(issued)) = (&mut decision, issued) {
             credential.authorization_binding = issued.action["credential_binding"]
                 .as_str()
@@ -1569,6 +1653,7 @@ pub enum RouteMode<'a> {
     CompiledPolicy(&'a Policy),
     LocalFallback,
 }
+#[derive(Clone, Copy)]
 pub struct GatewayRequest<'a> {
     pub identity: TrustedIdentity<'a>,
     pub host: &'a str,

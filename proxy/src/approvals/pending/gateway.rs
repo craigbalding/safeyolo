@@ -267,17 +267,23 @@ pub(crate) async fn bind_agent_request(
         for key in ["template", "bindings", "grantable_operations"] {
             action[key] = hint[key].clone();
         }
+        action["run"] = json!(run);
         if let Some(name) = policy.service_credential(agent, service) {
             credentials.push(name);
         }
-        vec![OptionScope {
-            id: "persistent".into(),
-            effect: format!(
-                "Save the selected contract values for {agent} on {service}/{capability} until explicitly replaced or removed. This does not authorize the service or approve risky routes."
+        vec![
+            OptionScope {
+                id: "persistent".into(),
+                effect: format!(
+                    "Save the selected contract values for {agent} on {service}/{capability} until explicitly replaced or removed. This does not authorize the service or approve risky routes."
+                ),
+                session_id: None,
+                parameters: Value::Null,
+            },
+            super::run_option(
+                "Use the submitted exact contract values and selected operations only for the current worker run, while its recorded authority and definitions remain current. Service authorization, credentials, network policy and risky-route checks remain separate. Independent operator bindings remain.",
             ),
-            session_id: None,
-            parameters: Value::Null,
-        }]
+        ]
     } else if scoped {
         Vec::new()
     } else if definition.auth.is_none() {

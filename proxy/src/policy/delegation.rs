@@ -38,6 +38,13 @@ pub(crate) enum Scope {
         credential_binding: Option<String>,
         resources: Vec<String>,
     },
+    ContractBinding {
+        service: String,
+        capability: String,
+        template: String,
+        bound_values: BTreeMap<String, Vec<Value>>,
+        grantable_operations: Vec<String>,
+    },
     GatewayRoute {
         service: String,
         capability: String,
@@ -47,11 +54,60 @@ pub(crate) enum Scope {
     },
 }
 
+// Decode choice data before the internally tagged enum buffers JSON values.
+// Literal marker objects and arbitrary precision integers must remain distinct.
+fn deserialize_scopes<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<Scope>, D::Error> {
+    let raw = Vec::<Box<serde_json::value::RawValue>>::deserialize(deserializer)?;
+    raw.into_iter()
+        .map(|raw| {
+            let mut value =
+                crate::policy::parse_json(raw.get(), true).map_err(serde::de::Error::custom)?;
+            let choices = if value["type"] == "contract_binding" {
+                let values = value["bound_values"]
+                    .as_object()
+                    .ok_or_else(|| {
+                        serde::de::Error::custom(
+                            "bound_values must map binding names to lists of exact choices",
+                        )
+                    })?
+                    .iter()
+                    .map(|(name, choices)| {
+                        choices
+                            .as_array()
+                            .cloned()
+                            .map(|choices| (name.clone(), choices))
+                            .ok_or_else(|| {
+                                serde::de::Error::custom(
+                                    "each bound_values field requires a list of exact choices",
+                                )
+                            })
+                    })
+                    .collect::<std::result::Result<BTreeMap<_, _>, D::Error>>()?;
+                value["bound_values"] = json!({});
+                Some(values)
+            } else {
+                None
+            };
+            let mut scope: Scope =
+                serde_json::from_str(&value.to_string()).map_err(serde::de::Error::custom)?;
+            if let (Scope::ContractBinding { bound_values, .. }, Some(choices)) =
+                (&mut scope, choices)
+            {
+                *bound_values = choices;
+            }
+            Ok(scope)
+        })
+        .collect()
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Delegation {
     pub reviewers: Vec<Agent>,
     pub beneficiaries: Vec<Agent>,
+    #[serde(deserialize_with = "deserialize_scopes")]
     pub scopes: Vec<Scope>,
     pub expires_at: Option<String>,
     pub grant_seconds: Option<u64>,
@@ -89,6 +145,7 @@ impl Delegation {
                         warnings.push("Service resource patterns include every matching current or future path. A capability name or GET method does not establish business safety.".into());
                     }
                 }
+                Scope::ContractBinding { .. } => warnings.push("Contract binding permits only the selected exact values and operation names for the worker run. Each field lists alternative complete JSON values; choices across fields may be combined and all listed operations may be issued together. A list-valued binding uses a list inside its choice list. Service authorization, credential resolution, network policy and risky-route approval remain separate checks. Independent operator bindings survive revocation. Request comparisons retain the contract owner's value semantics; this is not byte-for-byte payload approval.".into()),
                 Scope::GatewayRoute { method, path, .. } => {
                     if method=="*" || path.contains(['*','?','[']) { warnings.push("The gateway envelope includes multiple or future matching routes. Each issued grant still binds the canonical method and exact path; payload effects remain unknown.".into()); }
                     warnings.push("A gateway route grant covers its supported method and path. It does not bind a payload or undo an upstream write. Capability and contract checks still apply.".into());
@@ -205,6 +262,25 @@ impl Delegation {
                         ));
                     }
                 }
+                Scope::ContractBinding {
+                    service,
+                    capability,
+                    template: _,
+                    bound_values,
+                    grantable_operations,
+                } => {
+                    if service.is_empty()
+                        || capability.is_empty()
+                        || bound_values.is_empty()
+                        || bound_values.values().any(Vec::is_empty)
+                        || grantable_operations.is_empty()
+                        || grantable_operations.iter().any(String::is_empty)
+                    {
+                        return Err(invalid(
+                            "contract binding requires exact service, capability, template, explicit choices for bound values and grantable operation names",
+                        ));
+                    }
+                }
                 Scope::GatewayRoute {
                     service,
                     capability,
@@ -302,6 +378,35 @@ impl Delegation {
                     })
             }
             Scope::ServiceAuthorization { .. } => false,
+            Scope::ContractBinding {
+                service,
+                capability,
+                template,
+                bound_values,
+                grantable_operations,
+            } => {
+                a["kind"] == "contract_binding"
+                    && option == "run"
+                    && a["service"] == *service
+                    && a["capability"] == *capability
+                    && a["template"] == *template
+                    && a["bindings"].as_object().is_some_and(|values| {
+                        !values.is_empty()
+                            && values.iter().all(|(name, value)| {
+                                bound_values
+                                    .get(name)
+                                    .is_some_and(|choices| choices.contains(value))
+                            })
+                    })
+                    && a["grantable_operations"].as_array().is_some_and(|names| {
+                        !names.is_empty()
+                            && names.iter().all(|name| {
+                                name.as_str().is_some_and(|name| {
+                                    grantable_operations.iter().any(|allowed| allowed == name)
+                                })
+                            })
+                    })
+            }
             Scope::GatewayRoute {
                 service,
                 capability,
@@ -351,7 +456,7 @@ pub(crate) fn parse(document: &Value) -> Result<BTreeMap<String, Delegation>> {
             let delegation: Delegation = if let Some(encoded) = value.as_str() {
                 serde_json::from_str(encoded)
             } else {
-                serde_json::from_value(value.clone())
+                serde_json::from_str(&value.to_string())
             }
             .map_err(|e| invalid(format!("approval_delegations.{name}: {e}")))?;
             delegations.insert(name.clone(), delegation);
@@ -396,6 +501,7 @@ pub(crate) struct IssuedAccess {
     pub beneficiary: AgentRun,
     pub approval_id: String,
     pub policy_revision: String,
+    #[serde(deserialize_with = "crate::policy::deserialize_json_value")]
     pub action: Value,
     pub expires_at: Option<String>,
     pub option: String,
@@ -423,6 +529,7 @@ impl IssuedAccess {
             Some("network_allow") => "network_grants",
             Some("credential_allow") => "credential_grants",
             Some("service_authorize") => "service_grants",
+            Some("contract_binding") => "binding_grants",
             // Gateway permissions belong to the gateway grant store. Its
             // caller checks the recorded grant and this authority together.
             Some("gateway_route") => return true,
@@ -532,7 +639,7 @@ impl Policy {
             return vec![];
         };
         native.authored["agents"].as_object().into_iter().flat_map(|agents| agents.keys())
-            .flat_map(|agent| ["network_grants","credential_grants","service_grants"].into_iter().flat_map(move |kind| {
+            .flat_map(|agent| ["network_grants","credential_grants","service_grants","binding_grants"].into_iter().flat_map(move |kind| {
                 self.issued_access(agent,kind).into_iter().map(move |grant| json!({"kind":kind,"active":grant.active(self),"permission":grant}))
             })).collect()
     }
@@ -564,6 +671,18 @@ impl IssuedAccess {
                 "credential",
                 "credential_binding",
                 "resources",
+                "run",
+            ],
+            "contract_binding" => &[
+                "kind",
+                "agent",
+                "agent_id",
+                "service",
+                "capability",
+                "host",
+                "template",
+                "bindings",
+                "grantable_operations",
                 "run",
             ],
             "gateway_route" => &[
@@ -633,7 +752,54 @@ impl IssuedAccess {
                 ));
             }
         }
+        if kind == "contract_binding" {
+            self.contract_binding()?;
+        }
         Ok(())
+    }
+
+    pub(crate) fn contract_binding(&self) -> Result<crate::contracts::ContractBinding> {
+        let text = |key: &str| {
+            self.action[key]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    invalid(
+                        "issued contract binding requires exact service, capability and template",
+                    )
+                })
+        };
+        let values = self.action["bindings"]
+            .as_object()
+            .filter(|values| !values.is_empty())
+            .ok_or_else(|| invalid("issued contract binding requires bound values"))?;
+        let operations: Vec<String> = self.action["grantable_operations"]
+            .as_array()
+            .ok_or_else(|| invalid("issued contract binding requires operation names"))?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned)
+                    .ok_or_else(|| invalid("invalid issued operation name"))
+            })
+            .collect::<Result<_>>()?;
+        if self.action["kind"] != "contract_binding" || operations.is_empty() {
+            return Err(invalid("invalid issued contract binding"));
+        }
+        Ok(crate::contracts::ContractBinding {
+            binding_id: self.approval_id.clone(),
+            agent: self.beneficiary.agent.clone(),
+            service: text("service")?.into(),
+            capability: text("capability")?.into(),
+            template: self.action["template"]
+                .as_str()
+                .ok_or_else(|| invalid("issued template must be a string"))?
+                .into(),
+            bound_values: values.clone(),
+            grantable_operations: operations,
+        })
     }
 }
 
@@ -643,6 +809,7 @@ pub(crate) fn validate_grants(document: &Value) -> Result<()> {
             ("network_grants", "network_allow"),
             ("credential_grants", "credential_allow"),
             ("service_grants", "service_authorize"),
+            ("binding_grants", "contract_binding"),
         ] {
             if let Some(values) = fields.get(collection) {
                 for (id, value) in super::object(values, collection)? {
@@ -719,7 +886,8 @@ impl Delegation {
         let mut result = BTreeMap::new();
         for scope in &self.scopes {
             if let Scope::GatewayRoute { service, .. }
-            | Scope::ServiceAuthorization { service, .. } = scope
+            | Scope::ServiceAuthorization { service, .. }
+            | Scope::ContractBinding { service, .. } = scope
             {
                 for agent in &self.beneficiaries {
                     let revision = policy
@@ -728,6 +896,76 @@ impl Delegation {
                             invalid("gateway definition or beneficiary authorization unavailable")
                         })?;
                     result.insert(format!("{}:{service}", agent.agent_id), revision);
+                }
+            }
+            if let Scope::ContractBinding {
+                service,
+                capability,
+                template,
+                bound_values,
+                grantable_operations,
+            } = scope
+            {
+                let contract = policy
+                    .gateway()
+                    .and_then(|gateway| gateway.registry())
+                    .and_then(|registry| {
+                        registry
+                            .services
+                            .get(service)
+                            .and_then(|service| service.capabilities.get(capability))
+                            .and_then(|capability| capability.contract.clone())
+                    })
+                    .filter(|contract| &contract.template == template)
+                    .ok_or_else(|| invalid("contract template unavailable or changed"))?;
+                if bound_values.iter().any(|(name, choices)| {
+                    choices
+                        .iter()
+                        .any(|value| !contract.validate_bound_value(name, value))
+                }) {
+                    return Err(invalid(
+                        "contract binding envelope contains unknown fields or unsupported values",
+                    ));
+                }
+                for name in grantable_operations {
+                    let mut selected = contract
+                        .grantable_operations()
+                        .filter(|operation| &operation.name == name)
+                        .peekable();
+                    if selected.peek().is_none() {
+                        return Err(invalid(
+                            "contract binding envelope contains an ungrantable operation",
+                        ));
+                    }
+                    let sample = bound_values
+                        .iter()
+                        .map(|(name, choices)| (name.clone(), choices[0].clone()))
+                        .collect();
+                    for operation in selected {
+                        if operation.resolved_path(&sample).is_none()
+                            || operation
+                                .bound_value_references()
+                                .iter()
+                                .any(|name| !bound_values.contains_key(*name))
+                            || operation.request.path_params.values().any(|constraint| {
+                                !constraint.equals_var.is_empty()
+                                    && bound_values.get(&constraint.equals_var).is_some_and(
+                                        |choices| {
+                                            choices.iter().any(|value| {
+                                                crate::contracts::safe_path_component(value)
+                                                    .is_none_or(|component| {
+                                                        component.contains(['{', '}'])
+                                                    })
+                                            })
+                                        },
+                                    )
+                            })
+                        {
+                            return Err(invalid(
+                                "contract binding envelope cannot enforce the operation's bound values",
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -832,11 +1070,49 @@ impl Policy {
                     Scope::Credential {..}=>access.push(json!({"beneficiary":beneficiary,"type":"credential","independent_access":"Existing shared fingerprint/type and destination permissions survive revocation. Full scope depends on the observed credential classification and current policy; this preview does not infer an API operation limit."})),
                     Scope::ServiceAuthorization {service,capability,..}=>access.push(json!({"beneficiary":beneficiary,"type":"service_authorization","service":service,"capability":capability,
                         "independent_access":"Existing operator service authorization survives delegation revocation. Contract bindings and risky-route grants do not themselves authorize service access."})),
+                    Scope::ContractBinding {service,capability,..}=>access.push(json!({"beneficiary":beneficiary,"type":"contract_binding","service":service,"capability":capability,
+                        "independent_access":"Existing operator bindings and service authorization survive delegation revocation. Derived bindings add only their own values and operations for the worker run."})),
                     Scope::GatewayRoute {service,capability,..}=>access.push(json!({"beneficiary":beneficiary,"type":"gateway_route","service":service,"capability":capability,
                         "independent_access":"Existing service authorization, contract bindings and independently sourced route grants survive revocation. A delegation does not add service authorization."})),
                 }
             }
         }
         access
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn binding_choices_keep_marker_objects_and_exact_numeric_types() {
+        let input = r#"{"reviewers":[],"beneficiaries":[],"scopes":[{"type":"contract_binding","service":"s","capability":"c","template":"t","bound_values":{"value":[{"$serde_json::private::Number":"17"},18446744073709551615,true,["x","y"]]},"grantable_operations":["read"]}],"expires_at":null,"grant_seconds":null,"gateway_once":false,"acknowledgment":null}"#;
+        let delegation: Delegation = serde_json::from_str(input).unwrap();
+        let Scope::ContractBinding { bound_values, .. } = &delegation.scopes[0] else {
+            panic!("binding scope")
+        };
+        assert!(bound_values["value"][0].is_object());
+        assert_eq!(bound_values["value"][1].as_u64(), Some(u64::MAX));
+        assert!(bound_values["value"][2].is_boolean());
+        assert!(bound_values["value"][3].is_array());
+        assert_eq!(
+            crate::policy::parse_json(&serde_json::to_string(&delegation).unwrap(), true).unwrap()
+                ["scopes"],
+            crate::policy::parse_json(input, true).unwrap()["scopes"]
+        );
+        // Canonical action/receipt decoding uses the same lossless boundary.
+        let action: Value = crate::policy::parse_json(
+            r#"{"bindings":{"value":{"$serde_json::private::Number":"17"}}}"#,
+            true,
+        )
+        .unwrap();
+        #[derive(Deserialize)]
+        struct Action {
+            #[serde(deserialize_with = "crate::policy::deserialize_json_value")]
+            action: Value,
+        }
+        let decoded: Action = serde_json::from_str(&json!({"action":action}).to_string()).unwrap();
+        assert_eq!(decoded.action, action);
     }
 }

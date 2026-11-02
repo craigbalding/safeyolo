@@ -40,6 +40,7 @@ pub(crate) struct OptionScope {
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Authority {
+    #[serde(deserialize_with = "crate::policy::deserialize_json_value")]
     pub(crate) action: Value,
     pub(crate) revision: String,
     pub(crate) method: String,
@@ -1011,7 +1012,7 @@ pub(crate) fn resolve_as(
                 crate::edit_native_policy(state, true, |source| {
                     if !check_saved(state, source, record)? { return Err(invalid("approval or delegation changed before commit")); }
                     let (mut document, context) = crate::policy::parse_toml_for_edit(source).map_err(unavailable)?;
-                    let kind = match action["kind"].as_str() { Some("network_allow") => "network_grants", Some("credential_allow") => "credential_grants", Some("service_authorize") => "service_grants", _ => return Err(invalid("unsupported run permission")) };
+                    let kind = match action["kind"].as_str() { Some("network_allow") => "network_grants", Some("credential_allow") => "credential_grants", Some("service_authorize") => "service_grants", Some("contract_binding") => "binding_grants", _ => return Err(invalid("unsupported run permission")) };
                     document["agents"][action["agent"].as_str().ok_or_else(|| invalid("agent unavailable"))?][kind][&record.approval_id] = toml_edit::value(serde_json::to_string(&issued).map_err(unavailable)?);
                     save_receipt(&mut document, record)?;
                     Ok(((), crate::policy::restore_large_toml_integers(&document.to_string(), &context)))
