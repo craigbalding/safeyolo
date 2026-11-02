@@ -2,7 +2,7 @@
 
 use std::{fs, net::TcpListener, os::unix::fs::symlink, process::Command, time::Duration};
 
-use safeyolo_proxy::{Proxy, native_config};
+use safeyolo_proxy::{Proxy, coord_rooms, native_config};
 use serde_json::Value;
 use tempfile::TempDir;
 use tokio::{
@@ -139,31 +139,38 @@ fn coord_fixture(directory: &TempDir, marker: &str) {
     listeners.push(listener);
     document["listeners"] = toml_edit::Item::ArrayOfTables(listeners);
     fs::write(root.join("config.toml"), document.to_string()).unwrap();
-    let data = root.join("data/coord");
-    fs::create_dir_all(&data).unwrap();
-    let conn = rusqlite::Connection::open(data.join("v0.db")).unwrap();
-    conn.execute_batch(
-        "PRAGMA user_version=5;
-         CREATE TABLE rooms(room_id TEXT PRIMARY KEY, name TEXT NOT NULL);
-         CREATE TABLE memberships(room_id TEXT, principal_kind TEXT, principal_id TEXT,
-             permissions TEXT, granted_at INTEGER, revoked_at INTEGER);
-         CREATE TABLE instance(id TEXT PRIMARY KEY);
-         CREATE TABLE coord_briefs(room_id TEXT PRIMARY KEY, revision INTEGER, markdown TEXT,
-             content_hash TEXT, updated_at INTEGER);
-         INSERT INTO rooms VALUES ('rm-shared', 'shared');
-         INSERT INTO instance VALUES ('instance');",
+    coord_rooms::bootstrap(root).unwrap();
+    let conn = rusqlite::Connection::open(root.join("data/coord/v0.db")).unwrap();
+    conn.execute(
+        "INSERT INTO rooms(room_id,name,created_at) VALUES ('rm-shared','shared',1)",
+        [],
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO memberships VALUES ('rm-shared','agent',?1,'receive',1,NULL)",
+        "INSERT INTO memberships(room_id,principal_kind,principal_id,permissions,granted_at)
+         VALUES ('rm-shared','agent',?1,'receive',1)",
         [principal],
     )
     .unwrap();
-    conn.execute(
-        "INSERT INTO coord_briefs VALUES ('rm-shared',1,?1,'fixture',1)",
-        [marker],
-    )
-    .unwrap();
+    let brief = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--root")
+        .arg(root)
+        .args([
+            "coord",
+            "brief",
+            "set",
+            "shared",
+            marker,
+            "--expected-revision",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        brief.status.success(),
+        "{}",
+        String::from_utf8_lossy(&brief.stderr)
+    );
 }
 
 async fn coord_brief(directory: &TempDir, token: &str) -> (u16, Value) {
