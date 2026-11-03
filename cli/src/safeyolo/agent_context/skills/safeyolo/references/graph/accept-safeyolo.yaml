@@ -414,6 +414,11 @@ nodes:
       state and reconnect. Its operator
       recovery runs with NATS stopped and the audit destination impaired.
       Current-state controls do not establish audit recording or historical replay.
+      Also select the two signals::native_watch_clears_ tests with --ignored
+      for requests seen only in attachment snapshots during an audit outage.
+      Both consume the initial control before resolving the request entirely
+      between shared host checks. Signals and approvals must clear within five
+      seconds without a later business event or idle viewer polling.
       For combined room status, select
       room_status::native_room_status_current_authority_restart_and_cli with
       --ignored. It compares authenticated Agent API and operator CLI state,
@@ -517,7 +522,7 @@ nodes:
         - path: proxy/src/coord_work_schema.sql
           sha256: fb6592902c80c56d51758e3938c3fa14b620daa6988269eedf7a6e215e0dcf99
         - path: proxy/tests/native_coord/signals.rs
-          sha256: 06e8e25ce18406b36783a196ef30db36e0b219a8f3cc3b169f768c37cb062c2d
+          sha256: fe7250cebc9206d3bcc04ad36cc62b25663bf30808d4d2f2ab20f795c3daabd2
         - path: proxy/src/coord_rooms/signals.rs
           sha256: bef138d95aa2d06ee547311728ed78b2a38b6cac96ed176a7c87caf54364ff57
         - path: proxy/src/coord_rooms/signals/tests.rs
@@ -527,7 +532,7 @@ nodes:
         - path: proxy/src/coord_signal_schema.sql
           sha256: 059ad7dcad31ae77f43cf8a9a890f110c7349aad8723b158aa666f34b2ae1bd0
         - path: proxy/src/agent_api/coord/signals.rs
-          sha256: 11c618ef0ead1212d2ff410634a394cbae0dd45a9a5e35a52f0f626870dd12ec
+          sha256: 931e2ffe8263715cafb7aecb50a7c4283bd41eeddcb4bc3216b9c32ad828ba83
         - path: proxy/src/admin_api/coord_signals.rs
           sha256: 02a963eef1bf4e390e9c57b9dbb0f95854bbb6c7592f6bb0b461ee2f04f41624
         - path: proxy/src/coord_operator/signals.rs

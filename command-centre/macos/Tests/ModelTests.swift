@@ -114,6 +114,7 @@ struct ModelTests: App {
             return
         }
         try await testApprovalAttentionAndUntrustedRendering()
+        try await testOperatorRecoveryControls()
         try testMutationPlans()
         try testAgentAndSecurityModels()
         try testHarnessMarks()

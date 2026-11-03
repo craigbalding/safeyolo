@@ -163,9 +163,18 @@ pub(crate) fn operator_fingerprint(client: &super::CoordClient) -> Result<[u8; 3
     let db = client.owner.data_dir.join("v0.db");
     let conn =
         open_db(&db, false).map_err(|_| SignalError(503, "signal store unavailable".into()))?;
+    // Immutable revisions retain a committed create/resolve cycle even when
+    // neither host read saw it pending and no audit record was delivered.
+    // Capture before the pending read so an overlapping commit stays due.
+    let committed: i64 = conn.query_row(
+        "SELECT coalesce(max(rowid),0) FROM coord_signal_revisions",
+        [],
+        |row| row.get(0),
+    )?;
     let mut statement = conn.prepare("SELECT s.signal_id,s.revision,r.content_hash FROM coord_signals s JOIN coord_signal_revisions r ON s.signal_id=r.signal_id AND s.revision=r.revision WHERE s.state='current' AND s.needs_operator=1 ORDER BY s.signal_id")?;
     let mut rows = statement.query([])?;
     let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
+    hash.update(&committed.to_be_bytes());
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
         let revision: i64 = row.get(1)?;
