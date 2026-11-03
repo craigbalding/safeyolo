@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +16,16 @@ from tests.blackbox import installed_sections, retained_inputs
 
 SOURCE = "a" * 40
 RUNTIME = {"name": "bbtest", "agent_id": "agent-fixture", "run_id": "b" * 32}
+
+
+def native_wrapper():
+    source = (Path(__file__).parents[1] / "proxy/src/guest_commands.rs").read_text()
+    declaration = next(line for line in source.splitlines() if line.startswith("pub const WRAPPER:"))
+    return ast.literal_eval(declaration.split(" = ", 1)[1].removesuffix(";"))
+
+
+def test_launch_wrapper_hash_matches_the_current_native_producer():
+    assert smoke.sha256(native_wrapper()) == smoke.NATIVE_WRAPPER_SHA256
 
 
 @pytest.fixture
@@ -236,6 +248,22 @@ def installed_smoke(tmp_path, monkeypatch):
                 (home / ".claude.json").write_text("{}")
         elif label[:2] == ["agent", "start"]:
             (root / "agents/bbtest/runtime.json").write_text(json.dumps(RUNTIME))
+            # guest_commands::stage renames the original before writing its wrapper
+            # and records lstat identity in the host launch context for this run.
+            home = root / "agents/bbtest/home"
+            payload = home / ".safeyolo-command.payload"
+            (home / ".safeyolo-command").rename(payload)
+            (home / ".safeyolo-command").write_bytes(native_wrapper())
+            (home / ".safeyolo-command").chmod(0o755)
+            info = payload.lstat()
+            share = root / "agents/bbtest/config-share"
+            share.mkdir()
+            (share / "host-launch-context.json").write_text(json.dumps({
+                "agent_id": RUNTIME["agent_id"], "generation": RUNTIME["run_id"],
+                "command_payloads": {".safeyolo-command": [
+                    info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns]}}))
+            if state.get("after_start"):
+                state["after_start"]()
         elif label[:2] == ["agent", "shell"]:
             script = label[-1]
             if script.endswith("--version"):
@@ -267,6 +295,8 @@ def installed_smoke(tmp_path, monkeypatch):
                 (root / "logs").mkdir()
                 (root / "logs/audit.jsonl").write_text(json.dumps(gateway()) + "\n")
                 stdout = "\n".join(json.dumps(row) for row in events()).encode()
+                if state.get("during_task"):
+                    state["during_task"]()
         return subprocess.CompletedProcess(arguments, 0, stdout, b"")
 
     monkeypatch.setattr(smoke.subprocess, "run", execute)
@@ -295,6 +325,73 @@ def test_completed_instrument_cannot_turn_reached_failures_into_success(installe
         assert report["steps"][-1]["timed_out"]
     if failure in {"auth", "client-exit"}:
         assert report["steps"][-1]["http_statuses"] == [401]
+    if failure is None:
+        assert report["launch"] == report["completed_launch"]
+        assert report["launch"]["wrapper_sha256"] != report["staging"]["command_sha256"]
+        assert report["launch"]["payload_sha256"] == report["staging"]["command_sha256"]
+
+
+@pytest.mark.parametrize("phase", ["after_start", "during_task"])
+@pytest.mark.parametrize("change", ["wrapper", "payload", "context-agent", "context-generation",
+                                    "context-payload", "missing-context", "runtime-agent", "runtime-run"])
+def test_native_launch_changes_cannot_pass_the_completed_instrument(installed_smoke, phase, change):
+    root, workspace, output, state = installed_smoke
+    directory = root / "agents/bbtest"
+
+    def tamper():
+        if change in {"wrapper", "payload"}:
+            name = ".safeyolo-command" + (".payload" if change == "payload" else "")
+            (directory / "home" / name).write_text("changed command")
+        elif change.startswith("runtime-"):
+            runtime = dict(RUNTIME)
+            runtime["agent_id" if change == "runtime-agent" else "run_id"] = "another"
+            (directory / "runtime.json").write_text(json.dumps(runtime))
+        else:
+            path = directory / "config-share/host-launch-context.json"
+            if change == "missing-context":
+                path.unlink()
+                return
+            context = json.loads(path.read_bytes())
+            if change == "context-payload":
+                context["command_payloads"][".safeyolo-command"][-1] += 1
+            else:
+                context["agent_id" if change == "context-agent" else "generation"] = "another"
+            path.write_text(json.dumps(context))
+
+    state[phase] = tamper
+    assert smoke.run(root, workspace, "host-subscription", output, 1) == 1
+    report = json.loads(output.read_bytes())
+    assert report["status"] == "failed"
+    assert report["cleanup"] == "stopped"
+    assert report["model_attempts"] == (1 if phase == "during_task" else 0)
+    if phase == "during_task":
+        assert report["task"]["successful_task"] and report["gateway"]
+
+
+def test_replaced_payload_and_rebound_context_cannot_hide_a_task_time_change(installed_smoke):
+    root, workspace, output, state = installed_smoke
+    directory = root / "agents/bbtest"
+
+    def replace_and_rebind():
+        payload = directory / "home/.safeyolo-command.payload"
+        replacement = payload.with_suffix(".replacement")
+        replacement.write_bytes(payload.read_bytes())
+        replacement.chmod(0o700)
+        replacement.replace(payload)
+        info = payload.lstat()
+        path = directory / "config-share/host-launch-context.json"
+        context = json.loads(path.read_bytes())
+        context["command_payloads"][".safeyolo-command"] = [
+            info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns]
+        path.write_text(json.dumps(context))
+
+    state["during_task"] = replace_and_rebind
+    assert smoke.run(root, workspace, "host-subscription", output, 1) == 1
+    report = json.loads(output.read_bytes())
+    assert report["failure"] == "native command launch changed during the task"
+    assert report["task"]["successful_task"] and report["cleanup"] == "stopped"
+    assert report["launch"]["payload_sha256"] == report["completed_launch"]["payload_sha256"]
+    assert report["launch"]["payload_identity"] != report["completed_launch"]["payload_identity"]
 
 
 def test_cleanup_failure_keeps_completed_task_but_fails_the_run(installed_smoke):
