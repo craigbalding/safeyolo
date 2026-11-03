@@ -276,17 +276,18 @@ nodes:
         - path: proxy/src/bin/safeyolo.rs
           sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
         - path: scripts/run_claude_blackbox.py
-          sha256: 7722b2d977274ba0a738736d1903f7e8811b201057d45aeb576005e5d8dc90d3
+          sha256: 62b27a405f88a67d2779853ab57c52092c260731a4c7fc82614e7085096435c7
         - path: tests/blackbox/claude_smoke.py
-          sha256: f17eff3e93b3259d750258a90ccf3b7314f2580300d64ce05caaddaf56864f71
+          sha256: f42b3db244978135a95c927f83df405ba38f2392a116cee640c8006cea1e00f5
         - path: tests/blackbox/installed_sections.py
-          sha256: 3935b99ef132af79e79647153ff26034fdd7dfe341d073f18f648dfd36b1e679
+          sha256: 2c3a3be25c93d60e32d632b1f6c6c12e2263cdd923007c1c23aac764ed7c119e
         - path: tests/blackbox/retained_inputs.py
           sha256: 9c9ba99fdf8549768aa494698df916d7bb953030d5f552df37d5156be6461347
-      setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
+      setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Retained manual Claude reuse requires the same host, selected installed bytes, successful original credential-free systrap reports and retained isolation config.toml; see tests/blackbox/README.md. The caller verifies runtime settings before creating separate writable state. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
       verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh proxy/src/host_platform.rs proxy/src/host_boot.rs guest/build-rootfs.sh && safeyolo doctor"
       run:
         trusted_claude: ".venv/bin/python scripts/run_claude_blackbox.py nightly --ref refs/heads/<default-branch> --provision <operator-helper> --credential <host-credential-name> --output <new-private-attempt-directory>"
+        retained_manual_claude: ".venv/bin/python scripts/run_claude_blackbox.py manual --ref refs/heads/<default-branch> --selection <frozen-selection.json> --prepared-config <retained-installed-root> --readiness <original-successful-no-secret-reports> --provision <operator-helper> --credential <host-credential-name> --output <new-private-attempt-directory>"
         native_claude: "SAFEYOLO_CLAUDE_SMOKE_CREDENTIAL=<existing-host-credential-name> .venv/bin/python tests/blackbox/retained_inputs.py run --lane systrap --selection <frozen-selection.json> --prepared-config <dedicated-selected-installation> --section claude --artifacts <new-private-report-directory>"
         gvisor_systrap: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh systrap --verbose"
         gvisor_kvm: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh kvm --verbose"
