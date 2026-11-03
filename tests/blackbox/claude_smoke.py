@@ -28,6 +28,8 @@ else:
 
 AGENT = "bbtest"
 RESULT = "claude-smoke-result.txt"
+# proxy/src/guest_commands.rs::WRAPPER; the offline control checks this binding.
+NATIVE_WRAPPER_SHA256 = "90c5beaa00ed0249c4cc9df0f88c37912af43bc8c647d86a848199dd108819e1"
 TASK = (
     "Read /workspace/claude-smoke-marker.txt and "
     "/home/agent/.claude/skills/safeyolo/SKILL.md using tools. "
@@ -176,6 +178,35 @@ def check_sandbox(runtime: dict) -> dict:
     return {"backend": "gvisor", "platform": "systrap", "process_identity_checked": True}
 
 
+def check_launch(root: Path, report: dict, field: str) -> None:
+    """Bind native startup's wrapper and preserved script to the current run."""
+    directory = root / "agents" / AGENT
+    home = directory / "home"
+    payload = home / ".safeyolo-command.payload"
+    # guest_commands::payload_identity uses lstat, including nanosecond times.
+    info = payload.lstat()
+    context = json.loads((directory / "config-share/host-launch-context.json").read_bytes())
+    observed = {
+        "wrapper_sha256": sha256((home / ".safeyolo-command").read_bytes()),
+        "payload_sha256": sha256(payload.read_bytes()),
+        "payload_identity": [info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns],
+        "context_agent_id": context["agent_id"],
+        "context_generation": context["generation"],
+        "context_payload_identity": context["command_payloads"][".safeyolo-command"],
+    }
+    # Retain both observations before a mismatch can fail the run.
+    report[field] = observed
+    if observed["wrapper_sha256"] != NATIVE_WRAPPER_SHA256:
+        raise SmokeFailure("staged command differs from the native observation wrapper")
+    if observed["payload_sha256"] != report["staging"]["command_sha256"]:
+        raise SmokeFailure("staged command payload differs from the original command")
+    if (observed["context_agent_id"] != report["runtime"]["agent_id"]
+            or observed["context_generation"] != report["runtime"]["run_id"]):
+        raise SmokeFailure("native launch context differs from the current sandbox run")
+    if observed["context_payload_identity"] != observed["payload_identity"]:
+        raise SmokeFailure("staged command payload differs from native launch ownership")
+
+
 def native_setup(guest, report: dict) -> str:
     version = guest("native-setup", "exec /home/agent/.safeyolo-command --version", seconds=600)
     match = re.fullmatch(rb"\s*(\d+\.\d+\.\d+) \(Claude Code\)\s*", version)
@@ -217,8 +248,9 @@ def completed_task(root: Path, workspace: Path, stream: bytes, expected: bytes, 
     after = json.loads((root / "agents" / AGENT / "runtime.json").read_bytes())
     if any(after.get(key) != report["runtime"].get(key) for key in ("agent_id", "run_id")):
         raise SmokeFailure("sandbox run changed during the task")
-    if sha256((root / "agents" / AGENT / "home/.safeyolo-command").read_bytes()) != report["staging"]["command_sha256"]:
-        raise SmokeFailure("staged command changed during the task")
+    check_launch(root, report, "completed_launch")
+    if report["completed_launch"] != report["launch"]:
+        raise SmokeFailure("native command launch changed during the task")
     if not report["task"]["successful_task"] or not report["gateway"]:
         raise SmokeFailure("completed tool task, host output and current gateway request did not agree")
 
@@ -290,6 +322,7 @@ def run(root: Path, workspace: Path, credential: str, output: Path, timeout: int
         runtime = json.loads(runtime_path.read_bytes())
         report["runtime"] = {key: runtime[key] for key in ("name", "agent_id", "run_id")}
         report["sandbox"] = check_sandbox(runtime)
+        check_launch(root, report, "launch")
         title = native_setup(guest, report)
         expected = (marker + "\n" + title + "\n").encode()
         stream = launch_task(guest, report, timeout)
