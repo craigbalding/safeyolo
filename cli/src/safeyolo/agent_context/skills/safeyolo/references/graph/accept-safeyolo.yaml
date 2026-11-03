@@ -278,7 +278,7 @@ nodes:
         - path: scripts/run_claude_blackbox.py
           sha256: 218890e4ddaef26d7d86a67784a447d3c40640eda4abe1c16a2243880c7e803b
         - path: tests/blackbox/claude_smoke.py
-          sha256: f42b3db244978135a95c927f83df405ba38f2392a116cee640c8006cea1e00f5
+          sha256: bb5c659af0a28b65f3da8c321b7ead0a3f00158339e45d1cc642046d3751a138
         - path: tests/blackbox/installed_sections.py
           sha256: 2c3a3be25c93d60e32d632b1f6c6c12e2263cdd923007c1c23aac764ed7c119e
         - path: tests/blackbox/retained_inputs.py
