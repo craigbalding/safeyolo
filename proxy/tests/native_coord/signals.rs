@@ -3,6 +3,7 @@ use super::*;
 use hyper::Method;
 use rusqlite::Connection;
 use std::sync::Arc;
+use tokio::io::AsyncBufReadExt;
 use tokio::sync::Barrier;
 
 const ALICE: &str = "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -73,6 +74,17 @@ async fn native_signals_author_page_watch_replay_and_restart() {
     };
     let alice = client("alice");
     let bob = client("bob");
+    // More than one outbox page remains blocked behind the failed archive.
+    // None of these unpaged results may prevent a later live operator wake.
+    for index in 0..70 {
+        signal(
+            &alice,
+            "result",
+            &format!("Unpaged result {index}"),
+            &format!("result-{index}"),
+        )
+        .await;
+    }
     let mut live_watch = host_command(root, &["watch"]).spawn().unwrap();
     assert!(
         client("carol")
@@ -241,6 +253,10 @@ async fn native_signals_author_page_watch_replay_and_restart() {
     tokio::time::sleep(Duration::from_millis(1200)).await;
     live_watch.kill().await.unwrap();
     let live_output = live_watch.wait_with_output().await.unwrap();
+    println!(
+        "{}",
+        json!({"live_watch_status":live_output.status.to_string(),"live_watch_stderr":String::from_utf8_lossy(&live_output.stderr)})
+    );
     let live_output = String::from_utf8(live_output.stdout).unwrap();
     println!("{}", json!({"live_watch_output":live_output}));
     assert_eq!(
@@ -317,6 +333,68 @@ async fn native_signals_author_page_watch_replay_and_restart() {
     );
     let viewed: Value = serde_json::from_slice(&detached.stdout).unwrap();
     assert_eq!(viewed["signal"], retry["signal"]);
+    // A live attachment must report broker loss, while the canonical one-time
+    // view remains usable. Reading its first line establishes attachment.
+    let mut attached = host_command(root, &["watch", "--json"]).spawn().unwrap();
+    let mut output = tokio::io::BufReader::new(attached.stdout.take().unwrap()).lines();
+    let initial = tokio::time::timeout(Duration::from_secs(5), output.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&initial).unwrap()["signal"],
+        retry["signal"]
+    );
+    coord_json(root, &["stop"]).await;
+    let lost = tokio::time::timeout(Duration::from_secs(5), attached.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!lost.status.success());
+    assert!(String::from_utf8_lossy(&lost.stderr).contains("live operator events"));
+    let offline = watch(root, &["--once", "--json"]).await;
+    assert!(
+        offline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&offline.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&offline.stdout).unwrap()["signal"],
+        retry["signal"]
+    );
+    let unavailable = watch(root, &["--json"]).await;
+    assert!(!unavailable.status.success());
+    coord_json(root, &["start", "--binary", &binary]).await;
+    let mut reattached = host_command(root, &["watch", "--json"]).spawn().unwrap();
+    let mut output = tokio::io::BufReader::new(reattached.stdout.take().unwrap()).lines();
+    let initial = tokio::time::timeout(Duration::from_secs(5), output.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&initial).unwrap()["signal"],
+        retry["signal"]
+    );
+    let recovered = signal(
+        &alice,
+        "blocker",
+        "Private live signal after reconnect",
+        "post-reconnect",
+    )
+    .await;
+    let revision = tokio::time::timeout(Duration::from_secs(5), output.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&revision).unwrap()["signal"],
+        recovered["signal"]
+    );
+    reattached.kill().await.unwrap();
+    reattached.wait().await.unwrap();
     stage0::until(||count(root,"SELECT count(*) FROM coord_outbox WHERE destination='audit-jsonl' AND delivered_at IS NULL")==0).await;
     let lines = fs::read_to_string(&audit).unwrap();
     assert!(!lines.contains("Private"));

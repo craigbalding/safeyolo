@@ -250,24 +250,35 @@ impl CoordClient {
         {
             return Ok(client.clone());
         }
+        let client = self
+            .connect_nats(async_nats::ConnectOptions::new())
+            .await
+            .map_err(|_| CoordError::Unavailable)?;
+        *current = Some(client.clone());
+        Ok(client)
+    }
+
+    pub(crate) async fn connect_nats(
+        &self,
+        options: async_nats::ConnectOptions,
+    ) -> Result<async_nats::Client, crate::Error> {
         let url = self.nats_url();
         let password = std::fs::read(self.owner.data_dir.join("nats/creds"))
-            .map_err(|_| CoordError::Unavailable)?;
+            .map_err(|_| "NATS credentials unavailable")?;
         let password = std::str::from_utf8(&password)
-            .map_err(|_| CoordError::Unavailable)?
+            .map_err(|_| "NATS credentials unavailable")?
             .trim()
             .to_owned();
         if password.is_empty() {
-            return Err(CoordError::Unavailable);
+            return Err("NATS credentials unavailable".into());
         }
-        let client = async_nats::ConnectOptions::new()
+        let client = options
             .user_and_password(NATS_USER.to_owned(), password)
             .connection_timeout(Duration::from_secs(2))
             .request_timeout(Some(Duration::from_secs(2)))
             .connect(url)
             .await
-            .map_err(|_| CoordError::Unavailable)?;
-        *current = Some(client.clone());
+            .map_err(|_| "NATS connection unavailable")?;
         Ok(client)
     }
 
@@ -275,8 +286,8 @@ impl CoordClient {
         if let Some(url) = std::env::var_os("SAFEYOLO_COORD_NATS_URL") {
             return url.to_string_lossy().into_owned();
         }
-        // Native startup records observed endpoints here. The test endpoint
-        // remains a fallback for the existing Python-owned integration fixture.
+        // Native startup records observed endpoints here. Owned source fixtures
+        // can instead supply their isolated test endpoint.
         for name in ["process.json", "test-endpoints.json"] {
             let endpoint = self.owner.data_dir.join("nats").join(name);
             if let Ok(bytes) = std::fs::read(endpoint)

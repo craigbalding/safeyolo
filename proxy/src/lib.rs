@@ -99,6 +99,7 @@ pub mod network_guard;
 pub mod oauth;
 mod operator_actions;
 pub mod operator_commands;
+mod operator_events;
 mod operator_stats;
 pub mod policy;
 mod policy_runtime;
@@ -552,6 +553,7 @@ impl Runtime {
                         None => audit::Settings::from_env()?,
                     },
                 )
+                .with_live_events(config.data_dir().join("coord"))
                 .with_named_controls(config.native_product)
                 .with_approvals(config.data_dir().join("approvals.sqlite3")),
             ),

@@ -22,7 +22,6 @@ use http_body_util::{BodyExt, Full};
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use tokio::{
-    io::{AsyncReadExt, AsyncSeekExt},
     net::{TcpListener, TcpStream},
     sync::{Mutex as AsyncMutex, oneshot, watch},
     task::{JoinHandle, JoinSet},
@@ -559,12 +558,23 @@ async fn serve_events(
         );
         return Ok(response);
     }
-    let path = runtime.audit.path().to_owned();
-    // Capture the source position after authentication, but before the 101 is
-    // returned. Events appended while the handshake is in flight are then
-    // delivered, while no event already present in the log is replayed.
-    let offset = audit_offset(&path);
     let handshake = Handshake::request(&mut request).map_err(|_| admin_api::Error::BodyFraming)?;
+    // Subscribe and flush SUB before returning 101. Authentication precedes
+    // all broker access; a failed feed cannot masquerade as a live attachment.
+    let subscription = match runtime.audit.subscribe_live().await {
+        Ok(subscription) => subscription,
+        Err(_) => {
+            return Ok(hyper::Response::builder()
+                .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
+                .header(hyper::header::CONNECTION, "close")
+                .body(
+                    Full::new(Bytes::from_static(b"live operator events unavailable"))
+                        .map_err(|never| match never {})
+                        .boxed(),
+                )
+                .expect("static live event response"));
+        }
+    };
     let upgrade = hyper::upgrade::on(request);
     let body = Full::new(Bytes::new())
         .map_err(|never: std::convert::Infallible| match never {})
@@ -576,28 +586,20 @@ async fn serve_events(
         let Ok(upgraded) = upgrade.await else {
             return;
         };
-        stream_events(upgraded, path, offset, stop).await;
+        stream_events(upgraded, subscription, stop).await;
     })
     .await;
     Ok(response)
 }
 
-fn audit_offset(path: &Path) -> u64 {
-    std::fs::metadata(path)
-        .map(|metadata| metadata.len())
-        .unwrap_or(0)
-}
-
 async fn stream_events(
     upgraded: hyper::upgrade::Upgraded,
-    path: std::path::PathBuf,
-    mut offset: u64,
+    mut subscription: crate::operator_events::Subscription,
     mut stop: watch::Receiver<bool>,
 ) {
     let (read, write) = tokio::io::split(TokioIo::new(upgraded));
     let mut reader = Reader::new(read, true, None);
     let mut writer = Writer::new(write, false, None);
-    let mut pending = Vec::new();
     loop {
         tokio::select! {
             biased;
@@ -635,160 +637,23 @@ async fn stream_events(
                     Err(_) => return,
                 }
             }
-            _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                let lines = read_event_lines(&path, &mut offset, &mut pending).await;
-                for line in lines {
-                    let Ok(line) = String::from_utf8(line) else {
-                        continue;
-                    };
-                    if !matches!(
-                        tokio::time::timeout(
-                            Duration::from_secs(1),
-                            writer.message(crate::websocket::Message::text_for_send(line)),
-                        )
-                        .await,
-                        Ok(Ok(()))
-                    ) {
+            event = subscription.next() => {
+                let Ok(line) = event else {
+                    let _ = tokio::time::timeout(Duration::from_secs(1), writer.control(Control::Close, &[0x03, 0xf5])).await;
+                    return;
+                };
+                let Ok(mut event) = serde_json::from_slice::<serde_json::Value>(&line) else { return };
+                let eligible = crate::operator_events::is_operator_event(&event);
+                crate::credentials::wipe_json(&mut event);
+                if eligible {
+                    let Ok(line) = String::from_utf8(line.to_vec()) else { return };
+                    if !matches!(tokio::time::timeout(Duration::from_secs(1), writer.message(crate::websocket::Message::text_for_send(line))).await, Ok(Ok(()))) {
                         return;
                     }
                 }
             }
         }
     }
-}
-
-async fn read_event_lines(path: &Path, offset: &mut u64, pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
-    let Ok(metadata) = tokio::fs::metadata(path).await else {
-        return Vec::new();
-    };
-    if metadata.len() < *offset {
-        *offset = 0;
-        pending.clear();
-    }
-    let Ok(mut file) = tokio::fs::File::open(path).await else {
-        return Vec::new();
-    };
-    if file.seek(std::io::SeekFrom::Start(*offset)).await.is_err() {
-        return Vec::new();
-    }
-    // Drain a bounded batch so a reconnect or a burst of retained events does
-    // not spend one hundred milliseconds per 16 KiB chunk. The batch bound
-    // keeps this poll independent of the file's total size and leaves the
-    // partial-line limit below as the separate malformed-input guard.
-    let mut remaining = 1024 * 1024;
-    let mut saw_bytes = false;
-    let mut lines = Vec::new();
-    while remaining > 0 {
-        let mut chunk = vec![0u8; remaining.min(16 * 1024)];
-        let Ok(read) = file.read(&mut chunk).await else {
-            return Vec::new();
-        };
-        if read == 0 {
-            break;
-        }
-        saw_bytes = true;
-        *offset += read as u64;
-        remaining -= read;
-        pending.extend_from_slice(&chunk[..read]);
-        let complete = extract_event_lines(pending);
-        lines.extend(complete);
-        // Only an unterminated line is subject to this cap. Complete lines
-        // were extracted above, so a valid batch cannot lose its first event
-        // merely because several lines crossed the aggregate bound.
-        if pending.len() > 1024 * 1024 {
-            pending.clear();
-        }
-        if read < chunk.len() {
-            break;
-        }
-    }
-    if !saw_bytes {
-        return Vec::new();
-    }
-    lines
-}
-
-fn extract_event_lines(pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
-    let mut lines = Vec::new();
-    while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
-        let mut line = pending.drain(..=newline).collect::<Vec<_>>();
-        line.pop();
-        if line.last() == Some(&b'\r') {
-            line.pop();
-        }
-        if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&line)
-            && is_operator_event(&event)
-            && let Ok(encoded) = serde_json::to_vec(&event)
-        {
-            lines.push(encoded);
-        }
-    }
-    lines
-}
-
-fn is_operator_event(event: &serde_json::Value) -> bool {
-    let approval = event.get("approval").and_then(serde_json::Value::as_object);
-    if approval
-        .and_then(|approval| approval.get("required"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    let event_name = event
-        .get("event")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    if event_name.starts_with("agent.")
-        || event_name == "ops.circuit_breaker.open"
-        || matches!(
-            event_name,
-            "admin.approval_added"
-                | "admin.denial"
-                | "admin.host_allowed"
-                | "admin.host_denied"
-                | "admin.host_rate_updated"
-                | "admin.host_bypass_added"
-                | "admin.mode_change"
-                | "admin.baseline_update"
-                | "admin.task_policy_update"
-                | "admin.task_policy_clear"
-                | "admin.agent_service_authorized"
-                | "admin.agent_service_revoked"
-                | "admin.gateway_grant"
-                | "admin.gateway_grant_revoked"
-                | "admin.contract_binding_approved"
-                | "admin.desktop_presented"
-                | "admin.desktop_presentation_failed"
-                | "plumb.approved"
-                | "plumb.denied"
-                | "plumb.conversation_created"
-                | "plumb.message_blocked"
-                | "plumb.message_flagged"
-                | "plumb.message_allowed"
-                | "plumb.conversation_closed"
-        )
-        || matches!(
-            event_name,
-            "ops.command_centre_tailnet_exited"
-                | "ops.command_centre_tailnet_failed"
-                | "ops.command_centre_tailnet_started"
-                | "ops.command_centre_tailnet_stopped"
-                | "ops.proxy_start"
-                | "ops.proxy_stop"
-                | "ops.proxy_start_failed"
-        )
-    {
-        return true;
-    }
-    event
-        .get("kind")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|kind| matches!(kind, "security" | "gateway"))
-        && event
-            .get("severity")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|severity| matches!(severity, "high" | "critical"))
 }
 
 async fn serve_capture(
@@ -887,75 +752,6 @@ async fn stream_capture(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-
-    #[tokio::test]
-    async fn captured_audit_offset_excludes_old_lines_and_includes_following_lines() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("audit.jsonl");
-        std::fs::write(&path, b"{\"event\":\"admin.denial\",\"details\":{}}\n").unwrap();
-        let mut offset = audit_offset(&path);
-        let mut pending = Vec::new();
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap()
-            .write_all(b"{\"event\":\"admin.host_allowed\",\"details\":{}}\n")
-            .unwrap();
-
-        let lines = read_event_lines(&path, &mut offset, &mut pending).await;
-        assert_eq!(lines.len(), 1);
-        let event: serde_json::Value = serde_json::from_slice(&lines[0]).unwrap();
-        assert_eq!(event["event"], "admin.host_allowed");
-    }
-
-    #[tokio::test]
-    async fn complete_lines_survive_the_bounded_batch_when_their_total_exceeds_one_mib() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("audit.jsonl");
-        let target_len = 262_248;
-        let empty = serde_json::to_vec(&serde_json::json!({
-            "event":"security.credential_guard",
-            "kind":"security",
-            "severity":"critical",
-            "summary":"",
-            "details":{"sequence":0}
-        }))
-        .unwrap();
-        let summary_len = target_len - empty.len();
-        let mut source = Vec::new();
-        for sequence in 0..5 {
-            let line = serde_json::to_vec(&serde_json::json!({
-                "event":"security.credential_guard",
-                "kind":"security",
-                "severity":"critical",
-                "summary":"x".repeat(summary_len),
-                "details":{"sequence":sequence}
-            }))
-            .unwrap();
-            assert_eq!(line.len(), target_len);
-            source.extend_from_slice(&line);
-            source.push(b'\n');
-        }
-        std::fs::write(&path, source).unwrap();
-
-        let mut offset = 0;
-        let mut pending = Vec::new();
-        let mut lines = Vec::new();
-        while lines.len() < 5 {
-            lines.extend(read_event_lines(&path, &mut offset, &mut pending).await);
-        }
-        let sequences = lines
-            .iter()
-            .map(|line| {
-                serde_json::from_slice::<serde_json::Value>(line).unwrap()["details"]["sequence"]
-                    .as_u64()
-                    .unwrap()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(sequences, (0..5).collect::<Vec<_>>());
-    }
-
     #[tokio::test]
     async fn completed_event_subscription_is_reaped_before_reconnect() {
         let event_tasks = Arc::new(AsyncMutex::new(JoinSet::new()));

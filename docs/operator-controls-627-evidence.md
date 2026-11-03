@@ -1,93 +1,77 @@
-# #627 native operator controls evidence
+# Native operator controls and live events
 
-This candidate is based on integration commit
-`46681aa7a23d58bdaffec6f631cb7e9227b2241a` on branch
-`feat/issue-627-facade-resume`. It keeps the operator listener, audit writer,
-policy owner, agent discovery state, service mutation owner, and gateway store
-already supplied by the native runtime. The test fixture uses only synthetic
-tokens, policy identifiers, and loopback endpoints.
+The native Admin API (application programming interface) owns operator state and
+decisions. Authenticated consumers can read runtime identity, agents, pending
+approvals, policy and control modes. Policy mutations use the existing atomic
+policy helpers and the runtime's policy reload boundary. Mode mutations update
+process state used by live enforcement.
 
-The reviewable slice has a real consumer boundary at the native admin TCP
-listener. Authenticated consumers can read `/admin/runtime-identity`,
-`/admin/instance`, `/admin/approvals`, `/admin/agents`, `/admin/policy/baseline`,
-`/modes`, and `/plugins/{name}/mode`. They can use `/admin/policy/validate`,
-`/admin/policy/baseline/approve`, `/admin/policy/baseline/deny`,
-`/admin/policy/baseline`, and the host allow, deny, rate, and bypass routes.
-Mode writes update retained process state used by live network, credential, and
-pattern enforcement. Policy writes use the existing atomic policy helpers and
-are consumed at the existing policy reload boundary; the wire test drives that
-boundary through `Proxy::reload_policy_if_changed` after a durable write.
+## Live operator events
 
-`GET /admin/events` is a native authenticated WebSocket upgrade on the same
-loopback admin listener. It starts at the current audit-file end, tails only
-canonical operator-relevant events, handles ping, close, and listener shutdown,
-and does not replay old rows. A real TCP test opens the upgrade, performs a
-second authenticated policy denial through a separate TCP connection, and
-observes the resulting `admin.denial` JSON frame. Invalid event-stream
-credentials receive 401 before upgrade. The canonical audit writer remains the
-only event producer; the stream does not create a second log or coordinator.
+`GET /admin/events` is an authenticated WebSocket upgrade on the loopback Admin
+listener or the configured Command Centre event port. The shared audit writer
+publishes eligible events through the selected instance's local NATS runtime.
+Proxy operations, short host commands and Coord metadata use that writer.
+Short host commands wait for bounded publication completion before exiting.
+The subscriber completes its NATS subscription before returning HTTP 101, so
+publication during the WebSocket handshake is eligible for delivery.
 
-Approval reconstruction is chronological and request aware. A denial closes
-the prompt that precedes it (and may carry that prompt's `approval_request_id`),
-while a later retry with the same credential and destination creates a new
-pending prompt. A real native agent Unix-socket request test proves the full
-prompt → `/admin/policy/baseline/deny` → retry path: both attempts return 428,
-the controlled loopback origin receives zero requests, and
-`GET /admin/approvals` retains only the second request ID.
+The WebSocket retains its event filter: approval-required events, agent events,
+the selected Admin, Plumb and operations events, and high or critical security
+and gateway events. Ordinary traffic bodies are not published. Coord signal
+metadata also uses the common live path. `safeyolo watch` consumes that metadata
+and fetches canonical pending signal revisions through the Admin API. The
+WebSocket keeps its existing filter rather than forwarding all Coord metadata.
+Broker credentials stay on the host; agents use their authorized Agent API.
 
-The owned native wire tests are
-`proxy/tests/operator_controls.rs::native_operator_consumer_controls_and_event_stream_are_live`,
-`native_operator_approval_denial_then_retry_is_resolved`,
-`native_operator_event_reconnect_does_not_replay_old_events`,
-`native_operator_stalled_event_subscriber_does_not_block_controls`,
-`native_operator_invalid_mutations_are_terminal_and_state_preserving`, and
-`native_operator_mutations_keep_committed_state_when_audit_sink_fails`.
-The retained Python consumers are
-`tests/proxy_migration/test_operator_consumer_approval.py`,
-`test_operator_task_api.py`, and
-`test_operator_modes_and_listeners.py`. The latter drives the existing mode
-and listener consumers against live enforcement and records the exact
-ignore-host publication and clearing events while #631 retains matching
-semantics. From `candidate/proxy`, the exact guarded commands and results were:
+Live publication uses bounded memory and a separate worker. It cannot wait
+indefinitely on a request or audit write. Each publication attempt has a
+two-second timeout. Publication failure, buffer overflow and incomplete shutdown
+drain produce diagnostics. JSON Lines (JSONL) remains the forensic archive, and
+FlowStore remains traffic history. Live success does not confirm archive
+durability. Archive failure does not suppress the independent live attempt.
+Canonical state, audit writes, `/explain`, policy enforcement and traffic recording
+remain independent of broker availability.
 
-```text
-SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target ../scripts/cargo_with_space.sh check
-PASS
+There is no live event replay or exactly-once promise. A new subscription receives
+publications after its subscription is established, including an event that was
+already queued in its producer. Each publisher preserves its admitted event
+order; separate publishers have no common publication order. Recovery of
+pending Coord outbox metadata after a worker restart can repeat an event ID. Canonical object IDs and revisions remain
+authoritative. Watch suppresses unchanged pending revisions per attachment.
 
-SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target ../scripts/cargo_with_space.sh test --test operator_controls -- --nocapture
-PASS: 6 passed, 0 failed
+If the broker is unavailable at attachment, `/admin/events` returns HTTP 503.
+Invalid credentials receive HTTP 401 before any broker access. Broker loss or
+NATS subscriber overflow closes an attached WebSocket with code 1013. A stalled
+WebSocket has a bounded write timeout and cannot block other subscribers or
+operator decisions. Reconnect establishes a fresh subscription and does not
+replay missed publications. Ping, close and owned listener shutdown remain
+supported. The configured NATS payload limit also bounds live publications.
 
-SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target ../scripts/cargo_with_space.sh build --bin safeyolo-proxy
-PASS
+If the watch feed fails, `safeyolo watch` reports the failure and exits. Restart
+watch to read current canonical pending state and attach again. `watch --once`
+reads pending state without NATS. `watch --jsonl FILE` reads retained metadata
+and resolves its immutable revisions; it does not follow an audit file for live
+updates. Unresolved operator needs remain in canonical state while detached.
 
-SAFEYOLO_DATA_DIR=/tmp/safeyolo-facade-py-data SAFEYOLO_RUST_PROXY=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target/debug/safeyolo-proxy SAFEYOLO_RUST_NATIVE_ONLY=1 uv run --frozen pytest -q tests/proxy_migration/test_operator_modes_and_listeners.py --proxy-backend rust
-PASS: 3 passed, 0 failed
+## Focused validation
 
-SAFEYOLO_DATA_DIR=/tmp/safeyolo-facade-py-data SAFEYOLO_RUST_PROXY=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target/debug/safeyolo-proxy SAFEYOLO_RUST_NATIVE_ONLY=1 uv run --frozen pytest -q tests/proxy_migration/test_operator_consumer_approval.py tests/proxy_migration/test_operator_task_api.py --proxy-backend rust
-PASS: 3 passed, 0 failed
+The producer controls are in `proxy/src/operator_events.rs` and
+`proxy/tests/native_coord/signals.rs`. The authenticated WebSocket, reconnect,
+slow-consumer, broker-outage and operator-decision controls are in
+`proxy/tests/operator_controls.rs`. These controls use synthetic credentials
+and owned loopback NATS servers. They do not use the operator's live Coord data.
 
-uv run --frozen pytest -q cli/tests/test_api.py cli/tests/test_ignore_hosts.py
-PASS: 62 passed, 0 failed
+On a development host, select the repository's pinned Rust toolchain and set
+`SAFEYOLO_COORD_NATS_BINARY` to the verified NATS 2.14.5 executable. From the
+repository root, run the focused controls with sufficient disk reserve:
 
-cargo fmt --all -- --check
-KNOWN BASELINE DIFF: proxy/src/trace/tests.rs and proxy/tests/credential_http.rs
-
-SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target ../scripts/cargo_with_space.sh clippy --lib --tests -- -D warnings
-KNOWN BASELINE FAILURE: existing dead-code, clippy style, and too-many-arguments findings in agent_api/plumb.rs, admin_api.rs, admin_listener/mutation_tests.rs, grants.rs, and policy.rs
+```sh
+CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --lib operator_events::tests -- --ignored
+CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test operator_controls -- --include-ignored
+CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test native_coord signals::native_signals_author_page_watch_replay_and_restart -- --exact --ignored
 ```
 
-The existing `admin_transport` source-parity test remains a known inherited
-failure on this integration base: it expects four request rows but the current
-runtime also emits startup `ops.policy_reload` and `ops.startup` rows before
-the authenticated requests, so it observes six rows. This candidate does not
-change that unrelated startup audit behavior or its fixture.
-
-The following acceptance work remains with the existing owners and is not
-claimed by this slice: native agent start, stop, and desktop presentation;
-passthrough matching and reload/removal semantics owned by #631; web-tailnet
-controls; plumb approval and conversation routes; full live agent
-approval/retry flows; gateway grant and contract-binding mutations already
-owned by the retained #624/#625 handlers; and Python CLI selection of the
-native event URL. Those routes require their existing lifecycle, gateway,
-plumb, presentation, or collaboration owners. No duplicate state store or
-alternate service client was added here.
+These are local producer and consumer controls. They do not establish physical
+Tailnet forwarding, Mac application behavior, private approval-result delivery,
+or the other separately owned integration outcomes.

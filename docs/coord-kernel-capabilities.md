@@ -646,8 +646,13 @@ pages; full history remains readable by signal ID and exact revision.
 Feed permitted blocker/decision pages into the existing `safeyolo watch` path
 rather than inventing a second notification product. JSONL records signal ID,
 kind, author and revision, not signal prose. `watch` retrieves the bounded
-canonical signal revision through the Admin API when rendering it. A detached
-`watch` loses no truth because unresolved signals remain in canonical state.
+canonical signal revision through the Admin API when rendering it. Live watch
+wakes from local NATS metadata, without polling or following JSONL. Subscription
+precedes the initial canonical pending-state read. Feed loss ends the attachment;
+restart watch to read pending state and resume. `watch --once` needs no broker.
+The [operator event contract](operator-controls-627-evidence.md#live-operator-events)
+defines publication, replay and failure limits. Unresolved signals remain in
+canonical state while watch is detached.
 
 Work completion and result signals remain distinct. `complete_work()` says the
 work item is finished and records its concise completion summary. A `result`

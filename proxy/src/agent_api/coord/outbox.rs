@@ -20,11 +20,17 @@ impl Delivery {
         }
         let (stop, mut stopped) = watch::channel(false);
         let task = tokio::spawn(async move {
+            // This attachment-local position is not a delivery record. Live
+            // publication has no durable cursor, retry queue or history replay.
+            let mut live_after = None;
             loop {
                 tokio::select! {
                     biased;
                     _ = stopped.changed() => break,
-                    _ = drain(&client, &audit) => {},
+                    _ = async {
+                        publish_live(&client, &audit, &mut live_after).await;
+                        drain(&client, &audit).await;
+                    } => {},
                 }
                 tokio::select! {
                     _ = stopped.changed() => break,
@@ -59,6 +65,48 @@ struct Pending {
     id: String,
     event_type: String,
     payload: String,
+}
+
+async fn publish_live(client: &CoordClient, audit: &audit::Writer, after: &mut Option<i64>) {
+    let path = client.owner.data_dir.join("v0.db");
+    let previous = *after;
+    let rows = tokio::task::spawn_blocking(move || -> Result<_, CoordError> {
+        let db = open_db(&path, false)?;
+        // Start after archived history, while including retained pending rows.
+        // In particular, a failed archive must not hold later signal wakes.
+        let previous = match previous {
+            Some(previous) => previous,
+            None => db.query_row("SELECT coalesce(max(rowid),0) FROM coord_outbox WHERE destination='audit-jsonl' AND delivered_at IS NOT NULL", [], |row| row.get(0)).map_err(|_| CoordError::Data)?,
+        };
+        let rows = db.prepare("SELECT rowid,event_id,event_type,payload_json FROM coord_outbox WHERE destination='audit-jsonl' AND rowid>?1 ORDER BY rowid LIMIT 64")
+            .map_err(|_| CoordError::Data)?
+            .query_map([previous], |row| Ok((row.get::<_,i64>(0)?, Pending { id:row.get(1)?, event_type:row.get(2)?, payload:row.get(3)? })))
+            .map_err(|_| CoordError::Data)?
+            .collect::<Result<Vec<_>,_>>().map_err(|_| CoordError::Data)?;
+        Ok((previous, rows))
+    }).await;
+    let Ok(Ok((previous, rows))) = rows else {
+        return;
+    };
+    *after = Some(previous);
+    for (position, row) in rows {
+        let result = coord_audit_payload(&row)
+            .and_then(|payload| audit.publish_coord(payload).map_err(Error::from));
+        if result.is_err() {
+            eprintln!("Coord live event publication failed; metadata may be lost.");
+        }
+        // Attempt once on this attachment, including a failed publication.
+        // Archive retry and canonical state remain independently authoritative.
+        *after = Some(position);
+    }
+}
+
+fn coord_audit_payload(row: &Pending) -> Result<&str, Error> {
+    let value: Value = serde_json::from_str(&row.payload)?;
+    if value["event_id"] != row.id || value["event"] != row.event_type || value["kind"] != "coord" {
+        return Err("Coord audit outbox identity is invalid".into());
+    }
+    Ok(&row.payload)
 }
 
 fn pending(db: &Path, destination: &str) -> Result<Vec<Pending>, CoordError> {
@@ -103,13 +151,7 @@ async fn deliver(
     let value: Value = serde_json::from_str(&row.payload)?;
     match destination {
         "audit-jsonl" => {
-            if value["event_id"] != row.id
-                || value["event"] != row.event_type
-                || value["kind"] != "coord"
-            {
-                return Err("Coord audit outbox identity is invalid".into());
-            }
-            audit.deliver_coord(&row.payload).await?;
+            audit.deliver_coord(coord_audit_payload(row)?).await?;
         }
         "attention-nats" => {
             let recipient = value["recipient_agent_id"]
