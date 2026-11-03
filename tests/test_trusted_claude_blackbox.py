@@ -275,6 +275,8 @@ def retained_invocation(invocation, monkeypatch):
             root.mkdir()
             (root/'config.toml').write_text('')
             print('PRIVATE init diagnostic')
+        elif stage == 'stop':
+            pass
         else:
             sys.exit(97)
     ''')
@@ -430,29 +432,35 @@ def test_retained_inputs_are_explicit_manual_proof(retained_invocation, trigger)
 
 
 @pytest.mark.parametrize('code', [0, 23])
-def test_retained_cli_returns_private_reports_and_real_exit(retained_invocation, monkeypatch, code):
-    args, controller = retained_invocation
+@pytest.mark.parametrize('caller_fixture', ['retained_invocation', 'prepared_invocation'])
+def test_retained_cli_returns_private_reports_and_real_exit(request, monkeypatch, code, caller_fixture):
+    args, controller = request.getfixturevalue(caller_fixture)
     script = controller / 'scripts/run_claude_blackbox.py'
     script.write_text(Path(caller.__file__).read_text())
     monkeypatch.setenv('FAIL_SMOKE', str(code))
-    result = subprocess.run([sys.executable, str(script), 'manual', '--ref', args.ref,
-                             '--selection', str(args.selection), '--prepared-config', str(args.prepared_config),
-                             '--readiness', str(args.readiness), '--provision', str(args.provision),
-                             '--credential', args.credential, '--output', str(args.output)],
+    command = [sys.executable, str(script), 'manual', '--ref', args.ref,
+               '--selection', str(args.selection), '--prepared-config', str(args.prepared_config),
+               '--provision', str(args.provision), '--credential', args.credential, '--output', str(args.output)]
+    if args.readiness:
+        command += ['--readiness', str(args.readiness)]
+    result = subprocess.run(command,
                             capture_output=True, text=True, check=False)
     assert result.returncode == code, result.stderr + result.stdout
     report = json.loads(result.stdout)
     assert report == json.loads((args.output / 'result.json').read_bytes())
     assert 'PRIVATE' not in result.stdout + result.stderr
     assert 'PRIVATE init diagnostic' in (args.output / 'private.log').read_text()
-    for name in ('result.json', 'private.log', 'inputs/selection.json', 'readiness/retained-run.json',
+    for name in ('result.json', 'private.log', 'inputs/selection.json',
                  'prepared/config.toml', 'prepared/private-state/credential'):
         assert (args.output / name).stat().st_mode & 0o777 == 0o600
+    assert (args.output/'readiness/retained-run.json').stat().st_mode & 0o777 == (0o600 if args.readiness else 0o644)
+    assert args.output.stat().st_mode & 0o777 == 0o700
 
 
 @pytest.mark.parametrize('owner', ['home', 'live', 'stopped'])
-def test_caller_checks_dedicated_ownership_before_provisioning(invocation, monkeypatch, owner):
-    args, controller = invocation
+@pytest.mark.parametrize('caller_fixture', ['invocation', 'prepared_invocation'])
+def test_caller_checks_dedicated_ownership_before_provisioning(request, monkeypatch, owner, caller_fixture):
+    args, controller = request.getfixturevalue(caller_fixture)
     process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
     if owner != 'live':
         process.terminate()
@@ -463,8 +471,14 @@ def test_caller_checks_dedicated_ownership_before_provisioning(invocation, monke
     try:
         report = caller.run(args)
         assert report['exit'] == (0 if owner == 'stopped' else 2)
-        assert [row['stage'] for row in events(controller)] == (
-            ['selection', 'readiness', 'binding', 'smoke'] if owner == 'stopped' else ['selection', 'readiness'])
+        stages = [row['stage'] for row in events(controller)]
+        if caller_fixture == 'invocation':
+            assert stages == (['selection', 'readiness', 'binding', 'smoke']
+                              if owner == 'stopped' else ['selection', 'readiness'])
+        else:
+            assert 'continuity' in stages
+            assert [stage for stage in stages if stage in {'binding', 'smoke'}] == (
+                ['binding', 'smoke'] if owner == 'stopped' else [])
         if owner == 'live':
             assert process.poll() is None
     finally:
@@ -487,7 +501,7 @@ def test_retained_failure_and_report_return_cannot_pass(retained_invocation, mon
         assert [row['stage'] for row in events(controller)] == ['doctor', 'init', 'binding']
 
 
-@pytest.mark.parametrize('missing', ['selection', 'readiness', 'prepared_config'])
+@pytest.mark.parametrize('missing', ['selection', 'prepared_config'])
 def test_incomplete_manual_reuse_is_refused_before_work(retained_invocation, missing):
     args, controller = retained_invocation
     setattr(args, missing, None)
@@ -508,3 +522,157 @@ def test_retained_runtime_timeout_returns_failure_before_provisioning(retained_i
     assert report['readiness_reused'] is False
     assert not events(controller)
     assert 'PRIVATE' not in json.dumps(report)
+
+
+@pytest.fixture
+def prepared_invocation(retained_invocation):
+    """Use the actual retained and section report writers; control only runtime work."""
+    args, controller = retained_invocation
+    args.readiness = None
+    (controller/'scripts/run_claude_blackbox.py').write_bytes(Path(caller.__file__).read_bytes())
+    instruments = controller / 'tests/blackbox'
+    (instruments / 'controlled-claude.py').write_text((instruments / 'retained_inputs.py').read_text().replace(
+        'directory.mkdir(parents=True)', 'directory.mkdir(parents=True, exist_ok=True)'))
+    (instruments / 'retained_inputs.py').write_bytes(Path(retained_inputs.__file__).read_bytes())
+    with (controller / 'scripts/select_blackbox_artifacts.py').open('a') as output:
+        output.write('\n' + inspect.getsource(installed_binaries))
+    # The installed CLI's native identity and the real sections are qualified
+    # separately. This boundary supplies their commands without booting guests.
+    wrapper = textwrap.dedent('''\
+        import argparse, os, pathlib, subprocess, sys
+        root = pathlib.Path.cwd()
+        sys.path.insert(0, str(root))
+        from tests.blackbox.installed_sections import SECTIONS, run_sections
+        parser = argparse.ArgumentParser()
+        parser.add_argument('lane')
+        parser.add_argument('--prepared-config', type=pathlib.Path)
+        parser.add_argument('--install-commit')
+        parser.add_argument('--artifacts', type=pathlib.Path)
+        parser.add_argument('--section', action='append')
+        args = parser.parse_args()
+        if args.section == ['claude']:
+            sys.exit(subprocess.call([sys.executable, str(root/'tests/blackbox/controlled-claude.py'),
+                '--prepared-config', str(args.prepared_config), '--section', 'claude',
+                '--artifacts', str(args.artifacts.parent)]))
+        directory = args.artifacts.parent/'section-state'
+        directory.mkdir()
+        sections = tuple(args.section or SECTIONS[args.lane])
+        if os.environ.get('INCOMPLETE_READINESS'):
+            sections = ('isolation',)
+        code = run_sections(args.lane, sections, root, args.install_commit,
+                            directory, args.artifacts, prepared_config=args.prepared_config)
+        sys.exit(0 if os.environ.get('FALSE_READINESS_SUCCESS') else code)
+    ''')
+    (instruments / 'run-installed.sh').write_text(f'#!{sys.executable}\n' + wrapper)
+    (instruments / 'run-installed.sh').chmod(0o700)
+    section = textwrap.dedent('''\
+        import json, os, pathlib, sys
+        root = pathlib.Path.cwd()
+        sys.path.insert(0, str(root))
+        from tests.blackbox.installed_host_smoke import _base_report, _substrate_identity
+        instance = pathlib.Path(os.environ['SAFEYOLO_TEST_CONFIG_DIR'])
+        instance.mkdir()
+        source = pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR'])
+        (instance/'config.toml').write_bytes((source/'config.toml').read_bytes())
+        with (root/'events').open('a') as output:
+            output.write(json.dumps({'stage':instance.name, 'instance':str(instance), 'umask':os.umask(0o022)})+'\\n')
+        if instance.name == 'isolation':
+            report = _base_report({'source_revision':'a'*40}, {}, _substrate_identity(source))
+            report['status'] = 'attached_ready'
+            artifacts = pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR'])
+            (artifacts/'installed-rust-runtime.json').write_text(json.dumps(report))
+        if instance.name == 'continuity':
+            if os.environ.get('ADMISSION_HOME'):
+                (source/'agents/owner/home').mkdir(parents=True)
+            if os.environ.get('ADMISSION_PID'):
+                (source/'data/proxy-process.json').write_text(json.dumps({'pid':int(os.environ['ADMISSION_PID'])}))
+        sys.exit(int(os.environ.get('FAIL_READINESS', '0')))
+    ''')
+    (instruments / 'run-tests.sh').write_text(f'#!{sys.executable}\n' + section)
+    (instruments / 'run-tests.sh').chmod(0o700)
+    (instruments / 'installed_state_transition.py').write_text(section)
+    (controller / '.gitignore').write_text('__pycache__/\n/events\n/retained installation/\n/original reports/\n'
+                                          '/original isolation state/\n/frozen selection.json\n')
+    for command in (['git', 'init', '-q'], ['git', 'add', '.'],
+                    ['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+                     'commit', '-qm', 'Controlled runtime commands']):
+        subprocess.run(command, cwd=controller, check=True, capture_output=True)
+    return args, controller
+
+
+@pytest.mark.parametrize('owner', ['live', 'stopped'])
+def test_missing_readiness_runs_maintained_sections_before_binding_and_preserves_owners(prepared_invocation, owner):
+    args, controller = prepared_invocation
+    process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+    if owner == 'stopped':
+        process.terminate()
+        process.wait()
+    (args.prepared_config/'data/proxy-process.json').write_text(json.dumps({'pid': process.pid}))
+    original = {path: path.read_bytes() for path in args.prepared_config.rglob('*') if path.is_file()}
+    proof = {path: path.read_bytes() for path in (controller/'original reports').rglob('*') if path.is_file()}
+    try:
+        report = caller.run(args)
+        assert report['exit'] == 0, report
+        stages = [row['stage'] for row in events(controller)]
+        assert stages == ['doctor', 'init', 'isolation', 'doctor', 'stop', 'workloads', 'stop',
+                          'access', 'stop', 'lifecycle', 'stop', 'continuity', 'stop', 'binding', 'smoke']
+        assert report['selection_mode'] == 'retained-manual' and report['readiness_reused'] is False
+        assert report['readiness_origin'] is None
+        assert report['readiness']['controller_revision'] == subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'], cwd=controller, text=True).strip()
+        assert report['readiness']['reused_installation'] is True
+        assert report['installed']['host_source_revision'] == SOURCE
+        assert report['readiness_selection'] == json.loads(args.selection.read_bytes())
+        rows = report['readiness_sections']['sections']
+        assert [row['section'] for row in rows] == list(caller.SECTIONS['systrap'])
+        assert all(row['cleanup'] == 'stopped' and row['result'] == 'passed' for row in rows)
+        assert len({row['config_dir'] for row in rows}) == len(rows)
+        assert all(row['prepared_config_dir'] == str(args.output/'prepared') for row in rows)
+        assert all(row['umask'] == 0o022 for row in events(controller) if row['stage'] in caller.SECTIONS['systrap'])
+        assert not (args.output/'prepared/agents/old').exists()
+        assert not (args.output/'prepared/data/credential').exists()
+        assert all(path.read_bytes() == content for path, content in {**original, **proof}.items())
+        if owner == 'live':
+            assert process.poll() is None
+        assert 'PRIVATE' not in json.dumps(report)
+        assert json.loads((args.output/'result.json').read_bytes()) == report
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait()
+
+
+@pytest.mark.parametrize('fault', ['exit', 'false-success', 'incomplete', 'installed-bytes', 'doctor'])
+def test_prepared_readiness_failure_never_provisions(prepared_invocation, monkeypatch, fault):
+    args, controller = prepared_invocation
+    if fault in {'exit', 'false-success'}:
+        monkeypatch.setenv('FAIL_READINESS', '19')
+        if fault == 'false-success':
+            monkeypatch.setenv('FALSE_READINESS_SUCCESS', '1')
+    elif fault == 'incomplete':
+        monkeypatch.setenv('INCOMPLETE_READINESS', '1')
+    elif fault == 'installed-bytes':
+        (args.prepared_config/'bin/safeyolo-proxy').write_text('tampered')
+    else:
+        monkeypatch.setenv('DOCTOR_STATE', 'unavailable')
+    report = caller.run(args)
+    assert report['exit'] == 2 and report['stage'] == 'credential-free-installed', report
+    assert all(row['stage'] not in {'binding', 'smoke', 'selection'} for row in events(controller))
+    if fault in {'exit', 'false-success', 'incomplete'}:
+        assert report['readiness_sections']['sections'][0]['section'] == 'isolation'
+        assert report['readiness']['exit'] == (2 if fault == 'exit' else 0)
+    else:
+        assert not (args.output/'prepared').exists()
+    assert 'PRIVATE' not in json.dumps(report)
+
+
+@pytest.mark.parametrize('sections', [['isolation'], ['isolation', 'access']])
+def test_prepared_retained_entry_forwards_explicit_nonsecret_sections(prepared_invocation, monkeypatch, sections):
+    args, controller = prepared_invocation
+    monkeypatch.setattr(retained_inputs, 'ROOT', controller)
+    assert retained_inputs.run(args.selection, 'systrap', args.output, sections, False,
+                               prepared_config=args.prepared_config) == 0
+    report = json.loads((args.output/'guest/installed-sections.json').read_bytes())
+    assert [row['section'] for row in report['sections']] == sections
+    assert all(row['result'] == 'passed' and row['cleanup'] == 'stopped' for row in report['sections'])
+    assert report['preparation']['config_dir'] == str(args.prepared_config)
