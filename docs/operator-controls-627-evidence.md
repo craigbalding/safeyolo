@@ -13,8 +13,12 @@ listener or the configured Command Centre event port. The shared audit writer
 publishes eligible events through the selected instance's local NATS runtime.
 Proxy operations, short host commands and Coord metadata use that writer.
 Short host commands wait for bounded publication completion before exiting.
-The subscriber completes its NATS subscription before returning HTTP 101, so
-publication during the WebSocket handshake is eligible for delivery.
+Before returning HTTP 101, the subscriber receives a private broker round trip
+ordered after its event subscription. The same confirmation precedes watch's
+initial canonical read. The attachment attempt, including confirmation, has a
+two-second timeout.
+The private marker does not enter the operator event stream. Events received
+after subscription establishment stay queued while the WebSocket upgrade completes.
 
 The WebSocket retains its event filter: approval-required events, agent events,
 the selected Admin, Plumb and operations events, and high or critical security
@@ -61,6 +65,9 @@ The producer controls are in `proxy/src/operator_events.rs` and
 slow-consumer, broker-outage and operator-decision controls are in
 `proxy/tests/operator_controls.rs`. These controls use synthetic credentials
 and owned loopback NATS servers. They do not use the operator's live Coord data.
+The subscription controls hold `SUB` in a loopback relay. They check that watch
+and WebSocket readiness wait for the broker, immediate events reach the ready
+consumer, and missing confirmation ends the attachment attempt within its bound.
 
 On a development host, select the repository's pinned Rust toolchain and set
 `SAFEYOLO_COORD_NATS_BINARY` to the verified NATS 2.14.5 executable. From the
@@ -69,7 +76,7 @@ repository root, run the focused controls with sufficient disk reserve:
 ```sh
 CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --lib operator_events::tests -- --ignored
 CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test operator_controls -- --include-ignored
-CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test native_coord signals::native_signals_author_page_watch_replay_and_restart -- --exact --ignored
+CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test native_coord signals::native_ -- --include-ignored
 ```
 
 These are local producer and consumer controls. They do not establish physical

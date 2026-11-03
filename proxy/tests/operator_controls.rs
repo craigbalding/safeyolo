@@ -39,6 +39,9 @@ effect = "allow"
 mod operator_nats;
 use operator_nats::Nats;
 
+#[path = "support/nats_subscription.rs"]
+mod nats_subscription;
+
 #[tokio::test]
 #[ignore = "requires the pinned SAFEYOLO_COORD_NATS_BINARY"]
 async fn native_operator_consumer_controls_and_event_stream_are_live() {
@@ -421,7 +424,7 @@ async fn native_operator_event_reconnect_does_not_replay_old_events() {
 
 #[tokio::test]
 #[ignore = "requires the pinned SAFEYOLO_COORD_NATS_BINARY"]
-async fn native_operator_events_published_during_handshake_are_filtered_and_delivered() {
+async fn native_operator_events_confirm_sub_before_handshake_and_filter_live_events() {
     let directory = TempDir::new().unwrap();
     let root = directory.path();
     let _nats = Nats::start(root).await;
@@ -429,27 +432,28 @@ async fn native_operator_events_published_during_handshake_are_filtered_and_deli
     let config = config(root, token);
     let proxy = Proxy::start(config.clone()).await.unwrap();
     let port = admin_port(&config);
-    let endpoints: Value = serde_json::from_slice(
-        &std::fs::read(root.join("data/coord/nats/test-endpoints.json")).unwrap(),
-    )
-    .unwrap();
-    let monitor = endpoints["monitor_port"].as_u64().unwrap() as u16;
-    let mut events = begin_events(port, token).await;
-    // The browser has sent its request but has not consumed the 101. Observe
-    // the server's real SUB before publishing, without a timing-only sleep.
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let status = admin(monitor, token, "GET", "/varz", b"").await;
-            assert_eq!(status.status, 200);
-            if status.json()["subscriptions"].as_u64().unwrap() > 0 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
     let publisher = Nats::publisher(root).await;
+    let endpoints_path = root.join("data/coord/nats/test-endpoints.json");
+    let original = std::fs::read(&endpoints_path).unwrap();
+    let mut endpoints: Value = serde_json::from_slice(&original).unwrap();
+    let mut relay = nats_subscription::SubscriptionRelay::start(
+        endpoints["client_port"].as_u64().unwrap() as u16,
+    )
+    .await;
+    endpoints["client_port"] = json!(relay.port);
+    std::fs::write(&endpoints_path, endpoints.to_string()).unwrap();
+    let mut events = begin_events(port, token).await;
+    relay.wait_for_sub().await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), read_headers(&mut events))
+            .await
+            .is_err(),
+        "HTTP 101 was returned before the broker received SUB"
+    );
+    relay.release();
+    assert!(read_headers(&mut events).await.starts_with(b"HTTP/1.1 101"));
+    std::fs::write(endpoints_path, original).unwrap();
+    // Publish at the consumer's ready boundary, without a monitor-side wait.
     for event in [
         json!({"event":"traffic.flow", "kind":"traffic", "severity":"low"}),
         json!({"event":"coord.signal_created", "kind":"coord", "severity":"low"}),
@@ -462,7 +466,6 @@ async fn native_operator_events_published_during_handshake_are_filtered_and_deli
     }
     publisher.flush().await.unwrap();
     assert_eq!(admin(port, token, "POST", "/admin/policy/baseline/deny", br#"{"destination":"handshake.example","cred_id":"synthetic:handshake","reason":"fixture"}"#).await.status, 200);
-    assert!(read_headers(&mut events).await.starts_with(b"HTTP/1.1 101"));
     let event = read_event(&mut events).await;
     assert_eq!(event["event"], "admin.denial");
     assert_eq!(event["details"]["destination"], "handshake.example");

@@ -6,6 +6,9 @@ use std::sync::Arc;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::Barrier;
 
+#[path = "../support/nats_subscription.rs"]
+mod nats_subscription;
+
 const ALICE: &str = "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 fn db(root: &Path) -> Connection {
     Connection::open(root.join("data/coord/v0.db")).unwrap()
@@ -36,6 +39,91 @@ async fn read(client: &Client, id: &Value, revision: Option<i64>) -> Value {
         args["revision"] = json!(revision);
     }
     client.call("read_signal", &args).await.unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires pinned NATS; holds the real watch SUB before the broker"]
+async fn native_watch_confirms_subscription_before_reading_pending_signals() {
+    let binary = std::env::var("SAFEYOLO_COORD_NATS_BINARY").expect("set pinned NATS binary");
+    let temp = tempfile::Builder::new()
+        .prefix("coord-watch-sub-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    let root = temp.path();
+    assert!(host_cli(root, &["init"]).await.status.success());
+    fs::write(root.join("config.toml"), "admin_port=0\nflow_store_enabled=false\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n").unwrap();
+    fs::write(
+        root.join("policy.toml"),
+        format!("[controls.network]\nenabled=false\n[hosts]\n[agents.alice]\nagent_id='{ALICE}'\n"),
+    )
+    .unwrap();
+    // host_cli supplies this test root's dynamic-port instance selection.
+    let started = host_cli(root, &["coord", "start", "--binary", &binary]).await;
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let _cleanup = NatsCleanup(root.into());
+    coord_json(root, &["room", "create", "shared"]).await;
+    coord_json(root, &["grant", "shared", "alice"]).await;
+    let mut proxy = stage0::start_proxy(root).await;
+    let alice = Client {
+        socket: Some(root.join("alice.sock")),
+        token_file: root.join("data/agent_token"),
+        home: None,
+    };
+    let first = signal(&alice, "blocker", "Initial pending blocker", "first").await;
+    let process: Value =
+        serde_json::from_slice(&fs::read(root.join("data/coord/nats/process.json")).unwrap())
+            .unwrap();
+    let mut relay = nats_subscription::SubscriptionRelay::start(
+        process["client_port"].as_u64().unwrap() as u16,
+    )
+    .await;
+    let mut watcher = host_command(root, &["watch", "--json"])
+        .env(
+            "SAFEYOLO_COORD_NATS_URL",
+            format!("nats://127.0.0.1:{}", relay.port),
+        )
+        .spawn()
+        .unwrap();
+    let mut output = tokio::io::BufReader::new(watcher.stdout.take().unwrap()).lines();
+    relay.wait_for_sub().await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), output.next_line())
+            .await
+            .is_err(),
+        "watch read canonical state before its SUB reached the broker"
+    );
+    relay.release();
+    let initial = tokio::time::timeout(Duration::from_secs(5), output.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&initial).unwrap()["signal"],
+        first["signal"]
+    );
+    let next = signal(&alice, "blocker", "Blocker at watch readiness", "next").await;
+    let live = tokio::time::timeout(Duration::from_secs(5), output.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&live).unwrap()["signal"],
+        next["signal"]
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), output.next_line())
+            .await
+            .is_err(),
+        "unchanged pending signal revisions printed twice"
+    );
+    watcher.kill().await.unwrap();
+    proxy.kill().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

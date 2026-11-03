@@ -45,7 +45,16 @@ pub(crate) async fn subscribe(directory: &Path) -> Result<Subscription, Error> {
     tokio::time::timeout(TIMEOUT, async {
         let client = coord.connect_nats(options).await?;
         let messages = client.subscribe(SUBJECT).await?;
-        client.flush().await?;
+        // flush() only confirms a local socket write. Receive a private marker
+        // ordered after SUB on this connection to confirm broker readiness.
+        let inbox = client.new_inbox();
+        let mut ready = client.subscribe(inbox.clone()).await?;
+        client.publish(inbox, Bytes::new()).await?;
+        ready
+            .next()
+            .await
+            .ok_or("live operator events unavailable")?;
+        ready.unsubscribe().await?;
         if *failed.borrow() {
             return Err("live operator events unavailable".into());
         }
@@ -248,10 +257,84 @@ pub(crate) fn is_operator_event(event: &serde_json::Value) -> bool {
 mod operator_nats;
 
 #[cfg(test)]
+#[path = "../tests/support/nats_subscription.rs"]
+mod nats_subscription;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::audit::{Event, Kind, Settings, Severity, Writer};
     use serde_json::{Value, json};
+
+    #[tokio::test]
+    #[ignore = "requires the pinned SAFEYOLO_COORD_NATS_BINARY"]
+    async fn subscription_waits_for_broker_to_process_sub() {
+        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let root = directory.path();
+        let _nats = operator_nats::Nats::start(root).await;
+        let publisher = operator_nats::Nats::publisher(root).await;
+        let endpoints_path = root.join("data/coord/nats/test-endpoints.json");
+        let mut endpoints: Value =
+            serde_json::from_slice(&std::fs::read(&endpoints_path).unwrap()).unwrap();
+        let mut relay = nats_subscription::SubscriptionRelay::start(
+            endpoints["client_port"].as_u64().unwrap() as u16,
+        )
+        .await;
+        endpoints["client_port"] = json!(relay.port);
+        std::fs::write(endpoints_path, endpoints.to_string()).unwrap();
+        let coord = root.join("data/coord");
+        let mut attaching = tokio::spawn(async move { subscribe(&coord).await });
+        relay.wait_for_sub().await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut attaching)
+                .await
+                .is_err(),
+            "subscription reported ready while SUB was held before the broker"
+        );
+        relay.release();
+        let mut events = attaching.await.unwrap().unwrap();
+        publisher
+            .publish(SUBJECT, "after-ready".into())
+            .await
+            .unwrap();
+        publisher.flush().await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(TIMEOUT, events.next())
+                .await
+                .unwrap()
+                .unwrap(),
+            "after-ready",
+            "readiness markers must not appear in the operator event stream"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the pinned SAFEYOLO_COORD_NATS_BINARY"]
+    async fn subscription_readiness_times_out_without_broker_confirmation() {
+        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let root = directory.path();
+        let _nats = operator_nats::Nats::start(root).await;
+        let endpoints_path = root.join("data/coord/nats/test-endpoints.json");
+        let mut endpoints: Value =
+            serde_json::from_slice(&std::fs::read(&endpoints_path).unwrap()).unwrap();
+        let mut relay = nats_subscription::SubscriptionRelay::start(
+            endpoints["client_port"].as_u64().unwrap() as u16,
+        )
+        .await;
+        endpoints["client_port"] = json!(relay.port);
+        std::fs::write(endpoints_path, endpoints.to_string()).unwrap();
+        let coord = root.join("data/coord");
+        let attaching = tokio::spawn(async move { subscribe(&coord).await });
+        relay.wait_for_sub().await;
+        let result = tokio::time::timeout(TIMEOUT + Duration::from_secs(1), attaching)
+            .await
+            .expect("subscription readiness did not time out")
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "subscription ignored the missing broker confirmation"
+        );
+    }
 
     #[tokio::test]
     #[ignore = "requires the pinned SAFEYOLO_COORD_NATS_BINARY"]
