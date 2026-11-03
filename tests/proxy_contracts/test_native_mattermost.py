@@ -826,7 +826,9 @@ def test_native_semantic_callback_authority_replay_and_restart(exchange):
         with sqlite3.connect(instance.root / "mattermost.sqlite3") as db:
             db.execute("UPDATE action_capability SET expires_at=?", (int(time.time() * 1000) - 1,))
         assert callback(instance, payload)[0] == 410
+        assert operator_requests(instance) == []
         with sqlite3.connect(instance.root / "mattermost.sqlite3") as db:
+            assert db.execute("SELECT status FROM action_capability").fetchone() == ("issued",)
             db.execute("UPDATE action_capability SET expires_at=?", (int(time.time() * 1000) + 60000,))
         # Cosmetic patch failure cannot undo an accepted canonical action.
         with remote.lock:
@@ -889,6 +891,29 @@ def test_native_interrupted_projection_page_reconciles_without_reposting(exchang
         first["msg_id"], second["msg_id"]]
     assert once(instance).returncode == 0
     assert remote.creates == 2 and operator_requests(instance) == []
+
+
+def test_native_committed_wal_survives_killed_adapter_without_reposting(exchange):
+    instance, remote = exchange
+    message = agent_send(instance, "committed before abrupt exit")["envelope"]
+    sequence = next(row["sequence"] for row in history(instance) if row["msg_id"] == message["msg_id"])
+    wal = instance.root / "mattermost.sqlite3-wal"
+    with daemon(instance) as process:
+        until(lambda: connected(instance))
+        until(lambda: ledger(instance, "SELECT coord_cursor FROM room_state") == str(sequence))
+        assert len(remote.projected()) == 1
+        assert wal.stat().st_size > 0
+        assert once(instance).returncode != 0, "a second adapter must not acquire the live lease"
+        process.kill()
+        assert process.wait(timeout=5) == -signal.SIGKILL
+    assert wal.stat().st_size > 0, "the crash must leave WAL for the next adapter"
+    with daemon(instance):
+        until(lambda: connected(instance))
+        assert ledger(instance, "SELECT coord_cursor FROM room_state") == str(sequence)
+        agent_send(instance, "after crash recovery")
+        until(lambda: len(remote.projected()) == 2)
+    assert [post["props"]["safeyolo_coord"]["coord_msg_id"] for post in remote.projected()].count(message["msg_id"]) == 1
+    assert operator_requests(instance) == []
 
 
 def test_native_uncertain_coord_reply_never_replays_after_restart(exchange):

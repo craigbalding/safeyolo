@@ -567,6 +567,7 @@ def prepared_invocation(retained_invocation):
     (instruments / 'run-installed.sh').chmod(0o700)
     section = textwrap.dedent('''\
         import json, os, pathlib, sys
+        from unittest.mock import patch
         root = pathlib.Path.cwd()
         sys.path.insert(0, str(root))
         from tests.blackbox.installed_host_smoke import _base_report, _substrate_identity
@@ -577,7 +578,11 @@ def prepared_invocation(retained_invocation):
         with (root/'events').open('a') as output:
             output.write(json.dumps({'stage':instance.name, 'instance':str(instance), 'umask':os.umask(0o022)})+'\\n')
         if instance.name == 'isolation':
-            report = _base_report({'source_revision':'a'*40}, {}, _substrate_identity(source))
+            # This Ubuntu caller fixture supplies Linux doctor/runsc inputs.
+            # Select that branch only for substrate discovery on any test host.
+            with patch('tests.blackbox.installed_host_smoke.platform.system', return_value='Linux'):
+                substrate = _substrate_identity(source)
+            report = _base_report({'source_revision':'a'*40}, {}, substrate)
             report['status'] = 'attached_ready'
             artifacts = pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR'])
             (artifacts/'installed-rust-runtime.json').write_text(json.dumps(report))

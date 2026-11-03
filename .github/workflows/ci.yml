@@ -61,10 +61,10 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
-      - name: Install Mac package and archive fixture dependencies
+      - name: Install Mac package, archive and coding-client fixture dependencies
         if: runner.os == 'macOS'
         run: |
-          brew install dpkg tmux gnu-tar coreutils zstd bash
+          brew install dpkg tmux gnu-tar coreutils zstd bash mise
           printf '%s\n' "$(brew --prefix bash)/bin" \
             "$(brew --prefix gnu-tar)/libexec/gnubin" \
             "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
