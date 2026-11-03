@@ -6,15 +6,16 @@ use serde_json::Value;
 
 use crate::{Error, audit};
 
-fn log_settings() -> Result<(PathBuf, audit::Settings), Error> {
+fn log_settings() -> Result<(PathBuf, audit::Settings, PathBuf), Error> {
     if let Ok(config) = crate::native_config::read(&crate::host_platform::config_path())
-        && let Some(path) = config.audit_log_path
+        && let Some(path) = config.audit_log_path.clone()
     {
+        let coord = config.data_dir().join("coord");
         let settings = match config.native_settings {
             Some(settings) => settings.audit.writer_settings(),
             None => audit::Settings::from_env()?,
         };
-        return Ok((path, settings));
+        return Ok((path, settings, coord));
     }
     let path = std::env::var_os("SAFEYOLO_LOG_PATH")
         .map(PathBuf::from)
@@ -32,7 +33,15 @@ fn log_settings() -> Result<(PathBuf, audit::Settings), Error> {
                 });
             directory.join("safeyolo.jsonl")
         });
-    Ok((path, audit::Settings::from_env()?))
+    let coord = std::env::var_os("SAFEYOLO_COORD_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            crate::host_platform::config_path()
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join("data/coord")
+        });
+    Ok((path, audit::Settings::from_env()?, coord))
 }
 
 pub(crate) fn write(
@@ -44,7 +53,7 @@ pub(crate) fn write(
     details: Value,
 ) {
     let result = (|| -> Result<(), Error> {
-        let (path, settings) = log_settings()?;
+        let (path, settings, coord) = log_settings()?;
         let kind = match kind {
             "agent" => audit::Kind::Agent,
             "traffic" => audit::Kind::Traffic,
@@ -54,7 +63,7 @@ pub(crate) fn write(
         event.agent = Some(agent.to_owned());
         event.addon = addon.map(str::to_owned);
         event.details = details.into();
-        let writer = audit::Writer::new(path, settings);
+        let writer = audit::Writer::new(path, settings).with_live_events(coord);
         writer.emit(event)?;
         // A short host command has no process-owned proxy shutdown to drain it.
         if !writer.shutdown(Duration::from_secs(5))? {

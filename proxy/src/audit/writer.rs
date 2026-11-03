@@ -163,6 +163,7 @@ pub struct Writer {
     settings: Settings,
     queue: Arc<Queue>,
     worker: Mutex<Worker>,
+    live: Option<Arc<crate::operator_events::Publisher>>,
 }
 impl Writer {
     pub(crate) fn approval_events(
@@ -204,7 +205,33 @@ impl Writer {
             }),
             settings,
             worker: Mutex::new(Worker::default()),
+            live: None,
         }
+    }
+
+    pub(crate) fn with_live_events(mut self, directory: PathBuf) -> Self {
+        self.live = Some(Arc::new(crate::operator_events::Publisher::new(directory)));
+        self
+    }
+
+    pub(crate) async fn subscribe_live(
+        &self,
+    ) -> std::result::Result<crate::operator_events::Subscription, crate::Error> {
+        self.live
+            .as_ref()
+            .ok_or("live operator events unconfigured")?
+            .subscribe()
+            .await
+    }
+
+    /// The existing Coord outbox attempts live metadata independently of its
+    /// durable archive retry. It retains the canonical event ID and timestamp.
+    pub(crate) fn publish_coord(&self, line: &str) -> Result<()> {
+        if let Some(live) = &self.live {
+            let record = Record::from_json(line)?;
+            live.submit(bytes::Bytes::from_owner(record.encode()?));
+        }
+        Ok(())
     }
 
     pub(crate) fn with_named_controls(mut self, enabled: bool) -> Self {
@@ -305,6 +332,7 @@ impl Writer {
             let queue = self.queue.clone();
             let path = self.path.clone();
             let settings = self.settings.clone();
+            let live = self.live.clone();
             let (send, done) = mpsc::channel();
             let task = std::thread::Builder::new()
                 .name("safeyolo-audit-writer".into())
@@ -314,6 +342,19 @@ impl Writer {
                         let reservation = ActiveBatch(&queue, batch.len());
                         let durable = receipts.iter().any(|receipt| receipt.durable);
                         let write = flush_batch(&path, &settings, &batch, durable);
+                        // Live delivery remains useful when the forensic sink
+                        // fails. Its outcome never satisfies an archive receipt.
+                        if let Some(live) = &live {
+                            for record in &batch {
+                                match record.live_bytes() {
+                                    Ok(Some(bytes)) => live.submit(bytes),
+                                    Ok(None) => {}
+                                    Err(_) => eprintln!(
+                                        "Live operator event encoding failed; event lost."
+                                    ),
+                                }
+                            }
+                        }
                         for receipt in receipts {
                             let _ = receipt.send.send(matches!(write, Ok(true)));
                         }
@@ -457,6 +498,9 @@ impl Writer {
         let joined = worker.task.take().is_none_or(|task| task.join().is_ok());
         let outcome = healthy && joined && self.pending_count()? == 0;
         worker.outcome = Some(outcome);
+        if let Some(live) = &self.live {
+            live.shutdown(timeout);
+        }
         Ok(outcome)
     }
 }

@@ -110,7 +110,7 @@ pub(super) async fn audit_revision(
 pub(super) async fn watch(config: &Path, args: &[String]) -> Result<(), Error> {
     if args == ["--help"] {
         println!(
-            "safeyolo [--root ROOT] watch [--once] [--json] [--jsonl FILE]\n\nWatch canonical pending Coord signals through Admin API. Each signal revision prints once per attachment. --once returns after the current pending set. --jsonl reads existing audit metadata and fetches its exact immutable revisions; FILE may be - for stdin. Terminal controls are escaped and markup remains text. Resolve with coord signal resolve; use coord signal --help for permissions, bounds and rate limits. Ctrl-C detaches without changing canonical truth."
+            "safeyolo [--root ROOT] watch [--once] [--json] [--jsonl FILE]\n\nWatch canonical pending Coord signals through Admin API, waking from local NATS metadata. Each pending signal revision prints once per attachment. --once returns the current pending set without needing NATS. Live-feed loss ends the attachment; restart watch to read current state and resume without event replay. --jsonl reads existing audit metadata and fetches its exact immutable revisions; FILE may be - for stdin. Terminal controls are escaped and markup remains text. Resolve with coord signal resolve; use coord signal --help for permissions, bounds and rate limits. Ctrl-C detaches without changing canonical truth."
         );
         return Ok(());
     }
@@ -157,6 +157,14 @@ pub(super) async fn watch(config: &Path, args: &[String]) -> Result<(), Error> {
         }
         return Ok(());
     }
+    // Complete SUB before the initial canonical read, so a mutation during
+    // attachment either appears in that read or wakes a subsequent read.
+    let mut subscription = if once {
+        None
+    } else {
+        let native = crate::native_config::read(config)?;
+        Some(crate::operator_events::subscribe(&native.data_dir().join("coord")).await?)
+    };
     let mut seen = BTreeMap::new();
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     loop {
@@ -209,7 +217,18 @@ pub(super) async fn watch(config: &Path, args: &[String]) -> Result<(), Error> {
         if once {
             return Ok(());
         }
-        tokio::select! { _=interrupt.recv()=>return Ok(()),_=tokio::time::sleep(Duration::from_secs(1))=>{} }
+        loop {
+            let bytes = tokio::select! {
+                _ = interrupt.recv() => return Ok(()),
+                event = subscription.as_mut().expect("live watch attached").next() => event?,
+            };
+            let mut event: Value = serde_json::from_slice(&bytes)?;
+            let signal = crate::operator_events::is_signal(&event);
+            crate::credentials::wipe_json(&mut event);
+            if signal {
+                break;
+            }
+        }
     }
 }
 

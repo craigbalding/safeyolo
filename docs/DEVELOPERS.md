@@ -42,6 +42,12 @@ for the contract and the per-sink obligations (terminal, web, log export).
 
 ## Building Integrations
 
+For live operator events, use the authenticated `/admin/events` WebSocket. Native
+`safeyolo watch` uses the same local NATS publication path and reads canonical
+signal revisions through the Admin API. See the [live operator event contract](operator-controls-627-evidence.md#live-operator-events)
+for event filtering, readiness, reconnect and failure limits. Use JSONL for
+retained forensic analysis; live consumers do not follow the file.
+
 ### Option 1: Consume JSONL Events
 
 On the host, use the account that owns the selected SafeYolo instance. The

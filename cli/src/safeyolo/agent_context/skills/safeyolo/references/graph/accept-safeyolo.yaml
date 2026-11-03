@@ -272,7 +272,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: ecc0de72cd8d295a673a7a533d36518730e347b5b4c9f2ccee5472626f3a348d
         - path: proxy/src/lib.rs
-          sha256: acec18fc71e48f4053bede37d8f2945732425602921dc503430d850b6fdd6446
+          sha256: 8d23165dd600acd5320c888db37ef859411338c9e474210ac5a1985c7aaec985
         - path: proxy/src/bin/safeyolo.rs
           sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
         - path: scripts/run_claude_blackbox.py
@@ -337,7 +337,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: ecc0de72cd8d295a673a7a533d36518730e347b5b4c9f2ccee5472626f3a348d
         - path: proxy/src/lib.rs
-          sha256: acec18fc71e48f4053bede37d8f2945732425602921dc503430d850b6fdd6446
+          sha256: 8d23165dd600acd5320c888db37ef859411338c9e474210ac5a1985c7aaec985
         - path: proxy/src/bin/safeyolo.rs
           sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
         - path: proxy/src/jobs/vz-guest-init.sh
@@ -438,7 +438,7 @@ nodes:
         - path: proxy/tests/native_coord/federation.rs
           sha256: b4f44c1465fd834f467ca5fb4f703efb3c372a57d327644deb8a8e2545e81578
         - path: proxy/src/agent_api/coord.rs
-          sha256: 864e1fb3cf11b410056837273f48606ff8880473ecdf446fdf53a027e54e2785
+          sha256: e5cb368c7d9eff58a5faaf35bbe4803bbe059dc8914bfca746da71816dbb0f53
         - path: proxy/src/agent_api/coord/federation.rs
           sha256: db953429fbeba489fd1aaa0e6d37ab841030de8f7b85874dc43e4fa0d396a0c9
         - path: proxy/src/agent_api/coord/federation/tests.rs
@@ -490,7 +490,9 @@ nodes:
         - path: proxy/src/coord_work_schema.sql
           sha256: fb6592902c80c56d51758e3938c3fa14b620daa6988269eedf7a6e215e0dcf99
         - path: proxy/tests/native_coord/signals.rs
-          sha256: 27f4f09af460a241b9801067c9f37bc5963aed70e25f67ed555c99a47f17d405
+          sha256: 6ba84d40f58e13e58b6f855e5f2d6855a9e235c94e8f6999041e6cc01e20f6eb
+        - path: proxy/tests/support/nats_subscription.rs
+          sha256: 108f06bcdd1675449e7aada5320e4aa21c49258833186cf1af329f6a57a20fe0
         - path: proxy/src/coord_rooms/signals.rs
           sha256: bef138d95aa2d06ee547311728ed78b2a38b6cac96ed176a7c87caf54364ff57
         - path: proxy/src/coord_rooms/signals/tests.rs
@@ -504,7 +506,7 @@ nodes:
         - path: proxy/src/admin_api/coord_signals.rs
           sha256: 02a963eef1bf4e390e9c57b9dbb0f95854bbb6c7592f6bb0b461ee2f04f41624
         - path: proxy/src/coord_operator/signals.rs
-          sha256: 38e446826430b7bd05abf2816b42415c80434e10495d640ab892a514498e4f6c
+          sha256: 860ce1c01a3d4714ad278c9394479c7019bfd70099136684be860f8990f7b531
         - path: proxy/src/coord_tools.rs
           sha256: f05fe053ac9471f43305c380cce31d107242e783c7cf3a1c2f1a3e942f696a47
         - path: proxy/src/coord_rooms/room_status.rs
