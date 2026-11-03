@@ -8,7 +8,7 @@ fn room_store(f: &Fixture) {
     coord_rooms::bootstrap(root).unwrap();
 }
 
-fn rooms(f: &Fixture) {
+pub(super) fn rooms(f: &Fixture) {
     room_store(f);
     let conn = db(f);
     conn.execute("INSERT INTO rooms VALUES('rm-delegated','delegated',0)", [])
@@ -16,7 +16,7 @@ fn rooms(f: &Fixture) {
     conn.execute("INSERT INTO memberships(room_id,principal_kind,principal_id,permissions,granted_at) VALUES('rm-delegated','operator','operator','page_operator,receive,send',1)",[]).unwrap();
 }
 
-fn envelope() -> Value {
+pub(super) fn envelope() -> Value {
     json!({"expected_revision":null,"delegation":{
         "reviewers":[{"name":"helper","agent_id":HELPER_ID}],
         "beneficiaries":[{"name":"worker","agent_id":WORKER_ID}],

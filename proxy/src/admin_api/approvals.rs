@@ -1,103 +1,8 @@
-//! Operator reads and decisions use canonical request scope. Retained Plumb
-//! prompts use their existing audit-backed owner.
+//! Operator reads and decisions use canonical request scope.
 
 use super::*;
 use crate::approvals::network_action;
 use crate::approvals::pending;
-
-/// Plumb still publishes audit prompts. Other approval types use
-/// the canonical store. Select these events before decoding their payloads.
-pub(super) fn plumb_prompts(path: &Path) -> Vec<Value> {
-    use std::collections::{HashMap, HashSet, VecDeque};
-    use std::io::BufRead;
-
-    #[derive(serde::Deserialize)]
-    struct EventName<'a> {
-        #[serde(borrow)]
-        event: std::borrow::Cow<'a, str>,
-    }
-
-    let Ok(file) = std::fs::File::open(path) else {
-        return Vec::new();
-    };
-    let mut reader = std::io::BufReader::new(file);
-    let mut line = String::new();
-    let mut events = VecDeque::new();
-    let mut sequence = 0usize;
-    loop {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(_) => return Vec::new(),
-        }
-        sequence += 1;
-        // Keep the existing 50,000-line window, including malformed and
-        // unrelated lines, without retaining their text or JSON values.
-        while events
-            .front()
-            .is_some_and(|(saved, _)| sequence - saved >= 50_000)
-        {
-            events.pop_front();
-        }
-        let Ok(name) = serde_json::from_str::<EventName<'_>>(&line) else {
-            continue;
-        };
-        let selected = matches!(
-            name.event.as_ref(),
-            "plumb.requested" | "plumb.approved" | "plumb.denied"
-        );
-        if selected && let Ok(event) = serde_json::from_str::<Value>(&line) {
-            events.push_back((sequence, event));
-        }
-    }
-
-    let mut resolved = HashSet::new();
-    let mut prompts: HashMap<String, (usize, Value)> = HashMap::new();
-    for (sequence, event) in events {
-        match event["event"].as_str() {
-            Some("plumb.approved" | "plumb.denied") => {
-                let Some(id) = event["details"]["request_id"].as_str() else {
-                    continue;
-                };
-                let Some(participants) = event["details"]["participants"].as_array() else {
-                    continue;
-                };
-                let participants = participants
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>();
-                if !participants.is_empty() {
-                    let key = format!("{id}:{}", participants.join(","));
-                    prompts.remove(&key);
-                    resolved.insert(key);
-                }
-            }
-            Some("plumb.requested") => {
-                if event["approval"]["required"] != true
-                    || !event["details"]["approval_id"].is_null()
-                    || !matches!(event["approval"]["approval_type"].as_str(), Some("plumb"))
-                {
-                    continue;
-                }
-                let (Some(key), Some(target)) = (
-                    event["approval"]["key"].as_str(),
-                    event["approval"]["target"].as_str(),
-                ) else {
-                    continue;
-                };
-                let key = format!("{key}:{target}");
-                if !resolved.contains(&key) {
-                    prompts.insert(key, (sequence, event));
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut prompts = prompts.into_values().collect::<Vec<_>>();
-    prompts.sort_unstable_by_key(|(sequence, _)| *sequence);
-    prompts.into_iter().map(|(_, prompt)| prompt).collect()
-}
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -314,19 +219,6 @@ async fn attention<B: Body<Data = Bytes>>(
     tokio::task::spawn_blocking(move || {
         let claim = || -> crate::approvals::Result<_> {
             let Some(record) = writer.approvals().get(&id)? else {
-                if let Some(prompt) = plumb_prompts(writer.path()).into_iter().find(|prompt| prompt["request_id"] == id) {
-                    let agent = prompt["agent"].as_str().unwrap_or("");
-                    if let Some(agent_id) = policy.evidence_agent_id(agent) {
-                        let authority_digest = pending::digest(&json!({"agent_id":agent_id,"kind":"plumb","participants":prompt["details"]["participants"],"ttl_seconds":prompt["details"]["ttl_seconds"]}));
-                        let notify = writer.approvals().claim_plumb_attention(&id,agent_id,&authority_digest)?;
-                        let mut event = crate::audit::Event::new("security.approval_attention",crate::audit::Kind::Security,crate::audit::Severity::Medium,"Plumb approval attention claimed or suppressed");
-                        event.agent=Some(agent.into());
-                        event.request_id=Some(id.clone());
-                        event.details=json!({"approval_id":id,"authority_digest":authority_digest,"recipient":"operator","admitted":notify}).into();
-                        let _=tokio::runtime::Handle::current().block_on(writer.emit_confirmed(event));
-                        return Ok((notify,None));
-                    }
-                }
                 return Ok((false, None));
             };
             let current = pending::current_view(&writer, &policy, &record, state.as_ref())?;

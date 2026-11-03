@@ -13,6 +13,7 @@ use std::{
 };
 
 const NATS_VERSION: &str = "2.14.5";
+pub(crate) const COLLABORATION_MAX_ENVELOPE_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) mod brief;
 mod inventory;
 pub(crate) mod room_status;
@@ -21,6 +22,7 @@ mod signals_cli;
 pub(crate) mod work;
 mod work_cli;
 pub use inventory::HELP as INVENTORY_HELP;
+pub(crate) mod collaboration;
 pub(crate) mod federation;
 pub(crate) mod membership;
 fn read_config(root: &Path) -> Result<crate::Config, Error> {
@@ -410,7 +412,7 @@ pub async fn start(
     let jetstream = nats.join("jetstream");
     fs::create_dir_all(&jetstream)?;
     let config = nats.join("server.conf");
-    atomic_write(&config,format!("host: 127.0.0.1\nport: {selected_client}\nhttp: 127.0.0.1:{selected_monitor}\nserver_name: {server_name}\nmax_payload: 2097152\nports_file_dir: {}\nauthorization {{ user: safeyolo, password: {} }}\njetstream {{ store_dir: {}, max_file_store: 1073741824 }}\n",serde_json::to_string(&nats.to_string_lossy())?,serde_json::to_string(password.trim())?,serde_json::to_string(&jetstream.to_string_lossy())?).as_bytes(),0o600)?;
+    atomic_write(&config,format!("host: 127.0.0.1\nport: {selected_client}\nhttp: 127.0.0.1:{selected_monitor}\nserver_name: {server_name}\nmax_payload: {COLLABORATION_MAX_ENVELOPE_BYTES}\nports_file_dir: {}\nauthorization {{ user: safeyolo, password: {} }}\njetstream {{ store_dir: {}, max_file_store: 1073741824 }}\n",serde_json::to_string(&nats.to_string_lossy())?,serde_json::to_string(password.trim())?,serde_json::to_string(&jetstream.to_string_lossy())?).as_bytes(),0o600)?;
     let log = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -537,6 +539,14 @@ async fn jetstream(root: &Path) -> Result<async_nats::jetstream::Context, Error>
 }
 
 pub async fn create_room(root: &Path, name: &str) -> Result<Value, Error> {
+    create_named_room(root, name, None).await
+}
+
+pub(crate) async fn create_named_room(
+    root: &Path,
+    name: &str,
+    prepared_id: Option<&str>,
+) -> Result<Value, Error> {
     if name.trim().is_empty() {
         return Err("room name must be nonempty".into());
     }
@@ -545,26 +555,34 @@ pub async fn create_room(root: &Path, name: &str) -> Result<Value, Error> {
     let _lock =
         tokio::task::spawn_blocking(move || crate::host_platform::lock_host_state(&lock)).await??;
     let mut connection = open(root)?;
-    if connection
+    if let Some(existing) = connection
         .query_row("SELECT room_id FROM rooms WHERE name=?1", [name], |r| {
             r.get::<_, String>(0)
         })
         .optional()?
-        .is_some()
     {
+        if prepared_id == Some(existing.as_str()) {
+            return Ok(json!({"room_id":existing,"room_name":name}));
+        }
         return Err("room already exists".into());
     }
-    let id = format!("rm-{}", uuid::Uuid::new_v4().simple());
+    let id = prepared_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("rm-{}", uuid::Uuid::new_v4().simple()));
     let stream = format!("ROOM_{id}");
     let js = jetstream(root).await?;
     use async_nats::jetstream::stream::{Config, StorageType};
-    js.create_stream(Config {
+    js.get_or_create_stream(Config {
         name: stream.clone(),
         subjects: vec![format!("rooms.{id}")],
         storage: StorageType::File,
         max_bytes: -1,
         max_age: Duration::from_secs(7 * 24 * 60 * 60),
-        max_message_size: 2 * 1024 * 1024,
+        max_message_size: if prepared_id.is_some() {
+            COLLABORATION_MAX_ENVELOPE_BYTES as i32
+        } else {
+            2 * 1024 * 1024
+        },
         max_messages: 100_000,
         duplicate_window: Duration::from_secs(120),
         ..Config::default()

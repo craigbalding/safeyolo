@@ -658,7 +658,7 @@ close helper, with matching origin and inspector observations.
 NATS and inspector. It checks service approval, contract binding and risky-route
 approval/retry, exact credential injection, live peer denial, test context and
 trace, populated exact owner-positive/live-peer-negative flow search/detail,
-Coord messages and resolved attention, Plumb approval/exchange/closure,
+Coord messages and resolved attention, collaboration approval/exchange/revocation,
 WebSocket peer effects, inspector filtering, transcript and export. Raw inspector
 exports may contain disposable gateway tokens and stay in private instance state;
 the workflow publishes selected reports instead of raw exports.
@@ -682,8 +682,7 @@ SQLite ownership, exact bodies, tags and correlated audit; enforce an open
 circuit before operator reset and avoid resurrecting it afterward; retain
 catalogue, policy, grants and scoped host/service revocations; preserve Coord
 messages/attention and the provider-owned lease snapshot; the fresh process must report unknown lease state without inventing held ownership.
-It retains approved Plumb messages before close returns 403. The same sequence
-checks stored OAuth refresh/use, trusted upstream TLS, stable CA/HMAC identity,
+The same sequence checks stored OAuth refresh/use, trusted upstream TLS, stable CA/HMAC identity,
 0600 private state and process-local task reset. Each process, listener, NATS
 server and owned origin must stop. The historical cross-backend executor was
 retired after [Lens verified the Linux replacement](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5951336164).

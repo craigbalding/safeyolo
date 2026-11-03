@@ -94,7 +94,7 @@ pub async fn respond_with_body_and_audit_id<'p, B>(
 where
     B: Body<Data = Bytes> + Unpin,
 {
-    respond_with_body_and_audit_id_with_plumb(
+    respond_with_body_and_audit_id_with_state(
         request,
         token_path,
         policy,
@@ -104,15 +104,13 @@ where
         body,
         source_request_id,
         None,
-        None,
     )
     .await
 }
 
-/// Internal production entry point that supplies runtime approval checks and
-/// the plumb mailbox without exposing private owners through `Controls`.
+/// Internal production entry point that supplies runtime approval checks.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn respond_with_body_and_audit_id_with_plumb<'p, B>(
+pub(crate) async fn respond_with_body_and_audit_id_with_state<'p, B>(
     request: Request<'_>,
     token_path: &Path,
     policy: PolicyState<'p>,
@@ -121,7 +119,6 @@ pub(crate) async fn respond_with_body_and_audit_id_with_plumb<'p, B>(
     controls: Controls<'_>,
     body: RequestBody<'_, B>,
     source_request_id: Option<&str>,
-    plumb: Option<&crate::agent_api::plumb::PlumbOwner>,
     state: Option<&crate::RuntimeState>,
 ) -> Result<Outcome<'p>, B::Error>
 where
@@ -146,7 +143,6 @@ where
                 | "/gateway/submit-binding"
                 | "/api/test-context/current"
         ) || route(request).starts_with("/api/flows")
-            || route(request).starts_with("/plumb")
             || route(request) == "/desktop/present")
     {
         return Ok(response(403, json!({"error":"Could not identify agent"})));
@@ -207,19 +203,6 @@ where
             Err(error) => return Ok(content_error(error)),
         };
         return Ok(gateway::submit_binding(request, controls.gateway, &content));
-    }
-    if route(request).starts_with("/plumb") {
-        return plumb::respond(
-            request,
-            body,
-            plumb,
-            controls.audit.cloned(),
-            match policy {
-                PolicyState::Ready(policy) => Some(policy.as_ref()),
-                _ => None,
-            },
-        )
-        .await;
     }
     if route(request) == "/agents" {
         return Ok(agents::respond(request, controls.agents));

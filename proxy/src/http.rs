@@ -1931,7 +1931,7 @@ where
             .as_ref()
             .map_or(PolicyState::Unavailable, PolicyState::Ready);
         let mut random = rand::random::<f64>;
-        agent_api::respond_with_body_and_audit_id_with_plumb(
+        agent_api::respond_with_body_and_audit_id_with_state(
             api_request,
             &token_path,
             policy,
@@ -1986,7 +1986,6 @@ where
                 observation: Some(&mut local_observation),
             },
             Some(request_id),
-            Some(runtime.plumb.as_ref()),
             Some(state),
         )
         .await?

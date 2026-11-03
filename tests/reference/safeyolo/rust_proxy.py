@@ -249,9 +249,9 @@ def _default_native_config(config: dict) -> dict:
     ignore_hosts = proxy_options.get("ignore_hosts", [])
     if not isinstance(ignore_hosts, list) or not all(isinstance(value, str) for value in ignore_hosts):
         raise ValueError("proxy.ignore_hosts must be a list of strings")
-    plumb = config.get("plumb", {})
-    if not isinstance(plumb, dict):
-        raise ValueError("plumb configuration must be a mapping")
+    collaboration = config.get("collaboration", {})
+    if not isinstance(collaboration, dict):
+        raise ValueError("collaboration configuration must be a mapping")
     return {
         "listeners": [],
         "agent_map_file": str(get_agent_map_path()),
@@ -279,7 +279,7 @@ def _default_native_config(config: dict) -> dict:
         "upstream_ca_file": proxy_options.get("upstream_ca_cert") or None,
         "ignore_hosts": ignore_hosts,
         "via_token": proxy_options.get("via_token") or None,
-        "plumb": plumb,
+        "collaboration": collaboration,
     }
 
 

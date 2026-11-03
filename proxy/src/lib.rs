@@ -133,7 +133,7 @@ mod tunnels;
 pub mod websocket;
 mod websocket_relay;
 
-pub use config::{AgentListener, Config, Inspection, PlumbConfig};
+pub use config::{AgentListener, CollaborationConfig, Config, Inspection};
 
 use std::{
     collections::HashMap,
@@ -447,7 +447,6 @@ pub(crate) struct Runtime {
     credential_key_empty: bool,
     tasks: tasks::Registry,
     service_mutations: admin_api::ServiceMutationOwner,
-    plumb: Arc<agent_api::plumb::PlumbOwner>,
     admin_address: Option<std::net::SocketAddr>,
     admin_shield: admin_shield::AdminShield,
     network_guard: network_guard::NetworkGuard,
@@ -532,13 +531,6 @@ impl Runtime {
         let service_mutations = previous
             .map(|runtime| runtime.service_mutations.clone())
             .unwrap_or_default();
-        let plumb = previous
-            .map(|runtime| runtime.plumb.clone())
-            .unwrap_or_else(|| {
-                Arc::new(agent_api::plumb::PlumbOwner::for_data_dir(
-                    &config.data_dir(),
-                ))
-            });
         let audit = match previous {
             Some(runtime) => runtime.audit.clone(),
             None => Arc::new(
@@ -741,7 +733,8 @@ impl Runtime {
                             runtime.coord.owner(),
                             config.policy_file.clone(),
                         )
-                        .with_provider_directory(config.native_config_dir.as_deref()),
+                        .with_provider_directory(config.native_config_dir.as_deref())
+                        .with_collaboration_config(config.collaboration.clone()),
                     )
                 })
                 .unwrap_or_else(|| {
@@ -753,7 +746,8 @@ impl Runtime {
                                 .as_ref()
                                 .map(|_| config.data_dir().join("coord")),
                         )
-                        .with_provider_directory(config.native_config_dir.as_deref()),
+                        .with_provider_directory(config.native_config_dir.as_deref())
+                        .with_collaboration_config(config.collaboration.clone()),
                     )
                 });
             let flow_recorder = match previous {
@@ -854,7 +848,6 @@ impl Runtime {
                 credential_key_empty,
                 tasks,
                 service_mutations,
-                plumb,
                 admin_address,
                 admin_shield,
                 network_guard,
@@ -922,7 +915,7 @@ impl Runtime {
                     != Some(id)
                 {
                     self.audit.approvals().withhold_results(id)?;
-                    self.plumb.withhold_approval_results(id)?;
+                    coord_rooms::collaboration::revoke_identity(&self.config.data_dir(), id)?;
                 }
             }
         }
@@ -2044,19 +2037,6 @@ impl Proxy {
         }
         proxy.commit_listeners(&config, additions);
         proxy.commit_ingress(&config, ingress);
-        {
-            let runtime = proxy
-                .runtime
-                .read()
-                .map_err(|_| "runtime read lock poisoned")?
-                .clone();
-            runtime.plumb.configure_limits(
-                runtime.config.plumb.max_participants,
-                runtime.config.plumb.max_message_bytes,
-                runtime.config.plumb.message_page_limit,
-                runtime.config.plumb.default_ttl_seconds,
-            );
-        }
         proxy.capture = packet_capture::Running::start(
             &proxy
                 .runtime
@@ -2411,12 +2391,6 @@ impl Proxy {
                 .protect_ingress_endpoints(ingress_endpoints);
             self.commit_listeners(&config, additions);
             released = self.commit_ingress(&config, ingress);
-            runtime.plumb.configure_limits(
-                runtime.config.plumb.max_participants,
-                runtime.config.plumb.max_message_bytes,
-                runtime.config.plumb.message_page_limit,
-                runtime.config.plumb.default_ttl_seconds,
-            );
             *current = runtime.clone();
         }
         for stopped in released {
@@ -2457,19 +2431,7 @@ impl Proxy {
             .unwrap_or_else(|error| error.into_inner())
             .service_mutations
             .clone();
-        let plumb = self
-            .runtime
-            .read()
-            .unwrap_or_else(|error| error.into_inner())
-            .plumb
-            .clone();
-        // Close every process-owned admission point before listeners begin
-        // draining. Plumb wakes long polls here; its blocking store calls and
-        // the service mutation owner are joined after accepted connections
-        // have stopped producing work.
-        plumb.stop_admission().await;
         service_mutations.stop_admission().await;
-        plumb.stop_admission().await;
         if let Some(share) = self.command_centre_share.take() {
             share.stop().await;
         }
@@ -2492,7 +2454,6 @@ impl Proxy {
             capture.stop().await;
         }
         service_mutations.drain().await;
-        plumb.drain().await;
         let coord = self
             .runtime
             .read()

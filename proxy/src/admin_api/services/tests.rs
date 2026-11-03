@@ -105,7 +105,6 @@ impl Fixture {
                     mutation_owner: &self.mutation_owner,
                     gateway_store: None,
                 }),
-                plumb: None,
                 task_state: None,
             },
         )
@@ -173,7 +172,6 @@ async fn revoke(fixture: &Fixture, agent: &str, service: &str) -> Result<Outcome
                 mutation_owner: &fixture.mutation_owner,
                 gateway_store: None,
             }),
-            plumb: None,
             task_state: None,
         },
     )
@@ -357,7 +355,6 @@ async fn service_authentication_precedes_body_and_policy_access() {
             client_ip: None,
             passthrough: None,
             service_audit: None,
-            plumb: None,
             task_state: None,
         },
     )
@@ -432,7 +429,6 @@ async fn service_missing_registry_or_policy_path_never_mutates() {
                 client_ip: None,
                 passthrough: None,
                 service_audit: None,
-                plumb: None,
                 task_state: None,
             },
         )

@@ -16,7 +16,7 @@ issue #581.
 ## Current audit contract
 
 All native audit families use `schema_version: 2`: security, gateway, traffic,
-operations, admin, agent, plumb, Coord and network events. This number identifies
+operations, admin, agent, Coord and network events. This number identifies
 an audit format generation, not a SafeYolo product release. Event prefixes match
 their kind. A current control event does not become scoped NSM evidence merely
 because it uses the same envelope generation.

@@ -35,7 +35,7 @@ impl Nats {
         )
         .unwrap();
         let config = directory.join("nats.conf");
-        std::fs::write(&config, format!("listen: 127.0.0.1:-1\nhttp: 127.0.0.1:-1\nmax_payload: 2097152\nports_file_dir: {directory:?}\nauthorization {{ user: safeyolo, password: synthetic-operator-events }}\n")).unwrap();
+        std::fs::write(&config, format!("listen: 127.0.0.1:-1\nhttp: 127.0.0.1:-1\nmax_payload: 8388608\nports_file_dir: {directory:?}\nauthorization {{ user: safeyolo, password: synthetic-operator-events }}\n")).unwrap();
         if jetstream {
             use std::io::Write;
             writeln!(

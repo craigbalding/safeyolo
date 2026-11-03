@@ -2928,7 +2928,7 @@ mod tests {
                                     let response = crate::admin_api::respond_with_context(request, "owned-test-token", crate::admin_api::OperatorContext {
                                         tasks: &tasks, policy: None, circuits: None, stats: None, view: None, policy_path: None, instance_id: None,
                                         command_centre: Some(&host), operator_modes: None, agent_activity: None, listeners: &[], audit: None,
-                                        client_ip: None, passthrough: None, service_audit: None, plumb: None, task_state: None,
+                                        client_ip: None, passthrough: None, service_audit: None, task_state: None,
                                     }).await.unwrap();
                                     assert_eq!(response.status(), hyper::StatusCode::INTERNAL_SERVER_ERROR);
                                     Ok::<_, std::convert::Infallible>(response.into_response())

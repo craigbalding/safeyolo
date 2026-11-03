@@ -1,6 +1,6 @@
 ---
 name: safeyolo
-description: Diagnose and resolve SafeYolo boundary failures and operate advanced SafeYolo facilities when the task explicitly concerns them. Use for proxy/TLS failures; policy or credential blocks; HTTP 403/428/429/503/508 or X-Blocked-By responses; surprising guest package, sudo, setpriv, apt, apk, pip, or mise behavior; debugger/profiler denials; operator recovery shells; desktop preview; Agent API policy, flow, budget, circuit-breaker, or service-gateway operations; approvals; legacy plumb; and sandbox introspection. Do not invoke merely because the product or repository is SafeYolo, or for ordinary commands in a healthy sandbox, routine factory handoffs, or normal GitHub App Connector work already specified by injected instructions.
+description: Diagnose and resolve SafeYolo boundary failures and operate advanced SafeYolo facilities when the task explicitly concerns them. Use for proxy/TLS failures; policy or credential blocks; HTTP 403/428/429/503/508 or X-Blocked-By responses; surprising guest package, sudo, setpriv, apt, apk, pip, or mise behavior; debugger/profiler denials; operator recovery shells; desktop preview; Agent API policy, flow, budget, circuit-breaker, or service-gateway operations; approvals; collaboration rooms; and sandbox introspection. Do not invoke merely because the product or repository is SafeYolo, or for ordinary commands in a healthy sandbox, routine factory handoffs, or normal GitHub App Connector work already specified by injected instructions.
 ---
 
 # Operate inside SafeYolo
@@ -53,8 +53,8 @@ do not reload Coord or GitHub references already supplied by the role contract.
   consuming completion-note nominations for public engineering content or
   rendering a Dispatch or living topic page.
 - Read [Agent API and workflows](references/agent-api.md) before querying
-  policy, flows, service capabilities, contract bindings, or the older
-  `plumb` conversation surface. It contains the current routes and request
+  policy, flows, service capabilities, contract bindings, or approved
+  collaboration rooms. It contains the current routes and request
   shapes.
 - Read [Troubleshooting and escalation](references/troubleshooting.md) for
   blocked responses, proxy/TLS failures, logs, request correlation, and exact

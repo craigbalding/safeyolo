@@ -146,7 +146,7 @@ safeyolo diagnose --agent AGENT --json
 ```
 
 Current event prefixes include `traffic.*`, `security.*`, `gateway.*`,
-`plumb.*`, `agent.*`, `ops.*`, and `admin.*`. Audit decisions include
+`agent.*`, `ops.*`, and `admin.*`. Audit decisions include
 `allow`, `deny`, `warn`, `require_approval`, `budget_exceeded`, and `log`.
 
 The Rust proxy generates a canonical request ID at ingress; a caller-supplied
@@ -161,7 +161,7 @@ Request the narrowest relevant host-side action and explain the evidence:
 
 | Command | Ask for it when |
 |---|---|
-| `safeyolo inspect` | A 428, gateway request, contract binding, risky route, credential, or plumb chat awaits approval |
+| `safeyolo inspect` | A 428, gateway request, contract binding, risky route, credential, or collaboration room awaits approval |
 | `safeyolo agent diagnostics <name>` | Runtime control, the shell bridge, or proxy attachment may be unavailable |
 | `safeyolo doctor` | Proxy dependencies, runtime, image, CA, or isolation may be unhealthy |
 | `safeyolo status` | You need the reconciled runtime, control, coding-agent and terminal observations |

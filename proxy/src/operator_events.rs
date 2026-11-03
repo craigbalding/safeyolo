@@ -221,13 +221,10 @@ pub(crate) fn is_operator_event(event: &serde_json::Value) -> bool {
                 | "admin.contract_binding_approved"
                 | "admin.desktop_presented"
                 | "admin.desktop_presentation_failed"
-                | "plumb.approved"
-                | "plumb.denied"
-                | "plumb.conversation_created"
-                | "plumb.message_blocked"
-                | "plumb.message_flagged"
-                | "plumb.message_allowed"
-                | "plumb.conversation_closed"
+                | "coord.message_allowed"
+                | "coord.message_flagged"
+                | "coord.message_blocked"
+                | "coord.message_scan_failed"
         )
         || matches!(
             event_name,

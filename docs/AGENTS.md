@@ -72,9 +72,9 @@ Triggers include, non-exhaustively:
   not permitted`, `py-spy` / `rbspy` / `strace` / `gdb` denied against a
   same-uid process.
 - Broken guest sudo helpers or operator recovery paths.
-- Agent API queries (`/lookup`, `/budgets`, `/policy`, `/flows`, `/plumb`),
+- Agent API queries (`/lookup`, `/budgets`, `/policy`, `/flows`, `/api/coord`),
   flow inspection, budget or circuit-breaker state.
-- Approved agent-to-agent plumb collaboration.
+- New operator-approved collaboration rooms.
 - General "am I inside a SafeYolo sandbox / what facilities are available /
   how do I debug this in-container" introspection.
 

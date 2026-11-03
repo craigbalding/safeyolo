@@ -70,6 +70,7 @@ pub(super) fn change(
             params![room_id,kind,principal,changed_at],
         )?;
         transaction.execute("UPDATE coord_membership_grants SET revoked_at=?3 WHERE room_id=?1 AND agent_id=?2 AND revoked_at IS NULL",params![room_id,principal,changed_at])?;
+        transaction.execute("UPDATE coord_collaboration_grants SET revoked_at=?3 WHERE room_id=?1 AND agent_id=?2 AND revoked_at IS NULL",params![room_id,principal,changed_at])?;
     } else if active.as_ref().map(|(p, _)| p.as_str()) != Some(permissions.join(",").as_str()) {
         let next = changed_at.max(
             latest
@@ -134,7 +135,7 @@ pub(crate) struct EffectiveMember {
 }
 
 fn latest_generation(conn: &Connection) -> Result<i64, Error> {
-    Ok(conn.query_row("SELECT max(v) FROM (SELECT coalesce(max(granted_at),0) AS v FROM memberships UNION ALL SELECT coalesce(max(granted_at),0) FROM coord_membership_grants)", [], |r| r.get(0))?)
+    Ok(conn.query_row("SELECT max(v) FROM (SELECT coalesce(max(granted_at),0) AS v FROM memberships UNION ALL SELECT coalesce(max(granted_at),0) FROM coord_membership_grants UNION ALL SELECT coalesce(max(granted_at),0) FROM coord_collaboration_grants)", [], |r| r.get(0))?)
 }
 
 pub(crate) fn valid_permissions(permissions: &[String]) -> bool {
@@ -216,6 +217,9 @@ fn effective_with_sources(
     room: &str,
 ) -> Result<(Vec<EffectiveMember>, Vec<String>), Error> {
     let mut members = independent(conn, room)?;
+    for member in super::collaboration::members(conn, room)? {
+        merge(&mut members, member);
+    }
     let mut candidates = vec![];
     let mut policies = std::collections::BTreeMap::new();
     let mut query = conn.prepare(

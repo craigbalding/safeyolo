@@ -9,6 +9,8 @@ use tokio::{
 };
 #[path = "delegated_approvals/approval_results.rs"]
 mod approval_results;
+#[path = "delegated_approvals/collaboration.rs"]
+mod collaboration;
 #[path = "delegated_approvals/contract_binding.rs"]
 mod contract_binding;
 #[path = "delegated_approvals/coord_room.rs"]

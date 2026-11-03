@@ -43,6 +43,7 @@ leave attention waiting to the supervisor outside the turn.
 
 | Operation | Purpose |
 |---|---|
+| `request_collaboration` | Request a new room for explicit current identities and a deadline; only an operator can approve it. |
 | `request_room_access` | Request explicit rights for this trusted worker run in an existing local room. The request grants nothing. |
 | `join_room` | Attach to an existing membership and read room metadata. |
 | `read_brief` | Read the operator-authored brief and its revision. |
@@ -81,6 +82,11 @@ For an agent using the MCP adapter, the following examples are separate `send`
 calls. Replace `work` with a room where the sender has send permission. Replace
 `alice` and `bob` with active agent names that have receive permission in that
 room.
+
+For a new collaboration, use `request_collaboration` with participant names and
+an operation ID. The operator approves the actual durable identities and
+absolute deadline. The returned `room_name` is used by ordinary send, history
+and attention after approval. See [the request, inspection and size rules](agent-api.md#approved-collaboration-rooms).
 
 If the operator configured a room approval delegation, a nonmember can call
 `request_room_access` with `room_name`, an explicit `permissions` list and a new

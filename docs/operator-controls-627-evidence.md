@@ -21,7 +21,7 @@ The private marker does not enter the operator event stream. Events received
 after subscription establishment stay queued while the WebSocket upgrade completes.
 
 The WebSocket retains its event filter: approval-required events, agent events,
-the selected Admin, Plumb and operations events, and high or critical security
+the selected Admin and operations events, and high or critical security
 and gateway events. Ordinary traffic bodies are not published. Coord signal
 metadata also uses the common live path. `safeyolo watch` consumes that metadata
 and fetches canonical pending signal revisions through the Admin API. The

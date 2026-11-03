@@ -577,10 +577,9 @@ via_token="owned"
 agent_id="alice"
 socket_path="state/alice.sock"
 source_id="10.0.0.2"
-[plumb]
+[collaboration]
 max_participants=3
 max_message_bytes=0
-message_page_limit=9
 default_ttl_seconds=17
 [capture]
 max_request_body_bytes=2
@@ -694,10 +693,9 @@ tailnet_port=8443
         assert_eq!(config.admin_shield_extra_ports, "19091");
         assert_eq!(config.ignore_hosts, ["example.invalid:443"]);
         assert_eq!(config.via_token.as_deref(), Some("owned"));
-        assert_eq!(config.plumb.max_participants, 3);
-        assert_eq!(config.plumb.max_message_bytes, 0);
-        assert_eq!(config.plumb.message_page_limit, 9);
-        assert_eq!(config.plumb.default_ttl_seconds, 17);
+        assert_eq!(config.collaboration.max_participants, 3);
+        assert_eq!(config.collaboration.max_message_bytes, 0);
+        assert_eq!(config.collaboration.default_ttl_seconds, 17);
         let settings = config.native_settings.unwrap();
         let capture = settings.capture.store_settings();
         assert_eq!(capture.max_request_body_bytes, 2);

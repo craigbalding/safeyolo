@@ -209,7 +209,6 @@ API is contained separately. Sources are `addons/agent_api.py`,
 | GET/POST/DELETE `/api/test-context/current` | Agent/source-bound declared context, validation, precedence and TTL in `addons/test_context.py`. |
 | GET `/gateway/services`; POST `/gateway/request-access`, `/gateway/submit-binding` | Bound service discovery, risk approval and contract-binding lifecycle. |
 | POST `/desktop/present` | Caller-authorized desktop presentation through `desktop_presenter.py`; preserve the existing host-side operation boundary. |
-| POST `/plumb/request-chat`; GET `/plumb/conversations`; `/plumb/conversations/{id}/messages` and `/leave` | Approved legacy collaboration through `core/plumb_service.py`, with scoped participants and asynchronous waits. |
 | `/api/coord/rooms/{room}/{join,send,messages,wait,members,brief,state,declarations}`; `/api/coord/attention/wait`; `/api/coord/attention/{id}/object` | Existing `coord/api.py`, store and NATS operations. Preserve trusted sender attribution, membership, attention resolution and ambiguous-publish/error semantics. A proxy rewrite does not remove coordination workflows. |
 
 ### Operator API and events
@@ -226,8 +225,8 @@ separate from both operator listeners.
 
 | Methods | Routes |
 |---|---|
-| GET | `/health`, `/stats`, `/debug/addons`, `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/budgets`, `/admin/traffic/scope`, `/admin/runtime-identity`, `/admin/instance`, `/admin/approvals`, `/admin/agents`, `/admin/gateway/grants`, `/admin/plumb/pending`, `/admin/plumb/conversations` |
-| POST | `/admin/policy/validate`, `/admin/policy/baseline/approve`, `/admin/policy/baseline/deny`, `/admin/policy/task/{id}/activate`, `/admin/policy/host/{rate,allow,deny,bypass}`, `/admin/circuit-breaker/reset`, `/admin/budgets/reset`, `/admin/gateway/grant`, `/admin/gateway/contract-binding`, `/admin/plumb/{approve,deny,close}`, `/admin/agents/{agent}/{start,start-interactive,stop}`, `/admin/agents/{agent}/services`, `/admin/agents/{agent}/desktop/present` |
+| GET | `/health`, `/stats`, `/debug/addons`, `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/budgets`, `/admin/traffic/scope`, `/admin/runtime-identity`, `/admin/instance`, `/admin/approvals`, `/admin/agents`, `/admin/gateway/grants` |
+| POST | `/admin/policy/validate`, `/admin/policy/baseline/approve`, `/admin/policy/baseline/deny`, `/admin/policy/task/{id}/activate`, `/admin/policy/host/{rate,allow,deny,bypass}`, `/admin/circuit-breaker/reset`, `/admin/budgets/reset`, `/admin/gateway/grant`, `/admin/gateway/contract-binding`, `/admin/agents/{agent}/{start,start-interactive,stop}`, `/admin/agents/{agent}/services`, `/admin/agents/{agent}/desktop/present` |
 | PUT | `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/proxy/mode`, `/admin/proxy/ignore-hosts`, `/admin/proxy/web-tailnet`, `/admin/traffic/scope` |
 | DELETE | `/admin/policy/task/{id}`, `/admin/gateway/grants/{id}`, `/admin/agents/{agent}/services/{service}` |
 
@@ -261,15 +260,14 @@ checked.
 | Operation | Status | Owner or evidence |
 |---|---|---|
 | GET `/health`, `/stats`, `/modes`, `/plugins/{name}/mode` | Implemented | Native `admin_api`; the retained `AdminAPI` mode workflow is covered by `tests/proxy_migration/test_operator_modes_and_listeners.py`. |
-| GET `/admin/runtime-identity`, `/admin/approvals` | Implemented | Native `admin_api` keeps the process runtime identity separate from the durable host identity. Approval listing reads the host-owned pending store and streams current plumb and desktop audit views within the existing 50,000-line window. |
+| GET `/admin/runtime-identity`, `/admin/approvals` | Implemented | Native `admin_api` keeps the process runtime identity separate from the durable host identity. Approval listing reads the host-owned canonical pending store. |
 | GET `/admin/instance`, `/admin/agents` | Implemented for installed host use | Native `admin_api` reads the existing `sy-*` Coord identity file and Rust host inventory. The installed loopback witness in `proxy/tests/command_centre_installed.rs` checks the Mac client's required agent fields and a stable host ID across proxy restarts. The physical Mac app journey remains open in #640 B2. |
 | GET `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/budgets` | Implemented | Native policy, task registry and budget owners. |
 | GET/PUT `/admin/traffic/scope` | Implemented | Native traffic-scope owner; traffic effect proof remains with the traffic lane. |
-| GET `/admin/gateway/grants`, `/admin/plumb/pending`, `/admin/plumb/conversations` | Implemented | Native #625 gateway store and retained plumb owner. |
+| GET `/admin/gateway/grants` | Implemented | Native gateway store. |
 | POST `/admin/policy/validate`, `/admin/policy/baseline/{approve,deny}` | Implemented | Native policy file and canonical audit writer; approval and denial consumers are covered by `tests/proxy_migration/test_operator_consumer_approval.py`. |
 | POST `/admin/policy/host/{allow,deny,rate,bypass}`, `/admin/budgets/reset`, `/admin/circuit-breaker/reset` | Implemented | Native approval, budget and circuit owners. |
 | POST `/admin/gateway/{grant,contract-binding}` and DELETE `/admin/gateway/grants/{id}` | Implemented | Native #625 grant/binding store; resolved-key audit wiring is retained here. |
-| POST `/admin/plumb/{approve,deny,close}` | Implemented | Native retained plumb owner; desktop/coordination host workflows remain separate. |
 | POST `/admin/agents/{agent}/services` | Implemented | Native #624 service persistence owner. |
 | POST `/admin/agents/{agent}/{start,start-interactive,stop}` | Implemented for installed host use | Native Admin authentication and fixed request validation precede the Rust host lifecycle. The installed loopback witness checks stop, unknown identity, invalid action and invalid arguments. A controlled runsc fixture checks native list, start, observation and stop with Python unavailable to the proxy. Supported-host start and the physical Mac app journey still need their separate issue results. |
 | DELETE `/admin/agents/{agent}/services/{service}` | Implemented | Native service mutation owner removes the binding, removes an empty `services` table, emits the canonical revocation audit, and lets the policy watcher publish the complete replacement snapshot; focused observer/control proof is in #627. |
@@ -480,7 +478,7 @@ silently reduce accepted message sizes to a library default.
 | D54 | An upstream HTTP/2 response with status 500, partial DATA and RST_STREAM(NO_ERROR) reaches the native downstream as status 500, the partial body and StreamEnded. Python sends a 502 error response. A retained binary from `d089f995` reproduces the native result before circuit completion metadata was added. | The application now keeps the upstream status and already-delivered DATA prefix, then fails the downstream body stream when the shared completion observer reports reset/truncation. A same-prefix END_STREAM control remains clean. Only validated parser completion reaches circuit counting: reset and downstream cancellation release a once grant and emit no circuit failure, while a complete 503 retains the grant and counts once. The live TLS/HTTP2 control is [`full_proxy_h2_partial_reset_fails_while_same_prefix_end_stream_is_clean`](../proxy/tests/transport.rs); the H2 grant/circuit/recording control is [`actual_h2_terminal_outcomes_release_once_grants_once_and_count_only_complete`](../proxy/src/http/circuit_completion.rs). A current-head versus frozen-source witness reruns the same 503/`body` frame sequence: current `14eb717b` ends the reset case with `reset_error`, while frozen `d089f995` emits an empty extra frame and then clean EOF; END_STREAM is clean in both. Current reset emits no circuit event or domain state (the persisted `states` object is empty) and complete emits one event/domain entry; frozen predates the completion module and has no circuit event/state. Python's 502 formatting remains a documented wire difference. |
 | D55 | With a request above 10 MiB, the source forwards the reserved test-context header before its late request hook removes it. A missing-context request sends all 10,485,761 bytes to the origin; the origin 200 then replaces the hook's attempted 428, despite a deny event. | Native test-context admission now rejects missing required context and strips the reserved field before origin contact. Completed streamed bodies retain the source's empty evidence snippet. The native HTTP regression separately checks blocking, stripping and complete payload forwarding. |
 | D56 | The inherited native HTTP/2 parser accepted pseudo-header trailers and dropped those fields before publishing successful completion. It also ignored the decoder's existing oversized-header marker for trailers, which can hide discarded pseudo fields. | Shared request/response trailer admission now rejects retained pseudo fields with connection PROTOCOL_ERROR and the existing oversized marker with ENHANCE_YOUR_CALM. Valid ordinary trailers still complete. Actual Python execution confirms ordinary versus pseudo-header behavior; the oversized source error path has static evidence only. Existing configured size limits are reused; exact-limit differential parity is unverified. |
-| D57 | A source flow-record tag failure can leave the inserted flow pending on its SQLite connection. A later successful operation commits that failed record. | Native recording rolls the row and provenance tags back together, while retaining separate best-effort body search indexing. The [storage comparison](../proxy/tests/flow_store.rs) preserves the source witness and checks that the failed record stays absent after another commit and reopen. The live [`live_evidence_sink_failure_keeps_transport_and_capture_distinct_from_recovery`](../proxy/src/flow_runtime_tests.rs) control replaces the response-phase event sink with writable `/dev/full`: the origin still returns 200, the response marks the evidence failure, the captured row survives reopen, and a later healthy write has no stale failure marker. That live sink control covers one response-phase event sink. Native Agent API and Plumb approval submissions separately wait for the canonical audit append before reporting a pending request; [`approval_audit_delivery`](../proxy/tests/approval_audit_delivery.rs) checks an unwritable destination, empty operator views and same-process recovery. The retained Python AgentAPI now waits for append/close before claiming operator review for service access, contract binding, desktop presentation or a Plumb chat request; failed writes return 500, while ordinary audit events stay asynchronous. These waits run off the event loop so other AgentAPI calls remain available. The [real-proxy control](https://github.com/craigbalding/safeyolo/blob/e91f69ef85df55341db530bab421f67c4afb83f5/tests/proxy_migration/test_python_agent_api_approval_audit.py) checks failure, both operator views and same-process recovery. Native and retained Python service-gateway risky-route approval prompts also wait for the audit append before returning 428. With an unwritable destination, native returns its existing 502 proxy error and retained Python returns its existing 503 failure response; neither failed request appears in the operator approval views. After the destination is restored, a new prompt becomes visible in the same process. The [shared real-proxy control](../tests/proxy_contracts/test_gateway_risk_approval.py) checks failure, recovery and an ordinary allowed route on both backends. Native and retained Python network-guard egress and credential-guard prompts also wait for the canonical audit append before reporting a pending approval. If the append fails, native returns 502 and retained Python returns 503 without forwarding to the origin or adding a new request to either operator approval view. A new prompt becomes visible after storage recovers in the same process. The [shared guard control](../tests/proxy_contracts/test_guard_approval_audit.py) checks both backends, both operator views, credential isolation, and unrelated allow and deny decisions. These confirmations do not promise fsync or crash durability. |
+| D57 | A source flow-record tag failure can leave the inserted flow pending on its SQLite connection. A later successful operation commits that failed record. | Native recording rolls the row and provenance tags back together, while retaining separate best-effort body search indexing. The [storage comparison](../proxy/tests/flow_store.rs) preserves the source witness and checks that the failed record stays absent after another commit and reopen. The live [`live_evidence_sink_failure_keeps_transport_and_capture_distinct_from_recovery`](../proxy/src/flow_runtime_tests.rs) control replaces the response-phase event sink with writable `/dev/full`: the origin still returns 200, the response marks the evidence failure, the captured row survives reopen, and a later healthy write has no stale failure marker. That live sink control covers one response-phase event sink. Agent API approval submissions separately wait for the canonical audit append before reporting a pending request; [`approval_audit_delivery`](../proxy/tests/approval_audit_delivery.rs) checks an unwritable destination, empty operator views and same-process recovery. The retained Python AgentAPI now waits for append/close before claiming operator review for service access, contract binding, desktop presentation or a collaboration request; failed writes return 500, while ordinary audit events stay asynchronous. These waits run off the event loop so other AgentAPI calls remain available. The [real-proxy control](https://github.com/craigbalding/safeyolo/blob/e91f69ef85df55341db530bab421f67c4afb83f5/tests/proxy_migration/test_python_agent_api_approval_audit.py) checks failure, both operator views and same-process recovery. Native and retained Python service-gateway risky-route approval prompts also wait for the audit append before returning 428. With an unwritable destination, native returns its existing 502 proxy error and retained Python returns its existing 503 failure response; neither failed request appears in the operator approval views. After the destination is restored, a new prompt becomes visible in the same process. The [shared real-proxy control](../tests/proxy_contracts/test_gateway_risk_approval.py) checks failure, recovery and an ordinary allowed route on both backends. Native and retained Python network-guard egress and credential-guard prompts also wait for the canonical audit append before reporting a pending approval. If the append fails, native returns 502 and retained Python returns 503 without forwarding to the origin or adding a new request to either operator approval view. A new prompt becomes visible after storage recovers in the same process. The [shared guard control](../tests/proxy_contracts/test_guard_approval_audit.py) checks both backends, both operator views, credential isolation, and unrelated allow and deny decisions. These confirmations do not promise fsync or crash durability. |
 | D58 | Direct source flow reads fall back to legacy agent_id when a schema-v2 row has no authoritative evidence_owner. An explicitly quarantined owner-null row is therefore readable by that legacy agent although scoped search excludes it. | Native direct reads require exact evidence_owner, matching collection scope. Foreign, unresolved, quarantined and missing records share the existing 404. [API tests](../proxy/tests/agent_api_flows.rs) prove denial before loading or decompressing a body; the `evidence_owner_is_the_single_scope_for_search_detail_body_and_tags` witness extends that check across Alice/Bob collection, detail, body and tag paths, while [trace tests](../proxy/tests/agent_api_trace.rs) cover foreign and owner-null trace records. Existing version-1 migration still assigns owners; reads do not reattribute quarantined version-2 evidence. |
 | D59 | If shutdown finds the source audit queue full, it removes and echoes queued events without releasing their pending reservations. After the active flush finishes, pending can remain permanently nonzero. | Native shutdown releases exactly the reservations for entries removed by this fallback. Pending then reaches zero after active work finishes. Echoed events are not claimed to have reached the file. The [writer tests](../proxy/src/audit/writer/tests.rs) preserve the held-flush/full-queue case and distinguish draining from persistence. |
 | D60 | The retired source reconciled UDS identity with an agent map. | Issue #197 removes that second identity source. Accepted listener identity now reaches all consumers directly; see [agent listener reports](#agent-listener-reports). |
@@ -2264,13 +2262,14 @@ of route parsing. These operator call sites supply no agent attribution,
 decision or approval.
 
 Approval-bearing Agent API requests (`/gateway/request-access`,
-`/gateway/submit-binding`, `/desktop/present` and `/plumb/request-chat`) now
+`/gateway/submit-binding`, `/desktop/present`, `/api/coord/request-access` and
+`/api/coord/request-collaboration`)
 return a pending success only after their own canonical audit event is written
 and closed. If the destination write fails, the queue is full or stopped, or
 the write does not complete within 5 seconds, the agent receives 500 rather
 than a claim that the operator can review the request. Other audit events remain
-asynchronous. A failed Plumb audit does not undo its already committed SQLite
-request; the operator approval views still require the canonical audit event.
+asynchronous. The canonical pending store owns native approval authority.
+An audit event does not create an approval.
 The write receipt does not promise filesystem sync or crash durability.
 [The focused approval delivery test](../proxy/tests/approval_audit_delivery.rs)
 checks all three stateless routes against the native admin and retained watch
@@ -3307,35 +3306,7 @@ and installed Linux rollback paths are exercised together in
 [`installed_state_transition.py`](../tests/blackbox/installed_state_transition.py).
 The task-policy contract and macOS installed return remain pending under #638.
 
-The native plumb owner applies the same process-lifetime rule to its blocking
-SQLite calls, memory projections and conversation long polls. Agent request-chat,
-message and leave operations, plus operator approval, denial and close, keep
-their committed projection and canonical audit attempt inside the process-owned
-operation. Shutdown closes plumb admission and wakes active polls before
-listener drain, then joins admitted operations and their store calls; a
-canceled caller drops only its response receiver. New calls return the existing
-503 unavailable response after the stop fence. The focused plumb controls
-`shutdown_wakes_waiters_and_closes_new_plumb_admission`,
-`canceled_store_call_remains_owned_until_plumb_drain`,
-`canceled_request_chat_keeps_projection_and_canonical_audit` and
-`canceled_message_keeps_projection_and_canonical_audit`,
-`canceled_leave_keeps_projection_and_canonical_audit` and
-`canceled_approval_keeps_projection_and_both_canonical_audits` cover these
-boundaries. `request_audit_submission_failure_keeps_committed_projection` and
-`admin_audit_submission_failure_keeps_committed_projection` inject writer
-failure and verify that committed state remains durable. The existing
-persistence test opens a second owner on the same state directory and verifies
-the projection; it does not claim a process restart. The real-listener
-`shutdown_fence_rejects_later_admin_approval_while_admitted_approval_drains`
-holds one authenticated `/admin/plumb/approve` at its SQLite boundary, closes
-the same admission fence used by `Proxy::shutdown`, then submits a distinct
-authenticated post-fence approval while full shutdown is draining. After the
-fixture releases, it independently checks the two SQLite request states, the
-single grant, one canonical `plumb.approved` and one
-`plumb.conversation_created` attempt, writer stop, readiness removal and both
-listener releases. Its distinct post-fence request and exact audit counts make
-the witness sensitive to late admission or an early writer stop. This is one
-graceful plumb approval slice, not the full producer matrix. The separate real-NATS
+The separate real-NATS
 [`native_attention_wait_is_reclaimed_by_proxy_shutdown`](../proxy/tests/coord_wait_shutdown.rs)
 witness covers one admitted coordination subscription through two graceful
 shutdowns: the same paths reopen with a fresh instance identity, the second
@@ -3344,28 +3315,6 @@ remain unchanged after each owner drain. This is one coordination worker
 slice, not the complete #626/#628/#629 standalone-worker matrix. Blocking
 SQLite work can still extend graceful shutdown, and abrupt termination or
 ordinary `Drop` do not claim this drain.
-
-The running-client control
-`disconnected_clients_release_wait_capacity_for_permitted_peer` fills the
-native 64-waiter bound through Bob's accepted listener, drops those client
-sockets, and then verifies that Carol's permitted wait receives a later Alice
-publication. This is an explicit client-disconnect cleanup witness; it does
-not claim restart persistence or a load/concurrency matrix.
-
-Before a native Plumb read releases a message page, the owner rechecks current
-participant access and conversation expiry after the SQLite read. If access
-ended after admission, the read returns an empty page, `has_more=false` and the
-original input cursor. New reads still return 403. Leave and operator close do
-not wake pending polls. This check prevents new disclosure; it does not retract
-content already returned while the participant had access.
-
-The companion running-client control
-`backing_state_failure_is_truthful_and_other_member_recovers` holds the real
-SQLite writer lock while Alice attempts a message. The native route returns
-503 `plumb backing state unavailable`, leaves no message or allowed-message
-audit for the failed write, and then accepts Carol's permitted publication
-after the lock is released. This covers one transient writer-lock failure; it
-does not claim corrupt-file recovery or restart behavior.
 
 Persistence uses the existing TOML transaction helper and its durability-failure
 rollback behavior. Truthy non-string request fields remain native representation

@@ -83,7 +83,7 @@ fn config(root: &Path) -> Config {
         ignore_hosts: Vec::new(),
         via_token: Some("coord-wait-test".into()),
         inspection: None,
-        plumb: Default::default(),
+        collaboration: Default::default(),
     }
 }
 

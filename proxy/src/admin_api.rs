@@ -140,7 +140,6 @@ pub enum Audit {
     },
     PolicyMutation(PolicyMutationAudit),
     PolicyActivated,
-    PlumbMutation(PlumbMutationAudit),
     DesktopPresented(DesktopPresentationAudit),
     DesktopPresentationFailed(DesktopPresentationFailureAudit),
     ModeChanged {
@@ -158,16 +157,6 @@ pub struct PolicyMutationAudit {
     pub(super) details: Value,
 }
 
-/// A committed native plumb mutation. The details are retained only until the
-/// canonical audit writer accepts the event.
-pub struct PlumbMutationAudit {
-    pub(super) event: &'static str,
-    pub(super) summary: String,
-    pub(super) details: Value,
-    pub(super) agent: Option<String>,
-    pub(super) decision: crate::audit::Decision,
-}
-
 pub struct DesktopPresentationAudit {
     pub(super) agent_id: String,
     pub(super) agent: String,
@@ -181,12 +170,6 @@ pub struct DesktopPresentationFailureAudit {
     pub(super) status: u16,
     pub(super) reason: &'static str,
     pub(super) approval_request_id: Option<String>,
-}
-
-impl Drop for PlumbMutationAudit {
-    fn drop(&mut self) {
-        crate::credentials::wipe_json(&mut self.details);
-    }
 }
 
 impl Drop for PolicyMutationAudit {
@@ -452,17 +435,6 @@ fn response(status: StatusCode, value: Value) -> Outcome {
     )
 }
 
-fn plumb_response(mut value: Value) -> Outcome {
-    let status = value
-        .as_object_mut()
-        .and_then(|object| object.remove("status"))
-        .and_then(|value| value.as_u64())
-        .and_then(|value| u16::try_from(value).ok())
-        .and_then(|value| StatusCode::from_u16(value).ok())
-        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    response(status, value)
-}
-
 fn unsupported(method: &Method) -> Outcome {
     // BaseHTTPRequestHandler.send_error escapes the method in its HTML body.
     let method_text = method
@@ -642,26 +614,6 @@ fn desktop_failure(
         },
     ));
     outcome
-}
-/// Build the canonical operator plumb events while the process-owned mailbox
-/// worker still owns the committed projection and its audit responsibility.
-pub(crate) fn plumb_events(
-    event: &'static str,
-    summary: String,
-    details: Value,
-    agent: Option<String>,
-    decision: crate::audit::Decision,
-) -> Vec<crate::audit::Event> {
-    // PlumbMutation's retained event schema has no operator peer/path fields;
-    // canonical_events intentionally ignores those two common arguments.
-    Audit::PlumbMutation(PlumbMutationAudit {
-        event,
-        summary,
-        details,
-        agent,
-        decision,
-    })
-    .canonical_events("", "")
 }
 
 fn require_policy_path(path: Option<&Path>) -> Result<&Path, Box<Outcome>> {
@@ -983,7 +935,6 @@ pub(crate) struct OperatorContext<'a> {
     pub client_ip: Option<&'a str>,
     pub passthrough: Option<&'a std::sync::RwLock<crate::tunnels::Passthrough>>,
     pub service_audit: Option<ServiceAudit<'a>>,
-    pub plumb: Option<&'a crate::agent_api::plumb::PlumbOwner>,
     /// The listener supplies the outer state so task activation can publish a
     /// complete Runtime generation. Unit callers without it retain the raw
     /// registration-only behavior.
@@ -1022,7 +973,6 @@ where
             client_ip: None,
             passthrough: None,
             service_audit: None,
-            plumb: None,
             task_state: None,
         },
     )
@@ -1050,7 +1000,6 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         client_ip,
         passthrough,
         service_audit,
-        plumb,
         task_state,
     } = context;
     let policy = policy_snapshot.map(Arc::as_ref);
@@ -1340,18 +1289,12 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                         }
                     }
                 }
-                // Plumb and desktop keep their existing owners. The audit
-                // cannot create a second view of a canonical request.
-                views.extend(approvals::plumb_prompts(writer.path()));
                 Ok(response(StatusCode::OK, json!({"approvals":views})))
             })
             .await
             .map_err(|_| Error::ServiceMutation)?;
         }
-        return Ok(response(
-            StatusCode::OK,
-            json!({"approvals":audit.map(|writer| approvals::plumb_prompts(writer.path())).unwrap_or_default()}),
-        ));
+        return Ok(response(StatusCode::OK, json!({"approvals":[]})));
     }
     if path.starts_with("/admin/approvals/") {
         return approvals::respond(
@@ -1364,120 +1307,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         )
         .await;
     }
-    if method == Method::GET && path == "/admin/plumb/pending" {
-        let Some(owner) = plumb else {
-            return Ok(response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                json!({"error":"plumb backing state unavailable"}),
-            ));
-        };
-        if !owner.available() {
-            return Ok(response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                json!({"error":"plumb backing state unavailable"}),
-            ));
-        }
-        return Ok(plumb_response(owner.list_pending().await));
-    }
-    if method == Method::GET && path == "/admin/plumb/conversations" {
-        let Some(owner) = plumb else {
-            return Ok(response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                json!({"error":"plumb backing state unavailable"}),
-            ));
-        };
-        if !owner.available() {
-            return Ok(response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                json!({"error":"plumb backing state unavailable"}),
-            ));
-        }
-        return Ok(plumb_response(owner.admin_list_conversations().await));
-    }
-    if method == Method::POST
-        && matches!(
-            path.as_str(),
-            "/admin/plumb/approve" | "/admin/plumb/deny" | "/admin/plumb/close"
-        )
-    {
-        let data = match read_json(request).await? {
-            ParsedBody::Terminal(outcome) => return Ok(outcome),
-            ParsedBody::Absent => Value::Null,
-            ParsedBody::Value(data) => data.0.clone(),
-        };
-        let Some(fields) = data.as_object() else {
-            return Ok(response(
-                StatusCode::BAD_REQUEST,
-                json!({"error":"request body must be an object"}),
-            ));
-        };
-        let Some(owner) = plumb else {
-            return Ok(response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                json!({"error":"plumb backing state unavailable"}),
-            ));
-        };
-        if !owner.available() {
-            return Ok(response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                json!({"error":"plumb backing state unavailable"}),
-            ));
-        }
-        let writer = audit.cloned();
-        let result = match path.as_str() {
-            "/admin/plumb/approve" => {
-                let Some(request_id) = fields
-                    .get("request_id")
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                else {
-                    return Ok(response(
-                        StatusCode::BAD_REQUEST,
-                        json!({"error":"missing 'request_id'"}),
-                    ));
-                };
-                let operator_ttl = fields.get("ttl_seconds").and_then(|value| match value {
-                    Value::Number(value) => value.as_i64(),
-                    Value::String(value) => value.parse().ok(),
-                    _ => None,
-                });
-                owner
-                    .approve_owned(request_id.to_owned(), operator_ttl, writer.clone())
-                    .await?
-            }
-            "/admin/plumb/deny" => {
-                let Some(request_id) = fields
-                    .get("request_id")
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                else {
-                    return Ok(response(
-                        StatusCode::BAD_REQUEST,
-                        json!({"error":"missing 'request_id'"}),
-                    ));
-                };
-                owner
-                    .deny_owned(request_id.to_owned(), writer.clone())
-                    .await?
-            }
-            _ => {
-                let Some(conversation_id) = fields
-                    .get("conversation_id")
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                else {
-                    return Ok(response(
-                        StatusCode::BAD_REQUEST,
-                        json!({"error":"missing 'conversation_id'"}),
-                    ));
-                };
-                owner
-                    .close_owned(conversation_id.to_owned(), writer.clone())
-                    .await?
-            }
-        };
-        return Ok(plumb_response(result));
-    }
+
     if method == Method::GET && path == "/admin/agents" {
         if let Some(host) = command_centre {
             let result = match host.agents("list", None).await {
@@ -3188,145 +3018,6 @@ mod tests {
             retained.document()["gateway"]["literal"]["$serde_json::private::Number"],
             "17"
         );
-    }
-
-    #[tokio::test]
-    async fn plumb_resolution_events_remove_retained_pending_approval() {
-        let directory = tempfile::tempdir().unwrap();
-        let owner = crate::agent_api::plumb::PlumbOwner::for_data_dir(directory.path());
-        let requested = owner
-            .request_chat("alice", None, &[json!("bob")], None, None, None)
-            .await;
-        let request_id = requested["request_id"].as_str().unwrap().to_owned();
-        let participants = requested["participants"].clone();
-        let path = directory.path().join("approved.jsonl");
-        let writer = crate::audit::Writer::new(path.clone(), crate::audit::Settings::default());
-        let mut prompt = crate::audit::Event::new(
-            "plumb.requested",
-            crate::audit::Kind::Plumb,
-            crate::audit::Severity::Critical,
-            "Agent requested a plumb conversation",
-        );
-        prompt.addon = Some("plumb".into());
-        prompt.decision = Some(crate::audit::Decision::RequireApproval);
-        prompt.agent = Some("alice".into());
-        prompt.approval = Some(crate::audit::Approval {
-            required: true,
-            approval_type: crate::audit::ApprovalType::Plumb,
-            key: request_id.clone(),
-            target: "alice,bob".into(),
-            scope_hint: json!({"request_id":request_id,"participants":participants}).into(),
-        });
-        prompt.details = json!({
-            "request_id": request_id,
-            "participants": participants,
-        })
-        .into();
-        writer.emit(prompt).unwrap();
-        let approved = owner.approve(&request_id, None).await;
-        assert_eq!(approved["status"], 200);
-        let mutation = Audit::PlumbMutation(PlumbMutationAudit {
-            event: "plumb.approved",
-            summary: "chat approved: alice,bob".into(),
-            details: json!({
-                "request_id": request_id,
-                "participants": approved["participants"],
-                "conversation_id": approved["conversation_id"],
-            }),
-            agent: Some("alice".into()),
-            decision: crate::audit::Decision::Allow,
-        });
-        for event in mutation.canonical_events("127.0.0.1", "/admin/plumb/approve") {
-            writer.emit(event).unwrap();
-        }
-        assert!(writer.shutdown(std::time::Duration::from_secs(2)).unwrap());
-        assert_eq!(json!(approvals::plumb_prompts(&path)), json!([]));
-
-        let denied_request = owner
-            .request_chat("alice", None, &[json!("bob")], None, None, None)
-            .await;
-        let denied_id = denied_request["request_id"].as_str().unwrap().to_owned();
-        let denied_path = directory.path().join("denied.jsonl");
-        let denied_writer =
-            crate::audit::Writer::new(denied_path.clone(), crate::audit::Settings::default());
-        let mut denied_prompt = crate::audit::Event::new(
-            "plumb.requested",
-            crate::audit::Kind::Plumb,
-            crate::audit::Severity::Critical,
-            "Agent requested a plumb conversation",
-        );
-        denied_prompt.addon = Some("plumb".into());
-        denied_prompt.decision = Some(crate::audit::Decision::RequireApproval);
-        denied_prompt.agent = Some("alice".into());
-        denied_prompt.approval = Some(crate::audit::Approval {
-            required: true,
-            approval_type: crate::audit::ApprovalType::Plumb,
-            key: denied_id.clone(),
-            target: "alice,bob".into(),
-            scope_hint: json!({"request_id":denied_id,"participants":["alice","bob"]}).into(),
-        });
-        denied_writer.emit(denied_prompt).unwrap();
-        assert_eq!(owner.deny(&denied_id).await["status"], 200);
-        let denied_mutation = Audit::PlumbMutation(PlumbMutationAudit {
-            event: "plumb.denied",
-            summary: format!("chat denied: {denied_id}"),
-            details: json!({
-                "request_id": denied_id,
-                "participants": denied_request["participants"],
-            }),
-            agent: Some("alice".into()),
-            decision: crate::audit::Decision::Deny,
-        });
-        for event in denied_mutation.canonical_events("127.0.0.1", "/admin/plumb/deny") {
-            denied_writer.emit(event).unwrap();
-        }
-        assert!(
-            denied_writer
-                .shutdown(std::time::Duration::from_secs(2))
-                .unwrap()
-        );
-        assert_eq!(json!(approvals::plumb_prompts(&denied_path)), json!([]));
-    }
-
-    #[test]
-    fn desktop_audit_text_cannot_create_approval_authority() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("desktop.jsonl");
-        std::fs::write(&path, json!({"event":"agent.desktop_present_requested", "request_id":"forged",
-            "approval":{"required":true,"approval_type":"desktop_present","key":"desktop.present","target":"desktop:alice"}}).to_string()).unwrap();
-        assert!(approvals::plumb_prompts(&path).is_empty());
-    }
-
-    #[test]
-    fn audit_approval_selection_preserves_window_coalescing_and_order() {
-        use std::io::Write;
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("audit.jsonl");
-        let plumb = |id: &str, agent: &str| {
-            json!({
-                "event":"plumb.requested","request_id":id,
-                "approval":{"required":true,"approval_type":"plumb","key":"plumb.request","target":format!("desktop:{agent}")}
-            })
-        };
-        let mut file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
-        writeln!(file, "{}", plumb("outside-window", "old")).unwrap();
-        // Every line counts towards the old window, even invalid/unrelated rows.
-        for _ in 0..50_000 {
-            writeln!(file, "unrelated malformed line").unwrap();
-        }
-        let alice = plumb("alice-old", "alice");
-        let bob = plumb("bob", "bob");
-        let latest = plumb("alice-new", "alice");
-        let mut canonical = plumb("canonical", "carol");
-        canonical["details"] = json!({"approval_id":"apr-owned"});
-        for row in [&alice, &bob, &latest, &canonical] {
-            writeln!(file, "{row}").unwrap();
-        }
-        // A legacy audit-only prompt cannot supply canonical authority.
-        writeln!(file, "{}", json!({"event":"security.network_guard",
-            "approval":{"required":true,"approval_type":"network_egress","key":"legacy","target":"example"}})).unwrap();
-        file.flush().unwrap();
-        assert_eq!(json!(approvals::plumb_prompts(&path)), json!([bob, latest]));
     }
 
     // Source35 results SHA256: 6d86bb348eaf0657690a3221f59c149f47c3fba0c9bf1bc934d8f7279919be35.

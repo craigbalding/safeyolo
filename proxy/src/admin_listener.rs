@@ -494,7 +494,6 @@ async fn serve_connection(
                         mutation_owner: &runtime.service_mutations,
                         gateway_store: runtime.gateway_grants.as_ref(),
                     }),
-                    plumb: Some(runtime.plumb.as_ref()),
                     task_state: Some(&state),
                 },
             )

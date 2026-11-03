@@ -1,9 +1,9 @@
 # Triage graph: "the proxy said wait_for_approval / pending -- now what?"
 #
-# Entry question: a request or gateway/plumb call returned 428 or 202 with
+# Entry question: a request or gateway/collaboration call returned 428 or 202 with
 # an `action` of `wait_for_approval` (or an equivalent pending state). This
 # graph disambiguates credential-guard / network-guard / service-gateway
-# / plumb approval flavours, tells me when waiting is the right move vs
+# / collaboration approval flavours, tells me when waiting is the right move vs
 # when I should self-correct instead, and points at the exact operator ask.
 #
 # See schema comment in `triage-request-failing.yaml` for field definitions.
@@ -43,10 +43,10 @@ nodes:
     keywords: ["needs_contract_binding", "gateway", "contract", "binding required"]
     source: authored
 
-  - id: sym.plumb_202_pending
+  - id: sym.collaboration_pending
     kind: symptom
-    label: "202 from `/plumb/request-chat` with pending status"
-    keywords: ["202", "plumb", "pending", "conversation", "chat request"]
+    label: "200 from `/api/coord/request-collaboration` with status pending"
+    keywords: ["collaboration", "pending", "room", "participants"]
     source: authored
 
   - id: sym.stuck_looping_retries
@@ -63,7 +63,7 @@ nodes:
 
   - id: ev.approval_read_type_field
     kind: evidence
-    label: "Read `type` field to identify which addon owns the approval: credential-guard / network-guard / service-gateway / plumb"
+    label: "Read `type` field to identify which addon owns the approval: credential-guard / network-guard / service-gateway / coord_room"
     source: authored
 
   - id: ev.approval_read_reflection
@@ -76,9 +76,9 @@ nodes:
     label: "GET /gateway/services -- has the requested capability moved from `available` to `authorized`?"
     source: authored
 
-  - id: ev.approval_poll_plumb_convos
+  - id: ev.approval_read_collaboration
     kind: evidence
-    label: "GET /plumb/conversations -- has the conversation been approved?"
+    label: "GET /approvals/APPROVAL_ID -- inspect the canonical collaboration decision"
     source: authored
 
   - id: ev.approval_check_retry_after
@@ -107,9 +107,9 @@ nodes:
     label: "service-gateway granted capability but requires a contract binding first"
     source: authored
 
-  - id: cls.approval_plumb
+  - id: cls.approval_collaboration
     kind: classification
-    label: "plumb requires operator approval to open a conversation"
+    label: "New collaboration requires an operator decision over audience and deadline"
     source: authored
 
   - id: cls.approval_not_wanted
@@ -135,7 +135,7 @@ nodes:
 
   - id: con.approval_poll_at_interval
     kind: conclusion
-    label: "Poll the relevant endpoint (`/gateway/services` or `/plumb/conversations`) at a reasonable interval; honor `Retry-After` if present"
+    label: "Poll the relevant endpoint (`/gateway/services` or `/approvals/APPROVAL_ID`) at a reasonable interval; honor `Retry-After` if present"
     source: authored
 
   # ---- Operator asks ---------------------------------------------------
@@ -154,9 +154,9 @@ nodes:
     label: "Ask operator to run `safeyolo watch` and grant/deny this capability (name the capability, explain the purpose)"
     source: authored
 
-  - id: ask.approval_watch_plumb
+  - id: ask.approval_watch_collaboration
     kind: operator_ask
-    label: "Ask operator to run `safeyolo watch` and approve/deny the plumb conversation (state topic, participants, TTL)"
+    label: "Ask operator to run `safeyolo watch` and approve/reject the collaboration room (inspect topic, durable participants and deadline)"
     source: authored
 
   - id: ask.approval_reconsider_scope
@@ -171,7 +171,7 @@ edges:
   - {from: sym.approval_428_self_correct, to: ev.approval_read_action_field, kind: next_check}
   - {from: sym.gateway_202_pending,       to: ev.approval_read_type_field, kind: next_check}
   - {from: sym.gateway_needs_contract,    to: ev.approval_read_type_field, kind: next_check}
-  - {from: sym.plumb_202_pending,         to: ev.approval_read_type_field, kind: next_check}
+  - {from: sym.collaboration_pending,         to: ev.approval_read_type_field, kind: next_check}
   - {from: sym.stuck_looping_retries,     to: con.approval_wait_do_not_retry, kind: implies}
 
   # action field disambiguates approval vs self-correct
@@ -184,7 +184,7 @@ edges:
   - {from: ev.approval_read_type_field, to: cls.approval_networkguard,    kind: implies, when: "type mentions network-guard OR egress_approval_required"}
   - {from: ev.approval_read_type_field, to: cls.approval_gateway_grant,   kind: implies, when: "type mentions service-gateway AND decision != needs_contract_binding"}
   - {from: ev.approval_read_type_field, to: cls.approval_gateway_binding, kind: implies, when: "decision == needs_contract_binding"}
-  - {from: ev.approval_read_type_field, to: cls.approval_plumb,           kind: implies, when: "endpoint was /plumb/*"}
+  - {from: ev.approval_read_type_field, to: cls.approval_collaboration,           kind: implies, when: "endpoint was /api/coord/request-collaboration"}
 
   # Each classification -> the exact operator ask + wait conclusion
   - {from: cls.approval_credguard,       to: ask.approval_watch_credguard,   kind: escalates_to}
@@ -195,8 +195,8 @@ edges:
   - {from: cls.approval_gateway_grant,   to: con.approval_poll_at_interval,  kind: implies}
   - {from: cls.approval_gateway_grant,   to: ev.approval_poll_gateway_services, kind: next_check}
   - {from: cls.approval_gateway_binding, to: con.approval_submit_binding,    kind: implies}
-  - {from: cls.approval_plumb,           to: ask.approval_watch_plumb,       kind: escalates_to}
-  - {from: cls.approval_plumb,           to: ev.approval_poll_plumb_convos,  kind: next_check}
+  - {from: cls.approval_collaboration,           to: ask.approval_watch_collaboration,       kind: escalates_to}
+  - {from: cls.approval_collaboration,           to: ev.approval_read_collaboration,  kind: next_check}
 
   # Reflection helps the operator ask read cleanly
   - {from: cls.approval_credguard,     to: ev.approval_read_reflection, kind: next_check}
@@ -215,5 +215,5 @@ entries:
   - symptom: sym.approval_428_self_correct
   - symptom: sym.gateway_202_pending
   - symptom: sym.gateway_needs_contract
-  - symptom: sym.plumb_202_pending
+  - symptom: sym.collaboration_pending
   - symptom: sym.stuck_looping_retries

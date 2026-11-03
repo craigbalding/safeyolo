@@ -238,8 +238,8 @@ passed to the existing storage/queue owners without a new positive-only rule.
 | `sse_streaming_enabled`, `sse_stream_json` | Booleans; `true`, `false` | Existing streaming inputs; response streaming consumer. Host exceptions remain policy. |
 | `flow_store_enabled`, `flow_store_db_path` | Boolean/path; `true`, `logs/flows.sqlite3` | Generated capture inputs; existing FlowRecorder and FlowStore. Context and evidence authority still govern capture. |
 | `flow_pruner_max`, `flow_pruner_max_body_bytes` | Integers; `5000`, `1073741824` | Existing inspector inputs; existing FlowStore pruner. Active flows remain retained. |
-| `plumb.max_participants`, `plumb.max_message_bytes` | Integers; `8`, `1048576` | Existing plumb settings; conversation admission. A zero message-size limit disables that cap. |
-| `plumb.message_page_limit`, `plumb.default_ttl_seconds` | Integers; `200`, `3600` | Existing plumb settings; history read and conversation TTL. Existing zero/default handling remains. |
+| `collaboration.max_participants`, `collaboration.max_message_bytes` | Integers; `8`, `1048576` | New approved collaboration rooms. The message bound counts UTF-8 body bytes. Zero skips the body check; HTTP/envelope/broker bounds still apply. |
+| `collaboration.default_ttl_seconds` | Integer; `3600` | Collaboration deadline measured from the request. Nonpositive defaults select 3600. See [collaboration limits](../cli/src/safeyolo/agent_context/skills/safeyolo/references/agent-api.md#approved-collaboration-rooms). |
 | `capture.max_request_body_bytes`, `capture.max_response_body_bytes` | Integers; `1048576`, `4194304` | Former flow-store tuning; FlowStore body limits. |
 | `capture.preview_text_chars`, `capture.compress_bodies`, `capture.queue_max` | Integer/Boolean/integer; `8192`, `true`, `500` | Former flow-store tuning and `SAFEYOLO_FLOW_QUEUE_MAX`; body preview/storage and recorder queue. |
 | `trace.ttl_s`, `trace.global_max`, `trace.per_agent_max` | Integers; `300`, `1000`, `200` | Former trace environment inputs; existing TraceStore retention and capacity. |
