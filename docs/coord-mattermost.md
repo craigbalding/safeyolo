@@ -17,8 +17,7 @@ No Mattermost plugin or PikaPods-specific feature is required.
 Use the CLI installed with your [instance](installation.md#install-and-start).
 Run the adapter as the host account that owns that instance. The bundle's
 `bin/safeyolo` supplies the adapter; no Python package, guest helper or additional
-Mattermost executable is required. The retired Python CLI no longer registers
-`coord mattermost`.
+Mattermost executable is required.
 
 ## Projection and trust
 
@@ -308,6 +307,20 @@ posts. Identity verification has its own status. Pending outward projections,
 inbound appends and action appends have separate reconciliation counts. A pending
 action can make synchronization degraded while independent traffic continues.
 Health exposes no credentials or capabilities.
+
+To check channel conversation, use the configured human's Mattermost account to
+send a new top-level post in a mapped channel. On the host, replace `ROOM_NAME`
+with that channel's configured Coord room and read its canonical history:
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" \
+  coord history ROOM_NAME
+```
+
+The post must appear once with `sender_kind=operator`, its exact text, and its
+Mattermost post and channel IDs. A top-level post has no `coord_msg_id`. An
+agent's reply must appear as a readable new post in the same Mattermost channel.
+A successful configuration or health check does not establish this exchange.
 
 To stop,
 press Ctrl-C in the foreground terminal or have the host supervisor send SIGTERM
