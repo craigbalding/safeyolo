@@ -596,6 +596,14 @@ Accepted reloads keep the view, scope and user filter, and apply updated targets
 Failed reloads leave the targets unchanged. Rust pruning occurs on observation,
 exchange release or settings changes. Python uses its hook and interval schedule.
 
+On GNU/Linux, the proxy asks glibc to release already-free heap pages every
+30 seconds. A dedicated worker performs the allocator scan outside request
+tasks and stops when its proxy owner is dropped. Reloads keep the same worker.
+This does not change capture settings, evict traffic or release live allocations.
+A trim can release no pages; live capture and fragmentation still consume memory.
+If the worker cannot start, the proxy reports the failure and continues serving.
+Other platforms retain their existing allocator behavior.
+
 For HTTP, the inspector shows retained encoded body bytes, including a distinct
 empty body. Streamed bodies, unavailable local response bodies, and bodies whose
 capture failed are labelled unavailable. The view does not drain a stream to
