@@ -483,7 +483,7 @@ nodes:
         - path: proxy/src/coord_tools/github.rs
           sha256: da9e4c6e244c232da4aedf17d7f58484862743996c084317a37f4e602d70c164
         - path: proxy/src/native_client.rs
-          sha256: 7dac16be1c24743ee56cd88d6340f4589310a97a47c1392c257d384a1787ccff
+          sha256: bb2061375c9bd7b814b9047d91e76d3cdccba0428581c40bee7d103c49924d9f
         - path: cli/src/safeyolo/services/github.yaml
           sha256: 38880c71fbe0a2f995a790c64d21d001baa7a5911d10f44d8e50973914f543d3
         - path: proxy/tests/native_coord/stage0.rs
