@@ -409,7 +409,9 @@ nodes:
       with --ignored. It uses the real authenticated Admin stream and native
       watch for pre-existing signals and approvals, the subscription/snapshot
       boundary, missed final create/clear notifications with no later event,
-      idle viewer requests, unavailable state and reconnect. Its operator
+      fast signal/approval creation and resolution between host reads with
+      the final resolution frames dropped, idle viewer requests, unavailable
+      state and reconnect. Its operator
       recovery runs with NATS stopped and the audit destination impaired.
       Current-state controls do not establish audit recording or historical replay.
       For combined room status, select
@@ -515,7 +517,7 @@ nodes:
         - path: proxy/src/coord_work_schema.sql
           sha256: fb6592902c80c56d51758e3938c3fa14b620daa6988269eedf7a6e215e0dcf99
         - path: proxy/tests/native_coord/signals.rs
-          sha256: c61808f52aa54c442f8656c4651bd972d2a66f1cab525d5c32848893b3f8ec60
+          sha256: 06e8e25ce18406b36783a196ef30db36e0b219a8f3cc3b169f768c37cb062c2d
         - path: proxy/src/coord_rooms/signals.rs
           sha256: bef138d95aa2d06ee547311728ed78b2a38b6cac96ed176a7c87caf54364ff57
         - path: proxy/src/coord_rooms/signals/tests.rs

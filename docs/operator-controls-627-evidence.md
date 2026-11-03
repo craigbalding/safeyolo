@@ -21,10 +21,14 @@ available; it does not prove that every producer recorded its events. A non-null
 does not replay or reconstruct that history.
 
 One host check reads local canonical pending state each second for all viewers.
-Changed state wakes connected clients even if the final audit notification was
+Relevant log delivery also requires a later host reconciliation, even when a
+brief creation and resolution leave the pending-state fingerprint unchanged.
+A delivery that overlaps a host read remains due for the next check.
+These controls wake clients even if the final audit notification was
 lost and no later business event occurs. With healthy state/API and client
-connectivity, the target is visibility within five seconds. Unchanged healthy
-state generates no refresh controls or periodic viewer network requests.
+connectivity, the target is visibility within five seconds. After relevant log
+activity is reconciled, unchanged healthy state generates no refresh controls
+or periodic viewer network requests.
 Controls coalesce to the latest state separately for each attached observer.
 
 Default watch shows current pending signals and approvals. It subscribes before
@@ -86,7 +90,13 @@ On macOS, run the Commander controls from the repository root:
 SAFEYOLO_COMMAND_CENTRE_TEST_FILTER=operator-recovery command-centre/macos/test.sh
 ```
 
-These controls cover pending recovery, attention suppression, stale reads,
+The native watch control also creates and resolves signals and approvals
+between host checks, observes creation through JSONL and drops the final
+resolution frames on a healthy authenticated viewer connection. Both removals
+must appear within five seconds with no later business event. It then checks
+that idle viewers make no repeated state requests.
+
+The Commander controls cover pending recovery, attention suppression, stale reads,
 attachment/reconnect and idle network behavior.
 These controls use synthetic credentials and isolated state. They do not
 establish #869's outstanding installed, Tailnet or SSH observations, private

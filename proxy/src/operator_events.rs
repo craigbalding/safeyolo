@@ -3,7 +3,13 @@
 use crate::{Error, RuntimeState};
 use bytes::Bytes;
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 use tokio::sync::{broadcast, watch};
 
 mod log;
@@ -15,6 +21,7 @@ struct State {
     log_readable: bool,
     gap: Option<&'static str>,
     revision: u64,
+    checked_log_revision: u64,
 }
 impl State {
     fn bytes(&self) -> Bytes {
@@ -32,6 +39,7 @@ impl State {
 pub(crate) struct Feed {
     records: broadcast::Sender<Bytes>,
     state: watch::Sender<State>,
+    pending_log_revision: AtomicU64,
 }
 impl Feed {
     pub(crate) async fn start(
@@ -46,8 +54,13 @@ impl Feed {
             log_readable: false,
             gap: None,
             revision: 0,
+            checked_log_revision: 0,
         });
-        let feed = Arc::new(Self { records, state });
+        let feed = Arc::new(Self {
+            records,
+            state,
+            pending_log_revision: AtomicU64::new(0),
+        });
         let source = runtime.read().ok().map(|r| r.audit.log_source());
         let follower = tokio::task::spawn_blocking(move || {
             source.map(|(path, settings)| log::Follower::new(path, settings))
@@ -82,6 +95,14 @@ impl Feed {
                 for line in result.records {
                     let _ = owner.records.send(line);
                 }
+                // A client may refresh from these records while a complete
+                // create/resolve cycle falls between host reads. Require a
+                // later current-state control even if the digest is unchanged.
+                // Mark after forwarding so a read cannot acknowledge a record
+                // before that record becomes observable.
+                if result.refresh_pending {
+                    owner.pending_log_revision.fetch_add(1, Ordering::SeqCst);
+                }
                 tokio::select! {
                     _ = stopped.changed() => return,
                     _ = tokio::time::sleep(Duration::from_millis(100)) => {},
@@ -96,18 +117,13 @@ impl Feed {
                 // One local read for all viewers. No client timer or broker is
                 // involved. Retained watch versions reach each observer even
                 // when intermediate invalidations coalesce.
+                // Capture before the read: a delivery overlapping this read
+                // must remain outstanding for the next host reconciliation.
+                let log_revision = owner.pending_log_revision.load(Ordering::SeqCst);
                 let state = runtime.clone();
                 let result = tokio::task::spawn_blocking(move || pending(&state)).await;
                 let (signals, approvals) = result.unwrap_or((None, None));
-                owner.state.send_if_modified(|state| {
-                    if (state.signals, state.approvals) == (signals, approvals) {
-                        return false;
-                    }
-                    state.signals = signals;
-                    state.approvals = approvals;
-                    state.revision += 1;
-                    true
-                });
+                owner.update_pending(log_revision, signals, approvals);
                 tokio::select! {
                     _ = stopped.changed() => return,
                     _ = tokio::time::sleep(Duration::from_secs(1)) => {},
@@ -116,6 +132,25 @@ impl Feed {
         })
         .await;
         feed
+    }
+    fn update_pending(
+        &self,
+        log_revision: u64,
+        signals: Option<[u8; 32]>,
+        approvals: Option<[u8; 32]>,
+    ) {
+        self.state.send_if_modified(|state| {
+            if (state.signals, state.approvals) == (signals, approvals)
+                && state.checked_log_revision == log_revision
+            {
+                return false;
+            }
+            state.signals = signals;
+            state.approvals = approvals;
+            state.checked_log_revision = log_revision;
+            state.revision += 1;
+            true
+        });
     }
     pub(crate) fn subscribe(&self) -> Subscription {
         Subscription {
@@ -201,6 +236,7 @@ pub(crate) fn is_operator_event(event: &serde_json::Value) -> bool {
         || matches!(
             event_name,
             "admin.approval_added"
+                | "admin.approval_decided"
                 | "admin.denial"
                 | "admin.host_allowed"
                 | "admin.host_denied"
@@ -257,8 +293,13 @@ mod tests {
             log_readable: true,
             gap: None,
             revision: 0,
+            checked_log_revision: 0,
         });
-        let feed = Feed { records, state };
+        let feed = Feed {
+            records,
+            state,
+            pending_log_revision: AtomicU64::new(0),
+        };
         let mut slow = feed.subscribe();
         let mut fast = feed.subscribe();
         slow.next().await.unwrap();
@@ -288,5 +329,47 @@ mod tests {
             assert!(value.get("event").is_none());
             assert_eq!(value["signals"], "ready");
         }
+    }
+
+    #[tokio::test]
+    async fn log_delivery_overlapping_a_read_requires_a_later_control_even_for_the_same_pending_set()
+     {
+        let (records, _) = broadcast::channel(2);
+        let empty = Some([0; 32]);
+        let (state, _) = watch::channel(State {
+            signals: empty,
+            approvals: empty,
+            log_readable: true,
+            gap: None,
+            revision: 0,
+            checked_log_revision: 0,
+        });
+        let feed = Feed {
+            records,
+            state,
+            pending_log_revision: AtomicU64::new(0),
+        };
+        let mut observer = feed.subscribe();
+        observer.next().await.unwrap();
+
+        let before_read = feed.pending_log_revision.load(Ordering::SeqCst);
+        // The log becomes visible while a host read is in progress. Neither
+        // host read observes the brief pending state seen by the client.
+        let creation = Bytes::from_static(br#"{"event":"coord.signal_created"}"#);
+        feed.records.send(creation.clone()).unwrap();
+        feed.pending_log_revision.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(observer.next().await.unwrap(), creation);
+        feed.update_pending(before_read, empty, empty);
+        assert!(!observer.state.has_changed().unwrap());
+        let next_read = feed.pending_log_revision.load(Ordering::SeqCst);
+        feed.update_pending(next_read, empty, empty);
+        let control: Value = serde_json::from_slice(&observer.next().await.unwrap()).unwrap();
+        assert_eq!(control["type"], "operator_state");
+        assert_eq!(control["revision"], 1);
+        assert!(control.get("event").is_none());
+
+        // A settled, unchanged host does not cause idle viewer requests.
+        feed.update_pending(next_read, empty, empty);
+        assert!(!observer.state.has_changed().unwrap());
     }
 }

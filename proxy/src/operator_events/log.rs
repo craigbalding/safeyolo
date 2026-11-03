@@ -19,6 +19,7 @@ pub(super) struct Readout {
     pub records: Vec<Bytes>,
     pub readable: bool,
     pub gap: Option<&'static str>,
+    pub refresh_pending: bool,
 }
 pub(super) struct Follower {
     path: PathBuf,
@@ -86,6 +87,7 @@ impl Follower {
             records: Vec::new(),
             readable: true,
             gap: None,
+            refresh_pending: false,
         };
         if self.file.is_none() && self.open(false).is_err() {
             // No archive is still unavailable, even if pending state is readable.
@@ -138,6 +140,7 @@ impl Follower {
                     {
                         Some(mut event) => {
                             if super::is_operator_event(&event) {
+                                output.refresh_pending |= super::refreshes_pending(&event);
                                 output.records.push(Bytes::copy_from_slice(&self.pending));
                             }
                             crate::credentials::wipe_json(&mut event);
@@ -279,7 +282,30 @@ mod tests {
         fs::write(&path, event("after gap")).unwrap();
         let read = follower.read();
         assert_eq!(read.records.len(), 1);
+        assert!(!read.refresh_pending);
         assert!(read.gap.is_some());
+    }
+
+    #[test]
+    fn recorded_approval_decisions_require_pending_reconciliation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("audit");
+        fs::write(&path, []).unwrap();
+        let mut follower = Follower::new(path.clone(), crate::audit::Settings::default());
+        let writer = crate::audit::Writer::new(path, crate::audit::Settings::default());
+        writer
+            .emit(crate::audit::Event::new(
+                "admin.approval_decided",
+                crate::audit::Kind::Admin,
+                crate::audit::Severity::High,
+                "Canonical approval resolved",
+            ))
+            .unwrap();
+        writer.shutdown(std::time::Duration::from_secs(2)).unwrap();
+        let read = follower.read();
+        assert_eq!(read.records.len(), 1);
+        assert!(read.refresh_pending);
+        assert!(read.gap.is_none());
     }
     #[test]
     fn first_file_and_rewritten_partial_tail_are_detected() {

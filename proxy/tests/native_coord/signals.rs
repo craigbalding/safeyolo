@@ -43,11 +43,83 @@ async fn read(client: &Client, id: &Value, revision: Option<i64>) -> Value {
 
 /// Count actual viewer HTTP requests and cut its connections for reconnect
 /// proof. The upstream remains the real authenticated Admin listener.
+#[derive(Default)]
+struct ViewerRecords {
+    drop_final: std::sync::atomic::AtomicBool,
+    controls: std::sync::atomic::AtomicUsize,
+    dropped_signals: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    dropped_approvals: std::sync::Mutex<std::collections::BTreeSet<String>>,
+}
+
+async fn forward_viewer_records(
+    mut viewer: tokio::net::TcpStream,
+    mut host: tokio::net::TcpStream,
+    records: Arc<ViewerRecords>,
+) {
+    use safeyolo_proxy::websocket::{Event, Reader, Writer};
+    use std::sync::atomic::Ordering;
+    use tungstenite::protocol::frame::coding::Control;
+
+    let mut header = Vec::new();
+    while !header.ends_with(b"\r\n\r\n") {
+        header.push(host.read_u8().await.unwrap());
+        assert!(header.len() < 8192);
+    }
+    assert!(header.starts_with(b"HTTP/1.1 101"));
+    viewer.write_all(&header).await.unwrap();
+    let (mut viewer_read, viewer_write) = viewer.into_split();
+    let (host_read, mut host_write) = host.into_split();
+    let mut read = Reader::new(host_read, false, None);
+    let mut write = Writer::new(viewer_write, false, None);
+    let forward = async {
+        loop {
+            match read.read().await? {
+                Event::Message(message) => {
+                    let event = message.with_text(|text| serde_json::from_str::<Value>(text))??;
+                    if event["type"] == "operator_state" {
+                        records.controls.fetch_add(1, Ordering::SeqCst);
+                    }
+                    let dropped = match event["event"].as_str() {
+                        Some("coord.signal_resolved") => {
+                            Some((&records.dropped_signals, "signal_id"))
+                        }
+                        Some("admin.approval_decided") => {
+                            Some((&records.dropped_approvals, "approval_id"))
+                        }
+                        _ => None,
+                    };
+                    if let Some((dropped, id_field)) = dropped
+                        && records.drop_final.load(Ordering::SeqCst)
+                    {
+                        dropped
+                            .lock()
+                            .unwrap()
+                            .insert(event["details"][id_field].as_str().unwrap().to_owned());
+                        continue;
+                    }
+                    write.message(message).await?;
+                }
+                Event::Ping(bytes) => write.control(Control::Ping, &bytes).await?,
+                Event::Pong(bytes) => write.control(Control::Pong, &bytes).await?,
+                Event::Close(bytes) => {
+                    write.control(Control::Close, &bytes).await?;
+                    return Ok::<_, safeyolo_proxy::Error>(());
+                }
+            }
+        }
+    };
+    tokio::select! {
+        _ = forward => {},
+        _ = tokio::io::copy(&mut viewer_read, &mut host_write) => {},
+    }
+}
+
 async fn viewer_relay(
     port: u16,
     requests: Arc<std::sync::atomic::AtomicUsize>,
     cuts: tokio::sync::broadcast::Sender<()>,
     fail_approval_read: Arc<std::sync::atomic::AtomicBool>,
+    records: Arc<ViewerRecords>,
 ) -> (
     u16,
     tokio::task::JoinHandle<()>,
@@ -69,7 +141,7 @@ async fn viewer_relay(
             tokio::select! {
                 connection=listener.accept() => {
                     let (mut viewer,_)=connection.unwrap();let requests=requests.clone();let mut cut=cuts.subscribe();
-                    let started=started.clone();let release=release.clone();let first=first.clone();let fail_approval_read=fail_approval_read.clone();
+                    let started=started.clone();let release=release.clone();let first=first.clone();let fail_approval_read=fail_approval_read.clone();let records=records.clone();
                     connections.spawn(async move {
                         let mut header=Vec::new();
                         while !header.ends_with(b"\r\n\r\n") {header.push(viewer.read_u8().await.unwrap());assert!(header.len()<8192);}
@@ -83,7 +155,11 @@ async fn viewer_relay(
                         }
                         let Ok(mut host)=tokio::net::TcpStream::connect(("127.0.0.1",port)).await else {return;};
                         host.write_all(&header).await.unwrap();
-                        tokio::select! {_=tokio::io::copy_bidirectional(&mut viewer,&mut host)=>{},_=cut.recv()=>{}}
+                        if header.starts_with(b"GET /admin/events ") {
+                            tokio::select! {_=forward_viewer_records(viewer,host,records)=>{},_=cut.recv()=>{}}
+                        } else {
+                            tokio::select! {_=tokio::io::copy_bidirectional(&mut viewer,&mut host)=>{},_=cut.recv()=>{}}
+                        }
                     });
                 },
                 Some(_)=connections.join_next(),if !connections.is_empty()=>{},
@@ -126,6 +202,24 @@ async fn pending_network(root: &Path, address: std::net::SocketAddr, path: &str)
         .unwrap()
 }
 
+async fn resolve_signal(root: &Path, signal: &Value, operation: &str) {
+    let resolved = coord_json(
+        root,
+        &[
+            "signal",
+            "resolve",
+            "shared",
+            signal["signal"]["signal_id"].as_str().unwrap(),
+            "--expected-revision",
+            "1",
+            "--operation-id",
+            operation,
+        ],
+    )
+    .await;
+    assert_eq!(resolved["signal"]["state"], "resolved");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires pinned NATS for canonical room setup; operator recovery runs with it stopped"]
 async fn native_watch_recovers_final_signal_and_approval_changes_without_a_later_event() {
@@ -140,7 +234,9 @@ async fn native_watch_recovers_final_signal_and_approval_changes_without_a_later
     fs::write(root.join("config.toml"),"admin_port=0\nflow_store_enabled=false\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n").unwrap();
     let (_origin, address) = test_owned_endpoint::bind().await;
     let (_second_origin, second_address) = test_owned_endpoint::bind().await;
-    fs::write(root.join("policy.toml"),format!("[controls.network]\nenabled=true\n[hosts.'{address}']\negress='prompt'\n[hosts.'{second_address}']\negress='prompt'\n[agents.alice]\nagent_id='{ALICE}'\n")).unwrap();
+    let (_approval_clock_origin, approval_clock_address) = test_owned_endpoint::bind().await;
+    let (_fast_approval_origin, fast_approval_address) = test_owned_endpoint::bind().await;
+    fs::write(root.join("policy.toml"),format!("[controls.network]\nenabled=true\n[hosts.'{address}']\negress='prompt'\n[hosts.'{second_address}']\negress='prompt'\n[hosts.'{approval_clock_address}']\negress='prompt'\n[hosts.'{fast_approval_address}']\negress='prompt'\n[agents.alice]\nagent_id='{ALICE}'\n")).unwrap();
     assert!(
         host_cli(root, &["coord", "start", "--binary", &binary])
             .await
@@ -181,11 +277,13 @@ async fn native_watch_recovers_final_signal_and_approval_changes_without_a_later
     let requests = Arc::new(AtomicUsize::new(0));
     let (cuts, _) = tokio::sync::broadcast::channel(8);
     let fail_approval_read = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let records = Arc::new(ViewerRecords::default());
     let (viewer_port, relay, snapshot_started, snapshot_release) = viewer_relay(
         ready["admin_port"].as_u64().unwrap() as u16,
         requests.clone(),
         cuts.clone(),
         fail_approval_read.clone(),
+        records.clone(),
     )
     .await;
     // Only the viewer uses the relay. The running host and author retain their
@@ -249,6 +347,114 @@ async fn native_watch_recovers_final_signal_and_approval_changes_without_a_later
     let cleared = next_watch(&mut output).await;
     assert_eq!(cleared["signal_id"], during_attach["signal"]["signal_id"]);
     assert_eq!(cleared["needs_operator"], false);
+
+    // Align just after the shared host read by waiting for a clear delivered
+    // only through its state control. The next item's entire lifetime must fit
+    // between host checks, with creation observed from JSONL and its final
+    // resolution frame actually discarded on this healthy viewer connection.
+    records.drop_final.store(true, Ordering::SeqCst);
+    let clock = signal(
+        &alice,
+        "decision",
+        "Align the signal host check",
+        "signal-clock",
+    )
+    .await;
+    assert_eq!(next_watch(&mut output).await["signal"], clock["signal"]);
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    resolve_signal(root, &clock, "signal-clock-clear").await;
+    assert_eq!(
+        next_watch(&mut output).await["signal_id"],
+        clock["signal"]["signal_id"]
+    );
+    let controls = records.controls.load(Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    let fast = signal(
+        &alice,
+        "blocker",
+        "Fast signal seen from JSONL",
+        "fast-signal",
+    )
+    .await;
+    assert_eq!(next_watch(&mut output).await["signal"], fast["signal"]);
+    resolve_signal(root, &fast, "fast-signal-clear").await;
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "signal lifetime crossed a host check"
+    );
+    assert_eq!(
+        records.controls.load(Ordering::SeqCst),
+        controls,
+        "creation was rescued by a host control"
+    );
+    let lifetime = started.elapsed();
+    println!(
+        "signal created and resolved between host checks in {lifetime:?}; waiting for its clear with the final resolution frame dropped"
+    );
+    let cleared = next_watch(&mut output).await;
+    assert_eq!(cleared["signal_id"], fast["signal"]["signal_id"]);
+    assert_eq!(cleared["needs_operator"], false);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(
+        records
+            .dropped_signals
+            .lock()
+            .unwrap()
+            .contains(fast["signal"]["signal_id"].as_str().unwrap())
+    );
+    println!(
+        "fast signal clear recovered in {:?} without a later business event",
+        started.elapsed()
+    );
+
+    let request = pending_network(root, approval_clock_address, "approval-clock").await;
+    let clock = next_watch(&mut output).await;
+    assert_eq!(clock["approval"]["request_id"], request);
+    let clock_id = clock["approval"]["approval_id"].as_str().unwrap();
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    assert!(
+        host_cli(root, &["approvals", "reject", clock_id, "--json"])
+            .await
+            .status
+            .success()
+    );
+    assert_eq!(next_watch(&mut output).await["approval_id"], clock_id);
+    let controls = records.controls.load(Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    let request = pending_network(root, fast_approval_address, "fast-approval").await;
+    let fast = next_watch(&mut output).await;
+    assert_eq!(fast["approval"]["request_id"], request);
+    let fast_id = fast["approval"]["approval_id"].as_str().unwrap();
+    assert!(
+        host_cli(root, &["approvals", "reject", fast_id, "--json"])
+            .await
+            .status
+            .success()
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "approval lifetime crossed a host check"
+    );
+    assert_eq!(
+        records.controls.load(Ordering::SeqCst),
+        controls,
+        "creation was rescued by a host control"
+    );
+    let lifetime = started.elapsed();
+    println!(
+        "approval created and resolved between host checks in {lifetime:?}; waiting for its clear with the final decision frame dropped"
+    );
+    let cleared = next_watch(&mut output).await;
+    assert_eq!(cleared["approval_id"], fast_id);
+    assert_eq!(cleared["needs_operator"], false);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(records.dropped_approvals.lock().unwrap().contains(fast_id));
+    println!(
+        "fast approval clear recovered in {:?} without a later business event",
+        started.elapsed()
+    );
+    records.drop_final.store(false, Ordering::SeqCst);
+
     // No state changes means no periodic network fetches by this viewer.
     tokio::time::sleep(Duration::from_secs(2)).await;
     let idle = requests.load(Ordering::SeqCst);
