@@ -20,9 +20,9 @@ STATUS_FIELDS = (
 AGENT_SOURCE = "custom:safeyolo"
 METADATA_SOURCE = "user:safeyolo"
 # Herdr 0.9.5 permits 32 pane tokens and 16 token updates per request.
-# The identity fields and two claim headings leave room for ten title/reference pairs.
+# The identity fields and three claim headings leave room for ten title/reference pairs.
 CLAIM_SLOTS = 10
-WORK_FIELDS = ("coord_room", "claimed_work", *(f"claim_{index}_{field}"
+WORK_FIELDS = ("coord_room", "claimed_work", "claim_warning", *(f"claim_{index}_{field}"
                for index in range(1, CLAIM_SLOTS + 1) for field in ("title", "ref")))
 
 
@@ -116,12 +116,9 @@ def claimed_work(command: list[str], room: str, agent_id: str) -> dict:
     tokens = dict.fromkeys(WORK_FIELDS)
     tokens["coord_room"] = display_text(room)
     count = len(claims)
-    summary = f"Claimed work: {count}" + (" seen" if truncated else "")
-    if count > CLAIM_SLOTS:
-        summary += f" ({CLAIM_SLOTS} shown; display truncated)"
-    if truncated:
-        summary += "; room truncated"
-    tokens["claimed_work"] = summary
+    count_label = f"{CLAIM_SLOTS}/{count}" if count > CLAIM_SLOTS else str(count)
+    tokens["claimed_work"] = f"Claimed work: {count_label}"
+    tokens["claim_warning"] = "Room truncated" if truncated else "Display truncated" if count > CLAIM_SLOTS else None
     for index, (title, reference) in enumerate(claims[:CLAIM_SLOTS], 1):
         tokens[f"claim_{index}_title"] = title
         tokens[f"claim_{index}_ref"] = reference
@@ -163,7 +160,7 @@ def refresh(command: list[str], name: str, herdr: Herdr, pane: str, *, room: str
     work = None
     if room is not None:
         work = dict.fromkeys(WORK_FIELDS)
-        work.update(coord_room=display_text(room), claimed_work="Claimed work: unavailable")
+        work.update(coord_room=display_text(room), claimed_work="Claimed work: unavailable", claim_warning="Unavailable")
         if status:
             try:
                 work = claimed_work(command, room, status["agent_id"])

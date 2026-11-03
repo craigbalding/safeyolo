@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -19,6 +20,7 @@ import pytest
 from scripts.accept_herdr_native import (
     Journey,
     JourneyError,
+    TuiClient,
     check_continuity,
     check_initial,
     main,
@@ -152,6 +154,21 @@ def metadata_tokens(calls):
     return tokens
 
 
+def assert_sidebar_rendered(journey, expected):
+    with TuiClient(journey.binary, journey.environment, journey.output) as client:
+        def visible():
+            # Read text actually painted into the PTY, including Herdr's clipping.
+            plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", client.output).decode(errors="replace").lower()
+            return all(text.lower() in plain for text in expected)
+
+        try:
+            until(visible, min(journey.deadline, time.monotonic() + 5), drain=client.drain)
+        finally:
+            # Preserve the failing frame in pytest scratch before the server closes.
+            if not visible():
+                (journey.output / "sidebar-failure.ansi").write_bytes(client.output)
+
+
 def test_live_herdr_095_response_consumers(tmp_path, preparation, monkeypatch):
     """Opt in with HERDR_TEST_BINARY pointing to the verified v0.9.5 release."""
     binary = os.environ.get("HERDR_TEST_BINARY")
@@ -169,6 +186,11 @@ def test_live_herdr_095_response_consumers(tmp_path, preparation, monkeypatch):
     try:
         journey.prepare()
         assert journey.result["herdr"] == {"version": "0.9.5", "protocol": 22}
+        sidebar = re.search(r"```toml\n(.*?)\n```", (ROOT / "docs/herdr-spike.md").read_text(), re.S).group(1)
+        config = tmp_path / "herdr.toml"
+        config.write_text(config.read_text() + "\n" + sidebar + "\n")
+        reload = journey.herdr.call("server.reload_config")
+        assert reload["status"] == "applied" and not reload["diagnostics"]
         workspace = journey.herdr.call("workspace.create", {"cwd": str(tmp_path), "focus": True})
         pane = workspace["root_pane"]["pane_id"]
         for index, name in enumerate(statuses):
@@ -185,9 +207,9 @@ def test_live_herdr_095_response_consumers(tmp_path, preparation, monkeypatch):
             assert focused["focused"] and focused["pane_id"] == pane
             assert focused["agent_status"] == "unknown"
             assert all(focused["tokens"].get(key) == value for key, value in work.items() if value is not None)
-            assert "room truncated" in focused["tokens"]["claimed_work"]
+            assert focused["tokens"]["claim_warning"] == "Room truncated"
             if name == "first":
-                assert "display truncated" in focused["tokens"]["claimed_work"]
+                assert focused["tokens"]["claimed_work"] == f"Claimed work: {CLAIM_SLOTS}/{CLAIM_SLOTS + 1}"
                 assert len(focused["tokens"]["claim_1_title"]) == 80
                 assert focused["tokens"]["claim_1_title"].endswith("…")
             journey.herdr.call("pane.send_input", {"pane_id": pane, "text": "printf 'HERDR_READ_READY\\n'",
@@ -199,6 +221,19 @@ def test_live_herdr_095_response_consumers(tmp_path, preparation, monkeypatch):
             tokens = journey.herdr.call("agent.get", {"target": name})["agent"]["tokens"]
             assert not any(key in tokens for key in WORK_FIELDS)
             assert tokens["agent_id"] == statuses[name]["agent_id"]
+        for page, expected in (
+            (coord_page(total=1), ["Claimed work: 0", "Room truncated"]),
+            (coord_page(*rows[:-1]), [f"Claimed work: {CLAIM_SLOTS}/{CLAIM_SLOTS + 1}", "Display truncated"]),
+            (coord_page(*rows[:-1], total=len(rows)),
+             [f"Claimed work: {CLAIM_SLOTS}/{CLAIM_SLOTS + 1}", "Room truncated"]),
+        ):
+            (tmp_path / "coord-status.json").write_text(json.dumps(page))
+            work = claimed_work(command, "backlog", statuses["first"]["agent_id"])
+            report(journey.herdr, journey.panes["first"], "first", statuses["first"], work)
+            assert_sidebar_rendered(journey, expected)
+        (tmp_path / "coord-status.json").write_text("malformed")
+        assert refresh(command, "first", journey.herdr, journey.panes["first"], room="backlog")
+        assert_sidebar_rendered(journey, ["Unavailable"])
     finally:
         journey.owned = []  # Only the disposable Herdr server was started; no native agents exist.
         assert journey.cleanup()
@@ -352,20 +387,23 @@ def test_claims_select_durable_identity_and_clear_released_completed_work(tmp_pa
     assert json.loads((tmp_path / "coord-called.json").read_text()) == ["coord", "status", "ops", "--json"]
 
 
-@pytest.mark.parametrize("rows,total,expected", [
-    ([], 1, "Claimed work: 0 seen; room truncated"),
-    ([claim(agent_id="ag-other")], 2, "Claimed work: 0 seen; room truncated"),
-    ([claim(title_truncated=True, github_reference=None)], 2, "Claimed work: 1 seen; room truncated"),
+@pytest.mark.parametrize("rows,total,expected,warning", [
+    ([], 1, "Claimed work: 0", "Room truncated"),
+    ([claim(agent_id="ag-other")], 2, "Claimed work: 0", "Room truncated"),
+    ([claim(title_truncated=True, github_reference=None)], 2, "Claimed work: 1", "Room truncated"),
     ([claim(str(index)) for index in range(CLAIM_SLOTS + 1)], CLAIM_SLOTS + 1,
-     f"Claimed work: {CLAIM_SLOTS + 1} ({CLAIM_SLOTS} shown; display truncated)"),
+     f"Claimed work: {CLAIM_SLOTS}/{CLAIM_SLOTS + 1}", "Display truncated"),
+    ([claim(str(index)) for index in range(CLAIM_SLOTS + 1)], CLAIM_SLOTS + 2,
+     f"Claimed work: {CLAIM_SLOTS}/{CLAIM_SLOTS + 1}", "Room truncated"),
 ])
-def test_claim_projection_limits_remain_visible(tmp_path, native_cli, herdr_socket, rows, total, expected):
+def test_claim_projection_limits_remain_visible(tmp_path, native_cli, herdr_socket, rows, total, expected, warning):
     path, calls = herdr_socket
     (tmp_path / "coord-status.json").write_text(json.dumps(coord_page(*rows, total=total)))
     assert refresh([str(native_cli), "--root", str(tmp_path)], "first", Herdr(str(path)), "w1:p1",
                    room="ops") is None
     tokens = metadata_tokens(calls)
     assert tokens["claimed_work"] == expected
+    assert tokens["claim_warning"] == warning
     if rows and rows[0]["title_truncated"]:
         assert tokens["claim_1_title"] == "Repair the CLI…"
         assert tokens["claim_1_ref"] == "work-one"
@@ -399,7 +437,8 @@ def test_failed_coord_read_clears_stale_claims(tmp_path, native_cli, herdr_socke
     assert problem.startswith("Coord claimed work unavailable (") and "private diagnostic" not in problem
     tokens = metadata_tokens(calls)
     assert tokens["claimed_work"] == "Claimed work: unavailable" and tokens["agent_id"] == "ag-first"
-    assert all(tokens[key] is None for key in WORK_FIELDS if key.startswith("claim_"))
+    assert tokens["claim_warning"] == "Unavailable"
+    assert all(tokens[key] is None for key in WORK_FIELDS if key.endswith(("_title", "_ref")))
     assert all(call["params"]["ttl_ms"] == 5000 for call in calls if call["method"] == "pane.report_metadata")
 
 
@@ -414,7 +453,8 @@ def test_failed_native_identity_clears_claims(tmp_path, native_cli, herdr_socket
     assert refresh(command, "first", herdr, "w1:p1", room="ops").startswith("native status unavailable (")
     tokens = metadata_tokens(calls)
     assert tokens["agent_id"] is None and tokens["claimed_work"] == "Claimed work: unavailable"
-    assert all(tokens[key] is None for key in WORK_FIELDS if key.startswith("claim_"))
+    assert tokens["claim_warning"] == "Unavailable"
+    assert all(tokens[key] is None for key in WORK_FIELDS if key.endswith(("_title", "_ref")))
 
 
 @pytest.mark.parametrize("unavailable", [False, True])

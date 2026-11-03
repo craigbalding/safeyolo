@@ -66,7 +66,9 @@ the Agent sidebar layout and show up to ten title/reference pairs:
 rows = [
   ["state_icon", "agent", "state_text"],
   ["workspace", "tab"],
-  ["$coord_room", "$claimed_work"],
+  ["$coord_room"],
+  ["$claimed_work"],
+  ["$claim_warning"],
   ["$claim_1_title", "$claim_1_ref"],
   ["$claim_2_title", "$claim_2_ref"],
   ["$claim_3_title", "$claim_3_ref"],
@@ -81,6 +83,10 @@ rows = [
 ```
 
 `Claimed work` reports how many matching claims the returned page contains.
+If more than ten claims match, the count shows displayed/seen, such as `10/11`.
+The separate warning row says `Display truncated`. If the room page is also
+incomplete, that row says `Room truncated` instead. Keep the room, count and
+warning on separate rows so a long room name cannot hide the count or warning.
 Each reference is the work's external GitHub URL when available, otherwise its
 candidate target or durable work ID. References are display text; the wrapper
 does not fetch their contents. The separate runtime, control, command and
@@ -88,16 +94,28 @@ terminal observations remain available as native metadata.
 
 Herdr limits a pane to 32 metadata tokens and each value to 80 characters. The
 wrapper uses ten title/reference pairs within that limit. It marks text
-excerpts with `…` and additional matching rows with `display truncated`. Coord
-also bounds its active-work page and title excerpts. If that page is incomplete,
-the heading says `seen; room truncated`. Even `0 seen` then does not establish
-that the agent has no claims. Use native `coord status ROOM --json` to inspect
+excerpts with `…`. Coord also bounds its active-work page and title excerpts.
+If `Room truncated` appears, the count covers only the returned page. Even a
+count of `0` then does not establish that the agent has no claims.
+Use native `coord status ROOM --json` to inspect
 the projection, or `coord work show ROOM WORK_ID` for a full known work record.
-Narrow sidebars can clip the displayed rows further.
+The count and warning fit Herdr's default 26-column expanded sidebar. Narrower
+sidebars can clip them. Titles and references can need more space. To widen the
+sidebar, merge these settings into the same configuration's `[ui]` table:
+
+```toml
+[ui]
+sidebar_width = 80
+sidebar_max_width = 80
+```
+
+Text can still exceed the available width. Use the native work record to read
+the full title and references.
 
 Released or completed claims disappear on refresh. If a Coord read fails or
 returns malformed data, the wrapper clears the claim titles/references and
-reports `Claimed work: unavailable`. If native identity is unavailable, the
+reports `Claimed work: unavailable` with `Unavailable` on the warning row.
+If native identity is unavailable, the
 wrapper also clears the claims. If Herdr cannot receive an update, the existing
 five-second expiry removes stale metadata.
 
@@ -118,8 +136,10 @@ uv run --frozen pytest -q tests/test_herdr_native.py
 ```
 
 With that variable set, the control exercises the real Herdr server, metadata,
-name focus and pane reader. It checks the added claim tokens at the display
-limits and clears them afterward. It starts no SafeYolo sandbox or model.
+name focus and pane reader. It checks the claim tokens at the display limits,
+clears them, and renders the documented layout at the default sidebar width.
+The rendered control checks the count and warning for incomplete room pages,
+omitted display rows and unavailable reads. It starts no SafeYolo sandbox or model.
 Without the variable, only the live protocol control is skipped. The remaining
 controls exercise wrapper terminal behavior, ownership selection, claim
 release/completion, unavailable and malformed reads, and projection limits.
