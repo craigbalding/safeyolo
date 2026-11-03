@@ -94,10 +94,11 @@ def run(args: argparse.Namespace) -> dict:
             report["stage"] = "selection"
             selection = select_inputs(args, attempt, log)
             report["stage"] = "credential-free-installed"
+            # Package fixtures in this credential-free child need normal build permissions.
             subprocess.run([str(python), str(ROOT / "tests/blackbox/retained_inputs.py"), "run",
                             "--lane", "systrap", "--yes", "--selection", str(selection),
                             "--artifacts", str(readiness)], cwd=ROOT, stdout=log,
-                           stderr=subprocess.STDOUT, check=True)
+                           stderr=subprocess.STDOUT, check=True, umask=0o022)
             if read_json(readiness / "retained-run.json")["exit"] != 0:
                 raise ValueError("credential-free installed readiness did not pass")
             prepared = Path(read_json(readiness / "guest/installed-sections.json")["preparation"]["config_dir"])
