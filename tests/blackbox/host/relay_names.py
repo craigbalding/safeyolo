@@ -39,11 +39,15 @@ def main() -> None:
     source = (ROOT / 'tests/blackbox/isolation/relay_names.py').read_text()
     command = f'sudo -n python3 -u -c {shlex.quote(source)} --platform {args.platform} --disposable-guest'
     shell = [args.cli, '--root', str(args.root), 'agent', 'shell', args.agent, '-c']
+    runtime = args.root / ('bin/safeyolo-vm' if args.platform == 'vz' else 'libexec/runsc')
+    runtime_command = [str(runtime), 'version' if args.platform == 'vz' else '--version']
     report = {
         'revision': args.revision, 'platform': args.platform, 'host': list(os.uname()),
         'started_at': datetime.now(UTC).isoformat(), 'shell_command': shell,
         'host_cli': subprocess.check_output([args.cli, '--version'], text=True).strip(),
-        'platform_metadata': json.loads((args.root / 'platform.json').read_text()), 'stages': [],
+        'runtime_command': runtime_command,
+        'runtime_version': subprocess.check_output(runtime_command, text=True).strip(),
+        'runtime_sha256': hashlib.sha256(runtime.read_bytes()).hexdigest(), 'stages': [],
     }
     signal.signal(signal.SIGALRM, deadline)
     signal.alarm(120)
