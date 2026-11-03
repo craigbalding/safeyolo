@@ -141,14 +141,17 @@ def run(selection_path: Path, lane: str, artifacts: Path, sections: list[str], y
         # branch nor a guest tag is consulted by any execution step.
         frozen = artifacts / "selection.json"
         frozen.write_text(json.dumps(selection, indent=2) + "\n")
+        section_options = [value for section in sections for value in ("--section", section)]
         if prepared_config is not None:
-            if lane != "systrap" or sections != ["claude"]:
-                raise ValueError("prepared retained execution requires systrap --section claude")
+            if lane != "systrap":
+                raise ValueError("prepared retained execution requires systrap")
             verify_installed(frozen, prepared_config, artifacts)
-            result = subprocess.run([str(ROOT / "tests/blackbox/run-installed.sh"), lane,
-                                     "--prepared-config", str(prepared_config), "--section", "claude",
-                                     "--install-commit", selection["host"]["source_revision"],
-                                     "--artifacts", str(artifacts / "guest")], cwd=ROOT, check=False)
+            command = [str(ROOT / "tests/blackbox/run-installed.sh"), lane,
+                       "--prepared-config", str(prepared_config),
+                       "--install-commit", selection["host"]["source_revision"],
+                       "--artifacts", str(artifacts / "guest")]
+            command += section_options
+            result = subprocess.run(command, cwd=ROOT, check=False)
             report["exit"] = result.returncode
             return report["exit"]
         package = selection_path.parent / selection["host"]["archive"]["name"]
@@ -161,8 +164,7 @@ def run(selection_path: Path, lane: str, artifacts: Path, sections: list[str], y
             options += ["--guest-index", selection["guest"]["index"]["digest"]]
         if lane != "package":
             options += ["--lane", lane]
-        for section in sections:
-            options += ["--section", section]
+        options += section_options
         if yes:
             options += ["--yes"]
         environment = dict(os.environ, SAFEYOLO_BLACKBOX_ARTIFACTS_DIR=str(artifacts),
@@ -190,7 +192,7 @@ def main() -> int:
     execute.add_argument("--yes", action="store_true")
     execute.add_argument("--guest-archive", type=Path, help="Exact archive from --download-guest-archive for offline execution")
     execute.add_argument("--prepared-config", type=Path,
-                         help="Reuse the exact selected dedicated installation for systrap --section claude")
+                         help="Reuse the exact selected installation for systrap sections; defaults to credential-free sections")
     verify = commands.add_parser("verify-installed")
     verify.add_argument("--selection", type=Path, required=True)
     verify.add_argument("--root", type=Path, required=True)
