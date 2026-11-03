@@ -77,6 +77,7 @@ jobs:
         run: |
           uv run --frozen pytest -q tests/test_blackbox_harness.py tests/test_blackbox_sinkhole.py \
             tests/test_claude_smoke.py \
+            tests/test_trusted_claude_blackbox.py \
             tests/test_kvm_p1_route.py tests/test_p2_installed_fixture.py \
             tests/test_installed_host_smoke.py tests/test_blackbox_cadence_contract.py \
             tests/test_proxy_rust_ci_events.py tests/test_workflow_action_pins.py \

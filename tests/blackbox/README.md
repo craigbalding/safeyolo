@@ -75,18 +75,69 @@ Success requires completed client and tool results, independently checked file
 contents, and a matching current agent/run decision from the native gateway.
 The report exports observations and hashes, without client messages or tokens.
 
-Use a dedicated Ubuntu AMD64/systrap host and a clean pinned checkout with its
-frozen development environment. First complete the credential-free retained
-installed run above. Reuse its frozen `selection.json` and the prepared root
-printed by that run. That prepared root must have no prior agent homes.
-Keep the root private and outside uploaded reports.
+For a trusted invocation, use a dedicated Ubuntu AMD64/systrap host and a clean,
+pinned controller checkout with the prerequisites for the retained run above.
+The [trusted caller](../../scripts/run_claude_blackbox.py) selects production
+inputs, completes the credential-free installed sections, provisions that
+installation, then invokes the maintained Claude section once. It uses the
+installer's `--yes` option to accept host preparation on this disposable host.
+Each attempt uses new private state. It does not reuse an older prepared root.
 
-Before the Claude section, provision the selected host-held subscription in that
-root's encrypted store through the supported
-[coding-client gateway setup](../../docs/coding-client-gateway.md).
-Provider login files must stay outside guest mounts. Keep existing policy,
-consent and first-request approvals; service authorization does not replace them.
-The section does not import a login, approve requests or retry a model task.
+The operator supplies an executable provisioning helper. The caller runs
+`HELPER INSTALLED_ROOT CREDENTIAL_NAME` only after credential-free success.
+The helper must provision the named credential in that root through the supported
+[coding-client gateway setup](../../docs/coding-client-gateway.md) and return
+nonzero if provisioning fails. Use the existing sealed access-only route when
+the factory owns the subscription's renewal. Keep its rotating refresh token
+with that owner. A credential name alone does not establish authentication.
+Provider secrets stay in the host encrypted store, outside guest mounts.
+The caller does not approve requests or retry a model task. Existing policy,
+consent and first-request approvals still apply.
+
+From the controller checkout root in the trusted host account, replace the
+helper path with the operator's provisioner and `claude-account` with the name
+it provisions. Replace `/owned/claude-attempt` with a new private disk-backed
+directory. Use the repository default-branch ref for `--ref`.
+
+```sh
+.venv/bin/python scripts/run_claude_blackbox.py nightly --ref refs/heads/master --provision /owned/bin/provision-claude --credential claude-account --output /owned/claude-attempt
+```
+
+For exact production inputs, use `manual` instead of `nightly` and append
+`--host-run RUN_ID --guest-index sha256:DIGEST`. The existing selector still
+requires trusted production and completed-staging evidence. Default selection
+uses the newest completed compatible guest; an exact older guest is recorded
+as an explicit selection. Selection failures remain failed attempts.
+
+For a default-branch merge, use `merge --source-revision FULL_MERGED_SHA` instead
+of `nightly`. The selected host package must match that exact source. If its
+production artifact is unavailable, the attempt fails before provisioning.
+The caller never builds a substitute or uses an older source as merge proof.
+Pull-request triggers and other branch refs cannot admit the Claude section.
+
+Deploy this command through the existing Rundeck `acceptance` project API 59
+`run/script` interface and its retained `ssh_exec.sh` wrapper on the owned
+Ubuntu host. Sylab supplies the protected controller, host provisioning helper,
+credential name, private attempt parent and trusted nightly/manual/default-
+branch merge bindings. Preserve the wrapper's decoded guest exit and returned
+standard output. Worker access to Rundeck and provider secrets in GitHub Actions
+are unnecessary. The existing Actions blackbox jobs and PR checks remain
+credential-free. This command is the deployment entry point; source availability
+does not establish that those trigger bindings are installed.
+
+The command returns the actual failing command exit, or zero after the smoke
+and its cleanup succeed. Standard output and `result.json` contain the same
+nonsecret JSON report, including the original selection and available smoke
+failure reports. Provisioner output is discarded. Other raw diagnostics stay
+in the attempt's `private.log`; do not upload that log, host vaults or instance
+state. Preserve the existing Rundeck
+timeout and the smoke's bounded task deadline. Do not replay a submitted
+invocation when its transport result is uncertain.
+
+For an already provisioned dedicated installation, first complete the
+credential-free retained installed run above. Reuse its frozen `selection.json`
+and prepared root. The root must have no prior agent homes and remain private.
+The lower-level entry remains available for exact retained-input execution.
 
 From the checkout root, replace `/owned/inputs/selection.json` with the frozen
 selection, `/owned/prepared` with the dedicated installed root, and
@@ -105,10 +156,10 @@ or approval failure is a failed attempt. Inspect that request through the existi
 host approval controls. Do not infer tool completion from a model reply or HTTP
 status alone. Preserve the reached failure when preparing a corrected run.
 
-The credential-free defaults remain unchanged. This section currently requires
-manual provisioned execution. The joined real-client witness and trusted
-nightly/default-branch deployment binding remain outstanding under
-[#356](https://github.com/craigbalding/safeyolo/issues/356). No fresh-install speed,
+The [accepted real-client witness](https://github.com/craigbalding/safeyolo/issues/356#issuecomment-6584976372)
+joins product `18893135`, observer `90167707` and the launcher correction at
+`2688116d`. Trusted caller deployment and its actual selected-input/report-return
+outcome remain unproved under #356 criterion 4. No fresh-install speed,
 interactive channel, Codex or other-platform result follows from this section.
 
 ## Build and test a contributor checkout
