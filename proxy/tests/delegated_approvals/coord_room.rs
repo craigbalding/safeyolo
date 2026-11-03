@@ -76,6 +76,21 @@ async fn assert_objects_denied(f: &Fixture) {
 }
 
 #[tokio::test]
+#[ignore = "requires pinned SAFEYOLO_COORD_NATS_BINARY"]
+async fn private_room_result_does_not_depend_on_the_reviewers_attention_room() {
+    let f = Fixture::new().await;
+    let _backend = Backend(runs(&f));
+    rooms(&f);
+    let _nats = operator_nats::Nats::start_jetstream(f.root.path()).await;
+    delegate(&f, envelope()).await;
+    let id = approve(&f, &["receive"], "private-room-result").await;
+    approval_results::projected(&f, &id).await;
+    approval_results::result(&f, &id, "approved").await;
+    assert_eq!(joined(&f).await.status, 200);
+    f.stop().await;
+}
+
+#[tokio::test]
 async fn whole_room_effect_previews_and_hostile_requests() {
     let f = Fixture::new().await;
     let _backend = Backend(runs(&f));
@@ -794,6 +809,7 @@ async fn real_nats_room_approval_attention_objects_and_pending_connections() {
         404
     );
     assert_eq!(decide(&f, "helper", id, "approve", "run").await.status, 200);
+    approval_results::projected(&f, id).await;
     let history = f
         .agent(
             "worker",
@@ -827,7 +843,8 @@ async fn real_nats_room_approval_attention_objects_and_pending_connections() {
             403
         );
     }
-    approve(&f, &["send", "receive", "page_operator"], "full-rights").await;
+    let full = approve(&f, &["send", "receive", "page_operator"], "full-rights").await;
+    approval_results::projected(&f, &full).await;
     let work = f
         .agent(
             "worker",
@@ -920,11 +937,22 @@ async fn real_nats_room_approval_attention_objects_and_pending_connections() {
             None,
         )
         .await;
-    assert_eq!(feed.json()["edges"], json!([]));
+    assert!(
+        feed.json()["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|edge| edge["kind"] == "approval_result" && edge["room_id"].is_null()),
+        "revoked room attention remained visible: {}",
+        feed.json()
+    );
+    // Room revocation leaves the original requester's independent result read.
+    approval_results::result(&f, id, "approved").await;
     f = f.restart().await;
     assert_objects_denied(&f).await;
     let (mut current, mut current_revision) = delegate(&f, input).await;
-    approve(&f, &["send", "receive"], "regrant").await;
+    let regrant = approve(&f, &["send", "receive"], "regrant").await;
+    approval_results::projected(&f, &regrant).await;
     let history = f
         .agent(
             "worker",
@@ -948,7 +976,8 @@ async fn real_nats_room_approval_attention_objects_and_pending_connections() {
             current["delegation"]["definition_revisions"] = json!({});
             current["delegation"]["grant_seconds"] = json!(1);
             (current, current_revision) = delegate(&f, current).await;
-            approve(&f, &["receive"], "before-expiry").await;
+            let expiry = approve(&f, &["receive"], "before-expiry").await;
+            approval_results::projected(&f, &expiry).await;
         }
         let cutoff = f
             .agent(

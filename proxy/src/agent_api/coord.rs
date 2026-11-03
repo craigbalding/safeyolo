@@ -38,6 +38,7 @@ const MAX_DECLARATIONS_PER_AGENT: usize = 32;
 const MAX_DECLARATION_TTL_SECONDS: i64 = 3600;
 const PROJECTION_PAGE: u64 = 200;
 const RECOVERY_INTERVAL: Duration = Duration::from_millis(250);
+mod approval_results;
 pub(crate) mod federation;
 pub(crate) mod inventory;
 pub(crate) mod outbox;
@@ -529,12 +530,25 @@ impl CoordClient {
         principal: &str,
         since: u64,
         limit: usize,
+        runtime: Option<&crate::RuntimeState>,
     ) -> Result<FeedPage, CoordError> {
         let db = self.owner.data_dir.join("v0.db");
         let principal = principal.to_owned();
-        tokio::task::spawn_blocking(move || read_attention_feed(&db, &principal, since, limit))
-            .await
-            .map_err(|_| CoordError::Unavailable)?
+        let principal_for_results = principal.clone();
+        let mut page =
+            tokio::task::spawn_blocking(move || read_attention_feed(&db, &principal, since, limit))
+                .await
+                .map_err(|_| CoordError::Unavailable)??;
+        let mut visible = Vec::new();
+        for edge in page.edges {
+            if edge.kind != "approval_result"
+                || approval_results::authorized(runtime, &edge, &principal_for_results).await?
+            {
+                visible.push(edge);
+            }
+        }
+        page.edges = visible;
+        Ok(page)
     }
 
     async fn verify_attention_access(
@@ -560,11 +574,14 @@ impl CoordClient {
         limit: usize,
         timeout_seconds: f64,
         mut cancellation: tokio::sync::watch::Receiver<bool>,
+        runtime: Option<&crate::RuntimeState>,
     ) -> Result<FeedPage, CoordError> {
         if *cancellation.borrow() {
             return Err(CoordError::Cancelled);
         }
-        let page = self.attention_feed(principal, since, limit).await?;
+        let page = self
+            .attention_feed(principal, since, limit, runtime)
+            .await?;
         if !page.edges.is_empty() || page.next_cursor != since {
             return Ok(page);
         }
@@ -573,13 +590,15 @@ impl CoordClient {
         // from retained messages before entering the long poll, and close
         // every provider failure with one more authoritative ledger read.
         if let Err(error) = self.recover_attention(principal).await {
-            let ledger = self.attention_feed(principal, since, limit).await;
+            let ledger = self.attention_feed(principal, since, limit, runtime).await;
             return match ledger {
                 Ok(page) if !page.edges.is_empty() || page.next_cursor != since => Ok(page),
                 _ => Err(error),
             };
         }
-        let page = self.attention_feed(principal, since, limit).await?;
+        let page = self
+            .attention_feed(principal, since, limit, runtime)
+            .await?;
         if !page.edges.is_empty() || page.next_cursor != since {
             return Ok(page);
         }
@@ -589,7 +608,7 @@ impl CoordClient {
                 // Reconnect failure is not authoritative: another projector
                 // may have committed the edge after the previous ledger read.
                 // Close this provider path with one final SQLite ledger read.
-                let ledger = self.attention_feed(principal, since, limit).await;
+                let ledger = self.attention_feed(principal, since, limit, runtime).await;
                 return match ledger {
                     Ok(page) if !page.edges.is_empty() || page.next_cursor != since => Ok(page),
                     _ => Err(error),
@@ -600,7 +619,7 @@ impl CoordClient {
         let mut subscription = match connection.subscribe(subject).await {
             Ok(subscription) => subscription,
             Err(_) => {
-                let ledger = self.attention_feed(principal, since, limit).await;
+                let ledger = self.attention_feed(principal, since, limit, runtime).await;
                 return match ledger {
                     Ok(page) if !page.edges.is_empty() || page.next_cursor != since => Ok(page),
                     _ => Err(CoordError::Unavailable),
@@ -609,7 +628,7 @@ impl CoordClient {
         };
         if connection.flush().await.is_err() {
             let _ = subscription.unsubscribe().await;
-            let ledger = self.attention_feed(principal, since, limit).await;
+            let ledger = self.attention_feed(principal, since, limit, runtime).await;
             return match ledger {
                 Ok(page) if !page.edges.is_empty() || page.next_cursor != since => Ok(page),
                 _ => Err(CoordError::Unavailable),
@@ -623,7 +642,9 @@ impl CoordClient {
                 let _ = subscription.unsubscribe().await;
                 return Err(CoordError::Cancelled);
             }
-            let page = self.attention_feed(principal, since, limit).await?;
+            let page = self
+                .attention_feed(principal, since, limit, runtime)
+                .await?;
             if !page.edges.is_empty() || page.next_cursor != since {
                 let _ = subscription.unsubscribe().await;
                 return Ok(page);
@@ -635,7 +656,7 @@ impl CoordClient {
             let now = tokio::time::Instant::now();
             if now >= next_recovery {
                 if let Err(error) = self.recover_attention(principal).await {
-                    let ledger = self.attention_feed(principal, since, limit).await;
+                    let ledger = self.attention_feed(principal, since, limit, runtime).await;
                     return match ledger {
                         Ok(page) if !page.edges.is_empty() || page.next_cursor != since => {
                             let _ = subscription.unsubscribe().await;
@@ -648,7 +669,9 @@ impl CoordClient {
                     };
                 }
                 next_recovery = now + RECOVERY_INTERVAL;
-                let recovered = self.attention_feed(principal, since, limit).await?;
+                let recovered = self
+                    .attention_feed(principal, since, limit, runtime)
+                    .await?;
                 if !recovered.edges.is_empty() || recovered.next_cursor != since {
                     let _ = subscription.unsubscribe().await;
                     return Ok(recovered);
@@ -677,7 +700,7 @@ impl CoordClient {
                 }
                 received = tokio::time::timeout(wait_for, subscription.next()) => {
                     if matches!(received, Ok(None)) {
-                        let ledger = self.attention_feed(principal, since, limit).await;
+                        let ledger = self.attention_feed(principal, since, limit, runtime).await;
                         let _ = subscription.unsubscribe().await;
                         return match ledger {
                             Ok(page) if !page.edges.is_empty() || page.next_cursor != since => Ok(page),
@@ -855,6 +878,7 @@ impl CoordClient {
         &self,
         principal: &str,
         attention_id: &str,
+        runtime: Option<&crate::RuntimeState>,
     ) -> Result<Value, CoordError> {
         let db = self.owner.data_dir.join("v0.db");
         let principal_owned = principal.to_owned();
@@ -864,6 +888,9 @@ impl CoordClient {
         })
         .await
         .map_err(|_| CoordError::Unavailable)??;
+        if edge.kind == "approval_result" {
+            return approval_results::read(self, runtime, principal, &edge).await;
+        }
         if edge.kind == "work_changed" {
             let db = self.owner.data_dir.join("v0.db");
             let edge_for_read = edge.clone();
@@ -871,7 +898,7 @@ impl CoordClient {
                 let conn = open_db(&db, false)?;
                 crate::coord_rooms::work::revision(
                     &conn,
-                    &edge_for_read.room_id,
+                    edge_for_read.room_id.as_deref().ok_or(CoordError::Data)?,
                     &edge_for_read.object_id,
                     edge_for_read.revision_or_sequence as i64,
                 )
@@ -883,7 +910,13 @@ impl CoordClient {
             return Ok(json!({"edge":edge.public_json(),"object":object}));
         }
         if edge.kind == "brief_changed" {
-            let expected_object_id = format!("brief-{}", edge.room_id.trim_start_matches("rm-"));
+            let expected_object_id = format!(
+                "brief-{}",
+                edge.room_id
+                    .as_deref()
+                    .ok_or(CoordError::Data)?
+                    .trim_start_matches("rm-")
+            );
             if edge.object_id != expected_object_id {
                 return Err(CoordError::Data);
             }
@@ -902,7 +935,9 @@ impl CoordClient {
         let connection = self.client().await?;
         let stream = jetstream::new(connection);
         let stream = stream
-            .get_stream(room_stream(&edge.room_id))
+            .get_stream(room_stream(
+                edge.room_id.as_deref().ok_or(CoordError::Data)?,
+            ))
             .await
             .map_err(|_| CoordError::Unavailable)?;
         let raw = stream
@@ -968,7 +1003,7 @@ struct RoomAccess {
 #[derive(Clone)]
 struct AttentionEdge {
     attention_id: String,
-    room_id: String,
+    room_id: Option<String>,
     kind: String,
     object_id: String,
     revision_or_sequence: u64,
@@ -977,7 +1012,7 @@ struct AttentionEdge {
 
 struct FeedEdge {
     attention_id: String,
-    room_id: String,
+    room_id: Option<String>,
     kind: String,
     object_id: String,
     revision_or_sequence: u64,
@@ -1312,7 +1347,11 @@ fn read_attention_feed(
     let mut edges = Vec::new();
     for row in rows {
         let (edge, generation) = row.map_err(|_| CoordError::Data)?;
-        if attention_member(&conn, &edge.room_id, principal, generation)? {
+        let permitted = match edge.room_id.as_deref() {
+            Some(room) => attention_member(&conn, room, principal, generation)?,
+            None => edge.kind == "approval_result",
+        };
+        if permitted {
             edges.push(edge);
         }
         if edges.len() == limit {
@@ -1368,7 +1407,14 @@ fn read_attention_edge(
         .optional()
         .map_err(|_| CoordError::Data)?
         .ok_or(CoordError::NotFound)?;
-    if !attention_member(&conn, &edge.room_id, principal, edge.membership_granted_at)? {
+    if !(edge.kind == "approval_result" && edge.room_id.is_none()
+        || attention_member(
+            &conn,
+            edge.room_id.as_deref().ok_or(CoordError::Data)?,
+            principal,
+            edge.membership_granted_at,
+        )?)
+    {
         return Err(CoordError::NotFound);
     }
     Ok(edge)
@@ -1394,6 +1440,7 @@ fn verify_attention_edge(
 }
 
 fn read_brief_revision(db: &Path, edge: &AttentionEdge) -> Result<Value, CoordError> {
+    let room = edge.room_id.as_deref().ok_or(CoordError::Data)?;
     let conn = open_db(db, false)?;
     conn.query_row(
         "SELECT room_id, revision, markdown, content_hash, created_at
@@ -1406,7 +1453,7 @@ fn read_brief_revision(db: &Path, edge: &AttentionEdge) -> Result<Value, CoordEr
         |row| {
             Ok(json!({
                 "room_id": row.get::<_, String>(0)?,
-                "object_id": format!("brief-{}", edge.room_id.trim_start_matches("rm-")),
+                "object_id": format!("brief-{}", room.trim_start_matches("rm-")),
                 "revision": row.get::<_, i64>(1)?,
                 "markdown": row.get::<_, String>(2)?,
                 "content_hash": row.get::<_, String>(3)?,
@@ -2386,6 +2433,7 @@ async fn respond_as(
                 limit,
                 timeout,
                 context.cancellation.clone(),
+                context.runtime,
             )
             .await
         {
@@ -2414,7 +2462,7 @@ async fn respond_as(
         }
         return match context
             .client
-            .attention_object(principal, &attention_id)
+            .attention_object(principal, &attention_id, context.runtime)
             .await
         {
             Ok(value) => response(200, value),
@@ -4328,7 +4376,7 @@ mod tests {
 
         let edge = AttentionEdge {
             attention_id: "attn-0123456789abcdef0123456789abcdef".to_owned(),
-            room_id: "rm-shared".to_owned(),
+            room_id: Some("rm-shared".to_owned()),
             kind: "brief_changed".to_owned(),
             object_id: "brief-shared".to_owned(),
             revision_or_sequence: 3,

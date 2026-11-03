@@ -12,7 +12,11 @@ pub(crate) struct Delivery {
 }
 
 impl Delivery {
-    pub(crate) fn start(client: Arc<CoordClient>, audit: Arc<audit::Writer>) -> Option<Self> {
+    pub(crate) fn start(
+        client: Arc<CoordClient>,
+        audit: Arc<audit::Writer>,
+        runtime: crate::RuntimeState,
+    ) -> Option<Self> {
         // A passive client's HOME fallback is not authority for a background
         // writer to drain an unrelated instance into this proxy's audit sink.
         if !client.owner.explicit_directory {
@@ -23,6 +27,9 @@ impl Delivery {
             // This attachment-local position is not a delivery record. Live
             // publication has no durable cursor, retry queue or history replay.
             let mut live_after = None;
+            let mut approval_positions = [0, 0];
+            let mut approval_first = false;
+            let mut results_unavailable = false;
             loop {
                 tokio::select! {
                     biased;
@@ -30,6 +37,11 @@ impl Delivery {
                     _ = async {
                         publish_live(&client, &audit, &mut live_after).await;
                         drain(&client, &audit).await;
+                        let unavailable = super::approval_results::reconcile(&client, &runtime, &mut approval_positions, &mut approval_first).await.is_err();
+                        if unavailable && !results_unavailable {
+                            eprintln!("Private approval result delivery unavailable; canonical approvals and operator controls remain available.");
+                        }
+                        results_unavailable = unavailable;
                     } => {},
                 }
                 tokio::select! {

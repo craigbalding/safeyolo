@@ -912,6 +912,23 @@ impl Runtime {
         result
     }
 
+    fn withhold_revoked_approval_results(&self, previous: &Runtime) -> Result<(), Error> {
+        if let Some(previous_policy) = previous.policy.as_deref() {
+            for (name, id) in previous_policy.agent_identities() {
+                if self
+                    .policy
+                    .as_deref()
+                    .and_then(|policy| policy.evidence_agent_id(name))
+                    != Some(id)
+                {
+                    self.audit.approvals().withhold_results(id)?;
+                    self.plumb.withhold_approval_results(id)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn configure_declarations(&self) -> Result<(), Error> {
         let options = test_context::Options {
             block: self.config.test_context_block,
@@ -1118,6 +1135,9 @@ fn native_policy_activation(
         runtime
             .configure_declarations()
             .map_err(|error| error.to_string())?;
+        runtime
+            .withhold_revoked_approval_results(current)
+            .map_err(|error| error.to_string())?;
         **current = Arc::new(runtime);
         Ok(())
     }
@@ -1159,6 +1179,7 @@ fn reload_native_policy(
         )?;
         let runtime = prepare_policy_runtime(&current, candidate)?;
         runtime.configure_declarations()?;
+        runtime.withhold_revoked_approval_results(&current)?;
         *current = Arc::new(runtime);
         Ok(true)
     };
@@ -2065,6 +2086,7 @@ impl Proxy {
             proxy.coord_delivery = agent_api::coord::outbox::Delivery::start(
                 runtime.coord.clone(),
                 runtime.audit.clone(),
+                proxy.runtime.clone(),
             );
         }
         Ok(proxy)
@@ -2381,6 +2403,7 @@ impl Proxy {
             runtime
                 .traffic_view
                 .configure(config.flow_pruner_max, config.flow_pruner_max_body_bytes);
+            runtime.withhold_revoked_approval_results(&current)?;
             // No fallible preparation remains before topology/runtime publication.
             clear_readiness(&self.readiness_file, &self.default_via);
             runtime

@@ -15,6 +15,17 @@ mod shared_approval_fixture;
 mod test_owned_endpoint;
 use shared_approval_fixture::*;
 
+fn decision_history(mut view: Value) -> Value {
+    // Delivery progresses independently of the immutable approval decision.
+    assert!(
+        view.as_object_mut()
+            .unwrap()
+            .remove("result_delivery")
+            .is_some()
+    );
+    view
+}
+
 #[cfg(target_os = "linux")]
 fn resident_kib() -> u64 {
     fs::read_to_string("/proc/self/status")
@@ -829,7 +840,10 @@ async fn lost_committed_response_reads_canonical_state_and_missing_evidence_keep
         .admin("GET", &format!("/admin/approvals/{id}"), None)
         .await;
     assert_eq!(recovered.status, 200, "{}", recovered.json());
-    assert_eq!(recovered.json(), approved);
+    assert_eq!(
+        decision_history(recovered.json()),
+        decision_history(approved.clone())
+    );
     for agent in ["worker", "helper"] {
         let recovered = fixture
             .agent(agent, "GET", &format!("/approvals/{id}"), None)
@@ -958,12 +972,16 @@ async fn terminal_approval_replay_does_not_restore_changed_policy_even_without_a
             .admin("GET", &format!("/admin/approvals/{id}"), None)
             .await;
         assert_eq!(view.status, 200, "{changed}: {}", view.json());
-        assert_eq!(view.json(), approved, "terminal history changed: {changed}");
+        assert_eq!(
+            decision_history(view.json()),
+            decision_history(approved.clone()),
+            "terminal history changed: {changed}"
+        );
         let replay = fixture.resolve(&id, "approve").await;
         assert_eq!(replay.status, 200, "{changed}: {}", replay.json());
         assert_eq!(
-            replay.json(),
-            approved,
+            decision_history(replay.json()),
+            decision_history(approved.clone()),
             "terminal replay changed: {changed}"
         );
         assert_eq!(

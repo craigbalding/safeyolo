@@ -3195,7 +3195,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let owner = crate::agent_api::plumb::PlumbOwner::for_data_dir(directory.path());
         let requested = owner
-            .request_chat("alice", &[json!("bob")], None, None, None)
+            .request_chat("alice", None, &[json!("bob")], None, None, None)
             .await;
         let request_id = requested["request_id"].as_str().unwrap().to_owned();
         let participants = requested["participants"].clone();
@@ -3243,7 +3243,7 @@ mod tests {
         assert_eq!(json!(approvals::plumb_prompts(&path)), json!([]));
 
         let denied_request = owner
-            .request_chat("alice", &[json!("bob")], None, None, None)
+            .request_chat("alice", None, &[json!("bob")], None, None, None)
             .await;
         let denied_id = denied_request["request_id"].as_str().unwrap().to_owned();
         let denied_path = directory.path().join("denied.jsonl");

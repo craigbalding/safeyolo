@@ -7,10 +7,14 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     time::timeout,
 };
+#[path = "delegated_approvals/approval_results.rs"]
+mod approval_results;
 #[path = "delegated_approvals/contract_binding.rs"]
 mod contract_binding;
 #[path = "delegated_approvals/coord_room.rs"]
 mod coord_room;
+#[path = "support/operator_nats.rs"]
+mod operator_nats;
 #[path = "delegated_approvals/service_authorization.rs"]
 mod service_authorization;
 #[allow(dead_code)]

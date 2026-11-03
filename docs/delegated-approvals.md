@@ -506,6 +506,66 @@ reject, expire or replay a request. Claimed or suppressed delivery metadata is
 retained in the canonical record and audit. Typed action attempts also audit the
 submitted reason's digest and byte count without retaining each changed reason.
 
+## Receive a private approval result
+
+The original requester receives terminal approval results through the existing
+`wait_for_coord` tool. Keep one attention cursor. Process every returned object
+before adopting `next_cursor`. An `approval_result` edge has `room_id: null`;
+its object contains the canonical `approval_id`, `source` and `status`.
+`wait_for_attention` followed by `read_attention` uses the same authorization.
+The Agent API routes are `GET /api/coord/attention/wait` and
+`GET /api/coord/attention/ATTENTION_ID/object`, with the requester's ordinary
+Agent API bearer and transport identity. Guests never connect to NATS.
+
+Native network, credential, service authorization, contract binding, risky
+gateway route, room access and typed operator-action approvals use the canonical
+approval store. Operator and delegated decisions share that store. Credential
+expiry can expire a pending service or gateway request while its requester is
+offline. Plumb keeps its approve/deny decisions in its own canonical pending
+store and exposes their references through the same attention feed. Native
+denials have status `rejected`; Plumb denials have status `denied`. This delivery
+path does not add an expiry to requests that have no existing approval expiry.
+
+A result reports the approval decision. It does not establish current grant
+activation or successful action execution. Read the canonical approval and
+effective access before explicitly retrying an operation. Receiving, rereading
+or recovering a result does not grant permission or replay the request.
+For native approvals, the requester can read `GET /approvals/APPROVAL_ID`;
+the host operator can use `approvals show ID`. Existing reviewer preparation
+notices and operator recovery remain available.
+
+The host retains result references in local JetStream for at most seven days.
+The stream has a 4 MiB and 100,000-reference limit and refuses new publication
+when full. Delivery receipts and permanent withholding markers remain in the
+canonical approval owners; attention stores references only. A disconnected
+requester can receive a decision made during its absence after ordinary broker,
+proxy and requester restart, while its stable identity remains authorized and
+the result is within retention. A recreated attention projection can recover
+retained references from their canonical receipts. Duplicate references have
+the same `attention_id`; consumers must treat repeats as harmless.
+
+Private delivery uses the requester's existing own-approval read authority:
+its name must still resolve unambiguously to the original durable `agent_id`.
+It does not depend on room membership or renew a run-bound permission. SafeYolo
+checks recipient authority at admission and again after broker I/O, immediately
+before disclosure. Observed identity revocation or replacement permanently
+withholds outstanding references, even if the original identity is later
+restored. The result's delivery deadline also permanently withholds expired
+references. Reconnection, recreated delivery state and human-name reuse cannot
+undo these markers. A newly created agent does not inherit an old agent's
+canonical own-read authority. Shared rooms keep their existing retained-history
+and revoke/regrant semantics.
+
+Results contain no room messages, request explanations, credentials, desktop
+URLs or unlock codes. They do not enter shared room history or ordinary result
+logs. Broker outages and pressure can delay delivery; they do not stop policy
+enforcement, canonical decisions and authorized reads, audit or traffic
+recording. An unavailable attention read returns an error and no later cursor.
+The delivery loop emits a content-free unavailable diagnostic. Native canonical
+views report `result_delivery.status` as `pending`, `published` or
+`withheld`; publication is not a requester receipt or a current broker-health check. After an unavailable result,
+use canonical reads or operator recovery. No model wake or start is guaranteed.
+
 ## Change, revoke and recover
 
 Inspect `approvals delegations --json` for revisions and issued access. For a

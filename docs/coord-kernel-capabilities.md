@@ -32,7 +32,7 @@ family. The kernel invariants are:
 * Work claims are durable generation-protected ownership, not automatically
   expiring leases.
 * Every agent has one identity-derived, multiplexed attention feed across its
-  authorized rooms.
+  authorized rooms and its own private approval-result references.
 * Attention delivery is at-least-once and deduplicable; an attention edge
   points to canonical state and never becomes a second copy of it.
 * Current-state tables support efficient projections; immutable
@@ -149,6 +149,7 @@ feed is capable eventually of returning:
 message
 brief_changed
 work_changed
+approval_result
 blocker
 decision_needed
 ...
@@ -169,6 +170,11 @@ and recipients deduplicate by `attention_id`. The recipient reads the
 authoritative message, brief, work item or signal after waking. Authorization
 is checked before returning the edge and independently when the referenced
 object is read.
+
+Private `approval_result` edges have `room_id: null`. They use the canonical
+requester's stable identity and approval read authority rather than room
+membership. See [private approval results](delegated-approvals.md#receive-a-private-approval-result)
+for retention, restart, withholding, duplicates and unavailable delivery.
 
 Compatibility is deliberate:
 
