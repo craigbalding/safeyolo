@@ -353,6 +353,34 @@ impl Store {
             .collect()
     }
 
+    /// Shared host recovery uses the same current view as the operator API.
+    /// Retain one record at a time rather than a second pending-work store.
+    pub(crate) fn pending_fingerprint(
+        &self,
+        writer: &Writer,
+        policy: &Policy,
+        state: &crate::RuntimeState,
+    ) -> Result<[u8; 32]> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare("SELECT record FROM approvals WHERE status='pending' ORDER BY approval_id")
+            .map_err(unavailable)?;
+        let mut rows = statement.query([]).map_err(unavailable)?;
+        let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
+        while let Some(row) = rows.next().map_err(unavailable)? {
+            let record = decode_record(&row.get::<_, String>(0).map_err(unavailable)?)?;
+            let view = current_view(writer, policy, &record, Some(state))?;
+            if view["status"] == "pending" {
+                hash.update(
+                    serde_json::to_string(&view)
+                        .map_err(unavailable)?
+                        .as_bytes(),
+                );
+            }
+        }
+        Ok(hash.finish().as_ref().try_into().expect("SHA256 size"))
+    }
+
     /// The database serializes competing resolvers. A policy commit also stores
     /// its receipt beside the effect. A restart after that commit can finish the
     /// receipt without creating a second grant, even when the audit was lost.

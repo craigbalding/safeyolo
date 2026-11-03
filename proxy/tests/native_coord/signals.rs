@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::Barrier;
 
-#[path = "../support/nats_subscription.rs"]
-mod nats_subscription;
+#[path = "../test_owned_endpoint/mod.rs"]
+mod test_owned_endpoint;
 
 const ALICE: &str = "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 fn db(root: &Path) -> Connection {
@@ -41,28 +41,207 @@ async fn read(client: &Client, id: &Value, revision: Option<i64>) -> Value {
     client.call("read_signal", &args).await.unwrap()
 }
 
+/// Count actual viewer HTTP requests and cut its connections for reconnect
+/// proof. The upstream remains the real authenticated Admin listener.
+#[derive(Default)]
+struct ViewerRecords {
+    drop_final: std::sync::atomic::AtomicBool,
+    controls: std::sync::atomic::AtomicUsize,
+    dropped_signals: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    dropped_approvals: std::sync::Mutex<std::collections::BTreeSet<String>>,
+}
+
+async fn forward_viewer_records(
+    mut viewer: tokio::net::TcpStream,
+    mut host: tokio::net::TcpStream,
+    records: Arc<ViewerRecords>,
+) {
+    use safeyolo_proxy::websocket::{Event, Reader, Writer};
+    use std::sync::atomic::Ordering;
+    use tungstenite::protocol::frame::coding::Control;
+
+    let mut header = Vec::new();
+    while !header.ends_with(b"\r\n\r\n") {
+        header.push(host.read_u8().await.unwrap());
+        assert!(header.len() < 8192);
+    }
+    assert!(header.starts_with(b"HTTP/1.1 101"));
+    viewer.write_all(&header).await.unwrap();
+    let (mut viewer_read, viewer_write) = viewer.into_split();
+    let (host_read, mut host_write) = host.into_split();
+    let mut read = Reader::new(host_read, false, None);
+    let mut write = Writer::new(viewer_write, false, None);
+    let forward = async {
+        loop {
+            match read.read().await? {
+                Event::Message(message) => {
+                    let event = message.with_text(|text| serde_json::from_str::<Value>(text))??;
+                    if event["type"] == "operator_state" {
+                        records.controls.fetch_add(1, Ordering::SeqCst);
+                    }
+                    let dropped = match event["event"].as_str() {
+                        Some("coord.signal_resolved") => {
+                            Some((&records.dropped_signals, "signal_id"))
+                        }
+                        Some("admin.approval_decided") => {
+                            Some((&records.dropped_approvals, "approval_id"))
+                        }
+                        _ => None,
+                    };
+                    if let Some((dropped, id_field)) = dropped
+                        && records.drop_final.load(Ordering::SeqCst)
+                    {
+                        dropped
+                            .lock()
+                            .unwrap()
+                            .insert(event["details"][id_field].as_str().unwrap().to_owned());
+                        continue;
+                    }
+                    write.message(message).await?;
+                }
+                Event::Ping(bytes) => write.control(Control::Ping, &bytes).await?,
+                Event::Pong(bytes) => write.control(Control::Pong, &bytes).await?,
+                Event::Close(bytes) => {
+                    write.control(Control::Close, &bytes).await?;
+                    return Ok::<_, safeyolo_proxy::Error>(());
+                }
+            }
+        }
+    };
+    tokio::select! {
+        _ = forward => {},
+        _ = tokio::io::copy(&mut viewer_read, &mut host_write) => {},
+    }
+}
+
+async fn viewer_relay(
+    port: u16,
+    requests: Arc<std::sync::atomic::AtomicUsize>,
+    cuts: tokio::sync::broadcast::Sender<()>,
+    fail_approval_read: Arc<std::sync::atomic::AtomicBool>,
+    records: Arc<ViewerRecords>,
+) -> (
+    u16,
+    tokio::task::JoinHandle<()>,
+    Arc<tokio::sync::Notify>,
+    Arc<tokio::sync::Notify>,
+) {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap().port();
+    let snapshot_started = Arc::new(tokio::sync::Notify::new());
+    let snapshot_release = Arc::new(tokio::sync::Notify::new());
+    let started = snapshot_started.clone();
+    let release = snapshot_release.clone();
+    let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let task = tokio::spawn(async move {
+        let mut connections = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                connection=listener.accept() => {
+                    let (mut viewer,_)=connection.unwrap();let requests=requests.clone();let mut cut=cuts.subscribe();
+                    let started=started.clone();let release=release.clone();let first=first.clone();let fail_approval_read=fail_approval_read.clone();let records=records.clone();
+                    connections.spawn(async move {
+                        let mut header=Vec::new();
+                        while !header.ends_with(b"\r\n\r\n") {header.push(viewer.read_u8().await.unwrap());assert!(header.len()<8192);}
+                        if !header.starts_with(b"GET /admin/events ") {requests.fetch_add(1,std::sync::atomic::Ordering::SeqCst);}
+                        if header.starts_with(b"GET /admin/approvals ") && fail_approval_read.swap(false,std::sync::atomic::Ordering::SeqCst) {
+                            viewer.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
+                            return;
+                        }
+                        if header.starts_with(b"GET /admin/coord/signals?") && first.swap(false,std::sync::atomic::Ordering::SeqCst) {
+                            started.notify_one();release.notified().await;
+                        }
+                        let Ok(mut host)=tokio::net::TcpStream::connect(("127.0.0.1",port)).await else {return;};
+                        host.write_all(&header).await.unwrap();
+                        if header.starts_with(b"GET /admin/events ") {
+                            tokio::select! {_=forward_viewer_records(viewer,host,records)=>{},_=cut.recv()=>{}}
+                        } else {
+                            tokio::select! {_=tokio::io::copy_bidirectional(&mut viewer,&mut host)=>{},_=cut.recv()=>{}}
+                        }
+                    });
+                },
+                Some(_)=connections.join_next(),if !connections.is_empty()=>{},
+            }
+        }
+    });
+    (address, task, snapshot_started, snapshot_release)
+}
+async fn next_watch(
+    output: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+) -> Value {
+    let line = tokio::time::timeout(Duration::from_secs(5), output.next_line())
+        .await
+        .expect("pending work did not converge within five seconds")
+        .unwrap()
+        .expect("watch exited");
+    serde_json::from_str(&line).unwrap()
+}
+async fn pending_network(root: &Path, address: std::net::SocketAddr, path: &str) -> String {
+    let mut socket = tokio::net::UnixStream::connect(root.join("alice.sock"))
+        .await
+        .unwrap();
+    socket.write_all(format!("GET http://{address}/{path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    let mut bytes = Vec::new();
+    socket.read_to_end(&mut bytes).await.unwrap();
+    let reply = String::from_utf8(bytes).unwrap();
+    assert!(
+        reply.starts_with("HTTP/1.1 428")
+            || (root.join("logs/audit.jsonl").is_dir() && reply.starts_with("HTTP/1.1 502")),
+        "{reply}\n{}",
+        fs::read_to_string(root.join("proxy-diagnostics.log")).unwrap_or_default()
+    );
+    reply
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("x-safeyolo-request-id")
+                .then(|| value.trim().to_owned())
+        })
+        .unwrap()
+}
+
+async fn resolve_signal(root: &Path, signal: &Value, operation: &str) {
+    let resolved = coord_json(
+        root,
+        &[
+            "signal",
+            "resolve",
+            "shared",
+            signal["signal"]["signal_id"].as_str().unwrap(),
+            "--expected-revision",
+            "1",
+            "--operation-id",
+            operation,
+        ],
+    )
+    .await;
+    assert_eq!(resolved["signal"]["state"], "resolved");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires pinned NATS; holds the real watch SUB before the broker"]
-async fn native_watch_confirms_subscription_before_reading_pending_signals() {
+#[ignore = "requires pinned NATS for canonical room setup; operator recovery runs with it stopped"]
+async fn native_watch_recovers_final_signal_and_approval_changes_without_a_later_event() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     let binary = std::env::var("SAFEYOLO_COORD_NATS_BINARY").expect("set pinned NATS binary");
     let temp = tempfile::Builder::new()
-        .prefix("coord-watch-sub-")
+        .prefix("operator-recovery-")
         .tempdir_in(std::env::current_dir().unwrap())
         .unwrap();
     let root = temp.path();
     assert!(host_cli(root, &["init"]).await.status.success());
-    fs::write(root.join("config.toml"), "admin_port=0\nflow_store_enabled=false\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n").unwrap();
-    fs::write(
-        root.join("policy.toml"),
-        format!("[controls.network]\nenabled=false\n[hosts]\n[agents.alice]\nagent_id='{ALICE}'\n"),
-    )
-    .unwrap();
-    // host_cli supplies this test root's dynamic-port instance selection.
-    let started = host_cli(root, &["coord", "start", "--binary", &binary]).await;
+    fs::write(root.join("config.toml"),"admin_port=0\nflow_store_enabled=false\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n").unwrap();
+    let (_origin, address) = test_owned_endpoint::bind().await;
+    let (_second_origin, second_address) = test_owned_endpoint::bind().await;
+    let (_approval_clock_origin, approval_clock_address) = test_owned_endpoint::bind().await;
+    let (_fast_approval_origin, fast_approval_address) = test_owned_endpoint::bind().await;
+    fs::write(root.join("policy.toml"),format!("[controls.network]\nenabled=true\n[hosts.'{address}']\negress='prompt'\n[hosts.'{second_address}']\negress='prompt'\n[hosts.'{approval_clock_address}']\negress='prompt'\n[hosts.'{fast_approval_address}']\negress='prompt'\n[agents.alice]\nagent_id='{ALICE}'\n")).unwrap();
     assert!(
-        started.status.success(),
-        "{}",
-        String::from_utf8_lossy(&started.stderr)
+        host_cli(root, &["coord", "start", "--binary", &binary])
+            .await
+            .status
+            .success()
     );
     let _cleanup = NatsCleanup(root.into());
     coord_json(root, &["room", "create", "shared"]).await;
@@ -73,57 +252,358 @@ async fn native_watch_confirms_subscription_before_reading_pending_signals() {
         token_file: root.join("data/agent_token"),
         home: None,
     };
-    let first = signal(&alice, "blocker", "Initial pending blocker", "first").await;
-    let process: Value =
-        serde_json::from_slice(&fs::read(root.join("data/coord/nats/process.json")).unwrap())
-            .unwrap();
-    let mut relay = nats_subscription::SubscriptionRelay::start(
-        process["client_port"].as_u64().unwrap() as u16,
+    let first = signal(&alice, "blocker", "Pending before attachment", "first").await;
+    let first_request = pending_network(root, address, "before-attachment").await;
+    let before: Value = serde_json::from_slice(
+        &host_cli(root, &["approvals", "list", "--json"])
+            .await
+            .stdout,
+    )
+    .unwrap();
+    let first_approval = before["approvals"][0]["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(before["approvals"][0]["request_id"], first_request);
+    let ready: Value = serde_json::from_slice(
+        &fs::read(
+            native_config::read(&root.join("config.toml"))
+                .unwrap()
+                .readiness_file,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let (cuts, _) = tokio::sync::broadcast::channel(8);
+    let fail_approval_read = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let records = Arc::new(ViewerRecords::default());
+    let (viewer_port, relay, snapshot_started, snapshot_release) = viewer_relay(
+        ready["admin_port"].as_u64().unwrap() as u16,
+        requests.clone(),
+        cuts.clone(),
+        fail_approval_read.clone(),
+        records.clone(),
     )
     .await;
-    let mut watcher = host_command(root, &["watch", "--json"])
-        .env(
-            "SAFEYOLO_COORD_NATS_URL",
-            format!("nats://127.0.0.1:{}", relay.port),
-        )
-        .spawn()
-        .unwrap();
+    // Only the viewer uses the relay. The running host and author retain their
+    // real configuration and authenticated routes.
+    let original_config = fs::read_to_string(root.join("config.toml")).unwrap();
+    fs::write(
+        root.join("config.toml"),
+        original_config.replace("admin_port=0", &format!("admin_port={viewer_port}")),
+    )
+    .unwrap();
+    let mut watcher = host_command(root, &["watch", "--json"]).spawn().unwrap();
     let mut output = tokio::io::BufReader::new(watcher.stdout.take().unwrap()).lines();
-    relay.wait_for_sub().await;
+    let mut errors = tokio::io::BufReader::new(watcher.stderr.take().unwrap()).lines();
+    tokio::time::timeout(Duration::from_secs(5), snapshot_started.notified())
+        .await
+        .unwrap();
+    let during_attach = signal(
+        &alice,
+        "blocker",
+        "Created between subscription and snapshot",
+        "attach-boundary",
+    )
+    .await;
+    snapshot_release.notify_one();
+    let mut attached_signals = std::collections::BTreeSet::new();
+    let mut attached_approvals = Vec::new();
+    for _ in 0..3 {
+        let row = next_watch(&mut output).await;
+        if let Some(id) = row["signal"]["signal_id"].as_str() {
+            attached_signals.insert(id.to_owned());
+        }
+        if let Some(id) = row["approval"]["approval_id"].as_str() {
+            attached_approvals.push(id.to_owned());
+        }
+    }
+    assert_eq!(
+        attached_signals,
+        std::collections::BTreeSet::from([
+            first["signal"]["signal_id"].as_str().unwrap().to_owned(),
+            during_attach["signal"]["signal_id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        ])
+    );
+    assert_eq!(attached_approvals, vec![first_approval.clone()]);
+    coord_json(
+        root,
+        &[
+            "signal",
+            "resolve",
+            "shared",
+            during_attach["signal"]["signal_id"].as_str().unwrap(),
+            "--expected-revision",
+            "1",
+            "--operation-id",
+            "resolve-attach-boundary",
+        ],
+    )
+    .await;
+    let cleared = next_watch(&mut output).await;
+    assert_eq!(cleared["signal_id"], during_attach["signal"]["signal_id"]);
+    assert_eq!(cleared["needs_operator"], false);
+
+    // Align just after the shared host read by waiting for a clear delivered
+    // only through its state control. The next item's entire lifetime must fit
+    // between host checks, with creation observed from JSONL and its final
+    // resolution frame actually discarded on this healthy viewer connection.
+    records.drop_final.store(true, Ordering::SeqCst);
+    let clock = signal(
+        &alice,
+        "decision",
+        "Align the signal host check",
+        "signal-clock",
+    )
+    .await;
+    assert_eq!(next_watch(&mut output).await["signal"], clock["signal"]);
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    resolve_signal(root, &clock, "signal-clock-clear").await;
+    assert_eq!(
+        next_watch(&mut output).await["signal_id"],
+        clock["signal"]["signal_id"]
+    );
+    let controls = records.controls.load(Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    let fast = signal(
+        &alice,
+        "blocker",
+        "Fast signal seen from JSONL",
+        "fast-signal",
+    )
+    .await;
+    assert_eq!(next_watch(&mut output).await["signal"], fast["signal"]);
+    resolve_signal(root, &fast, "fast-signal-clear").await;
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "signal lifetime crossed a host check"
+    );
+    assert_eq!(
+        records.controls.load(Ordering::SeqCst),
+        controls,
+        "creation was rescued by a host control"
+    );
+    let lifetime = started.elapsed();
+    println!(
+        "signal created and resolved between host checks in {lifetime:?}; waiting for its clear with the final resolution frame dropped"
+    );
+    let cleared = next_watch(&mut output).await;
+    assert_eq!(cleared["signal_id"], fast["signal"]["signal_id"]);
+    assert_eq!(cleared["needs_operator"], false);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(
+        records
+            .dropped_signals
+            .lock()
+            .unwrap()
+            .contains(fast["signal"]["signal_id"].as_str().unwrap())
+    );
+    println!(
+        "fast signal clear recovered in {:?} without a later business event",
+        started.elapsed()
+    );
+
+    let request = pending_network(root, approval_clock_address, "approval-clock").await;
+    let clock = next_watch(&mut output).await;
+    assert_eq!(clock["approval"]["request_id"], request);
+    let clock_id = clock["approval"]["approval_id"].as_str().unwrap();
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    assert!(
+        host_cli(root, &["approvals", "reject", clock_id, "--json"])
+            .await
+            .status
+            .success()
+    );
+    assert_eq!(next_watch(&mut output).await["approval_id"], clock_id);
+    let controls = records.controls.load(Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    let request = pending_network(root, fast_approval_address, "fast-approval").await;
+    let fast = next_watch(&mut output).await;
+    assert_eq!(fast["approval"]["request_id"], request);
+    let fast_id = fast["approval"]["approval_id"].as_str().unwrap();
+    assert!(
+        host_cli(root, &["approvals", "reject", fast_id, "--json"])
+            .await
+            .status
+            .success()
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "approval lifetime crossed a host check"
+    );
+    assert_eq!(
+        records.controls.load(Ordering::SeqCst),
+        controls,
+        "creation was rescued by a host control"
+    );
+    let lifetime = started.elapsed();
+    println!(
+        "approval created and resolved between host checks in {lifetime:?}; waiting for its clear with the final decision frame dropped"
+    );
+    let cleared = next_watch(&mut output).await;
+    assert_eq!(cleared["approval_id"], fast_id);
+    assert_eq!(cleared["needs_operator"], false);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(records.dropped_approvals.lock().unwrap().contains(fast_id));
+    println!(
+        "fast approval clear recovered in {:?} without a later business event",
+        started.elapsed()
+    );
+    records.drop_final.store(false, Ordering::SeqCst);
+
+    // No state changes means no periodic network fetches by this viewer.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let idle = requests.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        idle,
+        "idle viewer repeatedly fetched state"
+    );
     assert!(
         tokio::time::timeout(Duration::from_millis(100), output.next_line())
             .await
             .is_err(),
-        "watch read canonical state before its SUB reached the broker"
+        "unchanged pending work repeated alerts"
     );
-    relay.release();
-    let initial = tokio::time::timeout(Duration::from_secs(5), output.next_line())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&initial).unwrap()["signal"],
-        first["signal"]
-    );
-    let next = signal(&alice, "blocker", "Blocker at watch readiness", "next").await;
-    let live = tokio::time::timeout(Duration::from_secs(5), output.next_line())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&live).unwrap()["signal"],
-        next["signal"]
-    );
+    // Lose every final audit notification. Do not emit a later business event
+    // to rescue any of the four transitions below. Shared local checks own it.
+    let audit = root.join("logs/audit.jsonl");
+    fs::rename(&audit, root.join("retained-audit")).unwrap();
+    fs::create_dir(&audit).unwrap();
+    assert!(host_cli(root, &["coord", "stop"]).await.status.success());
+    let started = std::time::Instant::now();
+    let second = signal(
+        &alice,
+        "decision",
+        "Created with final notification missing",
+        "second",
+    )
+    .await;
+    assert_eq!(next_watch(&mut output).await["signal"], second["signal"]);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    fail_approval_read.store(true, Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    let second_request = pending_network(root, second_address, "missing-final-approval").await;
+    let approval = next_watch(&mut output).await;
+    assert_eq!(approval["approval"]["request_id"], second_request);
+    assert!(started.elapsed() < Duration::from_secs(5));
     assert!(
-        tokio::time::timeout(Duration::from_millis(100), output.next_line())
+        !fail_approval_read.load(Ordering::SeqCst),
+        "the final invalidation did not encounter the deliberate API read failure"
+    );
+    let second_approval = approval["approval"]["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let started = std::time::Instant::now();
+    let resolved = coord_json(
+        root,
+        &[
+            "signal",
+            "resolve",
+            "shared",
+            second["signal"]["signal_id"].as_str().unwrap(),
+            "--expected-revision",
+            "1",
+            "--operation-id",
+            "resolve-final",
+        ],
+    )
+    .await;
+    assert_eq!(resolved["signal"]["state"], "resolved");
+    let cleared = next_watch(&mut output).await;
+    assert_eq!(cleared["signal_id"], second["signal"]["signal_id"]);
+    assert_eq!(cleared["needs_operator"], false);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let started = std::time::Instant::now();
+    let _ = host_cli(root, &["approvals", "reject", &second_approval, "--json"]).await;
+    let cleared = next_watch(&mut output).await;
+    assert_eq!(cleared["approval_id"], second_approval);
+    assert_eq!(cleared["needs_operator"], false);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    // A failed canonical read is stale/unavailable, never an empty set.
+    db(root)
+        .execute_batch("ALTER TABLE coord_signals RENAME TO unavailable_signals")
+        .unwrap();
+    let approvals_db = Connection::open(root.join("data/approvals.sqlite3")).unwrap();
+    approvals_db
+        .execute_batch("ALTER TABLE approvals RENAME TO unavailable_approvals")
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut signals = false;
+        let mut approvals = false;
+        while !(signals && approvals) {
+            let line = errors
+                .next_line()
+                .await
+                .unwrap()
+                .expect("watch exited during unavailable state");
+            signals |= line.contains("Pending signals unavailable");
+            approvals |= line.contains("Pending approvals unavailable");
+        }
+    })
+    .await
+    .expect("failed state reads were not reported as stale");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), output.next_line())
             .await
             .is_err(),
-        "unchanged pending signal revisions printed twice"
+        "unavailable state cleared or repeated existing work"
+    );
+    db(root)
+        .execute_batch("ALTER TABLE unavailable_signals RENAME TO coord_signals")
+        .unwrap();
+    approvals_db
+        .execute_batch("ALTER TABLE unavailable_approvals RENAME TO approvals")
+        .unwrap();
+    drop(approvals_db);
+    // Cut only the viewer's TCP paths. Reconnect re-reads the canonical set
+    // while the broker and audit sink remain unavailable; no repeat alerts.
+    let attached = requests.load(Ordering::SeqCst);
+    let _ = cuts.send(());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while requests.load(Ordering::SeqCst) == attached {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), output.next_line())
+            .await
+            .is_err()
+    );
+    let current: Value = serde_json::from_slice(
+        &host_cli(root, &["watch", "--once", "--json"])
+            .await
+            .stdout
+            .iter()
+            .copied()
+            .take_while(|b| *b != b'\n')
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    assert_eq!(current["signal"], first["signal"]);
+    let approvals: Value = serde_json::from_slice(
+        &host_cli(root, &["approvals", "list", "--json"])
+            .await
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(approvals["approvals"].as_array().unwrap().len(), 1);
+    assert_eq!(approvals["approvals"][0]["approval_id"], first_approval);
+    println!(
+        "missed final signal/approval create and clear each converged within five seconds; broker stopped; idle request count stable at {idle}; reconnect retained unchanged current work"
     );
     watcher.kill().await.unwrap();
     proxy.kill().await.unwrap();
+    relay.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -421,8 +901,8 @@ async fn native_signals_author_page_watch_replay_and_restart() {
     );
     let viewed: Value = serde_json::from_slice(&detached.stdout).unwrap();
     assert_eq!(viewed["signal"], retry["signal"]);
-    // A live attachment must report broker loss, while the canonical one-time
-    // view remains usable. Reading its first line establishes attachment.
+    // Broker loss does not interrupt operator attachment or canonical reads.
+    // Reading the first line establishes the authenticated attachment.
     let mut attached = host_command(root, &["watch", "--json"]).spawn().unwrap();
     let mut output = tokio::io::BufReader::new(attached.stdout.take().unwrap()).lines();
     let initial = tokio::time::timeout(Duration::from_secs(5), output.next_line())
@@ -435,12 +915,13 @@ async fn native_signals_author_page_watch_replay_and_restart() {
         retry["signal"]
     );
     coord_json(root, &["stop"]).await;
-    let lost = tokio::time::timeout(Duration::from_secs(5), attached.wait_with_output())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(!lost.status.success());
-    assert!(String::from_utf8_lossy(&lost.stderr).contains("live operator events"));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), output.next_line())
+            .await
+            .is_err()
+    );
+    assert!(attached.try_wait().unwrap().is_none());
+    attached.kill().await.unwrap();
     let offline = watch(root, &["--once", "--json"]).await;
     assert!(
         offline.status.success(),
@@ -451,8 +932,6 @@ async fn native_signals_author_page_watch_replay_and_restart() {
         serde_json::from_slice::<Value>(&offline.stdout).unwrap()["signal"],
         retry["signal"]
     );
-    let unavailable = watch(root, &["--json"]).await;
-    assert!(!unavailable.status.success());
     coord_json(root, &["start", "--binary", &binary]).await;
     let mut reattached = host_command(root, &["watch", "--json"]).spawn().unwrap();
     let mut output = tokio::io::BufReader::new(reattached.stdout.take().unwrap()).lines();

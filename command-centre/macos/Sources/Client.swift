@@ -493,7 +493,7 @@ final class SafeYoloClient: ObservableObject {
             try await ping(socket)
             guard !stopping, !Task.isCancelled, webSocket === socket else { return }
             diagnostics.lastEventSuccess = Date()
-            // The listener starts at its handshake audit offset. Re-read the
+            // The listener registers before the handshake completes. Re-read the
             // pending list so an approval created after the earlier snapshot
             // but before this handshake cannot fall between both channels.
             guard await refreshApprovals() else { throw ClientError.invalidResponse }
@@ -537,6 +537,20 @@ final class SafeYoloClient: ObservableObject {
     }
 
     func ingestOperatorEventData(_ data: Data) async throws {
+        if let control = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+           control["type"] as? String == "operator_state" {
+            if control["log"] as? String == "unavailable" {
+                eventFeedGap = "Recorded event feed unavailable. Pending state does not prove JSONL delivery."
+            } else if let gap = control["history_gap"] as? String {
+                eventFeedGap = "Recorded event history gap: \(gap). Current-state refresh does not replay history."
+            } else if eventFeedGap?.hasPrefix("Recorded event feed unavailable.") == true {
+                eventFeedGap = "Recorded event feed recovered. History during the interruption may be missing."
+            }
+            // The canonical list retains attention claims and suppression.
+            // Recovery only reads existing requests; it never resubmits them.
+            guard await refreshApprovals() else { throw ClientError.invalidResponse }
+            return
+        }
         let event = try JSONDecoder().decode(OperatorEventEnvelope.self, from: data)
         if event.needsApproval || event.event.hasPrefix("admin.") || event.event == "agent.network_action_prepared" {
             guard await refreshApprovals() else {

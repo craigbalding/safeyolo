@@ -603,6 +603,57 @@ pub async fn helper_timeout(
     .await
 }
 
+/// Authenticated local attachment to the same Admin stream as Commander.
+pub(crate) struct OperatorEvents {
+    read: crate::websocket::Reader<tokio::io::ReadHalf<TokioIo<hyper::upgrade::Upgraded>>>,
+    write: crate::websocket::Writer<tokio::io::WriteHalf<TokioIo<hyper::upgrade::Upgraded>>>,
+}
+pub(crate) async fn operator_events(config: &Path) -> Result<OperatorEvents, Error> {
+    tokio::time::timeout(TIMEOUT, async {
+        let (socket, host, token) = operator_socket(config).await?;
+        let (mut client, connection) =
+            hyper::client::conn::http1::handshake(TokioIo::new(socket)).await?;
+        let driver = Connection(tokio::spawn(connection.with_upgrades()));
+        let mut request = Request::builder()
+            .uri("/admin/events")
+            .header("host", host)
+            .header("authorization", format!("Bearer {}", token.trim()))
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-version", "13")
+            .header(
+                "sec-websocket-key",
+                tungstenite::handshake::client::generate_key(),
+            )
+            .body(Full::new(Bytes::new()))?;
+        let handshake = crate::websocket::Handshake::request(&mut request)?;
+        let mut response = client.send_request(request).await?;
+        handshake.response(&response)?;
+        let upgraded = hyper::upgrade::on(&mut response).await?;
+        drop(driver);
+        let (read, write) = tokio::io::split(TokioIo::new(upgraded));
+        Ok(OperatorEvents {
+            read: crate::websocket::Reader::new(read, false, None),
+            write: crate::websocket::Writer::new(write, true, None),
+        })
+    })
+    .await?
+}
+impl OperatorEvents {
+    pub(crate) async fn next(&mut self) -> Result<Value, Error> {
+        loop {
+            match self.read.read().await? {
+                crate::websocket::Event::Message(message) => return Ok(message.with_text(|text| serde_json::from_str::<Value>(text))??),
+                crate::websocket::Event::Ping(bytes) => {
+                    tokio::time::timeout(TIMEOUT,self.write.control(tungstenite::protocol::frame::coding::Control::Pong,&bytes)).await??;
+                },
+                crate::websocket::Event::Pong(_) => {},
+                crate::websocket::Event::Close(_) => return Err("operator stream closed; reconnect to refresh current work; history may be missing".into()),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod rest_tests {
     use super::*;

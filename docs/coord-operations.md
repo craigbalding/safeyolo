@@ -317,10 +317,14 @@ operator. Ctrl-C detaches; unresolved signals remain across detachment and
 proxy or NATS restart. For a one-time structured view, use
 `safeyolo watch --once --json`.
 
-Live watch subscribes to local NATS metadata before reading pending state. A
-signal event wakes a canonical Admin API read; the watcher does not poll or
-follow JSONL. Feed loss reports an error and ends the attachment. Restart watch
-to read current pending state and resume. The one-time view needs no broker.
+Live watch subscribes to the authenticated Admin stream before reading current
+pending signals and approvals. Recorded events come from the shared JSONL log.
+A shared host check also detects missed pending-state changes and pushes a
+separate refresh control. Healthy idle viewers do not poll across the network.
+The target is convergence within five seconds with healthy state/API and
+connections. Feed loss reports a gap and reconnects; the new snapshots refresh
+current work without replaying history. Unavailable state retains a stale view.
+Operator attachment and reads do not require NATS.
 See the [live operator event limits](operator-controls-627-evidence.md#live-operator-events).
 
 Before resolving a signal, use `coord signal list chat` to get its actual ID

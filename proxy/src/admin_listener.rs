@@ -18,6 +18,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use futures_util::StreamExt;
 use http_body_util::{BodyExt, Full};
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
@@ -45,6 +46,7 @@ pub(crate) type EventTasks = Arc<AsyncMutex<JoinSet<()>>>;
 
 #[derive(Clone)]
 struct ConnectionAccess {
+    events: Arc<crate::operator_events::Feed>,
     events_only: bool,
     token: Arc<Zeroizing<String>>,
     command_centre: Option<command_centre::Host>,
@@ -259,6 +261,8 @@ async fn accept(
     event_tasks: EventTasks,
     stats_tasks: Arc<StatsTasks>,
 ) {
+    let events =
+        crate::operator_events::Feed::start(state.clone(), stop.clone(), &event_tasks).await;
     let mut connections = JoinSet::new();
     loop {
         tokio::select! {
@@ -270,6 +274,7 @@ async fn accept(
                         socket,
                         peer,
                         ConnectionAccess {
+                            events: events.clone(),
                             events_only: false,
                             token: prepared.token.clone(),
                             command_centre: prepared.command_centre.clone(),
@@ -299,6 +304,7 @@ async fn accept(
                         socket,
                         peer,
                         ConnectionAccess {
+                            events: events.clone(),
                             events_only: true,
                             token: prepared.token.clone(),
                             command_centre: prepared.command_centre.clone(),
@@ -434,7 +440,7 @@ async fn serve_connection(
                 return serve_events(
                     request,
                     runtime,
-                    access.token.trim_matches(python_whitespace),
+                    &access,
                     event_stop,
                     client_ip,
                     path,
@@ -539,14 +545,17 @@ fn close_http_response<B>(mut response: hyper::Response<B>) -> hyper::Response<B
 async fn serve_events(
     mut request: hyper::Request<hyper::body::Incoming>,
     runtime: std::sync::Arc<crate::Runtime>,
-    token: &str,
+    access: &ConnectionAccess,
     stop: watch::Receiver<bool>,
     client_ip: String,
     target: String,
     event_tasks: EventTasks,
 ) -> Result<hyper::Response<crate::admin_api::AdminBody>, admin_api::Error> {
-    if !admin_api::authenticate(request.headers(), token)
-        .map_err(|_| admin_api::Error::AuthenticationEncoding)?
+    if !admin_api::authenticate(
+        request.headers(),
+        access.token.trim_matches(python_whitespace),
+    )
+    .map_err(|_| admin_api::Error::AuthenticationEncoding)?
     {
         let mut response = admin_api::unauthorized()
             .submit_audit(&runtime.audit, &client_ip, &target)?
@@ -558,22 +567,9 @@ async fn serve_events(
         return Ok(response);
     }
     let handshake = Handshake::request(&mut request).map_err(|_| admin_api::Error::BodyFraming)?;
-    // Subscribe and flush SUB before returning 101. Authentication precedes
-    // all broker access; a failed feed cannot masquerade as a live attachment.
-    let subscription = match runtime.audit.subscribe_live().await {
-        Ok(subscription) => subscription,
-        Err(_) => {
-            return Ok(hyper::Response::builder()
-                .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
-                .header(hyper::header::CONNECTION, "close")
-                .body(
-                    Full::new(Bytes::from_static(b"live operator events unavailable"))
-                        .map_err(|never| match never {})
-                        .boxed(),
-                )
-                .expect("static live event response"));
-        }
-    };
+    // Register before 101 and before the client's canonical snapshot. The
+    // shared state receiver retains changes even when invalidations coalesce.
+    let subscription = access.events.subscribe();
     let upgrade = hyper::upgrade::on(request);
     let body = Full::new(Bytes::new())
         .map_err(|never: std::convert::Infallible| match never {})
@@ -597,7 +593,15 @@ async fn stream_events(
     mut stop: watch::Receiver<bool>,
 ) {
     let (read, write) = tokio::io::split(TokioIo::new(upgraded));
-    let mut reader = Reader::new(read, true, None);
+    // Keep the frame read future inside the stream while state/event sends
+    // win the select. Canceling a partial WebSocket read would corrupt the
+    // next ping or close frame.
+    let incoming =
+        futures_util::stream::unfold(Reader::new(read, true, None), |mut reader| async move {
+            let event = reader.read().await;
+            Some((event, reader))
+        });
+    futures_util::pin_mut!(incoming);
     let mut writer = Writer::new(write, false, None);
     loop {
         tokio::select! {
@@ -610,8 +614,8 @@ async fn stream_events(
                 let _ = tokio::time::timeout(Duration::from_secs(1), writer.shutdown()).await;
                 return;
             }
-            event = reader.read() => {
-                match event {
+            event = incoming.next() => {
+                match event.expect("frame stream always yields a result") {
                     Ok(WebSocketEvent::Ping(payload)) => {
                         if !matches!(
                             tokio::time::timeout(
@@ -642,7 +646,7 @@ async fn stream_events(
                     return;
                 };
                 let Ok(mut event) = serde_json::from_slice::<serde_json::Value>(&line) else { return };
-                let eligible = crate::operator_events::is_operator_event(&event);
+                let eligible = crate::operator_events::is_operator_event(&event) || event["type"] == "operator_state";
                 crate::credentials::wipe_json(&mut event);
                 if eligible {
                     let Ok(line) = String::from_utf8(line.to_vec()) else { return };

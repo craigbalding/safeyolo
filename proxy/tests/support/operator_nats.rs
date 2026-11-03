@@ -1,4 +1,4 @@
-//! Owned pinned NATS server for operator-event producer and consumer tests.
+//! Owned pinned NATS server for private approval delivery and broker-outage controls.
 use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt, path::Path, time::Duration};
 
@@ -17,7 +17,7 @@ impl Nats {
 
     #[allow(
         dead_code,
-        reason = "Live-event tests use core NATS without retention."
+        reason = "Broker-outage tests use core NATS without retention."
     )]
     pub(crate) async fn start_jetstream(root: &Path) -> Self {
         Self::start_config(root, true).await
