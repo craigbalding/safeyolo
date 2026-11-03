@@ -217,7 +217,8 @@ touch {shlex.quote(str(tmp_path / "lane-reached"))}
 
 
 @pytest.mark.parametrize("missing", [False, True])
-def test_vz_transfer_copies_guest_readable_offline_files(tmp_path, missing):
+@pytest.mark.parametrize("supplier_mode", [0o700, 0o755])
+def test_vz_transfer_copies_guest_readable_offline_files(tmp_path, missing, supplier_mode):
     producer = tmp_path / "controller"
     producer.mkdir()
     (producer / "tracked").touch()
@@ -225,14 +226,15 @@ def test_vz_transfer_copies_guest_readable_offline_files(tmp_path, missing):
     subprocess.run(["git", "-C", str(producer), "add", "."], check=True)
     subprocess.run(["git", "-C", str(producer), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "controller"], check=True)
     work = tmp_path / "work $literal"
+    work.mkdir(mode=0o700)
     for name in ("source", "inputs"):
         (work / name).mkdir(parents=True)
     subprocess.run(["git", "-C", str(producer), "bundle", "create", str(work / "controller.bundle"), "HEAD"], check=True)
     archive = tmp_path / "inputs.tar"
     subprocess.run(["tar", "-cf", str(archive), "-C", str(producer), "tracked"], check=True)
     supplier = tmp_path / "supplier"
-    supplier.mkdir(mode=0o755)
-    supplier.chmod(0o755)  # mkdir's mode is still filtered by the caller's umask.
+    supplier.mkdir()
+    supplier.chmod(supplier_mode)
     expected = {"debs/python.deb": b"verified Debian bytes", "wheels/pytest.whl": b"locked wheel bytes",
                 "mise-node/installs/node/22/bin/node": b"verified executable bytes"}
     for name, content in expected.items():
@@ -253,12 +255,15 @@ def test_vz_transfer_copies_guest_readable_offline_files(tmp_path, missing):
     wrapper = (ROOT / "tests/blackbox/hardware/run-vz.sh").read_text()
     transfer = wrapper[wrapper.index("    printf -v command 'set -euo pipefail; tar"):wrapper.index("    env_options=(")]
     setup = 'umask 077; work=$1; VZ_TEST_ENV=$2; VZ_OFFLINE_TEST_INPUTS=$3; attempt=$4; ssh_command=(bash -c)\n'
+    private_mode = work.stat().st_mode
     result = subprocess.run(["bash", "-c", setup + transfer, "transfer", str(work), sys.prefix, str(inputs), str(tmp_path)],
                             capture_output=True, text=True, timeout=10, check=False)
     if missing:
         assert result.returncode != 0
         return
     assert result.returncode == 0, result.stdout + result.stderr
+    assert supplier.stat().st_mode & 0o777 == supplier_mode
+    assert work.stat().st_mode == private_mode
     staged = work / "source/offline"
     assert staged.is_dir() and not staged.is_symlink()
     assert not any(path.is_symlink() for path in staged.rglob("*"))
