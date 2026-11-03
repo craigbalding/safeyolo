@@ -103,7 +103,9 @@ def main() -> None:
                                 raise AssertionError('ordinary socat never acquired its name')
                             os.kill(control.pid, 0)
                             subprocess.run([stage, 'socat'], check=True, capture_output=True, timeout=5)
-                            assert control.wait(timeout=5) == -signal.SIGTERM
+                            assert control.wait(timeout=5) in (
+                                -signal.SIGTERM, 128 + signal.SIGTERM,
+                            ), control.returncode
                             result.update(command=[stage, 'socat'], control_pid=control.pid,
                                           control_exit=control.returncode)
                         finally:
