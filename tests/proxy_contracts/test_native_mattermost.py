@@ -713,12 +713,22 @@ def test_native_flat_invalid_shapes_identity_and_timestamps_are_refused(exchange
     bad = [{"root_id": value} for value in (None, False, 1, [], {}, " ", "x" * 25, "X" * 26)]
     bad += [{"message": value} for value in (None, False, 1, [], {}, "", " \n\t", "é" * 32769)]
     bad += [{"user_id": "u" * 26}, {"channel_id": "d" * 26}, {"edit_at": 1},
-            {"delete_at": 1}, {"create_at": 1}, {"create_at": False}]
+            {"delete_at": 1}, {"create_at": 1}]
     posts = [remote.add(body="not admitted", **fields) for fields in bad]
     assert once(instance).returncode == 0
     assert operator_requests(instance) == [] and remote.creates == 0
     with sqlite3.connect(instance.root / "mattermost.sqlite3") as db:
-        assert db.execute("SELECT COUNT(*) FROM inbound_post WHERE status='ignored'").fetchone()[0] == len(posts)
+        ignored = {row[0] for row in db.execute("SELECT mattermost_post_id FROM inbound_post WHERE status='ignored'")}
+        assert ignored == {post["id"] for post in posts if post["channel_id"] == CHANNEL and post["delete_at"] == 0}
+    baseline = ledger(instance, "SELECT inbound_since FROM room_state")
+    for field in ("create_at", "update_at"):
+        malformed = remote.add(body="malformed page timestamp", **{field: False})
+        failed = once(instance)
+        assert failed.returncode != 0 and f"Mattermost {field} is invalid" in failed.stderr
+        assert operator_requests(instance) == [] and remote.creates == 0
+        assert ledger(instance, "SELECT inbound_since FROM room_state") == baseline
+        with remote.lock:
+            remote.posts.remove(malformed)
     remote.add(body="operator deactivated after startup")
     with remote.lock:
         remote.human["delete_at"] = 1
@@ -998,6 +1008,7 @@ def test_native_uncertain_coord_reply_never_replays_after_restart(exchange, thre
         until(lambda: len(remote.projected()) == (2 if threaded else 1))
         remote.add(root=remote.projected()[0]["id"] if threaded else "", body="independent later reply")
         until(lambda: len(operator_requests(instance)) == 2)
+        until(lambda: ledger(instance, "SELECT COUNT(*) FROM inbound_post WHERE status='sent'") == 1)
         assert process.poll() is None
     with daemon(instance):
         health = until(lambda: failed_sync(instance))
