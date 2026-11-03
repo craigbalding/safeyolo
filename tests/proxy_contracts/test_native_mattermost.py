@@ -513,11 +513,13 @@ def test_native_invalid_identity_or_transport_configuration_is_terminal(exchange
     assert expected in process.captured
 
 
-def test_native_authorization_outage_between_backlog_appends_retains_unsent_replies(exchange):
+@pytest.mark.parametrize("threaded", [False, True], ids=["channel", "thread"])
+def test_native_authorization_outage_between_backlog_appends_retains_unsent_replies(exchange, threaded):
     instance, remote = exchange
-    agent_send(instance, "batch authorization question")
+    if threaded:
+        agent_send(instance, "batch authorization question")
     assert once(instance).returncode == 0
-    root = remote.projected()[0]["id"]
+    root = remote.projected()[0]["id"] if threaded else ""
     for index in range(5):
         remote.add(root=root, body=f"authorized reply {index}")
 
@@ -668,6 +670,70 @@ def test_native_long_outage_pages_equal_timestamps_partial_failure_and_restart(e
     assert operator_requests(instance) == messages and remote.creates == 1
     assert any(r[2].get("page") == ["6"] for r in remote.requests if r[1] == endpoint)
     assert all("since" not in r[2] for r in remote.requests if r[1] == endpoint)
+
+
+def test_native_flat_conversation_without_projection_and_same_channel_reply(exchange):
+    instance, remote = exchange
+    assert once(instance).returncode == 0
+    assert history(instance) == [] and remote.projected() == []
+    texts = ["Hello café\nPlease reply here.", "!safeyolo approve checked", "!safeyolo unknown"]
+    incoming = [remote.add(body=text) for text in texts]
+    result = once(instance)
+    assert result.returncode == 0, result.stderr
+    messages = operator_requests(instance)
+    assert len(messages) == len(incoming) and remote.creates == 0
+    adapter_id = json.loads(messages[0]["body"])["adapter_id"]
+    assert len(adapter_id) == 64
+    for message, post in zip(messages, incoming, strict=True):
+        assert message["sender_agent_id"] is None and message["sender_agent_name"] is None
+        assert message["content_type"] == "text/plain"
+        assert json.loads(message["body"]) == {
+            "schema": SCHEMA, "adapter_id": adapter_id, "kind": "message", "action": None,
+            "text": post["message"], "correlation": {
+                "mattermost_post_id": post["id"], "mattermost_root_post_id": "",
+                "mattermost_channel_id": CHANNEL,
+            },
+        }
+    assert once(instance).returncode == 0
+    assert operator_requests(instance) == messages and remote.creates == 0
+    agent_send(instance, "# Reply\n\nHello **operator**.\n\n- Same channel\n- @all stays quiet")
+    assert once(instance).returncode == 0
+    reply, = remote.projected()
+    assert reply["channel_id"] == CHANNEL and reply["root_id"] == ""
+    html = MarkdownIt("commonmark").render(reply["message"])
+    assert "<h1>Reply</h1>" in html and "<strong>operator</strong>" in html
+    assert "＠all" in html and html.count("Canonical provenance") == 1
+    assert once(instance).returncode == 0
+    assert operator_requests(instance) == messages and remote.creates == 1
+
+
+def test_native_flat_invalid_shapes_identity_and_timestamps_are_refused(exchange):
+    instance, remote = exchange
+    assert once(instance).returncode == 0
+    bad = [{"root_id": value} for value in (None, False, 1, [], {}, " ", "x" * 25, "X" * 26)]
+    bad += [{"message": value} for value in (None, False, 1, [], {}, "", " \n\t", "é" * 32769)]
+    bad += [{"user_id": "u" * 26}, {"channel_id": "d" * 26}, {"edit_at": 1},
+            {"delete_at": 1}, {"create_at": 1}]
+    posts = [remote.add(body="not admitted", **fields) for fields in bad]
+    assert once(instance).returncode == 0
+    assert operator_requests(instance) == [] and remote.creates == 0
+    with sqlite3.connect(instance.root / "mattermost.sqlite3") as db:
+        ignored = {row[0] for row in db.execute("SELECT mattermost_post_id FROM inbound_post WHERE status='ignored'")}
+        assert ignored == {post["id"] for post in posts if post["channel_id"] == CHANNEL and post["delete_at"] == 0}
+    baseline = ledger(instance, "SELECT inbound_since FROM room_state")
+    for field in ("create_at", "update_at"):
+        malformed = remote.add(body="malformed page timestamp", **{field: False})
+        failed = once(instance)
+        assert failed.returncode != 0 and f"Mattermost {field} is invalid" in failed.stderr
+        assert operator_requests(instance) == [] and remote.creates == 0
+        assert ledger(instance, "SELECT inbound_since FROM room_state") == baseline
+        with remote.lock:
+            remote.posts.remove(malformed)
+    remote.add(body="operator deactivated after startup")
+    with remote.lock:
+        remote.human["delete_at"] = 1
+    assert once(instance).returncode != 0
+    assert operator_requests(instance) == []
 
 
 def test_native_exchange_authority_restart_and_backend_isolation(exchange):
@@ -916,11 +982,13 @@ def test_native_committed_wal_survives_killed_adapter_without_reposting(exchange
     assert operator_requests(instance) == []
 
 
-def test_native_uncertain_coord_reply_never_replays_after_restart(exchange):
+@pytest.mark.parametrize("threaded", [False, True], ids=["channel", "thread"])
+def test_native_uncertain_coord_reply_never_replays_after_restart(exchange, threaded):
     instance, remote = exchange
-    agent_send(instance, "question")
+    if threaded:
+        agent_send(instance, "question")
     assert once(instance).returncode == 0
-    remote.add(root=remote.projected()[0]["id"], body="unknown acceptance")
+    remote.add(root=remote.projected()[0]["id"] if threaded else "", body="unknown acceptance")
     before = asyncio.run(stream_control(instance, no_ack=True))
     try:
         failed = once(instance)
@@ -937,9 +1005,10 @@ def test_native_uncertain_coord_reply_never_replays_after_restart(exchange):
         assert health["pending_inbound_reconciliation"] == 1
         assert health["synchronization"]["rooms"][ROOM]["status"] == "blocked"
         agent_send(instance, "independent outward projection")
-        until(lambda: len(remote.projected()) == 2)
-        remote.add(root=remote.projected()[0]["id"], body="independent later reply")
+        until(lambda: len(remote.projected()) == (2 if threaded else 1))
+        remote.add(root=remote.projected()[0]["id"] if threaded else "", body="independent later reply")
         until(lambda: len(operator_requests(instance)) == 2)
+        until(lambda: ledger(instance, "SELECT COUNT(*) FROM inbound_post WHERE status='sent'") == 1)
         assert process.poll() is None
     with daemon(instance):
         health = until(lambda: failed_sync(instance))
