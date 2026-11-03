@@ -16,33 +16,120 @@ SOURCE = "a" * 40
 RUNTIME = {"name": "bbtest", "agent_id": "agent-fixture", "run_id": "b" * 32}
 
 
-def test_gateway_launch_finds_jq_in_the_guest_tool_path(tmp_path):
+@pytest.fixture
+def guest_launch(tmp_path):
     guest_home = tmp_path / "guest"
     guest_tools = guest_home / ".local/bin"
     inherited_tools = tmp_path / "inherited"
     guest_tools.mkdir(parents=True)
     inherited_tools.mkdir()
+    reached = tmp_path / "client-reached"
     programs = {
-        inherited_tools / "cat": "printf 'fixture-agent\\n'\n",
-        inherited_tools / "curl": "IFS= read -r header\nprintf '{}\\n'\n",
-        guest_tools / "jq": (
-            "while IFS= read -r input; do :; done\n"
-            "printf 'guest jq reached\\n' >&2\nexit 42\n"
-        ),
+        inherited_tools / "cat": '''test "$*" = /app/agent_token
+printf '%s' "$FIXTURE_AGENT_TOKEN"
+''',
+        guest_tools / "curl": '''IFS= read -r header
+test "$header" = "Authorization: Bearer $FIXTURE_AGENT_TOKEN"
+test "$*" = '--fail --silent --show-error --max-time 15 --header @- http://_safeyolo.proxy.internal/gateway/services'
+printf '%s' "$FIXTURE_SERVICES"
+exit "$FIXTURE_CURL_EXIT"
+''',
+        guest_home / ".safeyolo-command": '''printf 'reached' > "$FIXTURE_REACHED"
+test "$CLAUDE_CODE_OAUTH_TOKEN" = "$FIXTURE_TOKEN"
+test "${ANTHROPIC_API_KEY+x}" != x
+test "${ANTHROPIC_AUTH_TOKEN+x}" != x
+test "${agent_token+x}" != x
+test "$*" = '-p --verbose --output-format stream-json'
+IFS= read -r -d '' prompt || :
+test "$prompt" = "$FIXTURE_TASK"
+printf 'client completed\\n'
+''',
     }
     for path, script in programs.items():
-        path.write_text("#!/bin/sh\n" + script)
+        path.write_text("#!/bin/bash\nset -eu\n" + script)
         path.chmod(0o700)
 
-    result = subprocess.run(
-        ["/bin/sh", "-c", smoke.GATEWAY_LAUNCH],
-        env=dict(os.environ, HOME=str(guest_home), PATH=str(inherited_tools)),
-        capture_output=True, text=True, timeout=10, check=False,
-    )
-    # Stop in the fixture jq before any staged client can run. All token and
-    # gateway operations above are local fakes, with no credential access.
-    assert result.returncode == 42, result.stderr
-    assert "guest jq reached" in result.stderr
+    state = {"token": "sgw_fixture-scoped-secret", "curl_exit": 0, "calls": []}
+
+    def guest(label, script, *, seconds, stdin=None):
+        # Only cat, curl and the staged command exist in this PATH. The product
+        # executes shell -c with Bash; neither jq nor guest Python is available.
+        arguments = ["/bin/bash", "-c", script]
+        assert state["token"] not in repr(arguments)
+        state["calls"].append(label)
+        services = state.get("services", json.dumps({"authorized": {"claude": {"token": state["token"]}}}))
+        result = subprocess.run(arguments, input=stdin, capture_output=True, timeout=seconds, check=False,
+            env=dict(os.environ, HOME=str(guest_home), PATH=str(inherited_tools),
+                     FIXTURE_AGENT_TOKEN="fixture-agent-secret", FIXTURE_TOKEN=state["token"],
+                     FIXTURE_SERVICES=services, FIXTURE_CURL_EXIT=str(state["curl_exit"]),
+                     FIXTURE_TASK=smoke.TASK, FIXTURE_REACHED=str(reached),
+                     ANTHROPIC_API_KEY="fixture-provider-secret", ANTHROPIC_AUTH_TOKEN="fixture-auth-secret"))
+        assert result.stderr == b""
+        if result.returncode:
+            raise smoke.SmokeFailure(f"{label}: client or command failed")
+        return result.stdout
+
+    return guest, state, reached
+
+
+@pytest.mark.parametrize("token", ["sgw_fixture-scoped-secret", 'sgw_quotes"\\\n$(exit 88)\r\n'])
+def test_actual_guest_launch_without_jq_or_python_preserves_token_and_task(guest_launch, token):
+    guest, state, reached = guest_launch
+    state["token"] = token
+    report = {"model_attempts": 0}
+    assert smoke.launch_task(guest, report, 10) == b"client completed\n"
+    assert reached.read_text() == "reached"
+    assert state["calls"] == ["gateway-services", "claude-tool-task"]
+    assert report == {"model_attempts": 1}
+
+
+@pytest.mark.parametrize("services", [
+    "malformed fixture-scoped-secret", '"sgw_fixture-scoped-secret"', '[]', '{}',
+    '{"authorized": null}', '{"authorized": {"claude": {}}}',
+    *[json.dumps({"authorized": {"claude": {"token": token}}})
+      for token in [None, False, 7, [], {}, "", "provider-secret", "sgw_bad\0token", "sgw_\ud800"]],
+])
+def test_gateway_refusal_cannot_execute_client_or_publish_token(guest_launch, services):
+    guest, state, reached = guest_launch
+    state["services"] = services
+    report = {"model_attempts": 0}
+    with pytest.raises(smoke.SmokeFailure, match="^gateway-services: invalid Claude authorization$"):
+        smoke.launch_task(guest, report, 10)
+    assert state["calls"] == ["gateway-services"]
+    assert not reached.exists()
+    assert report == {"model_attempts": 0}
+
+
+def test_gateway_http_refusal_cannot_execute_client(guest_launch):
+    guest, state, reached = guest_launch
+    state["curl_exit"] = 22  # curl --fail for an unauthorized gateway response.
+    report = {"model_attempts": 0}
+    with pytest.raises(smoke.SmokeFailure, match="^gateway-services: client or command failed$"):
+        smoke.launch_task(guest, report, 10)
+    assert state["calls"] == ["gateway-services"]
+    assert not reached.exists()
+    assert report == {"model_attempts": 0}
+
+
+def test_incomplete_token_input_cannot_execute_client(guest_launch):
+    guest, _, reached = guest_launch
+    with pytest.raises(smoke.SmokeFailure, match="^claude-tool-task: client or command failed$"):
+        guest("claude-tool-task", smoke.GATEWAY_LAUNCH, seconds=10, stdin=b"sgw_unterminated")
+    assert not reached.exists()
+
+
+def test_gateway_preparation_does_not_extend_the_task_deadline(guest_launch, monkeypatch):
+    guest, _, reached = guest_launch
+    # Use the real guest script before replacing the clock: subprocess timeout
+    # accounting uses the same time module as the instrument.
+    services = guest("gateway-services", smoke.GATEWAY_SERVICES, seconds=10)
+    clock = iter([0, 2])
+    monkeypatch.setattr(smoke.time, "monotonic", lambda: next(clock))
+    report = {"model_attempts": 0}
+    with pytest.raises(smoke.SmokeFailure, match="^claude-tool-task: timeout$"):
+        smoke.launch_task(lambda *_args, **_options: services, report, 1)
+    assert not reached.exists()
+    assert report == {"model_attempts": 0}
 
 
 def events(tool="Bash"):
@@ -160,9 +247,15 @@ def installed_smoke(tmp_path, monkeypatch):
                           + smoke.sha256(b"baseline") + "  /home/agent/.safeyolo/AGENTS.md\n"
                           + "e" * 64 + "  /home/agent/.claude/skills/safeyolo/SKILL.md\n"
                           + "# Operate inside SafeYolo\n").encode()
+            elif script == smoke.GATEWAY_SERVICES:
+                if state["failure"] == "gateway-http":
+                    return subprocess.CompletedProcess(arguments, 22, b"private gateway response", b"private error")
+                stdout = (b"private malformed response" if state["failure"] == "gateway-malformed" else
+                          json.dumps({"authorized": {} if state["failure"] == "gateway-unauthorized" else
+                                      {"claude": {"token": "sgw_private-launch-token"}}}).encode())
             else:
                 assert script == smoke.GATEWAY_LAUNCH
-                assert options["input"] == smoke.TASK.encode()
+                assert options["input"] == b"sgw_private-launch-token\0" + smoke.TASK.encode()
                 if state["failure"] == "timeout":
                     raise subprocess.TimeoutExpired(arguments, options["timeout"], output=b"private timeout")
                 if state["failure"] in {"auth", "client-exit"}:
@@ -182,6 +275,7 @@ def installed_smoke(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("failure", [None, "missing-skill", "wrong-baseline", "wrong-config", "unreadable-skill",
+                                     "gateway-http", "gateway-malformed", "gateway-unauthorized",
                                      "auth", "client-exit", "timeout", "wrong-output", "absent-output"])
 def test_completed_instrument_cannot_turn_reached_failures_into_success(installed_smoke, failure):
     root, workspace, output, state = installed_smoke
@@ -193,8 +287,10 @@ def test_completed_instrument_cannot_turn_reached_failures_into_success(installe
     assert report["cleanup"] == "stopped"
     assert report["model_attempts"] <= 1
     assert "private" not in output.read_text()
-    if failure in {"missing-skill", "wrong-baseline", "wrong-config", "unreadable-skill"}:
+    if failure in {"missing-skill", "wrong-baseline", "wrong-config", "unreadable-skill",
+                   "gateway-http", "gateway-malformed", "gateway-unauthorized"}:
         assert report["model_attempts"] == 0
+        assert not any(row["step"] == "claude-tool-task" for row in report["steps"])
     if failure == "timeout":
         assert report["steps"][-1]["timed_out"]
     if failure in {"auth", "client-exit"}:

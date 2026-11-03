@@ -35,27 +35,48 @@ TASK = (
     "the first Markdown title (the line starting with '# ') in that skill, "
     "with one newline after each line. Complete this local task without network tools."
 )
-# Fetch at launch, just like claude-safeyolo. Neither the agent token nor the
-# scoped token is interpolated by the host or passed on the command line.
-GATEWAY_LAUNCH = r'''set -eu
+# Fetch in the guest; parse in this host instrument's Python interpreter.
+# Neither token enters command arguments, logs or exported observations.
+GATEWAY_SERVICES = r'''set -eu
 set +x
 export PATH="$HOME/.local/bin:$PATH"
 agent_token=$(cat /app/agent_token)
-services=$(printf 'Authorization: Bearer %s\n' "$agent_token" |
+printf 'Authorization: Bearer %s\n' "$agent_token" |
   curl --fail --silent --show-error --max-time 15 --header @- \
-    http://_safeyolo.proxy.internal/gateway/services)
-unset agent_token
-CLAUDE_CODE_OAUTH_TOKEN=$(printf '%s' "$services" |
-  jq -er '.authorized.claude.token | select(type == "string" and startswith("sgw_"))')
-unset services
+    http://_safeyolo.proxy.internal/gateway/services
+'''
+GATEWAY_LAUNCH = r'''set -eu
+set +x
+export PATH="$HOME/.local/bin:$PATH"
+IFS= read -r -d '' CLAUDE_CODE_OAUTH_TOKEN
 export CLAUDE_CODE_OAUTH_TOKEN
 unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
-exec /home/agent/.safeyolo-command -p --verbose --output-format stream-json
+exec "$HOME/.safeyolo-command" -p --verbose --output-format stream-json
 '''
 
 
 class SmokeFailure(Exception):
     """A categorical failure safe to publish without client or service text."""
+
+
+def launch_task(guest, report: dict, timeout: int) -> bytes:
+    """Fetch a fresh scoped token and launch once within the task deadline."""
+    deadline = time.monotonic() + timeout
+    services = guest("gateway-services", GATEWAY_SERVICES, seconds=timeout)
+    try:
+        token = json.loads(services)["authorized"]["claude"]["token"]
+        if not isinstance(token, str) or not token.startswith("sgw_") or "\0" in token:
+            # NUL delimits stdin and cannot appear in an environment variable.
+            raise SmokeFailure("gateway-services: invalid Claude authorization")
+        task_input = token.encode() + b"\0" + TASK.encode()
+    except (ValueError, KeyError, TypeError):
+        raise SmokeFailure("gateway-services: invalid Claude authorization") from None
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise SmokeFailure("claude-tool-task: timeout")
+    report["model_attempts"] = 1
+    return guest("claude-tool-task", GATEWAY_LAUNCH, seconds=remaining,
+                 stdin=task_input)
 
 
 def require_dedicated_instance(root: Path) -> None:
@@ -271,8 +292,7 @@ def run(root: Path, workspace: Path, credential: str, output: Path, timeout: int
         report["sandbox"] = check_sandbox(runtime)
         title = native_setup(guest, report)
         expected = (marker + "\n" + title + "\n").encode()
-        report["model_attempts"] = 1
-        stream = guest("claude-tool-task", GATEWAY_LAUNCH, seconds=timeout, stdin=TASK.encode())
+        stream = launch_task(guest, report, timeout)
         completed_task(root, workspace, stream, expected, report)
         report["status"] = "passed"
         exit_code = 0
