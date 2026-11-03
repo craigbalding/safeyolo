@@ -471,21 +471,18 @@ live consumer can subscribe after a session gap.
 
 ## PCAP Next Generation (PCAPNG)
 
-Release output remains unavailable until
-[#862](https://github.com/craigbalding/safeyolo/issues/862) confirms the owning
-organization's Internet Assigned Numbers Authority (IANA) Private Enterprise
-Number (PEN). The assignment and registry name have one authoritative location:
+Release output uses the owning organization's assigned Internet Assigned
+Numbers Authority (IANA) Private Enterprise Number (PEN). The assigned number
+and owning registry name have one authoritative location:
 `ENTERPRISE` in [the shared encoder](../proxy/src/packet_capture/pcapng.rs).
-The implementation does not substitute a local-use number or another
-organization's assignment. Test builds can use an isolated identifier; those
-files do not establish portable release acceptance.
+All Custom Blocks and Custom Options use that assignment.
 
-Once the confirmed assignment is installed, select `profile = "pcapng"` in the
-existing `[packet_capture]` table. The same file, stdout/pipe, raw TCP and
-authenticated WebSocket adapters carry this format. Each new session begins
-with a Section Header Block, interface descriptions and section/session metadata
-before dependent records. A section identifies its canonical namespace, starting
-sequence, sink session, schema and profile.
+Select `profile = "pcapng"` in the existing `[packet_capture]` table.
+The file, stdout/pipe, raw TCP and authenticated WebSocket adapters carry this
+format. Each new session begins with a Section Header Block, interface
+descriptions and section/session metadata before dependent records. A section
+identifies its canonical namespace, starting sequence, sink session, schema and
+profile.
 
 Non-packet observations use standard PEN-scoped Custom Blocks. Each copyable
 block (`0x00000BAD`) contains the PEN, ASCII `SYOB`, a little-endian 32-bit JSON

@@ -7,26 +7,21 @@ use serde_json::json;
 #[cfg(test)]
 mod tests;
 
-// An isolated test identifier. Never a release assignment or portable proof.
-#[cfg(test)]
-pub(super) const TEST_ENTERPRISE: Enterprise = Enterprise {
-    number: u32::MAX,
-    name: "isolated test only",
+/// IANA Private Enterprise Number and owning registry name for SafeYolo captures.
+/// https://www.iana.org/assignments/enterprise-numbers.txt
+pub(super) const ENTERPRISE: Enterprise = Enterprise {
+    number: 67476,
+    name: "Threatspotting Ltd.",
 };
 
-/// #862 supplies the confirmed IANA assignment and owning registry name here.
-/// None keeps release-format output unavailable; test identifiers never enter it.
-pub(super) const ENTERPRISE: Option<Enterprise> = None;
-
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Enterprise {
+pub(super) struct Enterprise {
     pub number: u32,
     pub name: &'static str,
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct Format {
-    pub enterprise: Enterprise,
     pub wire: Option<wire::Format>,
     pub compatibility: bool,
     pub wire_unavailable: Option<&'static str>,
@@ -73,7 +68,7 @@ impl Format {
         code: u16,
         value: &impl Serialize,
     ) -> Result<(), ()> {
-        let mut bytes = self.enterprise.number.to_le_bytes().to_vec();
+        let mut bytes = ENTERPRISE.number.to_le_bytes().to_vec();
         bytes.extend(compat::json_bytes(value)?);
         option(out, code, &bytes)
     }
@@ -88,7 +83,7 @@ impl Format {
         if json.len().saturating_add(payload.len()).saturating_add(28) > limit {
             return Err(());
         }
-        let mut body = self.enterprise.number.to_le_bytes().to_vec();
+        let mut body = ENTERPRISE.number.to_le_bytes().to_vec();
         body.extend(*b"SYOB");
         body.extend((json.len() as u32).to_le_bytes());
         body.extend(u32::try_from(payload.len()).map_err(|_| ())?.to_le_bytes());
@@ -108,7 +103,7 @@ impl Format {
         body.extend((-1i64).to_le_bytes());
         option(&mut body, 4, b"SafeYolo")?; // shb_userappl
         let description = json!({"schema_version":1,"profile":"pcapng","session":session,
-            "enterprise_name":self.enterprise.name,"sink":sink,
+            "enterprise_name":ENTERPRISE.name,"sink":sink,
             "wire_interface":self.wire.map(|_|0),"wire_unavailable":self.wire_unavailable,
             "compat_interface":self.compatibility.then_some(u32::from(self.wire.is_some()))});
         // Interface IDs and the starting sequence describe this particular section.

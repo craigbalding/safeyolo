@@ -38,7 +38,6 @@ fn options(mut bytes: &[u8]) -> Vec<(u16, &[u8])> {
 }
 fn format(precision: u64, compatibility: bool) -> Format {
     Format {
-        enterprise: TEST_ENTERPRISE,
         wire: Some(wire::Format {
             link_type: 1,
             precision_ns: precision,
@@ -48,7 +47,7 @@ fn format(precision: u64, compatibility: bool) -> Format {
     }
 }
 fn custom(body: &[u8]) -> (serde_json::Value, &[u8]) {
-    assert_eq!(word(body, 0), TEST_ENTERPRISE.number);
+    assert_eq!(word(body, 0), ENTERPRISE.number);
     assert_eq!(&body[4..8], b"SYOB");
     let metadata = word(body, 8) as usize;
     let payload = word(body, 12) as usize;
@@ -73,8 +72,9 @@ fn canonical_blocks_preserve_payload_identity_lineage_and_deliberate_copy_forms(
     assert_eq!(rows[0].0, 0x0a0d0d0a);
     let section = options(&rows[0].1[16..]);
     let section = section.iter().find(|o| o.0 == SECTION_STRING).unwrap();
-    assert_eq!(word(section.1, 0), TEST_ENTERPRISE.number);
+    assert_eq!(word(section.1, 0), ENTERPRISE.number);
     let section: serde_json::Value = serde_json::from_slice(&section.1[4..]).unwrap();
+    assert_eq!(section["enterprise_name"], ENTERPRISE.name);
     assert_eq!(section["session"]["instance_id"], session.instance_id);
     assert_eq!(
         section["session"]["sink_session_id"],
@@ -85,6 +85,8 @@ fn canonical_blocks_preserve_payload_identity_lineage_and_deliberate_copy_forms(
     assert_eq!(section["compat_interface"], 1);
     assert_eq!(rows.iter().filter(|b| b.0 == 1).count(), 2);
     assert_eq!(rows.iter().filter(|b| b.0 == NONCOPYABLE).count(), 1);
+    let section_block = rows.iter().find(|b| b.0 == NONCOPYABLE).unwrap();
+    assert_eq!(custom(section_block.1).0["section"], section);
     let canonical = rows.iter().find(|b| b.0 == COPYABLE).unwrap();
     let (metadata, bytes) = custom(canonical.1);
     assert_eq!(metadata["source"]["id"]["sequence"], o.id.sequence);
@@ -135,7 +137,8 @@ fn wire_subset_keeps_actual_precision_and_packet_options_are_copyable() {
         let caplen = word(epb, 12) as usize;
         assert_eq!(&epb[20..20 + caplen], o.payload.as_ref().unwrap().as_ref());
         let option = options(&epb[20 + caplen.next_multiple_of(4)..]);
-        assert!(option.iter().any(|o| o.0 == CUSTOM_STRING));
+        let correlation = option.iter().find(|o| o.0 == CUSTOM_STRING).unwrap();
+        assert_eq!(word(correlation.1, 0), ENTERPRISE.number);
         let classic = format.wire.unwrap().encode(&record, 65536).unwrap();
         assert_eq!(&classic[16..], &epb[20..20 + caplen]);
         assert_eq!(
@@ -248,7 +251,6 @@ async fn token_file_whitespace_cannot_grant_secrets_to_the_capture_reader() {
         config.admin_api_token_file = Some(read_path);
         config.native_settings.as_mut().unwrap().packet_capture = Settings {
             profile: Profile::Pcapng,
-            test_enterprise: Some(TEST_ENTERPRISE),
             wss: true,
             tls_secrets: true,
             secrets_token_file: Some(secret_path),

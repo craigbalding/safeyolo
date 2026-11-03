@@ -1,6 +1,6 @@
 //! Real intercepted TLS and the existing WSS route. Native mode additionally
-//! acquires genuine packets; its isolated test PEN cannot establish release acceptance.
-use super::{Format, TEST_ENTERPRISE, blocks, custom, word};
+//! acquires genuine packets. All modes use the release capture-format assignment.
+use super::{Format, blocks, custom, word};
 use crate::{
     observations::{ConsumerKind, Layer, Limits, Record},
     packet_capture::{Profile, SecretOutput, Settings},
@@ -146,7 +146,6 @@ async fn capture_tls(root: &Path, native: bool, enabled: bool, exhausted: bool) 
     std::fs::write(&secret, "capture-secret-858").unwrap();
     config.native_settings.as_mut().unwrap().packet_capture = Settings {
         profile: Profile::Pcapng,
-        test_enterprise: Some(TEST_ENTERPRISE),
         file: Some(root.join("capture.pcapng")),
         payload_layers: vec![
             Layer::TransportStream,
@@ -384,7 +383,6 @@ async fn capture_tls(root: &Path, native: bool, enabled: bool, exhausted: bool) 
         let wire = capture.wire_format().unwrap();
         let mut classic = wire.header();
         let packet_format = Format {
-            enterprise: TEST_ENTERPRISE,
             wire: Some(wire),
             compatibility: false,
             wire_unavailable: None,
