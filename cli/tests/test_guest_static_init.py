@@ -125,7 +125,7 @@ if [[ $name = sshd ]]; then
     read -r status <&"$TEST_SSHD_GATE"
 else
     printf 'private unrelated log content\\n'
-    printf '2026/10/29 01:00:00 socat[123] E controlled bridge failure\\n'
+    printf '2026/10/29 01:00:00 sy-shell-relay[123] E controlled bridge failure\\n'
     read -r status <&"$TEST_BRIDGE_GATE"
 fi
 if [[ $status = TERM ]]; then
@@ -228,7 +228,7 @@ def _boot_job(root, *, real_sshd=False):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
         )
         try:
-            _wait_events(events, "sshd-started", "socat-started")
+            _wait_events(events, "sshd-started", "sy-shell-relay-started")
             yield process, sshd_release, bridge_release
         finally:
             try:
@@ -238,7 +238,7 @@ def _boot_job(root, *, real_sshd=False):
             process.communicate(timeout=10)
 
 
-@pytest.mark.parametrize("first", ["sshd", "socat"])
+@pytest.mark.parametrize("first", ["sshd", "sy-shell-relay"])
 @pytest.mark.parametrize("status", [0, 31, "TERM"])
 def test_job_reports_first_child_and_preserves_its_status(job_guest, first, status):
     expected_status = 143 if status == "TERM" else status
@@ -248,9 +248,10 @@ def test_job_reports_first_child_and_preserves_its_status(job_guest, first, stat
         stdout, stderr = process.communicate(timeout=10)
         assert process.returncode == expected_status
         assert not stdout
-        assert stderr.startswith(f"safeyolo job startup: {first} exited (status {expected_status})\n")
+        reported = "sshd" if first == "sshd" else "shell relay"
+        assert stderr.startswith(f"safeyolo job startup: {reported} exited (status {expected_status})\n")
         assert ("controlled SSH failure" in stderr) == (first == "sshd")
-        assert ("controlled bridge failure" in stderr) == (first == "socat")
+        assert ("controlled bridge failure" in stderr) == (first == "sy-shell-relay")
         assert f"controlled {first} launch error" in stderr
         assert "private" not in stderr
         assert "failed (status" not in stderr

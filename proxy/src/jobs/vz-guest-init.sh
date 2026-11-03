@@ -41,7 +41,8 @@ stage='start SSH observer'
 /usr/sbin/sshd -D -E /run/job-sshd.log -f /safeyolo/sshd_config >/run/job-sshd.log 2>&1 &
 sshd_pid=$!
 stage='start SSH bridge'
-socat VSOCK-LISTEN:2220,reuseaddr,fork TCP:127.0.0.1:22 >/run/job-bridge.log 2>&1 &
+ln -sf "$(command -v socat)" /run/sy-shell-relay
+/run/sy-shell-relay VSOCK-LISTEN:2220,reuseaddr,fork TCP:127.0.0.1:22 >/run/job-bridge.log 2>&1 &
 bridge_pid=$!
 
 status=0
@@ -54,8 +55,8 @@ case ${exited_pid-} in
         grep -E '^(error: |fatal: |sshd: |/usr/sbin/sshd: |/safeyolo/sshd_config( |:)|Unable to load host key:|Missing privilege separation directory:|Bind to port |Cannot bind any address|safeyolo job startup:)|^.*/guest-init: line [0-9]+:' /run/job-sshd.log >&2 || true
         ;;
     "$bridge_pid")
-        printf 'safeyolo job startup: socat exited (status %d)\n' "$status" >&2
-        grep -E ' socat\[[0-9]+\] [EW] |^safeyolo job startup:|^.*/guest-init: line [0-9]+:' /run/job-bridge.log >&2 || true
+        printf 'safeyolo job startup: shell relay exited (status %d)\n' "$status" >&2
+        grep -E ' sy-shell-relay\[[0-9]+\] [EW] |^safeyolo job startup:|^.*/guest-init: line [0-9]+:' /run/job-bridge.log >&2 || true
         ;;
     *)
         printf 'safeyolo job startup: wait for SSH observer or bridge failed (status %d)\n' "$status" >&2

@@ -341,7 +341,7 @@ nodes:
         - path: proxy/src/bin/safeyolo.rs
           sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
         - path: proxy/src/jobs/vz-guest-init.sh
-          sha256: b8365d82b1a39f4888b3a717d4a0f1eca1d1a8c239d89c08e15bc94024de2735
+          sha256: 7fc4a7442ccf50eea20dad24b7bb5659f69875f7853f11da2bb96665fc25dc4b
         - path: proxy/src/jobs/vz-exec.sh
           sha256: 72e284a6b8cc9aae65870b97cdf9ab9f4c123dacebc78f3694bd2cb4203ff58a
         - path: tests/fixtures/job-observer-probe.c

@@ -23,6 +23,9 @@ echo "[guest-shell-bridge] vsock:${VSOCK_LISTEN_PORT} -> ${TARGET_HOST}:${TARGET
 # su=agent: see comment in guest-proxy-forwarder.sh for rationale.
 # VSOCK-LISTEN:2220 is an unprivileged vsock port (>1024), so binding
 # works as root-at-start, and per-fork client sockets work as agent.
-exec socat \
+# Execute a distinct filename so the listener and its forks have a distinct
+# /proc/PID/comm; changing argv[0] alone would not protect against pkill socat.
+ln -sf "$(command -v socat)" /run/sy-shell-relay
+exec /run/sy-shell-relay \
     "VSOCK-LISTEN:${VSOCK_LISTEN_PORT},reuseaddr,fork,su=agent" \
     "TCP:${TARGET_HOST}:${TARGET_PORT}"
