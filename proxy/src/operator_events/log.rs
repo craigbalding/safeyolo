@@ -38,9 +38,7 @@ fn backup(path: &Path, index: usize) -> PathBuf {
     if index == 0 {
         return path.to_owned();
     }
-    let mut name = path.as_os_str().to_os_string();
-    name.push(format!(".{index}"));
-    PathBuf::from(name)
+    crate::audit::backup(path, &index.into())
 }
 impl Follower {
     pub fn new(path: PathBuf, settings: crate::audit::Settings) -> Self {
@@ -306,6 +304,58 @@ mod tests {
         assert_eq!(read.records.len(), 1);
         assert!(read.refresh_pending);
         assert!(read.gap.is_none());
+    }
+
+    #[tokio::test]
+    async fn retained_actual_writer_rotations_follow_every_filename() {
+        for name in ["audit.log", "audit.jsonl", "audit", "audit."] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join(name);
+            let settings = crate::audit::Settings {
+                max_bytes: 1.into(),
+                backups: 3.into(),
+                ..Default::default()
+            };
+            let writer = crate::audit::Writer::new(path.clone(), settings.clone());
+            let record = |summary: &str| {
+                crate::audit::Event::new(
+                    "admin.approval_decided",
+                    crate::audit::Kind::Admin,
+                    crate::audit::Severity::High,
+                    summary,
+                )
+            };
+            writer
+                .emit_confirmed(record("before attachment"))
+                .await
+                .unwrap();
+            let mut follower = Follower::new(path, settings);
+            // Each receipt finishes a distinct writer batch and actual rename.
+            for summary in ["first", "second", "third"] {
+                writer.emit_confirmed(record(summary)).await.unwrap();
+            }
+            let read = follower.read();
+            let summaries: Vec<_> = read
+                .records
+                .iter()
+                .map(|line| {
+                    serde_json::from_slice::<serde_json::Value>(line).unwrap()["summary"].clone()
+                })
+                .collect();
+            assert_eq!(
+                summaries,
+                ["first", "second", "third"],
+                "destination {name}; gap={:?}",
+                read.gap
+            );
+            assert!(read.readable);
+            assert!(
+                read.gap.is_none(),
+                "retained writer records are not a gap: {name}"
+            );
+            assert!(read.refresh_pending);
+            writer.shutdown(std::time::Duration::from_secs(2)).unwrap();
+        }
     }
     #[test]
     fn first_file_and_rewritten_partial_tail_are_detected() {

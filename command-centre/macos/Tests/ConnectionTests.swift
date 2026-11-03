@@ -68,11 +68,59 @@ extension ModelTests {
     @MainActor
     static func testOperatorRecoveryControls() async throws {
         try await testOperatorStateRecovery()
+        try await testAttachedApprovalClearsDuringAuditOutage()
         try await testMultiplePendingApprovals()
         try await testApprovalInSubscriptionGapAndReconnect()
         try await testFailedHandshakeSnapshotRetriesPendingApproval()
         try await testAgentInventoryFailureDoesNotBlockApprovals()
         print("operator-recovery-tests: PASS current pending, suppression, stale reads, attach/reconnect, idle network")
+    }
+
+    @MainActor
+    private static func testAttachedApprovalClearsDuringAuditOutage() async throws {
+        snapshot()
+        defer { StubURLProtocol.responsesByPath = [:] }
+        let firstControl = Data(#"{"type":"operator_state","revision":1,"signals":"ready","approvals":"ready","log":"unavailable","history_gap":null}"#.utf8)
+        let socket = StubEventSocket()
+        socket.messages = [.data(firstControl)]
+        socket.onResume = {
+            // This request exists only between host checks. Commander sees
+            // it in its attachment snapshot, without a recorded event.
+            StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["brief", "quiet"]))
+            StubURLProtocol.responsesByPath["/admin/approvals/apr-quiet/attention"] = (200, Data(#"{"notify":false}"#.utf8))
+        }
+        let client = try SafeYoloClient(adminURL: "http://127.0.0.1:19090", eventsURL: "ws://127.0.0.1:19091/admin/events",
+            token: "fixture-secret", expectedInstanceID: "sy-connection-test", session: stubSession(), makeEventSocket: { _ in socket })
+        defer { client.stop() }
+        var presented: [String] = []
+        client.onNewApproval = { presented.append($0.id) }
+        client.start()
+        // Consume the initial control while both requests remain pending.
+        // It must not be left queued to rescue the subsequent clear.
+        try await until { !client.diagnosticReport.contains("Last live event received: Never") && client.approvals.count == 2 }
+        precondition(socket.messages.isEmpty && presented == ["apr-brief"])
+        let beforeResolution = StubURLProtocol.requestCount
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals([]))
+        for key in ["brief", "quiet"] {
+            StubURLProtocol.responsesByPath["/admin/approvals/apr-\(key)"] = (200, try JSONSerialization.data(withJSONObject:
+                ["approval_id": "apr-\(key)", "request_id": "req-\(key)", "status": "rejected", "effect": "Credential needs approval"]))
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        precondition(client.approvals.count == 2 && StubURLProtocol.requestCount == beforeResolution,
+                     "The initial control or viewer polling rescued resolution")
+        let resolvedAt = Date()
+        // The native host regression proves this later control is produced
+        // from committed state even when the audit delivers no notification.
+        socket.messages.append(.data(Data(#"{"type":"operator_state","revision":2,"signals":"ready","approvals":"ready","log":"unavailable","history_gap":null}"#.utf8)))
+        try await until { client.approvals.isEmpty && client.approvalOutcomes["apr-brief"]?.status == "rejected"
+            && client.approvalOutcomes["apr-quiet"]?.status == "rejected" }
+        precondition(Date().timeIntervalSince(resolvedAt) < 5 && presented == ["apr-brief"])
+        precondition(client.eventFeedGap?.contains("does not prove JSONL delivery") == true)
+        precondition(client.securityEvents.isEmpty, "Recovery controls are not recorded events")
+        let idle = StubURLProtocol.requestCount
+        try await Task.sleep(for: .milliseconds(1200))
+        precondition(StubURLProtocol.requestCount == idle && !socket.cancelled,
+                     "Healthy Commander must stay attached without polling")
     }
 
     @MainActor

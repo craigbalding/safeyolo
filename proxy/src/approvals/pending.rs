@@ -362,11 +362,21 @@ impl Store {
         state: &crate::RuntimeState,
     ) -> Result<[u8; 32]> {
         let connection = self.connect()?;
+        // Approval rows survive resolution. Their insertion high-water mark
+        // catches a request seen only by an attachment snapshot during an
+        // audit outage. Read it first so concurrent creation stays due for
+        // the next host check; unchanged stores still leave viewers quiet.
+        let committed: i64 = connection
+            .query_row("SELECT coalesce(max(rowid),0) FROM approvals", [], |row| {
+                row.get(0)
+            })
+            .map_err(unavailable)?;
         let mut statement = connection
             .prepare("SELECT record FROM approvals WHERE status='pending' ORDER BY approval_id")
             .map_err(unavailable)?;
         let mut rows = statement.query([]).map_err(unavailable)?;
         let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
+        hash.update(&committed.to_be_bytes());
         while let Some(row) = rows.next().map_err(unavailable)? {
             let record = decode_record(&row.get::<_, String>(0).map_err(unavailable)?)?;
             let view = current_view(writer, policy, &record, Some(state))?;

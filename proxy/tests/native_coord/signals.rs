@@ -47,6 +47,7 @@ async fn read(client: &Client, id: &Value, revision: Option<i64>) -> Value {
 struct ViewerRecords {
     drop_final: std::sync::atomic::AtomicBool,
     controls: std::sync::atomic::AtomicUsize,
+    completed_snapshots: std::sync::atomic::AtomicUsize,
     dropped_signals: std::sync::Mutex<std::collections::BTreeSet<String>>,
     dropped_approvals: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
@@ -159,6 +160,9 @@ async fn viewer_relay(
                             tokio::select! {_=forward_viewer_records(viewer,host,records)=>{},_=cut.recv()=>{}}
                         } else {
                             tokio::select! {_=tokio::io::copy_bidirectional(&mut viewer,&mut host)=>{},_=cut.recv()=>{}}
+                            if header.starts_with(b"GET /admin/coord/signals?") || header.starts_with(b"GET /admin/approvals ") {
+                                records.completed_snapshots.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+                            }
                         }
                     });
                 },
@@ -218,6 +222,196 @@ async fn resolve_signal(root: &Path, signal: &Value, operation: &str) {
     )
     .await;
     assert_eq!(resolved["signal"]["state"], "resolved");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires pinned NATS for setup; attachment runs with audit and broker unavailable"]
+async fn native_watch_clears_signal_attached_between_host_checks_during_audit_outage() {
+    attachment_during_audit_outage(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires pinned NATS for setup; attachment runs with audit and broker unavailable"]
+async fn native_watch_clears_approval_attached_between_host_checks_during_audit_outage() {
+    attachment_during_audit_outage(true).await;
+}
+
+async fn attachment_during_audit_outage(approval: bool) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let binary = std::env::var("SAFEYOLO_COORD_NATS_BINARY").expect("set pinned NATS binary");
+    let temp = tempfile::Builder::new()
+        .prefix("operator-outage-attachment-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    let root = temp.path();
+    assert!(host_cli(root, &["init"]).await.status.success());
+    fs::write(root.join("config.toml"), "admin_port=0\nflow_store_enabled=false\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n").unwrap();
+    let (_origin, address) = test_owned_endpoint::bind().await;
+    fs::write(root.join("policy.toml"), format!("[controls.network]\nenabled=true\n[hosts.'{address}']\negress='prompt'\n[agents.alice]\nagent_id='{ALICE}'\n")).unwrap();
+    assert!(
+        host_cli(root, &["coord", "start", "--binary", &binary])
+            .await
+            .status
+            .success()
+    );
+    let _cleanup = NatsCleanup(root.into());
+    coord_json(root, &["room", "create", "shared"]).await;
+    coord_json(root, &["grant", "shared", "alice"]).await;
+    let mut proxy = stage0::start_proxy(root).await;
+    let alice = Client {
+        socket: Some(root.join("alice.sock")),
+        token_file: root.join("data/agent_token"),
+        home: None,
+    };
+    let audit = root.join("logs/audit.jsonl");
+    if audit.exists() {
+        fs::rename(&audit, root.join("retained-audit")).unwrap();
+    }
+    fs::create_dir(&audit).unwrap();
+    assert!(host_cli(root, &["coord", "stop"]).await.status.success());
+
+    // Establish a host-observed clock, let its initial controls settle, then
+    // use its clear to align immediately after a shared read of the empty set.
+    let mut clock_watcher = host_command(root, &["watch", "--json"]).spawn().unwrap();
+    let mut clock_output = tokio::io::BufReader::new(clock_watcher.stdout.take().unwrap()).lines();
+    let clock = signal(
+        &alice,
+        "blocker",
+        "Align the empty host check",
+        "outage-clock",
+    )
+    .await;
+    assert_eq!(
+        next_watch(&mut clock_output).await["signal"],
+        clock["signal"]
+    );
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    resolve_signal(root, &clock, "outage-clock-clear").await;
+    assert_eq!(
+        next_watch(&mut clock_output).await["signal_id"],
+        clock["signal"]["signal_id"]
+    );
+    clock_watcher.kill().await.unwrap();
+
+    let config = fs::read_to_string(root.join("config.toml")).unwrap();
+    let ready: Value = serde_json::from_slice(
+        &fs::read(
+            native_config::read(&root.join("config.toml"))
+                .unwrap()
+                .readiness_file,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let records = Arc::new(ViewerRecords::default());
+    let (cuts, _) = tokio::sync::broadcast::channel(8);
+    let (port, relay, snapshot_started, snapshot_release) = viewer_relay(
+        ready["admin_port"].as_u64().unwrap() as u16,
+        requests.clone(),
+        cuts,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        records.clone(),
+    )
+    .await;
+    fs::write(
+        root.join("config.toml"),
+        config.replace("admin_port=0", &format!("admin_port={port}")),
+    )
+    .unwrap();
+    let mut watcher = host_command(root, &["watch", "--json"]).spawn().unwrap();
+    let mut output = tokio::io::BufReader::new(watcher.stdout.take().unwrap()).lines();
+    tokio::time::timeout(Duration::from_secs(1), snapshot_started.notified())
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    let created = if approval {
+        json!(pending_network(root, address, "outage-attach").await)
+    } else {
+        signal(
+            &alice,
+            "decision",
+            "Visible only in attachment snapshots",
+            "outage-attach",
+        )
+        .await
+    };
+    snapshot_release.notify_one();
+    let seen = next_watch(&mut output).await;
+    let id = if approval {
+        assert_eq!(seen["approval"]["request_id"], created);
+        seen["approval"]["approval_id"].as_str().unwrap().to_owned()
+    } else {
+        assert_eq!(seen["signal"], created["signal"]);
+        created["signal"]["signal_id"].as_str().unwrap().to_owned()
+    };
+    // Both the attachment snapshots AND the refresh caused by the initial
+    // stream control must finish while the request is still pending. Leaving
+    // that initial control queued until after resolution would hide the bug.
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while records.completed_snapshots.load(Ordering::SeqCst) < 4 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+    if approval {
+        let _ = host_cli(root, &["approvals", "reject", &id, "--json"]).await;
+        let resolved: Value = serde_json::from_slice(
+            &host_cli(root, &["approvals", "show", &id, "--json"])
+                .await
+                .stdout,
+        )
+        .unwrap();
+        assert_eq!(resolved["status"], "rejected");
+    } else {
+        resolve_signal(root, &created, "outage-attach-clear").await;
+    }
+    assert!(
+        started.elapsed() < Duration::from_millis(800),
+        "request crossed the next host check"
+    );
+    assert_eq!(
+        records.controls.load(Ordering::SeqCst),
+        1,
+        "host observed the request before resolution"
+    );
+    let lifetime = started.elapsed();
+    println!(
+        "outage attachment approval={approval}: committed resolution after {lifetime:?}; initial control and all four snapshot responses consumed; no host control observed the brief request; awaiting clear without another business event"
+    );
+    let line = tokio::time::timeout(Duration::from_secs(5), output.next_line())
+        .await
+        .expect("resolved request stayed visible after outage attachment")
+        .unwrap()
+        .expect("watch exited");
+    let cleared: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(
+        cleared[if approval { "approval_id" } else { "signal_id" }],
+        id
+    );
+    assert_eq!(cleared["needs_operator"], false);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    println!(
+        "outage attachment approval={approval}: lifetime={lifetime:?}, clear={:?}; initial control fully consumed before resolution; no later business event",
+        started.elapsed()
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let idle = requests.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        idle,
+        "idle viewer polled state"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), output.next_line())
+            .await
+            .is_err()
+    );
+    watcher.kill().await.unwrap();
+    proxy.kill().await.unwrap();
+    relay.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

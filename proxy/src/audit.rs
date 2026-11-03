@@ -16,6 +16,7 @@ pub use envelope::{
 pub use explain::{ExplainError, ExplainErrorKind};
 pub use reader::parse_record;
 pub(crate) use reader::{local_tail, selected_tails};
+pub(crate) use writer::backup;
 pub use writer::{Settings, Submission, Writer};
 
 use std::fmt;

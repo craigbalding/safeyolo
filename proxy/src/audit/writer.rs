@@ -502,7 +502,7 @@ fn rotate(path: &Path, settings: &Settings) -> io::Result<()> {
     }
     Ok(())
 }
-pub(super) fn backup(path: &Path, index: &BigInt) -> PathBuf {
+pub(crate) fn backup(path: &Path, index: &BigInt) -> PathBuf {
     // Python 3.12 treats a terminal dot as no suffix; Rust treats it as an
     // empty extension. Preserve the original filename bytes in that case.
     if path

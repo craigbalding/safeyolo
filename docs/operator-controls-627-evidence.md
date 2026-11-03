@@ -21,6 +21,11 @@ available; it does not prove that every producer recorded its events. A non-null
 does not replay or reconstruct that history.
 
 One host check reads local canonical pending state each second for all viewers.
+The check includes committed signal revisions and the latest retained approval
+insertion. A request created and resolved between checks therefore leaves a
+detectable change even if audit delivery fails. The host captures these markers
+before reading pending state so an overlapping creation remains due for the
+next check. This also clears requests seen only in an attachment snapshot.
 Relevant log delivery also requires a later host reconciliation, even when a
 brief creation and resolution leave the pending-state fingerprint unchanged.
 A delivery that overlaps a host read remains due for the next check.
@@ -96,8 +101,18 @@ resolution frames on a healthy authenticated viewer connection. Both removals
 must appear within five seconds with no later business event. It then checks
 that idle viewers make no repeated state requests.
 
+The outage attachment controls create and resolve each kind of request while
+the audit destination and broker are unavailable. A new watch sees the request
+in its attachment snapshots and consumes the initial stream control before
+resolution. The next shared host check must clear the request within five
+seconds, despite seeing the same pending set before and after its lifetime.
+The log control uses actual writer rotations with JSONL, other-extension,
+extensionless and terminal-dot destinations. Every retained record must arrive
+in order without a false retention gap.
+
 The Commander controls cover pending recovery, attention suppression, stale reads,
 attachment/reconnect and idle network behavior.
+They run in the ordinary macOS suite as well as the focused filter.
 These controls use synthetic credentials and isolated state. They do not
 establish #869's outstanding installed, Tailnet or SSH observations, private
 approval-result delivery, or automatic model wakeups.
