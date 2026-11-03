@@ -38,8 +38,32 @@ through the existing guest transport and compares its result with the owned
 fixture's request record. The expected response has `title: Demo tasks`,
 `count: 3`, `total_minutes: 20`, and the same marker printed for this run.
 The output labels these observations separately from their interpretation.
-Enter to finish after reading the result. Lab, tmux and a public preview
-are not needed.
+Enter to finish after reading the result, or type `preview` to use the app
+in the managed desktop viewer. Lab, tmux and a public preview are not needed.
+
+For a preview, the guest needs the normal desktop packages. The host needs
+a usable local display and browser, or its existing configured tailnet
+presentation route. Demo submits `desktop.present` from the selected guest
+with `http://127.0.0.1:8000/app` and a 900-second lifetime. Demo shows the
+canonical approval and its consequences. Type `approve`, `reject`, `evidence`,
+or `cancel` at the preview prompt. This decision is separate from the fixture's
+network approval. It uses the normal operator approval and presenter; it grants
+no additional network or credential permission.
+
+After presentation starts, use the app's **Refresh** button in the gated viewer.
+The page displays the summary and counts successful refreshes. Demo reports
+the saved presentation result; it does not infer interaction from a browser
+opening. Enter to finish and stop the Demo after using the app.
+
+If presentation prerequisites are missing, the operator rejects the preview,
+or execution fails, Demo reports that outcome and performs its owned cleanup.
+Demo does not retry a preview request or replay an uncertain presentation.
+Use `safeyolo approvals show ID` on the host to inspect the retained request;
+replace `ID` with the printed approval ID. See the
+[desktop action workflow](../cli/src/safeyolo/agent_context/skills/safeyolo/references/desktop.md#request-a-preview-during-agent-work)
+for normal recovery. The guest receives no viewer unlock code or session
+material. Preview authority has a finite lifetime and ends when the selected
+guest run ends. Independent preview sources keep their own lifetimes.
 
 Demo stops its guest, closes its fixture listener and removes the fixture
 permission on success, cancellation and ordinary failure. The default also

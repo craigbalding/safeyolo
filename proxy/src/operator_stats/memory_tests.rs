@@ -82,7 +82,9 @@ fn memory_is_first_in_the_native_lane_and_reports_the_shared_owner() {
                 "test-context",
                 "flow-recorder",
                 "request-logger",
-                "metrics"
+                "metrics",
+                "observations",
+                "observation_source"
             ]
         );
         assert_eq!(

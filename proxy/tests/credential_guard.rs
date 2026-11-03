@@ -309,7 +309,13 @@ fn source_order_charges_credential_then_baseline_network_for_each_detection() {
         json!({"permissions":[{"action":"credential:use","resource":"*","effect":"allow"},{"action":"network:request","resource":"*","effect":"deny"},{"action":"network:request","resource":"*","effect":"allow","condition":{"agent":"alice"}}]}),
     );
     assert_eq!(
-        observed(&guard, &scoped, &row)["outcome"]["response"]["status"],
+        observed(&guard, &scoped, &row)["outcome"]["kind"],
+        "allowed"
+    );
+    let mut other_agent = row.clone();
+    other_agent["agent"] = json!("bob");
+    assert_eq!(
+        observed(&guard, &scoped, &other_agent)["outcome"]["response"]["status"],
         403
     );
     let denied = policy(credential_policy("deny"));

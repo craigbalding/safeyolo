@@ -88,13 +88,12 @@ Replies to a known projected thread retain their real `coord_msg_id` and use
 callbacks retain their capability and projection checks. Unknown threads,
 malformed roots or bodies, edited or deleted posts, and posts from another
 human or channel do not become canonical operator messages. The adapter
-revalidates the configured human on each poll and does not project its own
-inbound messages back into Mattermost.
+revalidates the configured human before each canonical append and does not
+project its own inbound messages back into Mattermost.
 
 This update needs no configuration, token, mapping, state path, or tunnel
-change. Restart only the adapter with its existing command and state. For an
-installed historical Python adapter, use the narrow
-[4116 compatibility update](coord-mattermost-4116-update.md).
+change. Stop and start the adapter with its existing command and state, as
+described in [Validate, run, stop, and restart](#validate-run-stop-and-restart).
 
 ### Fixed operator-request schema
 
@@ -171,8 +170,7 @@ Keep these operator-owned files outside the repository:
    token.
 2. `~/.safeyolo/coord-mattermost.toml`, containing the adapter configuration.
 
-Start with a new state filename. The adapter refuses an older Python
-adapter database and does not convert it. Preserve the old database. Changing
+Use an unused state filename for the first setup. Changing
 the action configuration also requires a fresh state path because that
 configuration is part of the adapter's durable identity:
 
@@ -295,8 +293,23 @@ curl -fsS http://127.0.0.1:8765/safeyolo/mattermost/healthz
 sudo tailscale funnel status --json
 ```
 
-Health reports only listener state and the count of action appends awaiting
-manual reconciliation; it exposes no credentials or capabilities. To stop,
+The HTTP 200 response means the callback listener can answer a health request.
+Read `synchronization.status` separately for Mattermost delivery:
+`connected` means all mapped rooms completed synchronization, `retrying` means
+verification or delivery is temporarily unavailable, `degraded` means some safe
+traffic can continue, and `blocked` means the affected mappings need operator
+attention. `listener` reports callback listener health independently.
+
+The response includes each room's last successful synchronization time in Unix
+milliseconds, last sanitized error category, next retry time and delay, and
+backlog age. Backlog age measures time since the last completed synchronization
+(or startup before the first success), rather than a count of remote unread
+posts. Identity verification has its own status. Pending outward projections,
+inbound appends and action appends have separate reconciliation counts. A pending
+action can make synchronization degraded while independent traffic continues.
+Health exposes no credentials or capabilities.
+
+To stop,
 press Ctrl-C in the foreground terminal or have the host supervisor send SIGTERM
 to its owned adapter process. Wait for that process to exit before restarting
 with the same command and state file. Stop closes the listener and releases
@@ -308,6 +321,8 @@ Coord, NATS or the proxy.
 projection/reply diagnostic. It intentionally does not expose a callback
 listener or issue buttons; do not use it to consume an intended interactive
 acceptance request.
+Both `check` and `run --once` fail on unavailable dependencies without entering
+the foreground retry loop.
 
 ## Delivery and failure semantics
 
@@ -315,8 +330,39 @@ SQLite suppresses inbound replay across retries/restarts and marks outbound
 projection pending before calling Mattermost. Each post carries a deterministic
 correlation property. After an interrupted post request, the adapter reconciles
 one visible match and refuses an automatic retry if the remote outcome cannot
-be established. An uncertain free-text coord append still stops the adapter,
-as before; an uncertain button append disables only that capability.
+be established. An uncertain free-text Coord append or button append stays
+pending and is never replayed automatically. Independent traffic continues
+where its identity, permissions and delivery state can be verified.
+
+Normal foreground `run` stays alive when startup verification or a later read
+fails because of HTTP 408, HTTP 429, HTTP 5xx, connection failure, timeout or
+disconnect. The adapter uses exponential backoff with jitter, capped at 30
+seconds, and honors a longer valid `Retry-After` delay. A successful recovery
+resets the backoff. The callback listener continues to answer health requests
+during downtime. SIGINT and SIGTERM interrupt work or backoff and release the
+listener and state lease.
+
+The adapter must successfully revalidate the human operator before accepting
+inbound replies or consuming a button capability. Cached authorization never
+substitutes for unavailable verification. A confirmed invalid identity exits
+the daemon. A confirmed mapping, permission or protocol fault blocks that
+mapping until the operator repairs the cause and restarts the adapter. An
+ordinary mapping outage or ambiguous projection does not stop other safe
+mappings. State or configuration failures remain fail-closed.
+
+Catch-up reads complete channel pages through the saved creation-time boundary,
+including all posts with the same timestamp. If reads fail or the channel head
+changes during paging, the cursor stays unchanged and the interval is retried.
+The cursor advances only after the complete interval is processed. The existing
+ledger suppresses previously handled replies on overlapping polls and restart;
+edited, deleted, unmapped and wrongly attributed replies remain ineligible.
+
+The host supervisor owns starting the foreground process, collecting its bounded
+state-transition diagnostics, and restarting it after a process or confirmed
+configuration/security failure. It must distinguish listener availability from
+synchronization status and alert on persistent outages or reconciliation
+blockers. Routine network downtime recovers within the existing process.
+Restarting does not resolve an unknown delivery outcome.
 
 Authentication, identity, mapping, malformed response, and ambiguous
 correlation errors are sanitized. The bot token and action capabilities never
@@ -329,10 +375,11 @@ correlations before deciding whether a separate operator send is needed. A
 top-level message has no original Coord target. Do
 not repeat a button click or reset a cursor to force a retry. A pending button
 remains unavailable while routine projection and replies continue. A pending
-free-text append stops the adapter and is not replayed on restart.
+free-text append remains visible as a reconciliation blocker and is not replayed
+on recovery or restart. Later independent replies and projections may continue.
 
 For an uncertain outward post, inspect the mapped Mattermost channel for its
-deterministic projection correlation. On restart the adapter accepts one exact
+deterministic projection correlation. On recovery or restart the adapter accepts one exact
 matching post; no match or multiple matches require operator reconciliation.
 Preserve the state database, adjacent SQLite write-ahead log (WAL) files and
 lease file. Do not delete or edit pending records to claim success. If an
@@ -346,7 +393,3 @@ exchange, authority, hostile text, expiry/replay, publication counts, uncertain
 outcomes and owned stop/restart. Rust units cover private state, WAL, leases,
 replacement guards and rendering. These checks establish the selected client
 contract; live-account/mobile deployment acceptance is outside that scope.
-The older Python fixtures and macOS probe scripts remain repository test
-tooling under `tests/legacy_mattermost` and `scripts/accept_mattermost_macos*.py`.
-They are excluded from production packages and do not establish native adapter
-behavior. The historical compatibility candidate has its own source and tests.

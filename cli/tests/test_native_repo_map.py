@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -286,7 +287,7 @@ def test_native_installed_guidance_is_project_bound_and_local_guidance_wins(tmp_
     installed = tmp_path / "installed"
     installed.mkdir()
     binary = installed / "safeyolo-coord"
-    os.link(BINARY.resolve(), binary)
+    shutil.copy2(BINARY.resolve(), binary)
     guidance = installed / "repo-map.toml"
     guidance.write_text('version = 1\nproject = "example"\n[[hints]]\nid = "installed"\n'
                         'triggers = ["service"]\nadvice = "Reuse the service."\nsource = "README.md"\n')

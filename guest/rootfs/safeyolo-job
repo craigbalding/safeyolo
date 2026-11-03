@@ -1,0 +1,24 @@
+#!/bin/sh
+# Start a scheduled command with the current guest environment. In particular,
+# discard the environment that at saved when the job was submitted.
+set -eu
+if [ "$#" -eq 0 ]; then
+    echo 'Usage: safeyolo-job COMMAND [ARG...]' >&2
+    exit 2
+fi
+exec /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    HOME=/home/agent USER=agent LOGNAME=agent SHELL=/bin/bash \
+    /bin/bash --noprofile --norc -c '
+        set -e
+        set -a
+        . /etc/environment
+        set +a
+        cd /workspace
+        if "$@"; then
+            exit 0
+        else
+            job_status=$?
+            printf "safeyolo-job: command failed (exit=%s)\n" "$job_status" >&2
+            exit "$job_status"
+        fi
+    ' safeyolo-job "$@"

@@ -61,6 +61,7 @@ async fn synchronous_submission_errors_preserve_mutations_and_stop_later_events(
         let breaker = CircuitBreaker::new();
         breaker.force_open(HOST, 1000.).unwrap();
         let tasks = Registry::default();
+        let policy = std::sync::Arc::new(policy);
         let evaluations = policy.engine_stats().unwrap()["evaluations"].clone();
         let source = match route {
             "budget" => Some(&budgets["failure_rows"][failure_index]),
@@ -167,14 +168,22 @@ async fn synchronous_submission_errors_preserve_mutations_and_stop_later_events(
             .unwrap_or_default()
             .lines()
             .map(|line| {
-                let mut event: Value = serde_json::from_str(line).unwrap();
+                let mut event = crate::audit::parse_record(line).unwrap();
+                assert_eq!(
+                    event.as_object_mut().unwrap().remove("schema_version"),
+                    Some(json!(2))
+                );
                 assert!(event.as_object_mut().unwrap().remove("ts").is_some());
                 event
             })
             .collect();
         assert_eq!(accepted.len(), failure_index);
         if let Some(source) = source {
-            assert_eq!(json!(accepted), source["accepted"], "{route}");
+            let mut expected = source["accepted"].clone();
+            for row in expected.as_array_mut().unwrap() {
+                row.as_object_mut().unwrap().remove("schema_version");
+            }
+            assert_eq!(json!(accepted), expected, "{route}");
         }
         if failure_index == 1 {
             assert_eq!(

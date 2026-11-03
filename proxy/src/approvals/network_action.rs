@@ -19,6 +19,10 @@ pub(crate) struct NetworkAction {
     pub(crate) agent_id: String,
     pub(crate) host: String,
     pub(crate) port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) run: Option<crate::host_runs::AgentRun>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) network_action: Option<String>,
     revision: String,
 }
 
@@ -35,6 +39,7 @@ impl NetworkAction {
 
     fn current(&self, policy: &Policy) -> bool {
         policy.evidence_agent_id(&self.agent) == Some(self.agent_id.as_str())
+            && self.run.as_ref().is_none_or(|run| run.current(policy))
             && policy.network_action_revision(&self.agent).as_deref()
                 == Some(self.revision.as_str())
     }
@@ -87,6 +92,8 @@ pub(crate) fn bind(event: &mut Event, policy: &Policy) {
     };
     let action = NetworkAction {
         kind: ActionKind::NetworkAllow,
+        run: None,
+        network_action: None,
         agent: agent.into(),
         agent_id: agent_id.into(),
         host: host.into(),

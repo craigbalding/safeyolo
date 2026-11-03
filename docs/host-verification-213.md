@@ -1,5 +1,11 @@
 # Host-side verification for issue #213 PR B
 
+This is the historical Python-proxy procedure for PR B. Current native doctor
+behavior is described in [DEVELOPERS.md](DEVELOPERS.md#disposable-development-instance).
+The maintained native checks are in
+[test_native_skill_trace.py](../tests/proxy_contracts/test_native_skill_trace.py)
+and [doctor_api.rs](../proxy/src/http/probe/tests/doctor_api.rs).
+
 The sandbox this branch was developed in cannot spin up a real
 `mitmproxy` master with a live `UnixInstance` listener. The blackbox
 suite that would normally exercise the full lifecycle needs `runsc`

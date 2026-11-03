@@ -43,6 +43,8 @@ leave attention waiting to the supervisor outside the turn.
 
 | Operation | Purpose |
 |---|---|
+| `request_collaboration` | Request a new room for explicit current identities and a deadline; only an operator can approve it. |
+| `request_room_access` | Request explicit rights for this trusted worker run in an existing local room. The request grants nothing. |
 | `join_room` | Attach to an existing membership and read room metadata. |
 | `read_brief` | Read the operator-authored brief and its revision. |
 | `get_room_state` | Read attributed membership, capability, and lease state. |
@@ -80,6 +82,30 @@ For an agent using the MCP adapter, the following examples are separate `send`
 calls. Replace `work` with a room where the sender has send permission. Replace
 `alice` and `bob` with active agent names that have receive permission in that
 room.
+
+For a new collaboration, use `request_collaboration` with participant names and
+an operation ID. The operator approves the actual durable identities and
+absolute deadline. The returned `room_name` is used by ordinary send, history
+and attention after approval. See [the request, inspection and size rules](agent-api.md#approved-collaboration-rooms).
+
+If the operator configured a room approval delegation, a nonmember can call
+`request_room_access` with `room_name`, an explicit `permissions` list and a new
+`operation_id`. Rights are `send`, `receive` and `page_operator`. The returned
+receipt identifies the canonical approval. An eligible reviewer inspects the
+host-generated effect through `read_approval` and selects its offered `run`
+choice through `resolve_approval`. The worker then retries ordinary room
+access. The reviewer need not hold the target room rights. Attention and peer
+references confer no deciding authority.
+
+Receive exposes retained history and authorized native room objects. Send plus
+receive permits existing native work and signal mutations. `page_operator`
+permits existing paging. Delegation revocation, narrowing, expiry or worker run
+replacement ends derived access, including pending waits and later requests on
+existing connections. Independent and other valid grants remain. If a response
+is lost, inspect the canonical outcome before retrying the same operation ID
+with identical inputs. If reviewer delivery is unavailable, use `list_approvals`
+or ask the operator to inspect the same approval ID. See
+[delegated decisions](agent-api.md#delegated-decisions) for the API equivalents.
 
 ```text
 send(room_name="work", body="Notes retained.", notify="none")
@@ -386,3 +412,18 @@ carry the work-state transition.
 
 Any of those activities may be a legitimate assigned task. The restriction is
 on incidental conversational chatter, not on classes of work.
+
+## Operator pending work
+
+On the owning host, `safeyolo watch` shows current pending Coord signals and
+approval requests through the authenticated Admin stream and canonical APIs.
+`watch --once --json` reads one current view. Attachment and reconnect discover
+existing work. Shared host checks repair missed final state notifications within
+five seconds while state/API and connections are healthy; idle viewers do not
+poll. JSONL event records and state-refresh controls have different meanings.
+A refresh does not establish that missing audit history was recorded. State-read
+failures leave an explicitly stale view. Operator attachment and existing state
+reads do not need NATS; Coord and private approval-result delivery still use it.
+`watch --jsonl FILE` instead resolves exact immutable historical signal revisions.
+Clearing a signal records an attributed transition, not independent acceptance
+of its underlying claim.

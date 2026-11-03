@@ -1,4 +1,4 @@
-use std::{path::Path, process::Command};
+use std::{path::Path, process::Command, sync::Arc};
 
 use safeyolo_proxy::{
     agent_api::{Failure, PolicyState, Request, respond_read},
@@ -43,7 +43,7 @@ async fn compare_source(source: &Value) {
     let baseline = directory.path().join("baseline.json");
     std::fs::write(&token, TOKEN).unwrap();
     std::fs::write(&baseline, source["baseline"].to_string()).unwrap();
-    let mut policy = Policy::from_path_at(&baseline, NOW).unwrap();
+    let mut policy = Arc::new(Policy::from_path_at(&baseline, NOW).unwrap());
     let tasks = Registry::default();
     for row in source["rows"].as_array().unwrap() {
         let step = &row["step"];
@@ -58,7 +58,7 @@ async fn compare_source(source: &Value) {
             "task" => {
                 let path = directory.path().join("task.json");
                 std::fs::write(&path, source["task"].to_string()).unwrap();
-                policy = policy.with_task_path(&path).unwrap();
+                policy = Arc::new(policy.with_task_path(&path).unwrap());
             }
             "lookup" => {
                 let before = policy.budget_stats(NOW).unwrap();
@@ -157,7 +157,7 @@ async fn status_is_shared_across_identities_ignores_queries_and_tracks_reload_ha
     let directory = tempfile::tempdir().unwrap();
     let token = directory.path().join("agent_token");
     std::fs::write(&token, TOKEN).unwrap();
-    let initial = Policy::unconfigured();
+    let initial = Arc::new(Policy::unconfigured());
     let tasks = Registry::default();
     let mut expected = None;
     for identity in [
@@ -191,13 +191,15 @@ async fn status_is_shared_across_identities_ignores_queries_and_tracks_reload_ha
     }
     let fresh = Registry::default();
     tasks.upsert("registered", json!({})).unwrap();
-    let policy = initial
-        .reload_from_source_at(
-            r#"{"permissions":[{"action":"network:request","resource":"*","effect":"allow"}]}"#,
-            safeyolo_proxy::policy::Format::Json,
-            NOW,
-        )
-        .unwrap();
+    let policy = Arc::new(
+        initial
+            .reload_from_source_at(
+                r#"{"permissions":[{"action":"network:request","resource":"*","effect":"allow"}]}"#,
+                safeyolo_proxy::policy::Format::Json,
+                NOW,
+            )
+            .unwrap(),
+    );
     policy.evaluate(network(), NOW, false).unwrap();
     let response = respond_read(
         request("/status"),

@@ -18,11 +18,11 @@ use std::{
 };
 
 use bytes::Bytes;
+use futures_util::StreamExt;
 use http_body_util::{BodyExt, Full};
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use tokio::{
-    io::{AsyncReadExt, AsyncSeekExt},
     net::{TcpListener, TcpStream},
     sync::{Mutex as AsyncMutex, oneshot, watch},
     task::{JoinHandle, JoinSet},
@@ -42,10 +42,11 @@ pub(crate) struct Prepared {
     command_centre: Option<command_centre::Host>,
 }
 
-type EventTasks = Arc<AsyncMutex<JoinSet<()>>>;
+pub(crate) type EventTasks = Arc<AsyncMutex<JoinSet<()>>>;
 
 #[derive(Clone)]
 struct ConnectionAccess {
+    events: Arc<crate::operator_events::Feed>,
     events_only: bool,
     token: Arc<Zeroizing<String>>,
     command_centre: Option<command_centre::Host>,
@@ -220,7 +221,7 @@ impl Drop for Running {
     }
 }
 
-fn read_token(path: Option<&Path>) -> Result<Zeroizing<String>, Error> {
+pub(crate) fn read_token(path: Option<&Path>) -> Result<Zeroizing<String>, Error> {
     let Some(path) = path.filter(|path| !path.as_os_str().is_empty()) else {
         return Ok(Zeroizing::new(String::new()));
     };
@@ -260,6 +261,8 @@ async fn accept(
     event_tasks: EventTasks,
     stats_tasks: Arc<StatsTasks>,
 ) {
+    let events =
+        crate::operator_events::Feed::start(state.clone(), stop.clone(), &event_tasks).await;
     let mut connections = JoinSet::new();
     loop {
         tokio::select! {
@@ -271,6 +274,7 @@ async fn accept(
                         socket,
                         peer,
                         ConnectionAccess {
+                            events: events.clone(),
                             events_only: false,
                             token: prepared.token.clone(),
                             command_centre: prepared.command_centre.clone(),
@@ -300,6 +304,7 @@ async fn accept(
                         socket,
                         peer,
                         ConnectionAccess {
+                            events: events.clone(),
                             events_only: true,
                             token: prepared.token.clone(),
                             command_centre: prepared.command_centre.clone(),
@@ -356,7 +361,7 @@ async fn drain_event_tasks(event_tasks: EventTasks) {
     }
 }
 
-async fn spawn_event_task<F>(event_tasks: &EventTasks, task: F)
+pub(crate) async fn spawn_event_task<F>(event_tasks: &EventTasks, task: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
@@ -418,11 +423,24 @@ async fn serve_connection(
                         .to_owned()
                 })
                 .unwrap_or_else(|| peer.ip().to_string());
+            if request.method() == hyper::Method::GET && request.uri().path() == "/admin/capture" {
+                return serve_capture(
+                    request,
+                    runtime,
+                    access.token.trim_matches(python_whitespace),
+                    event_stop,
+                    client_ip,
+                    path,
+                    event_tasks,
+                )
+                .await
+                .map(close_http_response_unless_upgrade);
+            }
             if request.method() == hyper::Method::GET && request.uri().path() == "/admin/events" {
                 return serve_events(
                     request,
                     runtime,
-                    access.token.trim_matches(python_whitespace),
+                    &access,
                     event_stop,
                     client_ip,
                     path,
@@ -441,6 +459,17 @@ async fn serve_connection(
                 return Ok::<_, admin_api::Error>(close_http_response(
                     admin_api::event_not_found().into_response(),
                 ));
+            }
+            if crate::jobs::network::route(request.uri().path()) {
+                return crate::jobs::network::serve(
+                    request,
+                    state,
+                    access.token.trim_matches(python_whitespace),
+                    event_stop,
+                    &event_tasks,
+                )
+                .await
+                .map(close_http_response_unless_upgrade);
             }
             let stats = || {
                 let runtime = runtime.clone();
@@ -471,7 +500,6 @@ async fn serve_connection(
                         mutation_owner: &runtime.service_mutations,
                         gateway_store: runtime.gateway_grants.as_ref(),
                     }),
-                    plumb: Some(runtime.plumb.as_ref()),
                     task_state: Some(&state),
                 },
             )
@@ -498,6 +526,14 @@ async fn serve_connection(
     }
 }
 
+fn close_http_response_unless_upgrade<B>(response: hyper::Response<B>) -> hyper::Response<B> {
+    if response.status() == hyper::StatusCode::SWITCHING_PROTOCOLS {
+        response
+    } else {
+        close_http_response(response)
+    }
+}
+
 fn close_http_response<B>(mut response: hyper::Response<B>) -> hyper::Response<B> {
     response.headers_mut().insert(
         hyper::header::CONNECTION,
@@ -509,14 +545,17 @@ fn close_http_response<B>(mut response: hyper::Response<B>) -> hyper::Response<B
 async fn serve_events(
     mut request: hyper::Request<hyper::body::Incoming>,
     runtime: std::sync::Arc<crate::Runtime>,
-    token: &str,
+    access: &ConnectionAccess,
     stop: watch::Receiver<bool>,
     client_ip: String,
     target: String,
     event_tasks: EventTasks,
 ) -> Result<hyper::Response<crate::admin_api::AdminBody>, admin_api::Error> {
-    if !admin_api::authenticate(request.headers(), token)
-        .map_err(|_| admin_api::Error::AuthenticationEncoding)?
+    if !admin_api::authenticate(
+        request.headers(),
+        access.token.trim_matches(python_whitespace),
+    )
+    .map_err(|_| admin_api::Error::AuthenticationEncoding)?
     {
         let mut response = admin_api::unauthorized()
             .submit_audit(&runtime.audit, &client_ip, &target)?
@@ -527,12 +566,10 @@ async fn serve_events(
         );
         return Ok(response);
     }
-    let path = runtime.audit.path().to_owned();
-    // Capture the source position after authentication, but before the 101 is
-    // returned. Events appended while the handshake is in flight are then
-    // delivered, while no event already present in the log is replayed.
-    let offset = audit_offset(&path);
     let handshake = Handshake::request(&mut request).map_err(|_| admin_api::Error::BodyFraming)?;
+    // Register before 101 and before the client's canonical snapshot. The
+    // shared state receiver retains changes even when invalidations coalesce.
+    let subscription = access.events.subscribe();
     let upgrade = hyper::upgrade::on(request);
     let body = Full::new(Bytes::new())
         .map_err(|never: std::convert::Infallible| match never {})
@@ -544,28 +581,28 @@ async fn serve_events(
         let Ok(upgraded) = upgrade.await else {
             return;
         };
-        stream_events(upgraded, path, offset, stop).await;
+        stream_events(upgraded, subscription, stop).await;
     })
     .await;
     Ok(response)
 }
 
-fn audit_offset(path: &Path) -> u64 {
-    std::fs::metadata(path)
-        .map(|metadata| metadata.len())
-        .unwrap_or(0)
-}
-
 async fn stream_events(
     upgraded: hyper::upgrade::Upgraded,
-    path: std::path::PathBuf,
-    mut offset: u64,
+    mut subscription: crate::operator_events::Subscription,
     mut stop: watch::Receiver<bool>,
 ) {
     let (read, write) = tokio::io::split(TokioIo::new(upgraded));
-    let mut reader = Reader::new(read, true, None);
+    // Keep the frame read future inside the stream while state/event sends
+    // win the select. Canceling a partial WebSocket read would corrupt the
+    // next ping or close frame.
+    let incoming =
+        futures_util::stream::unfold(Reader::new(read, true, None), |mut reader| async move {
+            let event = reader.read().await;
+            Some((event, reader))
+        });
+    futures_util::pin_mut!(incoming);
     let mut writer = Writer::new(write, false, None);
-    let mut pending = Vec::new();
     loop {
         tokio::select! {
             biased;
@@ -577,8 +614,8 @@ async fn stream_events(
                 let _ = tokio::time::timeout(Duration::from_secs(1), writer.shutdown()).await;
                 return;
             }
-            event = reader.read() => {
-                match event {
+            event = incoming.next() => {
+                match event.expect("frame stream always yields a result") {
                     Ok(WebSocketEvent::Ping(payload)) => {
                         if !matches!(
                             tokio::time::timeout(
@@ -603,20 +640,17 @@ async fn stream_events(
                     Err(_) => return,
                 }
             }
-            _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                let lines = read_event_lines(&path, &mut offset, &mut pending).await;
-                for line in lines {
-                    let Ok(line) = String::from_utf8(line) else {
-                        continue;
-                    };
-                    if !matches!(
-                        tokio::time::timeout(
-                            Duration::from_secs(1),
-                            writer.message(crate::websocket::Message::text_for_send(line)),
-                        )
-                        .await,
-                        Ok(Ok(()))
-                    ) {
+            event = subscription.next() => {
+                let Ok(line) = event else {
+                    let _ = tokio::time::timeout(Duration::from_secs(1), writer.control(Control::Close, &[0x03, 0xf5])).await;
+                    return;
+                };
+                let Ok(mut event) = serde_json::from_slice::<serde_json::Value>(&line) else { return };
+                let eligible = crate::operator_events::is_operator_event(&event) || event["type"] == "operator_state";
+                crate::credentials::wipe_json(&mut event);
+                if eligible {
+                    let Ok(line) = String::from_utf8(line.to_vec()) else { return };
+                    if !matches!(tokio::time::timeout(Duration::from_secs(1), writer.message(crate::websocket::Message::text_for_send(line))).await, Ok(Ok(()))) {
                         return;
                     }
                 }
@@ -625,212 +659,102 @@ async fn stream_events(
     }
 }
 
-async fn read_event_lines(path: &Path, offset: &mut u64, pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
-    let Ok(metadata) = tokio::fs::metadata(path).await else {
-        return Vec::new();
+async fn serve_capture(
+    mut request: hyper::Request<hyper::body::Incoming>,
+    runtime: Arc<crate::Runtime>,
+    token: &str,
+    stop: watch::Receiver<bool>,
+    client_ip: String,
+    target: String,
+    tasks: EventTasks,
+) -> Result<hyper::Response<crate::admin_api::AdminBody>, admin_api::Error> {
+    // DOC: docs/native-observations.md
+    let read = admin_api::authenticate(request.headers(), token)?;
+    let capture = runtime
+        .connection_events
+        .as_ref()
+        .and_then(|events| events.observations.capture.get())
+        .filter(|capture| capture.settings.wss);
+    let secrets = match capture {
+        Some(capture) => capture.authorize_secrets(request.headers())?,
+        None => false,
     };
-    if metadata.len() < *offset {
-        *offset = 0;
-        pending.clear();
+    if !read && !secrets {
+        return Ok(admin_api::unauthorized()
+            .submit_audit(&runtime.audit, &client_ip, &target)?
+            .into_response());
     }
-    let Ok(mut file) = tokio::fs::File::open(path).await else {
-        return Vec::new();
+    let Some(capture) = capture else {
+        return Ok(admin_api::event_not_found().into_response());
     };
-    if file.seek(std::io::SeekFrom::Start(*offset)).await.is_err() {
-        return Vec::new();
-    }
-    // Drain a bounded batch so a reconnect or a burst of retained events does
-    // not spend one hundred milliseconds per 16 KiB chunk. The batch bound
-    // keeps this poll independent of the file's total size and leaves the
-    // partial-line limit below as the separate malformed-input guard.
-    let mut remaining = 1024 * 1024;
-    let mut saw_bytes = false;
-    let mut lines = Vec::new();
-    while remaining > 0 {
-        let mut chunk = vec![0u8; remaining.min(16 * 1024)];
-        let Ok(read) = file.read(&mut chunk).await else {
-            return Vec::new();
+    let handshake = Handshake::request(&mut request).map_err(|_| admin_api::Error::BodyFraming)?;
+    let Ok(receiver) = capture.subscribe_authorized(crate::packet_capture::Sink::Wss, secrets)
+    else {
+        return Ok(hyper::Response::builder()
+            .status(hyper::StatusCode::SERVICE_UNAVAILABLE)
+            .body(
+                Full::new(Bytes::new())
+                    .map_err(|never: std::convert::Infallible| match never {})
+                    .boxed(),
+            )
+            .unwrap());
+    };
+    let upgrade = hyper::upgrade::on(request);
+    let body = Full::new(Bytes::new())
+        .map_err(|never: std::convert::Infallible| match never {})
+        .boxed();
+    let response = handshake
+        .server_response(body)
+        .map_err(|_| admin_api::Error::BodyFraming)?;
+    spawn_event_task(&tasks, async move {
+        let Ok(upgraded) = upgrade.await else {
+            return;
         };
-        if read == 0 {
-            break;
-        }
-        saw_bytes = true;
-        *offset += read as u64;
-        remaining -= read;
-        pending.extend_from_slice(&chunk[..read]);
-        let complete = extract_event_lines(pending);
-        lines.extend(complete);
-        // Only an unterminated line is subject to this cap. Complete lines
-        // were extracted above, so a valid batch cannot lose its first event
-        // merely because several lines crossed the aggregate bound.
-        if pending.len() > 1024 * 1024 {
-            pending.clear();
-        }
-        if read < chunk.len() {
-            break;
-        }
-    }
-    if !saw_bytes {
-        return Vec::new();
-    }
-    lines
+        stream_capture(upgraded, receiver, stop).await;
+    })
+    .await;
+    Ok(response)
 }
-
-fn extract_event_lines(pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
-    let mut lines = Vec::new();
-    while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
-        let mut line = pending.drain(..=newline).collect::<Vec<_>>();
-        line.pop();
-        if line.last() == Some(&b'\r') {
-            line.pop();
+async fn stream_capture(
+    upgraded: hyper::upgrade::Upgraded,
+    mut receiver: crate::packet_capture::Receiver,
+    mut stop: watch::Receiver<bool>,
+) {
+    let (read, write) = tokio::io::split(TokioIo::new(upgraded));
+    let mut reader = Reader::new(read, true, None);
+    let mut writer = Writer::new(write, false, None);
+    loop {
+        // Keep a partially received client frame alive across capture deliveries.
+        // Reader::read may only be cancelled when discarding this connection.
+        let incoming = reader.read();
+        tokio::pin!(incoming);
+        loop {
+            tokio::select! {
+                biased;
+                _=stop.changed()=>return,
+                event=&mut incoming=>match event {
+                    Ok(WebSocketEvent::Ping(bytes))=>{
+                        if !matches!(tokio::time::timeout(Duration::from_secs(1),writer.control(Control::Pong,&bytes)).await,Ok(Ok(()))) {receiver.error("wss_control_failed");return;}
+                        break;
+                    },
+                    Ok(WebSocketEvent::Pong(_))=>break,
+                    Ok(WebSocketEvent::Close(bytes))=>{let _=tokio::time::timeout(Duration::from_secs(1),writer.control(Control::Close,&bytes)).await;return;},
+                    Ok(WebSocketEvent::Message(_))=>break,
+                    Err(_)=>return,
+                },
+                delivery=receiver.recv()=>{
+                    let Some(delivery)=delivery else {return;};
+                    if !matches!(tokio::time::timeout(Duration::from_secs(1),writer.binary(&delivery.bytes)).await,Ok(Ok(()))) {receiver.error("wss_write_failed_or_timed_out");return;}
+                    receiver.written(delivery.bytes.len());
+                }
+            }
         }
-        if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&line)
-            && is_operator_event(&event)
-            && let Ok(encoded) = serde_json::to_vec(&event)
-        {
-            lines.push(encoded);
-        }
     }
-    lines
-}
-
-fn is_operator_event(event: &serde_json::Value) -> bool {
-    let approval = event.get("approval").and_then(serde_json::Value::as_object);
-    if approval
-        .and_then(|approval| approval.get("required"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    let event_name = event
-        .get("event")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    if event_name.starts_with("agent.")
-        || event_name == "ops.circuit_breaker.open"
-        || matches!(
-            event_name,
-            "admin.approval_added"
-                | "admin.denial"
-                | "admin.host_allowed"
-                | "admin.host_denied"
-                | "admin.host_rate_updated"
-                | "admin.host_bypass_added"
-                | "admin.mode_change"
-                | "admin.baseline_update"
-                | "admin.task_policy_update"
-                | "admin.task_policy_clear"
-                | "admin.agent_service_authorized"
-                | "admin.agent_service_revoked"
-                | "admin.gateway_grant"
-                | "admin.gateway_grant_revoked"
-                | "admin.contract_binding_approved"
-                | "admin.desktop_presented"
-                | "admin.desktop_presentation_failed"
-                | "plumb.approved"
-                | "plumb.denied"
-                | "plumb.conversation_created"
-                | "plumb.message_blocked"
-                | "plumb.message_flagged"
-                | "plumb.message_allowed"
-                | "plumb.conversation_closed"
-        )
-        || matches!(
-            event_name,
-            "ops.command_centre_tailnet_exited"
-                | "ops.command_centre_tailnet_failed"
-                | "ops.command_centre_tailnet_started"
-                | "ops.command_centre_tailnet_stopped"
-                | "ops.proxy_start"
-                | "ops.proxy_stop"
-                | "ops.proxy_start_failed"
-        )
-    {
-        return true;
-    }
-    event
-        .get("kind")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|kind| matches!(kind, "security" | "gateway"))
-        && event
-            .get("severity")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|severity| matches!(severity, "high" | "critical"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-
-    #[tokio::test]
-    async fn captured_audit_offset_excludes_old_lines_and_includes_following_lines() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("audit.jsonl");
-        std::fs::write(&path, b"{\"event\":\"admin.denial\",\"details\":{}}\n").unwrap();
-        let mut offset = audit_offset(&path);
-        let mut pending = Vec::new();
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap()
-            .write_all(b"{\"event\":\"admin.host_allowed\",\"details\":{}}\n")
-            .unwrap();
-
-        let lines = read_event_lines(&path, &mut offset, &mut pending).await;
-        assert_eq!(lines.len(), 1);
-        let event: serde_json::Value = serde_json::from_slice(&lines[0]).unwrap();
-        assert_eq!(event["event"], "admin.host_allowed");
-    }
-
-    #[tokio::test]
-    async fn complete_lines_survive_the_bounded_batch_when_their_total_exceeds_one_mib() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("audit.jsonl");
-        let target_len = 262_248;
-        let empty = serde_json::to_vec(&serde_json::json!({
-            "event":"security.credential_guard",
-            "kind":"security",
-            "severity":"critical",
-            "summary":"",
-            "details":{"sequence":0}
-        }))
-        .unwrap();
-        let summary_len = target_len - empty.len();
-        let mut source = Vec::new();
-        for sequence in 0..5 {
-            let line = serde_json::to_vec(&serde_json::json!({
-                "event":"security.credential_guard",
-                "kind":"security",
-                "severity":"critical",
-                "summary":"x".repeat(summary_len),
-                "details":{"sequence":sequence}
-            }))
-            .unwrap();
-            assert_eq!(line.len(), target_len);
-            source.extend_from_slice(&line);
-            source.push(b'\n');
-        }
-        std::fs::write(&path, source).unwrap();
-
-        let mut offset = 0;
-        let mut pending = Vec::new();
-        let mut lines = Vec::new();
-        while lines.len() < 5 {
-            lines.extend(read_event_lines(&path, &mut offset, &mut pending).await);
-        }
-        let sequences = lines
-            .iter()
-            .map(|line| {
-                serde_json::from_slice::<serde_json::Value>(line).unwrap()["details"]["sequence"]
-                    .as_u64()
-                    .unwrap()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(sequences, (0..5).collect::<Vec<_>>());
-    }
-
     #[tokio::test]
     async fn completed_event_subscription_is_reaped_before_reconnect() {
         let event_tasks = Arc::new(AsyncMutex::new(JoinSet::new()));

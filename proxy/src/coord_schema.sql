@@ -54,7 +54,7 @@ CREATE TABLE coord_attention_edges (
            recipient_agent_id TEXT NOT NULL,
            feed_sequence INTEGER NOT NULL CHECK(feed_sequence > 0),
            attention_id TEXT NOT NULL UNIQUE,
-           room_id TEXT NOT NULL REFERENCES rooms(room_id),
+           room_id TEXT REFERENCES rooms(room_id),
            kind TEXT NOT NULL,
            object_id TEXT NOT NULL,
            revision_or_sequence INTEGER NOT NULL

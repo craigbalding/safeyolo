@@ -213,12 +213,6 @@ def resolved_approval_key(event: AuditEvent) -> str | None:
             return f"{key}:{destination_key(host, port)}"
         return f"{host}:{host}" if host else None
 
-    if event_type in ("plumb.approved", "plumb.denied"):
-        request_id = details.get("request_id", "")
-        participants = details.get("participants", [])
-        if request_id and participants:
-            return f"{request_id}:{','.join(participants)}"
-
     if event_type == "admin.desktop_presented":
         agent_id = details.get("agent_id", "")
         if agent_id:

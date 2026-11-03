@@ -310,8 +310,8 @@ nodes:
 
   - id: cls.trace_not_loaded
     kind: classification
-    label: "Expected control has no retained step (state=not_loaded)"
-    detail: "The expected-control list has no recorded observation. Check completeness, effective settings and earlier responses; absence alone does not establish a startup failure or that the code never ran."
+    label: "Expected control is unavailable at its native call site (state=not_loaded)"
+    detail: "The native call site explicitly reported that its control was unavailable. Retain this observation and check the native diagnostic logs. An absent step without this state means incomplete evidence instead."
     source: authored
 
   - id: cls.trace_error
@@ -322,7 +322,7 @@ nodes:
 
   - id: cls.trace_truncated
     kind: classification
-    label: "Trace hit the per-record step cap (truncated=true)"
+    label: "Trace is incomplete (incomplete=true or truncated=true)"
     detail: "The retained trace is incomplete. Inspect the recorded step distribution and configured step cap; do not infer the missing steps or a successful pipeline from this record."
     source: authored
 
@@ -494,7 +494,7 @@ edges:
   - {from: ev.check_trace_request_id, to: cls.trace_bypassed_prior_response, kind: implies, when: "selected control/hook step has state=bypassed AND reason=prior_response"}
   - {from: ev.check_trace_request_id, to: cls.trace_not_loaded,              kind: implies, when: "not_loaded[] contains the selected control AND truncated=false"}
   - {from: ev.check_trace_request_id, to: cls.trace_error,                   kind: implies, when: "selected control/hook step has state=error"}
-  - {from: ev.check_trace_request_id, to: cls.trace_truncated,               kind: implies, when: "truncated=true in the /trace payload"}
+  - {from: ev.check_trace_request_id, to: cls.trace_truncated,               kind: implies, when: "incomplete=true OR truncated=true in the /trace payload"}
   - {from: ev.check_trace_request_id, to: cls.trace_unavailable,             kind: implies, when: "/trace returned 404 or 5xx, or the request wasn't traced (no X-SafeYolo-Trace: 1 header), or the trace expired"}
 
   # Trace classifications resolve to conclusions or asks
@@ -502,9 +502,9 @@ edges:
   - {from: cls.trace_bypassed_control_disabled, to: ask.check_control_policy,     kind: escalates_to, when: "the control was expected to enforce; inspect its native enabled setting"}
   - {from: cls.trace_bypassed_policy_disabled,to: ask.check_control_policy,        kind: escalates_to, when: "inspect the matching host/agent exception and effective control"}
   - {from: cls.trace_bypassed_prior_response, to: ev.check_x_blocked_by,           kind: next_check, when: "the earlier responder's block markers and preceding steps identify the decision to investigate"}
-  - {from: cls.trace_not_loaded,              to: ask.native_trace_diagnostics,   kind: escalates_to, when: "reconcile missing observations with settings, earlier responses and logs"}
+  - {from: cls.trace_not_loaded,              to: ask.native_trace_diagnostics,   kind: escalates_to, when: "the native call site reported a control unavailable; inspect the diagnostic logs"}
   - {from: cls.trace_error,                   to: ask.native_trace_diagnostics,   kind: escalates_to, when: "correlate the exact reason=<diagnostic> with native logs"}
-  - {from: cls.trace_truncated,               to: ask.native_trace_diagnostics,   kind: escalates_to, when: "trace exceeded the per-record step cap; retain its incomplete-evidence limit"}
+  - {from: cls.trace_truncated,               to: ask.native_trace_diagnostics,   kind: escalates_to, when: "request evidence is missing or capped; retain its incomplete-evidence limit"}
   - {from: cls.trace_unavailable,             to: ask.retry_with_trace_header,     kind: escalates_to, when: "an own request was untraced or expired and can be safely reissued within existing authority"}
   - {from: cls.trace_unavailable,             to: ask.native_trace_diagnostics,    kind: escalates_to, when: "the endpoint returned 5xx or the request cannot be reissued; report unavailable evidence"}
 

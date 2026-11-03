@@ -16,8 +16,10 @@ import time
 import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from safeyolo.operator_approvals import approve
+from tests.blackbox import installed_state_transition as continuity
 from tests.blackbox.native_credentials import native_cli
 from tests.proxy_contracts.harness import connection, read_events
 from tests.proxy_contracts.harness import request as send_request
@@ -126,6 +128,37 @@ def _wait_for_removed_grant(api, port):
             return
         time.sleep(0.02)
     raise AssertionError("removed Alice endpoint approval was not reloaded")
+
+
+def test_continuity_wrong_port_skips_the_approved_vz_tls_authority(tmp_path):
+    """The maintained caller refuses a distinct port with no origin effect."""
+    # Use the VZ caller's adjacent authorities. The existing parent observes
+    # allowed traffic without binding either physical host port in this check.
+    http_port, tls_port = 46373, 46374
+    policy = f'''
+[hosts."*"]
+egress = "deny"
+[agents.alice]
+agent_id = "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+[agents.alice.hosts."fixture.test"]
+egress = "deny"
+[agents.alice.hosts."fixture.test:{http_port}"]
+egress = "allow"
+[agents.alice.hosts."fixture.test:{tls_port}"]
+egress = "allow"
+'''
+    with origin_server(capture_heads=True) as parent, policy_proxy(
+        "rust", tmp_path / "native", policy, native_product=True,
+        parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+    ) as proxy:
+        alice = Path(proxy.paths["alice"])
+        # The old target is already approved and reaches the parent.
+        status, _ = continuity.request(alice, "GET", f"http://fixture.test:{http_port + 1}/collision")
+        assert status == 200 and len(parent.requests) == 1
+        origin = SimpleNamespace(server_port=http_port, seen=parent.requests)
+        tls_origin = SimpleNamespace(server_port=tls_port, seen=parent.requests)
+        assert continuity.check_unapproved_port(alice, "fixture.test", origin, tls_origin) == 403
+        assert len(parent.requests) == 1
 
 
 def test_shared_operator_approval_is_scoped_and_retried(proxy_backend, tmp_path):

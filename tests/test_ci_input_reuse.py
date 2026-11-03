@@ -237,6 +237,25 @@ def test_native_input_selection_and_actions_caller(inputs, case):
         assert "/actions/runs/9" not in Path(data["environment"]["API_CALLS"]).read_text()
 
 
+@pytest.mark.parametrize("platform,target", [
+    ("linux-amd64", "x86_64-unknown-linux-musl"),
+    ("linux-arm64", "aarch64-unknown-linux-musl"),
+])
+def test_guest_input_receipt_records_target_and_c_compiler(monkeypatch, platform, target):
+    revision = "a" * 40
+    monkeypatch.setattr(packages, "commit", lambda: revision)
+    monkeypatch.setattr(packages, "proxy_settings", lambda profile: {"environment": {}})
+    monkeypatch.setattr(packages, "output", lambda *args, **kwargs: "pinned rustc")
+    monkeypatch.delenv("SAFEYOLO_GUEST_TARGET", raising=False)
+    compiler = "CC_" + target.replace("-", "_")
+    monkeypatch.setenv(compiler, "configured-musl-cc")
+    identity = selection.native_input_identity("guest", platform, "production", revision)
+    assert identity["settings"]["guest_target"] == target
+    assert identity["settings"]["environment"][compiler] == "configured-musl-cc"
+    monkeypatch.setenv("SAFEYOLO_GUEST_TARGET", target.replace("musl", "gnu"))
+    assert selection.native_input_identity("guest", platform, "production", revision) != identity
+
+
 def test_reuse_keeps_independent_schedules_tests_and_package_assembly():
     for workflow_name in ("ci.yml", "proxy-rust.yml"):
         workflow = yaml.safe_load((ROOT / ".github/workflows" / workflow_name).read_text())
@@ -255,8 +274,8 @@ def test_reuse_keeps_independent_schedules_tests_and_package_assembly():
     steps = WORKFLOW["jobs"]["build"]["steps"]
     guest_build = next(step for step in steps if step.get("name") == "Build Linux guest executables and receipts")
     host_select = next(step for step in steps if step.get("id") == "reuse_host")
-    # Guest compilation also writes proxy/target's Coord binary. Restore a
-    # reused host after that write so its original receipt still checks out.
+    # Keep guest compilation before host selection, including explicit targets
+    # that can write proxy/target's host Coord binary.
     assert steps.index(guest_build) < steps.index(host_select)
 
 

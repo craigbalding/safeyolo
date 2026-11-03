@@ -1,32 +1,14 @@
 use safeyolo_proxy::audit::{Event, Kind, Settings, Severity, Submission, Writer};
-use std::{path::PathBuf, process::Command, time::Duration};
-
-fn python() -> std::ffi::OsString {
-    std::env::var_os("SAFEYOLO_PYTHON").unwrap_or_else(|| "python3".into())
-}
+use std::{
+    fs,
+    path::PathBuf,
+    process::{Command, Stdio},
+    time::Duration,
+};
 
 #[test]
-fn live_source_oracle_and_consumer_accept_native_records() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+fn current_writer_output_is_accepted_by_the_native_reader() {
     let directory = tempfile::tempdir().unwrap();
-    let script = root.join("tests/audit_oracle.py");
-    let output = Command::new(python())
-        .arg(&script)
-        .arg("--check")
-        .arg(root.join("tests/audit_source.json"))
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .env("SAFEYOLO_LOG_PATH", directory.path().join("unused"))
-        .env(
-            "MITMPROXY_LOG_PATH",
-            directory.path().join("unused-diagnostic"),
-        )
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "actual source oracle failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
     let path = directory.path().join("native.jsonl");
     let writer = Writer::new(path.clone(), Settings::default());
     for name in ["request", "response"] {
@@ -41,25 +23,18 @@ fn live_source_oracle_and_consumer_accept_native_records() {
         assert_eq!(writer.emit(event).unwrap(), Submission::Queued);
     }
     assert!(writer.shutdown(Duration::from_secs(2)).unwrap());
-    let output = Command::new(python())
-        .arg(script)
-        .arg("--consume")
-        .arg(path)
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .env("SAFEYOLO_LOG_PATH", directory.path().join("unused"))
-        .env(
-            "MITMPROXY_LOG_PATH",
-            directory.path().join("unused-diagnostic"),
-        )
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "source reader rejected native JSONL"
-    );
-    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["native_records"], 2);
-    assert_eq!(result["schema_drift"], 0);
+    let bytes = std::fs::read_to_string(path).unwrap();
+    let rows: Vec<_> = bytes
+        .lines()
+        .map(|line| safeyolo_proxy::audit::parse_record(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 2);
+    for (row, name) in rows.iter().zip(["request", "response"]) {
+        assert_eq!(row["schema_version"], 2);
+        assert_eq!(row["event"], format!("traffic.{name}"));
+        assert_eq!(row["agent"], "alice");
+        assert!(row["details"].get("sandbox_run").is_none());
+    }
 }
 
 #[test]
@@ -76,8 +51,8 @@ fn asynchronous_sink_failure_echoes_owned_event_without_failing_emission() {
     let event = stderr
         .lines()
         .find_map(|line| line.strip_prefix("[safeyolo] Event: "))
-        .expect("source-shaped stderr fallback");
-    let event: serde_json::Value = serde_json::from_str(event).unwrap();
+        .expect("current stderr event");
+    let event = safeyolo_proxy::audit::parse_record(event).unwrap();
     assert_eq!(event["event"], "traffic.fixture");
     assert_eq!(event["details"]["owned"], true);
 }
@@ -100,4 +75,59 @@ fn sink_failure_child() {
     assert_eq!(writer.emit(event).unwrap(), Submission::Queued);
     assert!(writer.wait_for_drain(Duration::from_secs(2)).unwrap());
     assert!(writer.shutdown(Duration::from_secs(2)).unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn writer_survives_failed_audit_and_stderr_destinations() {
+    let directory = tempfile::tempdir().unwrap();
+    let (stderr, peer) = std::os::unix::net::UnixStream::pair().unwrap();
+    drop(peer);
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "failed_stderr_child", "--nocapture"])
+        .env("SAFEYOLO_AUDIT_TEST_DIRECTORY", directory.path())
+        // A disconnected socket makes the real worker's stderr fallback fail
+        // without changing this process's diagnostics or filling a filesystem.
+        .stderr(Stdio::from(std::os::fd::OwnedFd::from(stderr)))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn failed_stderr_child() {
+    let Some(directory) = std::env::var_os("SAFEYOLO_AUDIT_TEST_DIRECTORY") else {
+        return;
+    };
+    // This child intentionally has no writable stderr; keep assertion failures
+    // visible in the parent's captured stdout.
+    std::panic::set_hook(Box::new(|info| println!("{info}")));
+    let path = PathBuf::from(directory).join("audit.jsonl");
+    fs::create_dir(&path).unwrap();
+    let writer = Writer::new(path.clone(), Settings::default());
+    let event = |name| Event::new(name, Kind::Admin, Severity::Low, "owned fixture");
+    assert!(writer.emit_confirmed(event("admin.failed")).await.is_err());
+    assert!(writer.wait_for_drain(Duration::from_secs(2)).unwrap());
+
+    fs::remove_dir(&path).unwrap();
+    writer
+        .emit_confirmed(event("admin.recovered"))
+        .await
+        .unwrap();
+    assert!(writer.wait_for_drain(Duration::from_secs(2)).unwrap());
+    assert_eq!(writer.pending_count().unwrap(), 0);
+    // Recovery does not erase the earlier fallback failure or replay its event.
+    assert!(!writer.shutdown(Duration::from_secs(2)).unwrap());
+    let rows: Vec<_> = fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|line| safeyolo_proxy::audit::parse_record(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["event"], "admin.recovered");
 }

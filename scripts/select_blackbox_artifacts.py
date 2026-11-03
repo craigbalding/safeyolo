@@ -141,11 +141,13 @@ def select_host(platform: str, branch: str, run_id: int | None) -> dict:
 
 def download_host(artifact: dict, directory: Path, platform: str, branch: str) -> dict:
     archive_name = f"safeyolo-{platform}-production.tar.gz"
-    download_artifact(artifact, directory, [archive_name, "SHA256SUMS", "build.json"])
+    download_name = archive_name.removesuffix(".tar.gz") + "-guest-download.tar.gz"
+    download_artifact(artifact, directory, [archive_name, "SHA256SUMS", "build.json"], optional_names=(download_name,))
     return verify_host(artifact, directory, platform, branch)
 
 
-def download_artifact(artifact: dict, directory: Path, names: list[str], *, legacy_input: bool = False) -> bool:
+def download_artifact(artifact: dict, directory: Path, names: list[str], *, legacy_input: bool = False,
+                      optional_names: tuple[str, ...] = ()) -> bool:
     """Download verified bytes and read only the expected fixed ZIP names."""
     archive_zip = directory / "host.zip"
     with archive_zip.open("xb") as output:
@@ -164,6 +166,7 @@ def download_artifact(artifact: dict, directory: Path, names: list[str], *, lega
             # current source rather than infer identity or alter those bytes.
             # Old guest upload globs also included Cargo's depfile.
             return False
+        names = [*names, *(name for name in optional_names if name in members)]
         if members != sorted(names):
             raise ValueError("selected artifact is incomplete or has unexpected files")
         # Read only fixed names. Never extract paths supplied by the ZIP.
@@ -195,11 +198,22 @@ def native_input_identity(kind: str, platform: str, profile: str, revision: str)
     if packages.commit() != revision:
         raise ValueError("native input source differs from the checked out revision")
     settings = packages.proxy_settings(profile)
-    # These producers use default Cargo features and the native host target.
-    # Source identity also binds manifests, Cargo configuration and build scripts.
+    # Source identity binds manifests, Cargo configuration and build scripts.
     settings["features"] = "default"
     settings["guest_target"] = os.environ.get("SAFEYOLO_GUEST_TARGET", "")
     if kind == "guest":
+        if not settings["guest_target"]:
+            settings["guest_target"] = {
+                "linux-amd64": "x86_64-unknown-linux-musl",
+                "linux-arm64": "aarch64-unknown-linux-musl",
+            }[platform]
+        # cc-rs accepts target-specific C compiler, archiver and flag overrides.
+        # They affect the guest bytes independently of the host build settings.
+        settings["environment"].update({
+            key: value for key, value in os.environ.items()
+            if key.startswith(("CC_", "CFLAGS_", "AR_"))
+            or key in {"TARGET_CC", "TARGET_CFLAGS", "TARGET_AR"}
+        })
         settings["guest_rustc"] = packages.output("rustc", "-vV", cwd=ROOT / "guest/command")
         settings["guest_cargo_lock_sha256"] = packages.sha256(ROOT / "guest/command/Cargo.lock")
     return {"source_revision": revision, "platform": platform, "profile": profile,
@@ -291,6 +305,19 @@ def reuse_native_input(directory: Path, identity: dict, branch: str, *, require_
     return False
 
 
+def verify_host_guest_download(build: dict, archive: Path, directory: Path) -> None:
+    """Retain old archives, and bind the optional early package when present."""
+    name = archive.name.removesuffix(".tar.gz") + "-guest-download.tar.gz"
+    download = directory / name
+    if not download.exists() and "guest_download" not in build:
+        return
+    if (build.get("guest_download", {}).get("name") != name or not download.is_file()
+            or input_package_tools().guest_download_receipt(archive, download) != build["guest_download"]):
+        raise ValueError("guest download package differs from its producer receipt")
+    if f"{build['guest_download']['sha256']}  {name}" not in (directory / "SHA256SUMS").read_text().splitlines():
+        raise ValueError("guest download package is absent from producer SHA256SUMS")
+
+
 def verify_host(artifact: dict, directory: Path, platform: str, branch: str) -> dict:
     archive_name = f"safeyolo-{platform}-production.tar.gz"
     build = json.loads((directory / "build.json").read_bytes())
@@ -313,6 +340,7 @@ def verify_host(artifact: dict, directory: Path, platform: str, branch: str) -> 
         raise ValueError("host archive checksum/size differs")
     if f"{checksum}  {archive_name}" not in (directory / "SHA256SUMS").read_text().splitlines():
         raise ValueError("host archive is absent from producer SHA256SUMS")
+    verify_host_guest_download(build, archive, directory)
     with tarfile.open(archive, "r:gz") as package:
         stream = package.extractfile(archive_name.removesuffix(".tar.gz") + "/package-info")
         if stream is None:
@@ -382,6 +410,8 @@ def staged_guest_candidates(compatibility: str, explicit: str | None) -> tuple[l
                 or value["artifactType"] != "application/vnd.safeyolo.guest.v1"):
             raise ValueError("guest index differs from the maintained OCI contract")
         annotations = value["annotations"]
+        if "dev.safeyolo.guest.profile" in annotations and explicit is None:
+            continue
         if annotations["dev.safeyolo.guest.compatibility"] != compatibility:
             if explicit:
                 raise ValueError("selected guest is incompatible with the host")

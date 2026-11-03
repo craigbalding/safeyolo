@@ -14,6 +14,26 @@ use super::DecodedLength;
 
 use self::Kind::{Chunked, Eof, Length};
 
+// Preserve the error kind and display while identifying actual framing failures.
+#[derive(Debug)]
+pub(super) struct BodyParseError(Box<dyn StdError + Send + Sync>);
+impl fmt::Display for BodyParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, formatter)
+    }
+}
+impl StdError for BodyParseError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+fn body_parse_error(
+    kind: io::ErrorKind,
+    error: impl Into<Box<dyn StdError + Send + Sync>>,
+) -> io::Error {
+    io::Error::new(kind, BodyParseError(error.into()))
+}
+
 /// Maximum amount of bytes allowed in chunked extensions.
 ///
 /// This limit is currentlty applied for the entire body, not per chunk.
@@ -265,7 +285,7 @@ macro_rules! or_overflow {
     ($e:expr) => (
         match $e {
             Some(val) => val,
-            None => return Poll::Ready(Err(io::Error::new(
+            None => return Poll::Ready(Err(body_parse_error(
                 io::ErrorKind::InvalidData,
                 "invalid chunk size: overflow",
             ))),
@@ -278,7 +298,7 @@ macro_rules! put_u8 {
         $trailers_buf.put_u8($byte);
 
         if $trailers_buf.len() >= $limit {
-            return Poll::Ready(Err(io::Error::new(
+            return Poll::Ready(Err(body_parse_error(
                 io::ErrorKind::InvalidData,
                 "chunk trailers bytes over limit",
             )));
@@ -361,7 +381,7 @@ impl ChunkedState {
                 *size = or_overflow!(size.checked_add(u64::from(b + 10 - b'A')));
             }
             _ => {
-                return Poll::Ready(Err(io::Error::new(
+                return Poll::Ready(Err(body_parse_error(
                     io::ErrorKind::InvalidInput,
                     "Invalid chunk size line: missing size digit",
                 )));
@@ -396,7 +416,7 @@ impl ChunkedState {
             b';' => return Poll::Ready(Ok(ChunkedState::Extension)),
             b'\r' => return Poll::Ready(Ok(ChunkedState::SizeLf)),
             _ => {
-                return Poll::Ready(Err(io::Error::new(
+                return Poll::Ready(Err(body_parse_error(
                     io::ErrorKind::InvalidInput,
                     "Invalid chunk size line: Invalid Size",
                 )));
@@ -414,7 +434,7 @@ impl ChunkedState {
             b'\t' | b' ' => Poll::Ready(Ok(ChunkedState::SizeLws)),
             b';' => Poll::Ready(Ok(ChunkedState::Extension)),
             b'\r' => Poll::Ready(Ok(ChunkedState::SizeLf)),
-            _ => Poll::Ready(Err(io::Error::new(
+            _ => Poll::Ready(Err(body_parse_error(
                 io::ErrorKind::InvalidInput,
                 "Invalid chunk size linear white space",
             ))),
@@ -434,14 +454,14 @@ impl ChunkedState {
         // well.
         match byte!(rdr, cx) {
             b'\r' => Poll::Ready(Ok(ChunkedState::SizeLf)),
-            b'\n' => Poll::Ready(Err(io::Error::new(
+            b'\n' => Poll::Ready(Err(body_parse_error(
                 io::ErrorKind::InvalidData,
                 "invalid chunk extension contains newline",
             ))),
             _ => {
                 *extensions_cnt += 1;
                 if *extensions_cnt >= CHUNKED_EXTENSIONS_LIMIT {
-                    Poll::Ready(Err(io::Error::new(
+                    Poll::Ready(Err(body_parse_error(
                         io::ErrorKind::InvalidData,
                         "chunk extensions over limit",
                     )))
@@ -466,7 +486,7 @@ impl ChunkedState {
                     Poll::Ready(Ok(ChunkedState::Body))
                 }
             }
-            _ => Poll::Ready(Err(io::Error::new(
+            _ => Poll::Ready(Err(body_parse_error(
                 io::ErrorKind::InvalidInput,
                 "Invalid chunk size LF",
             ))),
@@ -508,7 +528,7 @@ impl ChunkedState {
     ) -> Poll<Result<ChunkedState, io::Error>> {
         match byte!(rdr, cx) {
             b'\r' => Poll::Ready(Ok(ChunkedState::BodyLf)),
-            _ => Poll::Ready(Err(io::Error::new(
+            _ => Poll::Ready(Err(body_parse_error(
                 io::ErrorKind::InvalidInput,
                 "Invalid chunk body CR",
             ))),
@@ -520,7 +540,7 @@ impl ChunkedState {
     ) -> Poll<Result<ChunkedState, io::Error>> {
         match byte!(rdr, cx) {
             b'\n' => Poll::Ready(Ok(ChunkedState::Start)),
-            _ => Poll::Ready(Err(io::Error::new(
+            _ => Poll::Ready(Err(body_parse_error(
                 io::ErrorKind::InvalidInput,
                 "Invalid chunk body LF",
             ))),
@@ -560,7 +580,7 @@ impl ChunkedState {
         match byte {
             b'\n' => {
                 if *trailers_cnt >= h1_max_headers {
-                    return Poll::Ready(Err(io::Error::new(
+                    return Poll::Ready(Err(body_parse_error(
                         io::ErrorKind::InvalidData,
                         "chunk trailers count overflow",
                     )));
@@ -575,7 +595,7 @@ impl ChunkedState {
 
                 Poll::Ready(Ok(ChunkedState::EndCr))
             }
-            _ => Poll::Ready(Err(io::Error::new(
+            _ => Poll::Ready(Err(body_parse_error(
                 io::ErrorKind::InvalidInput,
                 "Invalid trailer end LF",
             ))),
@@ -627,7 +647,7 @@ impl ChunkedState {
                 }
                 Poll::Ready(Ok(ChunkedState::End))
             }
-            _ => Poll::Ready(Err(io::Error::new(
+            _ => Poll::Ready(Err(body_parse_error(
                 io::ErrorKind::InvalidInput,
                 "Invalid chunk end LF",
             ))),
@@ -647,7 +667,7 @@ fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Er
                 let name = match HeaderName::try_from(header.name) {
                     Ok(name) => name,
                     Err(_) => {
-                        return Err(io::Error::new(
+                        return Err(body_parse_error(
                             io::ErrorKind::InvalidInput,
                             format!("Invalid header name: {:?}", &header),
                         ));
@@ -657,7 +677,7 @@ fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Er
                 let value = match HeaderValue::from_bytes(header.value) {
                     Ok(value) => value,
                     Err(_) => {
-                        return Err(io::Error::new(
+                        return Err(body_parse_error(
                             io::ErrorKind::InvalidInput,
                             format!("Invalid header value: {:?}", &header),
                         ));
@@ -669,11 +689,11 @@ fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Er
 
             Ok(trailers)
         }
-        Ok(httparse::Status::Partial) => Err(io::Error::new(
+        Ok(httparse::Status::Partial) => Err(body_parse_error(
             io::ErrorKind::InvalidInput,
             "Partial header",
         )),
-        Err(e) => Err(io::Error::new(io::ErrorKind::InvalidInput, e)),
+        Err(e) => Err(body_parse_error(io::ErrorKind::InvalidInput, e)),
     }
 }
 

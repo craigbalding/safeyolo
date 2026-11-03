@@ -31,6 +31,7 @@ def _load_key_isolation():
     (
         "ssh_host_ecdsa_key",
         "ssh_host_ed25519_key",
+        "ssh_host_mldsa44_ed25519_key",
         "ssh_host_rsa_key",
     ),
 )
@@ -48,7 +49,9 @@ def test_private_key_scanner_allows_expected_sshd_host_keys(tmp_path, key_name):
     (
         "etc/ssh/ssh_host_dsa_key",
         "etc/ssh/ssh_host_ed25519_key.backup",
+        "etc/ssh/ssh_host_mldsa44_ed25519_key.backup",
         "home/agent/.ssh/id_ed25519",
+        "safeyolo/ca.key",
     ),
 )
 def test_private_key_scanner_rejects_every_other_path(tmp_path, relative_path):

@@ -19,3 +19,9 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Additional terms apply to JA4S (TLS server response fingerprinting), which is
+subject to FoxIO License 1.1 rather than the MIT license above. See
+proxy/licenses/ja4s-NOTICE.txt and proxy/licenses/ja4s-FoxIO-1.1.txt in source
+releases, or the same files in assets/licenses in native host bundles.
+Official terms: https://github.com/FoxIO-LLC/ja4/blob/main/LICENSE

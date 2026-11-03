@@ -2,7 +2,6 @@
 //! authenticated lifecycle routes, and the configured live event socket.
 
 use std::{
-    io::Write,
     net::{Ipv4Addr, TcpListener as StdTcpListener},
     os::unix::fs::PermissionsExt,
     time::Duration,
@@ -33,7 +32,7 @@ async fn installed_command_centre_keeps_host_identity_and_serves_client_shapes()
     .unwrap();
     std::fs::write(
         root.join("config.toml"),
-        "policy_file = \"policy.toml\"\nlisteners = []\n",
+        "policy_file = \"policy.toml\"\nlisteners = []\naudit_log_path = \"audit.jsonl\"\n",
     )
     .unwrap();
     std::fs::write(
@@ -215,18 +214,6 @@ fi
             .0,
         400
     );
-    let stopped = admin(
-        port,
-        TOKEN,
-        "POST",
-        &format!("/admin/agents/{AGENT_ID}/stop"),
-        b"",
-    )
-    .await;
-    assert_eq!(stopped.0, 200, "{:?}", stopped.1);
-    assert_eq!(stopped.1["agent_id"], AGENT_ID);
-    assert_eq!(stopped.1["sandbox_state"], "stopped");
-
     let mut events = TcpStream::connect((Ipv4Addr::LOCALHOST, events_port))
         .await
         .unwrap();
@@ -243,21 +230,41 @@ fi
             .contains("\r\nconnection: upgrade\r\n"),
         "a reverse proxy must receive Connection: Upgrade with the 101"
     );
-    std::fs::OpenOptions::new().append(true).open(root.join("audit.jsonl")).unwrap()
-        .write_all(b"{\"event\":\"agent.started\",\"kind\":\"agent\",\"severity\":\"low\",\"summary\":\"Agent probe started\",\"agent\":\"probe\"}\n").unwrap();
-    let mut frame = [0u8; 2];
-    tokio::time::timeout(Duration::from_secs(3), events.read_exact(&mut frame))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(frame[0] & 0x0f, 1);
-    assert!(frame[1] < 126);
-    let mut body = vec![0u8; usize::from(frame[1])];
-    events.read_exact(&mut body).await.unwrap();
-    assert_eq!(
-        serde_json::from_slice::<Value>(&body).unwrap()["event"],
-        "agent.started"
-    );
+    // The lifecycle route writes to the same canonical log the host follows.
+    let stopped = admin(
+        port,
+        TOKEN,
+        "POST",
+        &format!("/admin/agents/{AGENT_ID}/stop"),
+        b"",
+    )
+    .await;
+    assert_eq!(stopped.0, 200, "{:?}", stopped.1);
+    assert_eq!(stopped.1["agent_id"], AGENT_ID);
+    assert_eq!(stopped.1["sandbox_state"], "stopped");
+    loop {
+        let mut frame = [0u8; 2];
+        tokio::time::timeout(Duration::from_secs(3), events.read_exact(&mut frame))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame[0] & 0x0f, 1);
+        assert_eq!(frame[1] & 0x80, 0, "server frames must be unmasked");
+        let length = match frame[1] {
+            126 => usize::from(events.read_u16().await.unwrap()),
+            127 => events.read_u64().await.unwrap().try_into().unwrap(),
+            length => usize::from(length),
+        };
+        assert!(length < 8192, "unexpected lifecycle event size: {length}");
+        let mut body = vec![0u8; length];
+        events.read_exact(&mut body).await.unwrap();
+        let event: Value = serde_json::from_slice(&body).unwrap();
+        if event["type"] == "operator_state" {
+            continue;
+        }
+        assert_eq!(event["event"], "agent.stopped");
+        break;
+    }
     assert_eq!(
         admin(events_port, "wrong", "GET", "/admin/events", b"")
             .await

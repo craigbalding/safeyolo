@@ -243,6 +243,60 @@ struct SecurityObservation: Hashable, Identifiable {
     }
 }
 
+// Quoting contains line, terminal and Unicode direction controls. SwiftUI must
+// also render this value verbatim so requester markup stays plain data.
+func quotedRequesterText(_ value: String) -> String {
+    var result = "\""
+    for unit in value.utf16 {
+        switch unit {
+        case 0x22: result += "\\\""
+        case 0x5c: result += "\\\\"
+        case 0x20...0x7e: result += String(UnicodeScalar(unit)!)
+        default: result += String(format: "\\u%04x", unit)
+        }
+    }
+    return result + "\""
+}
+
+func approvalDisplayText(_ value: String) -> String {
+    value.unicodeScalars.map { scalar in
+        switch scalar.properties.generalCategory {
+        case .control, .format, .lineSeparator, .paragraphSeparator:
+            return String(scalar).utf16.map { String(format: "\\u%04x", $0) }.joined()
+        default: return String(scalar)
+        }
+    }.joined()
+}
+
+struct ApprovalRequestHistory: Decodable, Hashable {
+    struct Refusal: Decodable, Hashable {
+        let approvalID: String
+        let decidedAt: Int?
+        enum CodingKeys: String, CodingKey { case approvalID = "approval_id", decidedAt = "decided_at" }
+    }
+    let equivalentRequestCount: Int
+    let approvalCount: Int
+    let firstRequestedAt: Int
+    let lastRequestedAt: Int
+    let lastRefusal: Refusal?
+    enum CodingKeys: String, CodingKey {
+        case equivalentRequestCount = "equivalent_request_count", approvalCount = "approval_count"
+        case firstRequestedAt = "first_requested_at", lastRequestedAt = "last_requested_at", lastRefusal = "last_refusal"
+    }
+    var display: String {
+        var text = "Equivalent requests: \(equivalentRequestCount) across \(approvalCount) approvals."
+        text += " First: \(Date(timeIntervalSince1970: TimeInterval(firstRequestedAt)).formatted()). Last: \(Date(timeIntervalSince1970: TimeInterval(lastRequestedAt)).formatted())."
+        if let refusal = lastRefusal {
+            text += " Last refusal: \(refusal.approvalID)."
+            if let at = refusal.decidedAt { text += " Refused: \(Date(timeIntervalSince1970: TimeInterval(at)).formatted())." }
+        }
+        return text
+    }
+}
+
+struct ApprovalAttentionDelivery: Decodable, Hashable { let status: String }
+struct ApprovalAttentionClaim: Decodable { let notify: Bool }
+
 struct ApprovalEvent: Decodable, Hashable, Identifiable {
     struct Option: Decodable, Hashable, Identifiable {
         let id: String
@@ -284,11 +338,17 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
         let reason: String?
         let networkAction: NetworkAction?
         let untrustedReasonText: String?
+        let browserURL: String?
+        let presentation: String?
+        let ttlSeconds: Int?
 
         enum CodingKeys: String, CodingKey {
             case service, method, path, reason
             case networkAction = "network_action"
             case untrustedReasonText = "untrusted_reason_text"
+            case browserURL = "browser_url"
+            case presentation
+            case ttlSeconds = "ttl_seconds"
         }
     }
 
@@ -302,6 +362,8 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
     let host: String?
     let approval: Request
     let details: Details?
+    let requestHistory: ApprovalRequestHistory?
+    let attention: [String: ApprovalAttentionDelivery]?
 
     enum CodingKeys: String, CodingKey {
         case approvalID = "approval_id"
@@ -314,6 +376,8 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
         case host
         case approval
         case details
+        case requestHistory = "request_history"
+        case attention
     }
 
     var outcomeID: String? {
@@ -329,7 +393,7 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
     }
 
     var quotedUntrustedReason: String? {
-        details?.untrustedReasonText.map { "\"\($0)\"" }
+        details?.untrustedReasonText.map(quotedRequesterText)
     }
 
     var title: String {
@@ -365,7 +429,6 @@ struct DesktopPresentation: Decodable, Equatable {
 struct MutationPlan: Equatable {
     let path: String
     let body: [String: String]
-    let expectsDesktop: Bool
     var payload: [String: Any] { body.mapValues { $0 as Any } }
 
     static func forApproval(_ event: ApprovalEvent, allow: Bool, option: String? = nil) throws -> MutationPlan {
@@ -385,68 +448,50 @@ struct MutationPlan: Equatable {
                     throw ClientError.invalidApproval("Select one of this approval's fixed options")
                 }
             }
-            return MutationPlan(path: "/admin/approvals/\(encodedID)", body: body, expectsDesktop: false)
+            return MutationPlan(path: "/admin/approvals/\(encodedID)", body: body)
         }
         if ["network_egress", "credential"].contains(event.approval.approvalType) {
             throw ClientError.invalidApproval("Historical approval is read-only. Make a new request or use explicit policy controls.")
         }
-        if event.approval.approvalType == "desktop_present", allow {
-            guard let agentID = event.approval.scopeHint?.agentID,
-                  let encodedAgentID = encodePathComponent(agentID)
-            else {
-                throw ClientError.invalidApproval("Desktop presentation is missing agent_id")
-            }
-            return MutationPlan(
-                path: "/admin/agents/\(encodedAgentID)/desktop/present",
-                body: event.requestID.map { ["approval_request_id": $0] } ?? [:],
-                expectsDesktop: true
-            )
-        }
-
-        guard event.approval.approvalType == "desktop_present"
-        else {
-            throw ClientError.invalidApproval(
-                "Commander does not handle \(event.approval.approvalType)"
-            )
-        }
-
-        var body = [
-            "destination": event.approval.target,
-            "cred_id": event.approval.key,
-        ]
-        if !allow {
-            body["reason"] = "user_denied"
-        }
-        if event.approval.approvalType == "desktop_present",
-           let requestID = event.requestID {
-            body["approval_request_id"] = requestID
-        }
-        return MutationPlan(
-            path: allow ? "/admin/policy/baseline/approve" : "/admin/policy/baseline/deny",
-            body: body,
-            expectsDesktop: false
-        )
+        throw ClientError.invalidApproval("A canonical approval ID is required. Make a new request or use explicit operator controls.")
     }
 }
 
 struct ApprovalResolution: Decodable, Equatable {
+    struct ActionResult: Decodable, Equatable {
+        struct Diagnostic: Decodable, Equatable { let message: String }
+        let status: String?
+        let diagnostic: Diagnostic?
+    }
     let approvalID: String?
     let requestID: String
     let status: String
     let effect: String
     let untrustedReasonText: String?
+    let result: ActionResult?
+    let operatorPreview: DesktopPresentation?
+    let requestHistory: ApprovalRequestHistory?
+    let attention: [String: ApprovalAttentionDelivery]?
 
     enum CodingKeys: String, CodingKey {
         case approvalID = "approval_id"
         case requestID = "request_id"
         case status, effect
         case untrustedReasonText = "untrusted_reason_text"
+        case result
+        case operatorPreview = "operator_preview"
+        case requestHistory = "request_history"
+        case attention
     }
 
     var id: String { approvalID ?? requestID }
     var terminal: Bool { ["approved", "rejected", "expired", "superseded"].contains(status) }
-    var display: String { "\(status.capitalized). \(effect)" }
-    var quotedUntrustedReason: String? { untrustedReasonText.map { "\"\($0)\"" } }
+    var display: String {
+        let action = result?.status.map { " Preview result: \($0)." } ?? ""
+        let diagnostic = result?.diagnostic.map { " \($0.message)" } ?? ""
+        return "\(status.capitalized). \(effect)\(action)\(diagnostic)"
+    }
+    var quotedUntrustedReason: String? { untrustedReasonText.map(quotedRequesterText) }
 }
 
 enum ResolutionResult: Equatable {
@@ -469,6 +514,7 @@ enum WebMITMOpenError: LocalizedError {
 enum ClientError: LocalizedError {
     case invalidURL(String)
     case invalidResponse
+    case connectionUnavailable
     case requestFailed(Int, String)
     case invalidApproval(String)
     case instanceMismatch(expected: String, actual: String)
@@ -479,6 +525,8 @@ enum ClientError: LocalizedError {
             return "Invalid URL: \(value)"
         case .invalidResponse:
             return "SafeYolo returned an invalid response"
+        case .connectionUnavailable:
+            return "The selected SafeYolo instance could not be verified. Reconnect that instance and retry."
         case .requestFailed(let status, let message):
             return "SafeYolo returned HTTP \(status): \(message)"
         case .invalidApproval(let message):

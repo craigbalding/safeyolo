@@ -11,6 +11,76 @@ pub(crate) fn path(name: &str) -> PathBuf {
 pub(crate) fn read(name: &str) -> Result<Option<Value>, Error> {
     crate::guest_commands::read_state(&path(name))
 }
+
+/// Host-owned ingress binding. A stopped or replaced generation is never a
+/// source of current-run authority, even while an old client socket is open.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRun {
+    pub agent: String,
+    pub agent_id: String,
+    pub run_id: String,
+}
+
+pub(crate) fn authority(root: &std::path::Path, name: &str, agent_id: &str) -> Option<AgentRun> {
+    let run =
+        crate::guest_commands::read_state(&root.join("agents").join(name).join("runtime.json"))
+            .ok()??;
+    let context = crate::guest_commands::read_state(
+        &root
+            .join("agents")
+            .join(name)
+            .join("config-share/host-launch-context.json"),
+    )
+    .ok()??;
+    let generation = run["run_id"].as_str()?;
+    if run["name"] != name
+        || run["agent_id"] != agent_id
+        || !matches!(run["state"].as_str(), Some("starting" | "running"))
+        || context["agent_id"] != agent_id
+        || context["generation"] != generation
+        || generation.len() != 32
+        || !generation.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    let pid = run["backend_pid"].as_i64().filter(|pid| *pid > 0)?;
+    #[cfg(target_os = "linux")]
+    {
+        if crate::host_lifecycle::process_token(pid).as_deref() != run["backend_token"].as_str() {
+            return None;
+        }
+        let command = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+        let runsc_root = std::env::var_os("SAFEYOLO_RUNSC_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| root.join("run"));
+        if !crate::host_platform::is_runsc_boot(
+            &command,
+            &format!("safeyolo-{generation}"),
+            &runsc_root,
+        ) {
+            return None;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if crate::host_platform::vm_process_token_in(root, name, i32::try_from(pid).ok()?).as_deref()
+        != run["backend_token"].as_str()
+    {
+        return None;
+    }
+    Some(AgentRun {
+        agent: name.into(),
+        agent_id: agent_id.into(),
+        run_id: generation.into(),
+    })
+}
+
+impl AgentRun {
+    pub(crate) fn current(&self, policy: &crate::policy::Policy) -> bool {
+        policy.evidence_agent_id(&self.agent) == Some(self.agent_id.as_str())
+            && policy.agent_run(&self.agent).as_ref() == Some(self)
+    }
+}
 pub(crate) fn save(name: &str, value: &Value) -> Result<(), Error> {
     crate::guest_commands::write_json(&path(name), value)
 }
@@ -502,8 +572,10 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) async fn stop_without_holder(name: &str) -> Result<(), Error> {
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+pub(crate) fn verified_stop_backend(
+    name: &str,
+) -> Result<(String, Option<std::os::fd::OwnedFd>), Error> {
+    use std::os::fd::{FromRawFd, OwnedFd};
 
     let run = read(name)?
         .ok_or("backend process identity is stale or unverified; no process was signalled")?;
@@ -512,9 +584,7 @@ pub(crate) async fn stop_without_holder(name: &str) -> Result<(), Error> {
     if run["run_id"].as_str() == Some(id.trim_start_matches("safeyolo-"))
         && (saved_backend_is_dead(&run) || stopped_before_backend(name, &run, &root, &id)?)
     {
-        // The owner may have exited before stop acquired its lock. Only
-        // matching dead metadata is retired; no process needs signalling.
-        return remove_runsc_state(&root, &id);
+        return Ok((id, None));
     }
     let pid = crate::host_platform::backend_pid(name)
         .ok_or("backend process identity is stale or unverified; no process was signalled")?;
@@ -533,6 +603,20 @@ pub(crate) async fn stop_without_holder(name: &str) -> Result<(), Error> {
     {
         return Err("backend birth, run or namespaces are unverified; no process was signalled; backend state was preserved".into());
     }
+    Ok((id, Some(backend)))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) async fn stop_without_holder(name: &str) -> Result<(), Error> {
+    use std::os::fd::AsRawFd;
+
+    let (id, backend) = verified_stop_backend(name)?;
+    let root = crate::host_platform::runsc_root();
+    let Some(backend) = backend else {
+        // The owner may have exited before stop acquired its lock. Only
+        // matching dead metadata is retired; no process needs signalling.
+        return remove_runsc_state(&root, &id);
+    };
     if unsafe {
         libc::syscall(
             libc::SYS_pidfd_send_signal,

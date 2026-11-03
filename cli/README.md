@@ -91,7 +91,7 @@ services](../docs/credentials.md) store local values or host-controlled
 1Password references, then authorize the selected service capability. OAuth
 credentials accept the operator's token and refresh fields; refresh uses the
 same store. Service authorization, contract binding, credential approval
-and risky-route approval remain distinct. See [service discovery](../docs/SERVICE_DISCOVERY.md)
+and risky-route approval remain distinct. See [service discovery and catalogue changes](../docs/credentials.md#catalogue-changes-and-removals)
 and [the responsibility map](../docs/settings.md#operator-entry-responsibilities).
 
 ## Operator evidence and approvals

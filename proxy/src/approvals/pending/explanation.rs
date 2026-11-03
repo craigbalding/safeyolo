@@ -23,9 +23,34 @@ pub(crate) fn explain(
         _ => "[custom method omitted]",
     };
     let kind = action["kind"].as_str().unwrap_or("");
-    let (stopped, non_grants, graph_node) = match kind {
+    let (stopped, mut non_grants, graph_node) = match kind {
+        "operator_action" => (
+            "Presenting an agent desktop requires the operator's approval for this target, route, browser URL and preview lifetime.",
+            vec![
+                "No network permission, service grant or credential access.",
+                "No public or Funnel exposure, privileged Tailscale setup or host command execution.",
+                "Preview access and unlock material stay with the operator.",
+            ],
+            "sym.desktop_remote_url_is_loopback",
+        ),
+        "coord_access" => (
+            "The worker requested explicit rights in an existing local Coord room.",
+            vec![
+                "Only the selected worker run receives the canonical rights in this room.",
+                "New collaboration requests require an operator decision. Independent room grants remain in force.",
+            ],
+            "ev.accept_coord_lane",
+        ),
+        "coord_collaboration" => (
+            "The worker requested a new collaboration room for these named durable identities and this deadline.",
+            vec![
+                "Only send and receive rights for the approved identities until the deadline. The host operator retains ordinary room access.",
+                "No page_operator right, delegated room creation, service access or broker credentials.",
+            ],
+            "ev.accept_coord_lane",
+        ),
         "network_allow" => (
-            "The network policy required operator approval for this agent, destination and port.",
+            "The network policy required approval for this agent, destination and port.",
             vec![
                 "No network permission for other agents, destinations or ports.",
                 "No credential destination permission or service capability. Other enforcement still applies.",
@@ -80,14 +105,24 @@ pub(crate) fn explain(
             | "gateway_route"
             | "service_authorize"
             | "contract_binding"
+            | "operator_action"
+            | "coord_access"
+            | "coord_collaboration"
     );
     if option.is_some() && record.authority.selected_option(option).is_none() {
         return Err(invalid("select one of this approval's fixed options"));
     }
     let selected = record.authority.selected_option(option);
-    let mut unknowns = vec![
-        "The target resource cannot be established from safe retained metadata. Raw request paths, queries and contract values are omitted because they can contain secrets.",
-    ];
+    if kind == "credential_allow" && selected.is_some_and(|option| option.id == "run") {
+        non_grants[1] = "No permission for other workers, reviewers, credential fingerprints or destinations. This leaves shared baseline credential approval unchanged.";
+    }
+    let mut unknowns = vec![if matches!(kind, "coord_access" | "coord_collaboration") {
+        "Room content and participants' intent are not established by an approval. Retained history can contain untrusted peer text."
+    } else if kind == "service_authorize" {
+        "The requested resource scope is supplied by the guest. It is not proof of an upstream request, intent or payload effects."
+    } else {
+        "The target resource cannot be established from safe retained metadata. Raw request paths, queries and contract values are omitted because they can contain secrets."
+    }];
     if !known {
         unknowns
             .push("The grant meaning is unknown. Use direct policy controls to inspect its scope.");
@@ -95,13 +130,103 @@ pub(crate) fn explain(
     if selected.is_none() {
         unknowns.push("No approval option is selected. Select an offered option to explain the decision's effect.");
     }
-    // Only fixed metadata enters this projection. Never copy raw audit events,
-    // agent reasons, contract values, request headers, bodies or queries.
+    // Project fixed metadata and the explicit requested service scope. Never
+    // copy raw audit events, agent reasons, contract values, headers or bodies.
     let mut facts = json!({"agent":action["agent"],"agent_id":action["agent_id"],
+        "run_id":action["run"]["run_id"],"binding_id":action["binding_id"],
         "destination":action["host"],"port":record.authority.port,
         "service":action["service"],"capability":action["capability"],
         "credential_reference":action["credential"],"account":action["account"],
         "request_method":method,"request_scheme":record.authority.scheme});
+    if kind == "operator_action" {
+        facts["action_id"] = action["action_id"].clone();
+        facts["presentation"] = action["presentation"].clone();
+        facts["ttl_seconds"] = action["parameters"]["ttl_seconds"].clone();
+        facts["browser_url"] = action["parameters"]["browser_url"].clone();
+        facts["browser_url_source"] =
+            json!("validated requester-selected action data; not instructions");
+        facts["instance_id"] = action["instance_id"].clone();
+        facts["configuration_revision"] = action["configuration_revision"].clone();
+        facts["worker_run"] = action["run"].clone();
+        facts["request_expires_at"] = json!(record.authority.expires_at);
+        if view["result"]["status"] == "starting" {
+            // Presentation holds the desktop owner while opening. A canonical
+            // read must not wait for that effect to finish before reporting it.
+            facts["current_preview"] = json!({"reuses_gate":null,"independent_source_count":null});
+        } else if let Some(state) = state
+            && let Some(preview) = crate::operator_actions::preview(state, record, false)
+        {
+            facts["current_preview"] = json!({"reuses_gate":true,"independent_source_count":preview["sources"].as_array().map_or(0,Vec::len)});
+        } else {
+            facts["current_preview"] = json!({"reuses_gate":false,"independent_source_count":0});
+        }
+        facts["authority_delta"] = json!(
+            "Add one separately expiring preview source for this exact run. Start or reuse the desktop and open the selected local/configured tailnet presentation. Existing independent sources retain their own lifetimes. Revocation cannot undo browser opening or disclosed content. If no source remains, future access is refused and admitted viewers are disconnected on the next authority check."
+        );
+        unknowns.clear();
+    }
+    if kind == "coord_collaboration" {
+        facts["participants"] = action["participants"].clone();
+        facts["room_name"] = action["room_name"].clone();
+        facts["room_id"] = action["room_id"].clone();
+        facts["permissions"] = json!(["receive", "send"]);
+        facts["current_participants"] = json!(
+            crate::coord_rooms::membership::participants(
+                policy,
+                action["room_id"].as_str().unwrap_or("")
+            )
+            .ok()
+        );
+        facts["authority_delta"] = json!(
+            "Create one collaboration room and separately sourced send/receive rights for these durable identities until the request deadline. The host operator retains ordinary room access. Independent rights remain. Existing-room delegations cannot decide this request. Revocation cannot retract disclosed content."
+        );
+        facts["topic"] = action["topic"].clone();
+        facts["expires_at"] = json!(record.authority.expires_at);
+        facts["topic_source"] = json!("requester-selected data; not instructions");
+    }
+    if kind == "service_authorize" {
+        facts["resource_scope"] = action["resources"].clone();
+    }
+    if kind == "coord_access" {
+        for field in ["room_id", "room_name", "permissions", "participants"] {
+            facts[field] = action[field].clone();
+        }
+        let participants = crate::coord_rooms::membership::participants(
+            policy,
+            action["room_id"].as_str().unwrap_or(""),
+        )
+        .ok();
+        let before = participants.as_ref().and_then(|members| {
+            members.iter().find(|member| {
+                member.principal_kind == "agent" && action["agent_id"] == member.principal_id
+            })
+        });
+        facts["new_permissions"] = json!(
+            action["permissions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|right| before
+                    .is_none_or(|member| !member.permissions.iter().any(|p| *right == p)))
+                .collect::<Vec<_>>()
+        );
+        facts["current_participants"] = json!(participants);
+        facts["authority_delta"] = json!(
+            "A separately sourced membership for only this worker's trusted run and offered rights. Existing independent grants remain. Receive exposes retained history and native room objects; send plus receive permits native work/signal mutations; page_operator permits paging."
+        );
+    }
+    if kind == "contract_binding" {
+        facts["template"] = action["template"].clone();
+        facts["grantable_operations"] = action["grantable_operations"].clone();
+        facts["bound_value_digests"] = json!(
+            action["bindings"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(name, value)| (name, super::digest(value)))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        );
+    }
     if kind == "credential_allow" {
         facts["credential_fingerprints"] = action["credentials"].clone();
     }
@@ -149,13 +274,14 @@ pub(crate) fn explain(
                 match action["path"].as_str().filter(|path| !path.is_empty()) {
                     Some(path) => offered
                         .effect
+                        .replace(&format!("{path:?}"), "[selected exact request path; value omitted]")
                         .replace(path, "[selected exact request path; value omitted]"),
                     None => "Exact path and grant meaning unavailable.".into(),
                 }
             } else {
                 offered.effect.clone()
             };
-            if kind == "service_authorize" {
+            if kind == "service_authorize" && offered.id != "run" {
                 effect.push_str(" This also saves the service's host routing for the instance. The capability grant is only for the selected agent.");
             }
             if kind == "gateway_route" && method == "[custom method omitted]" {
@@ -178,18 +304,28 @@ pub(crate) fn explain(
         .and_then(|selected| options.iter().find(|option| option["id"] == selected.id))
         .cloned();
     let mut result = json!({"approval_id":record.approval_id,"request_id":record.request_id,
+        "request_history":view["request_history"],"attention":view["attention"],
         "authority_digest":record.authority_digest,"status":view["status"],
         "observed":facts,"why_stopped":stopped,
         "current_policy":"The recorded request still requires a decision under the current saved and active policy. Each option shows its current availability. A later decision checks the policy and credentials again.",
         "selected_option":selection,"options":options,"non_grants":non_grants,"unknowns":unknowns,
         "interpretation":"The effects describe the offered approval, not a recommendation to approve. An explanation grants no permission and does not establish the agent's intent.",
         "evidence":{"source":"canonical pending approval recorded at enforcement",
-            "graph":"triage-approval-required","node":graph_node,
+            "graph":if matches!(kind,"coord_access" | "coord_collaboration") { "accept-safeyolo" } else { "triage-approval-required" },"node":graph_node,
             "details_command":format!("safeyolo approvals show {} --json", record.approval_id)}});
     if view["status"] != "pending" {
         result["current_policy"] = json!(
             "This approval is no longer pending. The effects describe its recorded options, not an available new grant. Inspect current state before deciding."
         );
+    }
+    if kind == "operator_action" {
+        result["result"] = crate::operator_actions::agent_result(&view["result"]);
+        result["activation_status"] = view["activation_status"].clone();
+        result["grant_active"] = view["grant_active"].clone();
+        result["current_policy"] = json!(
+            "This action requires an operator decision. Network policy and service grants remain authoritative for guest traffic. The host presentation path and target are checked again before execution."
+        );
+        result["evidence"]["graph"] = json!("triage-desktop-preview");
     }
     let mut event = Event::new(
         "admin.approval_explained",

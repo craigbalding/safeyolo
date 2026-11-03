@@ -5,7 +5,7 @@ use crate::{
     linux_host::{ARCHIVE_BASE, ID_COUNT, Mapping},
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     ffi::CString,
     fs,
     os::unix::{
@@ -39,22 +39,46 @@ fn fd_path(file: &fs::File) -> PathBuf {
 
 fn walk(
     file: &fs::File,
-    visit: &mut impl FnMut(&fs::File, &fs::Metadata) -> Result<(), Error>,
+    path: &Path,
+    visit: &mut impl FnMut(&fs::File, &fs::Metadata, &Path) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let metadata = file.metadata()?;
     if metadata.is_dir() {
         for entry in fs::read_dir(fd_path(file))? {
-            let child = open_entry(file.as_raw_fd(), &entry?.file_name())?;
-            walk(&child, visit)?;
+            let name = entry?.file_name();
+            let child = open_entry(file.as_raw_fd(), &name)?;
+            walk(&child, &path.join(name), visit)?;
         }
     }
-    visit(file, &metadata)
+    visit(file, &metadata, path)
+}
+
+struct OwnershipChange {
+    path: PathBuf,
+    metadata: fs::Metadata,
+    uid: u32,
+    gid: u32,
+    attributes: Vec<(CString, Vec<u8>)>,
+}
+
+fn reopen_entry(root: &fs::File, path: &Path) -> Result<fs::File, Error> {
+    let mut file = root.try_clone()?;
+    // Paths come from walk, relative to the pinned root. Open one component
+    // at a time: an intermediate symlink's O_PATH descriptor cannot be used
+    // as a directory, and the final symlink is never followed either.
+    for name in path {
+        file = open_entry(file.as_raw_fd(), name)?;
+    }
+    Ok(file)
 }
 
 fn attributes(path: &CString) -> Result<Vec<(CString, Vec<u8>)>, Error> {
     let size = unsafe { libc::listxattr(path.as_ptr(), std::ptr::null_mut(), 0) };
     if size < 0 {
         return Err(std::io::Error::last_os_error().into());
+    }
+    if size == 0 {
+        return Ok(Vec::new());
     }
     let mut names = vec![0_u8; size as usize];
     let length = unsafe { libc::listxattr(path.as_ptr(), names.as_mut_ptr().cast(), names.len()) };
@@ -87,9 +111,16 @@ fn attributes(path: &CString) -> Result<Vec<(CString, Vec<u8>)>, Error> {
     Ok(result)
 }
 
-fn shift_id(id: u32, base: u32, operator: u32) -> Result<u32, Error> {
-    let offset = id.checked_sub(ARCHIVE_BASE).filter(|offset| *offset < ID_COUNT)
-        .ok_or_else(|| format!("archive ownership {id} is outside the published subordinate-ID range {ARCHIVE_BASE}–{}", ARCHIVE_BASE + ID_COUNT - 1))?;
+fn shift_id(id: u32, base: u32, operator: u32, source_base: u32) -> Result<u32, Error> {
+    let offset = id
+        .checked_sub(source_base)
+        .filter(|offset| *offset < ID_COUNT)
+        .ok_or_else(|| {
+            format!(
+                "rootfs ownership {id} is outside the input ID range {source_base}–{}",
+                source_base + ID_COUNT - 1
+            )
+        })?;
     Ok(if offset == 1000 {
         operator
     } else {
@@ -97,7 +128,12 @@ fn shift_id(id: u32, base: u32, operator: u32) -> Result<u32, Error> {
     })
 }
 
-fn shift_attribute(name: &CString, bytes: &mut [u8], mapping: Mapping) -> Result<(), Error> {
+fn shift_attribute(
+    name: &CString,
+    bytes: &mut Vec<u8>,
+    mapping: Mapping,
+    source_base: u32,
+) -> Result<(), Error> {
     if matches!(
         name.to_bytes(),
         b"system.posix_acl_access" | b"system.posix_acl_default"
@@ -116,15 +152,26 @@ fn shift_attribute(name: &CString, bytes: &mut [u8], mapping: Mapping) -> Result
                 _ => continue,
             };
             let id = u32::from_le_bytes(entry[4..8].try_into()?);
-            if (ARCHIVE_BASE..ARCHIVE_BASE + ID_COUNT).contains(&id) {
-                entry[4..8].copy_from_slice(&shift_id(id, base, operator)?.to_le_bytes());
+            if source_base == 0 || (source_base..source_base + ID_COUNT).contains(&id) {
+                entry[4..8]
+                    .copy_from_slice(&shift_id(id, base, operator, source_base)?.to_le_bytes());
             }
         }
+    } else if name.to_bytes() == b"security.capability" && bytes.len() == 20 && source_base == 0 {
+        // Linux revision-2 file capabilities have implicit root ID 0. The
+        // canonical archive needs revision 3 with an explicit shifted root,
+        // so the importer can map it to the consuming user namespace.
+        let magic = u32::from_le_bytes(bytes[..4].try_into()?);
+        if magic & 0xff00_0000 != 0x0200_0000 {
+            return Err("invalid revision-2 file capability in the profile tree".into());
+        }
+        bytes[..4].copy_from_slice(&((magic & 0x00ff_ffff) | 0x0300_0000).to_le_bytes());
+        bytes.extend_from_slice(&mapping.uid_base.to_le_bytes());
     } else if name.to_bytes() == b"security.capability" && bytes.len() == 24 {
         let root = u32::from_le_bytes(bytes[20..24].try_into()?);
-        if (ARCHIVE_BASE..ARCHIVE_BASE + ID_COUNT).contains(&root) {
+        if source_base == 0 || (source_base..source_base + ID_COUNT).contains(&root) {
             bytes[20..24].copy_from_slice(
-                &shift_id(root, mapping.uid_base, mapping.host_uid)?.to_le_bytes(),
+                &shift_id(root, mapping.uid_base, mapping.host_uid, source_base)?.to_le_bytes(),
             );
         }
     }
@@ -133,43 +180,102 @@ fn shift_attribute(name: &CString, bytes: &mut [u8], mapping: Mapping) -> Result
 
 pub(super) fn remap_tree(tree: &Path, mapping: Mapping) -> Result<(), Error> {
     mapping.validate()?;
+    rewrite_tree(tree, mapping, ARCHIVE_BASE, mapping.host_uid)
+}
+
+/// Convert a stopped distro build to the published numeric ownership contract.
+/// The existing importer subsequently maps this canonical tree to the actual
+/// operator's selected ranges. Do not collapse guest users to sandbox root.
+pub(super) fn archive_profile_tree(tree: &Path, builder_uid: u32) -> Result<(), Error> {
+    rewrite_tree(
+        tree,
+        Mapping {
+            uid_base: ARCHIVE_BASE,
+            gid_base: ARCHIVE_BASE,
+            host_uid: ARCHIVE_BASE + 1000,
+            host_gid: ARCHIVE_BASE + 1000,
+        },
+        0,
+        builder_uid,
+    )
+}
+
+fn rewrite_tree(
+    tree: &Path,
+    mapping: Mapping,
+    source_base: u32,
+    stage_uid: u32,
+) -> Result<(), Error> {
     let stage = tree.parent().ok_or("guest extraction stage is missing")?;
     let stage_metadata = fs::symlink_metadata(stage)?;
     if tree.file_name().is_none_or(|name| name != "rootfs-tree")
         || !stage_metadata.is_dir()
-        || stage_metadata.uid() != mapping.host_uid
+        || stage_metadata.uid() != stage_uid
         || stage_metadata.mode() & 0o777 != 0o700
         || stage
             .file_name()
             .is_none_or(|name| !name.as_encoded_bytes().starts_with(b"extract-"))
     {
-        return Err("ownership preparation accepts only the installer's private extract-*/rootfs-tree stage; shared prepared and live trees were preserved".into());
+        return Err("ownership preparation accepts only a private extract-*/rootfs-tree stage; shared prepared and live trees were preserved".into());
     }
     if unsafe { libc::geteuid() } != 0 {
         return Err(
-            "guest ownership preparation requires the installer's narrow privileged file operation"
+            "guest ownership preparation requires a narrowly scoped privileged file operation"
                 .into(),
         );
     }
     let root_file = open_entry(libc::AT_FDCWD, tree.as_os_str())?;
     let root = root_file.metadata()?;
-    if !root.is_dir() || root.uid() != ARCHIVE_BASE || root.gid() != ARCHIVE_BASE {
-        return Err(
-            "archive rootfs-tree must be a directory owned by published sandbox root 100000:100000"
-                .into(),
-        );
+    if !root.is_dir() || root.uid() != source_base || root.gid() != source_base {
+        return Err(format!(
+            "rootfs-tree must be a directory owned by input root {source_base}:{source_base}"
+        )
+        .into());
     }
     let mut records: HashMap<(u64, u64), (fs::Metadata, u64)> = HashMap::new();
-    walk(&root_file, &mut |_, metadata| {
+    let mut changes = Vec::new();
+    walk(&root_file, Path::new(""), &mut |file, metadata, path| {
         if metadata.dev() != root.dev() {
             return Err("guest staging tree contains another filesystem".into());
         }
-        shift_id(metadata.uid(), mapping.uid_base, mapping.host_uid)?;
-        shift_id(metadata.gid(), mapping.gid_base, mapping.host_gid)?;
-        records
-            .entry((metadata.dev(), metadata.ino()))
-            .and_modify(|(_, count)| *count += 1)
-            .or_insert_with(|| (metadata.clone(), 1));
+        let uid = shift_id(
+            metadata.uid(),
+            mapping.uid_base,
+            mapping.host_uid,
+            source_base,
+        )?;
+        let gid = shift_id(
+            metadata.gid(),
+            mapping.gid_base,
+            mapping.host_gid,
+            source_base,
+        )?;
+        if let Some((_, count)) = records.get_mut(&(metadata.dev(), metadata.ino())) {
+            *count += 1;
+            return Ok(());
+        }
+        records.insert((metadata.dev(), metadata.ino()), (metadata.clone(), 1));
+        let ownership_changes = metadata.uid() != uid || metadata.gid() != gid;
+        let mut updates = Vec::new();
+        if !metadata.file_type().is_symlink() {
+            let path_c = CString::new(fd_path(file).as_os_str().as_bytes())?;
+            for (name, mut value) in attributes(&path_c)? {
+                let original = value.clone();
+                shift_attribute(&name, &mut value, mapping, source_base)?;
+                if ownership_changes || value != original {
+                    updates.push((name, value));
+                }
+            }
+        }
+        if ownership_changes || !updates.is_empty() {
+            changes.push(OwnershipChange {
+                path: path.to_owned(),
+                metadata: metadata.clone(),
+                uid,
+                gid,
+                attributes: updates,
+            });
+        }
         Ok(())
     })?;
     for (metadata, count) in records.values() {
@@ -177,37 +283,30 @@ pub(super) fn remap_tree(tree: &Path, mapping: Mapping) -> Result<(), Error> {
             return Err("guest staging tree has a hard link outside its private extraction; other installations were preserved".into());
         }
     }
-    // All owners have been checked before the first change. This is a fresh
-    // stage; the caller publishes it only after this operation succeeds.
-    let mut changed = HashSet::new();
-    walk(&root_file, &mut |file, current| {
-        let key = (current.dev(), current.ino());
-        if !changed.insert(key) {
-            return Ok(());
-        }
-        let (metadata, _) = records.get(&key).ok_or("guest staging tree changed during ownership preparation; discard this unpublished stage and retry")?;
-        if current.uid() != metadata.uid()
+    drop(records);
+    // Check every owner, hard link and attribute before the first change.
+    // Reopen only inodes that need writes instead of walking the whole tree
+    // again. The usual root mapping leaves most inodes untouched. Relative
+    // paths avoid retaining a descriptor for every inode in a large archive.
+    for change in changes {
+        let file = reopen_entry(&root_file, &change.path)?;
+        let current = file.metadata()?;
+        let metadata = change.metadata;
+        if current.dev() != metadata.dev()
+            || current.ino() != metadata.ino()
+            || current.uid() != metadata.uid()
             || current.gid() != metadata.gid()
             || current.mode() != metadata.mode()
             || current.nlink() != metadata.nlink()
         {
             return Err("guest staging inode changed during ownership preparation; discard this unpublished stage and retry".into());
         }
-        let path = fd_path(file);
+        let path = fd_path(&file);
         let path_c = CString::new(path.as_os_str().as_bytes())?;
-        // lchown does not remove symlink attributes. Leave them on that
-        // pinned symlink; following its target would be incorrect.
-        let mut attributes = if metadata.file_type().is_symlink() {
-            Vec::new()
-        } else {
-            attributes(&path_c)?
-        };
-        for (name, value) in &mut attributes {
-            shift_attribute(name, value, mapping)?;
-        }
-        let uid = shift_id(metadata.uid(), mapping.uid_base, mapping.host_uid)?;
-        let gid = shift_id(metadata.gid(), mapping.gid_base, mapping.host_gid)?;
-        if (metadata.uid() != uid || metadata.gid() != gid)
+        let uid = change.uid;
+        let gid = change.gid;
+        let ownership_changes = metadata.uid() != uid || metadata.gid() != gid;
+        if ownership_changes
             && unsafe {
                 libc::fchownat(
                     file.as_raw_fd(),
@@ -220,12 +319,13 @@ pub(super) fn remap_tree(tree: &Path, mapping: Mapping) -> Result<(), Error> {
         {
             return Err(std::io::Error::last_os_error().into());
         }
-        if !metadata.file_type().is_symlink() {
+        if ownership_changes && !metadata.file_type().is_symlink() {
             fs::set_permissions(&path, fs::Permissions::from_mode(metadata.mode() & 0o7777))?;
         }
         // chown can clear set-ID bits and file capabilities. Restore the
         // archive's modes and attributes after changing the numeric owner.
-        for (name, value) in attributes {
+        // Without chown, write only attributes whose embedded IDs changed.
+        for (name, value) in change.attributes {
             if unsafe {
                 libc::setxattr(
                     path_c.as_ptr(),
@@ -239,7 +339,74 @@ pub(super) fn remap_tree(tree: &Path, mapping: Mapping) -> Result<(), Error> {
                 return Err(std::io::Error::last_os_error().into());
             }
         }
-        Ok(())
-    })?;
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn profile_ownership_keeps_guest_users_and_named_acls() {
+        let archive = Mapping {
+            uid_base: ARCHIVE_BASE,
+            gid_base: ARCHIVE_BASE,
+            host_uid: ARCHIVE_BASE + 1000,
+            host_gid: ARCHIVE_BASE + 1000,
+        };
+        for id in [0, 1, 33, 1000, 65534] {
+            assert_eq!(
+                shift_id(id, archive.uid_base, archive.host_uid, 0).unwrap(),
+                ARCHIVE_BASE + id
+            );
+        }
+        assert!(shift_id(ID_COUNT, ARCHIVE_BASE, archive.host_uid, 0).is_err());
+        let mut acl = 2_u32.to_le_bytes().to_vec();
+        for (tag, id) in [(2_u16, 1000_u32), (8, 33)] {
+            acl.extend_from_slice(&tag.to_le_bytes());
+            acl.extend_from_slice(&4_u16.to_le_bytes());
+            acl.extend_from_slice(&id.to_le_bytes());
+        }
+        shift_attribute(
+            &CString::new("system.posix_acl_access").unwrap(),
+            &mut acl,
+            archive,
+            0,
+        )
+        .unwrap();
+        assert_eq!(u32::from_le_bytes(acl[8..12].try_into().unwrap()), 101000);
+        assert_eq!(u32::from_le_bytes(acl[16..20].try_into().unwrap()), 100033);
+        assert_eq!(shift_id(101000, 231072, 1001, ARCHIVE_BASE).unwrap(), 1001);
+        assert_eq!(
+            shift_id(100033, 400000, 1001, ARCHIVE_BASE).unwrap(),
+            400033
+        );
+        let mut capability = 0x0200_0001_u32.to_le_bytes().to_vec();
+        capability.extend_from_slice(&[7; 16]);
+        shift_attribute(
+            &CString::new("security.capability").unwrap(),
+            &mut capability,
+            archive,
+            0,
+        )
+        .unwrap();
+        assert_eq!(&capability[..4], &0x0300_0001_u32.to_le_bytes());
+        assert_eq!(&capability[4..20], &[7; 16]);
+        assert_eq!(&capability[20..], &ARCHIVE_BASE.to_le_bytes());
+    }
+
+    #[test]
+    fn reopening_changes_never_follows_symlinks() {
+        let directory = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("file"), "preserved").unwrap();
+        symlink(outside.path(), directory.path().join("link")).unwrap();
+        let root = open_entry(libc::AT_FDCWD, directory.path().as_os_str()).unwrap();
+        let link = reopen_entry(&root, Path::new("link")).unwrap();
+        assert!(link.metadata().unwrap().file_type().is_symlink());
+        assert!(reopen_entry(&root, Path::new("link/file")).is_err());
+        assert_eq!(fs::read(outside.path().join("file")).unwrap(), b"preserved");
+    }
 }

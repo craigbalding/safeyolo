@@ -53,7 +53,9 @@ extension ModelTests {
         try await testFailedHandshakeSnapshotRetriesPendingApproval()
         try await testAgentInventoryFailureDoesNotBlockApprovals()
         try await testCanonicalNetworkResolution()
+        try await testCanonicalDesktopActionResolution()
         try await testGatewayOptionAndExpiredOutcome()
+        try await testSelectedApprovalEffect()
         try await testPreparedNetworkRequestsAndOpenWindows()
         try await testNetworkResolutionLostReplyAndReconnect()
         try await testDisabledEventsAndRecovery()
@@ -61,6 +63,102 @@ extension ModelTests {
         try await testRealSocketRefusalPacing()
         try await testRemoteDisabledGuidance()
         print("connection-tests: PASS approvals, disabled, legacy, retry pacing, stable snapshots, recovery, cancellation, redaction")
+    }
+
+    @MainActor
+    static func testOperatorRecoveryControls() async throws {
+        try await testOperatorStateRecovery()
+        try await testAttachedApprovalClearsDuringAuditOutage()
+        try await testMultiplePendingApprovals()
+        try await testApprovalInSubscriptionGapAndReconnect()
+        try await testFailedHandshakeSnapshotRetriesPendingApproval()
+        try await testAgentInventoryFailureDoesNotBlockApprovals()
+        print("operator-recovery-tests: PASS current pending, suppression, stale reads, attach/reconnect, idle network")
+    }
+
+    @MainActor
+    private static func testAttachedApprovalClearsDuringAuditOutage() async throws {
+        snapshot()
+        defer { StubURLProtocol.responsesByPath = [:] }
+        let firstControl = Data(#"{"type":"operator_state","revision":1,"signals":"ready","approvals":"ready","log":"unavailable","history_gap":null}"#.utf8)
+        let socket = StubEventSocket()
+        socket.messages = [.data(firstControl)]
+        socket.onResume = {
+            // This request exists only between host checks. Commander sees
+            // it in its attachment snapshot, without a recorded event.
+            StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["brief", "quiet"]))
+            StubURLProtocol.responsesByPath["/admin/approvals/apr-quiet/attention"] = (200, Data(#"{"notify":false}"#.utf8))
+        }
+        let client = try SafeYoloClient(adminURL: "http://127.0.0.1:19090", eventsURL: "ws://127.0.0.1:19091/admin/events",
+            token: "fixture-secret", expectedInstanceID: "sy-connection-test", session: stubSession(), makeEventSocket: { _ in socket })
+        defer { client.stop() }
+        var presented: [String] = []
+        client.onNewApproval = { presented.append($0.id) }
+        client.start()
+        // Consume the initial control while both requests remain pending.
+        // It must not be left queued to rescue the subsequent clear.
+        try await until { !client.diagnosticReport.contains("Last live event received: Never") && client.approvals.count == 2 }
+        precondition(socket.messages.isEmpty && presented == ["apr-brief"])
+        let beforeResolution = StubURLProtocol.requestCount
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals([]))
+        for key in ["brief", "quiet"] {
+            StubURLProtocol.responsesByPath["/admin/approvals/apr-\(key)"] = (200, try JSONSerialization.data(withJSONObject:
+                ["approval_id": "apr-\(key)", "request_id": "req-\(key)", "status": "rejected", "effect": "Credential needs approval"]))
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        precondition(client.approvals.count == 2 && StubURLProtocol.requestCount == beforeResolution,
+                     "The initial control or viewer polling rescued resolution")
+        let resolvedAt = Date()
+        // The native host regression proves this later control is produced
+        // from committed state even when the audit delivers no notification.
+        socket.messages.append(.data(Data(#"{"type":"operator_state","revision":2,"signals":"ready","approvals":"ready","log":"unavailable","history_gap":null}"#.utf8)))
+        try await until { client.approvals.isEmpty && client.approvalOutcomes["apr-brief"]?.status == "rejected"
+            && client.approvalOutcomes["apr-quiet"]?.status == "rejected" }
+        precondition(Date().timeIntervalSince(resolvedAt) < 5 && presented == ["apr-brief"])
+        precondition(client.eventFeedGap?.contains("does not prove JSONL delivery") == true)
+        precondition(client.securityEvents.isEmpty, "Recovery controls are not recorded events")
+        let idle = StubURLProtocol.requestCount
+        try await Task.sleep(for: .milliseconds(1200))
+        precondition(StubURLProtocol.requestCount == idle && !socket.cancelled,
+                     "Healthy Commander must stay attached without polling")
+    }
+
+    @MainActor
+    private static func testOperatorStateRecovery() async throws {
+        snapshot()
+        defer { StubURLProtocol.responsesByPath = [:] }
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals([]))
+        let socket = StubEventSocket()
+        let client = try SafeYoloClient(adminURL: "http://127.0.0.1:19090", eventsURL: "ws://127.0.0.1:19091/admin/events",
+            token: "fixture-secret", expectedInstanceID: "sy-connection-test", session: stubSession(), makeEventSocket: { _ in socket })
+        defer { client.stop() }
+        var presented: [String] = []
+        client.onNewApproval = { presented.append($0.id) }
+        client.start()
+        try await until { socket.receiving }
+        let idle = StubURLProtocol.requestCount
+        try await Task.sleep(for: .milliseconds(1200))
+        precondition(StubURLProtocol.requestCount == idle, "Healthy idle Commander must not poll pending state")
+        let refresh = Data(#"{"type":"operator_state","revision":2,"signals":"ready","approvals":"ready","log":"unavailable","history_gap":null}"#.utf8)
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["visible", "suppressed"]))
+        StubURLProtocol.responsesByPath["/admin/approvals/apr-suppressed/attention"] = (200, Data(#"{"notify":false}"#.utf8))
+        // No audit event exists. A separate current-state control wakes the
+        // canonical read while preserving the host's attention suppression.
+        socket.messages.append(.data(refresh))
+        try await until { client.approvals.count == 2 }
+        try await until { presented == ["apr-visible"] }
+        precondition(client.eventFeedGap?.contains("does not prove JSONL delivery") == true)
+        try await client.ingestOperatorEventData(refresh)
+        precondition(presented == ["apr-visible"], "Repeated refresh must not repeat attention or override suppression")
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (503, Data(#"{"error":"state unavailable"}"#.utf8))
+        do { try await client.ingestOperatorEventData(refresh); preconditionFailure("Unavailable state became success") }
+        catch { precondition(client.approvals.count == 2 && client.requestErrors["Pending approvals"] != nil) }
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals([]))
+        try await client.ingestOperatorEventData(refresh)
+        precondition(client.approvals.isEmpty && client.requestErrors["Pending approvals"] == nil)
+        try await client.ingestOperatorEventData(Data(#"{"type":"operator_state","log":"following","history_gap":null}"#.utf8))
+        precondition(client.eventFeedGap?.contains("feed recovered") == true, "Recovery must not retain a false current outage status")
+        precondition(presented == ["apr-visible"], "Clearing pending work must not create an approval")
     }
 
     @MainActor
@@ -174,7 +272,10 @@ extension ModelTests {
 
     private static func pendingApprovals(_ keys: [String]) -> Data {
         let approvals: [[String: Any]] = keys.map { key in
-            [
+            StubURLProtocol.responsesByPath["/admin/approvals/apr-\(key)/attention"] = (200, Data(#"{"notify":true}"#.utf8))
+            StubURLProtocol.responsesByPath["/admin/approvals/apr-\(key)"] = (200, try! JSONSerialization.data(withJSONObject: ["approval_id":"apr-\(key)","request_id":"req-\(key)","status":"pending","effect":"Credential needs approval"]))
+            return [
+                "approval_id": "apr-\(key)", "request_id": "req-\(key)",
                 "event": "security.credential_guard", "summary": "Credential needs approval",
                 "agent": "forge", "host": "api.example.com",
                 "approval": [
@@ -212,6 +313,26 @@ extension ModelTests {
             let observed = try result!.get()
             precondition(observed == .decided("\(message). \(effect)"), "Use the canonical outcome and scope even when the other decision won")
         }
+    }
+
+    @MainActor
+    private static func testCanonicalDesktopActionResolution() async throws {
+        let data = Data(#"{"approval_id":"apr-preview","request_id":"req-preview","event":"agent.operator_action_requested","agent":"worker","summary":"Present the gated desktop for 900 seconds. Network permissions stay unchanged.","approval":{"required":true,"approval_type":"desktop_present","key":"apr-preview","target":"ag-worker"},"options":[{"id":"once","effect":"Present once","status":"available"}]}"#.utf8)
+        let event = try JSONDecoder().decode(ApprovalEvent.self, from: data)
+        let plan = try MutationPlan.forApproval(event, allow: true)
+        precondition(plan.path == "/admin/approvals/apr-preview")
+        snapshot()
+        defer { StubURLProtocol.responsesByPath = [:] }
+        StubURLProtocol.responsesByPath[plan.path] = (200, Data(#"{"approval_id":"apr-preview","request_id":"req-preview","status":"approved","effect":"Present once","result":{"status":"started"},"operator_preview":{"agent_id":"ag-worker","agent":"worker","url":"https://fixture.ts.net:8443/_safeyolo_desktop/","unlock_code":"fixture-code","reused":false}}"#.utf8))
+        let client = try SafeYoloClient(adminURL: "http://127.0.0.1:19090", eventsURL: "ws://127.0.0.1:19091/admin/events", token: "fixture-secret", expectedInstanceID: "sy-connection-test", session: stubSession())
+        defer { client.stop() }
+        var result: Result<ResolutionResult, Error>?
+        client.resolve(event, allow: true) { result = $0 }
+        try await until { result != nil }
+        guard case .desktop(let preview) = try result!.get() else { preconditionFailure("Canonical approval lost the operator preview") }
+        precondition(preview.url == "https://fixture.ts.net:8443/_safeyolo_desktop/" && preview.unlockCode == "fixture-code")
+        let failed = try JSONDecoder().decode(ApprovalResolution.self, from: Data(#"{"request_id":"req-preview","status":"approved","effect":"Present once","result":{"status":"failed","diagnostic":{"message":"This host user cannot manage Tailscale Serve."}}}"#.utf8))
+        precondition(failed.display.contains("failed") && failed.display.contains("cannot manage Tailscale Serve"))
     }
 
     @MainActor
@@ -254,6 +375,115 @@ extension ModelTests {
     }
 
     @MainActor
+    private static func testSelectedApprovalEffect() async throws {
+        let cases: [(String, String, [(String, String)])] = [
+            ("network_egress", "Allow reusable network access for worker to owned.example port 443 until explicitly removed.", [
+                ("run", "Run-bound reusable network access to this destination, port and request/CONNECT action. Existing budgets and all other controls remain."),
+            ]),
+            ("credential", "Allow these credential fingerprints to owned.example for all agents in this instance, including future agents. This changes shared persistent policy until explicitly removed.", [
+                ("run", "Allow only the worker's current run to send these exact fingerprints to this destination. All ports, methods and paths at this host are included. This does not change shared baseline credential approval."),
+            ]),
+            ("gateway_risky_route", "Allow worker to use POST at the exact path /write on fixture with a once grant.", [
+                ("delegated_once", "One reserved gateway route use for the current worker run. Existing response consumption/release semantics apply. This does not bind the payload."),
+                ("run", "Run-bound reusable access to the canonical service, capability, binding, method and exact path. Gateway expiry and all contract checks remain. This is not payload-bound approval."),
+            ]),
+        ]
+        for (kind, summary, choices) in cases {
+            snapshot()
+            let id = "apr-effect-\(kind)"
+            let path = "/admin/approvals/\(id)"
+            let defaultID = kind == "gateway_risky_route" ? "once" : "persistent"
+            var options = [(defaultID, summary)] + choices
+            var unavailable = false
+            func prompt() -> [String: Any] {
+                ["event": "security.\(kind)", "approval_id": id, "request_id": "req-effect-\(kind)",
+                 "agent": "worker", "summary": summary,
+                 "approval": ["required": true, "approval_type": kind, "key": id, "target": "owned.example"],
+                 "options": options.map { option in
+                     ["id": option.0, "effect": option.1,
+                      "status": unavailable && option.0 == "run" ? "unavailable" : "available"]
+                 }]
+            }
+            func publish(status: String = "pending", effect: String) throws {
+                StubURLProtocol.responsesByPath[path + "/attention"] = (200, Data(#"{"notify":true}"#.utf8))
+                StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": status == "pending" ? [prompt()] : []]))
+                StubURLProtocol.responsesByPath[path] = (200, try JSONSerialization.data(withJSONObject: [
+                    "approval_id": id, "request_id": "req-effect-\(kind)", "status": status, "effect": effect,
+                ]))
+            }
+            try publish(effect: summary)
+            let socket = StubEventSocket()
+            let client = try SafeYoloClient(adminURL: "http://127.0.0.1:19090",
+                eventsURL: "ws://127.0.0.1:19091/admin/events", token: "fixture-secret",
+                expectedInstanceID: "sy-connection-test", session: stubSession(), makeEventSocket: { _ in socket })
+            let presenter = ApprovalWindowPresenter()
+            client.onNewApproval = { presenter.show($0, client: client) }
+            defer { presenter.close(id, instanceID: client.expectedInstanceID); client.stop(); StubURLProtocol.responsesByPath = [:] }
+            client.start()
+            try await until { socket.receiving && client.approvalOutcomes[id] != nil }
+            let window = NSApp.windows.first { $0.identifier?.rawValue == id }!
+            func headline(_ expected: String) async throws {
+                try await until {
+                    window.contentView!.layoutSubtreeIfNeeded()
+                    return approvalViews(window)
+                        .compactMap { $0 as? NSTextField }.contains { $0.stringValue == expected }
+                }
+            }
+            try await headline(summary)
+            try await until { approvalViews(window).contains { $0 is NSPopUpButton } }
+            let picker = approvalViews(window).compactMap { $0 as? NSPopUpButton }.first!
+            func choose(_ option: String, effect: String) async throws {
+                let index = picker.indexOfItem(withTitle: option)
+                precondition(index >= 0, "The real approval picker must offer \(option)")
+                picker.selectItem(at: index)
+                picker.menu!.performActionForItem(at: index)
+                print("approval-effect: \(kind) picker=\(picker.titleOfSelectedItem ?? "none")")
+                try await headline(effect)
+                print("approval-effect: \(kind) selected \(option); rendered headline matches host option")
+            }
+            if defaultID == "once" { precondition(picker.titleOfSelectedItem == "once") }
+            for (option, effect) in choices { try await choose(option, effect: effect) }
+            try await choose(defaultID, effect: summary)
+            try await choose("run", effect: choices.last!.1)
+
+            // Refresh the same open card, including a selected option that is no longer available.
+            let refreshed = "Updated host effect for the current worker run."
+            options = [(defaultID, summary), ("run", refreshed)]
+            try publish(effect: summary)
+            let refresh = Data(#"{"event":"admin.host_allowed","kind":"admin","severity":"high","summary":"Refresh approvals"}"#.utf8)
+            try await client.ingestOperatorEventData(refresh)
+            try await headline(refreshed)
+            unavailable = true
+            try publish(effect: "Canonical pending fallback")
+            try await client.ingestOperatorEventData(refresh)
+            try await headline("Canonical pending fallback")
+            options = [(defaultID, summary)]
+            try publish(effect: "Canonical pending fallback")
+            try await client.ingestOperatorEventData(refresh)
+            try await headline("Canonical pending fallback")
+
+            options.append(("run", refreshed))
+            unavailable = false
+            try publish(effect: summary)
+            try await client.ingestOperatorEventData(refresh)
+            try await headline(refreshed)
+            for status in ["approved", "rejected", "expired", "superseded"] {
+                try publish(status: status, effect: "Canonical \(status) effect")
+                try await client.ingestOperatorEventData(refresh)
+                try await headline("Canonical \(status) effect")
+            }
+            let fallbackClient = try SafeYoloClient(adminURL: "http://127.0.0.1:19090",
+                eventsURL: "ws://127.0.0.1:19091/admin/events", token: "fixture-secret",
+                expectedInstanceID: "sy-connection-test", session: stubSession())
+            var fallbackPrompt = prompt()
+            fallbackPrompt.removeValue(forKey: "options")
+            let fallbackEvent = try JSONDecoder().decode(ApprovalEvent.self, from: JSONSerialization.data(withJSONObject: fallbackPrompt))
+            precondition(ApprovalView(event: fallbackEvent, client: fallbackClient, close: {}).displayedEffect == summary)
+            print("approval-effect: \(kind) refresh, unavailable/missing selection, canonical outcomes and summary fallback passed")
+        }
+    }
+
+    @MainActor
     private static func testPreparedNetworkRequestsAndOpenWindows() async throws {
         snapshot()
         defer { StubURLProtocol.responsesByPath = [:]; StubURLProtocol.requestHandler = nil }
@@ -283,6 +513,7 @@ extension ModelTests {
         let helper = prompt("req-helper", agent: "helper")
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [selected, newer, helper]]))
         for id in ["req-selected", "req-newer", "req-helper"] {
+            StubURLProtocol.responsesByPath["/admin/approvals/apr-\(id.dropFirst(4))/attention"] = (200, Data(#"{"notify":true}"#.utf8))
             StubURLProtocol.responsesByPath["/admin/approvals/apr-\(id.dropFirst(4))"] = (200, try record(id, agent: id == "req-helper" ? "helper" : "worker"))
         }
         let socket = StubEventSocket()
@@ -294,7 +525,7 @@ extension ModelTests {
         var presentations = 0
         client.onNewApproval = { event in presentations += 1; presenter.show(event, client: client) }
         defer {
-            for id in ["req-selected", "req-newer", "req-helper"] { presenter.close("apr-\(id.dropFirst(4))") }
+            for id in ["req-selected", "req-newer", "req-helper"] { presenter.close("apr-\(id.dropFirst(4))", instanceID: client.expectedInstanceID) }
             client.stop()
         }
         client.start()
@@ -321,9 +552,9 @@ extension ModelTests {
         precondition(NSApp.windows.first { $0.identifier?.rawValue == "apr-selected" } === selectedWindow)
         precondition(presentations == 3, "Preparation updates the open window without another prompt")
         precondition(hosting.rootView.displayedEffect == effect)
-        precondition(hosting.rootView.quotedUntrustedReason == "\"\(reason)\"")
+        precondition(hosting.rootView.quotedUntrustedReason == quotedRequesterText(reason))
         precondition(client.approvalOutcomes["apr-newer"]?.untrustedReasonText == nil)
-        try await checkApprovalLayout(selectedWindow, text: [effect, "\"\(reason)\""])
+        try await checkApprovalLayout(selectedWindow, text: [effect, quotedRequesterText(reason)])
 
         // A different request's decision cannot invent this request's outcome.
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, try JSONSerialization.data(withJSONObject: ["approvals": [selected, helper]]))
@@ -402,6 +633,7 @@ extension ModelTests {
             Data("{\"approval_id\":\"apr-reconcile\",\"request_id\":\"req-reconcile\",\"status\":\"\(status)\",\"effect\":\"\(effect)\"}".utf8)
         }
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, Data("{\"approvals\":[\(pending)]}".utf8))
+        StubURLProtocol.responsesByPath[path + "/attention"] = (200, Data(#"{"notify":true}"#.utf8))
         StubURLProtocol.responsesByPath[path] = (200, record("pending"))
         let gate = RetryGate()
         let first = StubEventSocket()
@@ -465,7 +697,7 @@ extension ModelTests {
         client.onNewApproval = { presented.append($0.id) }
         client.start()
         try await until { socket.receiving }
-        precondition(presented == ["one:api.example.com", "two:api.example.com"])
+        precondition(presented == ["apr-one", "apr-two"])
         precondition(client.approvals.map(\.id) == presented, "Every presentation callback must have a pending menu item")
 
         socket.messages.append(approvalEvent)
@@ -474,7 +706,7 @@ extension ModelTests {
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["two"]))
         socket.messages.append(approvalEvent)
         try await until { client.approvals.count == 1 }
-        precondition(client.approvals[0].id == "two:api.example.com" && presented.count == 2,
+        precondition(client.approvals[0].id == "apr-two" && presented.count == 2,
                      "A resolved approval must leave the menu without another window")
     }
 
@@ -485,7 +717,7 @@ extension ModelTests {
         let gate = RetryGate()
         let first = StubEventSocket()
         first.onResume = {
-            // The server starts streaming at the handshake audit offset. This
+            // The server registers the stream during the handshake. This
             // approval is absent from the earlier HTTP snapshot and stream.
             StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["gap"]))
         }
@@ -506,7 +738,7 @@ extension ModelTests {
         client.onNewApproval = { presented.append($0.id) }
         client.start()
         try await until { first.receiving }
-        precondition(presented == ["gap:api.example.com"] && client.approvals.map(\.id) == presented,
+        precondition(presented == ["apr-gap"] && client.approvals.map(\.id) == presented,
                      "A pending approval in the subscribe gap must be presented and appear in the menu")
 
         first.receiveError = URLError(.networkConnectionLost)
@@ -521,7 +753,7 @@ extension ModelTests {
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["during-outage"]))
         gate.release()
         try await until { third.receiving }
-        precondition(presented == ["gap:api.example.com", "during-outage:api.example.com"],
+        precondition(presented == ["apr-gap", "apr-during-outage"],
                      "Reconnect must present a still-pending approval missed during the outage")
     }
 
@@ -554,7 +786,7 @@ extension ModelTests {
         gate.release()
         try await until { second.receiving }
         precondition(client.connectionState == .connected)
-        precondition(presented == ["recovered:api.example.com"] && client.approvals.map(\.id) == presented)
+        precondition(presented == ["apr-recovered"] && client.approvals.map(\.id) == presented)
         precondition(client.requestErrors["Pending approvals"] == nil && client.requestErrors["Live events"] == nil)
     }
 
@@ -579,7 +811,7 @@ extension ModelTests {
         client.onNewApproval = { presented.append($0.id) }
         client.start()
         try await until { socket.receiving }
-        precondition(client.connectionState == .connected && presented == ["first:api.example.com"])
+        precondition(client.connectionState == .connected && presented == ["apr-first"])
         precondition(client.requestErrors["Agent status"] != nil && client.requestErrors["Live events"] == nil)
 
         socket.messages.append(agentEvent)
@@ -589,7 +821,7 @@ extension ModelTests {
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["first", "second"]))
         socket.messages.append(approvalEvent)
         try await until { presented.count == 2 }
-        precondition(presented == ["first:api.example.com", "second:api.example.com"])
+        precondition(presented == ["apr-first", "apr-second"])
         precondition(client.approvals.map(\.id) == presented)
     }
 

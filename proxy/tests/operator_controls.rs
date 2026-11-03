@@ -3,7 +3,6 @@
 //! bound admin TCP listener and the event stream is a real WebSocket upgrade.
 
 use std::{
-    io::Write as _,
     net::Ipv4Addr,
     os::unix::fs::PermissionsExt,
     path::Path,
@@ -35,6 +34,14 @@ action = "network:request"
 resource = "*"
 effect = "allow"
 "#;
+
+#[allow(
+    dead_code,
+    reason = "Only the outage control uses this shared private-result fixture."
+)]
+#[path = "support/operator_nats.rs"]
+mod operator_nats;
+use operator_nats::Nats;
 
 #[tokio::test]
 async fn native_operator_consumer_controls_and_event_stream_are_live() {
@@ -174,8 +181,7 @@ async fn native_operator_consumer_controls_and_event_stream_are_live() {
     assert_eq!(agents.status, 200);
     assert_eq!(agents.json()["agents"].as_array().unwrap().len(), 1);
 
-    // The event stream starts at the current audit file offset. Let earlier
-    // mutations reach the file before subscribing so the next frame is live.
+    // Wait for earlier archive writes before the live attachment.
     let audit_path = config.audit_log_path.as_ref().unwrap();
     wait_for_audit_event(audit_path, "admin.approval_added", "approved.example").await;
     wait_for_audit_event(audit_path, "admin.denial", "approved.example").await;
@@ -190,9 +196,7 @@ async fn native_operator_consumer_controls_and_event_stream_are_live() {
     )
     .await;
     assert_eq!(live_event.status, 200);
-    let (header, body) = read_ws_frame(&mut events).await;
-    assert_eq!(header[0] & 0x0f, 1);
-    let event: Value = serde_json::from_slice(&body).unwrap();
+    let event = read_denial(&mut events, "stream.example").await;
     assert_eq!(event["event"], "admin.denial");
     assert_eq!(event["details"]["destination"], "stream.example");
 
@@ -278,11 +282,18 @@ use_default_credential_rules = false
     );
     assert_eq!(prompt_event["approval"]["required"], true);
 
-    let first_pending = wait_for_pending(port, token, None).await;
-    let first_event = first_pending["approvals"]
-        .as_array()
-        .and_then(|items| items.first())
-        .unwrap();
+    // This name-only listener has no durable agent ID. Its 428 and direct
+    // policy decision remain supported, but an audit/live event cannot create
+    // a canonical assisted approval for an unregistered principal.
+    assert!(
+        admin(port, token, "GET", "/admin/approvals", b"")
+            .await
+            .json()["approvals"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let first_event = &prompt_event;
     let fingerprint = first_event["approval"]["key"].as_str().unwrap().to_owned();
     let destination = first_event["approval"]["target"]
         .as_str()
@@ -373,8 +384,7 @@ async fn native_operator_event_reconnect_does_not_replay_old_events() {
     first.shutdown().await.unwrap();
 
     let mut reconnect = connect_events(port, token).await;
-    let replay =
-        tokio::time::timeout(Duration::from_millis(250), read_ws_frame(&mut reconnect)).await;
+    let replay = tokio::time::timeout(Duration::from_millis(250), read_event(&mut reconnect)).await;
     assert!(
         replay.is_err(),
         "reconnect replayed an event from before its handshake"
@@ -400,6 +410,220 @@ async fn native_operator_event_reconnect_does_not_replay_old_events() {
     );
 
     reconnect.shutdown().await.unwrap();
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn native_operator_events_follow_complete_selected_log_records() {
+    let directory = TempDir::new().unwrap();
+    let root = directory.path();
+    let token = "operator-controls-synthetic";
+    let config = config(root, token);
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let port = admin_port(&config);
+    let mut events = connect_events(port, token).await;
+    use std::io::Write;
+    let mut archive = std::fs::OpenOptions::new()
+        .append(true)
+        .open(config.audit_log_path.as_ref().unwrap())
+        .unwrap();
+    for name in ["traffic.flow", "security.evaluated"] {
+        let record = json!({"schema_version":2,"event_id":format!("evt-{}","a".repeat(32)),"ts":"2026-11-03T00:00:00Z","event":name,"kind":name.split('.').next().unwrap(),"severity":"low","summary":"Filtered record","details":{"private_body":"synthetic-private-body"}});
+        writeln!(archive, "{record}").unwrap();
+    }
+    let record=json!({"schema_version":2,"event_id":format!("evt-{}","b".repeat(32)),"ts":"2026-11-03T00:00:00Z","event":"agent.log_backed","kind":"agent","severity":"low","summary":"Complete actual log record","details":{}}).to_string();
+    archive.write_all(record.as_bytes()).unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), read_event(&mut events))
+            .await
+            .is_err(),
+        "a partial record became an event"
+    );
+    archive.write_all(b"\n").unwrap();
+    let received = read_event(&mut events).await;
+    assert_eq!(received, serde_json::from_str::<Value>(&record).unwrap());
+    assert!(!received.to_string().contains("synthetic-private-body"));
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "requires the pinned SAFEYOLO_COORD_NATS_BINARY"]
+async fn native_operator_broker_loss_preserves_enforcement_archive_explain_and_traffic() {
+    let directory = TempDir::new().unwrap();
+    let root = directory.path();
+    let nats = Nats::start(root).await;
+    let token = "operator-controls-synthetic";
+    let mut config = config_with_policy(
+        root,
+        token,
+        &(POLICY.replace("effect = \"allow\"", "effect = \"deny\"")
+            + "\n[addons.test_context]\ntarget_hosts=['127.0.0.1']\n"),
+    );
+    config.agent_api_enabled = true;
+    config.flow_store_enabled = true;
+    config.flow_store_db_path = root.join("flows.sqlite3");
+    std::fs::write(root.join("data/agent_token"), "synthetic-agent-api").unwrap();
+    let mut proxy = Proxy::start(config.clone()).await.unwrap();
+    let port = admin_port(&config);
+    let mut events = connect_events(port, token).await;
+    drop(nats);
+    let mut brokerless = connect_events(port, token).await;
+    assert_eq!(
+        admin(port, token, "GET", "/admin/approvals", b"")
+            .await
+            .status,
+        200
+    );
+    brokerless.shutdown().await.unwrap();
+    let mut unauthorized = begin_events(port, "wrong-token").await;
+    assert!(
+        read_headers(&mut unauthorized)
+            .await
+            .starts_with(b"HTTP/1.1 401")
+    );
+
+    assert_eq!(
+        admin(port, token, "GET", "/admin/runtime-identity", b"")
+            .await
+            .status,
+        200
+    );
+    assert_eq!(
+        admin(port, token, "GET", "/admin/policy/baseline", b"")
+            .await
+            .status,
+        200
+    );
+    assert_eq!(admin(port, token, "POST", "/admin/policy/baseline/deny", br#"{"destination":"broker-down.example","cred_id":"synthetic:down","reason":"fixture"}"#).await.status, 200);
+    wait_for_audit_event(
+        config.audit_log_path.as_ref().unwrap(),
+        "admin.denial",
+        "broker-down.example",
+    )
+    .await;
+    let observed = read_denial(&mut events, "broker-down.example").await;
+    assert_eq!(
+        observed["details"]["destination"], "broker-down.example",
+        "stopping the broker interrupted the existing attachment"
+    );
+
+    let origin = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    let origin_count = Arc::new(AtomicUsize::new(0));
+    let origin_task = tokio::spawn(approval_origin(
+        origin,
+        origin_count.clone(),
+        Arc::new(Notify::new()),
+    ));
+    let stream = UnixStream::connect(root.join("alice.sock")).await.unwrap();
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .unwrap();
+    let connection_task = tokio::spawn(connection);
+    let started = Instant::now();
+    let denied = agent_request(
+        &mut sender,
+        format!("http://127.0.0.1:{origin_port}/broker-down")
+            .parse()
+            .unwrap(),
+        "Bearer synthetic-data",
+    )
+    .await;
+    assert_eq!(denied.status(), 403);
+    let request_id = agent_request_id(&denied);
+    denied.collect().await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(origin_count.load(Ordering::Acquire), 0);
+    let explain = agent_request(
+        &mut sender,
+        format!("http://_safeyolo.proxy.internal/explain?request_id={request_id}")
+            .parse()
+            .unwrap(),
+        "Bearer synthetic-agent-api",
+    )
+    .await;
+    assert_eq!(explain.status(), 200);
+    let explain: Value =
+        serde_json::from_slice(&explain.collect().await.unwrap().to_bytes()).unwrap();
+    assert!(!explain["events"].as_array().unwrap().is_empty());
+    // Traffic recording retains its existing applied-context eligibility.
+    // Exercise a completed origin exchange while the broker remains down.
+    assert_eq!(
+        admin(
+            port,
+            token,
+            "POST",
+            "/admin/policy/host/allow",
+            br#"{"host":"127.0.0.1","rate":10}"#
+        )
+        .await
+        .status,
+        200
+    );
+    assert!(proxy.reload_policy_if_changed().await.unwrap());
+    let allowed = sender
+        .send_request(
+            Request::builder()
+                .uri(format!(
+                    "http://127.0.0.1:{origin_port}/recorded-during-outage"
+                ))
+                .header(
+                    "X-SafeYolo-Test-Context",
+                    "run=operator-events;agent=alice;test=broker-down",
+                )
+                .body(Empty::new())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(allowed.status(), 200);
+    let recorded_request_id = agent_request_id(&allowed);
+    allowed.collect().await.unwrap();
+    assert_eq!(origin_count.load(Ordering::Acquire), 1);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let db = rusqlite::Connection::open(&config.flow_store_db_path).unwrap();
+            let count: i64 = db
+                .query_row(
+                    "SELECT count(*) FROM flows WHERE request_id=?1",
+                    [&recorded_request_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if count == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("broker outage stopped traffic recording");
+    drop(sender);
+    let _ = connection_task.await;
+    origin_task.abort();
+
+    let mut reconnected = connect_events(port, token).await;
+    assert_eq!(admin(port, token, "POST", "/admin/policy/baseline/deny", br#"{"destination":"broker-reconnected.example","cred_id":"synthetic:reconnected","reason":"fixture"}"#).await.status, 200);
+    let event = read_denial(&mut reconnected, "broker-reconnected.example").await;
+    assert_eq!(
+        event["details"]["destination"],
+        "broker-reconnected.example"
+    );
+    // An invalid row is not a complete canonical event record.
+    use std::io::Write as _;
+    let mut archive = std::fs::OpenOptions::new()
+        .append(true)
+        .open(config.audit_log_path.as_ref().unwrap())
+        .unwrap();
+    archive
+        .write_all(b"{\"event\":\"agent.archive_only\",\"kind\":\"agent\"}\n")
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), read_event(&mut reconnected))
+            .await
+            .is_err()
+    );
+    reconnected.shutdown().await.unwrap();
     proxy.shutdown().await;
 }
 
@@ -450,38 +674,20 @@ use_default_credential_rules = false
     // Each event is 256 KiB and the burst exceeds TCP's send buffer. The
     // second WebSocket checks event order through its final marker. That
     // marker does not establish completion of the slow subscriber's write.
-    let summary = "x".repeat(256 * 1024);
-    let mut file = std::fs::OpenOptions::new()
+    // The shared host follower isolates this stalled socket from its producer
+    // and from a concurrent fast observer. These are actual log records.
+    use std::io::Write;
+    let mut archive = std::fs::OpenOptions::new()
         .append(true)
         .open(config.audit_log_path.as_ref().unwrap())
         .unwrap();
-    for sequence in 0..32 {
-        let line = serde_json::to_vec(&json!({
-            "event":"security.credential_guard",
-            "kind":"security",
-            "severity":"critical",
-            "summary":summary,
-            "details":{"sequence":sequence}
-        }))
-        .unwrap();
-        file.write_all(&line).unwrap();
-        file.write_all(b"\n").unwrap();
+    for sequence in 0..33 {
+        let event = json!({"schema_version":2,"event_id":format!("evt-{sequence:032x}"),"ts":"2026-11-03T00:00:00Z",
+            "event":"security.credential_guard","kind":"security","severity":"critical",
+            "summary":if sequence==32 {"event stream backpressure barrier".to_owned()} else {"x".repeat(256*1024)},
+            "details":if sequence==32 {json!({"barrier":true})} else {json!({"sequence":sequence})}});
+        writeln!(archive, "{event}").unwrap();
     }
-    file.write_all(
-        serde_json::to_string(&json!({
-            "event":"security.credential_guard",
-            "kind":"security",
-            "severity":"critical",
-            "summary":"event stream backpressure barrier",
-            "details":{"barrier":true}
-        }))
-        .unwrap()
-        .as_bytes(),
-    )
-    .unwrap();
-    file.write_all(b"\n").unwrap();
-    file.flush().unwrap();
-
     let (barrier, sequences) = tokio::time::timeout(Duration::from_secs(20), async {
         let mut sequences = Vec::new();
         loop {
@@ -823,7 +1029,7 @@ async fn approval_origin(listener: TcpListener, count: Arc<AtomicUsize>, ready: 
     }
 }
 
-async fn connect_events(port: u16, token: &str) -> TcpStream {
+async fn begin_events(port: u16, token: &str) -> TcpStream {
     let mut events = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
         .await
         .unwrap();
@@ -839,6 +1045,11 @@ async fn connect_events(port: u16, token: &str) -> TcpStream {
         )
         .await
         .unwrap();
+    events
+}
+
+async fn connect_events(port: u16, token: &str) -> TcpStream {
+    let mut events = begin_events(port, token).await;
     let handshake = read_headers(&mut events).await;
     assert!(handshake.starts_with(b"HTTP/1.1 101"));
     assert!(
@@ -851,9 +1062,29 @@ async fn connect_events(port: u16, token: &str) -> TcpStream {
 }
 
 async fn read_event(stream: &mut TcpStream) -> Value {
-    let (header, body) = read_ws_frame(stream).await;
-    assert_eq!(header[0] & 0x0f, 1);
-    serde_json::from_slice(&body).unwrap()
+    loop {
+        let (header, body) = read_ws_frame(stream).await;
+        assert_eq!(header[0] & 0x0f, 1);
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        if value["type"] != "operator_state" {
+            return value;
+        }
+    }
+}
+
+// A shared reader may have records queued before a new attachment. Select the
+// newly caused denial while still checking real log order through its marker.
+async fn read_denial(stream: &mut TcpStream, destination: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = read_event(stream).await;
+            if event["event"] == "admin.denial" && event["details"]["destination"] == destination {
+                return event;
+            }
+        }
+    })
+    .await
+    .expect("new denial did not reach the authenticated log stream")
 }
 
 async fn wait_for_audit_event(path: &Path, event_name: &str, destination: &str) {
@@ -876,27 +1107,6 @@ async fn wait_for_audit_event(path: &Path, event_name: &str, destination: &str) 
     })
     .await
     .unwrap_or_else(|_| panic!("audit event {event_name} for {destination} was not durable"));
-}
-
-async fn wait_for_pending(port: u16, token: &str, request_id: Option<&str>) -> Value {
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let pending = admin(port, token, "GET", "/admin/approvals", b"").await;
-            let document = pending.json();
-            let matches = document["approvals"].as_array().is_some_and(|items| {
-                !items.is_empty()
-                    && request_id.is_none_or(|request_id| {
-                        items.iter().any(|item| item["request_id"] == request_id)
-                    })
-            });
-            if matches {
-                return document;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap()
 }
 
 async fn agent_request(

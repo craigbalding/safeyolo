@@ -133,14 +133,14 @@ def test_public_fields_reject_secrets_private_coord_and_raw_reasoning(unsafe: st
 
 def test_definitions_are_content_owned_extensible_and_omit_unused_filler() -> None:
     source = manifest_data()
-    source["sections"][0]["items"][0]["body"] = "The plumb route stayed bounded."
-    source["definitions"] = {"plumb": "SafeYolo's operator-approved agent collaboration path."}
+    source["sections"][0]["items"][0]["body"] = "The collaboration route stayed bounded."
+    source["definitions"] = {"collaboration": "SafeYolo's operator-approved agent collaboration path."}
     rendered = dispatch.render_dispatch(parse(source))
     assert rendered is not None
-    assert "`plumb` — SafeYolo's operator-approved agent collaboration path." in rendered
+    assert "`collaboration` — SafeYolo's operator-approved agent collaboration path." in rendered
 
     source["definitions"] = {
-        "plumb": "The path associates every exchange with a run_id.",
+        "collaboration": "The path associates every exchange with a run_id.",
         "run_id": "SafeYolo's identifier for one sandbox run.",
     }
     rendered = dispatch.render_dispatch(parse(source))
@@ -148,28 +148,28 @@ def test_definitions_are_content_owned_extensible_and_omit_unused_filler() -> No
     assert "`run_id` — SafeYolo's identifier for one sandbox run." in rendered
 
     source["sections"][0]["items"][0]["body"] = "The route stayed bounded."
-    source["definitions"] = {"plumb": "SafeYolo's operator-approved agent collaboration path."}
+    source["definitions"] = {"collaboration": "SafeYolo's operator-approved agent collaboration path."}
     with pytest.raises(dispatch.DispatchError, match="unused"):
         parse(source)
 
 
 def test_used_definitions_are_scoped_to_dispatch_and_topic_content() -> None:
     source = manifest_data()
-    source["sections"][0]["items"][0]["evidence"][0]["label"] = "Plumb generation issue"
-    source["definitions"] = {"plumb": "SafeYolo's operator-approved agent collaboration path."}
+    source["sections"][0]["items"][0]["evidence"][0]["label"] = "Collaboration generation issue"
+    source["definitions"] = {"collaboration": "SafeYolo's operator-approved agent collaboration path."}
     rendered = dispatch.render_dispatch(parse(source))
     assert rendered is not None
-    assert "`plumb` — SafeYolo's operator-approved agent collaboration path." in rendered
+    assert "`collaboration` — SafeYolo's operator-approved agent collaboration path." in rendered
 
     source["sections"][0]["items"][0]["evidence"][0]["label"] = "Issue #437"
     source["topic_updates"] = [topic_source()]
-    source["topic_updates"][0]["evidence"][0]["label"] = "Plumb topic issue"
+    source["topic_updates"][0]["evidence"][0]["label"] = "Collaboration topic issue"
     topic = next(
         generated
         for generated in dispatch.generate_files(parse(source))
         if generated.relative_path == Path("topics/coord.md")
     )
-    assert "`plumb` — SafeYolo's operator-approved agent collaboration path." in topic.content
+    assert "`collaboration` — SafeYolo's operator-approved agent collaboration path." in topic.content
 
 
 @pytest.mark.parametrize(

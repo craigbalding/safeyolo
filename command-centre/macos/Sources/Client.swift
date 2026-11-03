@@ -108,7 +108,7 @@ final class SafeYoloClient: ObservableObject {
     private let adminURL: URL
     private let eventsURL: URL
     private let token: String
-    private let expectedInstanceID: String
+    let expectedInstanceID: String
     private let session: URLSession
     private let isLocalConnection: Bool
     private let makeEventSocket: (URLRequest) -> any EventSocket
@@ -223,16 +223,19 @@ final class SafeYoloClient: ObservableObject {
             do {
                 let plan = try MutationPlan.forApproval(event, allow: allow, option: option)
                 if plan.path.hasPrefix("/admin/approvals/") { approvalPath = plan.path }
-                let data = try await request(path: plan.path, method: "POST", json: plan.payload)
+                let data = try await request(path: plan.path, method: "POST", json: plan.payload,
+                    timeout: event.approvalID != nil && event.approval.approvalType == "desktop_present" ? 150 : nil)
                 let result: ResolutionResult
-                if plan.expectsDesktop {
-                    result = .desktop(try JSONDecoder().decode(DesktopPresentation.self, from: data))
-                } else if plan.path.hasPrefix("/admin/approvals/") {
+                if plan.path.hasPrefix("/admin/approvals/") {
                     let resolution = try JSONDecoder().decode(ApprovalResolution.self, from: data)
                     guard resolution.id == event.outcomeID, resolution.requestID == event.requestID, resolution.terminal else { throw ClientError.invalidResponse }
                     approvalOutcomes[resolution.id] = resolution
                     unavailableApprovalOutcomes.remove(resolution.id)
-                    result = .decided(resolution.display)
+                    if let preview = resolution.operatorPreview, resolution.status == "approved", resolution.result?.status == "started" {
+                        result = .desktop(preview)
+                    } else {
+                        result = .decided(resolution.display)
+                    }
                 } else {
                     result = .decided(allow ? "Allowed" : "Denied")
                 }
@@ -242,7 +245,7 @@ final class SafeYoloClient: ObservableObject {
             } catch {
                 // The host may have committed before the connection failed.
                 // Read once, and report its actual decision without replay.
-                if let path = approvalPath,
+                if adminConnected, !stopping, let path = approvalPath,
                    let outcome = try? await readApprovalOutcome(path),
                    outcome.id == event.outcomeID, outcome.requestID == event.requestID, outcome.terminal {
                     approvalOutcomes[outcome.id] = outcome
@@ -407,7 +410,7 @@ final class SafeYoloClient: ObservableObject {
     }
 
     @discardableResult
-    private func refreshApprovals() async -> Bool {
+    func refreshApprovals() async -> Bool {
         do {
             let data = try await request(path: "/admin/approvals")
             let fresh = try JSONDecoder().decode(PendingApprovals.self, from: data).approvals
@@ -430,12 +433,22 @@ final class SafeYoloClient: ObservableObject {
             let newApprovals = fresh.filter { !knownApprovalIDs.contains($0.id) }
             knownApprovalIDs = Set(fresh.map(\.id))
             for approval in newApprovals {
-                onNewApproval?(approval)
+                guard let id = approval.approvalID ?? approval.requestID, let encoded = encodePathComponent(id) else { continue }
+                do {
+                    let data = try await request(path: "/admin/approvals/\(encoded)/attention", method: "POST", json: [:])
+                    let claim = try JSONDecoder().decode(ApprovalAttentionClaim.self, from: data)
+                    if claim.notify { onNewApproval?(approval) }
+                } catch {
+                    // A lost claim reply must not repeat the interruption.
+                    // The pending menu and explicit decisions remain available.
+                    setRequestError("Approval attention", error)
+                }
             }
             setRequestError("Pending approvals", nil)
             return true
         } catch {
             guard !Task.isCancelled else { return false }
+            unavailableApprovalOutcomes.formUnion(approvalOutcomes.keys)
             setRequestError("Pending approvals", error)
             return false
         }
@@ -480,7 +493,7 @@ final class SafeYoloClient: ObservableObject {
             try await ping(socket)
             guard !stopping, !Task.isCancelled, webSocket === socket else { return }
             diagnostics.lastEventSuccess = Date()
-            // The listener starts at its handshake audit offset. Re-read the
+            // The listener registers before the handshake completes. Re-read the
             // pending list so an approval created after the earlier snapshot
             // but before this handshake cannot fall between both channels.
             guard await refreshApprovals() else { throw ClientError.invalidResponse }
@@ -524,6 +537,20 @@ final class SafeYoloClient: ObservableObject {
     }
 
     func ingestOperatorEventData(_ data: Data) async throws {
+        if let control = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+           control["type"] as? String == "operator_state" {
+            if control["log"] as? String == "unavailable" {
+                eventFeedGap = "Recorded event feed unavailable. Pending state does not prove JSONL delivery."
+            } else if let gap = control["history_gap"] as? String {
+                eventFeedGap = "Recorded event history gap: \(gap). Current-state refresh does not replay history."
+            } else if eventFeedGap?.hasPrefix("Recorded event feed unavailable.") == true {
+                eventFeedGap = "Recorded event feed recovered. History during the interruption may be missing."
+            }
+            // The canonical list retains attention claims and suppression.
+            // Recovery only reads existing requests; it never resubmits them.
+            guard await refreshApprovals() else { throw ClientError.invalidResponse }
+            return
+        }
         let event = try JSONDecoder().decode(OperatorEventEnvelope.self, from: data)
         if event.needsApproval || event.event.hasPrefix("admin.") || event.event == "agent.network_action_prepared" {
             guard await refreshApprovals() else {
@@ -567,8 +594,12 @@ final class SafeYoloClient: ObservableObject {
     private func request(
         path: String,
         method: String = "GET",
-        json: [String: Any]? = nil
+        json: [String: Any]? = nil,
+        timeout: TimeInterval? = nil
     ) async throws -> Data {
+        if method == "POST" {
+            guard !stopping, await refreshInstance(), !stopping else { throw ClientError.connectionUnavailable }
+        }
         guard let url = URL(string: path, relativeTo: adminURL)?.absoluteURL else {
             throw ClientError.invalidURL(path)
         }
@@ -577,6 +608,7 @@ final class SafeYoloClient: ObservableObject {
         if method == "POST" && path.hasPrefix("/admin/agents/") {
             request.timeoutInterval = 130
         }
+        if let timeout { request.timeoutInterval = timeout }
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if let json {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")

@@ -26,6 +26,13 @@ pub(super) struct Prepared<B> {
 }
 
 impl<B> Prepared<B> {
+    pub(super) fn has_captured_trailers(&self) -> bool {
+        self.body
+            .frames
+            .iter()
+            .any(|frame| frame.trailers_ref().is_some())
+    }
+
     /// Body EOF with neither payload nor trailer frames. The caller must still
     /// cross the independent parser barrier before trusting this capture.
     pub(super) fn unvalidated_empty_body(&self) -> bool {

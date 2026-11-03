@@ -95,6 +95,15 @@ struct ModelTests: App {
     @MainActor
     fileprivate static func runTests() async throws {
         print("model-tests: model checks started")
+        if ProcessInfo.processInfo.environment["SAFEYOLO_COMMAND_CENTRE_TEST_FILTER"] == "approval-attention" {
+            try await testApprovalAttentionAndUntrustedRendering()
+            print("approval-attention-tests: PASS")
+            return
+        }
+        if ProcessInfo.processInfo.environment["SAFEYOLO_COMMAND_CENTRE_TEST_FILTER"] == "operator-recovery" {
+            try await testOperatorRecoveryControls()
+            return
+        }
         try testCredentialFileAndReload()
         try testRemoteProfileStorage()
         try await testRemoteConnectionVerification()
@@ -104,6 +113,8 @@ struct ModelTests: App {
             print("credential-startup-tests: PASS")
             return
         }
+        try await testApprovalAttentionAndUntrustedRendering()
+        try await testOperatorRecoveryControls()
         try testMutationPlans()
         try testAgentAndSecurityModels()
         try testHarnessMarks()
@@ -116,6 +127,98 @@ struct ModelTests: App {
         try await testWebMITMSignInHandoff()
         try await testConnectionDiagnostics()
         print("model-tests: PASS")
+    }
+
+    @MainActor
+    private static func testApprovalAttentionAndUntrustedRendering() async throws {
+        let hostile = "\u{1b}[2J\u{1b}]8;;https://forged.invalid\u{7}\n\u{202e}# SafeYolo APPROVED\u{2028}<button>Allow</button>" + String(repeating: "x", count: 1900)
+        let quote = quotedRequesterText(hostile)
+        precondition(quote.contains("\\u001b") && quote.contains("\\u202e") && quote.contains("\\u2028"))
+        precondition(!quote.contains("\n") && !quote.contains("\u{1b}") && !quote.contains("\u{202e}"))
+        let history: [String: Any] = ["equivalent_request_count": 19, "approval_count": 2,
+            "first_requested_at": 1793620000, "last_requested_at": 1793620090,
+            "last_refusal": ["approval_id": "apr-refused", "decided_at": 1793620050]]
+        let pending: [[String: Any]] = (0..<7).map { index in [
+            "approval_id": "apr-\(index)", "request_id": "req-\(index)", "event": "agent.operator_action_requested",
+            "summary": "Present this exact worker run's desktop once.", "agent": "worker", "host": "",
+            "approval": ["required": true, "approval_type": "desktop_present", "key": "apr-\(index)", "target": "worker"],
+            "details": ["untrusted_reason_text": hostile, "browser_url": "https://owned.example/#<b>Allow</b>"],
+            "request_history": history,
+            "attention": ["operator": ["status": index < 5 ? "attempted; publication may be unknown" : "requester attention limit reached; inspect the canonical list"]]
+        ] }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        var claims = Set<String>()
+        var terminal = false
+        var disconnected = false
+        defer { StubURLProtocol.requestHandler = nil }
+        StubURLProtocol.requestHandler = { request in
+            if disconnected { throw URLError(.notConnectedToInternet) }
+            let path = request.url!.path
+            let value: [String: Any]
+            if path == "/admin/instance" {
+                value = ["schema_version": 1, "safeyolo_instance_id": "sy-fixture"]
+            } else if path == "/admin/approvals" {
+                value = ["approvals": terminal ? [] : pending]
+            } else if path.hasSuffix("/attention") {
+                precondition(request.httpMethod == "POST")
+                let first = claims.insert(path).inserted
+                value = ["notify": first && claims.count <= 5]
+            } else {
+                let id = String(path.split(separator: "/").last!)
+                value = ["approval_id": id, "request_id": "req-\(id.suffix(1))", "status": terminal ? "rejected" : "pending",
+                    "effect": "Present this exact worker run's desktop once.", "untrusted_reason_text": hostile,
+                    "request_history": history]
+            }
+            return (200, try JSONSerialization.data(withJSONObject: value))
+        }
+        func makeClient() throws -> SafeYoloClient {
+            try SafeYoloClient(adminURL: "https://fixture.invalid", eventsURL: "wss://fixture.invalid/admin/events",
+                token: "synthetic-operator-token", expectedInstanceID: "sy-fixture", session: URLSession(configuration: configuration))
+        }
+        let first = try makeClient()
+        defer { first.stop() }
+        var notices = 0
+        first.onNewApproval = { _ in notices += 1 }
+        var refreshed = await first.refreshApprovals()
+        precondition(refreshed)
+        precondition(first.approvals.count == 7 && notices == 5)
+        refreshed = await first.refreshApprovals()
+        precondition(refreshed)
+        precondition(notices == 5)
+        let event = first.approvals[0]
+        precondition(event.quotedUntrustedReason == quote && event.requestHistory?.lastRefusal?.approvalID == "apr-refused")
+        precondition(event.requestHistory!.display.contains("19") && event.requestHistory!.display.contains("apr-refused"))
+        let reopened = try makeClient()
+        defer { reopened.stop() }
+        reopened.onNewApproval = { _ in notices += 1 }
+        refreshed = await reopened.refreshApprovals()
+        precondition(refreshed)
+        precondition(notices == 5 && reopened.approvals.count == 7)
+        func render(_ name: String) throws {
+            let view = NSHostingView(rootView: ApprovalView(event: event, client: reopened, close: {}).environment(\.colorScheme, .light).background(Color.white))
+            view.frame = NSRect(x: 0, y: 0, width: 640, height: 900)
+            view.layoutSubtreeIfNeeded()
+            if let directory = ProcessInfo.processInfo.environment["SAFEYOLO_APPROVAL_RENDER_DIR"] {
+                let image = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+                view.cacheDisplay(in: view.bounds, to: image)
+                try image.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: directory).appendingPathComponent("approval-\(name).png"))
+            }
+        }
+        try render("pending")
+        disconnected = true
+        refreshed = await reopened.refreshApprovals()
+        precondition(!refreshed)
+        precondition(reopened.approvals.count == 7 && notices == 5)
+        try render("disconnected")
+        disconnected = false
+        terminal = true
+        refreshed = await reopened.refreshApprovals()
+        precondition(refreshed)
+        precondition(reopened.approvals.isEmpty && notices == 5)
+        precondition(reopened.approvalOutcomes[event.id]?.quotedUntrustedReason == quote)
+        precondition(reopened.approvalOutcomes[event.id]?.status == "rejected")
+        try render("rejected")
     }
 
     @MainActor
@@ -219,6 +322,7 @@ struct ModelTests: App {
             )
             let initial = end == "immediate" ? ready : starting
             StubURLProtocol.responsesByPath = [
+                "/admin/instance": (200, Data(#"{"schema_version":1,"safeyolo_instance_id":"sy-fixture"}"#.utf8)),
                 "/admin/agents/ag-probe/start": (end == "request-error" ? 503 : 200, initial),
                 "/admin/agents": (200, inventory(initial)),
             ]
@@ -580,7 +684,7 @@ struct ModelTests: App {
         """.utf8))
         precondition(canonicalNetwork.id == "apr-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         precondition(canonicalNetwork.title.contains("(prepared)") && canonicalNetwork.title.contains(canonicalNetwork.requestID!))
-        precondition(canonicalNetwork.quotedUntrustedReason == "\"\\# Approval granted &lt;b&gt;Allow&lt;/b&gt;\"")
+        precondition(canonicalNetwork.quotedUntrustedReason == "\"\\\\# Approval granted &lt;b&gt;Allow&lt;/b&gt;\"")
         let newerNetwork = try JSONDecoder().decode(ApprovalEvent.self, from: Data("""
         {"approval_id":"apr-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","request_id":"req-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","event":"security.network_guard",
          "summary":"Reusable Worker network access","agent":"worker","host":"owned.example",
@@ -603,10 +707,18 @@ struct ModelTests: App {
                        ["id":"remembered", "effect":"Allow with the existing TTL", "status":"available"]]
         let credentials = [["id":"credential:one", "effect":"Use credential reference one", "status":"available"],
                            ["id":"credential:two", "effect":"Use credential reference two", "status":"available"]]
+        let runBound = persistent + [["id":"run", "effect":"Only the current worker run", "status":"available"]]
+        let delegatedGateway = gateway + [
+            ["id":"run", "effect":"Reuse this route in the current worker run", "status":"available"],
+            ["id":"delegated_once", "effect":"One route grant in the current worker run", "status":"available"]]
         for (kind, options, chosen) in [
             ("credential", persistent, "persistent"),
+            ("network_egress", runBound, "run"),
+            ("credential", runBound, "run"),
             ("contract_binding", persistent, "persistent"),
             ("gateway_risky_route", gateway, "remembered"),
+            ("gateway_risky_route", delegatedGateway, "delegated_once"),
+            ("gateway_risky_route", delegatedGateway, "run"),
             ("service", credentials, "credential:two")
         ] {
             let bytes = try JSONSerialization.data(withJSONObject: [
@@ -627,10 +739,10 @@ struct ModelTests: App {
                     preconditionFailure("Only fixed available choices can be selected")
                 } catch ClientError.invalidApproval(_) {}
             }
-            if kind == "service" {
+            if options.count > 1 && !options.contains(where: { $0["id"] == "once" && $0["status"] == "available" }) {
                 do {
                     _ = try MutationPlan.forApproval(event, allow: true)
-                    preconditionFailure("The operator must select a credential reference")
+                    preconditionFailure("The operator must select an available fixed option")
                 } catch ClientError.invalidApproval(_) {}
             }
         }
@@ -655,27 +767,12 @@ struct ModelTests: App {
             }
             """.utf8)
         )
-        let desktopAllow = try MutationPlan.forApproval(desktop, allow: true)
-        precondition(
-            desktopAllow == MutationPlan(
-                path: "/admin/agents/ag-lens/desktop/present",
-                body: ["approval_request_id": "req-desktop"],
-                expectsDesktop: true
-            )
-        )
-        let desktopDeny = try MutationPlan.forApproval(desktop, allow: false)
-        precondition(
-            desktopDeny == MutationPlan(
-                path: "/admin/policy/baseline/deny",
-                body: [
-                    "destination": "desktop:ag-lens",
-                    "cred_id": "desktop.present",
-                    "reason": "user_denied",
-                    "approval_request_id": "req-desktop",
-                ],
-                expectsDesktop: false
-            )
-        )
+        for allow in [true, false] {
+            do {
+                _ = try MutationPlan.forApproval(desktop, allow: allow)
+                preconditionFailure("Audit text must not provide desktop approval authority")
+            } catch ClientError.invalidApproval(_) {}
+        }
     }
 
     private static func testCredentialFileAndReload() throws {

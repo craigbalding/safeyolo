@@ -4,7 +4,7 @@
 Retain service and contract binding/risk approvals, exact credential injection
 and live peer denial, populated owner-positive/peer-negative guest flow search
 and detail, test-context/trace evidence, real NATS Coord and attention, operator
-Plumb approval/exchange/closure, WebSocket peer effects and traffic-inspector
+collaboration approval/exchange/revocation, WebSocket peer effects and traffic-inspector
 filter/transcript/export. These observations stay in one installed composition.
 """
 
@@ -16,6 +16,7 @@ import http.client
 import json
 import os
 import pty
+import re
 import select
 import shlex
 import signal
@@ -59,7 +60,7 @@ def checked(command: list[str], *, timeout: int = 30) -> subprocess.CompletedPro
 
 def guest_command(cli: str, agent: str, platform: str, marker: str, phase: str, **options: str | int) -> list[str]:
     request = [
-        "python3",
+        "/usr/bin/python3",
         "-m",
         "tests.blackbox.isolation.installed_access",
         "--phase",
@@ -100,25 +101,50 @@ def wait_for_approval(
     service: str | None = None,
 ) -> dict:
     deadline = time.monotonic() + 7
+    observed = []
     while time.monotonic() < deadline:
+        pending = api.pending_approvals()
+        observed = [{key: row.get(key) for key in ("approval_id", "request_id", "agent", "action")}
+                    for row in pending if row.get("approval", {}).get("approval_type") == approval_type]
         matches = [
             row
-            for row in api.pending_approvals()
+            for row in pending
             if row.get("approval", {}).get("approval_type") == approval_type
             and (request_id is None or row.get("request_id") == request_id)
             and (agent is None or row.get("agent") == agent)
-            and (service is None or row.get("approval", {}).get("target") == service)
+            and (service is None or row.get("action", {}).get("service") == service)
         ]
         if len(matches) == 1:
+            print(json.dumps({"phase": "approval_pending", "approval_type": approval_type,
+                              "observed": observed}), flush=True)
             return matches[0]
         time.sleep(0.05)
-    raise AssertionError(f"operator did not see one {approval_type} request for {agent}/{service}/{request_id}")
+    raise AssertionError(f"operator did not see one {approval_type} request for {agent}/{service}/{request_id}; "
+                         f"observed={json.dumps(observed)}")
 
 
-def approve_service(api: AdminAPI, agent: str, service: str, credential: str) -> None:
-    event = wait_for_approval(api, "service", agent=agent, service=service)
-    assert event["agent"] == agent and event["approval"]["target"] == service, event
+def approve_service(api: AdminAPI, agent: str, service: str, credential: str, *, request_id: str) -> None:
+    event = wait_for_approval(api, "service", agent=agent, service=service, request_id=request_id)
+    assert event["agent"] == agent and event["action"]["service"] == service, event
     assert approve(event, api, service_credential=credential) in {"authorized", "ok"}
+
+
+def authorize_access(api: AdminAPI, cli: str, agent: str, platform: str, marker: str, credential: str) -> dict:
+    """Request each approval after the preceding policy decision is published."""
+    first = guest(cli, agent, platform, marker, "access")
+    approve_service(api, agent, "p3_basic", credential, request_id=first["service_request_id"])
+    # Service authorization adds gateway permissions. The revision guard can
+    # supersede a binding submitted before that policy change.
+    requested = guest(cli, agent, platform, marker, "binding")
+    binding = wait_for_approval(api, "contract_binding", agent=agent, service="p3_contract",
+                                request_id=requested["binding_request_id"])
+    assert approve(binding, api) in {"bound", "ok"}
+    contract = guest(cli, agent, platform, marker, "contract-access")
+    authorized = api.authorize_service(agent=agent, service="p3_contract", capability="writer", credential=credential)
+    assert authorized["status"] == "authorized", authorized
+    return {"service_request_id": first["service_request_id"],
+            "binding_request_id": requested["binding_request_id"],
+            "challenge_after_binding": contract["contract_challenge"]}
 
 
 def setup_coord(cli: str, root: Path, primary: str, peer: str) -> dict:
@@ -179,8 +205,8 @@ def run_coord(cli: str, primary: str, platform: str, marker: str) -> dict:
                 process.communicate(timeout=5)
 
 
-def run_plumb_and_event(
-    api: AdminAPI, cli: str, primary: str, platform: str, marker: str, operator_token: str
+def run_collaboration_and_event(
+    api: AdminAPI, cli: str, config_dir: Path, primary: str, platform: str, marker: str, operator_token: str
 ) -> dict:
     admin = urlsplit(api.base_url)
     assert admin.scheme == "http" and admin.hostname == "127.0.0.1" and admin.port
@@ -189,33 +215,30 @@ def run_plumb_and_event(
         additional_headers={"Authorization": f"Bearer {operator_token}"},
         proxy=None,
     ) as websocket:
-        requested = guest(cli, primary, platform, marker, "plumb-request", peer=PEER)
+        requested = guest(cli, primary, platform, marker, "collaboration-request", peer=PEER)
+        identifier, room = requested["approval_id"], requested["room_name"]
         event = None
         for _ in range(5):
             candidate = json.loads(websocket.recv(timeout=5))
-            if candidate.get("approval", {}).get("key") == requested["request_id"]:
+            if candidate.get("approval", {}).get("key") == identifier:
                 event = candidate
                 break
-        assert event is not None and event.get("approval", {}).get("approval_type") == "plumb", (
-            "authenticated operator stream missed the selected Plumb approval"
+        assert event is not None and event.get("approval", {}).get("approval_type") == "coord_room", (
+            "authenticated operator stream missed the collaboration approval"
         )
-        pending = api.plumb_pending()["pending"]
-        assert any(row["request_id"] == requested["request_id"] for row in pending), pending
-        approved = api.plumb_approve(requested["request_id"], ttl_seconds=120)
-        conversation = approved["conversation_id"]
-        sent = guest(cli, primary, platform, marker, "plumb-send", conversation=conversation)
-        read = guest(cli, PEER, platform, marker, "plumb-read", conversation=conversation)
+        assert any(row["approval_id"] == identifier for row in api.pending_approvals())
+        current = api.approval(identifier)
+        assert {row["name"] for row in current["action"]["participants"]} == {primary, PEER}
+        approved = api.resolve_approval(identifier, "approve", option="collaboration")
+        assert approved["status"] == "approved" and approved["result"]["room_name"] == room
+        sent = guest(cli, primary, platform, marker, "collaboration-send", room=room)
+        read = guest(cli, PEER, platform, marker, "collaboration-read", room=room)
         assert sent["message_id"] and read["message_count"] >= 1
-        closed = api.plumb_close(conversation)
-        assert closed.get("closed") == conversation, closed
-        peer_closed = guest(cli, PEER, platform, marker, "plumb-closed", conversation=conversation)
-        return {
-            "request_id": requested["request_id"],
-            "operator_event": event["event"],
-            "conversation_id": conversation,
-            "peer_message_id": sent["message_id"],
-            "closed_read_status": peer_closed["closed_read_status"],
-        }
+        checked([cli, "--root", str(config_dir), "coord", "revoke", room, PEER,
+                 "--operation-id", marker + "-revoke"])
+        revoked = guest(cli, PEER, platform, marker, "collaboration-revoked", room=room)
+        return {"approval_id": identifier, "operator_event": event["event"], "room_name": room,
+                "peer_message_id": sent["message_id"], "revoked_read_status": revoked["revoked_read_status"]}
 
 
 def inspect_traffic(api: AdminAPI, output: Path, primary: str, marker: str) -> dict:
@@ -335,41 +358,63 @@ def operator_terminal(cli: str, root: Path, agent: str, marker: str) -> dict:
 
 
 def operator_desktop(api: AdminAPI, agent_id: str) -> dict:
-    """Open the native Admin presentation, unlock noVNC and reach live VNC."""
+    """Unlock the native desktop page and reach VNC through its viewer route."""
     presentation = api.present_desktop(agent_id)
     assert presentation["agent_id"] == agent_id, "desktop returned another target"
     url = urlsplit(presentation["url"])
     assert url.scheme == "http" and url.hostname == "127.0.0.1" and url.port, "fixture requires local presentation"
+    assert url.path == "/_safeyolo_desktop/", "presentation did not return the native desktop path"
     connection = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
     try:
         connection.request("POST", "/_safeyolo_preview/unlock",
                            body=urlencode({"code": presentation["unlock_code"]}),
                            headers={"Content-Type": "application/x-www-form-urlencoded"})
         response = connection.getresponse()
-        response.read()
-        assert response.status == 303, "desktop unlock failed"
+        response.read(1_000_001)
+        assert response.status == 303, f"desktop unlock failed: status={response.status}"
         cookie = response.getheader("Set-Cookie")
         assert cookie, "desktop unlock did not return its session cookie"
         connection.request("GET", url.path, headers={"Cookie": cookie.split(";", 1)[0]})
         response = connection.getresponse()
         page = response.read(1_000_001)
-        assert response.status == 200 and len(page) <= 1_000_000 and b"novnc" in page.lower(), "desktop page unavailable"
-        with connect(f"ws://{url.netloc}/websockify", origin=f"http://{url.netloc}",
-                     additional_headers={"Cookie": cookie.split(";", 1)[0]}, proxy=None) as websocket:
-            banner = websocket.recv(timeout=10)
-            assert isinstance(banner, bytes) and banner.startswith(b"RFB "), "desktop returned no live VNC banner"
+        page_markers = {
+            "title": b"<title>SafeYolo Desktop</title>" in page,
+            "screen": b'id="screen"' in page,
+            "script": b'src="/_safeyolo_desktop/page.js"' in page,
+        }
+        # Report only bounded status, size and marker operands. Response bodies
+        # and authentication headers can contain secrets.
+        assert response.status == 200 and len(page) <= 1_000_000 and all(page_markers.values()), (
+            f"desktop page unavailable: status={response.status} bytes_read={len(page)} markers={page_markers}"
+        )
+        viewer_path = "/_safeyolo_desktop/viewer?" + uuid.uuid4().hex
+        with connect(f"ws://{url.netloc}{viewer_path}", origin=f"http://{url.netloc}",
+                     additional_headers={"Cookie": cookie.split(";", 1)[0]},
+                     subprotocols=["binary"], proxy=None) as websocket:
+            deadline = time.monotonic() + 10
+            banner = b""
+            # The guest bridge sends TCP reads as separate WebSocket messages.
+            while len(banner) < 12:
+                chunk = websocket.recv(timeout=max(0, deadline - time.monotonic()))
+                assert isinstance(chunk, bytes) and b"RFB ".startswith((banner + chunk)[:4]), (
+                    f"desktop returned no live VNC banner: type={type(chunk).__name__} bytes_read={len(banner) + len(chunk)}"
+                )
+                banner += chunk
+            assert re.fullmatch(rb"RFB [0-9]{3}\.[0-9]{3}\n", banner), (
+                f"desktop returned no live VNC banner: bytes_read={len(banner)}"
+            )
     finally:
         connection.close()
     missing = "ag-" + uuid.uuid4().hex
     try:
         api.present_desktop(missing)
     except APIError as error:
-        assert error.status_code == 404, "missing desktop target did not report not found"
+        assert error.status_code == 404, f"missing desktop target did not report not found: status={error.status_code}"
     else:
         raise AssertionError("missing desktop target unexpectedly opened")
     return {"agent_id": agent_id, "url": presentation["url"], "page_status": 200,
-            "vnc_banner": banner.decode("ascii"), "missing_target_status": 404,
-            "observation_scope": "unlocked noVNC page and live VNC banner; no visual interaction"}
+            "page_bytes": len(page), "vnc_banner": banner.decode("ascii"), "missing_target_status": 404,
+            "observation_scope": "unlocked native desktop page and live VNC banner; no visual interaction"}
 
 
 def operator_restart(cli: str, root: Path, agent: str, marker: str, terminal: dict,
@@ -477,15 +522,7 @@ def main() -> None:
             if args.platform != "vz"
             else {"platform": "vz", "host_listener": str(peer_socket), "guest_forwarder": "vsock:2:1080"}
         )
-        first = guest(cli, args.agent, args.platform, marker, "access")
-        approve_service(admin, args.agent, "p3_basic", fixture["credential_name"])
-        binding = wait_for_approval(admin, "contract_binding", agent=args.agent, service="p3_contract")
-        assert approve(binding, admin) in {"bound", "ok"}
-        contract_request = guest(cli, args.agent, args.platform, marker, "contract-access")
-        authorized = admin.authorize_service(
-            agent=args.agent, service="p3_contract", capability="writer", credential=fixture["credential_name"]
-        )
-        assert authorized["status"] == "authorized", authorized
+        access = authorize_access(admin, cli, args.agent, args.platform, marker, fixture["credential_name"])
         basic = guest(cli, args.agent, args.platform, marker, "basic")
         token = basic.pop("token")  # Transient synthetic token is absent from the report.
         descriptor = os.open(stolen_token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)
@@ -495,7 +532,8 @@ def main() -> None:
         stolen_token_file.unlink()
         prompt = guest(cli, args.agent, args.platform, marker, "contract-prompt")
         assert not any(row.path == "/p3/write" for row in sinkhole.get_requests())
-        risk = wait_for_approval(admin, "gateway_route", request_id=prompt["request_id"])
+        risk = wait_for_approval(admin, "gateway_risky_route", agent=args.agent, service="p3_contract",
+                                request_id=prompt["request_id"])
         grant_id = approve(risk, admin)
         assert isinstance(grant_id, str) and grant_id
         contract = guest(cli, args.agent, args.platform, marker, "contract-effect")
@@ -519,7 +557,7 @@ def main() -> None:
         coord_backing = setup_coord(cli, config_dir, args.agent, PEER)
         coord = run_coord(cli, args.agent, args.platform, marker)
         assert coord["room_id"] == coord_backing["room_id"]
-        plumb = run_plumb_and_event(admin, cli, args.agent, args.platform, marker, admin.token)
+        collaboration = run_collaboration_and_event(admin, cli, config_dir, args.agent, args.platform, marker, admin.token)
         ws = guest(cli, args.agent, args.platform, marker, "websocket")
         assert ws["server"] == "server:p2-" + marker[3:]
         ws_state = control("GET", "/p2/state/p2-" + marker[3:])["websockets"]
@@ -538,13 +576,13 @@ def main() -> None:
             "peer_bridge": peer_bridge,
             "runtime_config": {"parent_proxy": native["parent_proxy"], "upstream_ca_file": native["upstream_ca_file"]},
             "service": {
-                "requested": first["service_request_id"],
+                "requested": access["service_request_id"],
                 "authorized_origin": basic,
                 "unauthorized_peer": peer_denial,
             },
             "contract": {
-                "binding_request": first["binding_request_id"],
-                "challenge_after_binding": contract_request["contract_challenge"],
+                "binding_request": access["binding_request_id"],
+                "challenge_after_binding": access["challenge_after_binding"],
                 "risk_request": prompt["request_id"],
                 "effect": contract,
             },
@@ -553,7 +591,7 @@ def main() -> None:
                                      "origin_paths": sorted(expected_flow_paths), "origin_deliveries": len(flow_deliveries)},
             "coord_backing": coord_backing,
             "coord": coord,
-            "collaboration_and_event": plumb,
+            "collaboration_and_event": collaboration,
             "websocket_peer": ws_state,
             "origin": origin,
             "inspector": inspector,

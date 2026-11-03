@@ -109,6 +109,163 @@ layered base. Build provenance and base compatibility do not relax the existing
 exact source/profile checks for host-shipped `safeyolo-guest`, `safeyolo-coord`
 or Mac helpers.
 
+### Explicit custom profiles
+
+A custom index and every child also carry the same nonempty
+`dev.safeyolo.guest.profile`, for example `kali-pentest`. Each child requires
+`dev.safeyolo.guest.build-inputs=sha256:<64 lowercase hex>`, the digest of its
+completed build's `build-inputs.json`. That record contains declared source
+hashes, base identity, architecture, output kind and frozen tool inputs.
+The archive producer includes the record in the opaque archive. The normal
+archive digest verifies all transported bytes.
+
+Custom indexes contain one or more of the supported consumer platforms.
+They need not contain every default-release platform. Duplicate or unknown
+platforms, incompatible generations and mismatched child profile identities
+are rejected. The maintained Kali profile supplies both Linux architectures
+and macOS arm64; its ARM64 distro build is reused for tree and ext4 exports.
+
+Prepare custom archives with `guest/archive-default.sh`, then invoke the same
+publisher with `--profile NAME`. Retained-layout publication also requires
+that explicit name. Custom publication does not update a compatibility tag.
+Stock compatibility-tag discovery and default promotion exclude custom profiles. Consumers
+select a custom index explicitly by immutable digest through the existing
+installer or guest upgrade command. The host compatibility requirement and
+normal ownership/ext4 contracts remain enforced. The
+[custom-rootfs guide](../contrib/ROOTFS_SCRIPT_GUIDE.md#cached-kali-builds)
+describes the local staged build and export path.
+
+### Publish a qualified custom layout through Actions
+
+The `custom-profile` activity in `guest-oci.yml` publishes an explicitly
+selected layout through the repository's `GITHUB_TOKEN` writer.
+It does not run a distro build. It copies the unchanged index by digest and
+reads back every child, config and archive through the shared verifier.
+Existing version and compatibility tags retain their targets. Custom indexes
+remain outside default discovery and promotion.
+
+First qualify the consumer archives with the maintained profile builder,
+exporter and archive producer. Keep each selected consumer's `guest.tar.zst`,
+`build-inputs.json` and `build-base.txt` together under `darwin-arm64`,
+`linux-amd64` or `linux-arm64` in one archive directory. Preserve the recorded
+archive and build-input hashes from that qualification. Publication checks
+those identities; it does not establish boot, installed isolation or clean-host
+acceptance.
+
+On a Linux maintainer machine, use Python 3.12+, a source checkout, the maintained ORAS
+publisher and a current shared native verifier that supports custom profiles.
+Set `ARTIFACTS` to the qualified archive directory and `LAYOUT` to an owned
+directory for the complete OCI layout. Set `PROFILE_SOURCE` to the full source
+commit used for the qualified profile inputs. It can differ from the Actions
+publisher commit. Set `GUEST_VERSION` to a fresh `guest-YYYY-MM-DD.N` identity,
+`PROFILE_NAME` to the custom profile name, `COMPATIBILITY` to the host's required
+identifier, and `VERIFIER` to the native verifier executable. From the checkout:
+
+```sh
+scripts/publish_guest_oci.sh --artifacts "$ARTIFACTS" --layout "$LAYOUT" \
+  --version "$GUEST_VERSION" --compatibility "$COMPATIBILITY" \
+  --revision "$PROFILE_SOURCE" --profile "$PROFILE_NAME" --verifier "$VERIFIER"
+INDEX=$(oras resolve --oci-layout "$LAYOUT:$GUEST_VERSION")
+```
+
+The command verifies the complete local layout and prints its immutable index
+digest. Transfer the unchanged layout with the maintained upload helper below.
+The helper uses the operator's existing authenticated `gh` repository access.
+Set `INPUT_RELEASE` to a new input-transfer release tag, for example
+`guest-layout-` followed by the index's SHA-256 hex. Set `TRANSFER_DIR` to a new
+owned directory outside the checkout, with disk space for the complete layout.
+
+```sh
+scripts/upload_guest_profile_layout.sh "$LAYOUT" "$PROFILE_SOURCE" "$INPUT_RELEASE" "$TRANSFER_DIR"
+```
+
+The helper packs `oci-layout`, `index.json` and `blobs/` at the tar root and
+splits the stream into 1 GiB parts. [GitHub limits each release asset](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)
+to less than 2 GiB; splitting preserves larger complete layouts without changing their
+OCI bytes. The helper creates a prerelease at `PROFILE_SOURCE`, explicitly
+leaves Latest unchanged, uploads the parts with `gh release create`, and reads
+their numeric asset IDs through the release API. These assets supply input
+transport; OCI remains the guest catalogue. The resulting
+`TRANSFER_DIR/layout-upload.json` records the ordered asset IDs, combined tar
+SHA-256, source revision and release ID. No local GHCR credential is used.
+After an interrupted upload, inspect that release and its assets before another
+write. The helper does not replace existing assets or delete retained inputs.
+
+After this workflow change is on `master`, an authenticated repository operator
+can dispatch the writer. The following command uses Python and `gh` from the
+same checkout. It sends the upload identities, selected source/profile/index and hashes the
+qualified archive and build-input files. Check those hashes against the retained
+qualification before dispatch. Set `REQUEST_FILE` to an owned JSON file outside
+the checkout. No local GHCR login is required.
+
+```sh
+export ARTIFACTS INDEX PROFILE_SOURCE PROFILE_NAME TRANSFER_DIR COMPATIBILITY
+python3 - <<'PY' > "$REQUEST_FILE"
+import hashlib
+import json
+import os
+from pathlib import Path
+
+def digest(path):
+    with path.open("rb") as stream:
+        return "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+
+artifacts = Path(os.environ["ARTIFACTS"])
+platforms = {}
+for name in ("darwin-arm64", "linux-amd64", "linux-arm64"):
+    directory = artifacts / name
+    if directory.is_dir():
+        platforms[name.replace("-", "/")] = {
+            "archive": digest(directory / "guest.tar.zst"),
+            "build_inputs": digest(directory / "build-inputs.json"),
+        }
+transfer = json.loads((Path(os.environ["TRANSFER_DIR"]) / "layout-upload.json").read_bytes())
+print(json.dumps({
+    **transfer,
+    "index": os.environ["INDEX"], "source_revision": os.environ["PROFILE_SOURCE"],
+    "profile": os.environ["PROFILE_NAME"], "platforms": platforms,
+}, indent=2))
+PY
+cat "$REQUEST_FILE"
+```
+
+After the request matches the qualified inputs, dispatch it:
+
+```sh
+gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
+  -f activity=custom-profile -f compatibility="$COMPATIBILITY" \
+  -F custom_profile=@"$REQUEST_FILE"
+```
+
+The writer downloads the exact asset IDs in order, checks the combined tar
+SHA-256, and extracts the layout into a new directory with Python's data-only
+tar filter. The extracted root contains `oci-layout`, `index.json` and `blobs/`.
+The writer refuses a mismatched source, profile, platform set, archive digest
+or build-input digest before registry login. The index digest binds all
+manifest and config bytes, including pinned base identities. The shared verifier
+checks compatibility and every referenced descriptor. A failed upload, login
+or readback fails the job. The `guest-custom-profile-result` artifact retains
+the request, verified selection and reached publication results. Only a
+successful readback writes `custom-profile-publication/result.json`, which
+includes the selected identities, destination and Actions publisher revision.
+Inspect the original run and live digest after an uncertain write before retrying.
+
+For a clean host with a verified compatible host bundle, set `HOST_BUNDLE` to
+the unpacked bundle directory, `ROOT` to the new installation directory, and
+`INDEX` to the successfully published custom index digest. Use the maintained
+installer from the qualified source checkout:
+
+```sh
+scripts/install_native.sh --bundle "$HOST_BUNDLE" --root "$ROOT" --guest-index "$INDEX" --yes
+```
+
+The installer selects the current host platform explicitly and verifies the
+published bytes. It does not repeat the distro build. For an existing
+compatible installation, select the same digest with
+`safeyolo --root "$ROOT" guest upgrade --index "$INDEX"`, then stop and start
+the agent to use it. Publication success alone does not prove either installed
+workflow or complete the custom-profile acceptance criteria.
+
 ## Descriptor verification and selection
 
 Each index child, config and archive descriptor must carry the required media
@@ -133,7 +290,7 @@ content from another release into that operation.
 its pinned child descriptor. `validate_child` checks raw child hash/size,
 shared annotations, build-base, config descriptor and single archive descriptor.
 `GuestChild::validate_config` checks the config's raw identity/size and exact
-consumer platform. `validate_children` checks all children in
+consumer platform. `validate_children` checks all declared children in
 `ConsumerPlatform::ALL` order, including distinct Mac/Linux arm64 archive
 identities. `Descriptor::verify` checks a reader incrementally through EOF;
 `check_size` supports callers whose OCI client already verifies the hash.
@@ -197,8 +354,10 @@ directories. Completed trees are renamed into their digest-addressed location;
 failed extraction removes its owned staging directory. The host's maintained
 tar extracts the selected backend members, preserving its path/link safeguards;
 Linux extraction uses sudo for numeric ownership. The ownership operation
-checks every source owner and pins file descriptors before changing a fresh
-stage. Hard links that leave that stage are refused. Existing prepared trees
+checks every source owner, hard link and attribute before changing a fresh
+stage. It then reopens only inodes that need ownership or attribute changes,
+relative to the pinned root without following symlinks. Hard links that leave
+that stage are refused. Existing prepared trees
 are checked against the selected mapping and remain unchanged. Native zstd decoding needs
 no separately installed zstd program. Explicit/offline inputs remain available
 with `--platform-assets`; `--no-guest-download` retains proxy-only/contributor use.
@@ -445,8 +604,11 @@ A conflicting existing name fails. Manual promotion applies the same age,
 content and platform checks as the schedule. No runner sleeps for 48 hours.
 
 For inspection, install the publisher tools on a Linux maintainer machine with
-Python 3.11+, GnuPG, curl and tar. Run from the source checkout. The following
-command reads the current channel and its digest-bound receipts; it writes no tag:
+Python 3.11+, GnuPG, curl and tar. Use registry read access; if anonymous reads
+are unavailable, reuse an authorized maintainer or Actions publisher identity.
+Run from the source checkout. Inspection needs no Rust compiler or native OCI
+verifier. The following command reads the current channel and its digest-bound
+receipts; it writes no tag:
 
 ```sh
 scripts/install_oras.sh "$HOME/.local/bin"
@@ -457,12 +619,74 @@ PATH="$HOME/.local/bin:$PATH" scripts/publish_guest_oci.sh --inspect \
 Replace the reference with a version tag or `ghcr.io/craigbalding/safeyolo-guest@sha256:DIGEST`
 to inspect a retained candidate. The output contains source and run links,
 resolution/build/assembly/staging times, tool identities, per-architecture
-package inventories and promotion decisions. The staging attachment also holds
+package inventories and promotion decisions. The `attachments` field preserves
+each attachment descriptor, original manifest and subject descriptor, parsed
+receipt and original UTF-8 `receipt_text`. The staging attachment also holds
 the exact signed APT metadata, APT sources, archive keyring, builder versions,
 resolved inputs and kernel configuration. These records remain in GHCR after
 Actions logs and build artifacts expire. An inventory does not promise a
 bit-for-bit rebuild from future live APT repositories; the retained candidate
 provides the exact bytes.
+
+To recover a decision when its candidate identity is missing, set
+`PROMOTION_JOB_ID` to the original Actions promotion job ID. Choose a new output
+path outside the checkout for `INSPECTION_FILE`. With authenticated `gh` and
+the publisher tools on `PATH`, run from the checkout:
+
+```sh
+scripts/publish_guest_oci.sh --inspect --promotion-job "$PROMOTION_JOB_ID" > "$INSPECTION_FILE"
+```
+
+The reader derives the run and actual attempt from that job's Actions record.
+It searches retained immutable guest versions for decisions with that exact
+repository, workflow, run, attempt and job. It does not infer the historical
+candidate from the current channel. `matches` contains each matching index,
+its original decisions and its retained staging/smoke attachments. No match
+leaves the historical selection unknown and exits 2. Current smoke attachments
+can include records added after the original promotion job.
+
+If local registry reads are unavailable, a maintainer with authenticated `gh`
+and repository Actions write access can use the integrated default-branch
+`inspect` activity. From the checkout, with `PROMOTION_JOB_ID` set as above:
+
+```sh
+gh workflow run guest-oci.yml --repo craigbalding/safeyolo --ref master \
+  -f activity=inspect -f promotion_job="$PROMOTION_JOB_ID"
+gh run list --repo craigbalding/safeyolo --workflow guest-oci.yml --event workflow_dispatch --limit 5
+```
+
+Select that inspection dispatch's run ID as `INSPECTION_RUN_ID`, separate from
+the historical promotion run. Set `INSPECTION_DIR` to a new directory outside
+the checkout. After the inspection job finishes, retrieve its output:
+
+```sh
+gh run view "$INSPECTION_RUN_ID" --repo craigbalding/safeyolo
+gh run download "$INSPECTION_RUN_ID" --repo craigbalding/safeyolo \
+  --name guest-promotion-inspection --dir "$INSPECTION_DIR"
+```
+
+Only the inspection job runs. It uses the existing workflow identity with
+registry read permission, writes the report to its Actions summary and retains
+`guest-inspection.json` as an artifact, including a reported no-match result.
+It does not build a native verifier, repeat installed qualification, attach a
+receipt or request promotion.
+
+A returned decision identifies the promotion controller source, run/job,
+selected `index_digest`, `old_index`, proposed `new_index` and compatibility
+identifier. For a held decision, `new_index` is the proposed selection; it is
+not evidence of a tag write. A failed latest platform gate includes the exact
+`failed_smoke` receipt, with its original finish time, result, reason and origin
+fields. The same structured result appears in stdout and the Actions summary,
+and the failed operation still exits nonzero. A `retention_error` means that
+decision attachment or readback failed; inspect existing attachments before
+assuming that the decision is available in GHCR. `publication-uncertain` means
+a tag write was attempted without confirmed success. Inspect the live tag and
+retained decisions before considering another write.
+
+An older decision may omit `failed_smoke`; current smoke receipts cannot
+establish which receipts existed during that operation. Keep missing historical
+evidence explicit. The inspection report preserves the records it finds and
+does not fill absent fields from later records.
 
 To retrieve the full inventory files, use `oras discover --artifact-type
 application/vnd.safeyolo.guest.staging.v1+json --format json --depth 1` with that
@@ -520,14 +744,16 @@ together. The installed isolation section must pass, including owned cleanup.
 The result records the physical host ID and the actual host/helper/guest bytes.
 
 For a completed retained run, an authorized repository operator can attach
-those four reports through the existing Actions publisher. Use a Linux
+those four reports through the existing Actions publisher. A same-installation
+continuation can instead supply `selection.json` and an operator observation
+named `installed-continuation.json`, as described below. Use a Linux
 maintainer checkout with Python 3 and authenticated `gh`. The account must have
 repository write, maintain or admin permission. The workflow uses its own
 repository token for GHCR writes; no local registry login is needed.
 
 Set `REPORTS` to the report directory and `GATE_URL` to the original execution
 result link. Run this command after the workflow change is on default branch
-`master`. It sends only the four original UTF-8 report texts. It starts a
+`master`. It sends the original UTF-8 report texts. It starts a
 serialized upload job without selecting a resolver, build, platform test or
 promotion job:
 
@@ -540,7 +766,10 @@ import os
 from pathlib import Path
 
 names = ("selection.json", "retained-run.json", "installed-inputs.json", "guest/installed-sections.json")
-texts = {name: (Path(os.environ["REPORTS"]) / name).read_bytes().decode("utf-8") for name in names}
+reports = Path(os.environ["REPORTS"])
+if (reports / "installed-continuation.json").is_file():
+    names = ("selection.json", "installed-continuation.json")
+texts = {name: (reports / name).read_bytes().decode("utf-8") for name in names}
 print(json.dumps({"activity": "record-smoke", "smoke_gate_url": os.environ["GATE_URL"],
                   "smoke_reports": json.dumps(texts)}))
 PY
@@ -551,9 +780,56 @@ run separately from the platform execution. The attached reports keep their
 original bytes, execution time, controller revision, host/package identities,
 guest descriptors and section outcomes. An exact successful attachment is
 retained without another write. Matching requires the same result fields and
-all four attached file bytes. Existing failed records remain available.
-Missing or failed reports and invalid operator or workflow origins fail the
-upload. The normal promotion age and evidence guards still apply.
+all attached file bytes. Existing failed records remain available.
+Incomplete evidence, unresolved failed sections and invalid operator or
+workflow origins fail the upload. The normal promotion age and evidence
+guards still apply.
+
+For an interrupted run whose section runner could not start, keep the failed
+execution unchanged. After correcting setup, run only the unstarted sections
+with the same prepared installation. The operator can supply an existing
+verified observation as `installed-continuation.json`. This is an explicit
+operator attestation, not a replacement `retained-run.json` or a claim that
+the original command passed. The observation must contain:
+
+- `controller.revision` and `controller.dirty`, identifying the clean controller
+  used for both commands. The revision must equal `selection.json`'s
+  `controller_revision`.
+- `original_execution` and `resume_execution`, each retaining its distinct `id`,
+  actual argv in `command`, literal `exit`, and UTC `started_at`/`ended_at`.
+  The original exit must be 2 and the resumed exit must be 0.
+  The original command is `retained_inputs.py run` for the recorded lane. The
+  resumed command is `installed_sections.py` for that lane, with explicit
+  `--section`, `--prepared-config` and `--install-commit` operands. The resume
+  also retains `controller_status`, which must be empty.
+- `verified_operands.host`, `observed_at`, `installed_inputs`,
+  `original_sections` and `resumed_sections`. Keep the installed-input and
+  section records in their existing producer formats. All required sections
+  for the lane must be present in the original collection. Each unsuccessful
+  original row must record exit 2, `preparation_failure`, and the runner error.
+  Only those rows may be resumed. The resumed collection must pass exactly
+  those sections on the original prepared installation and source revision.
+- `verified_operands.owned_live_markers` and `live_product_processes`, both
+  empty after cleanup. If present, every `continuity_runtime_after` row must
+  have `pid_exists` false. All original and resumed section rows must record
+  `cleanup: stopped` and empty `cleanup_failures`.
+- `verified_operands.report_hashes`, retaining the original SHA-256 hashes for
+  `reports/installed-inputs.json`, `reports/guest/installed-sections.json` and
+  `continuity-reports/installed-sections.json` from the observed report layout.
+  The hashes identify the underlying originals; supplying the observation
+  does not claim that the upload reconstructed or reread those files.
+- UTC `recorded_at`. The original execution, resumed execution, operand
+  observation and recording times must be in that order.
+
+The publisher derives a passed receipt with
+`execution_mode: same-installation-continuation`. It retains both execution
+records and uses the resumed command's actual end time. The observation is
+attached byte for byte, including its original failures and report hashes.
+An assertion failure, failed cleanup, missing required section, changed
+installed input, or inconsistent continuation refuses the upload. Supply the
+two continuation files together; do not mix them with the three original
+runner report files. This path does not run platform tests or publish a
+promotion decision. A newer failed smoke receipt still holds promotion.
 
 An operator with existing local publisher tools and GHCR write access can
 also attach completed physical evidence outside Actions:

@@ -334,6 +334,11 @@ pub(crate) fn vm_process_token(name: &str, pid: i32) -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
+pub(crate) fn vm_process_token_in(root: &std::path::Path, name: &str, pid: i32) -> Option<String> {
+    vm_process_token_detail_in(root, name, pid).ok()
+}
+
+#[cfg(target_os = "macos")]
 fn vz_diagnostic_path(path: &std::path::Path) -> String {
     let escaped = format!("{path:?}");
     if escaped.chars().count() <= 512 {
@@ -348,10 +353,17 @@ fn vz_diagnostic_path(path: &std::path::Path) -> String {
 
 #[cfg(target_os = "macos")]
 fn vm_process_token_detail(name: &str, pid: i32) -> Result<String, String> {
-    let executable = config_dir().join("bin/safeyolo-vm");
-    let control = config_dir()
-        .join("data/vm-control")
-        .join(format!("{name}.sock"));
+    vm_process_token_detail_in(&config_dir(), name, pid)
+}
+
+#[cfg(target_os = "macos")]
+fn vm_process_token_detail_in(
+    root: &std::path::Path,
+    name: &str,
+    pid: i32,
+) -> Result<String, String> {
+    let executable = root.join("bin/safeyolo-vm");
+    let control = root.join("data/vm-control").join(format!("{name}.sock"));
     let expected = format!(
         "expected_executable={} expected_control_argument={}",
         vz_diagnostic_path(&executable),
@@ -363,8 +375,7 @@ fn vm_process_token_detail(name: &str, pid: i32) -> Result<String, String> {
     // Keep the same PID/birth and private control-argument checks for that file.
     let mut arguments = macos_process_arguments_detail(pid, &executable);
     if arguments.is_err()
-        && let Ok(binaries) =
-            crate::guest_acquisition::retained_host_binaries(&config_dir(), "safeyolo-vm")
+        && let Ok(binaries) = crate::guest_acquisition::retained_host_binaries(root, "safeyolo-vm")
     {
         for binary in binaries.into_iter().skip(1) {
             if let Ok(retained) = macos_process_arguments_detail(pid, &binary) {
@@ -787,7 +798,7 @@ pub(crate) fn backend_pid(name: &str) -> Option<u32> {
 }
 
 #[cfg(target_os = "linux")]
-fn is_runsc_boot(command: &[u8], id: &str, root: &std::path::Path) -> bool {
+pub(crate) fn is_runsc_boot(command: &[u8], id: &str, root: &std::path::Path) -> bool {
     let fields = command.split(|b| *b == 0).collect::<Vec<_>>();
     let root = root.as_os_str().as_bytes();
     // gVisor serializes sentry argv as runsc-sandbox and --root=PATH.
@@ -822,7 +833,7 @@ pub(crate) fn runsc_root() -> PathBuf {
 }
 
 #[cfg(target_os = "linux")]
-fn userns_command(name: &str, program: &str) -> io::Result<Command> {
+pub(crate) fn userns_command(name: &str, program: &str) -> io::Result<Command> {
     let mut command = Command::new("nsenter");
     if let Some(pid) = userns_pid(name) {
         command.args(["--user", "--net", "--target", &pid.to_string(), "--"]);
@@ -963,40 +974,11 @@ fn scoped_runsc_create(name: &str, memory_mb: u64) -> io::Result<Command> {
 #[cfg(target_os = "linux")]
 async fn start_userns(name: &str) -> io::Result<u32> {
     let mapping = crate::linux_host::selected_mapping().map_err(io::Error::other)?;
-    let settings = crate::native_config::host_settings().map_err(io::Error::other)?;
-    let restricts =
-        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-            .is_ok_and(|value| value.trim() == "1");
-    // The recursive failed-start fixture exercises both launch commands without
-    // changing its host's AppArmor policy. Production always uses the sysctl.
-    #[cfg(test)]
-    let restricts = match std::env::var("SAFEYOLO_TEST_FAILED_START_LAUNCH").as_deref() {
-        Ok("direct") => false,
-        Ok("apparmor" | "missing-aa-exec") => true,
-        _ => restricts,
-    };
-    let mut holder = if restricts {
-        let mut command = Command::new("aa-exec");
-        command.args([
-            "-p",
-            settings
-                .linux
-                .as_ref()
-                .and_then(|s| s.apparmor_profile.as_deref())
-                .unwrap_or("safeyolo-runsc"),
-            "--",
-            "unshare",
-            "-Un",
-            "tail",
-            "-f",
-            "/dev/null",
-        ]);
-        command
-    } else {
-        let mut command = Command::new("unshare");
-        command.args(["-Un", "tail", "-f", "/dev/null"]);
-        command
-    };
+    let mut holder = Command::from(crate::linux_host::namespace_command(
+        &config_dir(),
+        "unshare",
+    )?);
+    holder.args(["-Un", "tail", "-f", "/dev/null"]);
     unsafe {
         holder.as_std_mut().pre_exec(|| {
             if libc::setsid() < 0 {
@@ -1084,6 +1066,24 @@ pub(crate) async fn start_sandbox(
     memory_mb: u64,
     ephemeral: bool,
 ) -> io::Result<()> {
+    start_linux_sandbox(name, ip, memory_mb, ephemeral, false).await
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) async fn start_job_sandbox(name: &str, memory_mb: u64) -> io::Result<()> {
+    // Job result interpretation uses the tested runtime's raw wait-status log.
+    crate::linux_host::verify_selected_runtime().map_err(io::Error::other)?;
+    start_linux_sandbox(name, "127.0.0.1", memory_mb, true, true).await
+}
+
+#[cfg(target_os = "linux")]
+async fn start_linux_sandbox(
+    name: &str,
+    ip: &str,
+    memory_mb: u64,
+    ephemeral: bool,
+    job: bool,
+) -> io::Result<()> {
     if !valid_agent_name(name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1160,14 +1160,16 @@ pub(crate) async fn start_sandbox(
         if !set_loopback.success() {
             return Err(io::Error::other("could not activate sandbox loopback"));
         }
-        let address = userns_command(name, "ip")?
-            .args(["addr", "add", &format!("{ip}/32"), "dev", "lo"])
-            .status()
-            .await?;
-        if !address.success() {
-            return Err(io::Error::other(
-                "could not assign sandbox attribution address",
-            ));
+        if !job {
+            let address = userns_command(name, "ip")?
+                .args(["addr", "add", &format!("{ip}/32"), "dev", "lo"])
+                .status()
+                .await?;
+            if !address.success() {
+                return Err(io::Error::other(
+                    "could not assign sandbox attribution address",
+                ));
+            }
         }
         let id = crate::host_runs::id(name).map_err(io::Error::other)?;
         let _ = runsc_command(name)?
@@ -1255,15 +1257,28 @@ pub(crate) async fn start_sandbox(
                 .unwrap_or(0)
                 .to_string(),
         )?;
-        crate::linux_host::shares::attach_startup(name)
-            .await
-            .map_err(io::Error::other)?;
+        if !job {
+            crate::linux_host::shares::attach_startup(name)
+                .await
+                .map_err(io::Error::other)?;
+        }
         // Linux extras must be mounted before guest-init performs static
         // setup or launches any workload. The OCI entry shell waits here.
         std::fs::write(share.join("per-run-go"), b"")?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
         while tokio::time::Instant::now() < deadline && backend_pid(name).is_some() {
-            if status_dir.join("per-run-started").is_file() {
+            let ready = if job {
+                runsc_command(name)?
+                    .args(["exec", &id, "/usr/bin/test", "-f", "/run/job-ready"])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .kill_on_drop(true)
+                    .status().await?.success()
+            } else {
+                status_dir.join("per-run-started").is_file()
+            };
+            if ready {
                 let mut run = crate::host_runs::read(name).map_err(io::Error::other)?
                     .ok_or_else(|| io::Error::other("sandbox record disappeared before readiness"))?;
                 if run["run_id"].as_str().map(|generation| format!("safeyolo-{generation}")) != Some(id.clone()) {
@@ -1470,6 +1485,36 @@ pub(crate) async fn spawn_guest_command_with_output(
         inherit_stdin,
     )
     .spawn()
+}
+
+pub(crate) async fn check_stop_sandbox(name: &str) -> io::Result<()> {
+    if !valid_agent_name(name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid agent name",
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if userns_pid(name).is_none() {
+            crate::host_runs::verified_stop_backend(name).map_err(io::Error::other)?;
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let pid = vz_stop_pid(name).await?;
+        match vm_process_token_detail(name, pid) {
+            Ok(_) => Ok(()),
+            Err(_) if crate::host_runs::process_is_absent(pid) => Ok(()),
+            Err(detail) => Err(io::Error::other(format!(
+                "VM PID does not identify this agent's helper; {detail}; {}",
+                vz_process_absence_detail(pid)
+            ))),
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    Err(unavailable())
 }
 
 #[cfg(target_os = "linux")]
@@ -1782,6 +1827,32 @@ async fn spawn_macos_guest_command(
 }
 
 #[cfg(target_os = "macos")]
+async fn vz_stop_pid(name: &str) -> io::Result<i32> {
+    // The private socket independently identifies this agent's helper when
+    // the saved PID projection is missing or stale.
+    let control = crate::host_runs::control(name, serde_json::json!({"operation":"status"}))
+        .await
+        .ok();
+    let controlled = control
+        .as_ref()
+        .filter(|value| value["agent"] == name)
+        .and_then(|value| value["pid"].as_i64())
+        .and_then(|pid| i32::try_from(pid).ok());
+    let saved = std::fs::read_to_string(config_dir().join("agents").join(name).join("vm.pid"))
+        .ok()
+        .and_then(|value| value.trim().parse::<i32>().ok());
+    let saved = saved.filter(|pid| {
+        vm_process_token(name, *pid).is_some_and(|token| {
+            std::fs::read_to_string(config_dir().join("agents").join(name).join("vm.token"))
+                .is_ok_and(|saved| saved.trim() == token)
+        })
+    });
+    controlled.or(saved).ok_or(io::Error::other(
+        "VZ helper identity is missing; inspect agent diagnostics",
+    ))
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
     if !valid_agent_name(name) {
         return Err(io::Error::new(
@@ -1796,28 +1867,7 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
     let mut first_wait_mismatch = None;
     let result = async {
         let path = config_dir().join("agents").join(name).join("vm.pid");
-        // The private socket independently identifies this agent's helper when
-        // the saved PID projection is missing or stale.
-        let control = crate::host_runs::control(name, serde_json::json!({"operation":"status"}))
-            .await
-            .ok();
-        let controlled = control
-            .as_ref()
-            .filter(|value| value["agent"] == name)
-            .and_then(|value| value["pid"].as_i64())
-            .and_then(|pid| i32::try_from(pid).ok());
-        let saved = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|value| value.trim().parse::<i32>().ok());
-        let saved = saved.filter(|pid| {
-            vm_process_token(name, *pid).is_some_and(|token| {
-                std::fs::read_to_string(config_dir().join("agents").join(name).join("vm.token"))
-                    .is_ok_and(|saved| saved.trim() == token)
-            })
-        });
-        let pid = controlled.or(saved).ok_or(io::Error::other(
-            "VZ helper identity is missing; inspect agent diagnostics",
-        ))?;
+        let pid = vz_stop_pid(name).await?;
         helper_pid = Some(pid);
         let token = vm_process_token_detail(name, pid);
         let token = match token {
@@ -2087,6 +2137,16 @@ pub(crate) fn spawn_vz_helper(
     memory_mb: u64,
     ephemeral: bool,
 ) -> io::Result<tokio::process::Child> {
+    spawn_vz(name, memory_mb, ephemeral, false)
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_vz(
+    name: &str,
+    memory_mb: u64,
+    ephemeral: bool,
+    job: bool,
+) -> io::Result<tokio::process::Child> {
     if !valid_agent_name(name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2114,8 +2174,10 @@ pub(crate) fn spawn_vz_helper(
             ));
         }
     }
-    std::fs::create_dir_all(&status_dir)?;
-    std::fs::create_dir_all(directory.join("home"))?;
+    if !job {
+        std::fs::create_dir_all(&status_dir)?;
+        std::fs::create_dir_all(directory.join("home"))?;
+    }
     let shell = config
         .join("data/shell-sockets")
         .join(format!("{name}.sock"));
@@ -2132,10 +2194,12 @@ pub(crate) fn spawn_vz_helper(
             Err(error) => return Err(error),
         }
     }
-    for marker in ["static-init-done", "per-run-started", "vm-status"] {
-        let _ = std::fs::remove_file(status_dir.join(marker));
+    if !job {
+        for marker in ["static-init-done", "per-run-started", "vm-status"] {
+            let _ = std::fs::remove_file(status_dir.join(marker));
+        }
+        std::fs::write(share.join("per-run-go"), b"")?;
     }
-    std::fs::write(share.join("per-run-go"), b"")?;
     let proxy = agent_proxy_dir(name).join("proxy.sock");
     let runner = std::env::var_os("SAFEYOLO_VZ_TEST_RUNNER");
     let runner_timeout = std::env::var_os("SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS");
@@ -2165,25 +2229,29 @@ pub(crate) fn spawn_vz_helper(
         "--memory",
         &memory_mb.to_string(),
         "--share",
-        &format!("{workspace}:workspace:rw"),
+        &format!("{workspace}:workspace:{}", if job { "ro" } else { "rw" }),
         "--share",
         &format!("{}:config:ro", share.display()),
-        "--share",
-        &format!("{}:status:rw", status_dir.display()),
-        "--share",
-        &format!("{}:home:rw", directory.join("home").display()),
         "--serial-log",
         &directory.join("console.log").display().to_string(),
         "--cmdline",
         &cmdline,
-        "--proxy-socket",
-        proxy.to_str().unwrap_or_default(),
         "--shell-socket",
         shell.to_str().unwrap_or_default(),
         "--control-socket",
         control.to_str().unwrap_or_default(),
         "--no-terminal",
     ]);
+    if !job || share.join("network").is_dir() {
+        command.arg("--proxy-socket").arg(proxy);
+    }
+    if !job {
+        command
+            .arg("--share")
+            .arg(format!("{}:status:rw", status_dir.display()))
+            .arg("--share")
+            .arg(format!("{}:home:rw", directory.join("home").display()));
+    }
     if let Some(shares) = launch_context
         .get("extra_shares")
         .and_then(serde_json::Value::as_array)
@@ -2234,6 +2302,23 @@ pub(crate) fn spawn_vz_helper(
 
 #[cfg(target_os = "macos")]
 pub(crate) async fn wait_vz_start(name: &str, mut child: tokio::process::Child) -> io::Result<()> {
+    wait_vz(name, &mut child, true).await
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn start_job_sandbox(name: &str, memory_mb: u64) -> io::Result<()> {
+    let mut child = spawn_vz(name, memory_mb, true, true)?;
+    // Identity comes from the private VM control socket. Job readiness is
+    // subsequently established by authenticated SSH, without a writable share.
+    wait_vz(name, &mut child, false).await
+}
+
+#[cfg(target_os = "macos")]
+async fn wait_vz(
+    name: &str,
+    child: &mut tokio::process::Child,
+    require_guest_marker: bool,
+) -> io::Result<()> {
     let config = config_dir();
     let directory = config.join("agents").join(name);
     let status_dir = directory.join("status");
@@ -2268,7 +2353,9 @@ pub(crate) async fn wait_vz_start(name: &str, mut child: tokio::process::Child) 
                     identity = Some(observed);
                 }
             }
-            if identity.is_some() && status_dir.join("per-run-started").is_file() {
+            if identity.is_some()
+                && (!require_guest_marker || status_dir.join("per-run-started").is_file())
+            {
                 return Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -2280,7 +2367,7 @@ pub(crate) async fn wait_vz_start(name: &str, mut child: tokio::process::Child) 
         // Stop the independently verified helper when available. Also stop
         // the owned launch process if identity persistence itself failed.
         let sandbox_stop = stop_sandbox(name).await;
-        return Err(cleanup_failed_vz_start(error, sandbox_stop, &mut child).await);
+        return Err(cleanup_failed_vz_start(error, sandbox_stop, child).await);
     }
     started
 }
@@ -2407,7 +2494,7 @@ pub(crate) async fn start_sandbox(
 
 #[cfg(all(test, target_os = "linux"))]
 #[path = "../tests/support/owned_run.rs"]
-mod guest_command_test_run;
+pub(crate) mod guest_command_test_run;
 
 #[cfg(test)]
 mod tests {
@@ -2720,6 +2807,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         in_config(temp.path().join("config.toml"), async {
             let mut child = spawn_vz_stop_test_helper(temp.path(), None).await;
+            check_stop_sandbox("alice").await.unwrap();
             let (stopped, exited) = tokio::join!(stop_sandbox("alice"), child.wait());
             stopped.unwrap();
             assert!(exited.unwrap().success());
@@ -2840,7 +2928,7 @@ mod tests {
                                     let response = crate::admin_api::respond_with_context(request, "owned-test-token", crate::admin_api::OperatorContext {
                                         tasks: &tasks, policy: None, circuits: None, stats: None, view: None, policy_path: None, instance_id: None,
                                         command_centre: Some(&host), operator_modes: None, agent_activity: None, listeners: &[], audit: None,
-                                        client_ip: None, passthrough: None, service_audit: None, plumb: None, task_state: None,
+                                        client_ip: None, passthrough: None, service_audit: None, task_state: None,
                                     }).await.unwrap();
                                     assert_eq!(response.status(), hyper::StatusCode::INTERNAL_SERVER_ERROR);
                                     Ok::<_, std::convert::Infallible>(response.into_response())
@@ -2925,7 +3013,7 @@ mod tests {
             let share = directory.join("config-share");
             std::fs::create_dir_all(&share).unwrap();
             std::fs::create_dir(root.join("bin")).unwrap();
-            // Restricted PATH cases omit the mapper or aa-exec, but still
+            // Restricted PATH cases omit the mapper or namespace entry, but still
             // need account lookup before reaching the intended failure.
             std::os::unix::fs::symlink("/usr/bin/getent", root.join("bin/getent")).unwrap();
             std::fs::write(share.join("guest-init"), b"fixture").unwrap();
@@ -2953,20 +3041,14 @@ mod tests {
                         directory.display()
                     ),
                 ),
-                ("ip", "#!/bin/sh\nexit 0\n".to_owned()),
-                ("systemctl", "#!/bin/sh\nexit 1\n".to_owned()),
                 (
-                    "aa-exec",
+                    "ip",
                     format!(
-                        r#"#!/bin/sh
-[ "$1" = -p ] && [ "$2" = safeyolo-runsc ] && [ "$3" = -- ] && [ "$4" = unshare ] || exit 2
-printf '%s\n' "$@" > '{}/fixture-aa-exec'
-shift 3
-exec "$@"
-"#,
-                        directory.display()
+                        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}/fixture-ip'\nif [ \"$*\" = 'addr add 127.0.0.1/32 dev lo' ]; then exit 17; fi\n",
+                        directory.display(),
                     ),
                 ),
+                ("systemctl", "#!/bin/sh\nexit 1\n".to_owned()),
                 (
                     "unshare",
                     format!(
@@ -3011,15 +3093,13 @@ esac
                     ),
                 ),
             ] {
-                if name == "aa-exec" && launch == "missing-aa-exec" {
-                    continue;
-                }
                 let path = root.join("bin").join(name);
                 std::fs::write(&path, script).unwrap();
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
             in_instance(root.clone(), async {
-                let starting = start_sandbox("alice", "10.200.0.1", 4096, true);
+                let job = stop == "job-loopback";
+                let starting = start_linux_sandbox("alice", if job { "127.0.0.1" } else { "10.200.0.1" }, 4096, true, job);
                 let inspect = async {
                     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
                     while !directory.join("fixture-running").exists() {
@@ -3054,7 +3134,7 @@ esac
                     .or_else(|_| std::fs::read(directory.join("runtime.json"))).unwrap();
                 let run: serde_json::Value = serde_json::from_slice(&record).unwrap();
                 assert_eq!(std::fs::read_to_string(directory.join("fixture-acl")).unwrap(), "prepared");
-                if launch == "missing-aa-exec" {
+                if launch == "missing-entry" {
                     assert_eq!(error.kind(), io::ErrorKind::NotFound, "{error}");
                     assert!(!directory.join("fixture-holder.pid").exists());
                     assert!(!directory.join("fixture-holder.json").exists());
@@ -3094,10 +3174,10 @@ esac
                         .is_ok_and(|value| value.trim() == "1"),
                     _ => panic!("unknown launch fixture: {launch}"),
                 };
-                assert_eq!(directory.join("fixture-aa-exec").exists(), apparmor);
+                assert_eq!(directory.join("fixture-namespace-entry").exists(), apparmor);
                 if apparmor {
-                    assert_eq!(std::fs::read_to_string(directory.join("fixture-aa-exec")).unwrap(),
-                        "-p\nsafeyolo-runsc\n--\nunshare\n-Un\ntail\n-f\n/dev/null\n");
+                    assert_eq!(std::fs::read_to_string(directory.join("fixture-namespace-entry")).unwrap(),
+                        "unshare\n-Un\ntail\n-f\n/dev/null\n");
                 }
                 if stop == "missing-mapper" {
                     assert!(error.contains("No such file or directory"), "{error}");
@@ -3112,6 +3192,13 @@ esac
                     "runsc create failed: fixture boot failure"
                 };
                 assert!(error.contains(expected), "{error}");
+                let ip = std::fs::read_to_string(directory.join("fixture-ip")).unwrap();
+                assert!(ip.contains("link set lo up\n"), "{ip}");
+                if job {
+                    assert!(!ip.contains("addr add"), "{ip}");
+                } else {
+                    assert!(ip.contains("addr add 10.200.0.1/32 dev lo\n"), "{ip}");
+                }
                 if let Some((observed, exec, ready, legacy)) = observation {
                     assert_eq!(observed["backend"]["status"], "running", "{observed}");
                     assert_eq!(observed["runtime_state"], "starting", "{observed}");
@@ -3142,6 +3229,7 @@ esac
             return;
         }
         for (launch, stop) in [
+            ("direct", "job-loopback"),
             ("direct", "after-running"),
             ("native", "succeeded"),
             ("native", "failed"),
@@ -3152,17 +3240,49 @@ esac
             ("apparmor", "succeeded"),
             ("apparmor", "failed"),
             ("apparmor", "missing-mapper"),
-            ("missing-aa-exec", "succeeded"),
+            ("missing-entry", "succeeded"),
         ] {
             let root = tempfile::tempdir().unwrap();
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
+            // Prepare profiles before restricting the child's PATH to omit the
+            // mapper: loading and removing the fixture profile still need sudo.
+            let _profile = if launch != "missing-entry" {
+                std::fs::create_dir(root.path().join("host")).unwrap();
+                let entry = root.path().join("host/namespace-entry");
+                std::fs::write(&entry, format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}/fixture-namespace-entry'\nexec \"$@\"\n",
+                    root.path().join("agents/alice").display(),
+                )).unwrap();
+                std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o755)).unwrap();
+                (launch != "direct").then(|| crate::linux_host::TestNamespaceProfile::load(&entry))
+            } else {
+                None
+            };
+            // A direct launch needs an allowed parent on restricted hosts.
+            // The native and apparmor rows still enter from an unconfined parent.
+            let direct_entry = root.path().join("direct-entry");
+            let _direct_profile = if launch == "direct" {
+                std::fs::write(&direct_entry, b"#!/bin/sh\nexec \"$@\"\n").unwrap();
+                std::fs::set_permissions(&direct_entry, std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
+                Some(crate::linux_host::TestNamespaceProfile::load(&direct_entry))
+            } else {
+                None
+            };
+            let mut runner = if launch == "direct" {
+                let mut runner = std::process::Command::new(&direct_entry);
+                runner.arg(std::env::current_exe().unwrap());
+                runner
+            } else {
+                std::process::Command::new(std::env::current_exe().unwrap())
+            };
+            let output = runner
                 .args(["--exact", TEST, "--nocapture"])
                 .env("SAFEYOLO_TEST_FAILED_START_ROOT", root.path())
                 .env("SAFEYOLO_TEST_FAILED_START_STOP", stop)
                 .env("SAFEYOLO_TEST_FAILED_START_LAUNCH", launch)
                 .env(
                     "PATH",
-                    if stop == "missing-mapper" || launch == "missing-aa-exec" {
+                    if stop == "missing-mapper" || launch == "missing-entry" {
                         root.path().join("bin").display().to_string()
                     } else {
                         format!("{}:/usr/bin:/bin", root.path().join("bin").display())

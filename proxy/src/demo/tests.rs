@@ -49,6 +49,42 @@ async fn request(socket: &Path, url: &str) -> (u16, String, Value) {
 }
 
 #[tokio::test]
+async fn preview_approval_must_match_the_demo_app_and_current_run() {
+    let root = instance();
+    host_platform::in_instance(root.path().into(), async {
+        let mut demo = Demo::prepare(&Options::default()).await.unwrap();
+        demo.run_id = Some("selected-demo-run".into());
+        let view = json!({"action":{"kind":"operator_action","action_id":"desktop.present",
+            "agent":demo.agent.name,"agent_id":demo.agent.id,
+            "run":{"agent":demo.agent.name,"agent_id":demo.agent.id,"run_id":"selected-demo-run"},
+            "parameters":{"browser_url":"http://127.0.0.1:8000/app","ttl_seconds":900}}});
+        assert!(preview_matches(&view, &demo));
+        for (path, replacement) in [
+            ("/action/kind", json!("network_egress")),
+            ("/action/action_id", json!("another.action")),
+            ("/action/agent", json!("peer")),
+            ("/action/agent_id", json!("ag-replaced")),
+            ("/action/run/agent", json!("peer")),
+            ("/action/run/agent_id", json!("ag-replaced")),
+            ("/action/run/run_id", json!("earlier-demo-run")),
+            (
+                "/action/parameters/browser_url",
+                json!("https://example.com"),
+            ),
+            ("/action/parameters/ttl_seconds", json!(86400)),
+        ] {
+            let mut changed = view.clone();
+            *changed.pointer_mut(path).unwrap() = replacement;
+            assert!(!preview_matches(&changed, &demo), "accepted changed {path}");
+        }
+        demo.run_id = None;
+        assert!(!preview_matches(&view, &demo));
+        demo.cleanup().await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn owned_json_requires_real_native_approval_and_cleanup_preserves_peer() {
     let root = instance();
     host_platform::in_instance(root.path().into(), async {
@@ -367,6 +403,27 @@ async fn explicit_provisioning_preserves_source_and_refuses_guest_redirects() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
+async fn spool_cleanup_failure_preserves_demo_configuration_and_workspace() {
+    let root = instance();
+    host_platform::in_instance(root.path().into(), async {
+        let demo = Demo::prepare(&Options::default()).await.unwrap();
+        let directory = root.path().join("agents").join(&demo.agent.name);
+        fs::write(directory.join("overlay"), "not a directory").unwrap();
+        let policy = fs::read(root.path().join("policy.toml")).unwrap();
+        let error = demo.cleanup().await.unwrap_err().to_string();
+        assert!(error.contains("Not a directory"), "{error}");
+        assert_eq!(fs::read(root.path().join("policy.toml")).unwrap(), policy);
+        assert!(demo.workspace.is_dir());
+        fs::remove_file(directory.join("overlay")).unwrap();
+        demo.cleanup().await.unwrap();
+        assert!(!directory.exists());
+        assert!(!demo.workspace.exists());
+    })
+    .await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
 async fn retained_live_owner_is_preserved_and_proven_dead_owner_can_retry() {
     let root = instance();
     host_platform::in_instance(root.path().into(), async {
@@ -383,6 +440,13 @@ async fn retained_live_owner_is_preserved_and_proven_dead_owner_can_retry() {
         let run = json!({"run_id":"abcdefabcdefabcdefabcdefabcdefab",
             "backend_pid":pid,"backend_token":token,"state":"running"});
         crate::host_runs::save(&demo.agent.name, &run).unwrap();
+        let crontabs = root
+            .path()
+            .join("agents")
+            .join(&demo.agent.name)
+            .join("overlay/var/spool/cron/crontabs");
+        fs::create_dir_all(&crontabs).unwrap();
+        fs::write(crontabs.join("agent"), "preserve the live owner's queue").unwrap();
         let policy = fs::read(root.path().join("policy.toml")).unwrap();
         // A live unrelated process does not authorize sandbox adoption or
         // signalling. Both the login caller and existing-agent selection hold.
@@ -396,6 +460,10 @@ async fn retained_live_owner_is_preserved_and_proven_dead_owner_can_retry() {
             .is_err()
         );
         assert!(demo.cleanup().await.is_err());
+        assert_eq!(
+            fs::read_to_string(crontabs.join("agent")).unwrap(),
+            "preserve the live owner's queue"
+        );
         assert!(owner.try_wait().unwrap().is_none());
         assert_eq!(fs::read(root.path().join("policy.toml")).unwrap(), policy);
         assert_eq!(

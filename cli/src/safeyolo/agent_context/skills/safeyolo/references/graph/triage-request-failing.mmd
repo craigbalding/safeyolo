@@ -48,9 +48,9 @@ flowchart TD
     cls.trace_bypassed_control_disabled{{"Control's runtime enable setting is off (state=bypassed, reason=control_disabled)"}}
     cls.trace_bypassed_policy_disabled{{"Control bypassed by policy for this scope (state=bypassed, reason=policy_disabled)"}}
     cls.trace_bypassed_prior_response{{"Control deferred to an earlier responder (state=bypassed, reason=prior_response)"}}
-    cls.trace_not_loaded{{"Expected control has no retained step (state=not_loaded)"}}
+    cls.trace_not_loaded{{"Expected control is unavailable at its native call site (state=not_loaded)"}}
     cls.trace_error{{"Reached operation reported an error (state=error, reason=<diagnostic>)"}}
-    cls.trace_truncated{{"Trace hit the per-record step cap (truncated=true)"}}
+    cls.trace_truncated{{"Trace is incomplete (incomplete=true or truncated=true)"}}
     cls.trace_unavailable{{"/trace returned nothing or errored — pipeline evidence is unavailable"}}
     con.self_correct_request(["Self-correct the request (destination / credential / method) and retry"])
     con.honor_retry_after(["Honor Retry-After, back off, retry once budget resets"])
@@ -109,15 +109,15 @@ flowchart TD
     ev.check_trace_request_id -->|"implies: selected control/hook step has state=bypassed AND reason=prior_response"| cls.trace_bypassed_prior_response
     ev.check_trace_request_id -->|"implies: not_loaded[] contains the selected control AND truncated=false"| cls.trace_not_loaded
     ev.check_trace_request_id -->|"implies: selected control/hook step has state=error"| cls.trace_error
-    ev.check_trace_request_id -->|"implies: truncated=true in the /trace payload"| cls.trace_truncated
+    ev.check_trace_request_id -->|"implies: incomplete=true OR truncated=true in the /trace payload"| cls.trace_truncated
     ev.check_trace_request_id -->|"implies: /trace returned 404 or 5xx, or the request wasn't traced (no X-SafeYolo-Trace: 1 header), or the trace expired"| cls.trace_unavailable
     cls.trace_evaluated_normal -->|"next_check: one normal step does not establish the final result; inspect other steps and block markers"| ev.check_x_blocked_by
     cls.trace_bypassed_control_disabled -->|"escalates_to: the control was expected to enforce; inspect its native enabled setting"| ask.check_control_policy
     cls.trace_bypassed_policy_disabled -->|"escalates_to: inspect the matching host/agent exception and effective control"| ask.check_control_policy
     cls.trace_bypassed_prior_response -->|"next_check: the earlier responder's block markers and preceding steps identify the decision to investigate"| ev.check_x_blocked_by
-    cls.trace_not_loaded -->|"escalates_to: reconcile missing observations with settings, earlier responses and logs"| ask.native_trace_diagnostics
+    cls.trace_not_loaded -->|"escalates_to: the native call site reported a control unavailable; inspect the diagnostic logs"| ask.native_trace_diagnostics
     cls.trace_error -->|"escalates_to: correlate the exact reason=<diagnostic> with native logs"| ask.native_trace_diagnostics
-    cls.trace_truncated -->|"escalates_to: trace exceeded the per-record step cap; retain its incomplete-evidence limit"| ask.native_trace_diagnostics
+    cls.trace_truncated -->|"escalates_to: request evidence is missing or capped; retain its incomplete-evidence limit"| ask.native_trace_diagnostics
     cls.trace_unavailable -->|"escalates_to: an own request was untraced or expired and can be safely reissued within existing authority"| ask.retry_with_trace_header
     cls.trace_unavailable -->|"escalates_to: the endpoint returned 5xx or the request cannot be reissued; report unavailable evidence"| ask.native_trace_diagnostics
     ev.check_status_security_events -->|"implies: no security events on the target host in the failing window"| cls.upstream_only

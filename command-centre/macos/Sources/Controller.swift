@@ -3,6 +3,76 @@ import Foundation
 
 @MainActor
 final class CommandCentreController: ObservableObject {
+    @Published private(set) var connections: [CommandCentreConnection] = []
+    let localConnection: CommandCentreConnection
+    let remoteConnection: CommandCentreConnection
+    private var updates: [AnyCancellable] = []
+
+    init(
+        presenter: ApprovalWindowPresenter,
+        securityNotifier: SecurityNotificationPresenter,
+        keychain: any CredentialStore = NativeKeychainStore(),
+        profileStore: any ConnectionProfileStore = UserDefaultsConnectionProfileStore(),
+        verifier: RemoteConnectionVerifier = RemoteConnectionVerifier(),
+        localCredentialDirectory: URL? = nil,
+        session: URLSession = .shared
+    ) {
+        localConnection = CommandCentreConnection(
+            id: "local", presenter: presenter, securityNotifier: securityNotifier,
+            keychain: keychain, profileStore: profileStore, verifier: verifier,
+            localCredentialDirectory: localCredentialDirectory, session: session
+        )
+        remoteConnection = CommandCentreConnection(
+            id: "remote", presenter: presenter, securityNotifier: securityNotifier,
+            keychain: keychain, profileStore: profileStore, verifier: verifier,
+            localCredentialDirectory: localCredentialDirectory, session: session
+        )
+        for connection in [localConnection, remoteConnection] {
+            updates.append(connection.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() })
+        }
+    }
+
+    var remoteProfile: RemoteConnectionProfile? { remoteConnection.remoteProfile }
+    var hasPendingApprovals: Bool { connections.contains { $0.hasPendingApprovals } }
+    var hasSecurityEvents: Bool { connections.contains { $0.hasSecurityEvents } }
+    var hasConnectedInstance: Bool { connections.contains { $0.client?.adminConnected == true } }
+
+    func start(commandLine: CommandLineConfiguration = .load()) {
+        stop()
+        connections = [localConnection]
+        localConnection.startLocal(commandLine: commandLine)
+        // Explicit endpoints keep their existing selection semantics.
+        if commandLine.adminURL == nil || commandLine.eventsURL == nil {
+            if remoteConnection.restoreRemote() { connections.append(remoteConnection) }
+        }
+    }
+
+    func configureRemote(_ input: RemoteConnectionInput,
+                         completion: @escaping (Result<RemoteConnectionProfile, Error>) -> Void) {
+        if !connections.contains(where: { $0 === remoteConnection }) { connections.append(remoteConnection) }
+        remoteConnection.configureRemote(input, completion: completion)
+    }
+
+    func useLocal() {
+        if !connections.contains(where: { $0 === localConnection }) { connections.insert(localConnection, at: 0) }
+        localConnection.startLocal(commandLine: CommandLineConfiguration(adminURL: nil, eventsURL: nil))
+    }
+
+    func removeRemote() throws {
+        try remoteConnection.removeRemote()
+        connections.removeAll { $0 === remoteConnection }
+    }
+
+    func stop() {
+        localConnection.stop()
+        remoteConnection.stop()
+        connections = []
+    }
+}
+
+@MainActor
+final class CommandCentreConnection: ObservableObject, Identifiable {
+    let id: String
     @Published private(set) var client: SafeYoloClient?
     @Published private(set) var startupError: String?
     @Published private(set) var connectionName = "Local SafeYolo"
@@ -30,9 +100,9 @@ final class CommandCentreController: ObservableObject {
     private var selectedConnection: SelectedConnection?
     private var clientUpdates: AnyCancellable?
     private var notificationUpdates: AnyCancellable?
-    private var remoteTerminal = false
 
     init(
+        id: String,
         presenter: ApprovalWindowPresenter,
         securityNotifier: SecurityNotificationPresenter,
         keychain: any CredentialStore = NativeKeychainStore(),
@@ -41,6 +111,8 @@ final class CommandCentreController: ObservableObject {
         localCredentialDirectory: URL? = nil,
         session: URLSession = .shared
     ) {
+        self.id = id
+        self.connectionName = id == "remote" ? "Remote SafeYolo" : "Local SafeYolo"
         self.presenter = presenter
         self.securityNotifier = securityNotifier
         self.keychain = keychain
@@ -70,7 +142,7 @@ final class CommandCentreController: ObservableObject {
         !(client?.securityEvents.isEmpty ?? true)
     }
 
-    func start(commandLine: CommandLineConfiguration = .load()) {
+    func startLocal(commandLine: CommandLineConfiguration) {
         disconnect()
         startupError = nil
         do {
@@ -87,26 +159,6 @@ final class CommandCentreController: ObservableObject {
                     instanceID: try localCredentials.instanceID()
                 )
                 load = { try loader.load() }
-            } else if let profile = try profileStore.load() {
-                selection = SelectedConnection(
-                    name: profile.friendlyName,
-                    adminURL: profile.adminURL,
-                    eventsURL: profile.eventsURL,
-                    instanceID: profile.instanceID,
-                    remoteProfile: profile
-                )
-                let keychain = self.keychain
-                load = {
-                    guard let token = try keychain.load(account: profile.instanceID), !token.isEmpty else {
-                        throw ConnectionError.missingCredential(profile.instanceID)
-                    }
-                    return LoadedCredential(
-                        instanceID: profile.instanceID,
-                        token: token,
-                        source: .keychain,
-                        warning: nil
-                    )
-                }
             } else {
                 selection = SelectedConnection(
                     name: "Local SafeYolo",
@@ -124,6 +176,32 @@ final class CommandCentreController: ObservableObject {
         } catch {
             startupError = error.localizedDescription
         }
+    }
+
+    func restoreRemote() -> Bool {
+        disconnect()
+        startupError = nil
+        do {
+            guard let profile = try profileStore.load() else { return false }
+            let selection = SelectedConnection(
+                name: profile.friendlyName, adminURL: profile.adminURL,
+                eventsURL: profile.eventsURL, instanceID: profile.instanceID,
+                remoteProfile: profile
+            )
+            selectedConnection = selection
+            connectionName = selection.name
+            credentialStatus = "Waiting for Keychain access for \(selection.instanceID). Connection Settings remain available."
+            let keychain = self.keychain
+            loadCredential({
+                guard let token = try keychain.load(account: profile.instanceID), !token.isEmpty else {
+                    throw ConnectionError.missingCredential(profile.instanceID)
+                }
+                return LoadedCredential(instanceID: profile.instanceID, token: token, source: .keychain, warning: nil)
+            }, for: selection)
+        } catch {
+            startupError = error.localizedDescription
+        }
+        return true
     }
 
     var credentialFileInstanceID: String? { selectedConnection?.instanceID }
@@ -234,9 +312,10 @@ final class CommandCentreController: ObservableObject {
         }
     }
 
-    func useLocal() throws {
+    func removeRemote() throws {
         try profileStore.delete()
-        start()
+        disconnect()
+        startupError = nil
     }
 
     func stop() {
@@ -265,30 +344,41 @@ final class CommandCentreController: ObservableObject {
         }
     }
 
-    func openAgentTerminal(_ agent: AgentInfo) throws {
-        try openTerminal(agent, action: .attach)
+    func openAgentTerminal(_ agent: AgentInfo, client: SafeYoloClient) throws {
+        try openTerminal(agent, client: client, action: .attach)
     }
 
-    func openSandboxShell(_ agent: AgentInfo) throws {
-        try openTerminal(agent, action: .shell)
+    func openSandboxShell(_ agent: AgentInfo, client: SafeYoloClient) throws {
+        try openTerminal(agent, client: client, action: .shell)
     }
 
     func showWebMITMSignInNotice() {
         securityNotifier.showWebMITMSignInNotice()
     }
 
-    private func openTerminal(_ agent: AgentInfo, action: AgentTerminalAction) throws {
-        let command = try agentTerminalCommand(
-            name: agent.name, remote: remoteTerminal,
+    func terminalCommand(_ agent: AgentInfo, client: SafeYoloClient, action: AgentTerminalAction) throws -> String {
+        guard self.client === client, client.adminConnected,
+              client.instanceID == selectedConnection?.instanceID,
+              client.agents.contains(where: { $0.agentID == agent.agentID && $0.name == agent.name }) else {
+            throw ClientError.connectionUnavailable
+        }
+        let remote = selectedConnection?.remoteProfile != nil
+            || !["127.0.0.1", "localhost", "::1", "[::1]"].contains(URL(string: selectedConnection?.adminURL ?? "")?.host ?? "")
+        return try agentTerminalCommand(
+            name: agent.name, remote: remote,
             terminalTarget: selectedConnection?.remoteProfile?.terminalTarget,
             adminURL: selectedConnection?.adminURL,
-            hostUser: client?.hostUser,
-            hostExecutable: client?.hostExecutable,
-            hostRoot: client?.hostRoot,
-            hostConfigPath: client?.hostConfigPath,
+            hostUser: client.hostUser,
+            hostExecutable: client.hostExecutable,
+            hostRoot: client.hostRoot,
+            hostConfigPath: client.hostConfigPath,
             transport: selectedConnection?.remoteProfile?.transport ?? .tailnet,
             action: action
         )
+    }
+
+    private func openTerminal(_ agent: AgentInfo, client: SafeYoloClient, action: AgentTerminalAction) throws {
+        let command = try terminalCommand(agent, client: client, action: action)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", """
@@ -331,15 +421,15 @@ final class CommandCentreController: ObservableObject {
         credential: LoadedCredential,
         client nextClient: SafeYoloClient
     ) {
+        if let client { presenter.close(instanceID: client.expectedInstanceID) }
         client?.stop()
-        remoteTerminal = selection.remoteProfile != nil
-            || !["127.0.0.1", "localhost", "::1"].contains(URL(string: selection.adminURL)?.host ?? "")
+        let instanceName = "\(selection.name) (\(selection.instanceID))"
         nextClient.onNewApproval = { [weak presenter = self.presenter, weak nextClient] approval in
             guard let presenter, let nextClient else { return }
-            presenter.show(approval, client: nextClient)
+            presenter.show(approval, client: nextClient, instanceName: instanceName)
         }
         nextClient.onNewSecurityEvent = { [weak securityNotifier = self.securityNotifier] event in
-            securityNotifier?.show(event)
+            securityNotifier?.show(event, instanceName: instanceName, instanceID: selection.instanceID)
         }
         clientUpdates = nextClient.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
@@ -362,6 +452,7 @@ final class CommandCentreController: ObservableObject {
         connectionAttempt += 1
         selectedConnection = nil
         credentialStatus = nil
+        if let client { presenter.close(instanceID: client.expectedInstanceID) }
         client?.stop()
         client = nil
         clientUpdates = nil

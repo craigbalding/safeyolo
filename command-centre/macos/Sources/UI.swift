@@ -20,12 +20,18 @@ private func securityMenuTitle(_ event: SecurityObservation) -> String {
     return preview + "…" + suffix
 }
 
+private struct InstanceEventID: Hashable {
+    let instanceID: String
+    let eventID: String
+}
+
 @MainActor
 final class ApprovalWindowPresenter {
-    private var windows: [String: NSWindow] = [:]
+    private var windows: [InstanceEventID: NSWindow] = [:]
 
-    func show(_ event: ApprovalEvent, client: SafeYoloClient) {
-        if let existing = windows[event.id] {
+    func show(_ event: ApprovalEvent, client: SafeYoloClient, instanceName: String? = nil) {
+        let key = InstanceEventID(instanceID: client.expectedInstanceID, eventID: event.id)
+        if let existing = windows[key] {
             NSApp.activate(ignoringOtherApps: true)
             existing.makeKeyAndOrderFront(nil)
             return
@@ -34,7 +40,7 @@ final class ApprovalWindowPresenter {
         let view = ApprovalView(
             event: event,
             client: client,
-            close: { [weak self] in self?.close(event.id) }
+            close: { [weak self] in self?.close(event.id, instanceID: key.instanceID) }
         )
         let controller = NSHostingController(rootView: view)
         let window = NSWindow(
@@ -43,14 +49,14 @@ final class ApprovalWindowPresenter {
             backing: .buffered,
             defer: false
         )
-        window.title = "SafeYolo Approval"
+        window.title = "SafeYolo Approval — \(instanceName ?? client.expectedInstanceID)"
         window.identifier = NSUserInterfaceItemIdentifier(event.id)
         window.contentViewController = controller
         window.setContentSize(NSSize(width: 520, height: 420))
         window.isReleasedWhenClosed = false
         window.level = .floating
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
-        windows[event.id] = window
+        windows[key] = window
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         DispatchQueue.main.async {
@@ -61,8 +67,14 @@ final class ApprovalWindowPresenter {
         }
     }
 
-    func close(_ id: String) {
-        windows.removeValue(forKey: id)?.close()
+    func close(_ id: String, instanceID: String) {
+        windows.removeValue(forKey: InstanceEventID(instanceID: instanceID, eventID: id))?.close()
+    }
+
+    func close(instanceID: String) {
+        for key in windows.keys.filter({ $0.instanceID == instanceID }) {
+            windows.removeValue(forKey: key)?.close()
+        }
     }
 }
 
@@ -106,16 +118,17 @@ final class ConnectionSettingsWindowPresenter {
 
 @MainActor
 final class SecurityEventWindowPresenter {
-    private var windows: [String: NSWindow] = [:]
+    private var windows: [InstanceEventID: NSWindow] = [:]
 
-    func show(_ event: SecurityObservation) {
-        if let existing = windows[event.id] {
+    func show(_ event: SecurityObservation, instanceName: String, instanceID: String) {
+        let key = InstanceEventID(instanceID: instanceID, eventID: event.id)
+        if let existing = windows[key] {
             NSApp.activate(ignoringOtherApps: true)
             existing.makeKeyAndOrderFront(nil)
             return
         }
         let view = SecurityEventView(event: event, close: { [weak self] in
-            self?.close(event.id)
+            self?.close(key)
         })
         let controller = NSHostingController(rootView: view)
         let window = NSWindow(
@@ -124,16 +137,16 @@ final class SecurityEventWindowPresenter {
             backing: .buffered,
             defer: false
         )
-        window.title = "SafeYolo Security Event"
+        window.title = "SafeYolo Security Event — \(instanceName)"
         window.contentViewController = controller
         window.isReleasedWhenClosed = false
-        windows[event.id] = window
+        windows[key] = window
         NSApp.activate(ignoringOtherApps: true)
         window.center()
         window.makeKeyAndOrderFront(nil)
     }
 
-    private func close(_ id: String) {
+    private func close(_ id: InstanceEventID) {
         windows.removeValue(forKey: id)?.close()
     }
 }
@@ -286,15 +299,17 @@ struct ConnectionSettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if let status = controller.credentialStatus {
-                Text(status)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let instanceID = controller.credentialFileInstanceID {
-                Button("Use Credential File for \(instanceID)") {
-                    error = nil
-                    controller.useCredentialFile()
+            ForEach(controller.connections) { connection in
+                if let status = connection.credentialStatus {
+                    Text("\(connection.connectionName): \(status)")
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let instanceID = connection.credentialFileInstanceID {
+                    Button("Use Credential File for \(instanceID)") {
+                        error = nil
+                        connection.useCredentialFile()
+                    }
                 }
             }
 
@@ -328,15 +343,27 @@ struct ConnectionSettingsView: View {
                     Text("Tailscale terminals use the connected host and its SafeYolo username automatically. Set an SSH target for a different login or an SSH tunnel. Run Agent uses the Admin API and survives disconnects.")
                         .font(.caption).foregroundStyle(.secondary)
 
-                    if let error = error ?? controller.startupError {
+                    if let error {
                         Text(error)
                             .foregroundStyle(.red)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    ForEach(controller.connections) { connection in
+                        if let failure = connection.startupError {
+                            Text("\(connection.connectionName): \(failure)")
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
             }
+            if controller.connections.contains(where: { $0 === controller.remoteConnection }) {
+                Button("Remove Saved Remote") {
+                    do { try controller.removeRemote() } catch { self.error = error.localizedDescription }
+                }.disabled(busy)
+            }
             HStack {
-                Button("Use Local SafeYolo") { useLocal() }
+                Button("Connect Local SafeYolo") { controller.useLocal(); close() }
                     .disabled(busy)
                 Spacer()
                 Button("Cancel") { close() }
@@ -387,14 +414,6 @@ struct ConnectionSettingsView: View {
         }
     }
 
-    private func useLocal() {
-        do {
-            try controller.useLocal()
-            close()
-        } catch {
-            self.error = error.localizedDescription
-        }
-    }
 }
 
 struct ApprovalView: View {
@@ -415,7 +434,13 @@ struct ApprovalView: View {
         return client.approvalOutcomes[id]
     }
 
-    var displayedEffect: String { approvalOutcome?.effect ?? currentEvent.summary }
+    var displayedEffect: String {
+        if let outcome = approvalOutcome, outcome.terminal { return outcome.effect }
+        if let option = currentEvent.options?.first(where: { $0.id == selectedOption && $0.available }) {
+            return option.effect
+        }
+        return approvalOutcome?.effect ?? currentEvent.summary
+    }
     var quotedUntrustedReason: String? { approvalOutcome?.quotedUntrustedReason ?? currentEvent.quotedUntrustedReason }
 
     private var evidenceUnavailable: Bool {
@@ -472,7 +497,7 @@ struct ApprovalView: View {
                 Image(systemName: "exclamationmark.shield.fill")
                     .font(.system(size: 26))
                     .foregroundStyle(.pink)
-                Text(verbatim: displayedEffect)
+                Text(verbatim: approvalDisplayText(displayedEffect))
                     .font(.headline)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -485,19 +510,29 @@ struct ApprovalView: View {
                 if let id = currentEvent.approvalID { row("Approval", id) }
                 if let id = currentEvent.requestID { row("Request", id) }
                 if let method = currentEvent.details?.method { row("Method", method) }
-                if let path = currentEvent.details?.path { row("Path", path) }
+                if let path = currentEvent.details?.path { row("Path (request data)", quotedRequesterText(path)) }
+                if let presentation = currentEvent.details?.presentation { row("Presentation", presentation) }
+                if let ttl = currentEvent.details?.ttlSeconds { row("Preview lifetime", "\(ttl) seconds") }
+                if let url = currentEvent.details?.browserURL { row("Guest browser URL (agent-selected data)", quotedRequesterText(url)) }
+            }
+
+            if let history = approvalOutcome?.requestHistory ?? currentEvent.requestHistory {
+                Text(verbatim: history.display).textSelection(.enabled)
+            }
+            if let delivery = (approvalOutcome?.attention ?? currentEvent.attention)?["operator"] {
+                Text(verbatim: "Operator attention: \(delivery.status)").foregroundStyle(.secondary)
             }
 
             if let options = currentEvent.options, options.count > 1 {
                 ForEach(options) { option in
-                    Text(verbatim: "\(option.id): \(option.effect)")
+                    Text(verbatim: approvalDisplayText("\(option.id): \(option.effect)"))
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
             if let reason = quotedUntrustedReason {
-                Text("Helper reason (untrusted)").foregroundStyle(.secondary)
+                Text("Agent-provided reason (untrusted)").foregroundStyle(.secondary)
                 Text(verbatim: reason)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -509,7 +544,7 @@ struct ApprovalView: View {
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             } else if let outcome = approvalOutcome, outcome.terminal {
-                Text(verbatim: outcome.display)
+                Text(verbatim: approvalDisplayText(outcome.display))
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -534,7 +569,7 @@ struct ApprovalView: View {
     private func row(_ label: String, _ value: String) -> some View {
         GridRow {
             Text(label).foregroundStyle(.secondary)
-            Text(value)
+            Text(verbatim: approvalDisplayText(value))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -553,7 +588,12 @@ struct ApprovalView: View {
                 }
                 close()
             case .success(.decided):
-                close()
+                if let outcome = approvalOutcome, let status = outcome.result?.status, status != "started", status != "denied" {
+                    busy = false
+                    error = outcome.display
+                } else {
+                    close()
+                }
             case .failure(let failure):
                 busy = false
                 error = failure.localizedDescription
@@ -569,11 +609,33 @@ struct CommandCentreMenu: View {
     let securityPresenter: SecurityEventWindowPresenter
     let errorPresenter: ErrorWindowPresenter
 
+    var body: some View {
+        ForEach(controller.connections) { connection in
+            Menu("\(connection.connectionName) — \(connection.client?.connectionSummary ?? "Not connected")") {
+                InstanceMenu(connection: connection, presenter: presenter,
+                             securityPresenter: securityPresenter, errorPresenter: errorPresenter)
+            }
+        }
+        Divider()
+        Button("Connection Settings…") { settingsPresenter.show(controller: controller) }
+        Button("Quit Command Centre") {
+            controller.stop()
+            NSApplication.shared.terminate(nil)
+        }
+    }
+}
+
+struct InstanceMenu: View {
+    @ObservedObject var connection: CommandCentreConnection
+    let presenter: ApprovalWindowPresenter
+    let securityPresenter: SecurityEventWindowPresenter
+    let errorPresenter: ErrorWindowPresenter
+
     @State private var actionError: String?
 
     var body: some View {
-        Text(controller.connectionName)
-        if let client = controller.client {
+        Text(connection.connectionName)
+        if let client = connection.client {
             Text(client.connectionSummary)
             if client.connectionGuidance != nil {
                 Button(client.eventEndpoint?.enabled == false ? "Set Up Live Events…" : "Connection Help…") {
@@ -596,7 +658,7 @@ struct CommandCentreMenu: View {
                 Text("Approvals (\(client.approvals.count))")
                 ForEach(client.approvals) { approval in
                     Button(approval.title) {
-                        presenter.show(approval, client: client)
+                        presenter.show(approval, client: client, instanceName: instanceLabel)
                     }
                 }
             }
@@ -641,7 +703,7 @@ struct CommandCentreMenu: View {
                         if let code = agent.exitCode { Text("Last command exit: \(code)") }
                         if agent.sandboxReady {
                             Button("Present Desktop") { present(agent, client: client) }
-                            Button("Open Sandbox Shell") { openTerminal(agent, shell: true) }
+                            Button("Open Sandbox Shell") { openTerminal(agent, client: client, shell: true) }
                         }
                         if agent.canStart {
                             Button("Run Agent") { setRunning(agent, running: true, client: client) }
@@ -653,7 +715,7 @@ struct CommandCentreMenu: View {
                             }
                         }
                         if agent.attachable {
-                            Button("Open Agent Terminal") { openTerminal(agent) }
+                            Button("Open Agent Terminal") { openTerminal(agent, client: client) }
                         } else if agent.managed && !agent.canStart {
                             Text("Headless agent: use Coord output or agent diagnostics")
                         }
@@ -668,7 +730,7 @@ struct CommandCentreMenu: View {
                         }
                     }
                     .accessibilityLabel("\(agent.name), \(agent.harnessLabel), agent \(agent.agentState)")
-                    .disabled(client.busyAgentIDs.contains(agent.agentID))
+                    .disabled(!client.adminConnected || client.busyAgentIDs.contains(agent.agentID))
                 }
             }
             if !client.securityEvents.isEmpty {
@@ -676,7 +738,7 @@ struct CommandCentreMenu: View {
                 Text("Security events observed this session (\(client.securityEvents.count))")
                 ForEach(client.securityEvents) { event in
                     Button(securityMenuTitle(event)) {
-                        securityPresenter.show(event)
+                        securityPresenter.show(event, instanceName: instanceLabel, instanceID: client.expectedInstanceID)
                     }
                 }
                 Button("Clear Security Events") { client.clearSecurityEvents() }
@@ -684,34 +746,31 @@ struct CommandCentreMenu: View {
         } else {
             Text("Not connected")
         }
-        if let status = controller.credentialStatus { Text(status) }
+        if let status = connection.credentialStatus { Text(status) }
         Divider()
         Button("Error details…") {
-            let client = controller.client
+            let client = connection.client
             errorPresenter.show(errorDetails, dismissFeedGap: client?.eventFeedGap == nil ? nil : {
                 client?.clearEventFeedGap()
             }, diagnostics: client.map { client in { client.diagnosticReport } })
         }
         .foregroundStyle(errorDetails.isEmpty ? Color.secondary : Color.red)
         .disabled(errorDetails.isEmpty)
-        if let client = controller.client {
+        if let client = connection.client {
             Button("Copy Diagnostics") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(client.diagnosticReport, forType: .string)
             }
         }
-        Button("Connection Settings…") {
-            settingsPresenter.show(controller: controller)
-        }
-        Button("Quit Command Centre") {
-            controller.stop()
-            NSApplication.shared.terminate(nil)
-        }
+    }
+
+    private var instanceLabel: String {
+        "\(connection.connectionName) (\(connection.client?.expectedInstanceID ?? connection.credentialFileInstanceID ?? connection.id))"
     }
 
     private var errorDetails: String {
-        [controller.client?.connectionGuidance, controller.startupError, controller.client?.errorDetails,
-         controller.notificationError, actionError, controller.client?.eventFeedGap]
+        [connection.client?.connectionGuidance, connection.startupError, connection.client?.errorDetails,
+         connection.notificationError, actionError, connection.client?.eventFeedGap]
             .compactMap { $0 }.joined(separator: "\n\n")
     }
 
@@ -722,40 +781,40 @@ struct CommandCentreMenu: View {
                 return NSPasteboard.general.setString(key, forType: .string)
             }, openBrowser: { NSWorkspace.shared.open($0) })
             actionError = nil
-            controller.showWebMITMSignInNotice()
+            connection.showWebMITMSignInNotice()
         } catch {
             actionError = error.localizedDescription
-            errorPresenter.show("Open WebMITM:\n\(error.localizedDescription)")
+            errorPresenter.show("\(instanceLabel) — Open WebMITM:\n\(error.localizedDescription)")
         }
     }
 
     private func setRunning(_ agent: AgentInfo, running: Bool, interactive: Bool = false, client: SafeYoloClient) {
         client.setRunning(agent, running: running, interactive: interactive) { result in
             if case .failure(let error) = result {
-                errorPresenter.show("\(running ? "Run" : "Stop") \(agent.name):\n\(error.localizedDescription)")
+                errorPresenter.show("\(instanceLabel) — \(running ? "Run" : "Stop") \(agent.name):\n\(error.localizedDescription)")
             }
         }
     }
 
-    private func openTerminal(_ agent: AgentInfo, shell: Bool = false) {
+    private func openTerminal(_ agent: AgentInfo, client: SafeYoloClient, shell: Bool = false) {
         do {
-            if shell { try controller.openSandboxShell(agent) }
-            else { try controller.openAgentTerminal(agent) }
+            if shell { try connection.openSandboxShell(agent, client: client) }
+            else { try connection.openAgentTerminal(agent, client: client) }
             actionError = nil
         } catch {
             actionError = error.localizedDescription
-            errorPresenter.show("Open \(shell ? "sandbox shell" : "agent terminal") for \(agent.name):\n\(error.localizedDescription)")
+            errorPresenter.show("\(instanceLabel) — Open \(shell ? "sandbox shell" : "agent terminal") for \(agent.name):\n\(error.localizedDescription)")
         }
     }
 
     private func runAndOpen(_ agent: AgentInfo, client: SafeYoloClient) {
         client.runAndWaitForTerminal(agent) { result in
             switch result {
-            case .success(let ready): openTerminal(ready)
+            case .success(let ready): openTerminal(ready, client: client)
             case .failure(let error):
                 if error is CancellationError { return }
                 actionError = error.localizedDescription
-                errorPresenter.show("Run and open terminal for \(agent.name):\n\(error.localizedDescription)")
+                errorPresenter.show("\(instanceLabel) — Run and open terminal for \(agent.name):\n\(error.localizedDescription)")
             }
         }
     }
@@ -770,7 +829,7 @@ struct CommandCentreMenu: View {
                     NSWorkspace.shared.open(url)
                 }
             case .failure(let error):
-                errorPresenter.show("Present desktop for \(agent.name):\n\(error.localizedDescription)")
+                errorPresenter.show("\(instanceLabel) — Present desktop for \(agent.name):\n\(error.localizedDescription)")
             }
         }
     }

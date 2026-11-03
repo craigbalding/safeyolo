@@ -38,11 +38,13 @@ tmux select-pane -t "$TMUX_PANE" -T controller
 
 ## Start through the operator handoff
 
-The `safeyolo lab` entry prepares the owned guest and checks its Codex
+For Codex, the `safeyolo lab` entry prepares the owned guest and checks its
 authentication before opening the viewer. Read [bootstrap.md](bootstrap.md) for
 startup and reconnection. The entry invokes `safeyolo-lab` in that guest. This
 helper creates the persistent shell and injects the controller runner. Do not
 require a second operator command inside tmux.
+For Claude, use `safeyolo-lab --harness claude` in the prepared guest as
+described in bootstrap. The shared helper provides the same persistent shell.
 Do not make tmux configuration run `.safeyolo-command` automatically.
 
 ## Create persistent shells

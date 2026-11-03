@@ -83,7 +83,6 @@ class EventKind(StrEnum):
     OPS = "ops"
     ADMIN = "admin"
     AGENT = "agent"
-    PLUMB = "plumb"
     COORD = "coord"
 
 
@@ -118,7 +117,6 @@ class ApprovalType(StrEnum):
     GATEWAY_ROUTE = "gateway_route"
     SERVICE = "service"
     CONTRACT_BINDING = "contract_binding"
-    PLUMB = "plumb"
     DESKTOP_PRESENT = "desktop_present"
 
 

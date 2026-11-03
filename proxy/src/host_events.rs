@@ -8,7 +8,7 @@ use crate::{Error, audit};
 
 fn log_settings() -> Result<(PathBuf, audit::Settings), Error> {
     if let Ok(config) = crate::native_config::read(&crate::host_platform::config_path())
-        && let Some(path) = config.audit_log_path
+        && let Some(path) = config.audit_log_path.clone()
     {
         let settings = match config.native_settings {
             Some(settings) => settings.audit.writer_settings(),

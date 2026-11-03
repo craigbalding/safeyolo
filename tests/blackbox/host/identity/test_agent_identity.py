@@ -19,7 +19,11 @@ _AGENT_NAME = os.environ.get("SAFEYOLO_TEST_AGENT", "bbtest")
 
 
 class TestAgentListener:
-    """Host-owned Unix domain sockets supply each agent's request identity."""
+    """Host-owned Unix domain sockets supply each agent's request identity.
+
+    Why: A missing or shared listener can break guest egress or attribute
+    requests to the wrong agent. Policy and evidence need the correct identity.
+    """
 
     @staticmethod
     def listener():

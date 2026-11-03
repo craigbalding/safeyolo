@@ -200,65 +200,6 @@ async fn method_auth_id_identity_and_control_order_leave_body_unread() {
 
 #[tokio::test]
 async fn existing_query_projection_keeps_first_id_and_exact_terminal_lf() {
-    let source: Value =
-        serde_json::from_str(include_str!("agent_api_explain_source.json")).unwrap();
-    let names = [
-        "missing_query",
-        "invalid_id",
-        "terminal_lf",
-        "duplicate_first_valid",
-        "duplicate_first_empty",
-        "unresolved_identity",
-    ];
-    let mut compared = 0;
-    for row in source["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|row| names.contains(&row["input"]["name"].as_str().unwrap()))
-    {
-        let (directory, token, writer) = fixture();
-        for file in row["input"]["files"].as_array().unwrap() {
-            let mut text = String::new();
-            for part in file["parts"].as_array().unwrap() {
-                text.push_str(
-                    &part["text"]
-                        .as_str()
-                        .unwrap()
-                        .repeat(part["repeat"].as_u64().unwrap() as usize),
-                );
-            }
-            std::fs::write(directory.path().join(file["name"].as_str().unwrap()), text).unwrap();
-        }
-        let path = format!("/explain?{}", row["input"]["query"].as_str().unwrap());
-        let input = Request {
-            identity: if row["input"]["resolved_identity"].as_bool().unwrap() {
-                Identity::Resolved("alice")
-            } else {
-                Identity::Unavailable
-            },
-            ..request(&path)
-        };
-        let outcome = call(input, &token, Some(&writer)).await;
-        assert_eq!(
-            outcome.response.status,
-            row["result"]["status"].as_u64().unwrap() as u16
-        );
-        assert_eq!(
-            std::str::from_utf8(&outcome.response.body_bytes()).unwrap(),
-            row["result"]["body_text"].as_str().unwrap()
-        );
-        assert_eq!(
-            outcome.response.headers[0],
-            ("Content-Type".into(), "application/json".into())
-        );
-        assert_eq!(
-            outcome.response.headers[1],
-            ("X-SafeYolo-Agent-API".into(), "true".into())
-        );
-        compared += 1;
-    }
-    assert_eq!(compared, names.len());
     let (_directory, token, writer) = fixture();
     for (query, expected_id) in [
         (format!("request_id={RID}"), Some(RID.to_owned())),
@@ -298,24 +239,47 @@ async fn existing_query_projection_keeps_first_id_and_exact_terminal_lf() {
 #[tokio::test]
 async fn actual_writer_read_uses_trusted_agent_and_preserves_typed_extensions() {
     let (directory, token, writer) = fixture();
-    let alice = format!(
-        r#"{{"request_id":"{RID}","agent":"alice","details":{{"n":NaN,"big":1208925819614629174706176}}}}"#
+    use safeyolo_proxy::{
+        audit::{Event, Kind, Severity},
+        circuits::CircuitValue,
+    };
+    for agent in [Some("alice"), Some("bob"), None] {
+        let mut event = Event::new(
+            "traffic.owned",
+            Kind::Traffic,
+            Severity::Low,
+            "Owned exchange",
+        );
+        event.request_id = Some(RID.into());
+        event.agent = agent.map(str::to_owned);
+        event.details = match agent {
+            Some("alice") => {
+                CircuitValue::parse_json(r#"{"n":NaN,"big":1208925819614629174706176}"#).unwrap()
+            }
+            Some("bob") => json!({"value":"bob-only"}).into(),
+            _ => json!({"agent":"alice"}).into(),
+        };
+        writer.emit(event).unwrap();
+    }
+    assert!(
+        writer
+            .wait_for_drain(std::time::Duration::from_secs(2))
+            .unwrap()
     );
-    let bob = format!(r#"{{"request_id":"{RID}","agent":"bob","details":{{"value":"bob-only"}}}}"#);
-    let unowned = format!(r#"{{"request_id":"{RID}","details":{{"agent":"alice"}}}}"#);
-    std::fs::write(
-        directory.path().join("audit.jsonl"),
-        format!("{alice}\n{bob}\n{unowned}\n"),
-    )
-    .unwrap();
+    let bytes = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+    let records: Vec<_> = bytes
+        .lines()
+        .map(|line| safeyolo_proxy::audit::parse_record(line).unwrap())
+        .collect();
     let path = format!("/explain?request_id={RID}&agent=bob&owner=bob");
     let outcome = call(request(&path), &token, Some(&writer)).await;
     assert_eq!(outcome.response.status, 200);
+    let result = json_body(&outcome);
+    assert_eq!(result["events"], json!([records[0]]));
+    assert!(result["events"][0]["details"]["n"].is_null());
     assert_eq!(
-        std::str::from_utf8(&outcome.response.body_bytes()).unwrap(),
-        format!(
-            r#"{{"request_id": "{RID}", "status": "complete", "events": [{{"request_id": "{RID}", "agent": "alice", "details": {{"n": NaN, "big": 1208925819614629174706176}}}}]}}"#
-        )
+        result["events"][0]["details"]["big"].to_string(),
+        "1208925819614629174706176"
     );
     assert!(outcome.failure.is_none() && outcome.audit.is_none());
     let bob_result = call(
@@ -327,10 +291,7 @@ async fn actual_writer_read_uses_trusted_agent_and_preserves_typed_extensions() 
         Some(&writer),
     )
     .await;
-    assert_eq!(
-        json_body(&bob_result)["events"],
-        json!([serde_json::from_str::<Value>(&bob).unwrap()])
-    );
+    assert_eq!(json_body(&bob_result)["events"], json!([records[1]]));
     let empty = call(
         Request {
             identity: Identity::Resolved("charlie"),
@@ -347,13 +308,9 @@ async fn actual_writer_read_uses_trusted_agent_and_preserves_typed_extensions() 
 }
 
 #[tokio::test]
-async fn reader_exceptions_keep_source_outer_handler_classes() {
+async fn current_reader_failures_preserve_the_handler_and_body_boundary() {
     for (data, kind, class) in [
-        (
-            b"[]\n".to_vec(),
-            ExplainErrorKind::Attribute,
-            "AttributeError",
-        ),
+        (b"[]\n".to_vec(), ExplainErrorKind::Value, "ValueError"),
         (
             b"\xff\n".to_vec(),
             ExplainErrorKind::UnicodeDecode,

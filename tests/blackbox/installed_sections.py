@@ -27,6 +27,7 @@ SECTIONS = {
     "kvm": ("isolation", "ingress", "workloads"),
     "vz": ("isolation", "access", "lifecycle", "continuity"),
 }
+OPTIONAL_SECTIONS = {"systrap": ("claude",), "kvm": (), "vz": ()}
 # run-tests.sh reserves this result for failed cleanup when invoked by this
 # loop. Its ordinary public infrastructure/cleanup exit remains 2.
 INNER_CLEANUP_FAILURE_EXIT = 3
@@ -37,11 +38,11 @@ def copy_prepared_nats(source: Path, root: Path) -> None:
     shutil.copytree(source / "data/coord/nats/bin", root / "data/coord/nats/bin")
 
 
-def prepare_native_instance(source: Path, root: Path) -> None:
+def prepare_native_instance(source: Path, root: Path, *, log=None) -> None:
     """Create fresh native state and reuse the prepared immutable inputs."""
     subprocess.run([str(source / "bin/safeyolo"), "--root", str(root), "init"],
-                   check=True, timeout=10)
-    for name in ("bin", "assets", "lib", "libexec", "share"):
+                   check=True, timeout=10, stdout=log, stderr=log)
+    for name in ("bin", "assets", "lib", "libexec", "share", "host"):
         if not (source / name).exists():
             continue
         target = root / name
@@ -237,8 +238,18 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                          "--https-port", "46374", "--oauth-port", "46375",
                          "--admin-port", "46371", "--nats-client-port", "46370",
                          "--nats-monitor-port", "46372"]
+        if section == "claude":
+            # The operator prepares the subscription in this dedicated host
+            # instance. Never copy its encrypted store into another instance.
+            instance = source
+            args = [str(REPOSITORY / ".venv/bin/python"),
+                    str(REPOSITORY / "tests/blackbox/claude_smoke.py"),
+                    "--root", str(source), "--workspace", str(directory / "claude-workspace"),
+                    "--credential", os.environ.get("SAFEYOLO_CLAUDE_SMOKE_CREDENTIAL", ""),
+                    "--output", str(section_artifacts / "claude-smoke.json")]
         print(f"=== Installed {section}: {instance} ===", flush=True)
         error = None
+        claude_cleanup = None
         try:
             if lane == "kvm":
                 # Device ACLs can be replaced between sections. Reuse the
@@ -254,7 +265,16 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
             error = str(exc)
             section_exit = 2
         finally:
-            failures = cleanup_instance(cli, instance)
+            # The Claude instrument checks a dedicated instance before taking
+            # ownership and performs its own cleanup, including on failure.
+            failures = [] if section == "claude" else cleanup_instance(cli, instance)
+            if section == "claude":
+                try:
+                    claude_report = json.loads((section_artifacts / "claude-smoke.json").read_bytes())
+                    failures = claude_report.get("cleanup_failures", [])
+                    claude_cleanup = claude_report.get("cleanup") or "not-started"
+                except (OSError, ValueError):
+                    failures = ["Claude section did not retain its cleanup result"]
             if section == "lifecycle":
                 failures += cleanup_instance(cli, directory / "lifecycle-owner", owner=True)
         if section != "continuity" and section_exit == INNER_CLEANUP_FAILURE_EXIT:
@@ -266,7 +286,7 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                "exit": section_exit, "result": "cleanup_failure" if failures else
                "passed" if section_exit == 0 else
                "assertion_failure" if section_exit == 1 else "preparation_failure",
-               "cleanup": "stopped" if not failures else "failed", "cleanup_failures": failures}
+               "cleanup": "failed" if failures else claude_cleanup or "stopped", "cleanup_failures": failures}
         if error is not None:
             row["error"] = error
         report["sections"].append(row)
@@ -282,7 +302,8 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("lane", choices=SECTIONS)
-    parser.add_argument("--section", action="append", choices=sorted({s for v in SECTIONS.values() for s in v}))
+    parser.add_argument("--section", action="append", choices=sorted(
+        {s for v in (*SECTIONS.values(), *OPTIONAL_SECTIONS.values()) for s in v}))
     parser.add_argument("--operator-journey", action="store_true",
                         help="Extend the selected systrap or VZ access section with terminal, desktop and restart observations")
     parser.add_argument("--listener-restart", action="store_true",
@@ -313,8 +334,10 @@ def main() -> int:
     if prepared_config is None and subprocess.check_output(["git", "-C", str(checkout), "status", "--porcelain"], text=True).strip():
         parser.error("installed source checkout must be clean")
     sections = tuple(args.section or SECTIONS[args.lane])
-    if any(section not in SECTIONS[args.lane] for section in sections) or len(set(sections)) != len(sections):
+    if any(section not in SECTIONS[args.lane] + OPTIONAL_SECTIONS[args.lane] for section in sections) or len(set(sections)) != len(sections):
         parser.error("sections must be distinct and supported by the selected lane")
+    if "claude" in sections and (prepared_config is None or not os.environ.get("SAFEYOLO_CLAUDE_SMOKE_CREDENTIAL")):
+        parser.error("--section claude requires --prepared-config and SAFEYOLO_CLAUDE_SMOKE_CREDENTIAL")
     if args.operator_journey and (args.lane not in {"systrap", "vz"} or sections != ("access",)):
         parser.error("--operator-journey requires systrap or vz --section access")
     if args.listener_restart and sections != ("isolation",):

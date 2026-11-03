@@ -183,7 +183,7 @@ nodes:
         - path: pyproject.toml
           sha256: 1e11bf66e0cf0aa1798847289cc72a247936951b5816265ca777b683fb64e9e6
         - path: uv.lock
-          sha256: ee29be49d5bb303ebe7f8d378d9b3abfaaebe218b1fd6be02d03e4547a9de497
+          sha256: fd244df9e559bed2b211bbe93f257831fce8e1087b19cfc7d9d3da2fd1bc3050
         - path: scripts/check_test_assurance.py
           sha256: 3dc6bc589625ea3058b7ca20711d97f3007ca41b0ebd1653a671a4642dc91974
       setup: "uv sync --frozen --group dev"
@@ -213,13 +213,13 @@ nodes:
       obtain_from: "the trusted-base installer and harness; Python dependencies are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: install.sh
-          sha256: a008b83f118b9d9a947e4dcc5852f7112d50dd8008ddc62185f6bf573056c6a0
+          sha256: dfb8215a4898a01dc79acba65d0cf99bf0da57201ff86e470cf88153843e9d2e
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: tests/blackbox/run-tests.sh
-          sha256: 3c81622bac685555b9befb4c7709cf6716aa86050c77baaff1a0acf77e51436b
+          sha256: ce39f4eb427f5553c95913e8ce95c328ae4f75732a20a4eab662a2f7b8027ab7
         - path: uv.lock
-          sha256: ee29be49d5bb303ebe7f8d378d9b3abfaaebe218b1fd6be02d03e4547a9de497
+          sha256: fd244df9e559bed2b211bbe93f257831fce8e1087b19cfc7d9d3da2fd1bc3050
       setup: "Use an approved host with native bundle/build inputs and a fresh SAFEYOLO_CONFIG_DIR; the lane owns its separate test instance, ports, certificates and sinkhole."
       verify: "sha256sum install.sh tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh uv.lock"
       run:
@@ -239,6 +239,12 @@ nodes:
       persistence or host-resource check. Observe actual enforcement; a saved
       setting alone does not prove the effect. The maintained shell builder
       supplies guest inputs; the retired Python bootstrap is not invoked.
+      The optional Claude section reuses an exact selected dedicated installation
+      with an operator-provisioned host subscription. It joins native setup,
+      staged skill readability, completed tools, a checked workspace effect and
+      current gateway run attribution. It does not approve requests or retry a
+      model task. Trusted caller deployment and its selected inputs/report return
+      require separate verification on the operator-owned host.
     source: tests/blackbox/run-lane.sh
     tool:
       obtain_from: "the host package's complete pinned gVisor payload (or its explicit tested system override), plus the trusted source's guest inputs and installer"
@@ -246,18 +252,47 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: tests/blackbox/run-tests.sh
-          sha256: 3c81622bac685555b9befb4c7709cf6716aa86050c77baaff1a0acf77e51436b
+          sha256: ce39f4eb427f5553c95913e8ce95c328ae4f75732a20a4eab662a2f7b8027ab7
         - path: proxy/src/host_platform.rs
-          sha256: a510354b7338cd64cc1dbdee16d3b467c4d028d6043c15e732f5681013f200b2
+          sha256: e3b377e3a0d65748e4104b1bc905b4459d85e4b19188d90406cfb82c0ba7201b
         - path: proxy/src/host_boot.rs
-          sha256: ed76909d65a957ee26b60ae329c998d1af360db355220c02166cb2ecb5076342
+          sha256: ce2861e854a3a1736f98f6d8ef9123af10090837d015b6519e339e0619f9fb59
         - path: guest/build-rootfs.sh
-          sha256: 151446ff900c8f1082cfa7ee700fa8df072b93956a6813dd8a9b4cc864d4a409
-      setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
+          sha256: 4a30c9ece1b79e9e53bbb1dd301596ff94552d99be25386ac395f1f9490d05ed
+        - path: proxy/src/jobs.rs
+          sha256: bf49088efe6c8f53ee6a07fdddcb5c01335e5ea5894734538ad67ada1c971502
+        - path: proxy/src/jobs/input.rs
+          sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
+        - path: tests/blackbox/host/job_sandbox.py
+          sha256: d0636a2c40ebea884bf7eafdc701960f8db7e0586db64f3dd6264820b9678741
+        - path: tests/blackbox/host/job_network.py
+          sha256: 50e5875eb2e8c62cd8277c90a338228d631762bf25a49d04f0f5f78d25f0c64b
+        - path: proxy/Cargo.toml
+          sha256: 0d650061e3d3882d26c65f26d479270c58f0dc8c6c05c4360577caa04af8b41c
+        - path: proxy/Cargo.lock
+          sha256: ecc0de72cd8d295a673a7a533d36518730e347b5b4c9f2ccee5472626f3a348d
+        - path: proxy/src/lib.rs
+          sha256: b21c961f4d23374b95ab7971b429d3ff624f2ad8a69ec748463ebea261fa1dc5
+        - path: proxy/src/bin/safeyolo.rs
+          sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
+        - path: scripts/run_claude_blackbox.py
+          sha256: 218890e4ddaef26d7d86a67784a447d3c40640eda4abe1c16a2243880c7e803b
+        - path: tests/blackbox/claude_smoke.py
+          sha256: 98a1ded436d5c4f395c9014e4d270efcbc9834732b0d0f8049c3c5ba51df1f06
+        - path: tests/blackbox/installed_sections.py
+          sha256: 2c3a3be25c93d60e32d632b1f6c6c12e2263cdd923007c1c23aac764ed7c119e
+        - path: tests/blackbox/retained_inputs.py
+          sha256: f78e88fcbe2026b7873ec172918201c2387a66ca9839254b4b6df7705eebd1c2
+      setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Retained manual Claude reuse requires the same host and selected installed bytes; see tests/blackbox/README.md. The caller verifies runtime settings, creates separate writable state and runs credential-free systrap sections before provisioning. Optional --readiness reuses applicable successful original reports and their retained isolation config.toml. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
       verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh proxy/src/host_platform.rs proxy/src/host_boot.rs guest/build-rootfs.sh && safeyolo doctor"
       run:
+        trusted_claude: ".venv/bin/python scripts/run_claude_blackbox.py nightly --ref refs/heads/<default-branch> --provision <operator-helper> --credential <host-credential-name> --output <new-private-attempt-directory>"
+        retained_manual_claude: ".venv/bin/python scripts/run_claude_blackbox.py manual --ref refs/heads/<default-branch> --selection <frozen-selection.json> --prepared-config <retained-installed-root> --provision <operator-helper> --credential <host-credential-name> --output <new-private-attempt-directory>"
+        native_claude: "SAFEYOLO_CLAUDE_SMOKE_CREDENTIAL=<existing-host-credential-name> .venv/bin/python tests/blackbox/retained_inputs.py run --lane systrap --selection <frozen-selection.json> --prepared-config <dedicated-selected-installation> --section claude --artifacts <new-private-report-directory>"
         gvisor_systrap: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh systrap --verbose"
         gvisor_kvm: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh kvm --verbose"
+        disposable_jobs: "python3 tests/blackbox/host/job_sandbox.py --cli <candidate-cli> --root <prepared-disposable-instance> --scratch <disk-backed-directory>"
+        credentialed_jobs: "python3 tests/blackbox/host/job_network.py --cli <candidate-cli> --proxy <candidate-proxy> --base-root <prepared-instance> --root <fresh-traversable-root> --scratch <empty-disk-backed-directory> --admin-port <authorized-port> --upstream-port <authorized-port>"
       capture: [trusted base, runsc version, actual platform metadata, uid map, guest-root boundary, lifecycle result, runsc logs, exit status]
 
   - id: ev.accept_vz_lane
@@ -285,11 +320,39 @@ nodes:
           sha256: d31fc5882ef185a66a86c634df38077eb1629df324bf03ae2e2068d5d9e7df6e
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
-      setup: "Use the approved physical Apple Silicon host; make -C vm install; prepare a disposable BYOA agent for snapshot smoke."
+        - path: proxy/src/host_platform.rs
+          sha256: e3b377e3a0d65748e4104b1bc905b4459d85e4b19188d90406cfb82c0ba7201b
+        - path: proxy/src/jobs.rs
+          sha256: bf49088efe6c8f53ee6a07fdddcb5c01335e5ea5894734538ad67ada1c971502
+        - path: proxy/src/jobs/input.rs
+          sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
+        - path: proxy/src/jobs/macos.rs
+          sha256: 310d5544e870e18de8adf89ea47ac39e5f029462ec0974453c5977caf2c86837
+        - path: tests/blackbox/host/job_sandbox.py
+          sha256: d0636a2c40ebea884bf7eafdc701960f8db7e0586db64f3dd6264820b9678741
+        - path: tests/blackbox/host/job_network.py
+          sha256: 50e5875eb2e8c62cd8277c90a338228d631762bf25a49d04f0f5f78d25f0c64b
+        - path: proxy/Cargo.toml
+          sha256: 0d650061e3d3882d26c65f26d479270c58f0dc8c6c05c4360577caa04af8b41c
+        - path: proxy/Cargo.lock
+          sha256: ecc0de72cd8d295a673a7a533d36518730e347b5b4c9f2ccee5472626f3a348d
+        - path: proxy/src/lib.rs
+          sha256: b21c961f4d23374b95ab7971b429d3ff624f2ad8a69ec748463ebea261fa1dc5
+        - path: proxy/src/bin/safeyolo.rs
+          sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
+        - path: proxy/src/jobs/vz-guest-init.sh
+          sha256: b8365d82b1a39f4888b3a717d4a0f1eca1d1a8c239d89c08e15bc94024de2735
+        - path: proxy/src/jobs/vz-exec.sh
+          sha256: 72e284a6b8cc9aae65870b97cdf9ab9f4c123dacebc78f3694bd2cb4203ff58a
+        - path: tests/fixtures/job-observer-probe.c
+          sha256: 0207c5417386d7022d0ffefeb9a6b4b9d162e5017a8684a5225c62533beb0e8b
+      setup: "Use the approved physical Apple Silicon host; make -C vm install; prepare a disposable BYOA agent for snapshot smoke. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance."
       verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
       run:
         full_vz: "./tests/blackbox/run-lane.sh vz --verbose"
         snapshot_restore: "bash vm/test/snapshot-smoke.sh <disposable-agent>"
+        disposable_jobs: "python3 tests/blackbox/host/job_sandbox.py --cli <candidate-cli> --root <prepared-disposable-instance> --scratch <disk-backed-directory> --observer-probe <static-linux-arm64-probe>"
+        credentialed_jobs: "python3 tests/blackbox/host/job_network.py --cli <candidate-cli> --proxy <candidate-proxy> --base-root <prepared-instance> --root <fresh-traversable-root> --scratch <empty-disk-backed-directory> --admin-port <authorized-port> --upstream-port <authorized-port>"
       capture: [trusted base, safeyolo-vm version, physical host identity, VZ assertion, snapshot fingerprint result, exit status]
 
   - id: ev.accept_coord_lane
@@ -302,16 +365,198 @@ nodes:
       publish, receive, retention or restart behavior. Startup alone does not
       establish durability. Historical Python upgrade fixtures are test
       references; the fresh product has no old-state conversion requirement.
+      For the Stage 0 current-master boundary, set SAFEYOLO_COORD_BASE_BINARY
+      to the retained current-master CLI and select the native_stage0 test
+      with --ignored. It uses three authenticated clients and real process
+      crashes; it does not substitute for model-driven three-agent dogfood.
+      For the native inventory boundary, select
+      inventory::native_inventory_uses_current_grants_and_fixture_provider_evidence_across_restart
+      with --ignored and the pinned NATS binary. It exercises actual service
+      grant/revoke, authenticated room state, identity replacement and restart.
+      Its controlled provider snapshots prove the trusted observation boundary,
+      not a deployed external lease. Unsupported deployed observations remain
+      unknown. The actual three-agent comparison is a separate required observation.
+      For new operator-approved collaboration, run the delegated_approvals
+      integration target with filter collaboration, --ignored, a disk-backed
+      TMPDIR, SAFEYOLO_NATS_TEST_INSTANCE=1 and the pinned NATS binary. It uses
+      the actual product room creator, canonical approval receipts, authenticated
+      Agent API, inspected messages and current/offline/restarted delivery. It
+      covers denied/expired requests, current identity removal, scoped delegation,
+      interrupted preparation/commit, pending-read revocation and UTF-8/encoded
+      size bounds. These controlled runs do not establish guest isolation or a
+      model wake.
+      For private approval results, run the delegated_approvals integration
+      target with filter private_, --ignored and the pinned NATS binary. It
+      uses authenticated Agent API calls, credential expiry, disconnected
+      requesters, broker/proxy/run restart, irreversible withholding, publication
+      gaps and bounded broker pressure. Controlled run records do not prove guest
+      isolation or an automatic model wake.
+      For durable work ownership, select
+      work::native_work_claims_replay_identity_revocation_and_crash_recovery
+      with --ignored. Set SAFEYOLO_WORK_RETAIN_SECONDS=1800 for the actual
+      30-minute ownership boundary. The test overlaps the wait with its other
+      checks and reports the observed elapsed time. A shorter run cannot prove
+      that duration. The three-model work exercise remains separate.
+      For material signals and operator attention, select
+      signals::native_signals_author_page_watch_replay_and_restart with
+      --ignored. It uses the authenticated Agent API, owned real NATS,
+      native watch and the Admin API. It checks permission revocation,
+      author-only correction, failed-write rollback, lost-response recovery,
+      metadata-only audit and exact immutable revision rendering. The actual
+      three-model symptom/inference/correction exercise remains separate.
+      For current operator work, select
+      signals::native_watch_recovers_final_signal_and_approval_changes_without_a_later_event
+      with --ignored. It uses the real authenticated Admin stream and native
+      watch for pre-existing signals and approvals, the subscription/snapshot
+      boundary, missed final create/clear notifications with no later event,
+      fast signal/approval creation and resolution between host reads with
+      the final resolution frames dropped, idle viewer requests, unavailable
+      state and reconnect. Its operator
+      recovery runs with NATS stopped and the audit destination impaired.
+      Current-state controls do not establish audit recording or historical replay.
+      Also select the two signals::native_watch_clears_ tests with --ignored
+      for requests seen only in attachment snapshots during an audit outage.
+      Both consume the initial control before resolving the request entirely
+      between shared host checks. Signals and approvals must clear within five
+      seconds without a later business event or idle viewer polling.
+      For combined room status, select
+      room_status::native_room_status_current_authority_restart_and_cli with
+      --ignored. It compares authenticated Agent API and operator CLI state,
+      challenges false chat claims, current ownership, completions, corrections,
+      grant revocation and restart. Actual 30-minute operator absence and three
+      actual model participants remain separate required observations.
+      For exact work candidates and attestations, select
+      attestations::native_attestations_exact_candidate_authorship_replay_and_recovery
+      with --ignored. It checks authenticated authorship, retained stale evidence,
+      independent conflicting dispositions, candidate changes, current status,
+      revocation races, pre-commit process interruption and lost responses while
+      NATS publication is unavailable. The three-model exact-target exercise
+      remains a separate required observation.
+      For read-only GitHub references, select
+      github::native_github_read_uses_caller_service_and_preserves_local_work
+      with --ignored. Its controlled external TLS fixture uses real service
+      grants, vaulted credential injection, authenticated work and real NATS.
+      It checks local ownership, reference replay, external failures, bounded
+      reads and in-flight service/room revocation. These responses are fixtures;
+      actual GitHub transport and three-model use remain separate observations.
+      For collaboration through one home SafeYolo, select
+      federation::two_safeyolos_share_only_home_authority_across_partition_restart_and_revocation
+      with --ignored. It starts two independent native instance roots, proxies
+      and NATS processes, and a real TLS home relay. A TCP fault injector cuts
+      a mutation's route. The test checks one concurrent claimant, qualified
+      identity, local-only history, targeted remote attention, home brief
+      versions, unavailable GitHub access on both callers, discarded-response
+      replay, restart, reconnection and peer/member revocation. It also checks
+      display-name reuse after the last grant or peer revocation, current-name
+      uniqueness, unchanged authorship and original-operation replay. It proves this
+      two-instance boundary on one owned host; WAN behavior, external GitHub
+      access and three actual model participants remain separate observations.
+      For optional operator catch-up, select
+      catch_up::native_catch_up_keeps_current_authority_and_inspectable_bounded_history
+      with --ignored. It exercises the read-only CLI against authenticated agent
+      mutations and real NATS: narrative contradiction, regeneration, simultaneous
+      readers, bounded long history and continuation, inspectable exact messages,
+      malformed/unavailable evidence, restart and revoked access. The test retains
+      its private fixture and original prompt/results. Actual model generation
+      and three model participants remain a separate observation.
     source: proxy/tests/native_coord.rs
     tool:
       obtain_from: "the trusted-base native tests and locked Cargo dependencies; the native NATS owner verifies its pinned archive and executable before launch"
       sources:
+        - path: proxy/tests/delegated_approvals/collaboration.rs
+          sha256: cc249a3fcdf97f033e57cc1a82f64ac7ef97f2c83f9c59c115eca21a7861ef17
         - path: proxy/tests/native_coord.rs
-          sha256: 37dc10a5696b8bbcfa71f56781f7a29eb9ff752eb8b21c7b5e49f72d559cd42b
+          sha256: e80d82dc38f9a432ed642892cef39457661ab65ff89475a4bf87fc19d128a0e7
+        - path: proxy/tests/native_coord/federation.rs
+          sha256: b4f44c1465fd834f467ca5fb4f703efb3c372a57d327644deb8a8e2545e81578
+        - path: proxy/src/agent_api/coord.rs
+          sha256: 356508bf02f9dc5d5728b0b77c53d25997416f361518788b01d3c49a85e6ff73
+        - path: proxy/src/agent_api/coord/federation.rs
+          sha256: 0a1a41a576e663065562d3968e2dbb603f57a1d296d6c730e9ad8f3d5b6f87f9
+        - path: proxy/src/agent_api/coord/federation/tests.rs
+          sha256: 0172482d36d05a08f16b331779296d31d6b558bcc332badf97cf207c133f77be
+        - path: proxy/src/coord_rooms/federation.rs
+          sha256: ee3732ccad8e2df401630722af5ce80ae248b2db6e74640af06d5b7f8b0f34d4
+        - path: proxy/src/coord_rooms/federation/tests.rs
+          sha256: 2c61194f81b57c913d2fb17f1c035d5e0704f1d0849f3d8d204028c70f47ae91
+        - path: proxy/src/coord_federation_schema.sql
+          sha256: 342a5fb315c9b2013afb291b0223ab2c83312af3f5a8ee2b7dfda6f6b493d12b
+        - path: proxy/src/coord_rooms/membership.rs
+          sha256: cb6b57cd126bae0d3c0471d5d2c683e32d3ec55a93b53663666c9f31c646e5ca
+        - path: proxy/tests/native_coord/github.rs
+          sha256: aa411d76472321e1813fa59d9aa5a4d1d375a9371df344271a5b2d6574a54c10
+        - path: proxy/src/coord_rooms/work/github.rs
+          sha256: 5070f64392febbebd3172479ff0d396288b12bda94cbd2cf5286707674d8e7c7
+        - path: proxy/src/coord_tools/github.rs
+          sha256: da9e4c6e244c232da4aedf17d7f58484862743996c084317a37f4e602d70c164
+        - path: proxy/src/native_client.rs
+          sha256: bb2061375c9bd7b814b9047d91e76d3cdccba0428581c40bee7d103c49924d9f
+        - path: cli/src/safeyolo/services/github.yaml
+          sha256: 38880c71fbe0a2f995a790c64d21d001baa7a5911d10f44d8e50973914f543d3
+        - path: proxy/tests/native_coord/stage0.rs
+          sha256: 97de83bf334938ba0d6b7bb727789e9da4834dc8bbf6fb659a3176119b8fbc6a
         - path: proxy/src/coord_rooms.rs
-          sha256: 751d00acdaaa5e843479a15db03891c0c8990e5e59672f4dc9402a774f681a39
+          sha256: 534969daebaeff6658f8efefa8d339ab76d1241ef1362046c6bfaa18caa954d7
+        - path: proxy/tests/native_coord/inventory.rs
+          sha256: 1de6227ecdc2bbf2062f0e912c0c4ae7d6e149e2ea61837d75705393891b7276
+        - path: proxy/src/agent_api/coord/inventory.rs
+          sha256: 8fbf8a3581d4a18cd9e3914ac49d622fd29ea6dfe7549df6c00a08d997d393bf
+        - path: proxy/src/coord_rooms/inventory.rs
+          sha256: 6411a3fe90b708ae479af0bc9df9199ed07c2b429b5f58c77bc3bd371628999e
+        - path: proxy/tests/native_coord/work.rs
+          sha256: 9e64e40d6b4e8c6d9ca192ff9b418557fa36c0fa32ec4f25cf40544d5d2458ac
+        - path: proxy/tests/native_coord/attestations.rs
+          sha256: 82eef376cf3acbfed06d54a3ae57047ac8d15a36f7c68cbb6c5dc0c9ab64d144
+        - path: proxy/src/coord_rooms/work/attestations.rs
+          sha256: 91caf90c13c3ff9c69fadc6c6b1b2d0f2099b0619c0dfcf80b63948b09560703
+        - path: proxy/src/coord_rooms/work/attestation_tests.rs
+          sha256: bf8f97d6dd3175aae8cd4a7448effa67d02fda8037e6952116f9e97c861156f7
+        - path: proxy/src/coord_rooms/work.rs
+          sha256: 6070753cea742f0ea3574f16378e895bbf9e56ab3f4e74d0982d03c468b55f19
+        - path: proxy/src/coord_rooms/work/tests.rs
+          sha256: 0052a9f8e099d600f3e222872740020e6ba7cf5339a385ce5be7fb388c4bcd26
+        - path: proxy/src/coord_rooms/work_cli.rs
+          sha256: 6d7d40f2093b41f7692cff412198bffc78cc71b55d9a7d560da6b3a736a2d6bb
+        - path: proxy/src/agent_api/coord/work.rs
+          sha256: c9915988232a53796e7c6d140ef0b716567c196d91eb845e5a1c5896b67a3dd0
+        - path: proxy/src/coord_work_schema.sql
+          sha256: fb6592902c80c56d51758e3938c3fa14b620daa6988269eedf7a6e215e0dcf99
+        - path: proxy/tests/native_coord/signals.rs
+          sha256: fe7250cebc9206d3bcc04ad36cc62b25663bf30808d4d2f2ab20f795c3daabd2
+        - path: proxy/src/coord_rooms/signals.rs
+          sha256: bef138d95aa2d06ee547311728ed78b2a38b6cac96ed176a7c87caf54364ff57
+        - path: proxy/src/coord_rooms/signals/tests.rs
+          sha256: e53eadd25a72205bac4825e18ea2e103810e977d4995cc743870ce19fd3b6d47
+        - path: proxy/src/coord_rooms/signals_cli.rs
+          sha256: f2574b47569fbf3b590c3d7def75abd66c76b14c677a6841c6c26178e7973ea3
+        - path: proxy/src/coord_signal_schema.sql
+          sha256: 059ad7dcad31ae77f43cf8a9a890f110c7349aad8723b158aa666f34b2ae1bd0
+        - path: proxy/src/agent_api/coord/signals.rs
+          sha256: 931e2ffe8263715cafb7aecb50a7c4283bd41eeddcb4bc3216b9c32ad828ba83
+        - path: proxy/src/admin_api/coord_signals.rs
+          sha256: 02a963eef1bf4e390e9c57b9dbb0f95854bbb6c7592f6bb0b461ee2f04f41624
+        - path: proxy/src/coord_operator/signals.rs
+          sha256: c9a05a60581829ccfcc26c4d6fae3ad25e1a9674bbe07337498a036dab317778
+        - path: proxy/src/coord_tools.rs
+          sha256: 263b83736868fbc5adfe4e99da76d3aa80b33b0dab01d5c1c96ad9c056483724
+        - path: proxy/src/coord_rooms/room_status.rs
+          sha256: ac2d0dff5875c2beacc4cef2208d5fec6286ae5b287373a0a2e3902c5bec097b
+        - path: proxy/src/coord_rooms/room_status/tests.rs
+          sha256: 1d5c49ba950a3220cf551cfebacc40ae0cec10bd96b816ee9b1c03c5150c4559
+        - path: proxy/tests/native_coord/room_status.rs
+          sha256: d36543f0abc7ba6bd5a4a24ffc160d72d9153cd8bb343f44969e6ee3c0ba0000
+        - path: proxy/src/coord_operator.rs
+          sha256: 0ef703a81eda9019b86ceca58616ccaa62e932f66c4b62bf61da7fbb393834ec
+        - path: proxy/src/coord_operator/catch_up.rs
+          sha256: aa83d743d015fe4cf0cb8c33f893e45daed5566e70b4360b73f10305345d3024
+        - path: proxy/src/coord_operator/catch_up/tests.rs
+          sha256: b36cec3e532f69faad69fcb314a6273659101b6d530e8ebdf1ff10a605cc8078
+        - path: proxy/src/coord_timeline.rs
+          sha256: da3a9e6c293022994dc4df5c7c6288b55eb0d834556f01387cfa5e3fecbba5bf
+        - path: proxy/tests/native_coord/catch_up.rs
+          sha256: 7126f4374e070d659d5f4df0be455f8c5881f3dd0a47277689d74de6593c9146
       setup: "Use the pinned Rust toolchain with curl/tar and an approved NATS acquisition route or the configured verified NATS executable. Tests allocate their own roots and endpoints; never use the operator's live Coord data."
-      verify: "sha256sum proxy/tests/native_coord.rs proxy/src/coord_rooms.rs && cargo --version"
+      verify: "sha256sum proxy/tests/native_coord.rs proxy/tests/native_coord/stage0.rs proxy/tests/native_coord/inventory.rs proxy/src/coord_rooms.rs proxy/src/agent_api/coord/inventory.rs proxy/src/coord_rooms/inventory.rs && cargo --version"
       run: "CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test native_coord"
       capture: [trusted base, native source/profile, NATS version, endpoint ownership, retained state, exit status]
 
@@ -328,9 +573,9 @@ nodes:
       obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: cli/tests/test_codex_coord_supervisor.py
-          sha256: 9ab5adfa35ef0b38fbaf62fd82766ccb97c95eeaf5a121baf4a035831e7b4c27
+          sha256: 0695022278d9a535de3a5c2edbaaa16829e7e02c20c2908539b18a1a981b4012
         - path: cli/tests/test_agent_command_supervisor.py
-          sha256: 0e4955002840bb0a393490800b042ee13bb03aeeccccddf62bbcd7edc5023918
+          sha256: 4e667aff35a4b8d2cedc3c7b9bf03dc1d4c647896df33d8846cc0a22be47a3db
         - path: tests/proxy_contracts/test_native_factory_cli.py
           sha256: c27a9710f392a2cb15c5026f9f6fd2b7fe5ff586755af144d39db9911833eb4d
       setup: "Use the trusted base's locked Python test environment and warm native production artifacts. Set SAFEYOLO_GUEST_ARTIFACTS to the verified guest artifact directory. Source fixtures start no guest or model; the optional launch case requires a separately owned installed Ubuntu host."
@@ -355,7 +600,7 @@ nodes:
       obtain_from: "the safeyolo-lab-controller skill staged from the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/safeyolo-lab
-          sha256: 66622b5e2e34add24c4ed087d233032c882d34d016e1c539f0d1f36e28904597
+          sha256: 3c6d37bba4c0f06134f632a5590667aa5952a50b7f9a61ba041806fc9288976d
         - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/capture-evidence.sh
           sha256: 5983a28e4a9eb1c48197c64f8511f7e18cffef001a81690e4a9c8e61e2b96c9d
         - path: cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/lab-snapshot.sh
@@ -415,9 +660,9 @@ nodes:
         - path: guest/build-all.sh
           sha256: 63b9ec48a6fbd6a4ea010a0ccc1a320376a5d0875a5268dec9f7b5652829fc4e
         - path: guest/build-rootfs.sh
-          sha256: 151446ff900c8f1082cfa7ee700fa8df072b93956a6813dd8a9b4cc864d4a409
+          sha256: 4a30c9ece1b79e9e53bbb1dd301596ff94552d99be25386ac395f1f9490d05ed
         - path: guest/rootfs-customize-hook.sh
-          sha256: 4eb6c8e238826e2aed62dbf13ace2dc6064c493d2bedba19d3d11f4c2fd33b1f
+          sha256: 84333056f8957049ae511cc3e9565342ddf8fd4cbf265e2e8dcfffd36736da15
       setup: "Use an approved Linux builder or the repository's narrow Lima builder; set OUTPUT_DIR to a disposable acceptance directory."
       verify: "sha256sum guest/build-all.sh guest/build-rootfs.sh guest/rootfs-customize-hook.sh && skopeo --version && umoci --version && mkfs.ext4 -V"
       run:
@@ -441,11 +686,11 @@ nodes:
       obtain_from: "the exact trusted-base blackbox and native Cargo tests; Python drivers are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: tests/blackbox/run-tests.sh
-          sha256: 3c81622bac685555b9befb4c7709cf6716aa86050c77baaff1a0acf77e51436b
+          sha256: ce39f4eb427f5553c95913e8ce95c328ae4f75732a20a4eab662a2f7b8027ab7
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: proxy/tests/native_host_cli.rs
-          sha256: 71f951c5df70bd94dc69a8163700e48d89e26fd5d040a28a2994eb0e19bbc5b5
+          sha256: d88f7700bad78622fce9c2e3649817f0b974f6f32ec4ca8065f71f155ed8bd46
       setup: "Use the prepared native proxy/platform lane for system evidence. For an ownership probe, select the affected native_host_cli test with the trusted Cargo toolchain and warm target."
       verify: "sha256sum tests/blackbox/run-tests.sh tests/blackbox/host/uds_transport.py proxy/tests/native_host_cli.rs"
       run:
@@ -470,7 +715,7 @@ nodes:
         - path: .pre-commit-config.yaml
           sha256: 91ada1101761243365bb0ae0ce5ebf99d8e97d51c59c71a56aad31013af9a5f1
         - path: uv.lock
-          sha256: ee29be49d5bb303ebe7f8d378d9b3abfaaebe218b1fd6be02d03e4547a9de497
+          sha256: fd244df9e559bed2b211bbe93f257831fce8e1087b19cfc7d9d3da2fd1bc3050
       setup: "Use the trusted base's locked Python environment and already-approved hook dependencies."
       verify: "sha256sum ruff.toml .pre-commit-config.yaml uv.lock && uv run ruff --version"
       run:
@@ -493,9 +738,9 @@ nodes:
       obtain_from: "mypy declared and hash-locked in the isolated tools/acceptance uv project, fetched through the approved SafeYolo proxy"
       sources:
         - path: tools/acceptance/pyproject.toml
-          sha256: 5885f54b9677bd908030aed93410f2e55fd8edfa5cf4fb581becb666fbfa7cd0
+          sha256: 30ef94b727a4e867be6c6757b1b4512c07af3065511e27404e7101e254f2a737
         - path: tools/acceptance/uv.lock
-          sha256: 23cfb803e819511def08f073e5e15b253650fa73d0fdc3950036f6c1dcad7c6e
+          sha256: 1e5c3ea9b0a8559bd4b39debfe03afc064221f92fb06687e06691f6c0caca2bb
       setup: "uv sync --project tools/acceptance --frozen --only-group static"
       verify: "sha256sum tools/acceptance/{pyproject.toml,uv.lock} && uv run --project tools/acceptance --frozen --no-sync mypy --version"
       run:
@@ -524,7 +769,7 @@ nodes:
         - path: pyproject.toml
           sha256: 1e11bf66e0cf0aa1798847289cc72a247936951b5816265ca777b683fb64e9e6
         - path: uv.lock
-          sha256: ee29be49d5bb303ebe7f8d378d9b3abfaaebe218b1fd6be02d03e4547a9de497
+          sha256: fd244df9e559bed2b211bbe93f257831fce8e1087b19cfc7d9d3da2fd1bc3050
         - path: tools/acceptance/requirements-stress.txt
           sha256: 5ef03fb3b4dbceda038ab1c919061096bb3c1e0548d244da0015f7ea4939e20e
       setup: "uv sync --frozen --group dev; select only hermetic focused nodes and give each test-owned external service a distinct endpoint"
@@ -548,9 +793,9 @@ nodes:
       obtain_from: "Semgrep declared and hash-locked in the isolated tools/acceptance uv project; rules and rule tests come from the exact trusted-base Git object"
       sources:
         - path: tools/acceptance/pyproject.toml
-          sha256: 5885f54b9677bd908030aed93410f2e55fd8edfa5cf4fb581becb666fbfa7cd0
+          sha256: 30ef94b727a4e867be6c6757b1b4512c07af3065511e27404e7101e254f2a737
         - path: tools/acceptance/uv.lock
-          sha256: 23cfb803e819511def08f073e5e15b253650fa73d0fdc3950036f6c1dcad7c6e
+          sha256: 1e5c3ea9b0a8559bd4b39debfe03afc064221f92fb06687e06691f6c0caca2bb
         - path: tools/acceptance/semgrep-rules.yml
           sha256: 36c03e46e234a6a4d1d72233c72096099d1bb1e798216d9413ddb817eb944555
         - path: tools/acceptance/semgrep-rules.py
@@ -580,11 +825,11 @@ nodes:
         - path: pyproject.toml
           sha256: 1e11bf66e0cf0aa1798847289cc72a247936951b5816265ca777b683fb64e9e6
         - path: uv.lock
-          sha256: ee29be49d5bb303ebe7f8d378d9b3abfaaebe218b1fd6be02d03e4547a9de497
+          sha256: fd244df9e559bed2b211bbe93f257831fce8e1087b19cfc7d9d3da2fd1bc3050
         - path: tools/acceptance/pyproject.toml
-          sha256: 5885f54b9677bd908030aed93410f2e55fd8edfa5cf4fb581becb666fbfa7cd0
+          sha256: 30ef94b727a4e867be6c6757b1b4512c07af3065511e27404e7101e254f2a737
         - path: tools/acceptance/uv.lock
-          sha256: 23cfb803e819511def08f073e5e15b253650fa73d0fdc3950036f6c1dcad7c6e
+          sha256: 1e5c3ea9b0a8559bd4b39debfe03afc064221f92fb06687e06691f6c0caca2bb
       setup: "uv sync --project tools/acceptance --frozen --only-group static; retain /home/agent/.cache/pip-audit across tasks"
       verify: "sha256sum pyproject.toml uv.lock tools/acceptance/{pyproject.toml,uv.lock} && uv run --project tools/acceptance --frozen --no-sync pip-audit --version"
       run:
@@ -606,9 +851,9 @@ nodes:
       obtain_from: "Radon declared and hash-locked in the isolated tools/acceptance uv project, fetched through the approved SafeYolo proxy"
       sources:
         - path: tools/acceptance/pyproject.toml
-          sha256: 5885f54b9677bd908030aed93410f2e55fd8edfa5cf4fb581becb666fbfa7cd0
+          sha256: 30ef94b727a4e867be6c6757b1b4512c07af3065511e27404e7101e254f2a737
         - path: tools/acceptance/uv.lock
-          sha256: 23cfb803e819511def08f073e5e15b253650fa73d0fdc3950036f6c1dcad7c6e
+          sha256: 1e5c3ea9b0a8559bd4b39debfe03afc064221f92fb06687e06691f6c0caca2bb
       setup: "uv sync --project tools/acceptance --frozen --only-group static"
       verify: "sha256sum tools/acceptance/{pyproject.toml,uv.lock} && uv run --project tools/acceptance --frozen --no-sync radon --version"
       run:
