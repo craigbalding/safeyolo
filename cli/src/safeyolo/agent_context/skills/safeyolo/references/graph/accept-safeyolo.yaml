@@ -276,7 +276,7 @@ nodes:
         - path: proxy/src/bin/safeyolo.rs
           sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
         - path: scripts/run_claude_blackbox.py
-          sha256: ab2dfb4d2235c2fbed5d3719c8d84afacd94b0386526a5a73b4a7309342d7c5b
+          sha256: 7722b2d977274ba0a738736d1903f7e8811b201057d45aeb576005e5d8dc90d3
         - path: tests/blackbox/claude_smoke.py
           sha256: f17eff3e93b3259d750258a90ccf3b7314f2580300d64ce05caaddaf56864f71
         - path: tests/blackbox/installed_sections.py

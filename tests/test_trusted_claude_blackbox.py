@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -23,15 +24,16 @@ def invocation(tmp_path, monkeypatch):
     (controller / "tests/blackbox").mkdir(parents=True)
     (controller / "tests/__init__.py").touch()
     (controller / "tests/blackbox/__init__.py").touch()
-    (controller / ".venv/bin").mkdir(parents=True)
-    (controller / ".venv/bin/python").symlink_to(sys.executable)
+    (controller / ".venv").symlink_to(sys.prefix, target_is_directory=True)
     child = textwrap.dedent('''\
         import json, os, pathlib, sys
         args = sys.argv[1:]
         root = pathlib.Path.cwd()
         stage = 'selection' if '--platform' in args else 'smoke' if '--prepared-config' in args else 'readiness'
+        mask = os.umask(0o077)
+        os.umask(mask)
         with (root / 'events').open('a') as output:
-            output.write(json.dumps({'stage':stage, 'args':args, 'python':sys.executable})+'\\n')
+            output.write(json.dumps({'stage':stage, 'args':args, 'python':sys.executable, 'umask':mask})+'\\n')
         print('PRIVATE diagnostic and token sentinel')
         print('PRIVATE stderr sentinel', file=sys.stderr)
         if stage == 'smoke':
@@ -49,6 +51,10 @@ def invocation(tmp_path, monkeypatch):
                 'default_branch_head':'c'*40, 'host':{'source_revision':os.environ.get('SELECTED_SOURCE', 'a'*40)},
                 'guest':{'index':{'digest':'sha256:'+'b'*64}}})
         elif stage == 'readiness':
+            if os.environ.get('PACKAGE_FIXTURE_ROOT'):
+                sys.path.insert(0, os.environ['PACKAGE_FIXTURE_ROOT'])
+                from tests.blackbox.installed_workloads import prepare_package
+                prepare_package(directory, 'caller-umask')
             save('retained-run.json', {'exit':code})
             save('installed-inputs.json', {'host_source_revision':'a'*40})
             save('guest/installed-sections.json', {'preparation':{'config_dir':str(root/'prepared')}})
@@ -68,6 +74,7 @@ def invocation(tmp_path, monkeypatch):
     provision = controller / "provision host binding"
     provision.write_text("#!/bin/sh\nset -eu\n"
                          'test "$1" = "$PWD/prepared"\ntest "$2" = host-access-only\n'
+                         'mkdir -p "$1/private-state"\nprintf fixture > "$1/private-state/credential"\n'
                          "printf '%s\\n' '{\"stage\":\"binding\"}' >> events\n"
                          "echo 'PRIVATE provisioner diagnostic'\nexit \"${FAIL_BINDING:-0}\"\n")
     provision.chmod(0o700)
@@ -78,6 +85,7 @@ def invocation(tmp_path, monkeypatch):
     monkeypatch.delenv("MISSING_SMOKE_REPORT", raising=False)
     monkeypatch.delenv("INVALID_SMOKE_REPORT", raising=False)
     monkeypatch.delenv("SELECTED_SOURCE", raising=False)
+    monkeypatch.delenv("PACKAGE_FIXTURE_ROOT", raising=False)
     args = argparse.Namespace(trigger="nightly", ref="refs/heads/master", source_revision=None,
                               host_run=None, guest_index=None, provision=provision,
                               credential="host-access-only", output=tmp_path / "new private attempt")
@@ -195,17 +203,32 @@ def test_dirty_controller_cannot_start_selection_or_provisioning(invocation, mon
 
 
 @pytest.mark.parametrize("code", [0, 17])
-def test_deployment_entry_returns_decoded_exit_and_only_nonsecret_json(invocation, monkeypatch, code):
+@pytest.mark.parametrize("build_package", [False, True])
+def test_deployment_entry_returns_decoded_exit_and_only_nonsecret_json(invocation, monkeypatch, code, build_package):
     args, controller = invocation
+    if build_package and not shutil.which("dpkg-deb"):
+        pytest.skip("the real readiness package fixture requires dpkg-deb")
     script = controller / "scripts/run_claude_blackbox.py"
     script.write_text(Path(caller.__file__).read_text())
     monkeypatch.setenv("FAIL_SMOKE", str(code))
+    if build_package:
+        monkeypatch.setenv("PACKAGE_FIXTURE_ROOT", str(Path(caller.__file__).resolve().parents[1]))
     result = subprocess.run([str(controller / ".venv/bin/python"), str(script), "nightly",
                              "--ref", args.ref, "--provision", str(args.provision),
                              "--credential", args.credential, "--output", str(args.output)],
-                            capture_output=True, text=True, check=False)
+                            capture_output=True, text=True, check=False, umask=0o022)
     assert result.returncode == code, result.stderr
     report = json.loads(result.stdout)
     assert report["exit"] == code
     assert report == json.loads((args.output / "result.json").read_bytes())
     assert "PRIVATE" not in result.stdout + result.stderr
+    assert [row["umask"] for row in events(controller) if row["stage"] != "binding"] == [0o077, 0o022, 0o077]
+    if build_package:
+        assert (args.output / "readiness/package-source/DEBIAN").stat().st_mode & 0o777 == 0o755
+        assert (args.output / "readiness/safeyolo-p2-fixture.deb").is_file()
+    for path in (args.output, args.output / "inputs", args.output / "smoke",
+                 controller / "prepared", controller / "prepared/private-state"):
+        assert path.stat().st_mode & 0o777 == 0o700, path
+    for path in (args.output / "private.log", args.output / "result.json",
+                 controller / "prepared/private-state/credential"):
+        assert path.stat().st_mode & 0o777 == 0o600, path
