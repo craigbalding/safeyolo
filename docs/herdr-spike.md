@@ -6,14 +6,6 @@ existing native terminal command. Names select panes, and native identities
 identify the corresponding agents and launches. Herdr client reattachment
 retains those foreground conversations.
 
-The [accepted two-Codex journey](https://github.com/craigbalding/safeyolo/issues/572#issuecomment-6547350302)
-establishes pane input, tool use, named navigation, detach/reattach, conversation
-continuation and normal owned stop on Ubuntu Linux with Kernel-based Virtual
-Machine (KVM). That proof remains valid. It does not establish another frontend
-or platform, server restart, sustained human usability, or semantic harness
-activity. [Issue #572](https://github.com/craigbalding/safeyolo/issues/572) retains
-its other exploration outcomes.
-
 ## Trusted-host pane wrapper
 
 [The wrapper](../scripts/safeyolo_herdr.py) uses the installed native command-line
@@ -135,13 +127,9 @@ release/completion, unavailable and malformed reads, and projection limits.
 ## Real-agent acceptance tooling
 
 [The journey script](../scripts/accept_herdr_native.py) uses Python 3.11 or newer
-on an owned Linux guest through the existing Rundeck route. Use the accepted
-journey result for unchanged real-agent behavior; the metadata increment does
-not require another model run.
-
-If a later change requires a new real-agent journey, obtain a verified
-preparation file for two owned, separately sandboxed Codex 0.164.0 agents with
-their authorized agent-local login state. Both sandboxes must have their
+on an owned Linux guest through the existing Rundeck route. To run the journey,
+obtain a verified preparation file for two owned, separately sandboxed Codex
+0.164.0 agents with their authorized agent-local login state. Both sandboxes must have their
 recorded identities and no coding command yet. The preparation records the
 installed native CLI/root, verified Herdr binary digest, agent/run identities,
 workspaces and disk reserve. Preflight alone does not prove model readiness.
