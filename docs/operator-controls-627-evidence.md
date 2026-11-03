@@ -1,84 +1,93 @@
-# Native operator controls and live events
-
-The native Admin API (application programming interface) owns operator state and
-decisions. Authenticated consumers can read runtime identity, agents, pending
-approvals, policy and control modes. Policy mutations use the existing atomic
-policy helpers and the runtime's policy reload boundary. Mode mutations update
-process state used by live enforcement.
+# Operator event stream and current pending work
 
 ## Live operator events
 
-`GET /admin/events` is an authenticated WebSocket upgrade on the loopback Admin
-listener or the configured Command Centre event port. The shared audit writer
-publishes eligible events through the selected instance's local NATS runtime.
-Proxy operations, short host commands and Coord metadata use that writer.
-Short host commands wait for bounded publication completion before exiting.
-Before returning HTTP 101, the subscriber receives a private broker round trip
-ordered after its event subscription. The same confirmation precedes watch's
-initial canonical read. The attachment attempt, including confirmation, has a
-two-second timeout.
-The private marker does not enter the operator event stream. Events received
-after subscription establishment stay queued while the WebSocket upgrade completes.
+The authenticated `/admin/events` WebSocket serves Commander and native
+`safeyolo watch`. Event records come from complete records in the shared
+canonical JSON Lines (JSONL) audit log. The host follows the audit writer's
+effective destination and rotation settings. Host commands and the proxy use
+that same writer. These operator consumers do not subscribe to NATS.
 
-The WebSocket retains its event filter: approval-required events, agent events,
-the selected Admin and operations events, and high or critical security
-and gateway events. Ordinary traffic bodies are not published. Coord signal
-metadata also uses the common live path. `safeyolo watch` consumes that metadata
-and fetches canonical pending signal revisions through the Admin API. The
-WebSocket keeps its existing filter rather than forwarding all Coord metadata.
-Broker credentials stay on the host; agents use their authorized Agent API.
+The stream selects approval-required events, agent events, selected Admin and
+operations events, Coord signal metadata, and high or critical security and
+gateway events. Ordinary traffic bodies and credentials are not selected.
+Signal prose comes from the canonical Admin API, with trusted author attribution.
 
-Live publication uses bounded memory and a separate worker. It cannot wait
-indefinitely on a request or audit write. Each publication attempt has a
-two-second timeout. Publication failure, buffer overflow and incomplete shutdown
-drain produce diagnostics. JSON Lines (JSONL) remains the forensic archive, and
-FlowStore remains traffic history. Live success does not confirm archive
-durability. Archive failure does not suppress the independent live attempt.
-Canonical state, audit writes, `/explain`, policy enforcement and traffic recording
-remain independent of broker availability.
+Messages with `type: "operator_state"` are current-state controls. They have no
+`event` field and are not audit records. `signals` and `approvals` report whether
+the host can read those stores. `log: "following"` means the log reader is
+available; it does not prove that every producer recorded its events. A non-null
+`history_gap` reports skipped or unavailable history. Refreshing current work
+does not replay or reconstruct that history.
 
-There is no live event replay or exactly-once promise. A new subscription receives
-publications after its subscription is established, including an event that was
-already queued in its producer. Each publisher preserves its admitted event
-order; separate publishers have no common publication order. Recovery of
-pending Coord outbox metadata after a worker restart can repeat an event ID. Canonical object IDs and revisions remain
-authoritative. Watch suppresses unchanged pending revisions per attachment.
+One host check reads local canonical pending state each second for all viewers.
+Changed state wakes connected clients even if the final audit notification was
+lost and no later business event occurs. With healthy state/API and client
+connectivity, the target is visibility within five seconds. Unchanged healthy
+state generates no refresh controls or periodic viewer network requests.
+Controls coalesce to the latest state separately for each attached observer.
 
-If the broker is unavailable at attachment, `/admin/events` returns HTTP 503.
-Invalid credentials receive HTTP 401 before any broker access. Broker loss or
-NATS subscriber overflow closes an attached WebSocket with code 1013. A stalled
-WebSocket has a bounded write timeout and cannot block other subscribers or
-operator decisions. Reconnect establishes a fresh subscription and does not
-replay missed publications. Ping, close and owned listener shutdown remain
-supported. The configured NATS payload limit also bounds live publications.
+Default watch shows current pending signals and approvals. It subscribes before
+reading the initial snapshots, then refreshes on relevant events and controls.
+Reconnect reads current state again. Changes and removals print once; unchanged
+items stay quiet. Clearing an attributed signal does not independently verify
+that its underlying claim was resolved. `watch --once` reads current pending
+work. `watch --jsonl FILE` renders exact immutable historical signal revisions;
+it does not present them as current pending work.
 
-If the watch feed fails, `safeyolo watch` reports the failure and exits. Restart
-watch to read current canonical pending state and attach again. `watch --once`
-reads pending state without NATS. `watch --jsonl FILE` reads retained metadata
-and resolves its immutable revisions; it does not follow an audit file for live
-updates. Unresolved operator needs remain in canonical state while detached.
+Commander refreshes its existing canonical approval list on controls and
+reconnect. Discovery does not resubmit requests. Existing attention claims,
+deduplication, suppression and decision authority still apply. A failed state
+read retains the previous view and reports it as unavailable/stale. After a
+failed canonical read, watch retries attachment with one-second pacing.
+
+The host reader retains at most an 8 MiB partial record and reads at most 1 MiB
+per turn. It follows renamed files and up to 64 retained rotation positions.
+Truncation, unavailable retention, invalid or oversized records, and partial
+records lost during rotation produce explicit status. Each attachment has a
+bounded 64-record buffer. Overflow closes that attachment with code 1013;
+WebSocket writes have a one-second timeout. A stalled client cannot block the
+writer, other clients or operator decisions. Authentication precedes attachment;
+invalid credentials receive HTTP 401. Ping, close and owned shutdown remain
+supported.
+
+The recorded feed has no replay service or exactly-once guarantee. A new
+attachment can receive records still queued in the shared host reader. A
+truncated file can cause repeated event IDs. JSONL file order is the recorded
+feed order. General audit admission can be lossy and write failures
+remain visible. Coord audit uses its durable outbox and can repeat the same event
+ID after an ambiguous append. A successful state read is independent of JSONL
+delivery. Pending recovery can work while recording is impaired. FlowStore
+remains traffic history. NATS/JetStream still carries Coord and private approval
+results; stopping it does not disable operator attachment or existing state reads.
 
 ## Focused validation
 
-The producer controls are in `proxy/src/operator_events.rs` and
-`proxy/tests/native_coord/signals.rs`. The authenticated WebSocket, reconnect,
-slow-consumer, broker-outage and operator-decision controls are in
-`proxy/tests/operator_controls.rs`. These controls use synthetic credentials
-and owned loopback NATS servers. They do not use the operator's live Coord data.
-The subscription controls hold `SUB` in a loopback relay. They check that watch
-and WebSocket readiness wait for the broker, immediate events reach the ready
-consumer, and missing confirmation ends the attachment attempt within its bound.
-
-On a development host, select the repository's pinned Rust toolchain and set
-`SAFEYOLO_COORD_NATS_BINARY` to the verified NATS 2.14.5 executable. From the
-repository root, run the focused controls with sufficient disk reserve:
+On a development host, select the repository's Rust toolchain. From the
+repository root, run these controls with sufficient disk reserve:
 
 ```sh
-CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --lib operator_events::tests -- --ignored
-CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test operator_controls -- --include-ignored
+CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --lib operator_events::
+CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test operator_controls
+CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test command_centre_installed
+```
+
+For the broker-outage and canonical signal/watch controls, set
+`SAFEYOLO_COORD_NATS_BINARY` to the verified NATS 2.14.5 executable. Add
+`-- --include-ignored` to the operator control command and run:
+
+```sh
 CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test native_coord signals::native_ -- --include-ignored
 ```
 
-These are local producer and consumer controls. They do not establish physical
-Tailnet forwarding, Mac application behavior, private approval-result delivery,
-or the other separately owned integration outcomes.
+On macOS, run the Commander controls from the repository root:
+
+```sh
+SAFEYOLO_COMMAND_CENTRE_TEST_FILTER=operator-recovery command-centre/macos/test.sh
+```
+
+These controls cover pending recovery, attention suppression, stale reads,
+attachment/reconnect and idle network behavior.
+These controls use synthetic credentials and isolated state. They do not
+establish #869's outstanding installed, Tailnet or SSH observations, private
+approval-result delivery, or automatic model wakeups.

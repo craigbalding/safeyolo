@@ -272,7 +272,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: ecc0de72cd8d295a673a7a533d36518730e347b5b4c9f2ccee5472626f3a348d
         - path: proxy/src/lib.rs
-          sha256: 2ffeee813f1f7edcca49e22390cd01b5f1150ef05747d137cbab4256bd4b11e0
+          sha256: 55112d0ad04e0692bf9edc6520c93bbde07312b8ae79f46c7d524e1ece1554ba
         - path: proxy/src/bin/safeyolo.rs
           sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
         - path: scripts/run_claude_blackbox.py
@@ -337,7 +337,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: ecc0de72cd8d295a673a7a533d36518730e347b5b4c9f2ccee5472626f3a348d
         - path: proxy/src/lib.rs
-          sha256: 2ffeee813f1f7edcca49e22390cd01b5f1150ef05747d137cbab4256bd4b11e0
+          sha256: 55112d0ad04e0692bf9edc6520c93bbde07312b8ae79f46c7d524e1ece1554ba
         - path: proxy/src/bin/safeyolo.rs
           sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
         - path: proxy/src/jobs/vz-guest-init.sh
@@ -404,6 +404,14 @@ nodes:
       author-only correction, failed-write rollback, lost-response recovery,
       metadata-only audit and exact immutable revision rendering. The actual
       three-model symptom/inference/correction exercise remains separate.
+      For current operator work, select
+      signals::native_watch_recovers_final_signal_and_approval_changes_without_a_later_event
+      with --ignored. It uses the real authenticated Admin stream and native
+      watch for pre-existing signals and approvals, the subscription/snapshot
+      boundary, missed final create/clear notifications with no later event,
+      idle viewer requests, unavailable state and reconnect. Its operator
+      recovery runs with NATS stopped and the audit destination impaired.
+      Current-state controls do not establish audit recording or historical replay.
       For combined room status, select
       room_status::native_room_status_current_authority_restart_and_cli with
       --ignored. It compares authenticated Agent API and operator CLI state,
@@ -475,7 +483,7 @@ nodes:
         - path: proxy/src/coord_tools/github.rs
           sha256: da9e4c6e244c232da4aedf17d7f58484862743996c084317a37f4e602d70c164
         - path: proxy/src/native_client.rs
-          sha256: 5fe7dff0df4318d974bb035dbf8aba0be0c85d347102efd16ac47ef9b48870d0
+          sha256: 7dac16be1c24743ee56cd88d6340f4589310a97a47c1392c257d384a1787ccff
         - path: cli/src/safeyolo/services/github.yaml
           sha256: 38880c71fbe0a2f995a790c64d21d001baa7a5911d10f44d8e50973914f543d3
         - path: proxy/tests/native_coord/stage0.rs
@@ -507,9 +515,7 @@ nodes:
         - path: proxy/src/coord_work_schema.sql
           sha256: fb6592902c80c56d51758e3938c3fa14b620daa6988269eedf7a6e215e0dcf99
         - path: proxy/tests/native_coord/signals.rs
-          sha256: 6ba84d40f58e13e58b6f855e5f2d6855a9e235c94e8f6999041e6cc01e20f6eb
-        - path: proxy/tests/support/nats_subscription.rs
-          sha256: 108f06bcdd1675449e7aada5320e4aa21c49258833186cf1af329f6a57a20fe0
+          sha256: c61808f52aa54c442f8656c4651bd972d2a66f1cab525d5c32848893b3f8ec60
         - path: proxy/src/coord_rooms/signals.rs
           sha256: bef138d95aa2d06ee547311728ed78b2a38b6cac96ed176a7c87caf54364ff57
         - path: proxy/src/coord_rooms/signals/tests.rs
@@ -519,11 +525,11 @@ nodes:
         - path: proxy/src/coord_signal_schema.sql
           sha256: 059ad7dcad31ae77f43cf8a9a890f110c7349aad8723b158aa666f34b2ae1bd0
         - path: proxy/src/agent_api/coord/signals.rs
-          sha256: 8d102a20edefb5be601b18865458fe0d5a0a8bd2fe825f8df315490d85f1f32f
+          sha256: 11c618ef0ead1212d2ff410634a394cbae0dd45a9a5e35a52f0f626870dd12ec
         - path: proxy/src/admin_api/coord_signals.rs
           sha256: 02a963eef1bf4e390e9c57b9dbb0f95854bbb6c7592f6bb0b461ee2f04f41624
         - path: proxy/src/coord_operator/signals.rs
-          sha256: 860ce1c01a3d4714ad278c9394479c7019bfd70099136684be860f8990f7b531
+          sha256: c9a05a60581829ccfcc26c4d6fae3ad25e1a9674bbe07337498a036dab317778
         - path: proxy/src/coord_tools.rs
           sha256: 263b83736868fbc5adfe4e99da76d3aa80b33b0dab01d5c1c96ad9c056483724
         - path: proxy/src/coord_rooms/room_status.rs

@@ -100,6 +100,10 @@ struct ModelTests: App {
             print("approval-attention-tests: PASS")
             return
         }
+        if ProcessInfo.processInfo.environment["SAFEYOLO_COMMAND_CENTRE_TEST_FILTER"] == "operator-recovery" {
+            try await testOperatorRecoveryControls()
+            return
+        }
         try testCredentialFileAndReload()
         try testRemoteProfileStorage()
         try await testRemoteConnectionVerification()

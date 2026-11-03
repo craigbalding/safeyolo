@@ -66,6 +66,54 @@ extension ModelTests {
     }
 
     @MainActor
+    static func testOperatorRecoveryControls() async throws {
+        try await testOperatorStateRecovery()
+        try await testMultiplePendingApprovals()
+        try await testApprovalInSubscriptionGapAndReconnect()
+        try await testFailedHandshakeSnapshotRetriesPendingApproval()
+        try await testAgentInventoryFailureDoesNotBlockApprovals()
+        print("operator-recovery-tests: PASS current pending, suppression, stale reads, attach/reconnect, idle network")
+    }
+
+    @MainActor
+    private static func testOperatorStateRecovery() async throws {
+        snapshot()
+        defer { StubURLProtocol.responsesByPath = [:] }
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals([]))
+        let socket = StubEventSocket()
+        let client = try SafeYoloClient(adminURL: "http://127.0.0.1:19090", eventsURL: "ws://127.0.0.1:19091/admin/events",
+            token: "fixture-secret", expectedInstanceID: "sy-connection-test", session: stubSession(), makeEventSocket: { _ in socket })
+        defer { client.stop() }
+        var presented: [String] = []
+        client.onNewApproval = { presented.append($0.id) }
+        client.start()
+        try await until { socket.receiving }
+        let idle = StubURLProtocol.requestCount
+        try await Task.sleep(for: .milliseconds(1200))
+        precondition(StubURLProtocol.requestCount == idle, "Healthy idle Commander must not poll pending state")
+        let refresh = Data(#"{"type":"operator_state","revision":2,"signals":"ready","approvals":"ready","log":"unavailable","history_gap":null}"#.utf8)
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["visible", "suppressed"]))
+        StubURLProtocol.responsesByPath["/admin/approvals/apr-suppressed/attention"] = (200, Data(#"{"notify":false}"#.utf8))
+        // No audit event exists. A separate current-state control wakes the
+        // canonical read while preserving the host's attention suppression.
+        socket.messages.append(.data(refresh))
+        try await until { client.approvals.count == 2 }
+        try await until { presented == ["apr-visible"] }
+        precondition(client.eventFeedGap?.contains("does not prove JSONL delivery") == true)
+        try await client.ingestOperatorEventData(refresh)
+        precondition(presented == ["apr-visible"], "Repeated refresh must not repeat attention or override suppression")
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (503, Data(#"{"error":"state unavailable"}"#.utf8))
+        do { try await client.ingestOperatorEventData(refresh); preconditionFailure("Unavailable state became success") }
+        catch { precondition(client.approvals.count == 2 && client.requestErrors["Pending approvals"] != nil) }
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals([]))
+        try await client.ingestOperatorEventData(refresh)
+        precondition(client.approvals.isEmpty && client.requestErrors["Pending approvals"] == nil)
+        try await client.ingestOperatorEventData(Data(#"{"type":"operator_state","log":"following","history_gap":null}"#.utf8))
+        precondition(client.eventFeedGap?.contains("feed recovered") == true, "Recovery must not retain a false current outage status")
+        precondition(presented == ["apr-visible"], "Clearing pending work must not create an approval")
+    }
+
+    @MainActor
     private static func until(file: StaticString = #fileID, line: UInt = #line, _ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(4)
         while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
@@ -621,7 +669,7 @@ extension ModelTests {
         let gate = RetryGate()
         let first = StubEventSocket()
         first.onResume = {
-            // The server starts streaming at the handshake audit offset. This
+            // The server registers the stream during the handshake. This
             // approval is absent from the earlier HTTP snapshot and stream.
             StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["gap"]))
         }

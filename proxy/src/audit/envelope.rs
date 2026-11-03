@@ -446,27 +446,6 @@ fn timestamp(now: OffsetDateTime) -> String {
 
 pub(super) struct Record(CircuitValue);
 impl Record {
-    pub(super) fn live_bytes(&self) -> Result<Option<bytes::Bytes>> {
-        let CircuitValue::Object(fields) = &self.0 else {
-            return Ok(None);
-        };
-        let text = |key| match fields.get(key) {
-            Some(CircuitValue::Other(Value::String(value))) => value.as_str(),
-            _ => "",
-        };
-        let required = match fields.get("approval") {
-            Some(CircuitValue::Object(approval)) => {
-                matches!(approval.get("required"), Some(CircuitValue::Bool(true)))
-            }
-            _ => false,
-        };
-        let metadata = serde_json::json!({"event": text("event"), "kind": text("kind"), "severity": text("severity"), "approval":{"required":required}});
-        if crate::operator_events::is_operator_event(&metadata) {
-            return Ok(Some(bytes::Bytes::from_owner(self.encode()?)));
-        }
-        Ok(None)
-    }
-
     pub(super) fn from_json(line: &str) -> Result<Self> {
         Ok(Self(super::parse_record(line)?.into()))
     }

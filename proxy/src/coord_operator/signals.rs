@@ -1,4 +1,4 @@
-//! The operator watch uses canonical metadata and fetches exact signal revisions.
+//! Current pending work uses canonical APIs; historical metadata resolves exact revisions.
 use crate::{Error, coord_timeline::visible, native_client};
 use hyper::Method;
 use serde_json::{Value, json};
@@ -110,7 +110,7 @@ pub(super) async fn audit_revision(
 pub(super) async fn watch(config: &Path, args: &[String]) -> Result<(), Error> {
     if args == ["--help"] {
         println!(
-            "safeyolo [--root ROOT] watch [--once] [--json] [--jsonl FILE]\n\nWatch canonical pending Coord signals through Admin API, waking from local NATS metadata. Each pending signal revision prints once per attachment. --once returns the current pending set without needing NATS. Live-feed loss ends the attachment; restart watch to read current state and resume without event replay. --jsonl reads existing audit metadata and fetches its exact immutable revisions; FILE may be - for stdin. Terminal controls are escaped and markup remains text. Resolve with coord signal resolve; use coord signal --help for permissions, bounds and rate limits. Ctrl-C detaches without changing canonical truth."
+            "safeyolo [--root ROOT] watch [--once] [--json] [--jsonl FILE]\n\nWatch current pending Coord signals and approval requests through the authenticated Admin stream and canonical APIs. Attachment and reconnect refresh current work. Changes and removals print once; unchanged work stays quiet. The host repairs missed state notifications within five seconds while state and connections are healthy. --once reads the current pending set. Feed gaps and unavailable state are reported; a refresh is not historical replay. --jsonl reads existing audit metadata and fetches its exact immutable revisions; FILE may be - for stdin. Terminal controls are escaped and markup remains text. Resolve with coord signal resolve; use coord signal --help for permissions, bounds and rate limits. Ctrl-C detaches without changing canonical truth."
         );
         return Ok(());
     }
@@ -157,79 +157,200 @@ pub(super) async fn watch(config: &Path, args: &[String]) -> Result<(), Error> {
         }
         return Ok(());
     }
-    // Complete SUB before the initial canonical read, so a mutation during
-    // attachment either appears in that read or wakes a subsequent read.
-    let mut subscription = if once {
-        None
-    } else {
-        let native = crate::native_config::read(config)?;
-        Some(crate::operator_events::subscribe(&native.data_dir().join("coord")).await?)
-    };
     let mut seen = BTreeMap::new();
+    let mut approvals = BTreeMap::new();
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    loop {
-        let mut current = BTreeMap::new();
-        let mut after = String::new();
-        loop {
-            let page = native_client::admin(
-                config,
-                &format!(
-                    "/admin/coord/signals?after={}&limit=100",
-                    crate::coord_tools::segment(&after)
-                ),
-                Method::GET,
-                Value::Null,
-                Duration::from_secs(5),
-            )
-            .await?;
-            for item in page["items"]
-                .as_array()
-                .ok_or("invalid pending signal page")?
-            {
-                let id = item["signal_id"]
-                    .as_str()
-                    .ok_or("invalid pending signal ID")?;
-                let rev = item["revision"]
-                    .as_u64()
-                    .ok_or("invalid pending signal revision")?;
-                if seen.get(id) != Some(&rev) {
-                    print!("{}", render(&exact(config, item).await?, json, true)?);
-                }
-                current.insert(id.to_owned(), rev);
-            }
-            let Some(next) = page["next_after"].as_str() else {
-                break;
-            };
-            if next <= after.as_str() {
-                return Err("pending signal page did not advance".into());
-            }
-            after = next.to_owned();
-        }
-        for id in seen.keys().filter(|id| !current.contains_key(*id)) {
-            if json {
-                println!("{}", json!({"signal_id":id,"needs_operator":false}));
-            } else {
-                println!("CLEARED needs-operator {id}");
-            }
-        }
+    if once {
+        let signals = refresh_signals(config, json, &mut seen).await;
+        let approvals = refresh_approvals(config, json, &mut approvals).await;
         std::io::stdout().flush()?;
-        seen = current;
-        if once {
-            return Ok(());
+        signals?;
+        return approvals;
+    }
+    loop {
+        let connection = tokio::select! {
+            _ = interrupt.recv() => return Ok(()),
+            result = native_client::operator_events(config) => result,
+        };
+        let mut subscription = match connection {
+            Ok(connection) => connection,
+            Err(error) => {
+                eprintln!("Operator stream unavailable; pending view may be stale: {error}");
+                tokio::select! {_ = interrupt.recv() => return Ok(()), _ = tokio::time::sleep(Duration::from_secs(1)) => {}}
+                continue;
+            }
+        };
+        // Subscribe before both snapshots. Mutations during attachment either
+        // enter the snapshots or the registered stream; shared host recovery
+        // also detects changes whose final audit notification was lost.
+        if refresh_current(config, json, &mut seen, &mut approvals)
+            .await
+            .is_err()
+        {
+            tokio::select! {_ = interrupt.recv() => return Ok(()), _ = tokio::time::sleep(Duration::from_secs(1)) => {}}
+            continue;
         }
         loop {
-            let bytes = tokio::select! {
+            let event = tokio::select! {
                 _ = interrupt.recv() => return Ok(()),
-                event = subscription.as_mut().expect("live watch attached").next() => event?,
+                result = subscription.next() => result,
             };
-            let mut event: Value = serde_json::from_slice(&bytes)?;
-            let signal = crate::operator_events::is_signal(&event);
+            let mut event = match event {
+                Ok(event) => event,
+                Err(error) => {
+                    eprintln!(
+                        "Operator stream interrupted; history may be missing; reconnecting: {error}"
+                    );
+                    break;
+                }
+            };
+            if event["type"] == "operator_state" {
+                if event["log"] == "unavailable" {
+                    eprintln!(
+                        "Recorded event feed unavailable; current pending state is independent of JSONL delivery."
+                    );
+                }
+                if let Some(gap) = event["history_gap"].as_str() {
+                    eprintln!(
+                        "Recorded event history gap: {gap}. Current-state refresh does not replay history."
+                    );
+                }
+            }
+            let refresh = crate::operator_events::refreshes_pending(&event);
             crate::credentials::wipe_json(&mut event);
-            if signal {
+            if refresh
+                && refresh_current(config, json, &mut seen, &mut approvals)
+                    .await
+                    .is_err()
+            {
                 break;
             }
         }
+        tokio::select! {_ = interrupt.recv() => return Ok(()), _ = tokio::time::sleep(Duration::from_secs(1)) => {}}
     }
+}
+
+async fn refresh_current(
+    config: &Path,
+    json: bool,
+    signals: &mut BTreeMap<String, u64>,
+    approvals: &mut BTreeMap<String, Value>,
+) -> Result<(), Error> {
+    let signals = refresh_signals(config, json, signals).await;
+    if let Err(error) = &signals {
+        eprintln!("Pending signals unavailable; previous view is stale: {error}");
+    }
+    let approvals = refresh_approvals(config, json, approvals).await;
+    if let Err(error) = &approvals {
+        eprintln!("Pending approvals unavailable; previous view is stale: {error}");
+    }
+    let _ = std::io::stdout().flush();
+    // A failed read can consume the final invalidation while host state stays
+    // unchanged. Reattach to obtain a fresh snapshot once the API recovers.
+    signals.and(approvals)
+}
+
+async fn refresh_signals(
+    config: &Path,
+    json: bool,
+    seen: &mut BTreeMap<String, u64>,
+) -> Result<(), Error> {
+    let mut current = BTreeMap::new();
+    let mut output = String::new();
+    let mut after = String::new();
+    loop {
+        let page = native_client::admin(
+            config,
+            &format!(
+                "/admin/coord/signals?after={}&limit=100",
+                crate::coord_tools::segment(&after)
+            ),
+            Method::GET,
+            Value::Null,
+            Duration::from_secs(5),
+        )
+        .await?;
+        for item in page["items"]
+            .as_array()
+            .ok_or("invalid pending signal page")?
+        {
+            let id = item["signal_id"]
+                .as_str()
+                .ok_or("invalid pending signal ID")?;
+            let rev = item["revision"]
+                .as_u64()
+                .ok_or("invalid pending signal revision")?;
+            if seen.get(id) != Some(&rev) {
+                output.push_str(&render(&exact(config, item).await?, json, true)?);
+            }
+            current.insert(id.to_owned(), rev);
+        }
+        let Some(next) = page["next_after"].as_str() else {
+            break;
+        };
+        if next <= after.as_str() {
+            return Err("pending signal page did not advance".into());
+        }
+        after = next.to_owned();
+    }
+    for id in seen.keys().filter(|id| !current.contains_key(*id)) {
+        output.push_str(&if json {
+            json_text(&json!({"signal_id":id,"needs_operator":false}))?
+        } else {
+            format!("CLEARED needs-operator {id} (attributed claim cleared)\n")
+        });
+    }
+    print!("{output}");
+    *seen = current;
+    Ok(())
+}
+
+async fn refresh_approvals(
+    config: &Path,
+    json: bool,
+    seen: &mut BTreeMap<String, Value>,
+) -> Result<(), Error> {
+    let page = native_client::admin(
+        config,
+        "/admin/approvals",
+        Method::GET,
+        Value::Null,
+        Duration::from_secs(5),
+    )
+    .await?;
+    let mut current = BTreeMap::new();
+    let mut output = String::new();
+    for item in page["approvals"]
+        .as_array()
+        .ok_or("invalid pending approval list")?
+    {
+        let id = item["approval_id"]
+            .as_str()
+            .ok_or("invalid pending approval ID")?;
+        if seen.get(id) != Some(item) {
+            output.push_str(&if json {
+                json_text(&json!({"approval":item,"needs_operator":true}))?
+            } else {
+                visible(&format!(
+                    "NEEDS APPROVAL {id} type={} agent={} summary={}\n",
+                    item["approval"]["approval_type"],
+                    item["agent"],
+                    serde_json::to_string(&item["summary"])?
+                ))
+            });
+        }
+        current.insert(id.to_owned(), item.clone());
+    }
+    for id in seen.keys().filter(|id| !current.contains_key(*id)) {
+        output.push_str(&if json {
+            json_text(&json!({"approval_id":id,"needs_operator":false}))?
+        } else {
+            format!("CLEARED needs-approval {id}\n")
+        });
+    }
+    print!("{output}");
+    *seen = current;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -545,7 +545,6 @@ impl Runtime {
                         None => audit::Settings::from_env()?,
                     },
                 )
-                .with_live_events(config.data_dir().join("coord"))
                 .with_named_controls(config.native_product)
                 .with_approvals(config.data_dir().join("approvals.sqlite3")),
             ),

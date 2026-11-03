@@ -412,3 +412,18 @@ carry the work-state transition.
 
 Any of those activities may be a legitimate assigned task. The restriction is
 on incidental conversational chatter, not on classes of work.
+
+## Operator pending work
+
+On the owning host, `safeyolo watch` shows current pending Coord signals and
+approval requests through the authenticated Admin stream and canonical APIs.
+`watch --once --json` reads one current view. Attachment and reconnect discover
+existing work. Shared host checks repair missed final state notifications within
+five seconds while state/API and connections are healthy; idle viewers do not
+poll. JSONL event records and state-refresh controls have different meanings.
+A refresh does not establish that missing audit history was recorded. State-read
+failures leave an explicitly stale view. Operator attachment and existing state
+reads do not need NATS; Coord and private approval-result delivery still use it.
+`watch --jsonl FILE` instead resolves exact immutable historical signal revisions.
+Clearing a signal records an attributed transition, not independent acceptance
+of its underlying claim.

@@ -1,183 +1,176 @@
-//! Ephemeral host-only operator events. Canonical state and JSONL own recovery.
-use std::{
-    path::{Path, PathBuf},
-    sync::Mutex,
-    time::Duration,
-};
-
+//! Shared log-backed operator feed. Recovery controls describe current state,
+//! never a recorded event or delivery guarantee for the audit archive.
+use crate::{Error, RuntimeState};
 use bytes::Bytes;
-use futures_util::StreamExt;
-use tokio::sync::{mpsc, watch};
+use serde_json::{Value, json};
+use std::{sync::Arc, time::Duration};
+use tokio::sync::{broadcast, watch};
 
-use crate::{Error, agent_api::CoordClient};
+mod log;
 
-const SUBJECT: &str = "safeyolo.operator.events";
-const TIMEOUT: Duration = Duration::from_secs(2);
-
-/// A subscription is ready only after the server has processed SUB. A loss
-/// closes this attachment; reconnect starts at the new subscription, with no
-/// history replay. Separate connections isolate slow operator subscribers.
-pub(crate) struct Subscription {
-    client: async_nats::Client,
-    messages: async_nats::Subscriber,
-    failed: watch::Receiver<bool>,
+#[derive(Clone, PartialEq, Eq)]
+struct State {
+    signals: Option<[u8; 32]>,
+    approvals: Option<[u8; 32]>,
+    log_readable: bool,
+    gap: Option<&'static str>,
+    revision: u64,
+}
+impl State {
+    fn bytes(&self) -> Bytes {
+        Bytes::from(
+            json!({"type":"operator_state", "revision":self.revision,
+            "signals":if self.signals.is_some() {"ready"} else {"unavailable"},
+            "approvals":if self.approvals.is_some() {"ready"} else {"unavailable"},
+            "log":if self.log_readable {"following"} else {"unavailable"},
+            "history_gap":self.gap})
+            .to_string(),
+        )
+    }
 }
 
-pub(crate) async fn subscribe(directory: &Path) -> Result<Subscription, Error> {
-    let coord = CoordClient::new(None, Some(directory.to_owned()));
-    let (failure, failed) = watch::channel(false);
-    let options = async_nats::ConnectOptions::new()
-        .subscription_capacity(256)
-        .max_reconnects(1)
-        .event_callback(move |event| {
-            let failure = failure.clone();
-            async move {
-                if matches!(
-                    event,
-                    async_nats::Event::Disconnected
-                        | async_nats::Event::Closed
-                        | async_nats::Event::SlowConsumer(_)
-                ) {
-                    let _ = failure.send(true);
+pub(crate) struct Feed {
+    records: broadcast::Sender<Bytes>,
+    state: watch::Sender<State>,
+}
+impl Feed {
+    pub(crate) async fn start(
+        runtime: RuntimeState,
+        stop: watch::Receiver<bool>,
+        tasks: &crate::admin_listener::EventTasks,
+    ) -> Arc<Self> {
+        let (records, _) = broadcast::channel(64);
+        let (state, _) = watch::channel(State {
+            signals: None,
+            approvals: None,
+            log_readable: false,
+            gap: None,
+            revision: 0,
+        });
+        let feed = Arc::new(Self { records, state });
+        let source = runtime.read().ok().map(|r| r.audit.log_source());
+        let follower = tokio::task::spawn_blocking(move || {
+            source.map(|(path, settings)| log::Follower::new(path, settings))
+        })
+        .await
+        .ok()
+        .flatten();
+        let owner = feed.clone();
+        let mut stopped = stop.clone();
+        crate::admin_listener::spawn_event_task(tasks, async move {
+            let Some(mut follower) = follower else { return };
+            loop {
+                let result = tokio::task::spawn_blocking(move || {
+                    let result = follower.read();
+                    (follower, result)
+                })
+                .await;
+                let Ok((next, result)) = result else { return };
+                follower = next;
+                owner.state.send_if_modified(|state| {
+                    let changed = state.log_readable != result.readable
+                        || (result.gap.is_some() && state.gap != result.gap);
+                    state.log_readable = result.readable;
+                    if result.gap.is_some() {
+                        state.gap = result.gap;
+                    }
+                    if changed {
+                        state.revision += 1;
+                    }
+                    changed
+                });
+                for line in result.records {
+                    let _ = owner.records.send(line);
+                }
+                tokio::select! {
+                    _ = stopped.changed() => return,
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {},
                 }
             }
-        });
-    tokio::time::timeout(TIMEOUT, async {
-        let client = coord.connect_nats(options).await?;
-        let messages = client.subscribe(SUBJECT).await?;
-        // flush() only confirms a local socket write. Receive a private marker
-        // ordered after SUB on this connection to confirm broker readiness.
-        let inbox = client.new_inbox();
-        let mut ready = client.subscribe(inbox.clone()).await?;
-        client.publish(inbox, Bytes::new()).await?;
-        ready
-            .next()
-            .await
-            .ok_or("live operator events unavailable")?;
-        ready.unsubscribe().await?;
-        if *failed.borrow() {
-            return Err("live operator events unavailable".into());
-        }
-        Ok(Subscription {
-            client,
-            messages,
-            failed,
         })
-    })
-    .await
-    .map_err(|_| "live operator events unavailable")?
+        .await;
+        let owner = feed.clone();
+        let mut stopped = stop;
+        crate::admin_listener::spawn_event_task(tasks, async move {
+            loop {
+                // One local read for all viewers. No client timer or broker is
+                // involved. Retained watch versions reach each observer even
+                // when intermediate invalidations coalesce.
+                let state = runtime.clone();
+                let result = tokio::task::spawn_blocking(move || pending(&state)).await;
+                let (signals, approvals) = result.unwrap_or((None, None));
+                owner.state.send_if_modified(|state| {
+                    if (state.signals, state.approvals) == (signals, approvals) {
+                        return false;
+                    }
+                    state.signals = signals;
+                    state.approvals = approvals;
+                    state.revision += 1;
+                    true
+                });
+                tokio::select! {
+                    _ = stopped.changed() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                }
+            }
+        })
+        .await;
+        feed
+    }
+    pub(crate) fn subscribe(&self) -> Subscription {
+        Subscription {
+            records: self.records.subscribe(),
+            state: self.state.subscribe(),
+            initial: true,
+        }
+    }
 }
 
+fn pending(state: &RuntimeState) -> (Option<[u8; 32]>, Option<[u8; 32]>) {
+    let Ok(runtime) = state.read().map(|r| r.clone()) else {
+        return (None, None);
+    };
+    let signals = crate::agent_api::coord::signals::operator_fingerprint(&runtime.coord).ok();
+    let approvals = if runtime.audit.approvals_enabled() {
+        runtime.policy.as_ref().and_then(|policy| {
+            runtime
+                .audit
+                .approvals()
+                .pending_fingerprint(&runtime.audit, policy, state)
+                .ok()
+        })
+    } else {
+        Some([0; 32])
+    };
+    (signals, approvals)
+}
+
+pub(crate) struct Subscription {
+    records: broadcast::Receiver<Bytes>,
+    state: watch::Receiver<State>,
+    initial: bool,
+}
 impl Subscription {
     pub(crate) async fn next(&mut self) -> Result<Bytes, Error> {
-        if *self.failed.borrow()
-            || self.client.connection_state() != async_nats::connection::State::Connected
-        {
-            return Err("live operator events lost; reconnect to resume (no replay)".into());
+        if self.initial {
+            self.initial = false;
+            return Ok(self.state.borrow_and_update().bytes());
         }
         tokio::select! {
             biased;
-            _ = self.failed.changed() => Err("live operator events lost; reconnect to resume (no replay)".into()),
-            message = self.messages.next() => message.map(|message| message.payload).ok_or_else(|| "live operator events closed".into()),
+            changed = self.state.changed() => {changed?; Ok(self.state.borrow_and_update().bytes())},
+            record = self.records.recv() => record.map_err(|_| "operator event buffer overflow or feed stopped; history may be missing; reconnect to refresh current work".into()),
         }
     }
 }
 
-/// The audit worker only tries an in-memory send. A separate bounded worker
-/// prevents a broker outage from holding archive writes or request producers.
-/// Each publish has one bounded attempt; this is not a durable queue.
-pub(crate) struct Publisher {
-    directory: PathBuf,
-    worker: Mutex<Option<Worker>>,
-}
-struct Worker {
-    send: mpsc::Sender<Bytes>,
-    done: std::sync::mpsc::Receiver<()>,
-}
-
-impl Publisher {
-    pub(crate) fn new(directory: PathBuf) -> Self {
-        Self {
-            directory,
-            worker: Mutex::new(None),
-        }
-    }
-
-    pub(crate) async fn subscribe(&self) -> Result<Subscription, Error> {
-        subscribe(&self.directory).await
-    }
-
-    pub(crate) fn submit(&self, bytes: Bytes) {
-        let Ok(mut worker) = self.worker.lock() else {
-            return;
-        };
-        if worker.is_none() {
-            let (send, mut receive) = mpsc::channel::<Bytes>(256);
-            let (finished, done) = std::sync::mpsc::channel();
-            let directory = self.directory.clone();
-            let started = std::thread::Builder::new().name("safeyolo-live-events".into()).spawn(move || {
-                if let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                    runtime.block_on(async move {
-                        let coord = CoordClient::new(None, Some(directory));
-                        let mut client = None;
-                        let mut unavailable = false;
-                        while let Some(bytes) = receive.recv().await {
-                            let result: Result<(), Error> = tokio::time::timeout(TIMEOUT, async {
-                                if client.as_ref().is_none_or(|client: &async_nats::Client| client.connection_state() != async_nats::connection::State::Connected) {
-                                    client = Some(coord.connect_nats(async_nats::ConnectOptions::new().max_reconnects(1)).await?);
-                                }
-                                let connection = client.as_ref().expect("connected live publisher");
-                                connection.publish(SUBJECT, bytes).await?;
-                                // Short host commands must not exit with a queued publish.
-                                connection.flush().await?;
-                                Ok(())
-                            }).await.unwrap_or_else(|_| Err("live publish timed out".into()));
-                            if result.is_err() {
-                                client = None;
-                                // Do not replay events accumulated during a failed attempt.
-                                while receive.try_recv().is_ok() {}
-                                if !unavailable { eprintln!("Live operator events unavailable; events may be lost. Canonical state and audit remain independent."); }
-                                unavailable = true;
-                            } else if unavailable {
-                                eprintln!("Live operator event publication recovered; missed events are not replayed.");
-                                unavailable = false;
-                            }
-                        }
-                    });
-                } else {
-                    eprintln!("Live operator event worker could not start.");
-                }
-                let _ = finished.send(());
-            });
-            if started.is_err() {
-                eprintln!("Live operator event worker could not start.");
-                return;
-            }
-            *worker = Some(Worker { send, done });
-        }
-        if worker
-            .as_ref()
-            .expect("live worker started")
-            .send
-            .try_send(bytes)
-            .is_err()
-        {
-            eprintln!("Live operator event buffer unavailable; event lost.");
-        }
-    }
-
-    pub(crate) fn shutdown(&self, timeout: Duration) {
-        if let Ok(mut worker) = self.worker.lock()
-            && let Some(Worker { send, done }) = worker.take()
-        {
-            drop(send);
-            if done.recv_timeout(timeout).is_err() {
-                eprintln!(
-                    "Live operator event publication did not drain before shutdown; events may be lost."
-                );
-            }
-        }
-    }
+pub(crate) fn refreshes_pending(event: &Value) -> bool {
+    event["type"] == "operator_state"
+        || is_signal(event)
+        || event["approval"]["required"] == true
+        || event["event"].as_str().is_some_and(|name| {
+            name.starts_with("admin.") || name == "agent.network_action_prepared"
+        })
 }
 
 pub(crate) fn is_signal(event: &serde_json::Value) -> bool {
@@ -188,6 +181,9 @@ pub(crate) fn is_signal(event: &serde_json::Value) -> bool {
 }
 
 pub(crate) fn is_operator_event(event: &serde_json::Value) -> bool {
+    if is_signal(event) {
+        return true;
+    }
     let approval = event.get("approval").and_then(serde_json::Value::as_object);
     if approval
         .and_then(|approval| approval.get("required"))
@@ -250,242 +246,47 @@ pub(crate) fn is_operator_event(event: &serde_json::Value) -> bool {
 }
 
 #[cfg(test)]
-#[path = "../tests/support/operator_nats.rs"]
-mod operator_nats;
-
-#[cfg(test)]
-#[path = "../tests/support/nats_subscription.rs"]
-mod nats_subscription;
-
-#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audit::{Event, Kind, Settings, Severity, Writer};
-    use serde_json::{Value, json};
-
     #[tokio::test]
-    #[ignore = "requires the pinned SAFEYOLO_COORD_NATS_BINARY"]
-    async fn subscription_waits_for_broker_to_process_sub() {
-        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
-        let root = directory.path();
-        let _nats = operator_nats::Nats::start(root).await;
-        let publisher = operator_nats::Nats::publisher(root).await;
-        let endpoints_path = root.join("data/coord/nats/test-endpoints.json");
-        let mut endpoints: Value =
-            serde_json::from_slice(&std::fs::read(&endpoints_path).unwrap()).unwrap();
-        let mut relay = nats_subscription::SubscriptionRelay::start(
-            endpoints["client_port"].as_u64().unwrap() as u16,
-        )
-        .await;
-        endpoints["client_port"] = json!(relay.port);
-        std::fs::write(endpoints_path, endpoints.to_string()).unwrap();
-        let coord = root.join("data/coord");
-        let mut attaching = tokio::spawn(async move { subscribe(&coord).await });
-        relay.wait_for_sub().await;
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), &mut attaching)
-                .await
-                .is_err(),
-            "subscription reported ready while SUB was held before the broker"
-        );
-        relay.release();
-        let mut events = attaching.await.unwrap().unwrap();
-        publisher
-            .publish(SUBJECT, "after-ready".into())
-            .await
-            .unwrap();
-        publisher.flush().await.unwrap();
-        assert_eq!(
-            tokio::time::timeout(TIMEOUT, events.next())
-                .await
-                .unwrap()
-                .unwrap(),
-            "after-ready",
-            "readiness markers must not appear in the operator event stream"
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "requires the pinned SAFEYOLO_COORD_NATS_BINARY"]
-    async fn subscription_readiness_times_out_without_broker_confirmation() {
-        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
-        let root = directory.path();
-        let _nats = operator_nats::Nats::start(root).await;
-        let endpoints_path = root.join("data/coord/nats/test-endpoints.json");
-        let mut endpoints: Value =
-            serde_json::from_slice(&std::fs::read(&endpoints_path).unwrap()).unwrap();
-        let mut relay = nats_subscription::SubscriptionRelay::start(
-            endpoints["client_port"].as_u64().unwrap() as u16,
-        )
-        .await;
-        endpoints["client_port"] = json!(relay.port);
-        std::fs::write(endpoints_path, endpoints.to_string()).unwrap();
-        let coord = root.join("data/coord");
-        let attaching = tokio::spawn(async move { subscribe(&coord).await });
-        relay.wait_for_sub().await;
-        let result = tokio::time::timeout(TIMEOUT + Duration::from_secs(1), attaching)
-            .await
-            .expect("subscription readiness did not time out")
-            .unwrap();
-        assert!(
-            result.is_err(),
-            "subscription ignored the missing broker confirmation"
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "requires the pinned SAFEYOLO_COORD_NATS_BINARY"]
-    async fn short_host_command_finishes_live_publication() {
-        const CHILD_ROOT: &str = "SAFEYOLO_HOST_EVENT_TEST_ROOT";
-        if let Some(root) = std::env::var_os(CHILD_ROOT) {
-            crate::host_platform::in_instance(root.into(), async {
-                crate::host_events::write(
-                    "alice",
-                    "traffic.preview_http",
-                    "traffic",
-                    "Raw traffic stays in its archive".into(),
-                    None,
-                    json!({"private_body":"synthetic-private-body"}),
-                );
-                crate::host_events::write(
-                    "alice",
-                    "agent.stopped",
-                    "agent",
-                    "Short host command".into(),
-                    None,
-                    json!({"reason":"user_request"}),
-                );
-            })
-            .await;
-            return;
-        }
-        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
-        let root = directory.path();
-        std::fs::write(
-            root.join("config.toml"),
-            "audit_log_path='host-audit.jsonl'\n",
-        )
-        .unwrap();
-        let _nats = operator_nats::Nats::start(root).await;
-        let mut events = subscribe(&root.join("data/coord")).await.unwrap();
-        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "operator_events::tests::short_host_command_finishes_live_publication",
-                "--ignored",
-            ])
-            .env(CHILD_ROOT, root)
-            .output()
-            .await
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let bytes = tokio::time::timeout(TIMEOUT, events.next())
-            .await
-            .unwrap()
-            .unwrap();
-        let event: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(event["event"], "agent.stopped");
-        assert_eq!(event["agent"], "alice");
-        assert_eq!(event["details"]["reason"], "user_request");
-        assert!(!String::from_utf8_lossy(&bytes).contains("synthetic-private-body"));
-        let audit = std::fs::read_to_string(root.join("host-audit.jsonl")).unwrap();
-        assert_eq!(audit.lines().count(), 2);
-        assert!(audit.contains("synthetic-private-body"));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), events.next())
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "requires the pinned SAFEYOLO_COORD_NATS_BINARY"]
-    async fn subscription_orders_bursts_and_archive_failure_does_not_stop_live_events() {
-        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
-        let root = directory.path();
-        let _nats = operator_nats::Nats::start(root).await;
-        let mut events = subscribe(&root.join("data/coord")).await.unwrap();
-        let publisher = operator_nats::Nats::publisher(root).await;
-        // Publish immediately after subscription readiness, before reading.
-        for sequence in 0..20 {
-            publisher
-                .publish(SUBJECT, json!({"sequence":sequence}).to_string().into())
-                .await
+    async fn overflow_is_explicit_and_one_observer_cannot_consume_anothers_state_change() {
+        let (records, _) = broadcast::channel(2);
+        let (state, _) = watch::channel(State {
+            signals: None,
+            approvals: None,
+            log_readable: true,
+            gap: None,
+            revision: 0,
+        });
+        let feed = Feed { records, state };
+        let mut slow = feed.subscribe();
+        let mut fast = feed.subscribe();
+        slow.next().await.unwrap();
+        fast.next().await.unwrap();
+        for sequence in 0..5 {
+            feed.records
+                .send(Bytes::from(sequence.to_string()))
                 .unwrap();
+            assert_eq!(fast.next().await.unwrap(), sequence.to_string());
         }
-        publisher.flush().await.unwrap();
-        for sequence in 0..20 {
-            let bytes = tokio::time::timeout(TIMEOUT, events.next())
+        assert!(
+            slow.next()
                 .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                serde_json::from_slice::<Value>(&bytes).unwrap()["sequence"],
-                sequence
-            );
+                .unwrap_err()
+                .to_string()
+                .contains("overflow")
+        );
+        let mut other = feed.subscribe();
+        other.next().await.unwrap();
+        feed.state.send_modify(|state| {
+            state.signals = Some([1; 32]);
+            state.revision += 1;
+        });
+        for observer in [&mut fast, &mut other] {
+            let value: Value = serde_json::from_slice(&observer.next().await.unwrap()).unwrap();
+            assert_eq!(value["type"], "operator_state");
+            assert!(value.get("event").is_none());
+            assert_eq!(value["signals"], "ready");
         }
-        let sink = root.join("blocked-audit");
-        std::fs::create_dir(&sink).unwrap();
-        let writer = Writer::new(sink.clone(), Settings::default())
-            .with_live_events(root.join("data/coord"));
-        let event = Event::new(
-            "agent.stopped",
-            Kind::Agent,
-            Severity::Low,
-            "Archive sink is a directory",
-        );
-        assert!(writer.emit_confirmed(event).await.is_err());
-        let bytes = tokio::time::timeout(TIMEOUT, events.next())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            serde_json::from_slice::<Value>(&bytes).unwrap()["event"],
-            "agent.stopped"
-        );
-        assert!(writer.shutdown(Duration::from_secs(5)).unwrap());
-        assert!(sink.is_dir());
-    }
-
-    #[tokio::test]
-    #[ignore = "requires the pinned SAFEYOLO_COORD_NATS_BINARY"]
-    async fn subscriber_overflow_reports_loss_instead_of_a_complete_feed() {
-        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
-        let root = directory.path();
-        let _nats = operator_nats::Nats::start(root).await;
-        let mut stalled = subscribe(&root.join("data/coord")).await.unwrap();
-        let publisher = operator_nats::Nats::publisher(root).await;
-        for sequence in 0..512 {
-            publisher
-                .publish(SUBJECT, json!({"sequence":sequence}).to_string().into())
-                .await
-                .unwrap();
-        }
-        publisher.flush().await.unwrap();
-        tokio::time::timeout(TIMEOUT, async {
-            while !*stalled.failed.borrow() {
-                stalled.failed.changed().await.unwrap();
-            }
-        })
-        .await
-        .expect("slow subscriber did not report loss");
-        assert!(stalled.next().await.is_err());
-        let mut fresh = subscribe(&root.join("data/coord")).await.unwrap();
-        publisher
-            .publish(SUBJECT, b"recovered".as_slice().into())
-            .await
-            .unwrap();
-        publisher.flush().await.unwrap();
-        assert_eq!(
-            tokio::time::timeout(TIMEOUT, fresh.next())
-                .await
-                .unwrap()
-                .unwrap(),
-            "recovered"
-        );
     }
 }

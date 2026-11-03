@@ -156,3 +156,23 @@ pub(crate) async fn operator_read(
     .await
     .map_err(|_| SignalError(503, "signal store unavailable".into()))?
 }
+
+/// Host-only recovery reads canonical current revisions without a broker.
+/// Stream rows into a digest; no signal prose enters the live control.
+pub(crate) fn operator_fingerprint(client: &super::CoordClient) -> Result<[u8; 32], SignalError> {
+    let db = client.owner.data_dir.join("v0.db");
+    let conn =
+        open_db(&db, false).map_err(|_| SignalError(503, "signal store unavailable".into()))?;
+    let mut statement = conn.prepare("SELECT s.signal_id,s.revision,r.content_hash FROM coord_signals s JOIN coord_signal_revisions r ON s.signal_id=r.signal_id AND s.revision=r.revision WHERE s.state='current' AND s.needs_operator=1 ORDER BY s.signal_id")?;
+    let mut rows = statement.query([])?;
+    let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
+        let revision: i64 = row.get(1)?;
+        let content: String = row.get(2)?;
+        hash.update(id.as_bytes());
+        hash.update(&revision.to_be_bytes());
+        hash.update(content.as_bytes());
+    }
+    Ok(hash.finish().as_ref().try_into().expect("SHA256 size"))
+}
