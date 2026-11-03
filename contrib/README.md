@@ -10,7 +10,7 @@ Example integrations. Copy and adapt for your own use.
 | `HOST_SCRIPT_GUIDE.md` | How to write host setup scripts for `safeyolo agent configure NAME --host-script FILE` |
 | `ROOTFS_SCRIPT_GUIDE.md` | How to prepare custom platform assets for a installation |
 | `../docs/AGENTS.md` | Compact always-on agent baseline (environment, guest tools, Agent API health check, security boundaries) |
-| `../cli/src/safeyolo/agent_context/skills/safeyolo/` | Shared Codex/Claude skill for guest tool installation, Agent API, flows, service gateway, plumb, block responses, and troubleshooting |
+| `../cli/src/safeyolo/agent_context/skills/safeyolo/` | Shared Codex/Claude skill for guest tool installation, Agent API, flows, service gateway, approved collaboration, block responses, and troubleshooting |
 | `../cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/` | Codex skill and helper scripts for persistent, operator-visible tmux labs |
 | `../cli/src/safeyolo/agent_context/skills/safeyolo-factory/` | Codex operator skill for designing, cross-reviewing, proving, and troubleshooting supervised factories |
 | `claude-host-setup.sh` | Host setup for Claude Code -- stages auth/extensions and the default coord MCP server, injects the baseline, links `/safeyolo`, and installs the native release on first run |

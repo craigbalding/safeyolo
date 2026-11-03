@@ -27,8 +27,7 @@ impl Delivery {
             // This attachment-local position is not a delivery record. Live
             // publication has no durable cursor, retry queue or history replay.
             let mut live_after = None;
-            let mut approval_positions = [0, 0];
-            let mut approval_first = false;
+            let mut approval_position = 0;
             let mut results_unavailable = false;
             loop {
                 tokio::select! {
@@ -37,7 +36,7 @@ impl Delivery {
                     _ = async {
                         publish_live(&client, &audit, &mut live_after).await;
                         drain(&client, &audit).await;
-                        let unavailable = super::approval_results::reconcile(&client, &runtime, &mut approval_positions, &mut approval_first).await.is_err();
+                        let unavailable = super::approval_results::reconcile(&client, &runtime, &mut approval_position).await.is_err();
                         if unavailable && !results_unavailable {
                             eprintln!("Private approval result delivery unavailable; canonical approvals and operator controls remain available.");
                         }

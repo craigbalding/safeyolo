@@ -254,7 +254,7 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: ce39f4eb427f5553c95913e8ce95c328ae4f75732a20a4eab662a2f7b8027ab7
         - path: proxy/src/host_platform.rs
-          sha256: 7d0e659bfe77645cff528e5a96a480d4c60b8b0c24e7305ac8b5aaf1c14cdbdb
+          sha256: e3b377e3a0d65748e4104b1bc905b4459d85e4b19188d90406cfb82c0ba7201b
         - path: proxy/src/host_boot.rs
           sha256: ce2861e854a3a1736f98f6d8ef9123af10090837d015b6519e339e0619f9fb59
         - path: guest/build-rootfs.sh
@@ -272,7 +272,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: ecc0de72cd8d295a673a7a533d36518730e347b5b4c9f2ccee5472626f3a348d
         - path: proxy/src/lib.rs
-          sha256: ee0df9823eb59cf6dbe7f930cabd6883f2c90cdb735ff32240263b34d0243a1b
+          sha256: 2ffeee813f1f7edcca49e22390cd01b5f1150ef05747d137cbab4256bd4b11e0
         - path: proxy/src/bin/safeyolo.rs
           sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
         - path: scripts/run_claude_blackbox.py
@@ -321,7 +321,7 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: proxy/src/host_platform.rs
-          sha256: 7d0e659bfe77645cff528e5a96a480d4c60b8b0c24e7305ac8b5aaf1c14cdbdb
+          sha256: e3b377e3a0d65748e4104b1bc905b4459d85e4b19188d90406cfb82c0ba7201b
         - path: proxy/src/jobs.rs
           sha256: bf49088efe6c8f53ee6a07fdddcb5c01335e5ea5894734538ad67ada1c971502
         - path: proxy/src/jobs/input.rs
@@ -337,7 +337,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: ecc0de72cd8d295a673a7a533d36518730e347b5b4c9f2ccee5472626f3a348d
         - path: proxy/src/lib.rs
-          sha256: ee0df9823eb59cf6dbe7f930cabd6883f2c90cdb735ff32240263b34d0243a1b
+          sha256: 2ffeee813f1f7edcca49e22390cd01b5f1150ef05747d137cbab4256bd4b11e0
         - path: proxy/src/bin/safeyolo.rs
           sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
         - path: proxy/src/jobs/vz-guest-init.sh
@@ -376,6 +376,15 @@ nodes:
       Its controlled provider snapshots prove the trusted observation boundary,
       not a deployed external lease. Unsupported deployed observations remain
       unknown. The actual three-agent comparison is a separate required observation.
+      For new operator-approved collaboration, run the delegated_approvals
+      integration target with filter collaboration, --ignored, a disk-backed
+      TMPDIR, SAFEYOLO_NATS_TEST_INSTANCE=1 and the pinned NATS binary. It uses
+      the actual product room creator, canonical approval receipts, authenticated
+      Agent API, inspected messages and current/offline/restarted delivery. It
+      covers denied/expired requests, current identity removal, scoped delegation,
+      interrupted preparation/commit, pending-read revocation and UTF-8/encoded
+      size bounds. These controlled runs do not establish guest isolation or a
+      model wake.
       For private approval results, run the delegated_approvals integration
       target with filter private_, --ignored and the pinned NATS binary. It
       uses authenticated Agent API calls, credential expiry, disconnected
@@ -439,14 +448,16 @@ nodes:
     tool:
       obtain_from: "the trusted-base native tests and locked Cargo dependencies; the native NATS owner verifies its pinned archive and executable before launch"
       sources:
+        - path: proxy/tests/delegated_approvals/collaboration.rs
+          sha256: cc249a3fcdf97f033e57cc1a82f64ac7ef97f2c83f9c59c115eca21a7861ef17
         - path: proxy/tests/native_coord.rs
           sha256: e80d82dc38f9a432ed642892cef39457661ab65ff89475a4bf87fc19d128a0e7
         - path: proxy/tests/native_coord/federation.rs
           sha256: b4f44c1465fd834f467ca5fb4f703efb3c372a57d327644deb8a8e2545e81578
         - path: proxy/src/agent_api/coord.rs
-          sha256: 525cef82010d65a761ccac6b6cfbad5f8f904ab5dbfbe8d30a730672045c9923
+          sha256: 356508bf02f9dc5d5728b0b77c53d25997416f361518788b01d3c49a85e6ff73
         - path: proxy/src/agent_api/coord/federation.rs
-          sha256: db953429fbeba489fd1aaa0e6d37ab841030de8f7b85874dc43e4fa0d396a0c9
+          sha256: 0a1a41a576e663065562d3968e2dbb603f57a1d296d6c730e9ad8f3d5b6f87f9
         - path: proxy/src/agent_api/coord/federation/tests.rs
           sha256: 0172482d36d05a08f16b331779296d31d6b558bcc332badf97cf207c133f77be
         - path: proxy/src/coord_rooms/federation.rs
@@ -456,7 +467,7 @@ nodes:
         - path: proxy/src/coord_federation_schema.sql
           sha256: 342a5fb315c9b2013afb291b0223ab2c83312af3f5a8ee2b7dfda6f6b493d12b
         - path: proxy/src/coord_rooms/membership.rs
-          sha256: 6c52140ef2fe7c02a3c68492296b1c8ae09e22598b83bce180b0989b8177b457
+          sha256: cb6b57cd126bae0d3c0471d5d2c683e32d3ec55a93b53663666c9f31c646e5ca
         - path: proxy/tests/native_coord/github.rs
           sha256: aa411d76472321e1813fa59d9aa5a4d1d375a9371df344271a5b2d6574a54c10
         - path: proxy/src/coord_rooms/work/github.rs
@@ -470,7 +481,7 @@ nodes:
         - path: proxy/tests/native_coord/stage0.rs
           sha256: 97de83bf334938ba0d6b7bb727789e9da4834dc8bbf6fb659a3176119b8fbc6a
         - path: proxy/src/coord_rooms.rs
-          sha256: 33333504318a5a7a36a66f5127feeee7656bdecf136253a451439a3ff3457bfb
+          sha256: 534969daebaeff6658f8efefa8d339ab76d1241ef1362046c6bfaa18caa954d7
         - path: proxy/tests/native_coord/inventory.rs
           sha256: 1de6227ecdc2bbf2062f0e912c0c4ae7d6e149e2ea61837d75705393891b7276
         - path: proxy/src/agent_api/coord/inventory.rs
@@ -514,7 +525,7 @@ nodes:
         - path: proxy/src/coord_operator/signals.rs
           sha256: 860ce1c01a3d4714ad278c9394479c7019bfd70099136684be860f8990f7b531
         - path: proxy/src/coord_tools.rs
-          sha256: f05fe053ac9471f43305c380cce31d107242e783c7cf3a1c2f1a3e942f696a47
+          sha256: 263b83736868fbc5adfe4e99da76d3aa80b33b0dab01d5c1c96ad9c056483724
         - path: proxy/src/coord_rooms/room_status.rs
           sha256: ac2d0dff5875c2beacc4cef2208d5fec6286ae5b287373a0a2e3902c5bec097b
         - path: proxy/src/coord_rooms/room_status/tests.rs

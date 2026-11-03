@@ -113,6 +113,7 @@ pub(crate) struct CoordOwner {
     nats: tokio::sync::Mutex<Option<async_nats::Client>>,
     cleanup: Arc<CoordCleanup>,
     snapshot_reads: Arc<inventory::SnapshotReads>,
+    collaboration_scanner: Option<crate::inspection::Scanner>,
 }
 
 impl CoordOwner {
@@ -127,12 +128,18 @@ impl CoordOwner {
                     .map(|home| home.join(".safeyolo/data/coord"))
             })
             .unwrap_or_else(|| PathBuf::from(".safeyolo/data/coord"));
+        let scanner = crate::inspection::Scanner::default();
+        let collaboration_scanner = scanner
+            .load_policy_config(&json!({"addons":{"pattern_scanner":{"builtin_sets":["secrets"]}}}))
+            .ok()
+            .map(|_| scanner);
         Self {
             data_dir,
             explicit_directory,
             nats: tokio::sync::Mutex::new(None),
             cleanup: Arc::new(CoordCleanup::new()),
             snapshot_reads: Arc::new(inventory::SnapshotReads::default()),
+            collaboration_scanner,
         }
     }
 }
@@ -148,6 +155,7 @@ pub struct CoordClient {
     remote: Option<crate::coord_rooms::federation::RemoteAgent>,
     relay_config: Option<PathBuf>,
     request_run: Option<Arc<(crate::host_runs::AgentRun, PathBuf)>>,
+    collaboration_config: crate::config::CollaborationConfig,
 }
 
 impl CoordClient {
@@ -167,11 +175,20 @@ impl CoordClient {
             remote: None,
             relay_config: None,
             request_run: None,
+            collaboration_config: Default::default(),
         }
     }
 
     pub(crate) fn owner(&self) -> Arc<CoordOwner> {
         self.owner.clone()
+    }
+
+    pub(crate) fn with_collaboration_config(
+        mut self,
+        config: crate::config::CollaborationConfig,
+    ) -> Self {
+        self.collaboration_config = config;
+        self
     }
 
     fn bound_current(&self) -> Result<(), CoordError> {
@@ -998,6 +1015,7 @@ struct RoomAccess {
     members: Vec<Membership>,
     instance_id: String,
     brief: Value,
+    collaboration: bool,
 }
 
 #[derive(Clone)]
@@ -2092,6 +2110,8 @@ fn read_access_from(
         .ok_or(CoordError::Unavailable)?;
     let brief = crate::coord_rooms::brief::current(conn, &room_id).map_err(|_| CoordError::Data)?;
     Ok(RoomAccess {
+        collaboration: crate::coord_rooms::collaboration::is_collaboration(conn, &room_id)
+            .map_err(|_| CoordError::Data)?,
         room_id,
         room_name,
         permissions: member.permissions.clone(),
@@ -2186,13 +2206,47 @@ where
     B: hyper::body::Body<Data = Bytes> + Unpin,
 {
     let payload = if route_parts(request).is_some_and(|(_, op)| op == "send") {
-        match read_capped_content(body, MAX_COORD_REQUEST_BYTES).await? {
+        // Select the collaboration reader only for a currently authorized
+        // member. Unrelated rooms retain their existing HTTP bound, and an
+        // unknown caller cannot infer a room's type from a larger allowance.
+        let collaboration = if let (Some(context), Some((room, _)), Some(name)) = (
+            context.as_ref(),
+            route_parts(request),
+            agent(request.identity),
+        ) {
+            match context.client.principal_id(name).await {
+                Ok(id) => context
+                    .client
+                    .access(&room, &id)
+                    .await
+                    .is_ok_and(|access| access.collaboration),
+                Err(_) => false,
+            }
+        } else {
+            false
+        };
+        let max_bytes = if collaboration {
+            let limit = context
+                .as_ref()
+                .expect("authorized context")
+                .client
+                .collaboration_config
+                .max_message_bytes;
+            MAX_COORD_REQUEST_BYTES.max(if limit == 0 {
+                crate::coord_rooms::COLLABORATION_MAX_ENVELOPE_BYTES
+            } else {
+                limit.saturating_mul(6).saturating_add(32 * 1024)
+            })
+        } else {
+            MAX_COORD_REQUEST_BYTES
+        };
+        match read_capped_content(body, max_bytes).await? {
             CappedContent::TooLarge => {
                 return Ok(response(
                     413,
                     json!({
                         "error":"request body too large",
-                        "max_bytes":MAX_COORD_REQUEST_BYTES,
+                        "max_bytes":max_bytes,
                     }),
                 ));
             }
@@ -2204,9 +2258,11 @@ where
                 Some(content)
             }
         }
-    } else if super::route(request) == "/api/coord/request-access"
-        || route_parts(request)
-            .is_some_and(|(_, op)| matches!(op, "declarations" | "work" | "signals"))
+    } else if matches!(
+        super::route(request),
+        "/api/coord/request-access" | "/api/coord/request-collaboration"
+    ) || route_parts(request)
+        .is_some_and(|(_, op)| matches!(op, "declarations" | "work" | "signals"))
     {
         let max_bytes = if route_parts(request).is_some_and(|(_, op)| op == "signals") {
             crate::coord_rooms::signals::MAX_REQUEST_BYTES
@@ -2323,7 +2379,11 @@ async fn respond_payload(
         cancellation: context.cancellation,
         runtime: context.runtime,
     };
-    if super::route(request) == "/api/coord/request-access" {
+    if matches!(
+        super::route(request),
+        "/api/coord/request-access" | "/api/coord/request-collaboration"
+    ) {
+        let collaboration = super::route(request) == "/api/coord/request-collaboration";
         if request.method != "POST" {
             return response(
                 405,
@@ -2344,13 +2404,21 @@ async fn respond_payload(
                 json!({"error":"trusted current-run ingress and a request body required"}),
             );
         };
-        let outcome = match crate::approvals::pending::coord::request(state, run, payload).await {
+        let outcome = match crate::approvals::pending::coord::request(
+            state,
+            run,
+            payload,
+            collaboration,
+        )
+        .await
+        {
             Ok(view) => {
                 let mut outcome = response(
                     200,
                     json!({
                         "approval_id":view["approval_id"], "request_id":view["request_id"],
                         "status":view["status"], "retry":view["retry"],
+                        "room_name":view["action"]["room_name"],
                     }),
                 );
                 outcome.audit = Some(AuditIntent {
@@ -2358,7 +2426,12 @@ async fn respond_payload(
                     event: "coord.access_requested",
                     severity: "high",
                     addon: "agent-api",
-                    summary: "Worker requested access to an existing Coord room".into(),
+                    summary: if collaboration {
+                        "Worker requested a new collaboration room"
+                    } else {
+                        "Worker requested access to an existing Coord room"
+                    }
+                    .into(),
                     agent: Some(run.agent.clone()),
                     request_id: Some(request.request_id.into()),
                     host: None,
@@ -2985,7 +3058,8 @@ impl OperatorCoord {
                 config.policy_file.clone(),
                 config.data_dir.map(|dir| dir.join("coord")),
             )
-            .with_provider_directory(config.native_config_dir.as_deref()),
+            .with_provider_directory(config.native_config_dir.as_deref())
+            .with_collaboration_config(config.collaboration.clone()),
         })
     }
 
@@ -3242,6 +3316,81 @@ async fn send(
     publish_prepared(client, request, room_name, sender, &prepared).await
 }
 
+fn inspect_collaboration(
+    client: &CoordClient,
+    access: &RoomAccess,
+    sender: Sender<'_>,
+    body: &str,
+) -> Result<Option<Value>, Box<Outcome<'static>>> {
+    let max_bytes = if access.collaboration {
+        client.collaboration_config.max_message_bytes
+    } else {
+        MAX_BODY_BYTES
+    };
+    if max_bytes != 0 && body.len() > max_bytes {
+        return Err(Box::new(response(
+            413,
+            json!({"error":"body too large","max_bytes":max_bytes}),
+        )));
+    }
+    if !access.collaboration {
+        return Ok(None);
+    }
+    let findings = client
+        .owner
+        .collaboration_scanner
+        .as_ref()
+        .ok_or(())
+        .and_then(|scanner| scanner.scan_request_body_rules(body).map_err(|_| ()));
+    let (status, kind, event, error, detected) = match findings {
+        Err(()) => (
+            503,
+            AuditKind::CoordMessageScanFailed,
+            "coord.message_scan_failed",
+            "collaboration message scanning unavailable",
+            vec![],
+        ),
+        Ok(findings) => {
+            let blocked = findings.iter().any(|f| f.pattern_action == "block");
+            let detected = findings
+                .into_iter()
+                .map(|f| f.rule_name)
+                .collect::<Vec<_>>();
+            if !blocked {
+                return Ok(Some(
+                    json!({"size_bytes":body.len(),"detected_classes":detected}),
+                ));
+            }
+            (
+                403,
+                AuditKind::CoordMessageBlocked,
+                "coord.message_blocked",
+                "collaboration message blocked: credential/secret detected",
+                detected,
+            )
+        }
+    };
+    let metadata =
+        json!({"room_id":access.room_id,"size_bytes":body.len(),"detected_classes":detected});
+    let mut outcome = response(status, json!({"error":error,"detected_classes":detected}));
+    outcome.audit = Some(AuditIntent {
+        kind,
+        event,
+        severity: "high",
+        addon: "agent-api",
+        summary: error.into(),
+        agent: match sender {
+            Sender::Agent { name, .. } => Some(name.into()),
+            Sender::Operator => None,
+        },
+        request_id: None,
+        host: None,
+        details: metadata,
+        approval: None,
+    });
+    Err(Box::new(outcome))
+}
+
 async fn prepare_send(
     client: &CoordClient,
     room_name: &str,
@@ -3264,11 +3413,16 @@ async fn prepare_send(
     if body.is_empty() {
         return response(400, json!({"error":"body required (non-empty string)"}));
     }
-    if body.len() > MAX_BODY_BYTES {
-        return response(
-            413,
-            json!({"error":"body too large", "max_bytes":MAX_BODY_BYTES}),
-        );
+    // Determine the body bound from current room authority without requiring
+    // a broker. An unavailable/unauthorized room retains the ordinary bound.
+    let access = client.sender_access(room_name, sender).await;
+    let max_bytes = if access.as_ref().is_ok_and(|access| access.collaboration) {
+        client.collaboration_config.max_message_bytes
+    } else {
+        MAX_BODY_BYTES
+    };
+    if max_bytes != 0 && body.len() > max_bytes {
+        return response(413, json!({"error":"body too large","max_bytes":max_bytes}));
     }
     let content_type = match object.get("declared_content_type") {
         None => "text/markdown",
@@ -3311,16 +3465,9 @@ async fn prepare_send(
             );
         }
     };
-    let connection = match client.client().await {
-        Ok(connection) => connection,
-        Err(error) => return error_response(error),
-    };
-    let jetstream = jetstream::new(connection.clone());
-
-    // The SQLite grant is authoritative for the stream lookup. A second
-    // snapshot below is taken after every preparation step, immediately
-    // before the manifest is constructed and published.
-    let access = match client.sender_access(room_name, sender).await {
+    // The SQLite grant is authoritative. A second snapshot below follows
+    // provider I/O, before construction of the publication manifest.
+    let access = match access {
         Ok(access) => access,
         Err(error) => return error_response(error),
     };
@@ -3331,6 +3478,15 @@ async fn prepare_send(
     {
         return response(403, json!({"error":"permission 'send' denied"}));
     }
+    let inspected = match inspect_collaboration(client, &access, sender, body) {
+        Ok(metadata) => metadata,
+        Err(outcome) => return *outcome,
+    };
+    let connection = match client.client().await {
+        Ok(connection) => connection,
+        Err(error) => return error_response(error),
+    };
+    let jetstream = jetstream::new(connection.clone());
     let mut stream = match jetstream.get_stream(room_stream(&access.room_id)).await {
         Ok(stream) => stream,
         Err(_) => return error_response(CoordError::Unavailable),
@@ -3472,6 +3628,9 @@ async fn prepare_send(
         "content_type":content_type,
         "body":body,
     });
+    if let Some(metadata) = inspected {
+        envelope["inspection"] = metadata;
+    }
     if let Some(remote) = &client.remote {
         envelope["origin_agent_id"] = json!(remote.agent_id);
     }
@@ -3513,9 +3672,7 @@ fn validate_prepared(
             envelope["content_type"].as_str(),
             Some("text/plain" | "text/markdown")
         )
-        || envelope["body"]
-            .as_str()
-            .is_none_or(|body| body.is_empty() || body.len() > MAX_BODY_BYTES)
+        || envelope["body"].as_str().is_none_or(str::is_empty)
         || !msg_id.strip_prefix("msg-").is_some_and(|id| {
             id.len() == 32
                 && id
@@ -3568,6 +3725,59 @@ async fn publish_prepared(
         Ok(stream) => stream,
         Err(_) => return error_response(CoordError::Unavailable),
     };
+    let mut envelope = prepared.envelope.clone();
+    match inspect_collaboration(
+        client,
+        &access,
+        sender,
+        envelope["body"].as_str().unwrap_or_default(),
+    ) {
+        Ok(Some(metadata)) => {
+            envelope["inspection"] = metadata;
+        }
+        Ok(None) => {}
+        Err(outcome) => return *outcome,
+    }
+    let mut headers = async_nats::HeaderMap::new();
+    headers.insert(
+        "Nats-Msg-Id",
+        envelope["msg_id"].as_str().unwrap_or_default(),
+    );
+    headers.insert(
+        "SafeYolo-Coord-Attention",
+        prepared.attention_manifest.to_string(),
+    );
+    let encoded = envelope.to_string();
+    // NATS includes the serialized header block in max_payload. The protocol
+    // uses one CRLF after the status line and each header, plus a final CRLF.
+    let header_bytes = 12
+        + headers
+            .iter()
+            .map(|(name, values)| {
+                values
+                    .iter()
+                    .map(|value| {
+                        <async_nats::HeaderName as AsRef<str>>::as_ref(name).len()
+                            + value.as_str().len()
+                            + 4
+                    })
+                    .sum::<usize>()
+            })
+            .sum::<usize>();
+    let serialized_bytes = encoded.len().saturating_add(header_bytes);
+    let broker_max = connection.server_info().max_payload;
+    let stream_max = stream.cached_info().config.max_message_size;
+    let max_bytes = if stream_max > 0 {
+        broker_max.min(stream_max as usize)
+    } else {
+        broker_max
+    };
+    if serialized_bytes > max_bytes {
+        return response(
+            413,
+            json!({"error":"serialized message exceeds the broker or room ceiling","max_envelope_bytes":max_bytes,"serialized_bytes":serialized_bytes}),
+        );
+    }
     // Preparation can precede a durable restart. Check the latest grant after
     // provider I/O, preserving the same authority check as ordinary send.
     let latest = match client.sender_access(room_name, sender).await {
@@ -3587,22 +3797,8 @@ async fn publish_prepared(
     {
         return error_response(CoordError::Forbidden);
     }
-    let envelope = &prepared.envelope;
-    let mut headers = async_nats::HeaderMap::new();
-    headers.insert(
-        "Nats-Msg-Id",
-        envelope["msg_id"].as_str().unwrap_or_default(),
-    );
-    headers.insert(
-        "SafeYolo-Coord-Attention",
-        prepared.attention_manifest.to_string(),
-    );
     let ack = match jetstream
-        .publish_with_headers(
-            room_subject(&access.room_id),
-            headers,
-            Bytes::from(envelope.to_string()),
-        )
+        .publish_with_headers(room_subject(&access.room_id), headers, Bytes::from(encoded))
         .await
     {
         Ok(ack) => ack,
@@ -3620,7 +3816,7 @@ async fn publish_prepared(
         Ok(ProjectionOutcome::Lost) => "lost",
         Err(_) => "pending",
     };
-    response(
+    let mut outcome = response(
         200,
         json!({
             "envelope": envelope,
@@ -3634,7 +3830,36 @@ async fn publish_prepared(
                 "attention_id":recipient.attention_id,
             })).collect::<Vec<_>>(),
         }),
-    )
+    );
+    if latest.collaboration {
+        let flagged = envelope["inspection"]["detected_classes"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty());
+        outcome.audit = Some(AuditIntent {
+            kind: if flagged {
+                AuditKind::CoordMessageFlagged
+            } else {
+                AuditKind::CoordMessageAllowed
+            },
+            event: if flagged {
+                "coord.message_flagged"
+            } else {
+                "coord.message_allowed"
+            },
+            severity: if flagged { "medium" } else { "low" },
+            addon: "agent-api",
+            summary: "Collaboration message inspected and accepted".into(),
+            agent: match sender {
+                Sender::Agent { name, .. } => Some(name.into()),
+                Sender::Operator => None,
+            },
+            request_id: Some(request.request_id.into()),
+            host: None,
+            details: json!({"room_id":latest.room_id,"message_id":envelope["msg_id"],"sequence":sequence,"inspection":envelope["inspection"]}),
+            approval: None,
+        });
+    }
+    outcome
 }
 
 struct ConsumerCleanup {
@@ -3858,7 +4083,11 @@ async fn read_messages_with_timeout(
             let messages = consumer
                 .fetch()
                 .max_messages(fetch_max_messages(wake_mode, limit))
-                .max_bytes(ROOM_MAX_BYTES)
+                .max_bytes(if access.collaboration {
+                    ROOM_MAX_BYTES.max(crate::coord_rooms::COLLABORATION_MAX_ENVELOPE_BYTES)
+                } else {
+                    ROOM_MAX_BYTES
+                })
                 .expires(remaining)
                 .messages();
             let mut messages = tokio::select! {
@@ -4066,6 +4295,64 @@ mod tests {
         }
     }
 
+    #[test]
+    fn collaboration_scanner_is_scoped_and_failure_is_explicit() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut owner = CoordOwner::new(Some(directory.path().to_owned()));
+        let access = RoomAccess {
+            room_id: "rm-collaboration".into(),
+            room_name: "collaboration".into(),
+            permissions: vec![],
+            members: vec![],
+            instance_id: "sy-test".into(),
+            brief: Value::Null,
+            collaboration: true,
+        };
+        let client = CoordClient::new(None, None);
+        let sender = Sender::Agent {
+            id: "ag-alice",
+            name: "alice",
+        };
+        let inspected =
+            inspect_collaboration(&client, &access, sender, "bearer abcdefghijklmnopqrst")
+                .ok()
+                .flatten()
+                .unwrap();
+        assert_eq!(
+            inspected["detected_classes"],
+            json!(["generic-bearer-in-body"])
+        );
+        assert_eq!(
+            inspect_collaboration(&client, &access, sender, "sk-admin-12345678")
+                .err()
+                .unwrap()
+                .response
+                .status,
+            403
+        );
+        owner.collaboration_scanner = None;
+        let unavailable = CoordClient::with_owner(Arc::new(owner), None);
+        assert_eq!(
+            inspect_collaboration(&unavailable, &access, sender, "ordinary body")
+                .err()
+                .unwrap()
+                .response
+                .status,
+            503
+        );
+        let ordinary = RoomAccess {
+            collaboration: false,
+            ..access
+        };
+        assert!(
+            matches!(
+                inspect_collaboration(&unavailable, &ordinary, sender, "sk-admin-12345678"),
+                Ok(None)
+            ),
+            "the collaboration scanner must not become policy for unrelated rooms"
+        );
+    }
+
     fn test_coord_request(method: &'static str, path_and_query: &'static str) -> Request<'static> {
         Request {
             method,
@@ -4217,6 +4504,7 @@ mod tests {
         })
         .to_string();
         let access = RoomAccess {
+            collaboration: false,
             room_id: "rm-shared".to_owned(),
             room_name: "shared".to_owned(),
             permissions: vec!["receive".to_owned()],
@@ -4248,6 +4536,7 @@ mod tests {
     #[test]
     fn legacy_unannotated_wait_requires_active_grant_after_revoke() {
         let access = RoomAccess {
+            collaboration: false,
             room_id: "rm-shared".to_owned(),
             room_name: "shared".to_owned(),
             permissions: vec!["receive".to_owned()],
@@ -4331,6 +4620,7 @@ mod tests {
         let mut headers = async_nats::HeaderMap::new();
         headers.insert("SafeYolo-Coord-Attention", header);
         let access = RoomAccess {
+            collaboration: false,
             room_id: "rm-shared".to_owned(),
             room_name: "shared".to_owned(),
             permissions: vec!["receive".to_owned()],

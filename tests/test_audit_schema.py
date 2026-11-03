@@ -40,7 +40,7 @@ from safeyolo.core.audit_schema import (
 class TestEventKind:
     def test_value_set(self):
         assert {k.value for k in EventKind} == {
-            "security", "gateway", "traffic", "ops", "admin", "agent", "plumb",
+            "security", "gateway", "traffic", "ops", "admin", "agent",
             "coord",
         }
 
@@ -67,7 +67,7 @@ class TestApprovalType:
     def test_value_set(self):
         assert {a.value for a in ApprovalType} == {
             "credential", "network_egress", "gateway_route", "service",
-            "contract_binding", "plumb", "desktop_present"
+            "contract_binding", "desktop_present"
         }
 
 

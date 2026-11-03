@@ -72,15 +72,7 @@ pub fn parse_record(line: &str) -> Result<Value> {
     }
     if !matches!(
         kind,
-        "security"
-            | "gateway"
-            | "traffic"
-            | "ops"
-            | "admin"
-            | "agent"
-            | "plumb"
-            | "coord"
-            | "network"
+        "security" | "gateway" | "traffic" | "ops" | "admin" | "agent" | "coord" | "network"
     ) || !event.starts_with(&format!("{kind}."))
         || !matches!(
             value["severity"].as_str(),
@@ -134,7 +126,6 @@ pub fn parse_record(line: &str) -> Result<Value> {
                         | "gateway_route"
                         | "service"
                         | "contract_binding"
-                        | "plumb"
                         | "desktop_present"
                 )
             )

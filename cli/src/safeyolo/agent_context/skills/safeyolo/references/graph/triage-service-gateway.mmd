@@ -33,7 +33,7 @@ flowchart TD
     con.gateway_submit_only_requested_bindings(["Submit ONLY the binding variables the gateway requested; do not add extras"])
     con.gateway_do_not_broaden(["If contract_not_enforceable: do NOT try a broader capability. Explain to operator, stop."])
     con.gateway_use_configured_header(["Place the sgw_ token in the service's configured auth header; make requests over HTTPS only"])
-    con.gateway_never_share_token(["Never print, persist, or send an sgw_ token to another agent (including via plumb)"])
+    con.gateway_never_share_token(["Never print, persist, or send an sgw_ token to another agent (including through collaboration messages)"])
     con.gateway_correct_route(["Restrict my call to routes the capability actually covers; other routes will 403"])
     ask.gateway_register_service[["Ask operator whether the service should be registered at all; do not assume it will be"]]
     ask.gateway_watch_grant[["Ask operator to run 'safeyolo watch' and grant the specific capability I requested"]]

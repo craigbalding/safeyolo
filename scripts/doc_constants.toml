@@ -208,13 +208,6 @@ docs = ["docs/proxy-parity.md"]
 must_contain = "Approval-bearing Agent API requests"
 
 [[assertion]]
-name = "approval-audit-plumb-confirmed"
-source = "proxy/src/agent_api/plumb.rs"
-pattern = 'writer\.emit_confirmed\(intent\.to_event\(\)\)\.await'
-docs = ["docs/proxy-parity.md"]
-must_contain = "/plumb/request-chat"
-
-[[assertion]]
 name = "block-response-status-code"
 # Approval-required credential decisions use 428 in the native guard.
 source = "proxy/src/credential_guard.rs"

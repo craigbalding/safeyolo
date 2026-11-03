@@ -30,8 +30,7 @@ and #815/#822, respectively. This ledger does not accept those outcomes.
 - **Proxy hooks (M8-01–M8-28):** the mitmproxy addon chain and its policy,
   inspection, Agent API, gateway, logging, and transport hooks are removed.
   The accepted native implementations supply those proxy responsibilities;
-  the old process-local `core/plumb_service.py` and mitmproxy timing hooks are
-  removed. Shared Python references under `tests/reference` support retained
+  the old mitmproxy timing hooks are removed. Shared Python references under `tests/reference` support retained
   tests; they are not packaged product owners.
 - **Package and comparator (M8-29–M8-31):** the Python PDP package and
   mitmproxy dependency remain removed. The native assembler and installer

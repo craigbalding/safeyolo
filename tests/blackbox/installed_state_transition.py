@@ -235,8 +235,7 @@ def request(socket_path: Path, method: str, target: str, *, token: str | None = 
             response_headers: dict | None = None):
     connection = UnixHTTP(socket_path)
     fields = {"Host": "_safeyolo.proxy.internal" if target in ("/health", "/circuits")
-              or target.startswith("/api/") or target.startswith("/gateway/")
-              or target.startswith("/plumb/") else urlsplit(target).netloc}
+              or target.startswith("/api/") or target.startswith("/gateway/") else urlsplit(target).netloc}
     if token:
         fields["Authorization"] = f"Bearer {token}"
     if body:
@@ -753,12 +752,6 @@ async def exercise():
             'provider_owned_lease':state['resource_leases'][0]['state']}
 print(json.dumps(asyncio.run(exercise())))
 """)
-        plumb_status, pending = json_request(alice, "POST", "/plumb/request-chat", agent_token,
-                                              {"participants": ["bob"], "topic": "r638",
-                                               "reason": "installed transition"})
-        check(plumb_status == 202 and pending.get("request_id"),
-              f"initial native process plumb pending writer failed: {plumb_status} {pending}")
-        plumb_request_id = pending["request_id"]
         status, denied = request(alice, "GET",
                                  f"http://{args.origin_host}:{origin.server_port}/initial")
         check(status == 403 and not origin.seen,
@@ -779,7 +772,7 @@ print(json.dumps(asyncio.run(exercise())))
         active = None
         print(json.dumps({"old_initial": stages[-1], "state": initial_state,
                           "denied_status": status, "coord": initial_coord,
-                          "plumb_request_id": plumb_request_id, "trusted_tls": initial_tls}),
+                          "trusted_tls": initial_tls}),
               flush=True)
         nats_identity = ensure_nats(args.cli, env, args.nats_client_port, args.nats_monitor_port)
         print(json.dumps({"nats": nats_identity}), flush=True)
@@ -816,26 +809,9 @@ print(json.dumps(asyncio.run(exercise())))
              "notify": ["bob"]})
         check(coord_send_status == 200 and coord_sent.get("envelope", {}).get("msg_id"),
               f"native Coord send failed: {coord_send_status} {coord_sent}")
-        pending_status, pending_native = admin(root, "GET", "/admin/plumb/pending")
-        check(pending_status == 200 and any(p.get("request_id") == plumb_request_id
-                                            for p in pending_native.get("pending", [])),
-              "native plumb did not read initial pending request")
-        approved_status, plumb_approved = admin(
-            root, "POST", "/admin/plumb/approve",
-            {"request_id": plumb_request_id, "ttl_seconds": 180})
-        check(approved_status == 200 and plumb_approved.get("conversation_id"),
-              f"native plumb approval failed: {approved_status} {plumb_approved}")
-        conversation_id = plumb_approved["conversation_id"]
-        plumb_send_status, plumb_sent = json_request(
-            alice, "POST", f"/plumb/conversations/{conversation_id}/messages", agent_token,
-            {"body": "native-written-plumb"})
-        check(plumb_send_status == 200 and plumb_sent.get("id"),
-              f"native plumb send failed: {plumb_send_status} {plumb_sent}")
         print(json.dumps({"native_coord": {"old_message_read": True,
                           "old_attention_read": True, "new_message_id":
-                          coord_sent["envelope"]["msg_id"], "plumb_pending_read": True,
-                          "plumb_conversation_id": conversation_id,
-                          "plumb_message_id": plumb_sent["id"]}}), flush=True)
+                          coord_sent["envelope"]["msg_id"]}}), flush=True)
         status, services = json_request(alice, "GET", "/gateway/services", agent_token)
         check(status == 200 and any(item.get("name") == "contract"
                                     for item in services.get("available", [])),
@@ -1139,16 +1115,6 @@ async def exercise():
             'provider_owned_lease':state['resource_leases'][0]['state']}
 print(json.dumps(asyncio.run(exercise())))
 """)
-        replacement_plumb_status, replacement_plumb = json_request(
-            bob, "GET", f"/plumb/conversations/{conversation_id}/messages", agent_token)
-        check(replacement_plumb_status == 200 and any(
-            m.get("body") == "native-written-plumb" for m in replacement_plumb.get("messages", [])),
-            f"replacement native process did not read native plumb message: {replacement_plumb_status} {replacement_plumb}")
-        plumb_reply_status, plumb_reply = json_request(
-            bob, "POST", f"/plumb/conversations/{conversation_id}/messages", agent_token,
-            {"body": "python-rollback-plumb"})
-        check(plumb_reply_status == 200 and plumb_reply.get("id"),
-              f"replacement native process plumb write failed: {plumb_reply_status} {plumb_reply}")
         native_flow(root, alice, agent_token, flow_id, "native")
         status, _ = json_request(alice, "POST", f"/api/flows/{flow_id}/tag", agent_token,
                                  {"tag": "replacement", "value": "rollback"})
@@ -1226,8 +1192,7 @@ print(json.dumps({'native_grant_read':True,
                           "task_reset_status": replacement_initial_task_status,
                           "gateway_response": summary_value(old_gateway_bytes),
                           "replacement_consumer": replacement_read, "oauth_provider_calls": len(oauth.seen),
-                          "coord": replacement_coord_read, "plumb_read_count": len(replacement_plumb["messages"]),
-                          "plumb_reply_id": plumb_reply["id"],
+                          "coord": replacement_coord_read,
                           "circuit_reset_status": replacement_recovered_status,
                           "host_approval_revoked": True}),
               flush=True)
@@ -1292,11 +1257,6 @@ print(json.dumps({'native_grant_read':True,
               f"return Rust lost Coord history: {status} {returned_coord}")
         lease = check_provider_lease("native_return", bob, agent_token, provider_snapshot,
                                      provider_expected, provider_checks, args.output)
-        status, returned_plumb = json_request(
-            alice, "GET", f"/plumb/conversations/{conversation_id}/messages", agent_token)
-        check(status == 200 and [m.get("body") for m in returned_plumb.get("messages", [])] == [
-            "native-written-plumb", "python-rollback-plumb"],
-              f"return Rust lost plumb history: {status} {returned_plumb}")
         approval_status, _ = admin(root, "POST", "/admin/policy/host/allow",
                                    {"host": args.origin_host, "port": origin.server_port,
                                     "agent": "alice", "rate": 600})
@@ -1339,18 +1299,10 @@ print(json.dumps({'native_grant_read':True,
         check(final_bytes == BODY and origin.seen[-1]["authorization"] ==
               "Bearer synthetic-r638-access-v2", "return Rust did not use refreshed vault")
         check(len(oauth.seen) == 2, "return Rust unexpectedly refreshed unexpired OAuth token")
-        close_status, _ = admin(root, "POST", "/admin/plumb/close",
-                                {"conversation_id": conversation_id})
-        check(close_status == 200, "return Rust could not close retained collaboration")
-        closed_status, _ = json_request(
-            alice, "GET", f"/plumb/conversations/{conversation_id}/messages", agent_token)
-        check(closed_status == 403, "closed collaboration remained usable")
         print(json.dumps({"rust_return": stages[-1], "revoked_status": revoked_status,
                           "host_revoked_status": host_revoked_status,
                           "regranted_status": final_status, "response": summary_value(final_bytes),
                           "replacement_flow_tag_read": True, "coord_messages": len(returned_coord["messages"]),
-                          "plumb_messages": len(returned_plumb["messages"]),
-                          "plumb_closed_status": closed_status,
                           "circuit_reset_status": return_circuit_status,
                           "task_reset_status": return_task_status,
                           "oauth_provider_calls": len(oauth.seen),
@@ -1410,8 +1362,6 @@ print(json.dumps({'native_grant_read':True,
         "coord": {"messages": len(returned_coord["messages"]),
                   "retained_attention_edges": replacement_coord_read["attention_edges"],
                   "provider_owned_lease": lease["state"], "provider_snapshot_unchanged": True},
-        "plumb": {"pending_retained": True, "messages": len(returned_plumb["messages"]),
-                  "closed_status": closed_status},
         "task_policy": "process-local registration and activation reset",
         "oauth": {"provider_calls": len(oauth.seen), "stored_credential_reused": True},
         "tls_statuses": [initial_tls["status"], native_tls["status"], replacement_tls["status"], returned_tls["status"]],

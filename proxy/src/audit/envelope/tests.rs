@@ -30,7 +30,6 @@ fn current_ordinary_families_round_trip_their_owned_fields() {
         Kind::Ops,
         Kind::Admin,
         Kind::Agent,
-        Kind::Plumb,
         Kind::Coord,
     ] {
         let mut event = Event::new(

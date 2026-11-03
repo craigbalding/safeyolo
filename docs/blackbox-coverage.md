@@ -25,7 +25,7 @@ Exercise installed access through two live systrap or VZ guests.
 Retain service and contract binding/risk approvals, exact credential injection
 and live peer denial, populated owner-positive/peer-negative guest flow search
 and detail, test-context/trace evidence, real NATS Coord and attention, operator
-Plumb approval/exchange/closure, WebSocket peer effects and traffic-inspector
+collaboration approval/exchange/revocation, WebSocket peer effects and traffic-inspector
 filter/transcript/export. These observations stay in one installed composition.
 
 ### `tests/blackbox/installed_state_transition.py`

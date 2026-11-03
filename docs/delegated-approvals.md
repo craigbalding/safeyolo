@@ -518,13 +518,12 @@ The Agent API routes are `GET /api/coord/attention/wait` and
 Agent API bearer and transport identity. Guests never connect to NATS.
 
 Native network, credential, service authorization, contract binding, risky
-gateway route, room access and typed operator-action approvals use the canonical
+gateway route, room access, new collaboration and typed operator-action approvals use the canonical
 approval store. Operator and delegated decisions share that store. Credential
 expiry can expire a pending service or gateway request while its requester is
-offline. Plumb keeps its approve/deny decisions in its own canonical pending
-store and exposes their references through the same attention feed. Native
-denials have status `rejected`; Plumb denials have status `denied`. This delivery
-path does not add an expiry to requests that have no existing approval expiry.
+offline. New collaboration requests carry their fixed request deadline.
+Denials have status `rejected`. This delivery path does not add an expiry to
+requests that have no existing approval expiry.
 
 A result reports the approval decision. It does not establish current grant
 activation or successful action execution. Read the canonical approval and

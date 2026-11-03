@@ -108,10 +108,6 @@ def approve(
     if approval_type in {"service", "contract_binding", "gateway_risky_route"}:
         return _approve_gateway(event, api, service_credential)
 
-    if approval_type == "plumb":
-        result = api.plumb_approve(request_id=approval.get("key", ""))
-        return result.get("conversation_id") or result.get("status", "ok")
-
     if approval_type == "desktop_present":
         agent_id = approval.get("scope_hint", {}).get("agent_id", "")
         if not agent_id:
@@ -164,10 +160,6 @@ def deny(event: dict, api: AdminAPI) -> None:
         status = api.resolve_approval(current["approval_id"], "reject").get("status")
         if status != "rejected":
             raise ApprovalActionError(f"Canonical gateway approval is {status}; this decision did not reject it")
-        return
-
-    if approval_type == "plumb":
-        api.plumb_deny(request_id=approval.get("key", ""))
         return
 
     if approval_type == "desktop_present":

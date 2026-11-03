@@ -79,7 +79,7 @@ def test_discovery_and_rpc_errors(adapter):
     by_name = {tool["name"]: tool for tool in tools}
     assert len(tools) == len(by_name)
     assert set(by_name) == {
-        "join_room", "read_brief", "get_room_state", "declare_capabilities", "request_room_access",
+        "join_room", "read_brief", "get_room_state", "declare_capabilities", "request_room_access", "request_collaboration",
         "send", "send_task", "read_room", "wait_for_coord", "wait_for_attention",
         "read_attention", "wait_for_message",
         "list_approvals", "read_approval", "resolve_approval",
@@ -90,6 +90,7 @@ def test_discovery_and_rpc_errors(adapter):
     }
     for name, required in {
         "request_room_access": ["room_name", "permissions", "operation_id"],
+        "request_collaboration": ["participants", "operation_id"],
         "list_approvals": [],
         "read_approval": ["approval_id"],
         "resolve_approval": ["approval_id", "decision", "delegation", "option"],
@@ -97,7 +98,8 @@ def test_discovery_and_rpc_errors(adapter):
         schema = by_name[name]["inputSchema"]
         assert schema["type"] == "object" and schema["additionalProperties"] is False
         assert schema["required"] == required
-        assert set(schema["properties"]) == set(required)
+        optional = {"topic", "ttl_seconds"} if name == "request_collaboration" else set()
+        assert set(schema["properties"]) == set(required) | optional
     assert by_name["resolve_approval"]["inputSchema"]["properties"]["decision"]["enum"] == ["approve", "reject", "defer"]
     assert by_name["request_room_access"]["inputSchema"]["properties"] == {
         "room_name": {"type": "string"},
@@ -219,3 +221,15 @@ def test_refused_unavailable_and_uncertain_sends_are_not_retried(adapter, status
     assert len(calls) == 1
     if value.get("send_outcome") == "unknown":
         assert "outcome unknown" in result["content"][0]["text"]
+
+
+def test_new_collaboration_request_uses_local_canonical_approval_route(adapter):
+    call, _, calls, _, _ = adapter
+    request = {"participants": ["reviewer"], "topic": "Check the repair", "ttl_seconds": 120,
+               "operation_id": "collaboration-request"}
+    call("request_collaboration", request)
+    assert calls[-1][0:2] == ("POST", "http://_safeyolo.proxy.internal/api/coord/request-collaboration")
+    assert calls[-1][2] == request
+    before = len(calls)
+    assert call("request_collaboration", {**request, "home": "peer"})["isError"]
+    assert len(calls) == before

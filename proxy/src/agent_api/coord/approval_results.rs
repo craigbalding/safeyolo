@@ -8,12 +8,7 @@ const STREAM: &str = "APPROVAL_RESULTS";
 
 fn reference(edge: &FeedEdge, principal: &str) -> Reference {
     Reference {
-        source: if edge.object_id.starts_with("apr-") {
-            "approval"
-        } else {
-            "plumb"
-        }
-        .into(),
+        source: "approval".into(),
         approval_id: edge.object_id.clone(),
         agent_id: principal.into(),
         attention_id: edge.attention_id.clone(),
@@ -39,11 +34,6 @@ async fn canonical(
                 .map_err(|_| CoordError::Unavailable)?
                 .map_err(|_| CoordError::Unavailable)
         }
-        "plumb" => runtime
-            .plumb
-            .approval_result(reference.clone(), policy)
-            .await
-            .map_err(|_| CoordError::Unavailable),
         _ => Err(CoordError::Data),
     }
 }
@@ -202,21 +192,13 @@ async fn deliver(
             .await
             .map_err(|_| CoordError::Unavailable)?;
         let snapshot = runtime.read().map_err(|_| CoordError::Unavailable)?.clone();
-        if reference.source == "approval" {
-            let store = snapshot.audit.approvals().clone();
-            let reference = reference.clone();
-            let sequence = ack.sequence;
-            tokio::task::spawn_blocking(move || store.result_published(&reference, sequence))
-                .await
-                .map_err(|_| CoordError::Unavailable)?
-                .map_err(|_| CoordError::Unavailable)?;
-        } else {
-            snapshot
-                .plumb
-                .approval_result_published(reference.clone(), ack.sequence)
-                .await
-                .map_err(|_| CoordError::Unavailable)?;
-        }
+        let store = snapshot.audit.approvals().clone();
+        let published = reference.clone();
+        let sequence = ack.sequence;
+        tokio::task::spawn_blocking(move || store.result_published(&published, sequence))
+            .await
+            .map_err(|_| CoordError::Unavailable)?
+            .map_err(|_| CoordError::Unavailable)?;
         ack.sequence
     };
     canonical(Some(runtime), &reference)
@@ -230,37 +212,22 @@ async fn deliver(
 pub(super) async fn reconcile(
     client: &CoordClient,
     runtime: &crate::RuntimeState,
-    positions: &mut [i64; 2],
-    plumb_first: &mut bool,
+    position: &mut i64,
 ) -> Result<(), CoordError> {
     let snapshot = runtime.read().map_err(|_| CoordError::Unavailable)?.clone();
     let policy = snapshot.policy.clone().ok_or(CoordError::Unavailable)?;
     let (store, page_policy, after) = (
         snapshot.audit.approvals().clone(),
         policy.clone(),
-        positions[0],
+        *position,
     );
-    let (next, mut ready) =
-        tokio::task::spawn_blocking(move || store.result_page(&page_policy, after))
-            .await
-            .map_err(|_| CoordError::Unavailable)?
-            .map_err(|_| CoordError::Unavailable)?;
-    let native_next = next;
-    let (next, plumb) = snapshot
-        .plumb
-        .approval_result_page(policy, positions[1])
+    let (next, ready) = tokio::task::spawn_blocking(move || store.result_page(&page_policy, after))
         .await
+        .map_err(|_| CoordError::Unavailable)?
         .map_err(|_| CoordError::Unavailable)?;
-    let next_positions = [native_next, next];
-    let mut remaining = [ready.len(), plumb.len()];
-    if *plumb_first {
-        ready.splice(0..0, plumb);
-    } else {
-        ready.extend(plumb);
-    }
-    *plumb_first = !*plumb_first;
+    let mut remaining = ready.len();
     if ready.is_empty() {
-        *positions = next_positions;
+        *position = next;
         return Ok(());
     }
     if !client.owner.data_dir.join("v0.db").is_file() {
@@ -276,30 +243,20 @@ pub(super) async fn reconcile(
     }
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     let mut unavailable = false;
-    for source in 0..2 {
-        if remaining[source] == 0 {
-            positions[source] = next_positions[source];
-        }
-    }
     for result in ready {
         let time_left = deadline.saturating_duration_since(tokio::time::Instant::now());
         if time_left.is_zero() {
             break;
         }
-        let source = usize::from(result.reference.source == "plumb");
-        let position = result.scan_position;
+        let scanned = result.scan_position;
         match tokio::time::timeout(time_left, deliver(client, runtime, result)).await {
             Ok(Ok(())) | Ok(Err(CoordError::NotFound)) => {}
             _ => unavailable = true,
         }
-        // Advance past an attempted item even on failure. The next scan cycle
-        // retries it, while subsequent references and both owners get a turn.
-        remaining[source] -= 1;
-        positions[source] = if remaining[source] == 0 {
-            next_positions[source]
-        } else {
-            position
-        };
+        // Advance past an attempted item even on failure. A later page cycle
+        // retries it without starving subsequent references.
+        remaining -= 1;
+        *position = if remaining == 0 { next } else { scanned };
     }
     if unavailable {
         Err(CoordError::Unavailable)

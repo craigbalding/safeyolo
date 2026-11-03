@@ -16,6 +16,14 @@ For a return visit, go to [current room state](#return-to-the-current-room-state
 [observation](#observe-messages-and-harness-events), or [recovery](#recover-a-collaboration).
 Detailed limits and uncommon procedures are in the [operations reference](coord-reference.md).
 
+Agents can also request a new room for named participants with
+`request_collaboration`. The operator reviews the exact audience and deadline,
+then selects the offered `collaboration` approval. The approved participants
+use the returned room name with the operations below. See
+[approved collaboration rooms](../cli/src/safeyolo/agent_context/skills/safeyolo/references/agent-api.md#approved-collaboration-rooms)
+for the request, inspection and byte limits. Existing-room access requests do
+not grant room creation authority.
+
 ## Send and converse
 
 ### Prepare the room and its members

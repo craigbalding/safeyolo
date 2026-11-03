@@ -4,7 +4,7 @@
 Retain service and contract binding/risk approvals, exact credential injection
 and live peer denial, populated owner-positive/peer-negative guest flow search
 and detail, test-context/trace evidence, real NATS Coord and attention, operator
-Plumb approval/exchange/closure, WebSocket peer effects and traffic-inspector
+collaboration approval/exchange/revocation, WebSocket peer effects and traffic-inspector
 filter/transcript/export. These observations stay in one installed composition.
 """
 
@@ -205,8 +205,8 @@ def run_coord(cli: str, primary: str, platform: str, marker: str) -> dict:
                 process.communicate(timeout=5)
 
 
-def run_plumb_and_event(
-    api: AdminAPI, cli: str, primary: str, platform: str, marker: str, operator_token: str
+def run_collaboration_and_event(
+    api: AdminAPI, cli: str, config_dir: Path, primary: str, platform: str, marker: str, operator_token: str
 ) -> dict:
     admin = urlsplit(api.base_url)
     assert admin.scheme == "http" and admin.hostname == "127.0.0.1" and admin.port
@@ -215,33 +215,30 @@ def run_plumb_and_event(
         additional_headers={"Authorization": f"Bearer {operator_token}"},
         proxy=None,
     ) as websocket:
-        requested = guest(cli, primary, platform, marker, "plumb-request", peer=PEER)
+        requested = guest(cli, primary, platform, marker, "collaboration-request", peer=PEER)
+        identifier, room = requested["approval_id"], requested["room_name"]
         event = None
         for _ in range(5):
             candidate = json.loads(websocket.recv(timeout=5))
-            if candidate.get("approval", {}).get("key") == requested["request_id"]:
+            if candidate.get("approval", {}).get("key") == identifier:
                 event = candidate
                 break
-        assert event is not None and event.get("approval", {}).get("approval_type") == "plumb", (
-            "authenticated operator stream missed the selected Plumb approval"
+        assert event is not None and event.get("approval", {}).get("approval_type") == "coord_room", (
+            "authenticated operator stream missed the collaboration approval"
         )
-        pending = api.plumb_pending()["pending"]
-        assert any(row["request_id"] == requested["request_id"] for row in pending), pending
-        approved = api.plumb_approve(requested["request_id"], ttl_seconds=120)
-        conversation = approved["conversation_id"]
-        sent = guest(cli, primary, platform, marker, "plumb-send", conversation=conversation)
-        read = guest(cli, PEER, platform, marker, "plumb-read", conversation=conversation)
+        assert any(row["approval_id"] == identifier for row in api.pending_approvals())
+        current = api.approval(identifier)
+        assert {row["name"] for row in current["action"]["participants"]} == {primary, PEER}
+        approved = api.resolve_approval(identifier, "approve", option="collaboration")
+        assert approved["status"] == "approved" and approved["result"]["room_name"] == room
+        sent = guest(cli, primary, platform, marker, "collaboration-send", room=room)
+        read = guest(cli, PEER, platform, marker, "collaboration-read", room=room)
         assert sent["message_id"] and read["message_count"] >= 1
-        closed = api.plumb_close(conversation)
-        assert closed.get("closed") == conversation, closed
-        peer_closed = guest(cli, PEER, platform, marker, "plumb-closed", conversation=conversation)
-        return {
-            "request_id": requested["request_id"],
-            "operator_event": event["event"],
-            "conversation_id": conversation,
-            "peer_message_id": sent["message_id"],
-            "closed_read_status": peer_closed["closed_read_status"],
-        }
+        checked([cli, "--root", str(config_dir), "coord", "revoke", room, PEER,
+                 "--operation-id", marker + "-revoke"])
+        revoked = guest(cli, PEER, platform, marker, "collaboration-revoked", room=room)
+        return {"approval_id": identifier, "operator_event": event["event"], "room_name": room,
+                "peer_message_id": sent["message_id"], "revoked_read_status": revoked["revoked_read_status"]}
 
 
 def inspect_traffic(api: AdminAPI, output: Path, primary: str, marker: str) -> dict:
@@ -560,7 +557,7 @@ def main() -> None:
         coord_backing = setup_coord(cli, config_dir, args.agent, PEER)
         coord = run_coord(cli, args.agent, args.platform, marker)
         assert coord["room_id"] == coord_backing["room_id"]
-        plumb = run_plumb_and_event(admin, cli, args.agent, args.platform, marker, admin.token)
+        collaboration = run_collaboration_and_event(admin, cli, config_dir, args.agent, args.platform, marker, admin.token)
         ws = guest(cli, args.agent, args.platform, marker, "websocket")
         assert ws["server"] == "server:p2-" + marker[3:]
         ws_state = control("GET", "/p2/state/p2-" + marker[3:])["websockets"]
@@ -594,7 +591,7 @@ def main() -> None:
                                      "origin_paths": sorted(expected_flow_paths), "origin_deliveries": len(flow_deliveries)},
             "coord_backing": coord_backing,
             "coord": coord,
-            "collaboration_and_event": plumb,
+            "collaboration_and_event": collaboration,
             "websocket_peer": ws_state,
             "origin": origin,
             "inspector": inspector,

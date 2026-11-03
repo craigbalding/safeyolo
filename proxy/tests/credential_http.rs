@@ -149,7 +149,7 @@ fn config(
         ignore_hosts: Vec::new(),
         via_token: Some("credential-http-test".into()),
         inspection: None,
-        plumb: Default::default(),
+        collaboration: Default::default(),
     }
 }
 

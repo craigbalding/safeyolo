@@ -339,7 +339,7 @@ async fn private_result_retention_expiry_is_irreversible_and_pressure_preserves_
 
 #[tokio::test]
 #[ignore = "requires pinned SAFEYOLO_COORD_NATS_BINARY"]
-async fn private_service_credential_expiry_and_plumb_terminal_results_use_their_canonical_owners() {
+async fn private_service_credential_expiry_uses_its_canonical_owner() {
     let (f, _backend, vault) = service_authorization::setup().await;
     prepare(&f);
     let _nats = Nats::start_jetstream(f.root.path()).await;
@@ -368,64 +368,6 @@ async fn private_service_credential_expiry_and_plumb_terminal_results_use_their_
             .await
             .json()["status"],
         "expired"
-    );
-    for (decision, outcome) in [("approve", "approved"), ("deny", "denied")] {
-        let request = f
-            .agent(
-                "worker",
-                "POST",
-                "/plumb/request-chat",
-                Some(json!({"participants":["helper"],"note":"private-result-note"})),
-            )
-            .await;
-        assert_eq!(request.status, 202, "{}", request.json());
-        let id = request.json()["request_id"].as_str().unwrap().to_owned();
-        assert_eq!(
-            f.admin(
-                "POST",
-                &format!("/admin/plumb/{decision}"),
-                Some(json!({"request_id":id}))
-            )
-            .await
-            .status,
-            200
-        );
-        let item = result(&f, &id, outcome).await;
-        assert_eq!(item["object"]["source"], "plumb");
-        assert!(!item.to_string().contains("private-result-note"));
-    }
-    let request = f
-        .agent(
-            "worker",
-            "POST",
-            "/plumb/request-chat",
-            Some(json!({"participants":["helper"],"requester_id":HELPER_ID})),
-        )
-        .await;
-    let id = request.json()["request_id"].as_str().unwrap().to_owned();
-    assert_eq!(
-        f.admin("POST", "/admin/plumb/deny", Some(json!({"request_id":id})))
-            .await
-            .status,
-        200
-    );
-    let attention = projected(&f, &id).await;
-    let original = f.source();
-    f.apply(&original.replace(WORKER_ID, "ag-66666666666666666666666666666666"))
-        .await;
-    f.apply(&original).await;
-    let f = f.restart().await;
-    assert!(
-        client(&f, "worker")
-            .call("read_attention", &json!({"attention_id":attention}))
-            .await
-            .is_err()
-    );
-    assert!(
-        client(&f, "helper")
-            .call("read_attention", &json!({"attention_id":attention}))
-            .await
-            .is_err()
     );
     f.stop().await;
 }

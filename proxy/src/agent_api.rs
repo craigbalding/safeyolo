@@ -33,12 +33,11 @@ mod flows;
 mod gateway;
 mod memory;
 mod operator_actions;
-pub(crate) mod plumb;
 mod trace;
 pub use gateway::GatewayContext;
 pub use memory::MemoryContext;
 
-pub(crate) use declarations::respond_with_body_and_audit_id_with_plumb;
+pub(crate) use declarations::respond_with_body_and_audit_id_with_state;
 pub use declarations::{
     AgentReportContext, BodyObservation, Controls, DeclarationContext, RequestBody, TraceContext,
     respond_with_body, respond_with_body_and_audit_id,
@@ -67,6 +66,7 @@ const ENDPOINTS: &[&str] = &[
     "/approvals",
     "/approvals/{approval_id}/resolve (POST)",
     "/api/coord/request-access (POST)",
+    "/api/coord/request-collaboration (POST)",
     "/approvals/{request_id}/prepare (POST)",
     "/trace",
     "/memory",
@@ -165,13 +165,12 @@ pub enum AuditKind {
     TestContextCleared,
     GatewayAccessRequested,
     GatewayBindingSubmitted,
-    PlumbRequested,
-    PlumbMessageBlocked,
-    PlumbMessageFlagged,
-    PlumbMessageAllowed,
-    PlumbConversationClosed,
-    CoordPublishOutcomeUnknown,
+    CoordMessageAllowed,
+    CoordMessageFlagged,
+    CoordMessageBlocked,
+    CoordMessageScanFailed,
     CoordAccessRequested,
+    CoordPublishOutcomeUnknown,
 }
 
 /// The approval envelope accepted by the existing audit writer. This is an
@@ -263,40 +262,33 @@ impl AuditIntent {
                 "agent-api",
                 Some(Decision::RequireApproval),
             ),
-            AuditKind::PlumbRequested => (
-                "plumb.requested",
-                Kind::Plumb,
-                Severity::Critical,
-                "plumb",
-                Some(Decision::RequireApproval),
+            AuditKind::CoordMessageAllowed => (
+                "coord.message_allowed",
+                Kind::Coord,
+                Severity::Low,
+                "agent-api",
+                Some(Decision::Allow),
             ),
-            AuditKind::PlumbMessageBlocked => (
-                "plumb.message_blocked",
-                Kind::Plumb,
-                Severity::Critical,
-                "plumb",
+            AuditKind::CoordMessageFlagged => (
+                "coord.message_flagged",
+                Kind::Coord,
+                Severity::Medium,
+                "agent-api",
+                Some(Decision::Allow),
+            ),
+            AuditKind::CoordMessageBlocked => (
+                "coord.message_blocked",
+                Kind::Coord,
+                Severity::High,
+                "agent-api",
                 Some(Decision::Deny),
             ),
-            AuditKind::PlumbMessageFlagged => (
-                "plumb.message_flagged",
-                Kind::Plumb,
+            AuditKind::CoordMessageScanFailed => (
+                "coord.message_scan_failed",
+                Kind::Coord,
                 Severity::High,
-                "plumb",
-                Some(Decision::Allow),
-            ),
-            AuditKind::PlumbMessageAllowed => (
-                "plumb.message_allowed",
-                Kind::Plumb,
-                Severity::Low,
-                "plumb",
-                Some(Decision::Allow),
-            ),
-            AuditKind::PlumbConversationClosed => (
-                "plumb.conversation_closed",
-                Kind::Plumb,
-                Severity::Low,
-                "plumb",
-                Some(Decision::Log),
+                "agent-api",
+                Some(Decision::Deny),
             ),
             AuditKind::CoordPublishOutcomeUnknown => (
                 "coord.publish_outcome_unknown",
@@ -454,7 +446,6 @@ impl Outcome<'_> {
                 AuditKind::GatewayAccessRequested
                 | AuditKind::GatewayBindingSubmitted
                 | AuditKind::CoordAccessRequested
-                | AuditKind::PlumbRequested
                 | AuditKind::FlowReadAll,
             ) => {
                 let mut outcome = response(500, json!({"error":"Internal error: RuntimeError"}));
@@ -695,7 +686,6 @@ async fn authorize(request: Request<'_>, token_path: &Path) -> Result<AuthScope,
     if matches!(request.method, "POST" | "DELETE")
         && !(path.starts_with("/api/flows")
             || path.starts_with("/gateway/")
-            || path.starts_with("/plumb")
             || path.starts_with("/api/coord/")
             || path == "/api/test-context/current"
             || path == "/desktop/present")
@@ -874,7 +864,7 @@ async fn authenticated_read<'p>(
             }
         }
     }
-    if ENDPOINTS.contains(&path) || path.starts_with("/api/flows/") || path.starts_with("/plumb") {
+    if ENDPOINTS.contains(&path) || path.starts_with("/api/flows/") {
         let mut outcome = response(
             503,
             json!({"error":"Agent API endpoint unavailable in development mode"}),

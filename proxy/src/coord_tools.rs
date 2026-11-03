@@ -154,14 +154,18 @@ impl Client {
     }
 
     async fn call_scoped(&self, name: &str, args: &Value) -> Result<Value, Error> {
-        if name == "request_room_access" {
+        if matches!(name, "request_room_access" | "request_collaboration") {
             if self.home.is_some() {
                 return Err("room approval requests belong to the local SafeYolo".into());
             }
             return self
                 .request(
                     Method::POST,
-                    "/api/coord/request-access",
+                    if name == "request_collaboration" {
+                        "/api/coord/request-collaboration"
+                    } else {
+                        "/api/coord/request-access"
+                    },
                     args.clone(),
                     Duration::from_secs(60),
                 )
@@ -576,6 +580,12 @@ pub fn tools() -> Vec<Value> {
         );
     }
     add(
+        "request_collaboration",
+        "Request a new local collaboration with named current participants. The operator approves the exact durable identities and deadline. The requester is included. Default lifetime is 3600 seconds from the request. Reuse operation_id only with identical inputs; retries never extend the deadline or create another room. After approval use returned room_name with ordinary Coord send/read/attention. Existing room-access delegation cannot decide this request.",
+        json!({"participants":{"type":"array","items":string,"minItems":1},"topic":string,"ttl_seconds":integer,"operation_id":string}),
+        &["participants", "operation_id"],
+    );
+    add(
         "request_room_access",
         "Request explicit rights for your own trusted current run in an existing local room. The host records the whole effect for an eligible reviewer or operator. Reuse the operation_id only with identical inputs after canonical readback. After approval retry ordinary room access. This creates no room and grants nothing by itself.",
         json!({"room_name":string,"permissions":{"type":"array","items":{"type":"string","enum":["send","receive","page_operator"]},"minItems":1},"operation_id":string}),
@@ -668,7 +678,13 @@ pub fn tools() -> Vec<Value> {
     for tool in &mut result {
         if !matches!(
             tool["name"].as_str(),
-            Some("list_approvals" | "read_approval" | "resolve_approval" | "request_room_access")
+            Some(
+                "list_approvals"
+                    | "read_approval"
+                    | "resolve_approval"
+                    | "request_room_access"
+                    | "request_collaboration"
+            )
         ) {
             tool["inputSchema"]["properties"]["home"] = json!({"type":"string","description":"Explicit configured home SafeYolo. Omit for local operations. Attention cursors belong to the selected home."});
         }

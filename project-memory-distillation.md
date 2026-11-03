@@ -5,7 +5,7 @@
 SafeYolo needs a lightweight way to preserve durable decisions without stuffing
 future agent context with chat transcripts.
 
-Most important decisions are not made inside agent-to-agent plumb chats. They
+Most important decisions are not made inside agent-to-agent Coord discussions. They
 are made in the coding harness between the operator and an LLM agent while code
 is being designed, reviewed, corrected, or committed. Agent-to-agent chat is a
 valuable additional source, but it should not be the only source.
@@ -23,7 +23,7 @@ The right model is loosely coupled:
   should rely on.
 - Keep the durable context small enough to read at the start of work.
 - Avoid treating raw chat logs as operational truth.
-- Support decisions made in operator-agent coding sessions, plumb chats,
+- Support decisions made in operator-agent coding sessions, Coord discussions,
   reviews, commits, and investigations.
 - Keep the first version simple enough to use without new SafeYolo machinery.
 
@@ -32,21 +32,21 @@ The right model is loosely coupled:
 - Do not summarize every conversation.
 - Do not automatically promote chat text into future agent instructions.
 - Do not create a second audit log.
-- Do not require plumb for project memory to work.
+- Do not require Coord for project memory to work.
 
 ## Sources
 
 Memory entries may come from:
 
 - operator-to-agent coding harness discussions
-- agent-to-agent plumb conversations
+- agent-to-agent Coord messages
 - code reviews
 - debugging sessions
 - blackbox test investigations
 - explicit operator decisions
 - accepted implementation tradeoffs
 
-Plumb can provide searchable provenance, but it is only one source.
+Coord history can provide provenance, but it is only one source.
 
 ## Storage
 
@@ -72,18 +72,15 @@ The first implementation should focus on repo-local memory.
 Entries should be short and specific:
 
 ```markdown
-## 2026-07-03: Plumb Chat Log Is Durable
+## Decision title
 
-Scope: `cli/src/safeyolo/core/plumb_service.py`, plumb collaboration
+Scope: the affected feature and current source path
 
-Decision: Plumb conversations are durable append-only logs. Do not cap messages
-per conversation. Bound individual reads with pagination instead.
+Decision: the approved behavior or constraint
 
-Rationale: Operators need long-running collaboration, auditability, and later
-reference. A hard conversation cap makes the feature annoying and loses useful
-context.
+Rationale: the concrete user need or evidenced technical limit
 
-Source: operator-agent coding harness discussion during plumb implementation.
+Source: the operator decision, issue, review or accepted test
 ```
 
 Useful entry types:
@@ -116,24 +113,24 @@ provenance.
 This is the lightweight ground-truth mechanism. The memory file is the thing
 future agents should read and rely on, not the raw transcript.
 
-## Relationship To Plumb
+## Relationship to Coord
 
-Plumb and memory are complementary:
+Coord and memory are complementary:
 
-- Plumb records conversations, approvals, messages, and audit evidence.
+- Coord retains room messages and canonical work, signals and approval-result references.
 - Memory records distilled decisions and durable guidance.
 
 The coupling should be provenance, not dependency.
 
 A memory entry may cite:
 
-- a plumb conversation ID
+- a Coord room and message sequence
 - relevant message IDs
 - an operator-agent session
 - a commit or PR
 - a test run or investigation
 
-But memory must still work when no plumb conversation exists. This matters
+But memory must still work when no Coord room exists. This matters
 because many decisions are made directly in the coding harness.
 
 ## Promotion Flow
@@ -152,9 +149,8 @@ Later SafeYolo features could formalize this:
 
 - `safeyolo memory propose`
 - `safeyolo memory approve`
-- `safeyolo plumb distill`
 - watch prompts for memory promotion
-- links from memory entries back to plumb conversations
+- links from memory entries back to Coord messages
 
 Those features should preserve the same principle: agents may propose memory,
 but durable ground truth should remain visible and reviewable by the operator.

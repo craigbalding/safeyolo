@@ -356,6 +356,7 @@ fn show_explanation(view: &Value) -> Result<(), Error> {
         ("Worker run", "run_id"),
         ("Room", "room_name"),
         ("Room ID", "room_id"),
+        ("Deadline", "expires_at"),
         ("Destination", "destination"),
         ("Method", "request_method"),
         ("Service", "service"),
@@ -376,9 +377,17 @@ fn show_explanation(view: &Value) -> Result<(), Error> {
             ("Decision audience", "participants"),
             ("Current participants", "current_participants"),
         ] {
-            println!("  {label}: {}", context_json(&facts[key])?);
+            if let Some(value) = facts.get(key) {
+                println!("  {label}: {}", context_json(value)?);
+            }
         }
         println!("  {}", safe(text(&facts["authority_delta"])));
+        if let Some(topic) = facts.get("topic") {
+            println!(
+                "  Topic (requester-selected data): {}",
+                context_json(topic)?
+            );
+        }
     }
     if let Some(routes) = facts["configured_routes"].as_array() {
         for route in routes.iter().take(3) {
@@ -500,6 +509,28 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
         println!(
             "Receive exposes retained history and native room objects. Send plus receive permits native work and signal mutations. page_operator permits paging. The offered run lifetime ends when the trusted worker run ends; delegation and grant expiry can end it earlier."
         );
+    }
+    if view["action"]["kind"] == "coord_collaboration" {
+        for (label, field) in [
+            ("Room", "room_name"),
+            ("Participant audience", "participants"),
+            ("Topic (requester-selected data)", "topic"),
+        ] {
+            println!("{label}: {}", context_json(&view["action"][field])?);
+        }
+        println!(
+            "Deadline: {}",
+            context_json(&view["authority"]["expires_at"])?
+        );
+        println!(
+            "Rights: receive, send. The host operator retains ordinary room access. This request requires an operator decision."
+        );
+        if let Some(active) = view.get("active_participant_ids") {
+            println!(
+                "Currently active participant IDs: {}",
+                context_json(active)?
+            );
+        }
     }
     if let Some(options) = view["options"].as_array() {
         for option in options {

@@ -75,30 +75,6 @@ impl Store {
         Ok(admitted)
     }
 
-    /// Plumb's existing audit-backed owner supplies the pending identity and
-    /// scope. Only interruption metadata shares this store; no grant is copied.
-    pub(crate) fn claim_plumb_attention(
-        &self,
-        id: &str,
-        agent_id: &str,
-        authority_digest: &str,
-    ) -> Result<bool> {
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(unavailable)?;
-        let (admitted, _) = claim_delivery(
-            &transaction,
-            id,
-            "operator",
-            agent_id,
-            authority_digest,
-            time::OffsetDateTime::now_utc().unix_timestamp(),
-        )?;
-        transaction.commit().map_err(unavailable)?;
-        Ok(admitted)
-    }
-
     pub(crate) fn request_history(&self, record: &Record) -> Result<Value> {
         let connection = self.connect()?;
         let mut statement = connection

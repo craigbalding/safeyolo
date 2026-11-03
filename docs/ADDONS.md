@@ -106,7 +106,7 @@ Tracks process memory and active connection/WebSocket state for OOM diagnostics.
 
 ## agent_api.py
 
-Authenticated agent self-service API on virtual hostname `_safeyolo.proxy.internal`. In addition to read-only PDP queries it exposes action-oriented routes (gateway access, plumb collaboration, and the declared test-context lifecycle).
+Authenticated agent self-service API on virtual hostname `_safeyolo.proxy.internal`. In addition to read-only PDP queries it exposes action-oriented routes (gateway access, approved collaboration rooms, and the declared test-context lifecycle).
 
 **Always active** (infrastructure, not a security sensor)
 

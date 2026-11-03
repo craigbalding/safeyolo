@@ -316,6 +316,7 @@ async fn receive(
         remote: Some(remote.clone()),
         relay_config: client.relay_config.clone(),
         request_run: None,
+        collaboration_config: client.collaboration_config.clone(),
     };
     let outcome = respond_as(
         request,

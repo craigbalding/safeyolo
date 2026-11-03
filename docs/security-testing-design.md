@@ -39,7 +39,7 @@ security decisions to implementation symbols and their test owners.
 | Installed isolation | Native host ingress/security/identity/lifecycle plus ordinary and guest-root probes in an actual systrap, KVM-backed gVisor or VZ guest |
 | Installed ingress | Actual KVM guest/forwarder and correlated allowed-origin/denied-no-origin/local API observations |
 | Installed workloads | Linux guest package, Git, SSE, WS/WSS and pinned SSH through CONNECT |
-| Installed access | Two live guests, operator approvals, service/contract/credential effects, populated owner-scoped flow access, NATS/Coord/attention, Plumb and inspector |
+| Installed access | Two live guests, operator approvals, service/contract/credential effects, populated owner-scoped flow access, NATS/Coord/attention, approved collaboration and inspector |
 | Installed lifecycle | Live listener/policy changes, all five guest-default-trust TLS cases, mixed drain, three subject cycles and a separate live owner |
 
 `run-installed.sh` prepares one compatible installed bundle, or reuses the
@@ -143,7 +143,7 @@ captured request. Process, guest, listener, NATS and fixture cleanup are owned;
 a local fixture stop cannot establish a physical Mac's ports are free.
 
 Current installed continuity owns flow/body/tag/audit, circuit,
-catalog/revocation/grant, Coord/attention/provider lease/Plumb, private file
+catalog/revocation/grant, Coord/attention/provider lease, private file
 modes, OAuth stored use and task reset. The named installed sections retain
 their guest/operator boundaries. Use the
 [installed selection reference](../tests/blackbox/README.md#what-each-installed-selection-observes)

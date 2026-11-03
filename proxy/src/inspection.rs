@@ -1478,9 +1478,8 @@ impl Scanner {
     }
 
     /// Return every matching rule for one request body. The ordinary HTTP
-    /// scanner stops at the first source ordered match; plumb retains the
-    /// source service's complete finding list so log-only and block rules can
-    /// be reported together.
+    /// scanner stops at the first match; collaboration messages retain every
+    /// finding so nonblocking detections and block rules can be reported together.
     pub(crate) fn scan_request_body_rules(&self, text: &str) -> Result<Vec<Finding>> {
         let rules = self.rules()?;
         if rules.is_empty() {
