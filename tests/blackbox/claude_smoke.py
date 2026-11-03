@@ -21,10 +21,10 @@ from pathlib import Path
 
 if __package__:
     from .installed_host_smoke import SmokeError, _cli_identity, _process_start_token
-    from .installed_sections import cleanup_instance
+    from .installed_sections import cleanup_instance, owned_processes
 else:
     from installed_host_smoke import SmokeError, _cli_identity, _process_start_token
-    from installed_sections import cleanup_instance
+    from installed_sections import cleanup_instance, owned_processes
 
 AGENT = "bbtest"
 RESULT = "claude-smoke-result.txt"
@@ -56,6 +56,13 @@ exec /home/agent/.safeyolo-command -p --verbose --output-format stream-json
 
 class SmokeFailure(Exception):
     """A categorical failure safe to publish without client or service text."""
+
+
+def require_dedicated_instance(root: Path) -> None:
+    if any((root / "agents").glob("*/home")):
+        raise SmokeFailure("requires a dedicated instance with no prior agent homes")
+    if owned_processes(root):
+        raise SmokeFailure("requires a dedicated instance with no live owned processes")
 
 
 def sha256(data: bytes) -> str:
@@ -245,8 +252,7 @@ def run(root: Path, workspace: Path, credential: str, output: Path, timeout: int
             raise SmokeFailure("requires an installed Linux AMD64 production package")
         report["source_revision"] = identity["source_revision"]
         report["cli_sha256"] = identity["sha256"]
-        if any((root / "agents").glob("*/home")):
-            raise SmokeFailure("requires a dedicated instance with no prior agent homes")
+        require_dedicated_instance(root)
         workspace.mkdir(parents=True, exist_ok=False)
         marker = uuid.uuid4().hex
         (workspace / "claude-smoke-marker.txt").write_text(marker + "\n")

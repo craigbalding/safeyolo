@@ -81,7 +81,8 @@ The [trusted caller](../../scripts/run_claude_blackbox.py) selects production
 inputs, completes the credential-free installed sections, provisions that
 installation, then invokes the maintained Claude section once. It uses the
 installer's `--yes` option to accept host preparation on this disposable host.
-Each attempt uses new private state. It does not reuse an older prepared root.
+Each attempt uses new private state. Explicit manual reuse can preserve a
+verified installation and its original credential-free proof.
 
 The operator supplies an executable provisioning helper. The caller runs
 `HELPER INSTALLED_ROOT CREDENTIAL_NAME` only after credential-free success.
@@ -108,6 +109,40 @@ For exact production inputs, use `manual` instead of `nightly` and append
 requires trusted production and completed-staging evidence. Default selection
 uses the newest completed compatible guest; an exact older guest is recorded
 as an explicit selection. Selection failures remain failed attempts.
+
+For manual execution without acquisition or installation, supply `--selection`,
+`--prepared-config` and `--readiness` together instead of the selector options.
+Use the original frozen production selection, its retained installed root and
+the original successful credential-free systrap report directory on the same
+host. The report directory must retain `selection.json`, `retained-run.json`,
+`installed-inputs.json`, `guest/installed-sections.json` and
+`guest/isolation/installed-rust-runtime.json`. Keep the isolation instance's
+`config.toml` at its recorded path. All default credential-free sections must
+have passed with stopped cleanup. Their installed inputs, Linux configuration
+and runtime must match the retained installation. A cached root or hash check
+alone does not establish that readiness.
+
+In the same host account and controller checkout, replace `/owned/inputs/selection.json`,
+`/owned/installed` and `/owned/no-secret-reports` with those retained operands.
+Use the helper and credential name described above and a new private output
+directory. The caller verifies installed bytes and runtime before provisioning.
+It creates a separate instance under the attempt directory using the existing
+prepared-instance helper. The original homes, credentials, running or stopped
+owners and proof remain untouched. Only verified inputs, Linux settings and
+the prepared NATS executable are reused; host credentials are provisioned anew.
+
+```sh
+.venv/bin/python scripts/run_claude_blackbox.py manual --ref refs/heads/master --selection /owned/inputs/selection.json --prepared-config /owned/installed --readiness /owned/no-secret-reports --provision /owned/bin/provision-claude --credential claude-account --output /owned/claude-attempt
+```
+
+The report marks `selection_mode` as `retained-manual` and `readiness_reused`
+as true. It preserves the original selection and readiness controller alongside
+the current invocation and controller. `installed` records the newly verified
+instance. `readiness_origin` and `installation_origin` name the original inputs.
+This mode does not discover the newest guest or establish automatic selection
+or installed behavior for another source revision. Missing, failed or
+inapplicable readiness fails before provisioning; the caller does not create
+a passing readiness report for the new invocation.
 
 For a default-branch merge, use `merge --source-revision FULL_MERGED_SHA` instead
 of `nightly`. The selected host package must match that exact source. If its

@@ -38,10 +38,10 @@ def copy_prepared_nats(source: Path, root: Path) -> None:
     shutil.copytree(source / "data/coord/nats/bin", root / "data/coord/nats/bin")
 
 
-def prepare_native_instance(source: Path, root: Path) -> None:
+def prepare_native_instance(source: Path, root: Path, *, log=None) -> None:
     """Create fresh native state and reuse the prepared immutable inputs."""
     subprocess.run([str(source / "bin/safeyolo"), "--root", str(root), "init"],
-                   check=True, timeout=10)
+                   check=True, timeout=10, stdout=log, stderr=log)
     for name in ("bin", "assets", "lib", "libexec", "share", "host"):
         if not (source / name).exists():
             continue
