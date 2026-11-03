@@ -80,6 +80,8 @@ pub fn recover_guest_probe(
 ) -> Result<serde_json::Value, Error> {
     host_lifecycle::recover_guest_probe(root, name, timeout)
 }
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+mod heap_release;
 pub mod host_names;
 pub mod host_package;
 mod host_platform;
@@ -1954,6 +1956,8 @@ pub struct Proxy {
     readiness_file: PathBuf,
     circuit_snapshots: Option<circuit_runtime::Snapshots>,
     coord_delivery: Option<agent_api::coord::outbox::Delivery>,
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    heap_release: Option<heap_release::HeapRelease>,
     service_files: Option<services::CatalogMetadata>,
     service_check_at: Option<tokio::time::Instant>,
     policy_check_at: Option<tokio::time::Instant>,
@@ -2014,6 +2018,8 @@ impl Proxy {
             readiness_file: config.readiness_file.clone(),
             circuit_snapshots: None,
             coord_delivery: None,
+            #[cfg(all(target_os = "linux", target_env = "gnu"))]
+            heap_release: None,
             service_check_at: service_files.as_ref().map(|_| tokio::time::Instant::now()),
             service_files,
             policy_check_at: config
@@ -2067,6 +2073,10 @@ impl Proxy {
                 runtime.audit.clone(),
                 proxy.runtime.clone(),
             );
+        }
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        {
+            proxy.heap_release = heap_release::HeapRelease::start();
         }
         Ok(proxy)
     }
