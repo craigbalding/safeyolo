@@ -20,8 +20,9 @@ STATUS_FIELDS = (
 AGENT_SOURCE = "custom:safeyolo"
 METADATA_SOURCE = "user:safeyolo"
 # Herdr 0.9.5 permits 32 pane tokens and 16 token updates per request.
-# The identity fields and three claim headings leave room for ten title/reference pairs.
-CLAIM_SLOTS = 10
+# Its 16-row sidebar fits five separate title/reference pairs after the two
+# identity rows and three claim headings in the documented layout.
+CLAIM_SLOTS = 5
 WORK_FIELDS = ("coord_room", "claimed_work", "claim_warning", *(f"claim_{index}_{field}"
                for index in range(1, CLAIM_SLOTS + 1) for field in ("title", "ref")))
 

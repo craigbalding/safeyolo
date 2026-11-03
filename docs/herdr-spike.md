@@ -57,11 +57,17 @@ handoffs.
 
 To show the metadata, edit the trusted host's Herdr configuration before
 starting its server. The default Linux path is `~/.config/herdr/config.toml`;
-`herdr --help` shows the resolved path. Merge the following rows into your existing
-`[ui.sidebar.agents]` table; do not create a duplicate table. These rows replace
-the Agent sidebar layout and show up to ten title/reference pairs:
+`herdr --help` shows the resolved path. Merge the following settings into your
+existing `[ui]` and `[ui.sidebar.agents]` tables; do not create duplicate tables.
+The 90-column expanded sidebar puts each title and reference on its own row.
+Leave additional terminal width for the coding panes.
+These rows replace the Agent sidebar layout and show up to five claims:
 
 ```toml
+[ui]
+sidebar_width = 90
+sidebar_max_width = 90
+
 [ui.sidebar.agents]
 rows = [
   ["state_icon", "agent", "state_text"],
@@ -69,21 +75,21 @@ rows = [
   ["$coord_room"],
   ["$claimed_work"],
   ["$claim_warning"],
-  ["$claim_1_title", "$claim_1_ref"],
-  ["$claim_2_title", "$claim_2_ref"],
-  ["$claim_3_title", "$claim_3_ref"],
-  ["$claim_4_title", "$claim_4_ref"],
-  ["$claim_5_title", "$claim_5_ref"],
-  ["$claim_6_title", "$claim_6_ref"],
-  ["$claim_7_title", "$claim_7_ref"],
-  ["$claim_8_title", "$claim_8_ref"],
-  ["$claim_9_title", "$claim_9_ref"],
-  ["$claim_10_title", "$claim_10_ref"],
+  ["$claim_1_title"],
+  ["$claim_1_ref"],
+  ["$claim_2_title"],
+  ["$claim_2_ref"],
+  ["$claim_3_title"],
+  ["$claim_3_ref"],
+  ["$claim_4_title"],
+  ["$claim_4_ref"],
+  ["$claim_5_title"],
+  ["$claim_5_ref"],
 ]
 ```
 
 `Claimed work` reports how many matching claims the returned page contains.
-If more than ten claims match, the count shows displayed/seen, such as `10/11`.
+If more than five claims match, the count shows displayed/seen, such as `5/6`.
 The separate warning row says `Display truncated`. If the room page is also
 incomplete, that row says `Room truncated` instead. Keep the room, count and
 warning on separate rows so a long room name cannot hide the count or warning.
@@ -92,25 +98,18 @@ candidate target or durable work ID. References are display text; the wrapper
 does not fetch their contents. The separate runtime, control, command and
 terminal observations remain available as native metadata.
 
-Herdr limits a pane to 32 metadata tokens and each value to 80 characters. The
-wrapper uses ten title/reference pairs within that limit. It marks text
+Herdr limits a pane to 32 metadata tokens, each value to 80 characters and a
+sidebar layout to 16 rows. The wrapper shows five title/reference pairs so both
+fields can have separate rows alongside the identity and claim headings. It marks text
 excerpts with `…`. Coord also bounds its active-work page and title excerpts.
 If `Room truncated` appears, the count covers only the returned page. Even a
 count of `0` then does not establish that the agent has no claims.
 Use native `coord status ROOM --json` to inspect
 the projection, or `coord work show ROOM WORK_ID` for a full known work record.
-The count and warning fit Herdr's default 26-column expanded sidebar. Narrower
-sidebars can clip them. Titles and references can need more space. To widen the
-sidebar, merge these settings into the same configuration's `[ui]` table:
-
-```toml
-[ui]
-sidebar_width = 80
-sidebar_max_width = 80
-```
-
-Text can still exceed the available width. Use the native work record to read
-the full title and references.
+The count and warning also fit Herdr's default 26-column expanded sidebar if
+you reduce the configured width. Titles and references need the wider layout.
+Narrower sidebars and wide Unicode characters can clip text. Use the native
+work record to read the full title and references.
 
 Released or completed claims disappear on refresh. If a Coord read fails or
 returns malformed data, the wrapper clears the claim titles/references and
@@ -137,8 +136,9 @@ uv run --frozen pytest -q tests/test_herdr_native.py
 
 With that variable set, the control exercises the real Herdr server, metadata,
 name focus and pane reader. It checks the claim tokens at the display limits,
-clears them, and renders the documented layout at the default sidebar width.
-The rendered control checks the count and warning for incomplete room pages,
+clears them, and renders titles and references with the documented layout.
+The rendered control also checks the count and warning at the default 26-column
+sidebar width for incomplete room pages,
 omitted display rows and unavailable reads. It starts no SafeYolo sandbox or model.
 Without the variable, only the live protocol control is skipped. The remaining
 controls exercise wrapper terminal behavior, ownership selection, claim

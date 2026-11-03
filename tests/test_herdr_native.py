@@ -159,10 +159,10 @@ def assert_sidebar_rendered(journey, expected):
         def visible():
             # Read text actually painted into the PTY, including Herdr's clipping.
             plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", client.output).decode(errors="replace").lower()
-            return all(text.lower() in plain for text in expected)
+            return plain if all(text.lower() in plain for text in expected) else None
 
         try:
-            until(visible, min(journey.deadline, time.monotonic() + 5), drain=client.drain)
+            return until(visible, min(journey.deadline, time.monotonic() + 5), drain=client.drain)
         finally:
             # Preserve the failing frame in pytest scratch before the server closes.
             if not visible():
@@ -188,7 +188,8 @@ def test_live_herdr_095_response_consumers(tmp_path, preparation, monkeypatch):
         assert journey.result["herdr"] == {"version": "0.9.5", "protocol": 22}
         sidebar = re.search(r"```toml\n(.*?)\n```", (ROOT / "docs/herdr-spike.md").read_text(), re.S).group(1)
         config = tmp_path / "herdr.toml"
-        config.write_text(config.read_text() + "\n" + sidebar + "\n")
+        base_config = config.read_text()
+        config.write_text(base_config + "\n" + sidebar + "\n")
         reload = journey.herdr.call("server.reload_config")
         assert reload["status"] == "applied" and not reload["diagnostics"]
         workspace = journey.herdr.call("workspace.create", {"cwd": str(tmp_path), "focus": True})
@@ -221,6 +222,24 @@ def test_live_herdr_095_response_consumers(tmp_path, preparation, monkeypatch):
             tokens = journey.herdr.call("agent.get", {"target": name})["agent"]["tokens"]
             assert not any(key in tokens for key in WORK_FIELDS)
             assert tokens["agent_id"] == statuses[name]["agent_id"]
+        readable = [
+            claim("work-readable-one", title="Show canonical claimed work in Herdr for an explicitly selected Coord room",
+                  github_reference={"source": "github", "url": "https://github.com/craigbalding/safeyolo/issues/1395"}),
+            claim("work-readable-two", title="Review the Herdr candidate",
+                  github_reference={"source": "github", "url": "https://github.com/craigbalding/safeyolo/pull/1396"}),
+        ]
+        (tmp_path / "coord-status.json").write_text(json.dumps(coord_page(*readable)))
+        work = claimed_work(command, "backlog", statuses["first"]["agent_id"])
+        report(journey.herdr, journey.panes["first"], "first", statuses["first"], work)
+        assert_sidebar_rendered(journey, [text for item in readable
+                                         for text in (item["title"], item["github_reference"]["url"])])
+        # Also exercise ordinary narrow-sidebar operation with the same rows.
+        rows_config = sidebar[sidebar.index("[ui.sidebar.agents]"):]
+        config.write_text(base_config + '\n[ui]\nsidebar_width = 26\nsidebar_max_width = 36\n' + rows_config + "\n")
+        reload = journey.herdr.call("server.reload_config")
+        assert reload["status"] == "applied" and not reload["diagnostics"]
+        narrow = assert_sidebar_rendered(journey, ["Claimed work: 2"])
+        assert readable[0]["github_reference"]["url"].lower() not in narrow
         for page, expected in (
             (coord_page(total=1), ["Claimed work: 0", "Room truncated"]),
             (coord_page(*rows[:-1]), [f"Claimed work: {CLAIM_SLOTS}/{CLAIM_SLOTS + 1}", "Display truncated"]),
