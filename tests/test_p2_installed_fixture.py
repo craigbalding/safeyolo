@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import http.client
 import io
+import os
 import queue
 import shlex
 import shutil
@@ -64,10 +65,20 @@ def p2_origin(tmp_path, monkeypatch):
         clear_requests()
 
 
-def test_owned_package_repository_and_websocket_reach_the_origin(p2_origin, tmp_path):
+@pytest.mark.parametrize("mask", [0o022, 0o077])
+def test_owned_package_repository_and_websocket_reach_the_origin(p2_origin, tmp_path, mask):
     fixture, directory = p2_origin
     marker = "p2-" + uuid.uuid4().hex
-    package_sha = prepare_package(directory, marker)
+    parent_mode = directory.stat().st_mode
+    previous = os.umask(mask)
+    try:
+        package_sha = prepare_package(directory, marker)
+    finally:
+        os.umask(previous)
+    assert directory.stat().st_mode == parent_mode
+    source = directory / "package-source"
+    for path in (source, *source.rglob("*")):
+        assert path.stat().st_mode & 0o777 == (0o755 if path.is_dir() else 0o644)
     commit = prepare_repository(directory, marker)
 
     connection = http.client.HTTPConnection(*guest.PROXY, timeout=5)

@@ -232,6 +232,7 @@ def test_vz_transfer_copies_guest_readable_offline_files(tmp_path, missing):
     subprocess.run(["tar", "-cf", str(archive), "-C", str(producer), "tracked"], check=True)
     supplier = tmp_path / "supplier"
     supplier.mkdir(mode=0o755)
+    supplier.chmod(0o755)  # mkdir's mode is still filtered by the caller's umask.
     expected = {"debs/python.deb": b"verified Debian bytes", "wheels/pytest.whl": b"locked wheel bytes",
                 "mise-node/installs/node/22/bin/node": b"verified executable bytes"}
     for name, content in expected.items():

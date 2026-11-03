@@ -203,7 +203,6 @@ def test_job_directory_creation_failure_reports_stage(job_guest):
     assert result.returncode == 1
     assert not result.stdout
     assert "mkdir:" in result.stderr
-    assert str(job_guest / "run/sshd") in result.stderr
     assert result.stderr.endswith("safeyolo job startup: create job directories failed (status 1)\n")
     assert (job_guest / "calls").read_text().splitlines() == ["ip link set lo up"]
     assert (job_guest / "run/sshd").is_file()

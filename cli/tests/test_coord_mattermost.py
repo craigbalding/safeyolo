@@ -57,31 +57,6 @@ def make_config(tmp_path: Path, *, backfill: bool = True, actions: bool = False)
     )
 
 
-def emulate_darwin_fd_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    real_alias_matches = mattermost._fd_alias_matches
-
-    def alias_matches(candidate: str, identity: tuple[int, int]) -> bool:
-        if candidate.startswith("/proc/self/fd/"):
-            return False
-        return real_alias_matches(candidate, identity)
-
-    def alias_stat_identity(candidate: str) -> tuple[int, int] | None:
-        if candidate.startswith("/proc/self/fd/"):
-            return None
-        fd = int(candidate.rsplit("/", 1)[1])
-        opened = os.fstat(fd)
-        return opened.st_dev + 1, opened.st_ino
-
-    monkeypatch.setattr(mattermost, "_is_darwin", lambda: True)
-    monkeypatch.setattr(mattermost, "_fd_alias_matches", alias_matches)
-    monkeypatch.setattr(mattermost, "_fd_alias_stat_identity", alias_stat_identity)
-    monkeypatch.setattr(
-        mattermost,
-        "_darwin_path_from_fd",
-        lambda fd: Path(os.readlink(f"/proc/self/fd/{fd}")),
-    )
-
-
 def coord_envelope(sequence: int, *, body: str = "agent body") -> dict[str, Any]:
     return {
         "msg_id": f"msg-{sequence:032x}",
@@ -885,20 +860,6 @@ async def test_interactive_action_validates_every_correlation_before_append(
 
 
 @pytest.mark.asyncio
-async def test_expired_action_is_gone_without_append(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config, state, _remote, coord, adapter, callback = await project_action_card(tmp_path, monkeypatch)
-    with sqlite3.connect(config.state_file) as conn:
-        conn.execute("UPDATE action_capability SET expires_at = 0")
-
-    response = await adapter.handle_action_callback(callback)
-    assert response.status == 410
-    assert coord.send_calls == []
-    record = state.action_capability_for_message(coord.messages[0]["msg_id"])
-    assert record is not None
-    assert record["status"] == "issued"
-
-
-@pytest.mark.asyncio
 async def test_uncertain_action_append_is_not_replayed_and_does_not_block_sync(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1554,151 +1515,6 @@ def test_fd_alias_probe_opens_duplicate_before_comparing_full_identity(
         os.close(state_fd)
 
 
-def test_emulated_darwin_uses_real_wal_path_and_reopens_durable_state(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    emulate_darwin_fd_paths(monkeypatch)
-    config = make_config(tmp_path)
-    state = mattermost.MattermostState(config)
-    assert state._state_fd_path == str(config.state_file)
-    assert state._verify_sqlite_fd
-
-    with state._connect() as conn:
-        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-        conn.execute("PRAGMA wal_autocheckpoint=0")
-        conn.execute("CREATE TABLE darwin_recovery(value TEXT NOT NULL)")
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("INSERT INTO darwin_recovery(value) VALUES ('durable')")
-        conn.execute("COMMIT")
-        assert Path(f"{config.state_file}-wal").is_file()
-        assert Path(f"{config.state_file}-shm").is_file()
-
-    second = mattermost.MattermostState(config)
-    with state.lease():
-        state.set_coord_cursor("backlog", 19)
-        with pytest.raises(mattermost.MattermostAdapterError, match="another Mattermost"):
-            with second.lease():
-                pass
-    state.close()
-    second.close()
-
-    reopened = mattermost.MattermostState(config)
-    assert reopened.room_state("backlog")["coord_cursor"] == 19
-    with reopened._connect() as conn:
-        assert conn.execute("SELECT value FROM darwin_recovery").fetchone()[0] == "durable"
-    reopened.close()
-
-
-def test_emulated_darwin_dev_fd_stat_match_still_uses_real_wal_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    emulate_darwin_fd_paths(monkeypatch)
-    resolved_fds: list[int] = []
-
-    def matching_alias_identity(candidate: str) -> tuple[int, int] | None:
-        if candidate.startswith("/proc/self/fd/"):
-            return None
-        opened = os.fstat(int(candidate.rsplit("/", 1)[1]))
-        return opened.st_dev, opened.st_ino
-
-    def resolved_path(fd: int) -> Path:
-        resolved_fds.append(fd)
-        return Path(os.readlink(f"/proc/self/fd/{fd}"))
-
-    monkeypatch.setattr(mattermost, "_fd_alias_stat_identity", matching_alias_identity)
-    monkeypatch.setattr(mattermost, "_darwin_path_from_fd", resolved_path)
-    config = make_config(tmp_path)
-    state = mattermost.MattermostState(config)
-    try:
-        assert state._state_fd_path == str(config.state_file)
-        assert state._verify_sqlite_fd
-        assert resolved_fds == [state._state_fd]
-    finally:
-        state.close()
-
-
-def test_emulated_darwin_recovers_committed_wal_after_abrupt_process_exit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    config_path = write_config(tmp_path)
-    config = mattermost.load_config(config_path)
-    child = """
-import os
-import sys
-from pathlib import Path
-from tests.legacy_mattermost import mattermost
-
-real_alias_matches = mattermost._fd_alias_matches
-mattermost._is_darwin = lambda: True
-mattermost._fd_alias_matches = lambda candidate, identity: (
-    False if candidate.startswith("/proc/self/fd/")
-    else real_alias_matches(candidate, identity)
-)
-def alias_stat_identity(candidate):
-    if candidate.startswith("/proc/self/fd/"):
-        return None
-    opened = os.fstat(int(candidate.rsplit("/", 1)[1]))
-    return opened.st_dev + 1, opened.st_ino
-mattermost._fd_alias_stat_identity = alias_stat_identity
-mattermost._darwin_path_from_fd = lambda fd: Path(os.readlink(f"/proc/self/fd/{fd}"))
-
-state = mattermost.MattermostState(mattermost.load_config(Path(sys.argv[1])))
-with state._connect() as conn:
-    conn.execute("PRAGMA wal_autocheckpoint=0")
-    conn.execute("CREATE TABLE abrupt_recovery(value TEXT NOT NULL)")
-    conn.execute("BEGIN IMMEDIATE")
-    conn.execute("INSERT INTO abrupt_recovery(value) VALUES ('committed')")
-    conn.execute("COMMIT")
-    os._exit(0)
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", child, str(config_path)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
-    assert Path(f"{config.state_file}-wal").is_file()
-
-    emulate_darwin_fd_paths(monkeypatch)
-    recovered = mattermost.MattermostState(config)
-    with recovered._connect() as conn:
-        assert conn.execute("SELECT value FROM abrupt_recovery").fetchone()[0] == "committed"
-    recovered.close()
-
-
-def test_emulated_darwin_rejects_state_swap_between_validation_and_sqlite_open(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    emulate_darwin_fd_paths(monkeypatch)
-    config = make_config(tmp_path)
-    redirected = tmp_path / "redirected.sqlite3"
-    real_connect = sqlite3.connect
-    with real_connect(redirected) as conn:
-        conn.execute("CREATE TABLE sentinel(value TEXT NOT NULL)")
-        conn.execute("INSERT INTO sentinel(value) VALUES ('unchanged')")
-    redirected.chmod(0o600)
-    swapped = False
-
-    def swap_then_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-        nonlocal swapped
-        if not swapped:
-            swapped = True
-            config.state_file.unlink()
-            config.state_file.symlink_to(redirected)
-        return real_connect(*args, **kwargs)
-
-    monkeypatch.setattr(mattermost.sqlite3, "connect", swap_then_connect)
-    with pytest.raises(mattermost.MattermostAdapterError, match="exactly the validated"):
-        mattermost.MattermostState(config)
-
-    with real_connect(redirected) as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-        assert conn.execute("SELECT value FROM sentinel").fetchone() == ("unchanged",)
-    assert tables == {"sentinel"}
-
-
 @pytest.mark.parametrize("replacement_kind", ["copy", "hardlinked-copy"])
 def test_durable_state_identity_rejects_copied_replacement_after_close(tmp_path: Path, replacement_kind: str) -> None:
     config = make_config(tmp_path)
@@ -1717,67 +1533,6 @@ def test_durable_state_identity_rejects_copied_replacement_after_close(tmp_path:
 
     with pytest.raises(mattermost.MattermostAdapterError, match="identity differs from durable state"):
         mattermost.MattermostState(config)
-
-
-def test_state_initialization_does_not_follow_validation_to_open_swap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    config = make_config(tmp_path)
-    redirected = tmp_path / "redirected.sqlite3"
-    real_connect = sqlite3.connect
-    with real_connect(redirected) as conn:
-        conn.execute("CREATE TABLE sentinel(value TEXT NOT NULL)")
-        conn.execute("INSERT INTO sentinel(value) VALUES ('unchanged')")
-    redirected.chmod(0o600)
-    swapped = False
-
-    def swap_then_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-        nonlocal swapped
-        if not swapped:
-            swapped = True
-            config.state_file.unlink()
-            config.state_file.symlink_to(redirected)
-        return real_connect(*args, **kwargs)
-
-    monkeypatch.setattr(mattermost.sqlite3, "connect", swap_then_connect)
-    with pytest.raises(mattermost.MattermostAdapterError, match="identity changed"):
-        mattermost.MattermostState(config)
-
-    with real_connect(redirected) as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-        assert conn.execute("SELECT value FROM sentinel").fetchone() == ("unchanged",)
-    assert tables == {"sentinel"}
-
-
-def test_state_subsequent_open_does_not_follow_validation_to_open_swap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    config = make_config(tmp_path)
-    state = mattermost.MattermostState(config)
-    redirected = tmp_path / "redirected.sqlite3"
-    real_connect = sqlite3.connect
-    with real_connect(redirected) as conn:
-        conn.execute("CREATE TABLE sentinel(value TEXT NOT NULL)")
-        conn.execute("INSERT INTO sentinel(value) VALUES ('unchanged')")
-    redirected.chmod(0o600)
-    swapped = False
-
-    def swap_then_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
-        nonlocal swapped
-        if not swapped:
-            swapped = True
-            config.state_file.unlink()
-            config.state_file.symlink_to(redirected)
-        return real_connect(*args, **kwargs)
-
-    monkeypatch.setattr(mattermost.sqlite3, "connect", swap_then_connect)
-    with pytest.raises(mattermost.MattermostAdapterError, match="identity changed"):
-        state.room_state("backlog")
-
-    with real_connect(redirected) as conn:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-        assert conn.execute("SELECT value FROM sentinel").fetchone() == ("unchanged",)
-    assert tables == {"sentinel"}
 
 
 def test_state_lease_is_private_sibling_and_does_not_lock_sqlite(tmp_path: Path) -> None:

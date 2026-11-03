@@ -66,6 +66,10 @@ def prepare_package(directory: Path, marker: str) -> str:
         "Maintainer: SafeYolo blackbox", "Description: finite installed P2 package probe", "",
     ]))
     payload.write_text(f"package:{marker}\n")
+    # These owned package inputs must be readable after installation even when
+    # the caller keeps its logs and credentials under a private umask.
+    for path in (source, *source.rglob("*")):
+        path.chmod(0o755 if path.is_dir() else 0o644)
     package = directory / f"{PACKAGE}.deb"
     checked(["dpkg-deb", "--build", str(source), str(package)])
     return hashlib.sha256(package.read_bytes()).hexdigest()
