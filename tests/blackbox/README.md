@@ -156,11 +156,10 @@ or approval failure is a failed attempt. Inspect that request through the existi
 host approval controls. Do not infer tool completion from a model reply or HTTP
 status alone. Preserve the reached failure when preparing a corrected run.
 
-The [accepted real-client witness](https://github.com/craigbalding/safeyolo/issues/356#issuecomment-6584976372)
-joins product `18893135`, observer `90167707` and the launcher correction at
-`2688116d`. Trusted caller deployment and its actual selected-input/report-return
-outcome remain unproved under #356 criterion 4. No fresh-install speed,
-interactive channel, Codex or other-platform result follows from this section.
+Trusted caller deployment and its actual selected-input/report-return outcome
+require separate verification on the operator-owned host. This section does
+not establish fresh-install speed, interactive channel behavior, Codex behavior
+or results on other platforms.
 
 ## Build and test a contributor checkout
 

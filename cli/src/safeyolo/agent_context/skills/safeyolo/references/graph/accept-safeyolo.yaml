@@ -243,9 +243,8 @@ nodes:
       with an operator-provisioned host subscription. It joins native setup,
       staged skill readability, completed tools, a checked workspace effect and
       current gateway run attribution. It does not approve requests or retry a
-      model task. The accepted #356 real-client witness remains bound to its
-      recorded product and observers. Trusted caller deployment and its selected
-      inputs/report return remain separate required proof.
+      model task. Trusted caller deployment and its selected inputs/report return
+      require separate verification on the operator-owned host.
     source: tests/blackbox/run-lane.sh
     tool:
       obtain_from: "the host package's complete pinned gVisor payload (or its explicit tested system override), plus the trusted source's guest inputs and installer"
