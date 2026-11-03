@@ -45,7 +45,7 @@ def test_ingress_native_defaults_trace_and_origin(tmp_path, monkeypatch, control
                 marker = "p1-" + "a" * 32
                 observation = {
                     "guest_socket": str(guest.GUEST_SOCKET), "guest_proxy": guest.GUEST_PROXY,
-                    "forwarder": {"pid": 42, "argv": ["socat", "TCP-LISTEN:8080,bind=127.0.0.1",
+                    "forwarder": {"pid": 42, "argv": ["/run/sy-proxy-relay", "TCP-LISTEN:8080,bind=127.0.0.1",
                                                       f"UNIX-CONNECT:{guest.GUEST_SOCKET},retry=20"]},
                     "allow": guest.traced_request("unused", 0, "alice", f"http://httpbin.org/{marker}", marker, AGENT_TOKEN),
                     "deny": guest.traced_request("unused", 0, "alice", f"http://evil.com/{marker}-denied", marker, AGENT_TOKEN),

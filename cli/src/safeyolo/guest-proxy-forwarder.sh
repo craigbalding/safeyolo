@@ -47,6 +47,9 @@ echo "[guest-proxy-forwarder] 127.0.0.1:${LISTEN_PORT} -> ${upstream} (running a
 # UNIX-CONNECT work fine as agent (UDS perms are granted via gVisor
 # userns mapping on Linux; AF_VSOCK socket() itself is unprivileged).
 # Narrowing the attack surface: a socat bug can't give root in the VM.
-exec socat \
+# Linux uses the executed filename for /proc/PID/comm, inherited by forks.
+# Keep workload socat available while plain pkill/killall socat spare this relay.
+ln -sf "$(command -v socat)" /run/sy-proxy-relay
+exec /run/sy-proxy-relay \
     "TCP-LISTEN:${LISTEN_PORT},${listen_options}" \
     "${upstream}"
