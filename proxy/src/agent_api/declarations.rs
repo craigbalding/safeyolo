@@ -209,7 +209,17 @@ where
         return Ok(gateway::submit_binding(request, controls.gateway, &content));
     }
     if route(request).starts_with("/plumb") {
-        return plumb::respond(request, body, plumb, controls.audit.cloned()).await;
+        return plumb::respond(
+            request,
+            body,
+            plumb,
+            controls.audit.cloned(),
+            match policy {
+                PolicyState::Ready(policy) => Some(policy.as_ref()),
+                _ => None,
+            },
+        )
+        .await;
     }
     if route(request) == "/agents" {
         return Ok(agents::respond(request, controls.agents));

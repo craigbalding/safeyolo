@@ -23,7 +23,7 @@ async fn rejected_reload_preserves_published_plumb_limits() {
     let mut proxy = Proxy::start(config.clone()).await.unwrap();
     let owner = proxy.runtime.read().unwrap().plumb.clone();
     let request = owner
-        .request_chat("alice", &[serde_json::json!("bob")], None, None, None)
+        .request_chat("alice", None, &[serde_json::json!("bob")], None, None, None)
         .await;
     let approved = owner
         .approve(request["request_id"].as_str().unwrap(), None)

@@ -129,6 +129,31 @@ async fn grant(f: &Fixture, project: &str) -> String {
 }
 
 #[tokio::test]
+#[ignore = "requires pinned SAFEYOLO_COORD_NATS_BINARY"]
+async fn private_binding_and_gateway_results_follow_the_canonical_decisions() {
+    let (f, _backend, _vault) = setup().await;
+    approval_results::prepare(&f);
+    let _nats = operator_nats::Nats::start_jetstream(f.root.path()).await;
+    delegate(&f, envelope(&f)).await;
+    let binding = grant(&f, "alpha").await;
+    let binding = approval_results::canonical_id(&f, &binding).await;
+    approval_results::result(&f, &binding, "approved").await;
+    let route = use_binding(&f, "worker", "POST", "/data/alpha").await;
+    assert_eq!(route.status, 428);
+    let id = approval_results::canonical_id(&f, &route.id()).await;
+    assert_eq!(
+        f.admin("GET", &format!("/admin/approvals/{id}"), None)
+            .await
+            .json()["action"]["kind"],
+        "gateway_route"
+    );
+    approval_results::resolve(&f, &id, "reject", "once").await;
+    approval_results::result(&f, &id, "rejected").await;
+    no_origin(&f).await;
+    f.stop().await;
+}
+
+#[tokio::test]
 async fn complete_fixed_binding_option_race_retry_and_separate_access() {
     let (f, _backend, _vault) = setup().await;
     delegate(&f, envelope(&f)).await;

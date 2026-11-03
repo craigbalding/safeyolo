@@ -228,6 +228,17 @@ impl Policy {
         Some(revision)
     }
 
+    pub(crate) fn agent_identities(&self) -> Vec<(&str, &str)> {
+        self.native
+            .as_ref()
+            .and_then(|native| native.authored.get("agents"))
+            .and_then(serde_json::Value::as_object)
+            .into_iter()
+            .flat_map(|agents| agents.keys())
+            .filter_map(|name| self.evidence_agent_id(name).map(|id| (name.as_str(), id)))
+            .collect()
+    }
+
     pub fn evidence_agent_id(&self, name: &str) -> Option<&str> {
         let agents = self.native.as_ref()?.authored.get("agents")?.as_object()?;
         let id = agents

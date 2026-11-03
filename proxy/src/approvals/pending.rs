@@ -21,6 +21,7 @@ pub(crate) mod coord;
 pub(crate) mod delegation;
 mod explanation;
 mod gateway;
+pub(crate) mod results;
 pub(crate) use explanation::explain;
 pub(crate) use gateway::{bind_agent_request, bind_risky};
 
@@ -134,6 +135,7 @@ pub(crate) struct Record {
     pub(crate) attention: std::collections::BTreeMap<String, attention::Delivery>,
     #[serde(default)]
     pub(crate) reviewer_delivery: std::collections::BTreeMap<String, String>,
+    pub(crate) result_delivery: results::Delivery,
 }
 
 /// Sort object keys recursively. Presentation order cannot change equivalence.
@@ -301,6 +303,7 @@ impl Store {
             decided_at: None,
             attention: Default::default(),
             reviewer_delivery: Default::default(),
+            result_delivery: results::Delivery::new(),
         });
         record.request_count = record.request_count.saturating_add(1);
         record.last_requested_at = time::OffsetDateTime::now_utc().unix_timestamp();
@@ -778,6 +781,7 @@ pub(crate) fn current_view(
     }
     view["request_history"] = writer.approvals().request_history(record)?;
     view["attention"] = json!(record.attention);
+    view["result_delivery"] = record.result_delivery.view();
     if view["status"] == "pending"
         && record.authority.action["kind"] == "operator_action"
         && state.is_some_and(|state| {

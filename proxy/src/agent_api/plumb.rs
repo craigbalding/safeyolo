@@ -86,6 +86,8 @@ impl Limits {
     }
 }
 
+mod results;
+
 const CREATE_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS plumb_grants (
     conversation_id TEXT PRIMARY KEY,
@@ -104,7 +106,10 @@ CREATE TABLE IF NOT EXISTS plumb_pending (
     note TEXT,
     ttl_seconds INTEGER NOT NULL,
     created_at REAL NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending'
+    status TEXT NOT NULL DEFAULT 'pending',
+    requester_id TEXT,
+    result_delivery TEXT NOT NULL,
+    decided_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS plumb_messages (
     id TEXT PRIMARY KEY,
@@ -122,6 +127,8 @@ CREATE INDEX IF NOT EXISTS idx_plumb_messages_conv
 struct Pending {
     request_id: String,
     requester: String,
+    requester_id: Option<String>,
+    result_delivery: crate::approvals::pending::results::Delivery,
     participants: Vec<String>,
     topic: String,
     note: String,
@@ -190,7 +197,7 @@ impl Store {
         {
             let mut rows = connection.prepare(
                 "SELECT request_id, requester, participants_json, topic, note,
-                        ttl_seconds, created_at, status
+                        ttl_seconds, created_at, status, requester_id, result_delivery
                  FROM plumb_pending WHERE status='pending'",
             )?;
             let values = rows.query_map([], |row| {
@@ -198,6 +205,16 @@ impl Store {
                 Ok(Pending {
                     request_id: row.get(0)?,
                     requester: row.get(1)?,
+                    requester_id: row.get(8)?,
+                    result_delivery: serde_json::from_str(&row.get::<_, String>(9)?).map_err(
+                        |e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                9,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        },
+                    )?,
                     participants: serde_json::from_str(&participants).unwrap_or_default(),
                     topic: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
                     note: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
@@ -231,8 +248,8 @@ impl Store {
             .unwrap_or_else(|error| error.into_inner());
         connection.execute(
             "INSERT OR REPLACE INTO plumb_pending
-             (request_id, requester, participants_json, topic, note, ttl_seconds, created_at, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (request_id, requester, participants_json, topic, note, ttl_seconds, created_at, status, requester_id, result_delivery)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 request.request_id,
                 request.requester,
@@ -242,6 +259,8 @@ impl Store {
                 request.ttl_seconds,
                 request.created_at,
                 request.status,
+                request.requester_id,
+                serde_json::to_string(&request.result_delivery).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
             ],
         )?;
         Ok(())
@@ -253,7 +272,7 @@ impl Store {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         connection.execute(
-            "UPDATE plumb_pending SET status=?1 WHERE request_id=?2",
+            "UPDATE plumb_pending SET status=?1,decided_at=unixepoch() WHERE request_id=?2",
             params![status, request_id],
         )?;
         Ok(())
@@ -291,7 +310,7 @@ impl Store {
             .unwrap_or_else(|error| error.into_inner());
         let transaction = connection.transaction()?;
         transaction.execute(
-            "UPDATE plumb_pending SET status='approved' WHERE request_id=?1",
+            "UPDATE plumb_pending SET status='approved',decided_at=unixepoch() WHERE request_id=?1",
             params![request_id],
         )?;
         transaction.execute(
@@ -687,6 +706,7 @@ impl PlumbOwner {
     pub(crate) async fn request_chat(
         &self,
         requester: &str,
+        requester_id: Option<&str>,
         participants: &[Value],
         topic: Option<&Value>,
         note: Option<&Value>,
@@ -729,6 +749,8 @@ impl PlumbOwner {
         let request = Pending {
             request_id: Self::id("req"),
             requester: requester.to_owned(),
+            requester_id: requester_id.map(str::to_owned),
+            result_delivery: crate::approvals::pending::results::Delivery::new(),
             participants: all.clone(),
             topic: Self::clean(topic),
             note: Self::clean(note),
@@ -759,6 +781,7 @@ impl PlumbOwner {
             "topic":request.topic,
             "note":request.note,
             "ttl_seconds":request.ttl_seconds,
+            "result_delivery":if request.requester_id.is_some() {"pending"} else {"unavailable: stable requester identity is missing"},
         })
     }
 
@@ -1154,6 +1177,7 @@ impl PlumbOwner {
         &self,
         request_id: String,
         requester: String,
+        requester_id: Option<String>,
         participants: Vec<Value>,
         topic: Option<Value>,
         note: Option<Value>,
@@ -1166,6 +1190,7 @@ impl PlumbOwner {
                 let result = owner
                     .request_chat(
                         &requester,
+                        requester_id.as_deref(),
                         &participants,
                         topic.as_ref(),
                         note.as_ref(),
@@ -1681,6 +1706,7 @@ pub(super) async fn respond<B>(
     body: RequestBody<'_, B>,
     owner: Option<&PlumbOwner>,
     audit: Option<Arc<crate::audit::Writer>>,
+    policy: Option<&crate::policy::Policy>,
 ) -> Result<Outcome<'static>, B::Error>
 where
     B: Body<Data = bytes::Bytes> + Unpin,
@@ -1720,6 +1746,10 @@ where
             .request_chat_owned(
                 request.request_id.to_owned(),
                 agent_name.to_owned(),
+                policy
+                    .filter(|policy| request.identity.run().is_none_or(|run| run.current(policy)))
+                    .and_then(|policy| policy.evidence_agent_id(agent_name))
+                    .map(str::to_owned),
                 participants.to_vec(),
                 object.and_then(|object| object.get("topic")).cloned(),
                 note.cloned(),
@@ -2002,6 +2032,7 @@ mod tests {
         let request = owner
             .request_chat(
                 "alice",
+                None,
                 &[json!("alice"), json!("bob")],
                 Some(&json!("topic")),
                 Some(&json!("note")),
@@ -2072,7 +2103,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let owner = PlumbOwner::for_data_dir(directory.path());
         let request = owner
-            .request_chat("1alice", &[json!("bob")], None, None, None)
+            .request_chat("1alice", None, &[json!("bob")], None, None, None)
             .await;
         assert_eq!(request["status"], 202);
         assert_eq!(request["participants"], json!(["1alice", "bob"]));
@@ -2083,7 +2114,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let owner = PlumbOwner::for_data_dir(directory.path());
         let request = owner
-            .request_chat("alice", &[json!("bob")], None, None, None)
+            .request_chat("alice", None, &[json!("bob")], None, None, None)
             .await;
         let approved = owner.approve(&text(&request, "request_id"), None).await;
         let conversation_id = text(&approved, "conversation_id");
@@ -2168,11 +2199,18 @@ mod tests {
         let owner = PlumbOwner::for_data_dir(directory.path());
         owner.configure_limits(2, 0, 1, 17);
         let too_many = owner
-            .request_chat("1alice", &[json!("bob"), json!("carol")], None, None, None)
+            .request_chat(
+                "1alice",
+                None,
+                &[json!("bob"), json!("carol")],
+                None,
+                None,
+                None,
+            )
             .await;
         assert_eq!(too_many["status"], 400);
         let request = owner
-            .request_chat("1alice", &[json!("bob")], None, None, None)
+            .request_chat("1alice", None, &[json!("bob")], None, None, None)
             .await;
         assert_eq!(request["ttl_seconds"], 17);
         let approved = owner.approve(&text(&request, "request_id"), None).await;
@@ -2275,7 +2313,7 @@ mod tests {
                 vec![json!("bob"), json!("carol")]
             };
             let requested = owner
-                .request_chat("alice", &participants, None, None, None)
+                .request_chat("alice", None, &participants, None, None, None)
                 .await;
             let approved = owner
                 .approve(
@@ -2362,7 +2400,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let owner = PlumbOwner::for_data_dir(directory.path());
         let requested = owner
-            .request_chat("alice", &[json!("bob")], None, None, None)
+            .request_chat("alice", None, &[json!("bob")], None, None, None)
             .await;
         let approved = owner
             .approve(&text(&requested, "request_id"), Some(1))
@@ -2404,7 +2442,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));
         let request = owner
-            .request_chat("alice", &[json!("bob")], None, None, None)
+            .request_chat("alice", None, &[json!("bob")], None, None, None)
             .await;
         let approved = owner.approve(&text(&request, "request_id"), None).await;
         let conversation_id = text(&approved, "conversation_id");
@@ -2456,7 +2494,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));
         let request = owner
-            .request_chat("alice", &[json!("bob")], None, None, None)
+            .request_chat("alice", None, &[json!("bob")], None, None, None)
             .await;
         let approved = owner.approve(&text(&request, "request_id"), None).await;
         let conversation_id = text(&approved, "conversation_id");
@@ -2496,7 +2534,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));
         let request = owner
-            .request_chat("alice", &[json!("bob")], None, None, None)
+            .request_chat("alice", None, &[json!("bob")], None, None, None)
             .await;
         let approved = owner.approve(&text(&request, "request_id"), None).await;
         let conversation_id = text(&approved, "conversation_id");
@@ -2523,7 +2561,7 @@ mod tests {
         assert_eq!(owner.waiters.load(std::sync::atomic::Ordering::Acquire), 0);
         assert_eq!(
             owner
-                .request_chat("alice", &[json!("carol")], None, None, None)
+                .request_chat("alice", None, &[json!("carol")], None, None, None)
                 .await["status"],
             503
         );
@@ -2574,6 +2612,7 @@ mod tests {
             .request_chat_owned(
                 "request-audit-failure".into(),
                 "alice".into(),
+                None,
                 vec![json!("bob")],
                 None,
                 None,
@@ -2610,6 +2649,7 @@ mod tests {
             .request_chat_owned(
                 "unwritten-plumb-request".into(),
                 "alice".into(),
+                None,
                 vec![json!("bob")],
                 None,
                 None,
@@ -2626,6 +2666,7 @@ mod tests {
             .request_chat_owned(
                 "written-plumb-request".into(),
                 "alice".into(),
+                None,
                 vec![json!("bob")],
                 None,
                 None,
@@ -2647,7 +2688,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let owner = PlumbOwner::for_data_dir(directory.path());
         let request = owner
-            .request_chat("alice", &[json!("bob")], None, None, None)
+            .request_chat("alice", None, &[json!("bob")], None, None, None)
             .await;
         let request_id = text(&request, "request_id");
         let writer = Arc::new(crate::audit::Writer::new(
@@ -2691,6 +2732,7 @@ mod tests {
                     .request_chat_owned(
                         "request-chat-cancelled".into(),
                         "alice".into(),
+                        None,
                         vec![json!("bob")],
                         None,
                         None,
@@ -2744,7 +2786,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));
         let request = owner
-            .request_chat("alice", &[json!("bob")], None, None, None)
+            .request_chat("alice", None, &[json!("bob")], None, None, None)
             .await;
         let request_id = text(&request, "request_id");
         let approved = owner.approve(&request_id, None).await;
@@ -2818,7 +2860,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));
         let request = owner
-            .request_chat("alice", &[json!("bob")], None, None, None)
+            .request_chat("alice", None, &[json!("bob")], None, None, None)
             .await;
         let request_id = text(&request, "request_id");
         let approved = owner.approve(&request_id, None).await;
@@ -2890,7 +2932,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));
         let request = owner
-            .request_chat("alice", &[json!("bob")], None, None, None)
+            .request_chat("alice", None, &[json!("bob")], None, None, None)
             .await;
         let request_id = text(&request, "request_id");
         let store = owner.store.clone().expect("test owner has a store");

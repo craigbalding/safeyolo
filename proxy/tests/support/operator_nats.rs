@@ -10,7 +10,20 @@ impl Drop for Nats {
     }
 }
 impl Nats {
+    #[allow(dead_code, reason = "Approval-result tests require JetStream instead.")]
     pub(crate) async fn start(root: &Path) -> Self {
+        Self::start_config(root, false).await
+    }
+
+    #[allow(
+        dead_code,
+        reason = "Live-event tests use core NATS without retention."
+    )]
+    pub(crate) async fn start_jetstream(root: &Path) -> Self {
+        Self::start_config(root, true).await
+    }
+
+    async fn start_config(root: &Path, jetstream: bool) -> Self {
         let binary =
             std::env::var_os("SAFEYOLO_COORD_NATS_BINARY").expect("set the pinned NATS binary");
         let directory = root.join("data/coord/nats");
@@ -23,6 +36,18 @@ impl Nats {
         .unwrap();
         let config = directory.join("nats.conf");
         std::fs::write(&config, format!("listen: 127.0.0.1:-1\nhttp: 127.0.0.1:-1\nmax_payload: 2097152\nports_file_dir: {directory:?}\nauthorization {{ user: safeyolo, password: synthetic-operator-events }}\n")).unwrap();
+        if jetstream {
+            use std::io::Write;
+            writeln!(
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&config)
+                    .unwrap(),
+                "jetstream {{ store_dir: {:?} }}",
+                directory.join("jetstream")
+            )
+            .unwrap();
+        }
         let server = Self(
             std::process::Command::new(binary)
                 .arg("-c")

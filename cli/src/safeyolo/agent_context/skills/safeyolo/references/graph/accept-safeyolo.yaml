@@ -272,7 +272,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: ecc0de72cd8d295a673a7a533d36518730e347b5b4c9f2ccee5472626f3a348d
         - path: proxy/src/lib.rs
-          sha256: 8d23165dd600acd5320c888db37ef859411338c9e474210ac5a1985c7aaec985
+          sha256: ee0df9823eb59cf6dbe7f930cabd6883f2c90cdb735ff32240263b34d0243a1b
         - path: proxy/src/bin/safeyolo.rs
           sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
         - path: scripts/run_claude_blackbox.py
@@ -337,7 +337,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: ecc0de72cd8d295a673a7a533d36518730e347b5b4c9f2ccee5472626f3a348d
         - path: proxy/src/lib.rs
-          sha256: 8d23165dd600acd5320c888db37ef859411338c9e474210ac5a1985c7aaec985
+          sha256: ee0df9823eb59cf6dbe7f930cabd6883f2c90cdb735ff32240263b34d0243a1b
         - path: proxy/src/bin/safeyolo.rs
           sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
         - path: proxy/src/jobs/vz-guest-init.sh
@@ -376,6 +376,12 @@ nodes:
       Its controlled provider snapshots prove the trusted observation boundary,
       not a deployed external lease. Unsupported deployed observations remain
       unknown. The actual three-agent comparison is a separate required observation.
+      For private approval results, run the delegated_approvals integration
+      target with filter private_, --ignored and the pinned NATS binary. It
+      uses authenticated Agent API calls, credential expiry, disconnected
+      requesters, broker/proxy/run restart, irreversible withholding, publication
+      gaps and bounded broker pressure. Controlled run records do not prove guest
+      isolation or an automatic model wake.
       For durable work ownership, select
       work::native_work_claims_replay_identity_revocation_and_crash_recovery
       with --ignored. Set SAFEYOLO_WORK_RETAIN_SECONDS=1800 for the actual
@@ -438,7 +444,7 @@ nodes:
         - path: proxy/tests/native_coord/federation.rs
           sha256: b4f44c1465fd834f467ca5fb4f703efb3c372a57d327644deb8a8e2545e81578
         - path: proxy/src/agent_api/coord.rs
-          sha256: e5cb368c7d9eff58a5faaf35bbe4803bbe059dc8914bfca746da71816dbb0f53
+          sha256: 525cef82010d65a761ccac6b6cfbad5f8f904ab5dbfbe8d30a730672045c9923
         - path: proxy/src/agent_api/coord/federation.rs
           sha256: db953429fbeba489fd1aaa0e6d37ab841030de8f7b85874dc43e4fa0d396a0c9
         - path: proxy/src/agent_api/coord/federation/tests.rs
