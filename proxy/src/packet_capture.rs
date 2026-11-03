@@ -44,9 +44,6 @@ pub struct Settings {
     pub tls_secrets: bool,
     pub secret_outputs: Vec<SecretOutput>,
     pub secrets_token_file: Option<PathBuf>,
-    #[cfg(test)]
-    #[serde(skip)]
-    pub(super) test_enterprise: Option<pcapng::Enterprise>,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -111,13 +108,6 @@ impl Settings {
         }
         Ok(())
     }
-    fn enterprise(&self) -> Option<pcapng::Enterprise> {
-        #[cfg(test)]
-        if let Some(enterprise) = self.test_enterprise {
-            return Some(enterprise);
-        }
-        pcapng::ENTERPRISE
-    }
     pub(crate) fn unavailable(&self) -> Option<&'static str> {
         match self.profile {
             Profile::Compat => None,
@@ -128,9 +118,6 @@ impl Settings {
                 Some("pcap_wire_disabled")
             }
             Profile::Wire => None,
-            Profile::Pcapng if self.enterprise().is_none() => {
-                Some("pcapng_portable_encoder_unavailable")
-            }
             Profile::Pcapng => None,
         }
     }
@@ -831,7 +818,6 @@ impl Running {
             Profile::Compat => Encoder::Compat,
             Profile::Wire => Encoder::Wire(wire_format?),
             Profile::Pcapng => Encoder::Pcapng(pcapng::Format {
-                enterprise: settings.enterprise()?,
                 wire: wire_format,
                 compatibility: settings.compatibility_packets,
                 wire_unavailable,

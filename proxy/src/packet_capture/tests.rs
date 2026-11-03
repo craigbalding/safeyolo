@@ -187,10 +187,7 @@ fn refused_profiles_remote_tcp_and_secret_config_remain_explicit() {
     settings.profile = Profile::Wire;
     assert_eq!(settings.unavailable(), Some("pcap_wire_disabled"));
     settings.profile = Profile::Pcapng;
-    assert_eq!(
-        settings.unavailable(),
-        Some("pcapng_portable_encoder_unavailable")
-    );
+    assert_eq!(settings.unavailable(), None);
     assert!(serde_json::from_value::<Settings>(json!({"secrets":true})).is_err());
 }
 
@@ -1551,7 +1548,6 @@ async fn pcapng_source_failure_is_explicit_for_existing_and_later_collectors() {
     config.admin_api_token_file = Some(token);
     config.native_settings.as_mut().unwrap().packet_capture = Settings {
         profile: Profile::Pcapng,
-        test_enterprise: Some(pcapng::TEST_ENTERPRISE),
         wire_interface: Some("controlled-source".into()),
         payload_layers: vec![Layer::WirePacket],
         tcp: Some(Tcp {
