@@ -1,6 +1,6 @@
 ---
 name: safeyolo
-description: Diagnose and resolve SafeYolo boundary failures and operate advanced SafeYolo facilities when the task explicitly concerns them. Use for proxy/TLS failures; policy or credential blocks; HTTP 403/428/429/503/508 or X-Blocked-By responses; surprising guest package, sudo, setpriv, apt, apk, pip, or mise behavior; debugger/profiler denials; operator recovery shells; desktop preview; Agent API policy, flow, budget, circuit-breaker, or service-gateway operations; approvals; legacy plumb; and sandbox introspection. Do not invoke merely because the product or repository is SafeYolo, or for ordinary commands in a healthy sandbox, routine factory handoffs, or normal GitHub App Connector work already specified by injected instructions.
+description: Diagnose and resolve SafeYolo boundary failures and operate advanced SafeYolo facilities when the task explicitly concerns them. Use for proxy/TLS failures; policy or credential blocks; HTTP 403/428/429/503/508 or X-Blocked-By responses; surprising guest package, sudo, setpriv, apt, apk, pip, or mise behavior; debugger/profiler denials; operator recovery shells; desktop preview; Agent API policy, flow, budget, circuit-breaker, or service-gateway operations; approvals; collaboration rooms; and sandbox introspection. Do not invoke merely because the product or repository is SafeYolo, or for ordinary commands in a healthy sandbox, routine factory handoffs, or normal GitHub App Connector work already specified by injected instructions.
 ---
 
 # Operate inside SafeYolo
@@ -53,8 +53,8 @@ do not reload Coord or GitHub references already supplied by the role contract.
   consuming completion-note nominations for public engineering content or
   rendering a Dispatch or living topic page.
 - Read [Agent API and workflows](references/agent-api.md) before querying
-  policy, flows, service capabilities, contract bindings, or the older
-  `plumb` conversation surface. It contains the current routes and request
+  policy, flows, service capabilities, contract bindings, or approved
+  collaboration rooms. It contains the current routes and request
   shapes.
 - Read [Troubleshooting and escalation](references/troubleshooting.md) for
   blocked responses, proxy/TLS failures, logs, request correlation, and exact
@@ -68,6 +68,17 @@ do not reload Coord or GitHub references already supplied by the role contract.
 - Read [Desktop and operator preview](references/desktop.md) before starting a
   graphical guest program, exposing the optional desktop to the operator, or
   diagnosing Xvfb, VNC, noVNC, and browser startup.
+  Offer the normal typed `desktop.present` operator action when a preview
+  helps the task. Use `GET /operator-actions` to discover its availability.
+  Agent reasons remain untrusted; SafeYolo owns the consequences and approval.
+  After a typed action is denied or unavailable, do not automatically substitute
+  an equivalent privileged host command or retry with different reasons to get
+  another prompt. Read the canonical result and report the unmet need. This
+  does not prevent commands explicitly requested by the operator or genuine
+  administration when the typed action cannot provide the required operation.
+- Read [Schedule guest shell work](references/scheduling.md) for cron/at,
+  current execution environment, Coord and exact tmux-pane examples, job state,
+  diagnostics and image rollout.
 - Read [Contributing to the SafeYolo repo](references/contributing-to-safeyolo.md)
   when editing files in the SafeYolo checkout itself: any pre-commit or CI
   drift check firing (`check_skill_markers`, `check_doc_cli_flags`,

@@ -94,7 +94,7 @@ pub async fn respond_with_body_and_audit_id<'p, B>(
 where
     B: Body<Data = Bytes> + Unpin,
 {
-    respond_with_body_and_audit_id_with_plumb(
+    respond_with_body_and_audit_id_with_state(
         request,
         token_path,
         policy,
@@ -104,15 +104,13 @@ where
         body,
         source_request_id,
         None,
-        None,
     )
     .await
 }
 
-/// Internal production entry point that supplies runtime approval checks and
-/// the plumb mailbox without exposing private owners through `Controls`.
+/// Internal production entry point that supplies runtime approval checks.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn respond_with_body_and_audit_id_with_plumb<'p, B>(
+pub(crate) async fn respond_with_body_and_audit_id_with_state<'p, B>(
     request: Request<'_>,
     token_path: &Path,
     policy: PolicyState<'p>,
@@ -121,7 +119,6 @@ pub(crate) async fn respond_with_body_and_audit_id_with_plumb<'p, B>(
     controls: Controls<'_>,
     body: RequestBody<'_, B>,
     source_request_id: Option<&str>,
-    plumb: Option<&crate::agent_api::plumb::PlumbOwner>,
     state: Option<&crate::RuntimeState>,
 ) -> Result<Outcome<'p>, B::Error>
 where
@@ -146,7 +143,6 @@ where
                 | "/gateway/submit-binding"
                 | "/api/test-context/current"
         ) || route(request).starts_with("/api/flows")
-            || route(request).starts_with("/plumb")
             || route(request) == "/desktop/present")
     {
         return Ok(response(403, json!({"error":"Could not identify agent"})));
@@ -174,11 +170,17 @@ where
         }
         return Ok(explain::respond(request, controls.audit).await);
     }
-    if route(request).starts_with("/approvals/") {
+    if route(request) == "/approvals" || route(request).starts_with("/approvals/") {
         let PolicyState::Ready(policy) = &policy else {
             return Ok(response(503, json!({"error":"policy unavailable"})));
         };
         return approvals::respond(request, controls.audit, policy, state, body).await;
+    }
+    if route(request).starts_with("/operator-actions") || route(request) == "/desktop/present" {
+        let PolicyState::Ready(policy) = &policy else {
+            return Ok(response(503, json!({"error":"policy unavailable"})));
+        };
+        return operator_actions::respond(request, policy, state, controls.audit, body).await;
     }
     if route(request) == "/trace" {
         return Ok(trace::respond(request, controls.traces));
@@ -201,44 +203,6 @@ where
             Err(error) => return Ok(content_error(error)),
         };
         return Ok(gateway::submit_binding(request, controls.gateway, &content));
-    }
-    if route(request) == "/desktop/present" {
-        let Some(agent_name) = agent(request.identity) else {
-            return Ok(response(403, json!({"error":"Could not identify agent"})));
-        };
-        let agent_id = agent_name.to_owned();
-        let mut outcome = response(
-            202,
-            json!({
-                "status":"pending",
-                "agent":agent_name,
-                "agent_id":agent_id,
-                "request_id":request.request_id,
-                "message":"Desktop presentation submitted for operator approval."
-            }),
-        );
-        outcome.audit = Some(AuditIntent {
-            kind: AuditKind::DesktopPresentRequested,
-            event: "agent.desktop_present_requested",
-            severity: "high",
-            addon: "agent-api",
-            summary: format!("{} requests desktop presentation", agent_name),
-            agent: Some(agent_name.to_owned()),
-            request_id: Some(request.request_id.to_owned()),
-            host: None,
-            details: json!({"agent_id":agent_id}),
-            approval: Some(AuditApproval {
-                required: true,
-                approval_type: crate::audit::ApprovalType::DesktopPresent,
-                key: "desktop.present".into(),
-                target: format!("desktop:{agent_id}"),
-                scope_hint: json!({"agent_id":agent_id}),
-            }),
-        });
-        return Ok(outcome);
-    }
-    if route(request).starts_with("/plumb") {
-        return plumb::respond(request, body, plumb, controls.audit.cloned()).await;
     }
     if route(request) == "/agents" {
         return Ok(agents::respond(request, controls.agents));

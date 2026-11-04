@@ -79,7 +79,7 @@ def guest_package_artifacts(tmp_path_factory):
 @pytest.mark.parametrize('failure', [None, 'wheel', 'source', 'missing-wheel', 'missing-hash', 'missing-all-hashes'])
 @pytest.mark.parametrize('offline', [False, True])
 def test_guest_hook_installs_locked_packages_and_refuses_unverified_bytes(
-    tmp_path, guest_package_artifacts, python_version, failure, offline
+    tmp_path, guest_package_artifacts, python_version, failure, offline, system_python_stub
 ):
     interpreter = shutil.which(f'python{python_version}')
     if interpreter is None:
@@ -108,9 +108,12 @@ def test_guest_hook_installs_locked_packages_and_refuses_unverified_bytes(
             for line in requirements.replace('\\\n', '').splitlines()
         ) + '\n'
     hook.with_name(REQUIREMENTS.name).write_text(requirements)
-    environment = dict(os.environ, PATH=f'{python.parent}:{os.environ["PATH"]}',
+    environment = dict(os.environ, **system_python_stub, PATH=f'{python.parent}:{os.environ["PATH"]}',
                        PIP_NO_INDEX='1', PIP_FIND_LINKS=str(local_wheels), PIP_NO_CACHE_DIR='1',
                        PIP_DISABLE_PIP_VERSION_CHECK='1', PIP_CONFIG_FILE=os.devnull)
+    # The guest hook selects /usr/bin/python3, regardless of the host's PATH.
+    # Bind that boundary to this real, disposable Python/pip environment.
+    environment['PROBE_SYSTEM_PYTHON'] = str(python)
     for name in ('PYTHONPATH', 'PIP_TARGET', 'PIP_PREFIX', 'PIP_REQUIREMENT', 'PIP_CONSTRAINT'):
         environment.pop(name, None)
     arguments = []
@@ -140,6 +143,7 @@ def test_guest_hook_installs_locked_packages_and_refuses_unverified_bytes(
                        env=environment, check=True, timeout=10)
     else:
         assert result.returncode == 0, result.stderr
+        assert f'Python {python_version}.' in result.stdout
         installed = subprocess.check_output([
             str(python), '-c', 'import importlib.metadata as m, json; '
             'print(json.dumps({p.metadata["Name"].lower().replace("_", "-"): p.version for p in m.distributions()}))',

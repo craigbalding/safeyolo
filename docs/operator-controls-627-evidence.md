@@ -1,93 +1,118 @@
-# #627 native operator controls evidence
+# Operator event stream and current pending work
 
-This candidate is based on integration commit
-`46681aa7a23d58bdaffec6f631cb7e9227b2241a` on branch
-`feat/issue-627-facade-resume`. It keeps the operator listener, audit writer,
-policy owner, agent discovery state, service mutation owner, and gateway store
-already supplied by the native runtime. The test fixture uses only synthetic
-tokens, policy identifiers, and loopback endpoints.
+## Live operator events
 
-The reviewable slice has a real consumer boundary at the native admin TCP
-listener. Authenticated consumers can read `/admin/runtime-identity`,
-`/admin/instance`, `/admin/approvals`, `/admin/agents`, `/admin/policy/baseline`,
-`/modes`, and `/plugins/{name}/mode`. They can use `/admin/policy/validate`,
-`/admin/policy/baseline/approve`, `/admin/policy/baseline/deny`,
-`/admin/policy/baseline`, and the host allow, deny, rate, and bypass routes.
-Mode writes update retained process state used by live network, credential, and
-pattern enforcement. Policy writes use the existing atomic policy helpers and
-are consumed at the existing policy reload boundary; the wire test drives that
-boundary through `Proxy::reload_policy_if_changed` after a durable write.
+The authenticated `/admin/events` WebSocket serves Commander and native
+`safeyolo watch`. Event records come from complete records in the shared
+canonical JSON Lines (JSONL) audit log. The host follows the audit writer's
+effective destination and rotation settings. Host commands and the proxy use
+that same writer. These operator consumers do not subscribe to NATS.
 
-`GET /admin/events` is a native authenticated WebSocket upgrade on the same
-loopback admin listener. It starts at the current audit-file end, tails only
-canonical operator-relevant events, handles ping, close, and listener shutdown,
-and does not replay old rows. A real TCP test opens the upgrade, performs a
-second authenticated policy denial through a separate TCP connection, and
-observes the resulting `admin.denial` JSON frame. Invalid event-stream
-credentials receive 401 before upgrade. The canonical audit writer remains the
-only event producer; the stream does not create a second log or coordinator.
+The stream selects approval-required events, agent events, selected Admin and
+operations events, Coord signal metadata, and high or critical security and
+gateway events. Ordinary traffic bodies and credentials are not selected.
+Signal prose comes from the canonical Admin API, with trusted author attribution.
 
-Approval reconstruction is chronological and request aware. A denial closes
-the prompt that precedes it (and may carry that prompt's `approval_request_id`),
-while a later retry with the same credential and destination creates a new
-pending prompt. A real native agent Unix-socket request test proves the full
-prompt → `/admin/policy/baseline/deny` → retry path: both attempts return 428,
-the controlled loopback origin receives zero requests, and
-`GET /admin/approvals` retains only the second request ID.
+Messages with `type: "operator_state"` are current-state controls. They have no
+`event` field and are not audit records. `signals` and `approvals` report whether
+the host can read those stores. `log: "following"` means the log reader is
+available; it does not prove that every producer recorded its events. A non-null
+`history_gap` reports skipped or unavailable history. Refreshing current work
+does not replay or reconstruct that history.
 
-The owned native wire tests are
-`proxy/tests/operator_controls.rs::native_operator_consumer_controls_and_event_stream_are_live`,
-`native_operator_approval_denial_then_retry_is_resolved`,
-`native_operator_event_reconnect_does_not_replay_old_events`,
-`native_operator_stalled_event_subscriber_does_not_block_controls`,
-`native_operator_invalid_mutations_are_terminal_and_state_preserving`, and
-`native_operator_mutations_keep_committed_state_when_audit_sink_fails`.
-The retained Python consumers are
-`tests/proxy_migration/test_operator_consumer_approval.py`,
-`test_operator_task_api.py`, and
-`test_operator_modes_and_listeners.py`. The latter drives the existing mode
-and listener consumers against live enforcement and records the exact
-ignore-host publication and clearing events while #631 retains matching
-semantics. From `candidate/proxy`, the exact guarded commands and results were:
+One host check reads local canonical pending state each second for all viewers.
+The check includes committed signal revisions and the latest retained approval
+insertion. A request created and resolved between checks therefore leaves a
+detectable change even if audit delivery fails. The host captures these markers
+before reading pending state so an overlapping creation remains due for the
+next check. This also clears requests seen only in an attachment snapshot.
+Relevant log delivery also requires a later host reconciliation, even when a
+brief creation and resolution leave the pending-state fingerprint unchanged.
+A delivery that overlaps a host read remains due for the next check.
+These controls wake clients even if the final audit notification was
+lost and no later business event occurs. With healthy state/API and client
+connectivity, the target is visibility within five seconds. After relevant log
+activity is reconciled, unchanged healthy state generates no refresh controls
+or periodic viewer network requests.
+Controls coalesce to the latest state separately for each attached observer.
 
-```text
-SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target ../scripts/cargo_with_space.sh check
-PASS
+Default watch shows current pending signals and approvals. It subscribes before
+reading the initial snapshots, then refreshes on relevant events and controls.
+Reconnect reads current state again. Changes and removals print once; unchanged
+items stay quiet. Clearing an attributed signal does not independently verify
+that its underlying claim was resolved. `watch --once` reads current pending
+work. `watch --jsonl FILE` renders exact immutable historical signal revisions;
+it does not present them as current pending work.
 
-SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target ../scripts/cargo_with_space.sh test --test operator_controls -- --nocapture
-PASS: 6 passed, 0 failed
+Commander refreshes its existing canonical approval list on controls and
+reconnect. Discovery does not resubmit requests. Existing attention claims,
+deduplication, suppression and decision authority still apply. A failed state
+read retains the previous view and reports it as unavailable/stale. After a
+failed canonical read, watch retries attachment with one-second pacing.
 
-SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target ../scripts/cargo_with_space.sh build --bin safeyolo-proxy
-PASS
+The host reader retains at most an 8 MiB partial record and reads at most 1 MiB
+per turn. It follows renamed files and up to 64 retained rotation positions.
+Truncation, unavailable retention, invalid or oversized records, and partial
+records lost during rotation produce explicit status. Each attachment has a
+bounded 64-record buffer. Overflow closes that attachment with code 1013;
+WebSocket writes have a one-second timeout. A stalled client cannot block the
+writer, other clients or operator decisions. Authentication precedes attachment;
+invalid credentials receive HTTP 401. Ping, close and owned shutdown remain
+supported.
 
-SAFEYOLO_DATA_DIR=/tmp/safeyolo-facade-py-data SAFEYOLO_RUST_PROXY=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target/debug/safeyolo-proxy SAFEYOLO_RUST_NATIVE_ONLY=1 uv run --frozen pytest -q tests/proxy_migration/test_operator_modes_and_listeners.py --proxy-backend rust
-PASS: 3 passed, 0 failed
+The recorded feed has no replay service or exactly-once guarantee. A new
+attachment can receive records still queued in the shared host reader. A
+truncated file can cause repeated event IDs. JSONL file order is the recorded
+feed order. General audit admission can be lossy and write failures
+remain visible. Coord audit uses its durable outbox and can repeat the same event
+ID after an ambiguous append. A successful state read is independent of JSONL
+delivery. Pending recovery can work while recording is impaired. FlowStore
+remains traffic history. NATS/JetStream still carries Coord and private approval
+results; stopping it does not disable operator attachment or existing state reads.
 
-SAFEYOLO_DATA_DIR=/tmp/safeyolo-facade-py-data SAFEYOLO_RUST_PROXY=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target/debug/safeyolo-proxy SAFEYOLO_RUST_NATIVE_ONLY=1 uv run --frozen pytest -q tests/proxy_migration/test_operator_consumer_approval.py tests/proxy_migration/test_operator_task_api.py --proxy-backend rust
-PASS: 3 passed, 0 failed
+## Focused validation
 
-uv run --frozen pytest -q cli/tests/test_api.py cli/tests/test_ignore_hosts.py
-PASS: 62 passed, 0 failed
+On a development host, select the repository's Rust toolchain. From the
+repository root, run these controls with sufficient disk reserve:
 
-cargo fmt --all -- --check
-KNOWN BASELINE DIFF: proxy/src/trace/tests.rs and proxy/tests/credential_http.rs
-
-SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target ../scripts/cargo_with_space.sh clippy --lib --tests -- -D warnings
-KNOWN BASELINE FAILURE: existing dead-code, clippy style, and too-many-arguments findings in agent_api/plumb.rs, admin_api.rs, admin_listener/mutation_tests.rs, grants.rs, and policy.rs
+```sh
+CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --lib operator_events::
+CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test operator_controls
+CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test command_centre_installed
 ```
 
-The existing `admin_transport` source-parity test remains a known inherited
-failure on this integration base: it expects four request rows but the current
-runtime also emits startup `ops.policy_reload` and `ops.startup` rows before
-the authenticated requests, so it observes six rows. This candidate does not
-change that unrelated startup audit behavior or its fixture.
+For the broker-outage and canonical signal/watch controls, set
+`SAFEYOLO_COORD_NATS_BINARY` to the verified NATS 2.14.5 executable. Add
+`-- --include-ignored` to the operator control command and run:
 
-The following acceptance work remains with the existing owners and is not
-claimed by this slice: native agent start, stop, and desktop presentation;
-passthrough matching and reload/removal semantics owned by #631; web-tailnet
-controls; plumb approval and conversation routes; full live agent
-approval/retry flows; gateway grant and contract-binding mutations already
-owned by the retained #624/#625 handlers; and Python CLI selection of the
-native event URL. Those routes require their existing lifecycle, gateway,
-plumb, presentation, or collaboration owners. No duplicate state store or
-alternate service client was added here.
+```sh
+CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test native_coord signals::native_ -- --include-ignored
+```
+
+On macOS, run the Commander controls from the repository root:
+
+```sh
+SAFEYOLO_COMMAND_CENTRE_TEST_FILTER=operator-recovery command-centre/macos/test.sh
+```
+
+The native watch control also creates and resolves signals and approvals
+between host checks, observes creation through JSONL and drops the final
+resolution frames on a healthy authenticated viewer connection. Both removals
+must appear within five seconds with no later business event. It then checks
+that idle viewers make no repeated state requests.
+
+The outage attachment controls create and resolve each kind of request while
+the audit destination and broker are unavailable. A new watch sees the request
+in its attachment snapshots and consumes the initial stream control before
+resolution. The next shared host check must clear the request within five
+seconds, despite seeing the same pending set before and after its lifetime.
+The log control uses actual writer rotations with JSONL, other-extension,
+extensionless and terminal-dot destinations. Every retained record must arrive
+in order without a false retention gap.
+
+The Commander controls cover pending recovery, attention suppression, stale reads,
+attachment/reconnect and idle network behavior.
+They run in the ordinary macOS suite as well as the focused filter.
+These controls use synthetic credentials and isolated state. They do not
+establish #869's outstanding installed, Tailnet or SSH observations, private
+approval-result delivery, or automatic model wakeups.

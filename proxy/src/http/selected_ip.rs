@@ -79,16 +79,17 @@ pub(super) fn route_needs_name(
     identity: &ConnectionIdentity,
     destination: &Destination,
 ) -> bool {
+    let agent = identity
+        .authorization_principal
+        .as_ref()
+        .unwrap_or(&identity.agent_id);
     destination.host.parse::<IpAddr>().is_ok()
         && runtime
             .parent
             .as_ref()
             .is_some_and(|parent| !parent.destination_hosts.is_empty())
         && (runtime.config.parent_proxy_agents.is_empty()
-            || runtime
-                .config
-                .parent_proxy_agents
-                .contains(&identity.agent_id))
+            || runtime.config.parent_proxy_agents.contains(agent))
 }
 
 pub(super) fn facts(destination: &Destination) -> Value {

@@ -11,6 +11,10 @@ its stopped test guest homes remain until the owner removes that disposable
 instance through the existing harness teardown.
 --deterministic-completion extends the no-model controls through final input
 and peer checks with a controlled guest app. That result is not a W1 model run.
+--preview selects only the completion and preview journey. It pauses for normal
+desktop.present approval and viewer interaction. The operator must observe the
+actual viewer; the driver's prompt records an operator report, not independent
+graphical acceptance. Prior cancellation and startup controls are not repeated.
 """
 
 from __future__ import annotations
@@ -50,12 +54,32 @@ while True:
         time.sleep(0.2)
 summary = {"title": data["title"], "count": len(data["items"]),
            "total_minutes": sum(item["minutes"] for item in data["items"]), "marker": data["marker"]}
+page = b"""<!doctype html><title>Demo tasks</title>
+<h1>Demo tasks</h1><button id="refresh">Refresh</button>
+<p id="count">Successful refreshes: 0</p><pre id="summary"></pre>
+<script>
+let refreshes = 0;
+async function refresh() {
+    try {
+        const response = await fetch('/');
+        if (!response.ok) throw new Error('App HTTP ' + response.status);
+        const summary = await response.json();
+        document.querySelector('#summary').textContent = JSON.stringify(summary, null, 2);
+        document.querySelector('#count').textContent = 'Successful refreshes: ' + (++refreshes);
+    } catch (error) {
+        document.querySelector('#summary').textContent = String(error);
+    }
+}
+document.querySelector('#refresh').addEventListener('click', refresh);
+refresh();
+</script>"""
 
 class App(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        body = json.dumps(summary).encode()
+        html = self.path == '/app'
+        body = page if html else json.dumps(summary).encode()
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "text/html; charset=utf-8" if html else "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -76,16 +100,21 @@ class DemoProcess:
         self.process.stdin.write(value.encode())
         self.process.stdin.flush()
 
+    def diagnostics(self) -> str:
+        # The normal operator renderer prints access material on these lines.
+        # Keep that host-only material out of retained failure diagnostics.
+        return re.sub(r"(?m)^(?:Operator preview|Unlock code):[^\n]*", "[operator preview access omitted]", self.output)[-1500:]
+
     def until(self, text: str, timeout: float = 150) -> str:
         assert self.process.stdout is not None
         deadline = time.monotonic() + timeout
         while text not in self.output:
             remaining = deadline - time.monotonic()
-            assert remaining > 0, f"Demo did not reach {text!r}: {self.output[-1500:]}"
+            assert remaining > 0, f"Demo did not reach {text!r}: {self.diagnostics()}"
             readable, _, _ = select.select([self.process.stdout], [], [], min(remaining, 1))
             if readable:
                 chunk = os.read(self.process.stdout.fileno(), 4096)
-                assert chunk, f"Demo ended before {text!r}: {self.output[-1500:]}"
+                assert chunk, f"Demo ended before {text!r}: {self.diagnostics()}"
                 self.output = (self.output + chunk.decode(errors="replace"))[-65536:]
         return self.output
 
@@ -103,6 +132,49 @@ class DemoProcess:
             self.finish()
 
 
+def stage_controlled_codex(home: Path, *, completion: bool = False) -> None:
+    """Stage the no-model fixture through the launcher's native package import."""
+    imported = home / ".safeyolo/codex-package"
+    payload = imported / "payload"
+    for directory in ("bin", "codex-path", "codex-resources"):
+        (payload / directory).mkdir(parents=True, exist_ok=True)
+    version = "0.0.0"
+    machine = os.uname()
+    architecture = {"arm64": "aarch64", "amd64": "x86_64"}.get(machine.machine, machine.machine)
+    platform = "apple-darwin" if machine.sysname == "Darwin" else "unknown-linux-musl"
+    (imported / "target").write_text(f"{architecture}-{platform}")
+    action = "echo reached > harness-started; exit 41"
+    if completion:
+        (payload / "bin/demo-completion-app.py").write_text(COMPLETION_APP)
+        action = ('mise use -g python@3.12 >&2\n'
+                  'cp "$(dirname "$0")/demo-completion-app.py" app.py\n'
+                  'exec python3 app.py')
+    scripts = {
+        "bin/codex": (
+            "#!/bin/sh\nset -e\nmode=\nworkspace=/workspace\n"
+            'while [ "$#" -gt 0 ]; do\n'
+            '  case "$1" in\n'
+            f'    --version) echo "codex-cli {version}"; exit 0;;\n'
+            '    login) exit 0;; exec) mode=exec;; -C) workspace="$2"; shift;;\n'
+            '  esac\n  shift\ndone\n'
+            '[ "$mode" = exec ] || exit 42\ncd "$workspace"\n' + action + "\n"
+        ),
+        "bin/codex-code-mode-host": "#!/bin/sh\nexit 42\n",
+        "codex-path/rg": '#!/bin/sh\n[ "$1" = --version ] || exit 42\necho "controlled ripgrep fixture"\n',
+    }
+    for name, source in scripts.items():
+        binary = payload / name
+        binary.write_text(source)
+        binary.chmod(0o755)
+    # The shipped wrapper publishes the complete payload into mise's selection.
+    (imported / "version").write_text(version)
+    # Demo also runs Codex login directly in a separate guest process.
+    command = home / ".local/bin/codex"
+    command.parent.mkdir(parents=True, exist_ok=True)
+    command.unlink(missing_ok=True)
+    command.symlink_to("../../.safeyolo/codex-package/payload/bin/codex")
+
+
 def run(args: argparse.Namespace) -> None:
     root = args.config_dir.resolve(strict=True)
     executable = root / "bin/safeyolo"
@@ -116,7 +188,10 @@ def run(args: argparse.Namespace) -> None:
         command = [discovered]
 
     def cli(*arguments: str, timeout: float = 150) -> str:
-        result = subprocess.run(command + list(arguments), capture_output=True, text=True, timeout=timeout)
+        # These commands need no input. Keep the observer's operator input out
+        # of child commands that can consume it or change its file status flags.
+        result = subprocess.run(command + list(arguments), stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=timeout)
         assert result.returncode == 0, result.stderr[-1500:]
         return result.stdout
 
@@ -134,10 +209,11 @@ def run(args: argparse.Namespace) -> None:
     identity = cli("--version").strip()
     assert f"commit={args.commit} " in identity, "installed native CLI is not this candidate"
     assert f"commit={args.commit} " in subprocess.check_output([str(root / "bin/safeyolo-proxy"), "--version"], text=True)
-    assert f"commit={args.commit} " in (root / "assets/guest/safeyolo-guest.version").read_text()
+    guest_commit = args.guest_commit or args.commit
+    assert f"commit={guest_commit} " in (root / "assets/guest/safeyolo-guest.version").read_text()
     before = json.loads(cli("status"))
     owned: list[str] = []
-    result = {"commit": args.commit, "native_cli": identity, "real_model": False}
+    result = {"commit": args.commit, "guest_commit": guest_commit, "native_cli": identity, "real_model": False}
     completion_agent = args.real_agent
     with tempfile.TemporaryDirectory(prefix="demo-proof-", dir=root / "data") as temporary:
         directory = Path(temporary)
@@ -183,17 +259,18 @@ def run(args: argparse.Namespace) -> None:
                 return process, name, int(port), record
 
             if not args.real_agent:
-                # W2: actual native workspace and runtime creation, then cancellation.
-                cancelled_workspace = directory / "cancel"
-                active, name, port, record = start(cancelled_workspace)
-                active.send("cancel\n")
-                assert active.finish() != 0 and "cancelled after runtime creation" in active.output
-                assert name not in policy()["agents"]
-                assert not cancelled_workspace.exists()
-                assert record.read_text() == ""
-                closed(port)
-                peer_survives()
-                result["cancel_after_runtime"] = {"owned_runtime_removed": True, "zero_deliveries": True, "peer_unchanged": True}
+                if not args.preview:
+                    # W2: actual native workspace and runtime creation, then cancellation.
+                    cancelled_workspace = directory / "cancel"
+                    active, name, port, record = start(cancelled_workspace)
+                    active.send("cancel\n")
+                    assert active.finish() != 0 and "cancelled after runtime creation" in active.output
+                    assert name not in policy()["agents"]
+                    assert not cancelled_workspace.exists()
+                    assert record.read_text() == ""
+                    closed(port)
+                    peer_survives()
+                    result["cancel_after_runtime"] = {"owned_runtime_removed": True, "zero_deliveries": True, "peer_unchanged": True}
 
                 # W2: controlled Codex executable succeeds readiness/auth, then fails
                 # its real guest exec after setup. No model is invoked for this case.
@@ -203,55 +280,40 @@ def run(args: argparse.Namespace) -> None:
                 cli("agent", "create", fixture_name, "--workspace", str(prior))
                 owned.append(fixture_name)
                 home = root / "agents" / fixture_name / "home"
-                binary = home / ".local/bin/codex"
-                binary.parent.mkdir(parents=True)
-                binary.write_text(
-                    "#!/bin/sh\n"
-                    'for arg in "$@"; do\n'
-                    '  case "$arg" in --version) echo deterministic-codex-startup-fixture; exit 0;;\n'
-                    '    login) exit 0;; exec) echo reached >/workspace/harness-started; exit 41;; esac\n'
-                    "done\nexit 42\n"
-                )
-                binary.chmod(0o755)
+                stage_controlled_codex(home)
                 auth = home / ".codex"
                 auth.mkdir(mode=0o700)
                 (auth / "auth.json").write_text("synthetic deterministic authentication fixture")
                 (auth / "auth.json").chmod(0o600)
                 (auth / ".safeyolo-provenance.json").write_text(json.dumps({"schema":"safeyolo.codex-provenance/v1", "state":"agent-local"}))
                 (auth / ".safeyolo-provenance.json").chmod(0o600)
-                failed_workspace = directory / "failure"
-                active, name, port, record = start(failed_workspace, ["--agent", fixture_name, "--keep"])
-                active.send("\n")
-                assert active.finish() != 0 and "Codex harness failed after setup" in active.output
-                assert (failed_workspace / "harness-started").read_text().strip() == "reached"
-                stopped(name)
-                assert policy()["agents"][name]["folder"] == str(prior)
-                assert not policy()["agents"][name].get("hosts")
-                assert record.read_text() == ""
-                closed(port)
-                peer_survives()
-                result["startup_failure"] = {"actual_guest_exec_exit":41, "owned_runtime_stopped":True, "keep_observed":True, "permission_removed":True, "peer_unchanged":True}
+                if not args.preview:
+                    failed_workspace = directory / "failure"
+                    active, name, port, record = start(failed_workspace, ["--agent", fixture_name, "--keep"])
+                    active.send("\n")
+                    assert active.finish() != 0 and "Codex harness failed after setup" in active.output
+                    assert (failed_workspace / "harness-started").read_text().strip() == "reached"
+                    stopped(name)
+                    assert policy()["agents"][name]["folder"] == str(prior)
+                    assert not policy()["agents"][name].get("hosts")
+                    assert record.read_text() == ""
+                    closed(port)
+                    peer_survives()
+                    result["startup_failure"] = {"actual_guest_exec_exit":41, "owned_runtime_stopped":True, "keep_observed":True, "permission_removed":True, "peer_unchanged":True}
 
-                fresh_workspace = directory / "fresh"
-                active, name, port, record = start(fresh_workspace)
-                active.send("cancel\n")
-                assert active.finish() != 0 and "cancelled after runtime creation" in active.output
-                assert name not in policy()["agents"] and not fresh_workspace.exists()
-                closed(port)
-                peer_survives()
-                result["fresh_start"] = True
+                    fresh_workspace = directory / "fresh"
+                    active, name, port, record = start(fresh_workspace)
+                    active.send("cancel\n")
+                    assert active.finish() != 0 and "cancelled after runtime creation" in active.output
+                    assert name not in policy()["agents"] and not fresh_workspace.exists()
+                    closed(port)
+                    peer_survives()
+                    result["fresh_start"] = True
 
                 if args.deterministic_completion:
                     # Reuse this owned, stopped startup fixture and synthetic
                     # authentication. No provisioned model login is read or changed.
-                    (binary.parent / "demo-completion-app.py").write_text(COMPLETION_APP)
-                    binary.write_text(
-                        "#!/bin/sh\n"
-                        'for arg in "$@"; do\n'
-                        '  case "$arg" in --version) echo deterministic-codex-completion-fixture; exit 0;;\n'
-                        '    login) exit 0;; exec) mise use -g python@3.12 >&2; cp /home/agent/.local/bin/demo-completion-app.py /workspace/app.py; exec python3 /workspace/app.py;; esac\n'
-                        "done\nexit 42\n"
-                    )
+                    stage_controlled_codex(home, completion=True)
                     completion_agent = fixture_name
 
             if completion_agent:
@@ -283,8 +345,24 @@ def run(args: argparse.Namespace) -> None:
                 # fail and Demo removes its disposable workspace.
                 result.update({"real_model":bool(args.real_agent), "deterministic_completion":args.deterministic_completion, "app_response":app, "fixture_records":records, "app_code_created":True, "app_source":source, "zero_preapproval_deliveries":True, "demo_finish_completed":False, "peer_after_finish_verified":False})
                 print(json.dumps(result), flush=True)
+                if args.preview:
+                    active.send("preview\n")
+                    active.until("Preview: type approve, reject, evidence, or cancel:")
+                    print(active.output, flush=True)  # Pending approval has no viewer secrets.
+                    decision = input("Inspect the desktop action above. Type approve or reject: ").strip()
+                    assert decision in {"approve", "reject"}, "an explicit preview decision is required"
+                    active.send(decision + "\n")
+                    assert decision == "approve", "operator rejected preview; do not count it as a pass"
+                    active.until("Preview is ready.")
+                    ids = re.findall(r"Approval: (apr-[a-f0-9]+)", active.output)
+                    assert ids, "canonical preview approval ID is missing"
+                    result["preview"] = {"approval_id": ids[-1], "started": True, "interaction": "unverified"}
+                    print(json.dumps(result), flush=True)
+                    confirmation = input(f"Use approvals show {ids[-1]} on the host to recover the unlock code. Use Refresh in the actual gated viewer. Type interacted after observing the changed refresh count: ").strip()
+                    assert confirmation == "interacted", "viewer interaction was not reported"
+                    result["preview"]["interaction"] = "operator_reported"
                 active.send("\n")
-                assert active.finish() == 0, active.output[-1500:]
+                assert active.finish() == 0, active.diagnostics()
                 stopped(name)
                 closed(port)
                 peer_survives()
@@ -308,10 +386,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config-dir", required=True, type=Path)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--guest-commit", help="explicit retained guest producer when its affected source is qualified equivalent; host binaries still require --commit")
+    parser.add_argument("--preview", action="store_true", help="request the normal desktop preview after completion, then pause for actual viewer interaction")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--real-agent", help="existing stopped Demo guest with its own configured Codex authentication")
     selection.add_argument("--deterministic-completion", action="store_true", help="use the owned no-model guest fixture to check final input and cleanup; does not accept W1")
-    run(parser.parse_args())
+    args = parser.parse_args()
+    if args.preview and not (args.real_agent or args.deterministic_completion):
+        parser.error("--preview requires --real-agent or --deterministic-completion")
+    run(args)
 
 
 if __name__ == "__main__":

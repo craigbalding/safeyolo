@@ -1,122 +1,8 @@
-//! Operator reads retain canonical request scope across credential retries.
+//! Operator reads and decisions use canonical request scope.
 
 use super::*;
 use crate::approvals::network_action;
 use crate::approvals::pending;
-
-pub(super) fn credential_view<'a>(
-    events: impl IntoIterator<Item = &'a Value>,
-    id: &str,
-) -> Result<Option<Value>, &'static str> {
-    let matching: Vec<_> = events
-        .into_iter()
-        .filter(|event| {
-            event["request_id"] == id
-                && event["event"] == "security.credential_guard"
-                && event["approval"]["approval_type"] == "credential"
-        })
-        .collect();
-    let Some(first) = matching.first() else {
-        return Ok(None);
-    };
-    if matching
-        .iter()
-        .any(|event| event.pointer("/details/approval_id").is_some())
-    {
-        return Err(
-            "canonical approval state unavailable; audit text cannot replace its authority",
-        );
-    }
-    let agent = first["agent"]
-        .as_str()
-        .ok_or("credential request has no agent")?;
-    let agent_id = first["details"]["agent_id"].as_str().ok_or("credential request predates identity binding; use direct credential policy controls or make a new request")?;
-    let host = first["approval"]["target"]
-        .as_str()
-        .ok_or("credential request has no destination")?;
-    let mut credentials = Vec::new();
-    for event in &matching {
-        if event["agent"] != agent
-            || event["details"]["agent_id"] != agent_id
-            || event["approval"]["target"] != host
-        {
-            return Err("credential request has conflicting scope; use direct policy controls");
-        }
-        let key = event["approval"]["key"]
-            .as_str()
-            .filter(|key| key.starts_with("hmac:") && key.len() > 5)
-            .ok_or("credential request has no fingerprint")?;
-        if !credentials.iter().any(|saved| saved == key) {
-            credentials.push(key.to_owned());
-        }
-    }
-    credentials.sort();
-    Ok(Some(json!({"request_id":id,"status":"pending",
-        "action":{"kind":"credential_allow","agent":agent,"agent_id":agent_id,"host":host,"credentials":credentials},
-        "effect":format!("Allow these credential fingerprints to {} for all agents in this instance, including future agents. This changes shared persistent policy until explicitly removed. Existing network rules still apply.", crate::network_guard::sanitize(host))})))
-}
-
-// The retained audit supplies the selected request's original identity. The
-// pending reducer supplies its current state; a newer representative is usable
-// only when its entire action still matches that original identity.
-pub(super) fn credential_record(
-    writer: &crate::audit::Writer,
-    policy: &Policy,
-    id: &str,
-) -> Result<Option<Value>, &'static str> {
-    let mut document = writer
-        .approval_events(id)
-        .map_err(|_| "credential approval evidence unavailable")?;
-    let rendered = document.render_json(false);
-    crate::audit::wipe(&mut document);
-    let rendered =
-        Zeroizing::new(rendered.map_err(|_| "credential approval evidence unavailable")?);
-    let events = Json(
-        serde_json::from_str(&rendered).map_err(|_| "credential approval evidence unavailable")?,
-    );
-    let Some(mut view) = credential_view(
-        events
-            .0
-            .as_array()
-            .ok_or("credential approval evidence unavailable")?,
-        id,
-    )?
-    else {
-        return Ok(None);
-    };
-    let current = read_audit_events(writer.path());
-    let pending = pending_approval_events(&current);
-    let action = &view["action"];
-    let mut matches = policy.evidence_agent_id(
-        action["agent"]
-            .as_str()
-            .ok_or("credential request has no agent")?,
-    ) == action["agent_id"].as_str();
-    for credential in action["credentials"]
-        .as_array()
-        .ok_or("credential request has no fingerprints")?
-    {
-        let representative = pending.as_array().and_then(|events| {
-            events.iter().find(|event| {
-                event["event"] == "security.credential_guard"
-                    && event["approval"]["key"] == *credential
-                    && event["approval"]["target"] == action["host"]
-            })
-        });
-        matches &= match representative.and_then(|event| event["request_id"].as_str()) {
-            Some(current_id) => credential_view(&current, current_id)?
-                .is_some_and(|current| current["action"] == *action),
-            None => false,
-        };
-    }
-    if !matches {
-        view["status"] = json!("stale");
-        view["effect"] = json!(
-            "This credential request is resolved or changed, or its current evidence is unavailable. Inspect the pending requests again before deciding."
-        );
-    }
-    Ok(Some(view))
-}
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -141,13 +27,16 @@ struct Explanation {
 pub(super) async fn respond<B: Body<Data = Bytes>>(
     request: Request<B>,
     path: &str,
-    policy: Option<&Policy>,
+    policy: Option<&Arc<Policy>>,
     audit: Option<&Arc<crate::audit::Writer>>,
     state: Option<&crate::RuntimeState>,
     service_audit: Option<ServiceAudit<'_>>,
 ) -> Result<Outcome, Error> {
     if let Some(path) = path.strip_suffix("/context") {
         return context(request, path, policy, audit, state).await;
+    }
+    if let Some(path) = path.strip_suffix("/attention") {
+        return attention(request, path, policy, audit, state).await;
     }
     let (path, explain) = path
         .strip_suffix("/explain")
@@ -186,7 +75,7 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
             ));
         };
         let (policy, writer, id, state) = (
-            policy.clone(),
+            Arc::clone(policy),
             writer.clone(),
             id.to_owned(),
             state.cloned(),
@@ -206,7 +95,7 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
     }
     if request.method() == Method::GET && !share {
         let (policy, writer, id, state) = (
-            policy.clone(),
+            Arc::clone(policy),
             writer.clone(),
             id.to_owned(),
             state.cloned(),
@@ -220,18 +109,6 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
                 Ok(None) if id.starts_with("apr-") => return Ok(response(StatusCode::NOT_FOUND, json!({"error":"approval unavailable"}))),
                 Ok(None) => {},
                 Err(error) => return Ok(response(StatusCode::SERVICE_UNAVAILABLE, json!({"error":error.to_string()}))),
-            }
-            match credential_record(&writer, &policy, &id) {
-                Ok(Some(view)) => return Ok(response(StatusCode::OK, view)),
-                Ok(None) => {},
-                Err(error) => {
-                    // A credential evidence failure cannot hide a committed
-                    // network grant. Audit-only records cannot supply this fallback.
-                    return Ok(match network_action::committed_record(&policy, &id) {
-                        Ok(Some(record)) => response(StatusCode::OK, record.view(&id, true)),
-                        _ => response(StatusCode::SERVICE_UNAVAILABLE, json!({"error":error})),
-                    });
-                },
             }
             Ok(match network_action::record(&writer, &policy, &id) {
                 Ok(Some(record)) => response(StatusCode::OK, record.view(&id, true)),
@@ -300,10 +177,94 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
     }).await?.await.map_err(|_| Error::ServiceMutation)?
 }
 
+/// This endpoint claims only an interruption. It cannot decide an approval.
+async fn attention<B: Body<Data = Bytes>>(
+    request: Request<B>,
+    path: &str,
+    policy: Option<&Arc<Policy>>,
+    audit: Option<&Arc<crate::audit::Writer>>,
+    state: Option<&crate::RuntimeState>,
+) -> Result<Outcome, Error> {
+    if request.method() != Method::POST {
+        return Ok(unsupported(request.method()));
+    }
+    let Some(id) = path
+        .strip_prefix("/admin/approvals/")
+        .filter(|id| !id.contains('/') && pending::valid_id(id))
+    else {
+        return Ok(response(
+            StatusCode::NOT_FOUND,
+            json!({"error":"approval unavailable"}),
+        ));
+    };
+    let id = id.to_owned();
+    match read_json(request).await? {
+        ParsedBody::Absent => {}
+        ParsedBody::Value(data) if data.0.as_object().is_some_and(|fields| fields.is_empty()) => {}
+        ParsedBody::Terminal(outcome) => return Ok(outcome),
+        _ => {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"attention takes no requester-selected fields"}),
+            ));
+        }
+    }
+    let (Some(policy), Some(writer)) = (policy, audit) else {
+        return Ok(response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"approval state unavailable"}),
+        ));
+    };
+    let (policy, writer, state) = (policy.clone(), writer.clone(), state.cloned());
+    tokio::task::spawn_blocking(move || {
+        let claim = || -> crate::approvals::Result<_> {
+            let Some(record) = writer.approvals().get(&id)? else {
+                return Ok((false, None));
+            };
+            let current = pending::current_view(&writer, &policy, &record, state.as_ref())?;
+            if current["status"] != "pending" {
+                return Ok((false, None));
+            }
+            if record.attention.contains_key("operator") {
+                return Ok((false, None));
+            }
+            let notify = writer
+                .approvals()
+                .claim_attention(&id, "operator", &policy)?;
+            let record = writer.approvals().get(&id)?;
+            Ok((notify, record))
+        };
+        Ok(match claim() {
+            Ok((notify, record)) => {
+                let mut value = json!({"notify":notify,"approval_id":id});
+                if let Some(record) = record {
+                    value["attention"] = json!(record.attention);
+                    if tokio::runtime::Handle::current()
+                        .block_on(
+                            writer.emit_confirmed(pending::attention::event(&record, "operator")),
+                        )
+                        .is_err()
+                    {
+                        value["audit_status"] =
+                            json!("unavailable; delivery claim is saved and will not be replayed");
+                    }
+                }
+                response(StatusCode::OK, value)
+            }
+            Err(error) => response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":error.to_string()}),
+            ),
+        })
+    })
+    .await
+    .map_err(|_| Error::ServiceMutation)?
+}
+
 async fn context<B: Body<Data = Bytes>>(
     request: Request<B>,
     path: &str,
-    policy: Option<&Policy>,
+    policy: Option<&Arc<Policy>>,
     audit: Option<&Arc<crate::audit::Writer>>,
     state: Option<&crate::RuntimeState>,
 ) -> Result<Outcome, Error> {
@@ -342,7 +303,7 @@ async fn context<B: Body<Data = Bytes>>(
     }
     let (writer, policy, state, id) = (
         writer.clone(),
-        policy.clone(),
+        Arc::clone(policy),
         state.cloned(),
         id.to_owned(),
     );
@@ -377,7 +338,7 @@ async fn context<B: Body<Data = Bytes>>(
                 pending::context::question(&record, exchange.as_ref().expect("new exchange"));
             match tokio::time::timeout(
                 std::time::Duration::from_secs(3),
-                coord.ask_approval_context(
+                coord.send_approval_notice(
                     record.authority.action["agent"].as_str().unwrap_or(""),
                     record.authority.action["agent_id"].as_str().unwrap_or(""),
                     &question,
@@ -441,4 +402,98 @@ fn context_error(error: crate::approvals::ApprovalError) -> Outcome {
         },
         json!({"error":error.to_string()}),
     )
+}
+
+pub(super) async fn delegations<B: Body<Data = Bytes>>(
+    request: Request<B>,
+    path: &str,
+    policy: Option<&Arc<Policy>>,
+    state: Option<&crate::RuntimeState>,
+    owner: Option<ServiceAudit<'_>>,
+) -> Result<Outcome, Error> {
+    let (Some(policy), Some(state)) = (policy, state) else {
+        return Ok(response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"native policy unavailable"}),
+        ));
+    };
+    if request.method() == Method::GET && path == "/admin/approval-delegations" {
+        let issued = policy.delegation_grants();
+        let gateway = state
+            .read()
+            .ok()
+            .and_then(|r| r.gateway_grants.clone())
+            .and_then(|s| s.list_grants(time::OffsetDateTime::now_utc()).ok());
+        return Ok(response(
+            StatusCode::OK,
+            json!({"delegations":policy.delegations().iter().map(|(name,d)| json!({"name":name,"revision":d.revision(),"active":d.current() && d.dependencies_current(policy),"delegation":d})).collect::<Vec<_>>(),"issued_access":issued,"gateway_grants":gateway}),
+        ));
+    }
+    let Some((name, operation)) = path
+        .strip_prefix("/admin/approval-delegations/")
+        .and_then(|p| p.split_once('/'))
+    else {
+        return Ok(response(
+            StatusCode::NOT_FOUND,
+            json!({"error":"delegation operation unavailable"}),
+        ));
+    };
+    if !crate::host_platform::valid_agent_name(name)
+        || !matches!(operation, "preview" | "apply" | "revoke")
+        || request.method() != Method::POST
+    {
+        return Ok(response(
+            StatusCode::BAD_REQUEST,
+            json!({"error":"use a named delegation and preview, apply or revoke"}),
+        ));
+    }
+    let data = match read_json(request).await? {
+        ParsedBody::Value(value) => value,
+        ParsedBody::Terminal(outcome) => return Ok(outcome),
+        ParsedBody::Absent => {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"proposal is required"}),
+            ));
+        }
+    };
+    let (name, operation, state, policy) = (
+        name.to_owned(),
+        operation.to_owned(),
+        state.clone(),
+        Arc::clone(policy),
+    );
+    let Some(owner) = owner else {
+        return Ok(response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"mutation owner unavailable"}),
+        ));
+    };
+    let writer = owner.writer.clone();
+    owner.mutation_owner.spawn_blocking(move || {
+        let before_revision = data.0["expected_revision"].clone();
+        let result=if operation=="revoke" {
+            #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)] struct Revoke { expected_revision:String }
+            match serde_json::from_value::<Revoke>(data.0.clone()) {
+                Ok(input)=>crate::approvals::delegations::revoke(&state,&name,&input.expected_revision),
+                Err(_)=>Err(crate::approvals::invalid("supply only expected_revision")),
+            }
+        } else {
+            match serde_json::from_value::<crate::approvals::delegations::Proposal>(data.0.clone()) {
+                Ok(input) if operation=="apply"=>crate::approvals::delegations::apply(&state,&name,input),
+                Ok(input)=>crate::approvals::delegations::preview(&policy,&name,&input,&state),
+                Err(_)=>Err(crate::approvals::invalid("invalid delegation proposal; unknown fields and unsupported bounds are rejected")),
+            }
+        };
+        Ok(match result { Ok(mut value)=>{
+            if operation != "preview" {
+                let mut event=crate::audit::Event::new("admin.approval_delegation_changed",crate::audit::Kind::Admin,crate::audit::Severity::High,format!("Approval delegation {name} {operation}"));
+                event.details=json!({"delegation":name,"operation":operation,"before_revision":before_revision,"revision":value["revision"]}).into();
+                if tokio::runtime::Handle::current().block_on(writer.emit_confirmed(event)).is_err() {
+                    value["audit_status"]=json!("unavailable; the delegation change is saved. Inspect current state before retrying.");
+                }
+            }
+            response(StatusCode::OK,value)
+        },Err(e)=>response(StatusCode::CONFLICT,json!({"error":e.to_string()})) })
+    }).await?.await.map_err(|_| Error::ServiceMutation)?
 }

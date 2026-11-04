@@ -38,9 +38,8 @@ fn ssh_banner(port: u16) -> Value {
 fn processes() -> Result<Value, Error> {
     let names = [
         "sshd",
-        "socat",
-        "guest-shell-bri",
-        "guest-proxy-bri",
+        "sy-shell-relay",
+        "sy-proxy-relay",
         "vsock-term",
         "tmux: server",
     ];

@@ -127,8 +127,19 @@ fn drained(proxy: &Proxy, directory: &Path) -> Vec<Value> {
     // lifecycle boundary instead of globally hiding the event.
     records(&directory.join("audit.jsonl"))
         .into_iter()
+        // Native connection history has its own scoped producer tests.
         .filter(|row| {
-            assert_eq!(row["schema_version"], 1);
+            !(row["event"] == "security.indicator"
+                && row["details"]["sensor"] == "connection-history.v1")
+        })
+        .filter(|row| {
+            !matches!(
+                row["event"].as_str(),
+                Some("network.connection" | "traffic.flow")
+            )
+        })
+        .filter(|row| {
+            assert_eq!(row["schema_version"], 2);
             !(row["addon"] == "memory-monitor" && row["event"] == "ops.memory.conn_closed")
         })
         .filter(|row| {
@@ -152,7 +163,7 @@ fn names(rows: &[Value]) -> Vec<&str> {
         .collect()
 }
 fn canonical(row: &Value, expected: &str, decision: Option<&str>) {
-    assert_eq!(row["schema_version"], 1);
+    assert_eq!(row["schema_version"], 2);
     assert_eq!(row["event"], expected);
     assert_eq!(row["kind"], "security");
     assert_eq!(
@@ -430,7 +441,8 @@ async fn explain_child(directory: &Path) {
                 "agent.api_response",
                 "traffic.request",
                 "traffic.response",
-                "traffic.request_outcome"
+                "traffic.request_outcome",
+                "traffic.flow"
             ]
         );
         assert!(events.iter().all(|event| event["agent"] == agent));

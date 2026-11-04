@@ -6,9 +6,12 @@ Real full-platform runs still prove that leg with the same running guest.
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -23,7 +26,7 @@ from tests.blackbox import installed_host_smoke as smoke
 from tests.blackbox import installed_lifecycle as lifecycle
 from tests.proxy_contracts.harness import connection, request
 from tests.proxy_contracts.scenarios import origin_server
-from tests.proxy_contracts.test_native_policy_cli import AGENT_TOKEN, native_instance
+from tests.proxy_contracts.test_native_policy_cli import AGENT_TOKEN, native_inputs, native_instance
 
 BLACKBOX = Path(__file__).resolve().parents[1] / "blackbox"
 ADMIN_TOKEN = "synthetic-blackbox-admin-token"
@@ -274,6 +277,222 @@ def test_native_lifecycle_consumer_retains_inactive_receipt_and_uses_configured_
         assert (instance.root / "data/proxy-process.json").is_file()
         lifecycle.assert_proxy_stopped(instance.root, listener, runtime)
         assert not Path(native["readiness_file"]).exists()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the owned-child probe uses Linux procfs")
+@pytest.mark.parametrize("control,coord_control", [
+    ("immediate", "ready"), ("delayed", "ready"), ("exited", "ready"), ("unready", "ready"),
+    ("immediate", "delayed"), ("exited", "delayed"), ("exited_after_ready", "delayed"),
+    ("delayed", "failed"),
+])
+def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_path, control, coord_control):
+    # Use the existing native CLI initialization boundary. No guest payload or
+    # package rebuild is needed to exercise these host-only start/stop commands.
+    artifacts, _, profile = native_inputs()
+    if bundle := os.environ.get("SAFEYOLO_NATIVE_BUNDLE"):
+        artifacts = Path(bundle) / "bin"
+    root = tmp_path / "i"
+    (root / "bin").mkdir(parents=True)
+    for binary in ("safeyolo", "safeyolo-proxy"):
+        (root / "bin" / binary).symlink_to((artifacts / binary).resolve(strict=True))
+    command = [str(root / "bin/safeyolo"), "--root", str(root)]
+    environment = dict(os.environ, SAFEYOLO_CONFIG_DIR=str(root), SAFEYOLO_HOME=str(root),
+                       SAFEYOLO_NATIVE_CONFIG_PATH=str(root / "config.toml"), SAFEYOLO_NATS_TEST_INSTANCE=str(root))
+    environment["SAFEYOLO_STARTUP_TIMINGS"] = "1" if coord_control == "delayed" else "0"
+    environment.pop("SAFEYOLO_OPERATOR_INSTANCE_ID_FILE", None)
+    initialized = subprocess.run([*command, "init"], env=environment, capture_output=True, text=True, timeout=15)
+    assert initialized.returncode == 0, initialized.stderr
+    config = root / "config.toml"
+    document = tomlkit.parse(config.read_text())
+    document.update(admin_port=0, flow_store_enabled=False, readiness_file="data/selected-ready.json",
+                    admin_api_token_file="data/admin_token",
+                    listeners=[{"agent_id": "alice", "socket_path": str(tmp_path / "a.sock"), "source_id": "10.0.0.2"}])
+    config.write_text(tomlkit.dumps(document))
+    coord_command = [*command, "coord", "start"]
+    if nats := os.environ.get("SAFEYOLO_COORD_NATS_BINARY"):
+        coord_command += ["--binary", nats]
+    coordinated = subprocess.run(coord_command, env=environment, capture_output=True, text=True, timeout=15)
+    assert coordinated.returncode == 0, coordinated.stderr
+    coord_lock = None
+    if coord_control != "ready":
+        stopped = subprocess.run([*command, "coord", "stop"], env=environment, capture_output=True,
+                                 text=True, timeout=10)
+        assert stopped.returncode == 0, stopped.stderr
+        nats = root / "data/coord/nats"
+        if coord_control == "delayed":
+            coord_lock = os.open(nats / "runtime.lock", os.O_RDWR)
+            fcntl.flock(coord_lock, fcntl.LOCK_EX)
+        else:
+            # Damage only this fixture's copied NATS input. The proxy must
+            # still initialize when the managed Coord prerequisite is absent.
+            cached, = nats.glob("bin/*/nats-server")
+            cached.write_bytes(b"incorrect-reviewed-nats-pin")
+    ca = root / "certs/mitmproxy-ca.pem"
+    pem = ca.read_bytes()
+    ca.unlink()
+    os.mkfifo(ca, 0o600)
+    readiness = root / "data/selected-ready.json"
+    readiness.write_text('{"ready":true,"pid":1}')
+    receipt = root / "data/proxy-process.json"
+    previous = '{"pid":1,"token":"stale-birth"}'
+    receipt.write_text(previous)
+    original_config = config.read_bytes()
+    original_inode = config.stat().st_ino
+    writer = None
+    pid = birth = None
+    started = time.monotonic()
+    startup = subprocess.Popen([*command, "start"], cwd=tmp_path, env=environment,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def owned_proxy_children():
+        children = set()
+        try:
+            tasks = list(Path(f"/proc/{startup.pid}/task").iterdir())
+        except FileNotFoundError:
+            return []  # The CLI exited before this cleanup observation.
+        for task in tasks:
+            try:
+                for child in (task / "children").read_text().split():
+                    # gVisor can list thread IDs here. Select their process ID
+                    # once so a multithreaded proxy remains one owned child.
+                    status = Path(f"/proc/{child}/status").read_text().splitlines()
+                    children.add(int(next(line.split()[1] for line in status if line.startswith("Tgid:"))))
+            except FileNotFoundError:
+                # A CLI or child thread exited between these observations.
+                continue
+        return [child for child in children
+                if smoke._process_executable(child) == (root / "bin/safeyolo-proxy").resolve()
+                and smoke._process_command_line(child) == [
+                    os.fsencode(root / "bin/safeyolo-proxy"), b"--config", os.fsencode(config),
+                ]]
+
+    try:
+        # A writer can open only after the real initializer starts reading
+        # its configured CA. Hold EOF to keep that initializer unready.
+        while writer is None:
+            assert startup.poll() is None, startup.communicate()
+            assert time.monotonic() - started < 10, "proxy did not open its configured CA"
+            try:
+                writer = os.open(ca, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as error:
+                if error.errno != errno.ENXIO:
+                    raise
+                time.sleep(0.02)
+        ca.unlink()
+        ca.write_bytes(pem)
+        owned = owned_proxy_children()
+        assert len(owned) == 1, owned
+        pid = owned[0]
+        birth = smoke._process_start_token(pid)
+        assert birth is not None
+        assert not readiness.exists(), "start retained a stale readiness marker"
+        assert receipt.read_text() == previous
+        held = time.monotonic()
+        if control == "delayed":
+            time.sleep(6)
+            assert startup.poll() is None, startup.communicate()
+            assert smoke._process_start_token(pid) == birth
+            assert not readiness.exists()
+        if control != "unready":
+            if control != "exited":
+                assert os.write(writer, pem) == len(pem)
+            os.close(writer)
+            writer = None
+        if coord_lock is not None:
+            deadline = time.monotonic() + 5
+            while (Path(f"/proc/{pid}").exists() if control == "exited"
+                   else not readiness.is_file() or receipt.read_text() == previous):
+                assert startup.poll() is None, startup.communicate()
+                assert time.monotonic() < deadline, "proxy startup waited for managed NATS"
+                time.sleep(0.02)
+            # Proxy readiness or owned failure finishes independently. The
+            # command must retain the pending NATS start and its startup lock.
+            assert startup.poll() is None, "start returned before managed NATS resolved"
+            if control == "exited_after_ready":
+                os.kill(pid, signal.SIGTERM)
+                while smoke._process_start_token(pid) == birth:
+                    assert time.monotonic() < deadline, "ready proxy did not exit"
+                    time.sleep(0.02)
+            fcntl.flock(coord_lock, fcntl.LOCK_UN)
+            os.close(coord_lock)
+            coord_lock = None
+        stdout, stderr = startup.communicate(timeout=20)
+        timing_lines = (root / "logs/proxy.log").read_text().splitlines() + stderr.splitlines()
+        timings = [json.loads(line.removeprefix("startup ")) for line in timing_lines if line.startswith("startup ")]
+        if control == "immediate" and coord_control == "delayed":
+            observed_stages = {(row["component"], row["stage"]) for row in timings}
+            assert {("launcher", "configuration"), ("process", "configuration"),
+                    ("listener_projection", "configuration_read"), ("listener_preparation", "projection"),
+                    ("listener_projection", "attachment_reconciliation"),
+                    ("runtime", "credentials"), ("runtime", "inspection"), ("runtime", "tls_and_circuits"),
+                    ("process", "process_record"), ("managed_nats", "start_complete")} <= observed_stages
+            assert not {("listener_projection", stage) for stage in (
+                "configuration_reread", "projection_write", "file_sync", "projection_publish", "directory_sync",
+            )} & observed_stages
+            assert ("listener_preparation", "configuration_reread") not in observed_stages
+            assert config.read_bytes() == original_config and config.stat().st_ino == original_inode
+            version = subprocess.check_output([*command, "--version"], env=environment, text=True)
+            for row in timings:
+                assert f"commit={row['source']} profile={profile}" in version
+                assert row["profile"] == profile and row["elapsed_seconds"] >= row["stage_seconds"] >= 0
+                assert row["stage_cpu_seconds"] is None or row["stage_cpu_seconds"] >= 0
+        elif coord_control != "delayed":
+            assert not timings, "startup diagnostics were enabled without the explicit option"
+        elapsed = time.monotonic() - started
+        if control == "unready":
+            assert startup.returncode != 0, stdout
+            assert "did not publish readiness within fifteen seconds" in stderr
+            assert 15 <= elapsed < 20
+        elif control in {"exited", "exited_after_ready"}:
+            assert startup.returncode != 0, stdout
+            assert "proxy exited during startup" in stderr
+            assert time.monotonic() - held < 5
+        else:
+            assert startup.returncode == 0, stderr
+            assert time.monotonic() - held < (6 if control == "delayed" else 0) + 5
+            record = json.loads(receipt.read_text())
+            assert (record["pid"], record["token"]) == (pid, birth)
+            native = smoke._native_config(config, tmp_path)
+            runtime = smoke._runtime_observation(
+                root, native, root / "bin/safeyolo-proxy", config_path=config,
+                working_directory=tmp_path, require_running=True, require_authenticated_identity=True,
+            )
+            assert runtime["pid"] == pid
+        if control in {"exited", "exited_after_ready", "unready"}:
+            assert not Path(f"/proc/{pid}").exists(), "startup did not reap its failed owned child"
+            assert not readiness.exists()
+            if control == "exited_after_ready":
+                assert json.loads(receipt.read_text())["pid"] == pid
+            else:
+                assert receipt.read_text() == previous
+        if coord_control == "failed":
+            assert "Coord unavailable: NATS executable differs from its reviewed platform pin" in stderr
+        else:
+            status = subprocess.run([*command, "coord", "status"], env=environment,
+                                    capture_output=True, text=True, timeout=10)
+            assert status.returncode == 0, status.stderr
+            assert json.loads(status.stdout)["state"] == "running"
+    finally:
+        if ca.is_fifo():
+            ca.unlink()
+            ca.write_bytes(pem)
+        if coord_lock is not None:
+            fcntl.flock(coord_lock, fcntl.LOCK_UN)
+            os.close(coord_lock)
+        if writer is not None:
+            os.close(writer)
+        if startup.poll() is None:
+            for child in owned_proxy_children():
+                try:
+                    os.kill(child, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass  # Closing the CA writer can let the child exit first.
+        startup.communicate(timeout=5)
+        stopped = subprocess.run([*command, "stop"], env=environment, capture_output=True, text=True, timeout=10)
+        assert stopped.returncode == 0, stopped.stderr
+    if control in {"immediate", "delayed"}:
+        assert receipt.is_file()
+        lifecycle.assert_proxy_stopped(root, tmp_path / "a.sock", runtime)
 
 
 @pytest.mark.parametrize("exits", [True, False])

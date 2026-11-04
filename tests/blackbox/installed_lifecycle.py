@@ -80,7 +80,7 @@ def guest_command(
     cli: str, agent: str, phase: str, marker: str, *, env: dict[str, str] | None = None
 ) -> list[str]:
     request = [
-        "python3",
+        "/usr/bin/python3",
         "-m",
         "tests.blackbox.isolation.installed_lifecycle",
         "--phase",

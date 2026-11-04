@@ -83,14 +83,11 @@ fn invalid_id() -> Outcome<'static> {
 
 fn failed(request: Request<'_>, failure: ExplainFailure) -> Outcome<'static> {
     let class = match failure {
-        ExplainFailure::Reader(audit::ExplainErrorKind::Attribute) => "AttributeError",
         ExplainFailure::Reader(audit::ExplainErrorKind::UnicodeDecode) => "UnicodeDecodeError",
         ExplainFailure::Reader(audit::ExplainErrorKind::Value) => "ValueError",
         ExplainFailure::Reader(audit::ExplainErrorKind::Permission) => "PermissionError",
         ExplainFailure::Reader(audit::ExplainErrorKind::Io) => "OSError",
-        ExplainFailure::Reader(audit::ExplainErrorKind::Compatibility)
-        | ExplainFailure::Worker
-        | ExplainFailure::Rendering(_) => {
+        ExplainFailure::Worker | ExplainFailure::Rendering(_) => {
             return super::unavailable(request, Failure::ExplainReporting(failure));
         }
     };

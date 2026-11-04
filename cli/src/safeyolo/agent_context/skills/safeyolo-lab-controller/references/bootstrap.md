@@ -4,16 +4,32 @@ Read this reference when the operator starts or reconnects to a SafeYolo lab.
 
 ## Operator workflow
 
-On the instance host, run `safeyolo lab`. The entry asks for the
+For a Codex Lab, run `safeyolo lab` on the instance host. The entry asks for the
 objective before preparing its guest and checking its own Codex authentication.
 The operator does not enter a guest shell or discover a controller pane first.
 
-The internal `safeyolo-lab` helper creates the owned guest session and a
-persistent interactive controller shell. The runner invokes the staged Codex
-command without replacing that shell. The recorded objective and base
-instructions are supplied as developer instructions. Codex receives `Hello.`
-as the short first user message, acknowledges the objective and proposes the
-smallest useful experiment before mutations.
+For a Claude Lab, first prepare an owned guest from the instance host. With the
+default installation, pass
+`--host-script "$HOME/.safeyolo/assets/contrib/claude-host-setup.sh"` to
+`agent create`, or `agent configure` for an existing stopped agent. Select the
+executable script from that instance's `assets/contrib/` directory. For another
+instance root or a trusted checkout script, see the
+[host-script guide](https://github.com/craigbalding/safeyolo/blob/master/contrib/HOST_SCRIPT_GUIDE.md),
+including its host-state copying behavior.
+In that guest, verify the existing account with `claude auth status`. Do not
+capture credential values or login codes. From the pre-lab shell, run
+`safeyolo-lab --harness claude --objective "OBJECTIVE"` with the operator's
+objective. This uses the same bundled skills and tmux helpers. The native
+host `safeyolo lab` command continues to provision Codex Labs.
+
+The guest `safeyolo-lab` helper creates the owned session and a persistent
+interactive controller shell. The runner invokes the staged command without
+replacing that shell. Codex receives the recorded objective, base instructions
+and startup instructions through `developer_instructions`. Claude receives
+the same context through `--append-system-prompt-file`. The private temporary
+file is removed when the runner exits. Both receive `Hello.` as the short
+first user message, acknowledge the objective and propose the smallest useful
+experiment before mutations.
 
 When the controller exits, its shell remains alive with the real exit marker.
 `lab --status` reports that the controller is dead. `lab --recover` explicitly
@@ -35,17 +51,30 @@ the operator must interact with it.
 
 ## Reconnect
 
-After a disconnection, run `safeyolo lab` on the same instance host. Use
-`--agent NAME` when several Labs exist. A live owned controller is reused;
+After a disconnection from a Codex Lab, run `safeyolo lab` on the same instance
+host. Use `--agent NAME` when several Labs exist. A live owned controller is reused;
 Lab does not inject its runner or startup message again.
+
+For a Claude Lab, run `safeyolo-lab` again from the same guest's pre-lab shell.
+Use `safeyolo-lab --status --json` to inspect the controller. Use `--recover`
+to restart an owned dead controller, or `--relaunch` to replace it explicitly.
+The session retains its harness selection and objective during recovery.
+Use `--teardown` to capture redacted evidence and remove only the owned Lab
+session. These guest commands keep the agent running. When the disposable
+agent is no longer needed, stop it separately from the instance host.
 
 ## Internal guest command
 
-A pre-lab shell in `/home/agent` prints this discovery hint:
+A pre-lab shell in `/home/agent` prepared by Claude host setup prints this
+discovery hint:
 
 ```text
-SafeYolo lab: run safeyolo-lab
+SafeYolo lab: run safeyolo-lab --harness claude
 ```
+
+Codex host setup and the standalone installer print `SafeYolo lab: run safeyolo-lab`.
+Without `--harness`, the helper uses Codex for a fresh session and the saved
+harness for reconnection or recovery.
 
 If the command is absent after the skill is installed, run the internal
 installer once:

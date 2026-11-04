@@ -96,6 +96,11 @@ def access() -> dict:
         },
     )
     assert basic[0] == 202 and basic[1].get("x-safeyolo-request-id", "").startswith("req-"), basic
+    return {"service_request_id": basic[1]["x-safeyolo-request-id"]}
+
+
+def request_binding() -> dict:
+    """Submit the binding after the operator publishes service authorization."""
     challenge = api(
         "POST",
         "/gateway/request-access",
@@ -118,7 +123,6 @@ def access() -> dict:
     )
     assert binding[0] == 202 and binding[1].get("x-safeyolo-request-id", "").startswith("req-"), binding
     return {
-        "service_request_id": basic[1]["x-safeyolo-request-id"],
         "binding_request_id": binding[1]["x-safeyolo-request-id"],
         "contract_challenge": challenge[2]["decision"],
     }
@@ -314,36 +318,33 @@ def coord_wait(after: int, message: str) -> dict:
     }
 
 
-def plumb_request(peer: str) -> dict:
-    status, _, body = api("POST", "/plumb/request-chat", payload={"participants": [peer]})
-    assert status == 202 and body.get("request_id"), body
-    return {"request_id": body["request_id"]}
+def collaboration_request(peer: str, marker: str) -> dict:
+    status, _, body = api("POST", "/api/coord/request-collaboration", payload={
+        "participants": [peer], "topic": "installed access", "ttl_seconds": 120,
+        "operation_id": marker,
+    })
+    assert status == 200 and body.get("approval_id") and body.get("room_name"), body
+    return body
 
 
-def plumb_send(conversation: str, marker: str) -> dict:
-    status, _, body = api(
-        "POST", f"/plumb/conversations/{conversation}/messages", payload={"body": f"p3-message:{marker}"}
-    )
-    assert status == 200 and body.get("id"), body
-    return {"message_id": body["id"]}
+def collaboration_send(room: str, marker: str) -> dict:
+    status, _, body = api("POST", f"/api/coord/rooms/{quote(room, safe='')}/send", payload={
+        "body": f"p3-message:{marker}", "notify": "room", "declared_content_type": "text/plain",
+    })
+    assert status == 200 and body.get("envelope", {}).get("msg_id"), body
+    return {"message_id": body["envelope"]["msg_id"]}
 
 
-def plumb_read(conversation: str, marker: str) -> dict:
-    view = api("GET", "/plumb/conversations")
-    assert view[0] == 200 and any(row["conversation_id"] == conversation for row in view[2]["conversations"]), view
-    result = api("GET", f"/plumb/conversations/{conversation}/messages")
-    assert result[0] == 200 and any(row["body"] == f"p3-message:{marker}" for row in result[2]["messages"]), result
-    return {"conversation_id": conversation, "message_count": len(result[2]["messages"])}
+def collaboration_read(room: str, marker: str) -> dict:
+    status, _, body = api("GET", f"/api/coord/rooms/{quote(room, safe='')}/messages")
+    assert status == 200 and any(row["body"] == f"p3-message:{marker}" for row in body["messages"]), body
+    return {"room_name": room, "message_count": len(body["messages"])}
 
 
-def plumb_closed(conversation: str) -> dict:
-    view = api("GET", "/plumb/conversations")
-    assert view[0] == 200 and all(row["conversation_id"] != conversation for row in view[2]["conversations"]), view
-    result = api("GET", f"/plumb/conversations/{conversation}/messages")
-    assert result[0] == 403, result
-    return {"closed_read_status": result[0]}
-
-
+def collaboration_revoked(room: str) -> dict:
+    status, _, body = api("GET", f"/api/coord/rooms/{quote(room, safe='')}/messages")
+    assert status in (403, 404), body
+    return {"revoked_read_status": status}
 
 
 def main() -> None:
@@ -353,7 +354,7 @@ def main() -> None:
     parser.add_argument("--agent", required=True)
     parser.add_argument("--peer")
     parser.add_argument("--marker", required=True)
-    parser.add_argument("--conversation")
+    parser.add_argument("--room")
     parser.add_argument("--message")
     parser.add_argument("--notify")
     parser.add_argument("--after", type=int)
@@ -363,6 +364,8 @@ def main() -> None:
     match args.phase:
         case "access":
             result = access()
+        case "binding":
+            result = request_binding()
         case "contract-access":
             result = contract_access()
         case "basic":
@@ -389,14 +392,14 @@ def main() -> None:
             result = coord_read(args.message)
         case "coord-wait":
             result = coord_wait(args.after, args.message)
-        case "plumb-request":
-            result = plumb_request(args.peer)
-        case "plumb-send":
-            result = plumb_send(args.conversation, args.marker)
-        case "plumb-read":
-            result = plumb_read(args.conversation, args.marker)
-        case "plumb-closed":
-            result = plumb_closed(args.conversation)
+        case "collaboration-request":
+            result = collaboration_request(args.peer, args.marker)
+        case "collaboration-send":
+            result = collaboration_send(args.room, args.marker)
+        case "collaboration-read":
+            result = collaboration_read(args.room, args.marker)
+        case "collaboration-revoked":
+            result = collaboration_revoked(args.room)
         case "websocket":
             result = websocket("p2-" + args.marker[3:], args.agent, tls=False)
         case _:

@@ -57,7 +57,7 @@ fn assert_event(row: &Value, event: &str, severity: &str, summary: &str, details
     // attribution, and accidentally serialized policy/token content.
     assert_eq!(
         projected,
-        json!({"schema_version":1,"event":event,"kind":"ops",
+        json!({"schema_version":2,"event":event,"kind":"ops",
         "severity":severity,"summary":summary,"addon":"policy-loader","details":details})
     );
     assert_eq!(

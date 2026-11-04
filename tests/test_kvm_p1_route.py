@@ -40,15 +40,19 @@ def test_unrelated_localhost_proxy_cannot_satisfy_guest_route(tmp_path, monkeypa
     with pytest.raises(AssertionError):
         check_guest_route(guest)
 
-    # A running socat bound to localhost must also name this guest's UDS.
-    _process(proc_root, 43, ["socat", LISTENER, "UNIX-CONNECT:/tmp/unrelated.sock"])
+    _process(proc_root, 45, ["socat", LISTENER, UPSTREAM])
     with pytest.raises(AssertionError, match="no running SafeYolo UDS forwarder"):
         forwarder_identity(proc_root)
 
-    _process(proc_root, 44, ["socat", LISTENER, UPSTREAM])
+    # A running relay bound to localhost must also name this guest's UDS.
+    _process(proc_root, 43, ["/run/sy-proxy-relay", LISTENER, "UNIX-CONNECT:/tmp/unrelated.sock"])
+    with pytest.raises(AssertionError, match="no running SafeYolo UDS forwarder"):
+        forwarder_identity(proc_root)
+
+    _process(proc_root, 44, ["/run/sy-proxy-relay", LISTENER, UPSTREAM])
     guest["forwarder"] = forwarder_identity(proc_root)
     check_guest_route(guest)
-    guest["forwarder"] = {"pid": 43, "argv": ["socat", LISTENER, "UNIX-CONNECT:/tmp/unrelated.sock"]}
+    guest["forwarder"] = {"pid": 43, "argv": ["/run/sy-proxy-relay", LISTENER, "UNIX-CONNECT:/tmp/unrelated.sock"]}
     with pytest.raises(AssertionError, match="not wired to the mounted SafeYolo UDS"):
         check_guest_route(guest)
 
@@ -56,10 +60,10 @@ def test_unrelated_localhost_proxy_cannot_satisfy_guest_route(tmp_path, monkeypa
 def test_vz_route_requires_its_forwarder_and_does_not_require_a_linux_socket(tmp_path, monkeypatch):
     monkeypatch.setenv("HTTP_PROXY", installed_ingress.GUEST_PROXY)
     monkeypatch.setattr(installed_ingress, "GUEST_SOCKET", tmp_path / "absent-linux.sock")
-    _process(tmp_path / "proc", 42, ["socat", LISTENER, "VSOCK-CONNECT:2:1080,retry=20,interval=0.25"])
+    _process(tmp_path / "proc", 42, ["/run/sy-proxy-relay", LISTENER, "VSOCK-CONNECT:2:1080,retry=20,interval=0.25"])
     assert installed_ingress.bridge("vz", tmp_path / "proc")["pid"] == 42
     (tmp_path / "proc/42/cmdline").unlink()
-    _process(tmp_path / "proc", 43, ["socat", LISTENER, "VSOCK-CONNECT:3:1080,retry=20"])
+    _process(tmp_path / "proc", 43, ["/run/sy-proxy-relay", LISTENER, "VSOCK-CONNECT:3:1080,retry=20"])
     with pytest.raises(AssertionError, match="no VZ forwarder"):
         installed_ingress.bridge("vz", tmp_path / "proc")
 
@@ -71,7 +75,7 @@ def test_linux_route_still_requires_its_mounted_agent_socket(tmp_path, monkeypat
     with tempfile.TemporaryDirectory(prefix="sy-sock-", dir="/tmp") as directory:
         path = Path(directory) / "proxy.sock"
         monkeypatch.setattr(installed_ingress, "GUEST_SOCKET", path)
-        _process(tmp_path / "proc", 42, ["socat", LISTENER, f"UNIX-CONNECT:{path},retry=20"])
+        _process(tmp_path / "proc", 42, ["/run/sy-proxy-relay", LISTENER, f"UNIX-CONNECT:{path},retry=20"])
         with pytest.raises(AssertionError):
             installed_ingress.bridge("systrap", tmp_path / "proc")
         with socket.socket(socket.AF_UNIX) as listener:

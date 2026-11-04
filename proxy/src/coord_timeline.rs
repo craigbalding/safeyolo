@@ -66,8 +66,16 @@ pub(crate) fn chat_message(message: &Value) -> String {
             .as_str()
             .unwrap_or("unknown")
     );
+    output.push_str(&text_block(message["body"].as_str().unwrap_or_default()));
+    output.push('\n');
+    output
+}
+
+/// Keep inert text inside a gutter on every physical terminal line.
+pub(crate) fn text_block(text: &str) -> String {
+    let mut output = String::new();
     let limit = width();
-    for line in visible(message["body"].as_str().unwrap_or_default()).split('\n') {
+    for line in visible(text).split('\n') {
         output.push_str("│ ");
         let mut column = 0;
         for character in line.chars() {
@@ -89,7 +97,6 @@ pub(crate) fn chat_message(message: &Value) -> String {
         }
         output.push('\n');
     }
-    output.push('\n');
     output
 }
 
@@ -179,6 +186,22 @@ fn mcp(item: &Value, phase: &str) -> String {
         get(item, "tool", "tool"),
         get(item, "status", "?")
     );
+    if item["server"] == "safeyolo-coord"
+        && item["tool"] == "send"
+        && let Some(body) = item["arguments"]["body"].as_str()
+        && let Some((kind, fields)) = crate::coord_supervisor::header(body)
+        && matches!(
+            kind.as_str(),
+            "TASK" | "DONE" | "BLOCKED" | "FAILED" | "REVIEW_READY" | "READY" | "CHANGES_REQUIRED"
+        )
+    {
+        detail.push_str(&format!(" message={kind}"));
+        for key in ["target", "attention_id"] {
+            if let Some(value) = fields.get(key) {
+                detail.push_str(&format!(" {key}={value}"));
+            }
+        }
+    }
     // As in the existing watcher, show routing fields without dumping tool
     // bodies/results, authentication parameters or arbitrary arguments.
     for (keys, shown) in [
@@ -201,12 +224,27 @@ fn mcp(item: &Value, phase: &str) -> String {
         (&["since_sequence"][..], "cursor"),
         (&["timeout_seconds"][..], "timeout"),
         (&["limit"][..], "limit"),
+        (&["approval_id"][..], "approval"),
+        (&["decision"][..], "decision"),
     ] {
         if let Some(v) = keys.iter().find_map(|key| {
             let v = &item["arguments"][*key];
             (v.is_string() || v.is_number()).then_some(v)
         }) {
             detail.push_str(&format!(" {shown}={}", string(v)));
+        }
+    }
+    if item["server"] == "safeyolo-coord"
+        && matches!(
+            item["tool"].as_str(),
+            Some("read_approval" | "resolve_approval")
+        )
+    {
+        let result = item["result"]
+            .get("structured_content")
+            .or_else(|| item["result"].get("structuredContent"));
+        if let Some(status) = result.and_then(|r| r["status"].as_str()) {
+            detail.push_str(&format!(" approval_status={status}"));
         }
     }
     if let Some(start) = item["arguments"]["start_line"].as_u64() {
@@ -285,7 +323,7 @@ fn event(event: &Value, show_unknown: bool) -> Option<(&'static str, String)> {
             ) {
                 ("EVENT", original)
             } else {
-                self::event(&reconstructed, true).unwrap_or(("EVENT", original))
+                self::event(&reconstructed, show_unknown).unwrap_or(("EVENT", original))
             };
             (
                 label,
@@ -302,6 +340,7 @@ fn event(event: &Value, show_unknown: bool) -> Option<(&'static str, String)> {
             let action = get(event, "event", "event");
             let mut detail = action.clone();
             for key in [
+                "detail",
                 "pid",
                 "signal",
                 "exit_code",
@@ -477,24 +516,32 @@ fn redact_text(text: &str) -> String {
         r"(?i)\bBearer\s+[^\s,;]+", r"\b(?:sgw_|sk-|gh[pousr]_)[A-Za-z0-9._-]{8,}",
         r"\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}\b",
         r"(?i)\b(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|cookie|private[_-]?key)\s*([:=])\s*([^\s,;]+)",
-        r#"https?://[^\s\]\[\"'<>]+"#,
+        r#"(?i)\b[a-z][a-z0-9+.-]*://[^\s\"'<>]+"#,
     ].iter().map(|p| Regex::new(p).expect("fixed watcher redaction expression")).collect()
     });
-    let mut text = text.to_owned();
-    for pattern in &PATTERNS[..3] {
-        text = pattern.replace_all(&text, "<redacted>").into_owned();
-    }
-    text = PATTERNS[3]
-        .replace_all(&text, "${1}${2}<redacted>")
-        .into_owned();
-    PATTERNS[4]
-        .replace_all(&text, |c: &regex::Captures<'_>| {
-            let url = &c[0];
+    // Remove URL credentials before matching key=value secrets, so usernames
+    // such as "password" cannot cause the useful host and path to be hidden.
+    let mut text = PATTERNS[4]
+        .replace_all(text, |c: &regex::Captures<'_>| {
+            let mut url = c[0].to_owned();
+            let start = url.find("://").expect("matched URL authority") + 3;
+            let end = url[start..]
+                .find(['/', '\\', '?', '#'])
+                .map_or(url.len(), |index| start + index);
+            if let Some(index) = url[start..end].rfind('@') {
+                url.replace_range(start..=start + index, "");
+            }
             url.find(['?', '#'])
                 .filter(|index| index + 1 < url.len())
                 .map(|index| format!("{}?<omitted>", &url[..index]))
-                .unwrap_or_else(|| url.to_owned())
+                .unwrap_or(url)
         })
+        .into_owned();
+    for pattern in &PATTERNS[..3] {
+        text = pattern.replace_all(&text, "<redacted>").into_owned();
+    }
+    PATTERNS[3]
+        .replace_all(&text, "${1}${2}<redacted>")
         .into_owned()
 }
 fn redact_value(value: &Value) -> Value {
@@ -523,6 +570,36 @@ pub(crate) struct Display {
     pub max_text: Option<usize>,
 }
 impl Display {
+    pub(crate) fn observation(&self, text: &str) -> String {
+        let text = compact::clean(self, &format!("observation: {text}"), true);
+        let rows = if std::io::stdout().is_terminal() {
+            compact::wrapped_rows("", "=", &text, width() + 2)
+        } else {
+            vec![("= ".into(), text)]
+        };
+        rows.into_iter()
+            .map(|(prefix, body)| format!("{prefix}{body}\n"))
+            .collect()
+    }
+
+    pub(crate) fn peer_message(&self, message: &Value) -> String {
+        let body = message["body"].as_str().unwrap_or_default();
+        // Reuse the safe event summary. A peer's tool arguments and results
+        // must not become plain room text or the selected worker's telemetry.
+        let text = match serde_json::from_str::<Value>(body) {
+            Ok(value) => event(&value, false)
+                .map(|(label, text)| format!("{label} {text}"))
+                .unwrap_or_else(|| "structured message (details omitted)".into()),
+            Err(_) => body.into(),
+        };
+        self.observation(&format!(
+            "room message from {}: {text}",
+            message["sender_agent_name"]
+                .as_str()
+                .unwrap_or("unknown agent")
+        ))
+    }
+
     pub(crate) fn message(&self, message: &Value) -> String {
         if self.json {
             return format!(
@@ -798,5 +875,70 @@ mod tests {
         .message(&secret);
         assert!(!redacted.contains("fixture-secret"));
         assert!(redacted.contains("token=<redacted>"));
+    }
+
+    #[test]
+    fn redacted_urls_keep_host_and_path_without_credentials() {
+        for (input, expected) in [
+            (
+                "https://alice:private@example.test/item?query#fragment",
+                "https://example.test/item?<omitted>",
+            ),
+            (
+                "HTTPS://user%40name:pass%3Aword@[::1]:8443/item@route#fragment",
+                "HTTPS://[::1]:8443/item@route?<omitted>",
+            ),
+            (
+                "https://password:private@example.test/item",
+                "https://example.test/item",
+            ),
+            (
+                "ssh://user:private@example.test/item",
+                "ssh://example.test/item",
+            ),
+            (
+                "https://example.test/item@route",
+                "https://example.test/item@route",
+            ),
+        ] {
+            assert_eq!(redact_text(input), expected);
+        }
+    }
+
+    #[test]
+    fn oversize_summaries_preserve_the_unknown_output_choice() {
+        for harness in ["codex", "pi"] {
+            let payload = json!({
+                "type": format!("safeyolo.{harness}.oversize"),
+                "original_type": "item.completed",
+                "summary": {
+                    "type": "unknown_tool_call",
+                    "arguments": {"token": "private-oversize-argument"},
+                    "result": {"body": "private-oversize-result"}
+                },
+                "original_bytes": 65536,
+                "omitted_middle_bytes": 64000,
+                "sha256": "a".repeat(64)
+            });
+            let (label, text) = event(&payload, false).unwrap();
+            assert_eq!(label, "EVENT");
+            assert!(text.starts_with("item.completed [middle snipped;"));
+            assert!(!text.contains("private-oversize"));
+            let (_, explicit) = event(&payload, true).unwrap();
+            assert!(explicit.contains("private-oversize-argument"));
+            assert!(explicit.contains("private-oversize-result"));
+            let message = json!({"sent_at":0,"sender_kind":"agent","body":payload.to_string()});
+            for show_unknown in [false, true] {
+                let output = Display {
+                    compact: true,
+                    show_unknown,
+                    ..Default::default()
+                }
+                .message(&message);
+                assert!(output.contains("[middle snipped;"));
+                assert_eq!(output.contains("private-oversize-argument"), show_unknown);
+                assert_eq!(output.contains("private-oversize-result"), show_unknown);
+            }
+        }
     }
 }

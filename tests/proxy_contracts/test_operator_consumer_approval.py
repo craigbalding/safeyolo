@@ -9,18 +9,28 @@ handler directly or manufacture a pending approval event.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
+import tomllib
 from contextlib import contextmanager
+from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from safeyolo.api import AdminAPI, APIError
-from safeyolo.operator_approvals import approve, deny
+from safeyolo.operator_approvals import ApprovalActionError, approve, deny
+from tests.blackbox import access_setup, installed_access
+from tests.blackbox.isolation import installed_access as guest_access
+from tests.blackbox.native_credentials import native_cli, store_credential
+from tests.proxy_contracts.harness import REPO
 from tests.proxy_contracts.harness import request as send_request
 from tests.proxy_contracts.scenarios import origin_server
 from tests.proxy_contracts.test_native_network_policy import policy_proxy
+from tests.proxy_contracts.test_native_policy_cli import AGENT_TOKEN
 
 PROMPT_POLICY = """
 budget = 12000
@@ -59,6 +69,7 @@ class _CredentialOrigin(ThreadingHTTPServer):
     def __init__(self):
         self.accepts = 0
         self.authorization = []
+        self.bodies = []
         super().__init__(("127.0.0.1", 0), _CredentialOriginHandler)
 
     def get_request(self):
@@ -80,6 +91,10 @@ class _CredentialOriginHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(b"hello")
+
+    def do_POST(self):
+        self.server.bodies.append(self.rfile.read(int(self.headers["Content-Length"])))
+        self.do_GET()
 
 
 @contextmanager
@@ -372,3 +387,308 @@ def test_retained_operator_client_approves_and_denies_native_credentials(tmp_pat
             assert status == 428, body
             assert origin.accepts == 1
             assert not any(row.get("request_id") == denied_event["request_id"] for row in api.pending_approvals())
+
+
+@pytest.fixture
+def native_access(tmp_path, request):
+    """Use the installed access definitions with local origins and native state."""
+    services = {
+        "basic.yaml": access_setup.BASIC.replace("legitimate-api.com", "127.0.0.1"),
+        "contract.yaml": access_setup.CONTRACT.replace("httpbin.org", "localhost"),
+        "other.yaml": access_setup.BASIC.replace("legitimate-api.com", "127.0.0.1").replace("p3_basic", "p3_other"),
+    }
+    policy = '''budget = 12000
+[hosts."127.0.0.1"]
+egress = "allow"
+service = "p3_basic"
+allow = ["unknown:*"]
+[hosts.localhost]
+egress = "allow"
+service = "p3_contract"
+allow = ["unknown:*"]
+[hosts."*"]
+egress = "deny"
+[agents.alice]
+agent_id = "ag-11111111111111111111111111111111"
+[agents.bob]
+agent_id = "ag-22222222222222222222222222222222"
+[[risk]]
+account = "agent"
+tactics = ["impact"]
+decision = "require_approval"
+approval_default = "once"
+'''
+    directory = tmp_path / "native"
+    service_dir, builtin = directory / "services", directory / "builtin-services"
+    for path in (service_dir, builtin):
+        path.mkdir(parents=True)
+    for name, source in services.items():
+        (service_dir / name).write_text(source)
+    proxy_binary = Path(os.environ.get("SAFEYOLO_RUST_PROXY", REPO / "proxy/target/release/safeyolo-proxy"))
+    binary = native_cli(Path(os.environ.get("SAFEYOLO_NATIVE_CLI", proxy_binary.with_name("safeyolo"))), proxy=proxy_binary)
+    for name, value in (("p3-owned", "synthetic-selected-secret"), ("p3-other", "synthetic-other-secret")):
+        store_credential(directory / "data", name, value, binary=binary)
+    operator_token = directory / "operator-token"
+    operator_token.write_text("synthetic-access-admin-token")
+    # Ordering-only probes also run on retained hosts that predate DNS mappings.
+    with _credential_origin() as origin, policy_proxy(
+        "rust", directory, policy, native_product=True,
+        gateway_services_dir=service_dir, gateway_builtin_services_dir=builtin,
+        target_ip_mappings=[{"host": "localhost", "ip": "127.0.0.1"}] if getattr(request, "param", True) else None,
+        agent_api=True, agent_api_token=AGENT_TOKEN.encode(), admin_port=0, admin_api_token_file=operator_token,
+    ) as instance:
+        api = _admin_client(instance, operator_token)
+        yield instance, api, origin
+
+
+def _access_request(instance, agent, service, *, bindings=None):
+    """Retain the actual request ID from the native Agent API response."""
+    payload = {"service": service, "capability": "writer" if bindings else "reader"}
+    route = "/gateway/request-access"
+    if bindings:
+        route = "/gateway/submit-binding"
+        payload.update(bindings=bindings, purpose_code="write")
+    status, headers, body = send_request(
+        instance.paths[agent], "http://_safeyolo.proxy.internal" + route,
+        method="POST", body=json.dumps(payload).encode(),
+        headers={"Authorization": f"Bearer {AGENT_TOKEN}", "Content-Type": "application/json"},
+    )
+    assert status == 202, body
+    return headers["x-safeyolo-request-id"]
+
+
+def _refuse_changed_gateway_scope(instance, api, event):
+    """A stale or incomplete selected row cannot authorize a different scope."""
+    changes = [((), key, None) for key in ("approval_id", "action")]
+    changes += [((), "agent", value) for value in (None, "bob")]
+    changes += [((), "request_id", value) for value in (None, "req-" + "0" * 32)]
+    changes += [(("action",), key, value)
+                for key in ("agent", "agent_id", "service", "capability")
+                for value in (None, "other")]
+    changes += [(("action",), key, "changed")
+                for key in ("host", "template", "bindings", "grantable_operations", "credential", "binding_id", "method", "path")
+                if key in event["action"]]
+    policy = instance.audit_log.parent / "policy.toml"
+    before = policy.read_bytes()
+    for path, key, value in changes:
+        changed = deepcopy(event)
+        selected = changed
+        for part in path:
+            selected = selected[part]
+        if value is None:
+            selected.pop(key)
+        else:
+            selected[key] = value
+        with pytest.raises(ApprovalActionError):
+            approve(changed, api, service_credential="p3-owned")
+        assert api.approval(event["approval_id"])["status"] == "pending"
+        assert policy.read_bytes() == before
+
+
+def _access_token(instance, service):
+    status, _, raw = send_request(instance.paths["alice"], "http://_safeyolo.proxy.internal/gateway/services",
+                                  headers={"Authorization": f"Bearer {AGENT_TOKEN}"})
+    assert status == 200
+    return json.loads(raw)["authorized"][service]["token"]
+
+
+@pytest.fixture
+def native_access_guest(native_access, monkeypatch):
+    """Drive the maintained guest phases through the native agent listener."""
+    instance, _, _ = native_access
+
+    def agent_api(method, path, *, payload=None):
+        status, headers, body = send_request(
+            instance.paths["alice"], "http://_safeyolo.proxy.internal" + path,
+            method=method, body=json.dumps(payload).encode() if payload is not None else None,
+            headers={"Authorization": f"Bearer {AGENT_TOKEN}", "Content-Type": "application/json"},
+        )
+        return status, headers, json.loads(body)
+
+    monkeypatch.setattr(guest_access, "api", agent_api)
+
+    def guest(cli, agent, platform, marker, phase):
+        assert agent == "alice"
+        if phase == "contract-access":
+            status, _, services = agent_api("GET", "/gateway/services")
+            assert status == 200 and set(services["authorized"]) == {"p3_basic"}
+        return {"access": guest_access.access, "binding": guest_access.request_binding,
+                "contract-access": guest_access.contract_access}[phase]()
+
+    monkeypatch.setattr(installed_access, "guest", guest)
+    return native_access
+
+
+@pytest.mark.parametrize("native_access", [False], indirect=True, ids=["without-dns-mapping"])
+def test_installed_access_refuses_binding_submitted_before_service_decision(native_access_guest):
+    """The old combined ordering supersedes its binding and cannot revive it."""
+    instance, api, origin = native_access_guest
+    first = guest_access.access() | guest_access.request_binding()
+    before = [api.approval(first[key]) for key in ("service_request_id", "binding_request_id")]
+    assert [row["status"] for row in before] == ["pending", "pending"]
+    installed_access.approve_service(api, "alice", "p3_basic", "p3-owned",
+                                    request_id=first["service_request_id"])
+    after = [api.approval(first[key]) for key in ("service_request_id", "binding_request_id")]
+    assert [row["status"] for row in after] == ["approved", "superseded"]
+    for phase in ("before", "after"):
+        rows = before if phase == "before" else after
+        print(json.dumps({"phase": phase, "approvals": [
+            {key: row.get(key) for key in ("approval_id", "request_id", "action", "status")} for row in rows
+        ]}), flush=True)
+    assert before[1]["action"] == after[1]["action"]
+    assert all(row["request_id"] != first["binding_request_id"] for row in api.pending_approvals())
+    policy = instance.audit_log.parent / "policy.toml"
+    saved = policy.read_bytes()
+    with pytest.raises((ApprovalActionError, APIError)):
+        approve(before[1], api)
+    assert policy.read_bytes() == saved
+    assert api.approval(before[1]["approval_id"])["status"] == "superseded"
+    assert origin.accepts == 0
+
+
+def test_installed_access_approves_exact_canonical_service(native_access, monkeypatch):
+    """Discovery, credential choice and effect retain service/agent/request scope."""
+    instance, api, origin = native_access
+    peer_id = _access_request(instance, "bob", "p3_basic")
+    other_id = _access_request(instance, "alice", "p3_other")
+    request_id = _access_request(instance, "alice", "p3_basic")
+    event = installed_access.wait_for_approval(api, "service", agent="alice", service="p3_basic", request_id=request_id)
+    assert event["approval"]["target"] == "127.0.0.1"
+    assert "capability" not in event["approval"]["scope_hint"]
+    assert event["action"]["capability"] == "reader"
+    _refuse_changed_gateway_scope(instance, api, event)
+    for credential in (None, "missing-credential"):
+        with pytest.raises(ApprovalActionError, match="does not offer"):
+            approve(event, api, service_credential=credential)
+    for scope in ({"agent": "missing"}, {"service": "missing"}, {"request_id": "missing"}):
+        with monkeypatch.context() as patch:
+            ticks = iter((0, 0, 8))
+            patch.setattr(installed_access, "time", SimpleNamespace(monotonic=lambda: next(ticks), sleep=lambda _: None))
+            with pytest.raises(AssertionError, match="observed="):
+                installed_access.wait_for_approval(api, "service", **({"agent": "alice", "service": "p3_basic", "request_id": request_id} | scope))
+    peer = installed_access.wait_for_approval(api, "service", agent="bob", service="p3_basic", request_id=peer_id)
+    changed = event | {"approval_id": peer["approval_id"]}
+    with pytest.raises(ApprovalActionError, match="no longer matches"):
+        approve(changed, api, service_credential="p3-owned")
+    assert origin.accepts == 0
+    installed_access.approve_service(api, "alice", "p3_basic", "p3-owned", request_id=request_id)
+    resolved = api.approval(event["approval_id"])
+    assert resolved["status"] == "approved" and resolved["option"] == "credential:p3-owned"
+    saved = tomllib.loads((instance.audit_log.parent / "policy.toml").read_text())
+    assert saved["agents"]["alice"]["services"]["p3_basic"]["token"] == "p3-owned"
+    assert set(saved["agents"]["alice"]["services"]) == {"p3_basic"}
+    assert "services" not in saved["agents"]["bob"]
+    assert api.approval(peer_id)["status"] == "pending"
+    assert api.approval(other_id)["status"] != "approved"
+    token = _access_token(instance, "p3_basic")
+    target = f"http://127.0.0.1:{origin.server_address[1]}/p3/read"
+    for agent, path, expected in (("bob", target, 403), ("alice", target + "/outside", 403), ("alice", target, 200)):
+        status, _, _ = send_request(instance.paths[agent], path, headers={"Authorization": f"Bearer {token}"})
+        assert status == expected
+    assert origin.authorization == ["Bearer synthetic-selected-secret"]
+    assert origin.accepts == 1
+    with pytest.raises((ApprovalActionError, APIError)):
+        approve(event, api, service_credential="p3-other")
+    assert tomllib.loads((instance.audit_log.parent / "policy.toml").read_text()) == saved
+
+
+@pytest.fixture
+def authorized_access(native_access_guest, monkeypatch):
+    """Run the installed service and binding sequence against the native proxy."""
+    instance, api, origin = native_access_guest
+    for agent, project in (("bob", "alpha"), ("alice", "beta")):
+        _access_request(instance, agent, "p3_contract", bindings={"project": project, "ticket": "T-1"})
+    wait_for_approval = installed_access.wait_for_approval
+    selected = {}
+
+    def checked_approval(api, approval_type, **scope):
+        event = wait_for_approval(api, approval_type, **scope)
+        assert origin.accepts == 0
+        if approval_type == "contract_binding":
+            saved = tomllib.loads((instance.audit_log.parent / "policy.toml").read_text())
+            assert set(saved["agents"]["alice"]["services"]) == {"p3_basic"}
+            assert "contract_bindings" not in saved["agents"]["alice"]
+        _refuse_changed_gateway_scope(instance, api, event)
+        selected[approval_type] = event
+        return event
+
+    with monkeypatch.context() as patch:
+        patch.setattr(installed_access, "wait_for_approval", checked_approval)
+        access = installed_access.authorize_access(api, "native-test-cli", "alice", "systrap", "combined", "p3-owned")
+    event = selected["contract_binding"]
+    assert event["request_id"] == access["binding_request_id"]
+    assert selected["service"]["request_id"] == access["service_request_id"]
+    assert access["challenge_after_binding"] == "needs_contract_binding"
+    assert event["approval"]["target"] == "localhost"
+    assert event["action"]["bindings"] == {"project": "alpha", "ticket": "T-1"}
+    assert event["action"]["template"] == "p3.write.v1" and event["action"]["grantable_operations"] == ["write"]
+    assert api.approval(event["approval_id"])["status"] == "approved"
+    assert api.approval(selected["service"]["approval_id"])["status"] == "approved"
+    saved = tomllib.loads((instance.audit_log.parent / "policy.toml").read_text())
+    binding, = saved["agents"]["alice"]["contract_bindings"]
+    assert binding["bound_values"] == {"project": "alpha", "ticket": "T-1"}
+    assert binding["capability"] == "writer" and binding["grantable_operations"] == ["write"]
+    assert "contract_bindings" not in saved["agents"]["bob"]
+    assert saved["agents"]["alice"]["services"] == {
+        "p3_basic": {"capability": "reader", "account": "agent", "token": "p3-owned"},
+        "p3_contract": {"capability": "writer", "account": "agent", "token": "p3-owned"},
+    }
+    assert origin.accepts == 0
+    return instance, api, origin, binding
+
+
+@pytest.mark.parametrize("native_access", [False], indirect=True, ids=["without-dns-mapping"])
+def test_installed_access_combined_approvals(authorized_access):
+    """The combined caller reaches fresh binding approval and real service access."""
+    instance, _, origin, _ = authorized_access
+    basic_target = f"http://127.0.0.1:{origin.server_address[1]}/p3/read"
+    basic_token = _access_token(instance, "p3_basic")
+    status, _, _ = send_request(instance.paths["alice"], basic_target, headers={"Authorization": f"Bearer {basic_token}"})
+    assert status == 200 and origin.accepts == 1
+    assert origin.authorization == ["Bearer synthetic-selected-secret"]
+    assert not origin.bodies
+
+
+def test_installed_access_approves_canonical_binding_and_once_effect(authorized_access):
+    """Combined approvals retain exact binding scope and one independent risky effect."""
+    instance, api, origin, binding = authorized_access
+    token = _access_token(instance, "p3_contract")
+    target = f"http://localhost:{origin.server_address[1]}/p3/write?ticket=T-1"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = json.dumps({"project": "alpha"}).encode()
+    status, response_headers, _ = send_request(instance.paths["alice"], target, method="POST", headers=headers, body=payload)
+    assert status == 428 and origin.accepts == 0
+    risk = installed_access.wait_for_approval(api, "gateway_risky_route", agent="alice", service="p3_contract",
+                                             request_id=response_headers["x-safeyolo-request-id"])
+    assert risk["action"]["binding_id"] == binding["binding_id"] and risk["action"]["credential"] == "p3-owned"
+    _refuse_changed_gateway_scope(instance, api, risk)
+    grant_id = approve(risk, api)
+    # The installed guest also reads its token after the operator's policy edit.
+    headers["Authorization"] = f"Bearer {_access_token(instance, 'p3_contract')}"
+    for agent, url, body in (("bob", target, payload), ("alice", target.replace("T-1", "T-2"), payload),
+                             ("alice", target, json.dumps({"project": "beta"}).encode())):
+        status, _, _ = send_request(instance.paths[agent], url, method="POST", headers=headers, body=body)
+        assert status == 403
+    assert origin.accepts == 0
+    status, _, body = send_request(instance.paths["alice"], target, method="POST", headers=headers, body=payload)
+    assert status == 200 and body == b"hello", (status, body)
+    assert origin.authorization == ["Bearer synthetic-selected-secret"]
+    assert [json.loads(body) for body in origin.bodies] == [{"project": "alpha"}]
+    assert all(row.get("grant_id") != grant_id for row in api.list_gateway_grants()["grants"])
+    status, _, _ = send_request(instance.paths["alice"], target, method="POST", headers=headers, body=payload)
+    assert status == 428 and origin.accepts == 1
+
+
+@pytest.mark.parametrize("approval_type", ["service", "contract_binding"])
+def test_installed_access_rejects_exact_canonical_request(native_access, approval_type):
+    """Rejection ends the selected approval without authorizing or binding it."""
+    instance, api, origin = native_access
+    service = "p3_basic" if approval_type == "service" else "p3_contract"
+    bindings = None if approval_type == "service" else {"project": "alpha", "ticket": "T-1"}
+    request_id = _access_request(instance, "alice", service, bindings=bindings)
+    event = installed_access.wait_for_approval(api, approval_type, agent="alice", service=service, request_id=request_id)
+    policy = instance.audit_log.parent / "policy.toml"
+    before = policy.read_bytes()
+    deny(event, api)
+    assert api.approval(event["approval_id"])["status"] == "rejected"
+    assert policy.read_bytes() == before and origin.accepts == 0

@@ -190,7 +190,7 @@ where
                 "caller_agent":caller,
                 "client_ip":request.client_ip,
                 "caller_identity":match request.identity {
-                    crate::network_guard::Identity::Resolved(_) => "resolved",
+                    crate::network_guard::Identity::Resolved(_) | crate::network_guard::Identity::Current(_) => "resolved",
                     crate::network_guard::Identity::Unavailable => "unavailable",
                     crate::network_guard::Identity::Conflict => "conflict",
                 },

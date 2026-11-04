@@ -1,0 +1,43 @@
+schema_version: 1
+name: delegated-binding-fixture
+default_host: 127.0.0.3
+auth:
+  type: bearer
+  allow_http: true
+capabilities:
+  reader:
+    contract:
+      template: delegated.binding.v1
+      bindings:
+        project:
+          type: string
+      operations:
+        - name: read
+          request:
+            method: GET
+            path: /delegated-binding/{project}
+            path_params:
+              project: {equals_var: project}
+            query:
+              allow:
+                project: {equals_var: project}
+        - name: write
+          request:
+            method: POST
+            path: /delegated-binding/{project}
+            path_params:
+              project: {equals_var: project}
+        - name: inspect
+          request:
+            method: GET
+            path: /delegated-inspect/{project}
+            path_params:
+              project: {equals_var: project}
+      enforcement:
+        request_shape: enforced
+        transport_hygiene: enforced
+        state_enforcement: declared
+risky_routes:
+  - methods: [POST]
+    path: /delegated-binding/*
+    tactics: [impact]

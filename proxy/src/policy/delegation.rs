@@ -1,0 +1,1376 @@
+//! Bounded deciding authority and run permissions in the native policy owner.
+
+use super::{Policy, Result, invalid};
+use crate::{
+    approvals::pending::{Record, digest},
+    host_runs::AgentRun,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Agent {
+    pub name: String,
+    pub agent_id: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum Scope {
+    DesktopPresent {
+        run: AgentRun,
+        #[serde(default)]
+        instance_id: Option<String>,
+        presentation: crate::desktop_present::Route,
+        browser_urls: Vec<Option<String>>,
+        any_browser_url: bool,
+        max_ttl_seconds: u32,
+        #[serde(default)]
+        configuration_revision: Option<String>,
+    },
+    NetworkEgress {
+        host: String,
+        ports: Vec<u16>,
+        all_ports: bool,
+        actions: Vec<String>,
+    },
+    Credential {
+        host: String,
+        fingerprints: Vec<String>,
+    },
+    ServiceAuthorization {
+        service: String,
+        capability: String,
+        account: String,
+        credential: String,
+        #[serde(default)]
+        credential_binding: Option<String>,
+        resources: Vec<String>,
+    },
+    ContractBinding {
+        service: String,
+        capability: String,
+        template: String,
+        bound_values: BTreeMap<String, Vec<Value>>,
+        grantable_operations: Vec<String>,
+    },
+    GatewayRoute {
+        service: String,
+        capability: String,
+        binding_id: Option<String>,
+        method: String,
+        path: String,
+    },
+    CoordRoom {
+        room_id: String,
+        participants: Vec<crate::coord_rooms::membership::Participant>,
+        permissions: Vec<String>,
+    },
+}
+
+// Decode choice data before the internally tagged enum buffers JSON values.
+// Literal marker objects and arbitrary precision integers must remain distinct.
+fn deserialize_scopes<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<Scope>, D::Error> {
+    let raw = Vec::<Box<serde_json::value::RawValue>>::deserialize(deserializer)?;
+    raw.into_iter()
+        .map(|raw| {
+            let mut value =
+                crate::policy::parse_json(raw.get(), true).map_err(serde::de::Error::custom)?;
+            let choices = if value["type"] == "contract_binding" {
+                let values = value["bound_values"]
+                    .as_object()
+                    .ok_or_else(|| {
+                        serde::de::Error::custom(
+                            "bound_values must map binding names to lists of exact choices",
+                        )
+                    })?
+                    .iter()
+                    .map(|(name, choices)| {
+                        choices
+                            .as_array()
+                            .cloned()
+                            .map(|choices| (name.clone(), choices))
+                            .ok_or_else(|| {
+                                serde::de::Error::custom(
+                                    "each bound_values field requires a list of exact choices",
+                                )
+                            })
+                    })
+                    .collect::<std::result::Result<BTreeMap<_, _>, D::Error>>()?;
+                value["bound_values"] = json!({});
+                Some(values)
+            } else {
+                None
+            };
+            let mut scope: Scope =
+                serde_json::from_str(&value.to_string()).map_err(serde::de::Error::custom)?;
+            if let (Scope::ContractBinding { bound_values, .. }, Some(choices)) =
+                (&mut scope, choices)
+            {
+                *bound_values = choices;
+            }
+            Ok(scope)
+        })
+        .collect()
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Delegation {
+    pub reviewers: Vec<Agent>,
+    pub beneficiaries: Vec<Agent>,
+    #[serde(deserialize_with = "deserialize_scopes")]
+    pub scopes: Vec<Scope>,
+    pub expires_at: Option<String>,
+    pub grant_seconds: Option<u64>,
+    pub gateway_once: bool,
+    pub acknowledgment: Option<String>,
+    #[serde(default)]
+    pub definition_revisions: BTreeMap<String, String>,
+}
+
+impl Delegation {
+    pub fn revision(&self) -> String {
+        let mut value = json!(self);
+        value
+            .as_object_mut()
+            .expect("delegation")
+            .shift_remove("acknowledgment");
+        digest(&value)
+    }
+
+    pub fn warnings(&self) -> Vec<String> {
+        let mut warnings = vec!["Run access is reusable until the worker stops, the grant expires, or this delegation changes or is revoked. Any one eligible reviewer may decide. Reviewers do not need to possess the permissions they issue.".into()];
+        if self.reviewers.len() > 1 {
+            warnings.push("Each named reviewer can decide alone. This is not a quorum.".into());
+        }
+        for scope in &self.scopes {
+            match scope {
+                Scope::DesktopPresent { any_browser_url, .. } => {
+                    warnings.push("Desktop presentation starts or reuses the named worker run's gated desktop. It opens the host's local browser or uses the configured tailnet route and can navigate the guest browser to an allowed URL. Delegation validity, pending-request expiry and finite preview lifetime are separate. Preview URLs, unlock codes and sessions stay on the operator path. Each approval adds a separate preview authority source; independent sources survive revocation. When no valid source remains, future access is refused and connected viewers are disconnected on the next authority check. Browser opening and disclosed content cannot be undone.".into());
+                    if *any_browser_url {
+                        warnings.push("Any browser URL accepted by the desktop presenter is allowed, including future destinations. This can show arbitrary guest-selected content and navigate the guest browser; network and credential controls still apply.".into());
+                    }
+                }
+                Scope::NetworkEgress { host, all_ports, .. } => {
+                    if host.contains(['*','?','[']) { warnings.push(format!("Network destination pattern {host} permits matching destinations, including future matches.")); }
+                    if *all_ports { warnings.push(format!("Network destination {host} permits every destination port. Port 443 does not establish safe use.")); }
+                }
+                Scope::Credential { .. } => warnings.push("Credential destination access permits all methods, paths and ports at the selected destination. It does not limit an API operation or grant network access.".into()),
+                Scope::ServiceAuthorization { resources, .. } => {
+                    warnings.push("Service authorization permits the selected capability and resource paths with the selected account and credential for the worker run. Contract binding, risky-route approval, network policy and credential resolution remain separate checks. It does not bind a request payload.".into());
+                    if resources.iter().any(|path| path.contains(['*', '?', '['])) {
+                        warnings.push("Service resource patterns include every matching current or future path. A capability name or GET method does not establish business safety.".into());
+                    }
+                }
+                Scope::ContractBinding { .. } => warnings.push("Contract binding permits only the selected exact values and operation names for the worker run. Each field lists alternative complete JSON values; choices across fields may be combined and all listed operations may be issued together. A list-valued binding uses a list inside its choice list. Service authorization, credential resolution, network policy and risky-route approval remain separate checks. Independent operator bindings survive revocation. Request comparisons retain the contract owner's value semantics; this is not byte-for-byte payload approval.".into()),
+                Scope::GatewayRoute { method, path, .. } => {
+                    if method=="*" || path.contains(['*','?','[']) { warnings.push("The gateway envelope includes multiple or future matching routes. Each issued grant still binds the canonical method and exact path; payload effects remain unknown.".into()); }
+                    warnings.push("A gateway route grant covers its supported method and path. It does not bind a payload or undo an upstream write. Capability and contract checks still apply.".into());
+                }
+                Scope::CoordRoom { .. } => warnings.push("Coord receive exposes retained room history and authorized native work, signals, state and brief objects. Send plus receive permits existing native work and signal mutations. page_operator permits existing operator paging. Any named beneficiary may receive the selected rights for its trusted worker run. All listed participants and their rights bound the audience; a changed audience is rechecked. Independent room grants survive delegation revocation. Regrant exposes retained history; already disclosed content cannot be retracted.".into()),
+            }
+        }
+        warnings
+    }
+
+    pub(crate) fn valid(&self) -> Result<()> {
+        if self.reviewers.is_empty() || self.beneficiaries.is_empty() || self.scopes.is_empty() {
+            return Err(invalid(
+                "delegation requires named reviewers, beneficiaries and explicit scopes",
+            ));
+        }
+        for agent in self.reviewers.iter().chain(&self.beneficiaries) {
+            if !crate::host_platform::valid_agent_name(&agent.name) || agent.agent_id.is_empty() {
+                return Err(invalid(
+                    "delegation requires a valid local name and durable agent_id",
+                ));
+            }
+        }
+        if self.reviewers.iter().any(|reviewer| {
+            self.beneficiaries
+                .iter()
+                .any(|agent| agent.agent_id == reviewer.agent_id || agent.name == reviewer.name)
+        }) {
+            return Err(invalid(
+                "a reviewer cannot approve for itself or directly benefit from its delegation",
+            ));
+        }
+        if self.grant_seconds.is_some_and(|seconds| {
+            seconds == 0
+                || i64::try_from(seconds)
+                    .ok()
+                    .and_then(|seconds| {
+                        time::OffsetDateTime::now_utc()
+                            .checked_add(time::Duration::seconds(seconds))
+                    })
+                    .is_none()
+        }) {
+            return Err(invalid(
+                "grant_seconds must be positive with a representable expiry, or null for the current worker run",
+            ));
+        }
+        if self
+            .expires_at
+            .as_deref()
+            .is_some_and(|s| super::parse_expiry(s).is_none() || !super::expiry_has_offset(s))
+        {
+            return Err(invalid(
+                "delegation expires_at requires an RFC3339 time with offset",
+            ));
+        }
+        for scope in &self.scopes {
+            match scope {
+                Scope::DesktopPresent {
+                    run,
+                    instance_id,
+                    browser_urls,
+                    any_browser_url,
+                    max_ttl_seconds,
+                    configuration_revision,
+                    ..
+                } => {
+                    if !self
+                        .beneficiaries
+                        .iter()
+                        .any(|agent| agent.name == run.agent && agent.agent_id == run.agent_id)
+                        || run.run_id.len() != 32
+                        || !run.run_id.bytes().all(|b| b.is_ascii_hexdigit())
+                        || !(1..=86400).contains(max_ttl_seconds)
+                        || configuration_revision.as_deref().is_none_or(str::is_empty)
+                        || instance_id.as_deref().is_none_or(str::is_empty)
+                        || (*any_browser_url != browser_urls.is_empty())
+                        || browser_urls.iter().any(|url| {
+                            crate::desktop_present::Parameters {
+                                browser_url: url.clone(),
+                                ttl_seconds: *max_ttl_seconds,
+                            }
+                            .validate()
+                            .is_err()
+                        })
+                    {
+                        return Err(invalid(
+                            "desktop_present requires an exact beneficiary run, presentation, host configuration revision, supported finite maximum lifetime, and explicit browser_urls choices or any_browser_url",
+                        ));
+                    }
+                }
+                Scope::CoordRoom {
+                    room_id,
+                    participants,
+                    permissions,
+                } => {
+                    if !room_id.starts_with("rm-")
+                        || !crate::coord_rooms::membership::valid_permissions(permissions)
+                        || participants.is_empty()
+                        || participants.iter().any(|p| {
+                            !matches!(p.principal_kind.as_str(), "agent" | "operator")
+                                || p.principal_id.is_empty()
+                                || !crate::coord_rooms::membership::valid_permissions(
+                                    &p.permissions,
+                                )
+                        })
+                        || participants.iter().enumerate().any(|(i, p)| {
+                            participants[..i].iter().any(|other| {
+                                other.principal_kind == p.principal_kind
+                                    && other.principal_id == p.principal_id
+                            })
+                        })
+                    {
+                        return Err(invalid(
+                            "Coord room scope requires an exact existing room_id, explicit participant identities and send/receive/page_operator rights",
+                        ));
+                    }
+                }
+                Scope::NetworkEgress {
+                    host,
+                    ports,
+                    all_ports,
+                    actions,
+                } => {
+                    let (canonical, port) = super::split_destination(host)?;
+                    if canonical != *host
+                        || port.is_some()
+                        || host.is_empty()
+                        || ports.contains(&0)
+                        || (*all_ports != ports.is_empty())
+                        || actions.is_empty()
+                        || actions
+                            .iter()
+                            .any(|s| !matches!(s.as_str(), "request" | "connect"))
+                    {
+                        return Err(invalid(
+                            "network scope requires a canonical host pattern, ports and an explicit all_ports choice, and request/connect actions",
+                        ));
+                    }
+                }
+                Scope::Credential { host, fingerprints } => {
+                    let (canonical, port) = super::split_destination(host)?;
+                    if canonical != *host
+                        || port.is_some()
+                        || host.contains(['*', '?', '['])
+                        || host.is_empty()
+                        || fingerprints.is_empty()
+                        || fingerprints
+                            .iter()
+                            .any(|s| !s.starts_with("hmac:") || s.len() <= 5)
+                    {
+                        return Err(invalid(
+                            "credential scope requires an exact canonical destination and exact hmac fingerprints; port/method/once bounds are unsupported",
+                        ));
+                    }
+                }
+                Scope::ServiceAuthorization {
+                    service,
+                    capability,
+                    account,
+                    credential,
+                    credential_binding,
+                    resources,
+                } => {
+                    if service.is_empty()
+                        || capability.is_empty()
+                        || account.is_empty()
+                        || resources.is_empty()
+                        || resources.iter().any(|path| !valid_resource(path))
+                        || (credential.is_empty() && credential_binding.is_some())
+                        || (!credential.is_empty()
+                            && credential_binding.as_deref().is_none_or(str::is_empty))
+                    {
+                        return Err(invalid(
+                            "service authorization requires exact service, capability, account, credential reference and explicit resource paths or patterns",
+                        ));
+                    }
+                }
+                Scope::ContractBinding {
+                    service,
+                    capability,
+                    template: _,
+                    bound_values,
+                    grantable_operations,
+                } => {
+                    if service.is_empty()
+                        || capability.is_empty()
+                        || bound_values.is_empty()
+                        || bound_values.values().any(Vec::is_empty)
+                        || grantable_operations.is_empty()
+                        || grantable_operations.iter().any(String::is_empty)
+                    {
+                        return Err(invalid(
+                            "contract binding requires exact service, capability, template, explicit choices for bound values and grantable operation names",
+                        ));
+                    }
+                }
+                Scope::GatewayRoute {
+                    service,
+                    capability,
+                    binding_id,
+                    method,
+                    path,
+                } => {
+                    if service.is_empty()
+                        || capability.is_empty()
+                        || method.is_empty()
+                        || (method != "*" && hyper::Method::from_bytes(method.as_bytes()).is_err())
+                        || method != &method.to_ascii_uppercase()
+                        || !path.starts_with('/')
+                        || path.contains('#')
+                        || binding_id.as_ref().is_some_and(String::is_empty)
+                    {
+                        return Err(invalid(
+                            "gateway scope requires service, capability, optional exact binding, uppercase method or *, and supported path pattern; payload bounds are unsupported",
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn current(&self) -> bool {
+        !expired(self.expires_at.as_deref())
+    }
+
+    pub fn contains(&self, record: &Record, option: &str) -> bool {
+        self.contains_effect(&record.authority.action, option)
+    }
+
+    pub(crate) fn contains_effect(&self, a: &Value, option: &str) -> bool {
+        if !self.current()
+            || !self
+                .beneficiaries
+                .iter()
+                .any(|agent| a["agent"] == agent.name && a["agent_id"] == agent.agent_id)
+        {
+            return false;
+        }
+        if a["kind"] == "operator_action" {
+            return option == "once"
+                && a["action_id"] == crate::operator_actions::DESKTOP_PRESENT
+                && self.scopes.iter().any(|scope| match scope {
+                    Scope::DesktopPresent {
+                        run,
+                        instance_id,
+                        presentation,
+                        browser_urls,
+                        any_browser_url,
+                        max_ttl_seconds,
+                        configuration_revision,
+                    } => serde_json::from_value::<crate::desktop_present::Parameters>(
+                        a["parameters"].clone(),
+                    )
+                    .is_ok_and(|parameters| {
+                        parameters.validate().is_ok()
+                            && parameters.ttl_seconds <= *max_ttl_seconds
+                            && (*any_browser_url || browser_urls.contains(&parameters.browser_url))
+                            && a["run"] == json!(run)
+                            && a["instance_id"].as_str() == instance_id.as_deref()
+                            && a["presentation"] == json!(presentation)
+                            && a["configuration_revision"].as_str()
+                                == configuration_revision.as_deref()
+                    }),
+                    _ => false,
+                });
+        }
+        if !matches!(option, "run" | "delegated_once")
+            || (option == "delegated_once" && !self.gateway_once)
+        {
+            return false;
+        }
+        if a["kind"] == "credential_allow" && option == "run" {
+            return a["credentials"].as_array().is_some_and(|values| !values.is_empty() && values.iter().all(|value| {
+                self.scopes.iter().any(|scope|matches!(scope,Scope::Credential {host,fingerprints} if a["host"]==*host && value.as_str().is_some_and(|v|fingerprints.iter().any(|p|p==v))))
+            }));
+        }
+        if a["kind"] == "service_authorize" && option == "run" {
+            return a["resources"].as_array().is_some_and(|resources| !resources.is_empty() && resources.iter().all(|resource| {
+                resource.as_str().is_some_and(|resource| self.scopes.iter().any(|scope| {
+                    matches!(scope, Scope::ServiceAuthorization {service, capability, account, credential, credential_binding, resources}
+                        if a["service"] == *service && a["capability"] == *capability && a["account"] == *account
+                            && a["credential"] == *credential && a["credential_binding"].as_str() == credential_binding.as_deref()
+                            && resources.iter().any(|pattern| resource_within(resource, pattern)))
+                }))
+            }));
+        }
+        self.scopes.iter().any(|scope| match scope {
+            Scope::DesktopPresent { .. } => false,
+            Scope::CoordRoom {
+                room_id,
+                participants,
+                permissions,
+            } => {
+                a["kind"] == "coord_access"
+                    && option == "run"
+                    && a["room_id"] == *room_id
+                    && serde_json::from_value::<Vec<String>>(a["permissions"].clone()).is_ok_and(
+                        |actual| {
+                            crate::coord_rooms::membership::valid_permissions(&actual)
+                                && actual.iter().all(|p| permissions.contains(p))
+                        },
+                    )
+                    && serde_json::from_value::<Vec<crate::coord_rooms::membership::Participant>>(
+                        a["participants"].clone(),
+                    )
+                    .is_ok_and(|actual| {
+                        !actual.is_empty()
+                            && crate::coord_rooms::membership::audience_contains(
+                                participants,
+                                &actual,
+                            )
+                    })
+            }
+            Scope::NetworkEgress {
+                host,
+                ports,
+                all_ports,
+                actions,
+            } => {
+                a["kind"] == "network_allow"
+                    && option == "run"
+                    && a["host"]
+                        .as_str()
+                        .is_some_and(|target| super::glob(target, host))
+                    && a["port"]
+                        .as_u64()
+                        .and_then(|p| u16::try_from(p).ok())
+                        .is_some_and(|port| *all_ports || ports.contains(&port))
+                    && actions
+                        .iter()
+                        .any(|action| action == a["network_action"].as_str().unwrap_or(""))
+            }
+            Scope::Credential { host, fingerprints } => {
+                a["kind"] == "credential_allow"
+                    && option == "run"
+                    && a["host"] == *host
+                    && a["credentials"].as_array().is_some_and(|values| {
+                        !values.is_empty()
+                            && values.iter().all(|value| {
+                                value
+                                    .as_str()
+                                    .is_some_and(|v| fingerprints.iter().any(|p| p == v))
+                            })
+                    })
+            }
+            Scope::ServiceAuthorization { .. } => false,
+            Scope::ContractBinding {
+                service,
+                capability,
+                template,
+                bound_values,
+                grantable_operations,
+            } => {
+                a["kind"] == "contract_binding"
+                    && option == "run"
+                    && a["service"] == *service
+                    && a["capability"] == *capability
+                    && a["template"] == *template
+                    && a["bindings"].as_object().is_some_and(|values| {
+                        !values.is_empty()
+                            && values.iter().all(|(name, value)| {
+                                bound_values
+                                    .get(name)
+                                    .is_some_and(|choices| choices.contains(value))
+                            })
+                    })
+                    && a["grantable_operations"].as_array().is_some_and(|names| {
+                        !names.is_empty()
+                            && names.iter().all(|name| {
+                                name.as_str().is_some_and(|name| {
+                                    grantable_operations.iter().any(|allowed| allowed == name)
+                                })
+                            })
+                    })
+            }
+            Scope::GatewayRoute {
+                service,
+                capability,
+                binding_id,
+                method,
+                path,
+            } => {
+                a["kind"] == "gateway_route"
+                    && a["service"] == *service
+                    && a["capability"] == *capability
+                    && a["binding_id"].as_str() == binding_id.as_deref()
+                    && a["method"]
+                        .as_str()
+                        .is_some_and(|m| method == "*" || method.eq_ignore_ascii_case(m))
+                    && a["path"]
+                        .as_str()
+                        .is_some_and(|p| crate::services::resource_matches(p, path))
+            }
+        })
+    }
+}
+
+pub(crate) fn valid_resource(path: &str) -> bool {
+    (path == "*" || path.starts_with('/'))
+        && !path.contains(['#', '\r', '\n'])
+        && !crate::contracts::reject_path_tricks(path)
+}
+
+// A requested pattern is supported when it is the acknowledged pattern itself.
+// Exact paths can be narrower. Do not guess containment between arbitrary globs.
+fn resource_within(resource: &str, pattern: &str) -> bool {
+    resource == pattern
+        || (!resource.contains(['*', '?', '['])
+            && crate::services::resource_matches(resource, pattern))
+}
+
+pub(crate) fn expired(value: Option<&str>) -> bool {
+    value.is_some_and(|s| {
+        super::parse_expiry(s).is_none_or(|t| time::OffsetDateTime::now_utc() >= t)
+    })
+}
+
+pub(crate) fn parse(document: &Value) -> Result<BTreeMap<String, Delegation>> {
+    let mut delegations = BTreeMap::new();
+    if let Some(values) = document.get("approval_delegations") {
+        for (name, value) in super::object(values, "approval_delegations")? {
+            let delegation: Delegation = if let Some(encoded) = value.as_str() {
+                serde_json::from_str(encoded)
+            } else {
+                serde_json::from_str(&value.to_string())
+            }
+            .map_err(|e| invalid(format!("approval_delegations.{name}: {e}")))?;
+            delegations.insert(name.clone(), delegation);
+        }
+    }
+    for (name, delegation) in &delegations {
+        if !crate::host_platform::valid_agent_name(name) {
+            return Err(invalid("invalid delegation name"));
+        }
+        delegation.valid()?;
+        if delegation.acknowledgment.as_deref() != Some(delegation.revision().as_str()) {
+            return Err(invalid(format!(
+                "delegation {name}: acknowledge the exact preview revision before apply"
+            )));
+        }
+        for agent in delegation.reviewers.iter().chain(&delegation.beneficiaries) {
+            if document["agents"][&agent.name]["agent_id"] != agent.agent_id
+                || document["agents"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .filter(|(_, value)| value["agent_id"] == agent.agent_id)
+                    .count()
+                    != 1
+            {
+                return Err(invalid(format!(
+                    "delegation {name}: agent {} has a missing, duplicate or changed durable identity",
+                    agent.name
+                )));
+            }
+        }
+    }
+    Ok(delegations)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct IssuedAccess {
+    pub delegation: String,
+    pub delegation_revision: String,
+    pub reviewer: Agent,
+    pub beneficiary: AgentRun,
+    pub approval_id: String,
+    pub policy_revision: String,
+    #[serde(deserialize_with = "crate::policy::deserialize_json_value")]
+    pub action: Value,
+    pub expires_at: Option<String>,
+    pub option: String,
+}
+
+impl IssuedAccess {
+    pub fn active(&self, policy: &Policy) -> bool {
+        if !self.active_snapshot(policy) || !self.stored(policy) {
+            return false;
+        }
+        let Some(path) = policy.baseline_path.as_ref() else {
+            return false;
+        };
+        let Ok(source) = std::fs::read_to_string(path) else {
+            return false;
+        };
+        let Ok(saved) = policy.reload_native_source(&source, path) else {
+            return false;
+        };
+        self.active_snapshot(&saved) && self.stored(&saved)
+    }
+
+    fn stored(&self, policy: &Policy) -> bool {
+        let kind = match self.action["kind"].as_str() {
+            Some("network_allow") => "network_grants",
+            Some("credential_allow") => "credential_grants",
+            Some("service_authorize") => "service_grants",
+            Some("contract_binding") => "binding_grants",
+            Some("coord_access") => "coord_grants",
+            Some("operator_action") => "desktop_grants",
+            // Gateway permissions belong to the gateway grant store. Its
+            // caller checks the recorded grant and this authority together.
+            Some("gateway_route") => return true,
+            _ => return false,
+        };
+        policy
+            .issued_access(&self.beneficiary.agent, kind)
+            .iter()
+            .any(|grant| grant == self)
+    }
+
+    pub(crate) fn active_snapshot(&self, policy: &Policy) -> bool {
+        if self.validate().is_err()
+            || !self.beneficiary.current(policy)
+            || expired(self.expires_at.as_deref())
+        {
+            return false;
+        }
+        if self.delegation.is_empty() {
+            return self.reviewer.name == "operator"
+                && self.reviewer.agent_id == "operator"
+                && crate::approvals::pending::revision(policy, &self.action).as_deref()
+                    == Some(self.policy_revision.as_str());
+        }
+        let Some(delegation) = policy.delegations().get(&self.delegation) else {
+            return false;
+        };
+        delegation.current()
+            && delegation.revision() == self.delegation_revision
+            && delegation.dependencies_current(policy)
+            && delegation.contains_effect(&self.action, &self.option)
+            && delegation.reviewers.contains(&self.reviewer)
+            && policy.evidence_agent_id(&self.reviewer.name)
+                == Some(self.reviewer.agent_id.as_str())
+            && crate::approvals::pending::revision(policy, &self.action).as_deref()
+                == Some(self.policy_revision.as_str())
+    }
+}
+
+impl Policy {
+    pub(crate) fn delegations(&self) -> &BTreeMap<String, Delegation> {
+        static EMPTY: std::sync::OnceLock<BTreeMap<String, Delegation>> =
+            std::sync::OnceLock::new();
+        self.native
+            .as_ref()
+            .map(|native| &native.delegations)
+            .unwrap_or_else(|| EMPTY.get_or_init(BTreeMap::new))
+    }
+    pub(crate) fn issued_access(&self, agent: &str, kind: &str) -> Vec<IssuedAccess> {
+        self.native
+            .as_ref()
+            .and_then(|n| n.authored["agents"][agent][kind].as_object())
+            .into_iter()
+            .flat_map(|grants| grants.values())
+            .filter_map(|value| {
+                value
+                    .as_str()
+                    .and_then(|value| serde_json::from_str(value).ok())
+            })
+            .collect()
+    }
+    pub(crate) fn delegated_network(
+        &self,
+        run: &AgentRun,
+        request: super::NetworkRequest<'_>,
+    ) -> bool {
+        self.issued_access(&run.agent, "network_grants")
+            .iter()
+            .any(|grant| {
+                grant.beneficiary == *run
+                    && grant.active(self)
+                    && grant.action["host"] == request.host
+                    && grant.action["port"].as_u64() == request.port.map(u64::from)
+                    && grant.action["network_action"]
+                        == if request.method.eq_ignore_ascii_case("CONNECT") {
+                            "connect"
+                        } else {
+                            "request"
+                        }
+            })
+    }
+    pub(crate) fn delegated_credential(
+        &self,
+        run: &AgentRun,
+        request: super::CredentialRequest<'_>,
+    ) -> bool {
+        self.issued_access(&run.agent, "credential_grants")
+            .iter()
+            .any(|grant| {
+                grant.beneficiary == *run
+                    && grant.active(self)
+                    && grant.action["host"] == request.destination
+                    && grant.action["credentials"]
+                        .as_array()
+                        .is_some_and(|values| {
+                            values.iter().any(|value| {
+                                value == &format!("hmac:{}", request.credential_hmac.unwrap_or(""))
+                            })
+                        })
+            })
+    }
+}
+
+impl Policy {
+    pub(crate) fn delegation_grants(&self) -> Vec<Value> {
+        let Some(native) = &self.native else {
+            return vec![];
+        };
+        native.authored["agents"].as_object().into_iter().flat_map(|agents| agents.keys())
+            .flat_map(|agent| ["network_grants","credential_grants","service_grants","binding_grants","coord_grants","desktop_grants"].into_iter().flat_map(move |kind| {
+                self.issued_access(agent,kind).into_iter().map(move |grant| json!({"kind":kind,"active":grant.active(self),"permission":grant}))
+            })).collect()
+    }
+}
+
+impl IssuedAccess {
+    pub(crate) fn validate(&self) -> Result<()> {
+        let kind = self.action["kind"].as_str().unwrap_or("");
+        let allowed: &[&str] = match kind {
+            "operator_action" => &[
+                "instance_id",
+                "kind",
+                "action_id",
+                "agent",
+                "agent_id",
+                "run",
+                "parameters",
+                "presentation",
+                "configuration_revision",
+            ],
+            "coord_access" => &[
+                "kind",
+                "agent",
+                "agent_id",
+                "run",
+                "room_id",
+                "room_name",
+                "permissions",
+                "participants",
+            ],
+            "network_allow" => &[
+                "kind",
+                "agent",
+                "agent_id",
+                "host",
+                "port",
+                "revision",
+                "run",
+                "network_action",
+            ],
+            "credential_allow" => &["kind", "agent", "agent_id", "host", "credentials", "run"],
+            "service_authorize" => &[
+                "kind",
+                "agent",
+                "agent_id",
+                "service",
+                "capability",
+                "host",
+                "account",
+                "credential",
+                "credential_binding",
+                "resources",
+                "run",
+            ],
+            "contract_binding" => &[
+                "kind",
+                "agent",
+                "agent_id",
+                "service",
+                "capability",
+                "host",
+                "template",
+                "bindings",
+                "grantable_operations",
+                "run",
+            ],
+            "gateway_route" => &[
+                "kind",
+                "agent",
+                "agent_id",
+                "service",
+                "capability",
+                "credential",
+                "account",
+                "host",
+                "method",
+                "path",
+                "irreversible",
+                "run",
+                "binding_id",
+            ],
+            _ => return Err(invalid("unsupported issued permission type")),
+        };
+        if self
+            .action
+            .as_object()
+            .is_none_or(|fields| fields.keys().any(|key| !allowed.contains(&key.as_str())))
+            || self.action["agent"] != self.beneficiary.agent
+            || self.action["agent_id"] != self.beneficiary.agent_id
+            || serde_json::from_value::<AgentRun>(self.action["run"].clone())
+                .ok()
+                .as_ref()
+                != Some(&self.beneficiary)
+            || self.beneficiary.run_id.len() != 32
+            || !self
+                .beneficiary
+                .run_id
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
+            || !self.approval_id.starts_with("apr-")
+            || !crate::approvals::pending::valid_id(&self.approval_id)
+            || self.policy_revision.len() != 64
+            || !(matches!(self.option.as_str(), "run" | "delegated_once")
+                || (kind == "operator_action" && self.option == "once"))
+            || (self.option == "delegated_once" && kind != "gateway_route")
+            || self
+                .expires_at
+                .as_deref()
+                .is_some_and(|s| super::parse_expiry(s).is_none() || !super::expiry_has_offset(s))
+        {
+            return Err(invalid(
+                "issued permission has unsupported scope, identity or lifetime",
+            ));
+        }
+        if kind == "operator_action" {
+            let parameters: crate::desktop_present::Parameters =
+                serde_json::from_value(self.action["parameters"].clone())
+                    .map_err(|_| invalid("invalid desktop parameters"))?;
+            parameters.validate().map_err(invalid)?;
+            if self.option != "once"
+                || self.action["action_id"] != crate::operator_actions::DESKTOP_PRESENT
+                || serde_json::from_value::<crate::desktop_present::Route>(
+                    self.action["presentation"].clone(),
+                )
+                .is_err()
+                || self.action["configuration_revision"]
+                    .as_str()
+                    .is_none_or(|value| value.len() != 64)
+                || self.expires_at.is_none()
+                || self.reviewer.agent_id == self.beneficiary.agent_id
+            {
+                return Err(invalid(
+                    "invalid desktop action, presentation, lifetime or self-benefit",
+                ));
+            }
+        }
+        if kind == "service_authorize" {
+            let text = |key: &str| self.action[key].as_str();
+            if ["service", "capability", "account", "host"]
+                .iter()
+                .any(|key| text(key).is_none_or(str::is_empty))
+                || text("credential").is_none()
+                || (text("credential") != Some("")
+                    && text("credential_binding").is_none_or(str::is_empty))
+                || self.action["resources"].as_array().is_none_or(|paths| {
+                    paths.is_empty()
+                        || paths
+                            .iter()
+                            .any(|path| path.as_str().is_none_or(|path| !valid_resource(path)))
+                })
+            {
+                return Err(invalid(
+                    "issued service authorization has unsupported credential or resource scope",
+                ));
+            }
+        }
+        if kind == "contract_binding" {
+            self.contract_binding()?;
+        }
+        if kind == "coord_access" {
+            let permissions: Vec<String> =
+                serde_json::from_value(self.action["permissions"].clone())
+                    .map_err(|_| invalid("explicit Coord permissions required"))?;
+            let audience: Vec<crate::coord_rooms::membership::Participant> =
+                serde_json::from_value(self.action["participants"].clone())
+                    .map_err(|_| invalid("explicit Coord audience required"))?;
+            if self.action["room_id"]
+                .as_str()
+                .is_none_or(|id| !id.starts_with("rm-"))
+                || self.action["room_name"].as_str().is_none_or(str::is_empty)
+                || !crate::coord_rooms::membership::valid_permissions(&permissions)
+                || !crate::coord_rooms::membership::audience_contains(
+                    &audience,
+                    &[crate::coord_rooms::membership::Participant {
+                        principal_kind: "agent".into(),
+                        principal_id: self.beneficiary.agent_id.clone(),
+                        permissions,
+                    }],
+                )
+                || self.reviewer.agent_id == self.beneficiary.agent_id
+            {
+                return Err(invalid(
+                    "invalid Coord room effect, rights, audience or self-benefit",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn contract_binding(&self) -> Result<crate::contracts::ContractBinding> {
+        let text = |key: &str| {
+            self.action[key]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    invalid(
+                        "issued contract binding requires exact service, capability and template",
+                    )
+                })
+        };
+        let values = self.action["bindings"]
+            .as_object()
+            .filter(|values| !values.is_empty())
+            .ok_or_else(|| invalid("issued contract binding requires bound values"))?;
+        let operations: Vec<String> = self.action["grantable_operations"]
+            .as_array()
+            .ok_or_else(|| invalid("issued contract binding requires operation names"))?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned)
+                    .ok_or_else(|| invalid("invalid issued operation name"))
+            })
+            .collect::<Result<_>>()?;
+        if self.action["kind"] != "contract_binding" || operations.is_empty() {
+            return Err(invalid("invalid issued contract binding"));
+        }
+        Ok(crate::contracts::ContractBinding {
+            binding_id: self.approval_id.clone(),
+            agent: self.beneficiary.agent.clone(),
+            service: text("service")?.into(),
+            capability: text("capability")?.into(),
+            template: self.action["template"]
+                .as_str()
+                .ok_or_else(|| invalid("issued template must be a string"))?
+                .into(),
+            bound_values: values.clone(),
+            grantable_operations: operations,
+        })
+    }
+}
+
+pub(crate) fn validate_grants(document: &Value) -> Result<()> {
+    for (agent, fields) in document["agents"].as_object().into_iter().flatten() {
+        for (collection, kind) in [
+            ("network_grants", "network_allow"),
+            ("credential_grants", "credential_allow"),
+            ("service_grants", "service_authorize"),
+            ("binding_grants", "contract_binding"),
+            ("coord_grants", "coord_access"),
+            ("desktop_grants", "operator_action"),
+        ] {
+            if let Some(values) = fields.get(collection) {
+                for (id, value) in super::object(values, collection)? {
+                    let issued: IssuedAccess =
+                        serde_json::from_str(value.as_str().ok_or_else(|| {
+                            invalid("issued permission must be its encoded host record")
+                        })?)
+                        .map_err(|e| invalid(format!("{collection}: {e}")))?;
+                    issued.validate()?;
+                    if issued.action["kind"] != kind
+                        || issued.beneficiary.agent != *agent
+                        || issued.approval_id != *id
+                    {
+                        return Err(invalid(
+                            "issued permission stored under a different identity or type",
+                        ));
+                    }
+                }
+            }
+        }
+        for grant in fields["grants"].as_array().into_iter().flatten() {
+            if let Some(encoded) = grant.get("delegated") {
+                let issued: IssuedAccess =
+                    serde_json::from_str(encoded.as_str().ok_or_else(|| {
+                        invalid("gateway delegated permission must be an encoded host record")
+                    })?)
+                    .map_err(|e| invalid(format!("gateway delegated permission: {e}")))?;
+                issued.validate()?;
+                if issued.action["kind"] != "gateway_route"
+                    || issued.beneficiary.agent != *agent
+                    || grant["service"] != issued.action["service"]
+                    || grant["method"] != issued.action["method"]
+                    || grant["path"] != issued.action["path"]
+                    || grant["literal_path"] != true
+                    || grant["scope"]
+                        != if issued.option == "delegated_once" {
+                            "once"
+                        } else {
+                            "remembered"
+                        }
+                {
+                    return Err(invalid(
+                        "gateway grant differs from its delegated authority",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+impl Delegation {
+    pub(crate) fn reciprocal_agent_pairs(&self, policy: &Policy) -> BTreeSet<(String, String)> {
+        let mut pairs = BTreeSet::new();
+        for other in policy.delegations().values() {
+            for reviewer in self
+                .reviewers
+                .iter()
+                .filter(|r| other.beneficiaries.contains(r))
+            {
+                for beneficiary in self
+                    .beneficiaries
+                    .iter()
+                    .filter(|b| other.reviewers.contains(b))
+                {
+                    pairs.insert((reviewer.agent_id.clone(), beneficiary.agent_id.clone()));
+                }
+            }
+        }
+        pairs
+    }
+
+    pub(crate) fn dependencies(&self, policy: &Policy) -> Result<BTreeMap<String, String>> {
+        let mut result = BTreeMap::new();
+        for scope in &self.scopes {
+            if let Scope::DesktopPresent { run, .. } = scope {
+                if !run.current(policy) {
+                    return Err(invalid(
+                        "desktop delegation target run was stopped or replaced",
+                    ));
+                }
+                result.insert(format!("desktop:{}", run.agent_id), digest(&json!(run)));
+            }
+            if let Scope::CoordRoom {
+                room_id,
+                participants,
+                permissions,
+            } = scope
+            {
+                let basis = crate::coord_rooms::membership::room_basis(policy, room_id)
+                    .map_err(|e| invalid(e.to_string()))?;
+                let independent: Vec<crate::coord_rooms::membership::Participant> =
+                    basis["independent_members"]
+                        .as_array()
+                        .ok_or_else(|| invalid("room audience unavailable"))?
+                        .iter()
+                        .map(|m| {
+                            serde_json::from_value(m["participant"].clone())
+                                .map_err(|e| invalid(e.to_string()))
+                        })
+                        .collect::<Result<_>>()?;
+                if !crate::coord_rooms::membership::audience_contains(participants, &independent)
+                    || self.beneficiaries.iter().any(|b| {
+                        !crate::coord_rooms::membership::audience_contains(
+                            participants,
+                            &[crate::coord_rooms::membership::Participant {
+                                principal_kind: "agent".into(),
+                                principal_id: b.agent_id.clone(),
+                                permissions: permissions.clone(),
+                            }],
+                        )
+                    })
+                {
+                    return Err(invalid(
+                        "Coord envelope omits an existing participant or a beneficiary's maximum rights",
+                    ));
+                }
+                result.insert(format!("coord:{room_id}"), digest(&basis));
+            }
+            if let Scope::GatewayRoute { service, .. }
+            | Scope::ServiceAuthorization { service, .. }
+            | Scope::ContractBinding { service, .. } = scope
+            {
+                for agent in &self.beneficiaries {
+                    let revision = policy
+                        .delegated_gateway_revision(&agent.name, service)
+                        .ok_or_else(|| {
+                            invalid("gateway definition or beneficiary authorization unavailable")
+                        })?;
+                    result.insert(format!("{}:{service}", agent.agent_id), revision);
+                }
+            }
+            if let Scope::ContractBinding {
+                service,
+                capability,
+                template,
+                bound_values,
+                grantable_operations,
+            } = scope
+            {
+                let contract = policy
+                    .gateway()
+                    .and_then(|gateway| gateway.registry())
+                    .and_then(|registry| {
+                        registry
+                            .services
+                            .get(service)
+                            .and_then(|service| service.capabilities.get(capability))
+                            .and_then(|capability| capability.contract.clone())
+                    })
+                    .filter(|contract| &contract.template == template)
+                    .ok_or_else(|| invalid("contract template unavailable or changed"))?;
+                if bound_values.iter().any(|(name, choices)| {
+                    choices
+                        .iter()
+                        .any(|value| !contract.validate_bound_value(name, value))
+                }) {
+                    return Err(invalid(
+                        "contract binding envelope contains unknown fields or unsupported values",
+                    ));
+                }
+                for name in grantable_operations {
+                    let mut selected = contract
+                        .grantable_operations()
+                        .filter(|operation| &operation.name == name)
+                        .peekable();
+                    if selected.peek().is_none() {
+                        return Err(invalid(
+                            "contract binding envelope contains an ungrantable operation",
+                        ));
+                    }
+                    let sample = bound_values
+                        .iter()
+                        .map(|(name, choices)| (name.clone(), choices[0].clone()))
+                        .collect();
+                    for operation in selected {
+                        if operation.resolved_path(&sample).is_none()
+                            || operation
+                                .bound_value_references()
+                                .iter()
+                                .any(|name| !bound_values.contains_key(*name))
+                            || operation.request.path_params.values().any(|constraint| {
+                                !constraint.equals_var.is_empty()
+                                    && bound_values.get(&constraint.equals_var).is_some_and(
+                                        |choices| {
+                                            choices.iter().any(|value| {
+                                                crate::contracts::safe_path_component(value)
+                                                    .is_none_or(|component| {
+                                                        component.contains(['{', '}'])
+                                                    })
+                                            })
+                                        },
+                                    )
+                            })
+                        {
+                            return Err(invalid(
+                                "contract binding envelope cannot enforce the operation's bound values",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        result.insert(
+            "reviewer_startup".into(),
+            digest(&json!(policy.reviewer_write_warnings(self))),
+        );
+        // Bind the reciprocal identities rather than delegation revisions.
+        // Acknowledging one direction must not invalidate the other direction.
+        let reciprocal = self.reciprocal_agent_pairs(policy);
+        if !reciprocal.is_empty() {
+            result.insert("reciprocal_reviewers".into(), digest(&json!(reciprocal)));
+        }
+        Ok(result)
+    }
+    pub(crate) fn dependencies_current(&self, policy: &Policy) -> bool {
+        self.dependencies(policy)
+            .is_ok_and(|current| current == self.definition_revisions)
+    }
+}
+
+impl Policy {
+    pub(crate) fn reviewer_write_warnings(&self, delegation: &Delegation) -> Vec<String> {
+        let Some(native) = &self.native else {
+            return vec![];
+        };
+        let mut warnings = vec![];
+        for worker in &delegation.beneficiaries {
+            let fields = &native.authored["agents"][&worker.name];
+            let mut writable = vec![];
+            if let Some(folder) = fields["folder"].as_str() {
+                match std::path::Path::new(folder).canonicalize() {
+                    Ok(path)=>writable.push(path),
+                    Err(_)=>warnings.push(format!("Worker {} has an unavailable workspace path. Its ability to write reviewer startup files is unknown.",worker.name)),
+                }
+            }
+            for mount in fields["mounts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                match crate::host_boot::mount(mount) {
+                    Ok((path,_,false))=>writable.push(path),
+                    Ok(_)=>{},
+                    Err(_)=>warnings.push(format!("Worker {} has an unresolved mount. Its ability to write reviewer startup files is unknown.",worker.name)),
+                }
+            }
+            for reviewer in &delegation.reviewers {
+                let home = native
+                    .identity_root
+                    .join("agents")
+                    .join(&reviewer.name)
+                    .join("home");
+                // These are the native Codex/MCP launch and configuration
+                // paths staged by codex-host-setup and stage-coord-native.
+                // An ordinary shared source workspace is not a startup path.
+                let mut trusted = vec![
+                    home.clone(),
+                    home.join(".codex"),
+                    home.join(".safeyolo"),
+                    home.join(".safeyolo-command"),
+                    home.join(".safeyolo-interactive-command"),
+                ];
+                if let Some(script) =
+                    native.authored["agents"][&reviewer.name]["host_script"].as_str()
+                {
+                    trusted.push(script.into());
+                }
+                for target in trusted {
+                    let target = target.canonicalize().unwrap_or(target);
+                    if writable.iter().any(|path| target.starts_with(path)) {
+                        warnings.push(format!("Worker {} can write a trusted startup path used by reviewer {}: {}. Compromise of that reviewer can exercise this entire delegation.",worker.name,reviewer.name,target.display()));
+                    }
+                }
+            }
+        }
+        warnings.sort();
+        warnings.dedup();
+        warnings
+    }
+}
+
+impl Policy {
+    pub(crate) fn independent_delegation_access(&self, delegation: &Delegation) -> Vec<Value> {
+        let mut access = vec![];
+        for beneficiary in &delegation.beneficiaries {
+            for scope in &delegation.scopes {
+                match scope {
+                    Scope::DesktopPresent { .. }=>access.push(json!({"beneficiary":beneficiary,"type":"desktop_present","independent_access":"Independent operator and other valid preview sources remain. Closing the operator preview explicitly closes all sources; revoking this delegation removes only its sources."})),
+                    Scope::CoordRoom {room_id,..}=>access.push(json!({"beneficiary":beneficiary,"type":"coord_room","room_id":room_id,"independent_access":crate::coord_rooms::membership::room_basis(self,room_id).ok(),"effective_participants":crate::coord_rooms::membership::participants(self,room_id).ok()})),
+                    Scope::NetworkEgress {host,ports,all_ports,actions} if !host.contains(['*','?','[']) && !all_ports => {
+                        for port in ports { for action in actions {
+                            let method=if action=="connect" {"CONNECT"} else {"GET"};
+                            // This is the ordinary configured policy path; it
+                            // does not include any delegated run permission.
+                            let effect=self.evaluate(super::NetworkRequest {agent:Some(&beneficiary.name),host,port:Some(*port),method,path:"/"},super::current_time_ms(),false);
+                            access.push(json!({"beneficiary":beneficiary,"type":"network_egress","host":host,"port":port,"action":action,
+                                "independent_effect_at_example_root_path":effect.ok(),
+                                "limit":"Advanced method/path exceptions can differ. GET is an example, not a claim of safety. Independent policy survives delegation revocation."}));
+                        }}
+                    }
+                    Scope::NetworkEgress {..}=>access.push(json!({"beneficiary":beneficiary,"type":"network_egress","independent_access":"Cannot enumerate all matching destinations or ports. Existing configured permissions remain authoritative and survive revocation."})),
+                    Scope::Credential {..}=>access.push(json!({"beneficiary":beneficiary,"type":"credential","independent_access":"Existing shared fingerprint/type and destination permissions survive revocation. Full scope depends on the observed credential classification and current policy; this preview does not infer an API operation limit."})),
+                    Scope::ServiceAuthorization {service,capability,..}=>access.push(json!({"beneficiary":beneficiary,"type":"service_authorization","service":service,"capability":capability,
+                        "independent_access":"Existing operator service authorization survives delegation revocation. Contract bindings and risky-route grants do not themselves authorize service access."})),
+                    Scope::ContractBinding {service,capability,..}=>access.push(json!({"beneficiary":beneficiary,"type":"contract_binding","service":service,"capability":capability,
+                        "independent_access":"Existing operator bindings and service authorization survive delegation revocation. Derived bindings add only their own values and operations for the worker run."})),
+                    Scope::GatewayRoute {service,capability,..}=>access.push(json!({"beneficiary":beneficiary,"type":"gateway_route","service":service,"capability":capability,
+                        "independent_access":"Existing service authorization, contract bindings and independently sourced route grants survive revocation. A delegation does not add service authorization."})),
+                }
+            }
+        }
+        access
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn binding_choices_keep_marker_objects_and_exact_numeric_types() {
+        let input = r#"{"reviewers":[],"beneficiaries":[],"scopes":[{"type":"contract_binding","service":"s","capability":"c","template":"t","bound_values":{"value":[{"$serde_json::private::Number":"17"},18446744073709551615,true,["x","y"]]},"grantable_operations":["read"]}],"expires_at":null,"grant_seconds":null,"gateway_once":false,"acknowledgment":null}"#;
+        let delegation: Delegation = serde_json::from_str(input).unwrap();
+        let Scope::ContractBinding { bound_values, .. } = &delegation.scopes[0] else {
+            panic!("binding scope")
+        };
+        assert!(bound_values["value"][0].is_object());
+        assert_eq!(bound_values["value"][1].as_u64(), Some(u64::MAX));
+        assert!(bound_values["value"][2].is_boolean());
+        assert!(bound_values["value"][3].is_array());
+        assert_eq!(
+            crate::policy::parse_json(&serde_json::to_string(&delegation).unwrap(), true).unwrap()
+                ["scopes"],
+            crate::policy::parse_json(input, true).unwrap()["scopes"]
+        );
+        // Canonical action/receipt decoding uses the same lossless boundary.
+        let action: Value = crate::policy::parse_json(
+            r#"{"bindings":{"value":{"$serde_json::private::Number":"17"}}}"#,
+            true,
+        )
+        .unwrap();
+        #[derive(Deserialize)]
+        struct Action {
+            #[serde(deserialize_with = "crate::policy::deserialize_json_value")]
+            action: Value,
+        }
+        let decoded: Action = serde_json::from_str(&json!({"action":action}).to_string()).unwrap();
+        assert_eq!(decoded.action, action);
+    }
+}

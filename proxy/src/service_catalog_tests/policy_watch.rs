@@ -195,7 +195,7 @@ approval_default='once'
             .gateway()
             .unwrap()
             .registry(),
-        original.policy.as_ref(),
+        original.policy.as_deref(),
         &original.audit,
     )
     .unwrap();
@@ -282,7 +282,7 @@ approval_default='once'
             .gateway()
             .unwrap()
             .registry(),
-        before.policy.as_ref(),
+        before.policy.as_deref(),
         &before.audit,
     )
     .unwrap();
@@ -493,7 +493,7 @@ fn prune_while_admin_waits(
             .gateway()
             .unwrap()
             .registry(),
-        before.policy.as_ref(),
+        before.policy.as_deref(),
         &before.audit,
     )
     .unwrap();
@@ -808,6 +808,11 @@ async fn catalog_workflow() {
     settings.tls_ca_file = Some(ca.clone());
     let mut fixture = Fixture::start(directory, settings.clone()).await;
     let initial = fixture.runtime();
+    let accepted_policy = initial.policy.as_ref().unwrap().clone();
+    assert!(Arc::ptr_eq(
+        &accepted_policy,
+        initial.as_ref().clone().policy.as_ref().unwrap()
+    ));
     let registry = initial
         .policy
         .as_ref()
@@ -908,6 +913,25 @@ async fn catalog_workflow() {
     assert!(fixture.proxy.reload_policy_if_changed().await.unwrap());
     let listed = fixture.runtime();
     assert!(!Arc::ptr_eq(&addon, &listed));
+    assert!(!Arc::ptr_eq(
+        &accepted_policy,
+        listed.policy.as_ref().unwrap()
+    ));
+    // A reader accepted before publication keeps the old list generation.
+    assert_eq!(
+        accepted_policy
+            .evaluate(list_request("old.listed.invalid"), now, false)
+            .unwrap()
+            .effect,
+        Effect::Allow
+    );
+    assert_ne!(
+        accepted_policy
+            .evaluate(list_request("new.listed.invalid"), now, false)
+            .unwrap()
+            .effect,
+        Effect::Allow
+    );
     assert_eq!(
         listed
             .policy

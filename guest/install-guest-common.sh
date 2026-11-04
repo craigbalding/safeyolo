@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Sourceable shell library for custom rootfs builders (--rootfs-script).
+# Sourceable shell library for explicitly invoked custom rootfs builders.
 #
 # Takes an unpacked rootfs tree and installs the bits SafeYolo's boot
 # orchestrator assumes are present. This is what makes a bare distro tree

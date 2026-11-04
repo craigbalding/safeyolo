@@ -57,7 +57,7 @@ def test_real_onepassword_resolves_only_after_host_approval(tmp_path):
         extra_config=f'onepassword_executable={json.dumps(str(wrapper))}\n',
     ) as instance:
         setup(instance, tmp_path)
-        cli(instance, "credentials", "reference", "external", "--provider", "onepassword",
+        cli(instance, "credentials", "reference", "external", "--storage", "local", "--provider", "onepassword",
             "--reference", reference)
         authorize(instance, "external")
         credential = token(instance)

@@ -98,6 +98,7 @@ capabilities:
 fn config(root: &Path) -> Config {
     Config {
         native_product: false,
+        ingress_bindings: vec![],
         native_settings: None,
         native_config_dir: None,
         native_config_path: None,
@@ -149,7 +150,7 @@ fn config(root: &Path) -> Config {
         ignore_hosts: Vec::new(),
         via_token: Some("contract-test".into()),
         inspection: None,
-        plumb: Default::default(),
+        collaboration: Default::default(),
     }
 }
 

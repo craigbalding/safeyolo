@@ -557,6 +557,34 @@ def test_substrate_uses_installed_runtime_diagnosis_without_path_fallback(tmp_pa
         assert observed["reason"] == "missing companion"
 
 
+@pytest.mark.parametrize("defect", [None, "prefix", "suffix", "nonzero", "shape"])
+def test_substrate_parses_complete_doctor_stdout_strictly(tmp_path, smoke_module, monkeypatch, defect):
+    selected = {"state": "ready", "path": "/owned/libexec/runsc",
+                "version": "release-20261005.0", "origin": "bundled"}
+    report = {"linux": selected, "pipeline": {"detail": "x" * (smoke_module.OUTPUT_LIMIT * 2)}}
+    if defect == "shape":
+        report["linux"] = []
+    output = json.dumps(report)
+    if defect == "prefix":
+        output = "diagnostic message\n" + output
+    if defect == "suffix":
+        output += "\ndiagnostic message"
+    cli = tmp_path / "bin/safeyolo"
+    cli.parent.mkdir()
+    _executable(cli, output, exit_code=17 if defect == "nonzero" else 0)
+    monkeypatch.setattr(smoke_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(smoke_module.shutil, "which", lambda name: pytest.fail("ambient runtime lookup"))
+    observed = smoke_module._substrate_identity(tmp_path)
+    if defect is None:
+        assert observed == {"status": "discovered", "kind": "gvisor",
+                            "path": selected["path"], "version": selected["version"], "origin": "bundled"}
+    else:
+        assert observed["status"] == "unavailable"
+        assert "runtime diagnosis failed" in observed["reason"]
+        if defect == "nonzero":
+            assert "doctor exited 17" in observed["reason"]
+
+
 def test_darwin_process_identity_is_observed_or_unavailable(tmp_path: Path, smoke_module, monkeypatch) -> None:
     candidate = tmp_path / "safeyolo-proxy"
     candidate.write_text("native")

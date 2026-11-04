@@ -188,6 +188,44 @@ Source: [native platform launch](../proxy/src/host_platform.rs),
 [boot mounts](../proxy/src/host_boot.rs), and
 [VZ initramfs](../guest/initramfs/init).
 
+### macOS host file-table pressure
+
+Choose a repository or worktree for `/workspace`, rather than a parent
+containing unrelated projects. Explicit broader shares remain supported.
+VirtioFS traversal can retain a host file handle for each visited file or
+directory, even after guest commands close their files. Several VMs can retain
+handles for the same host tree independently. Read-only shares also consume
+host handles; read-only access limits writes, not this pressure.
+
+Current-source macOS `agent launch` and `agent start` warn about writable
+shares of the operator's home, the filesystem root, or a directory with at
+least two immediate Git repositories or worktrees. A repository or worktree
+root is not classified by its nested repositories. This shallow check does
+not inventory the tree or detect every large share. The warning permits the
+launch and recommends narrower access; it changes no mount permissions.
+
+Repository scope reduces the files each VM can traverse. It does not bound a
+large repository or the independent `/home/agent` package and tool caches.
+Guest cache reclamation can release retained handles, but idle time alone is
+not a reliable release condition. Stopping an unused VM releases its handles
+while preserving its workspace and persistent home. No host file-table limit
+or guest cache-reclamation setting is changed by this mitigation.
+
+For `ENFILE` (`Too many open files in system`, errno 23), run this on the
+macOS host:
+
+```sh
+sysctl kern.num_files kern.maxfiles kern.maxfilesperproc
+```
+
+Compare `kern.num_files` with the host-wide `kern.maxfiles` ceiling. Stop
+unused agents to recover handles, and select narrower workspaces before
+starting them again. Raising the host ceiling only postpones exhaustion if
+the workload keeps retaining handles. Guest `EMFILE` (`Too many open files`,
+errno 24) concerns a process's open-file limit; raising that guest limit does
+not repair host-wide `ENFILE`. The guest limit is tracked separately in
+[#379](https://github.com/craigbalding/safeyolo/issues/379).
+
 ### Check available space
 
 In a running agent shell, check the root and the two writable host mounts

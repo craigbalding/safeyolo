@@ -127,7 +127,7 @@ impl Drop for Lease {
 
 pub(super) enum Selected {
     Http2(Lease),
-    Unshared(Outbound),
+    Unshared(Box<Outbound>),
 }
 
 impl Selected {
@@ -194,7 +194,7 @@ impl Sessions {
             open_outbound(runtime, allowed, provider, true, Some(tunnel), live, None).await?;
         if !outbound.http2 {
             // A negotiated H1 connection still has its ordinary request owner.
-            return Ok(Selected::Unshared(outbound));
+            return Ok(Selected::Unshared(Box::new(outbound)));
         }
         // Learn the peer's SETTINGS before opening streams. Hyper otherwise
         // permits an initial burst of 100 before a smaller origin limit arrives.
@@ -202,13 +202,19 @@ impl Sessions {
             hyper::client::conn::http2::Builder::new(Executor(allowed.tasks.clone()))
                 .initial_max_send_streams(0)
                 .handshake(TokioIo::new(outbound.stream))
-                .await?;
+                .await
+                .inspect_err(|_| {
+                    if let Some(network) = &outbound.network {
+                        network.failed("http_handshake_failed");
+                    }
+                })?;
         let activity = Activity::new();
         let driver_activity = activity.clone();
         let task = allowed.tasks.spawn(async move {
             tokio::select! {
                 result = connection => {
                     if let Err(error) = result {
+                        if let Some(network) = &outbound.network { network.http_error(&error); }
                         eprintln!("upstream HTTP/2 connection: {error}");
                     }
                 },

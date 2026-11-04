@@ -12,9 +12,9 @@ final class SecurityNotificationPresenter: NSObject, ObservableObject, UNUserNot
         center.delegate = self
     }
 
-    func show(_ event: SecurityObservation) {
+    func show(_ event: SecurityObservation, instanceName: String, instanceID: String) {
         show(title: "SafeYolo \(event.severity.capitalized) security event",
-             body: event.summary, identifier: "safeyolo-security-\(event.id)")
+             body: "\(instanceName): \(event.summary)", identifier: "safeyolo-security-\(instanceID)-\(event.id)")
     }
 
     func showWebMITMSignInNotice() {

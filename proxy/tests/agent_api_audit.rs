@@ -10,7 +10,7 @@ use safeyolo_proxy::{
     test_context::{self, TestContext},
 };
 use serde_json::{Value, json};
-use std::{path::PathBuf, process::Command, time::Duration};
+use std::time::Duration;
 use time::OffsetDateTime;
 
 const BODY: &[u8] = br#"{"context":"run=R;agent=claimed;test=T","ttl":7}"#;
@@ -34,35 +34,8 @@ fn state(owner: &TestContext) -> Value {
     }
 }
 
-#[test]
-#[ignore = "historical Python producer; set SAFEYOLO_PYTHON_SOURCE and SAFEYOLO_PYTHON_EXECUTABLE"]
-fn historical_source_producer_matches_frozen_rows() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source = PathBuf::from(
-        std::env::var_os("SAFEYOLO_PYTHON_SOURCE")
-            .expect("set SAFEYOLO_PYTHON_SOURCE to the pinned pre-cutover checkout"),
-    );
-    let python = std::env::var_os("SAFEYOLO_PYTHON_EXECUTABLE")
-        .expect("set SAFEYOLO_PYTHON_EXECUTABLE to the comparator environment");
-    let output = Command::new(python)
-        .arg(root.join("tests/agent_api_audit_oracle.py"))
-        .arg("--check")
-        .arg(root.join("tests/agent_api_audit_source.json"))
-        .env("SAFEYOLO_SOURCE_ROOT", source)
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "source producer oracle failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report, json!({"source_rows":13,"matched":true}));
-}
-
 #[tokio::test]
-async fn native_envelopes_and_committed_mutations_match_actual_source() {
+async fn current_envelopes_preserve_committed_mutations_and_failure_ownership() {
     let source: Value = serde_json::from_str(include_str!("agent_api_audit_source.json")).unwrap();
     let directory = tempfile::tempdir().unwrap();
     let token = directory.path().join("agent_token");
@@ -74,7 +47,7 @@ async fn native_envelopes_and_committed_mutations_match_actual_source() {
         &time::format_description::well_known::Rfc3339,
     )
     .unwrap();
-    let mut expected_lines = String::new();
+    let mut expected_payloads = Vec::new();
     for row in source["rows"].as_array().unwrap() {
         let input = &row["input"];
         let result = &row["result"];
@@ -159,7 +132,11 @@ async fn native_envelopes_and_committed_mutations_match_actual_source() {
         let event = intent.to_event();
         assert!(event.attribution.is_none() && event.approval.is_none());
         assert_eq!(writer.emit_at(event, now).unwrap(), Submission::Queued);
-        expected_lines.push_str(result["attempts"][0]["line"].as_str().unwrap());
+        // Reuse the accepted payload specimen, not its retired envelope generation.
+        let mut expected: Value =
+            serde_json::from_str(result["attempts"][0]["line"].as_str().unwrap()).unwrap();
+        expected.as_object_mut().unwrap().remove("schema_version");
+        expected_payloads.push(expected);
         let outcome = match input["failure"].as_str() {
             Some("RuntimeError") => {
                 outcome.audit_submission_failed(request, ErrorKind::ThreadStart)
@@ -190,5 +167,17 @@ async fn native_envelopes_and_committed_mutations_match_actual_source() {
         }
     }
     assert!(writer.shutdown(Duration::from_secs(2)).unwrap());
-    assert_eq!(std::fs::read_to_string(path).unwrap(), expected_lines);
+    let bytes = std::fs::read_to_string(path).unwrap();
+    let actual: Vec<_> = bytes
+        .lines()
+        .map(|line| {
+            let mut row = safeyolo_proxy::audit::parse_record(line).unwrap();
+            assert_eq!(
+                row.as_object_mut().unwrap().remove("schema_version"),
+                Some(json!(2))
+            );
+            row
+        })
+        .collect();
+    assert_eq!(actual, expected_payloads);
 }

@@ -97,6 +97,8 @@ pub struct Grant {
     pub scope: GrantScope,
     pub created: String,
     pub expires: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated: Option<String>,
 }
 impl Grant {
     pub fn is_expired(&self, now: OffsetDateTime) -> bool {
@@ -642,7 +644,12 @@ impl Store {
                 let expires = now
                     .checked_add(Duration::seconds(state.ttl_seconds))
                     .ok_or_else(|| invalid("grant expiry overflow"))?;
+                let delegated = approval.as_ref().and_then(|(_, record)| record.result.get("issued_access"))
+                    .map(serde_json::to_string).transpose().map_err(|e| invalid(e.to_string()))?;
+                let delegated_expiry = delegated.as_deref().and_then(|s| serde_json::from_str::<crate::policy::delegation::IssuedAccess>(s).ok())
+                    .and_then(|issued| issued.expires_at.as_deref().and_then(parse_expiry));
                 let grant = Grant {
+                    delegated,
                     grant_id: identifier("grt"),
                     agent: request.agent,
                     service: request.service,
@@ -651,7 +658,7 @@ impl Store {
                     literal_path: approval.is_some(),
                     scope: request.scope,
                     created: timestamp(now)?,
-                    expires: timestamp(expires)?,
+                    expires: timestamp(delegated_expiry.map_or(expires, |bound| bound.min(expires)))?,
                 };
                 let persistence = if grant.scope == GrantScope::Session {
                     Persistence::SessionOnly
@@ -674,8 +681,10 @@ impl Store {
                 }
                 replace_grant(&mut state.grants, grant.clone());
                 if let Some((_, record)) = approval {
+                    let issued = record.result.get("issued_access").cloned();
                     record.result = serde_json::json!({"grant_id":grant.grant_id,"scope":grant.scope,"literal_path":grant.literal_path,
                         "created":grant.created,"expires":grant.expires,"persistence":persistence});
+                    if let Some(issued) = issued { record.result["issued_access"] = issued; }
                     crate::approvals::pending::save_receipt(document, record)?;
                 }
                 Ok(GrantAddition { grant, persistence })
@@ -859,6 +868,21 @@ impl Store {
         now: OffsetDateTime,
         activate: impl FnMut(&str) -> std::result::Result<(), String>,
     ) -> Result<Option<GrantLease>> {
+        self.check_grant_authority(scope, now, None, activate)
+    }
+
+    pub(crate) fn check_grant_authority(
+        &self,
+        scope: RequestScope<'_>,
+        now: OffsetDateTime,
+        authority: Option<(
+            &crate::policy::Policy,
+            &crate::host_runs::AgentRun,
+            &str,
+            Option<&str>,
+        )>,
+        activate: impl FnMut(&str) -> std::result::Result<(), String>,
+    ) -> Result<Option<GrantLease>> {
         let expired: Vec<_> = {
             let state = self.lock()?;
             state
@@ -902,6 +926,24 @@ impl Store {
                     .iter()
                     .find(|grant| {
                         grant.matches(scope, now)
+                            && match grant.delegated.as_deref() {
+                                None => true,
+                                Some(encoded) => {
+                                    authority.is_some_and(|(policy, run, capability, binding)| {
+                                        let Ok(issued) =
+                                            serde_json::from_str::<
+                                                crate::policy::delegation::IssuedAccess,
+                                            >(encoded)
+                                        else {
+                                            return false;
+                                        };
+                                        issued.beneficiary == *run
+                                            && issued.active(policy)
+                                            && issued.action["capability"] == capability
+                                            && issued.action["binding_id"].as_str() == binding
+                                    })
+                                }
+                            }
                             && !state.reservations.contains_key(&grant.grant_id)
                     })
                     .cloned()

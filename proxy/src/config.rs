@@ -58,29 +58,25 @@ pub struct Inspection {
     pub block_websocket_response: bool,
 }
 
-/// Native plumb bounds mirror the source service's [plumb] configuration.
-/// Zero disables only the message-size cap; the other zero values resolve to
-/// their source defaults.
+/// Bounds for operator-approved collaboration rooms. Zero disables the body
+/// bound; HTTP, serialized-envelope and broker bounds still apply.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct PlumbConfig {
-    #[serde(default = "plumb_default_max_participants")]
+pub struct CollaborationConfig {
+    #[serde(default = "collaboration_default_max_participants")]
     pub max_participants: usize,
-    #[serde(default = "plumb_default_max_message_bytes")]
+    #[serde(default = "collaboration_default_max_message_bytes")]
     pub max_message_bytes: usize,
-    #[serde(default = "plumb_default_message_page_limit")]
-    pub message_page_limit: usize,
-    #[serde(default = "plumb_default_ttl_seconds")]
+    #[serde(default = "collaboration_default_ttl_seconds")]
     pub default_ttl_seconds: i64,
 }
 
-impl Default for PlumbConfig {
+impl Default for CollaborationConfig {
     fn default() -> Self {
         Self {
-            max_participants: plumb_default_max_participants(),
-            max_message_bytes: plumb_default_max_message_bytes(),
-            message_page_limit: plumb_default_message_page_limit(),
-            default_ttl_seconds: plumb_default_ttl_seconds(),
+            max_participants: collaboration_default_max_participants(),
+            max_message_bytes: collaboration_default_max_message_bytes(),
+            default_ttl_seconds: collaboration_default_ttl_seconds(),
         }
     }
 }
@@ -104,6 +100,9 @@ pub struct Config {
     #[serde(default)]
     pub native_product: bool,
     pub listeners: Vec<AgentListener>,
+    /// Operator-owned TCP ingress into an existing listener's policy partition.
+    #[serde(default)]
+    pub ingress_bindings: Vec<crate::external_ingress::Binding>,
     /// Per-process state directory for credential HMAC and local Agent API
     /// material. The key itself is never part of Config serialization.
     pub data_dir: Option<PathBuf>,
@@ -182,7 +181,7 @@ pub struct Config {
     pub via_token: Option<String>,
     pub inspection: Option<Inspection>,
     #[serde(default)]
-    pub plumb: PlumbConfig,
+    pub collaboration: CollaborationConfig,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -233,19 +232,15 @@ fn flow_pruner_max_body_bytes() -> usize {
     1024 * 1024 * 1024
 }
 
-fn plumb_default_max_participants() -> usize {
+fn collaboration_default_max_participants() -> usize {
     8
 }
 
-fn plumb_default_max_message_bytes() -> usize {
+fn collaboration_default_max_message_bytes() -> usize {
     1_048_576
 }
 
-fn plumb_default_message_page_limit() -> usize {
-    200
-}
-
-fn plumb_default_ttl_seconds() -> i64 {
+fn collaboration_default_ttl_seconds() -> i64 {
     3600
 }
 
@@ -309,6 +304,11 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), Error> {
+        if let Some(settings) = &self.native_settings {
+            settings
+                .packet_capture
+                .validate(self.admin_port.is_some())?;
+        }
         if self.flow_pruner_max == 0 || self.flow_pruner_max_body_bytes == 0 {
             return Err("flow_pruner_max and flow_pruner_max_body_bytes must be positive".into());
         }
@@ -329,6 +329,7 @@ impl Config {
                 return Err("listeners need an agent identity and a unique socket path".into());
             }
         }
+        crate::external_ingress::validate(self)?;
         for path in [&self.readiness_file]
             .into_iter()
             .chain(self.policy_file.iter())

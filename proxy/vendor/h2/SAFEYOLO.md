@@ -61,3 +61,18 @@ hash. Its file list now records cumulative source changes. The separate
 `response_completion` section records this patch's before/after source hashes
 against commit `d089f99506d9342cfd853709de87d2a465312d4e` and its focused proof hash.
 The upstream MIT license remains unchanged.
+
+## Optional stream parser failures
+
+`server::Connection::set_stream_parse_error_observer` registers a content-free
+`ext::StreamParseErrorObserver`. The receiver calls it for library-originated
+PROTOCOL_ERROR, FRAME_SIZE_ERROR and COMPRESSION_ERROR stream rejections. The
+existing reset owner reports recoverable errors, including rejected heads that
+never reach request admission. The connection error owner reports stream errors
+that propagate to it. An error consumed by the reset owner does not propagate.
+
+The observer retains one callback per connection. It passes the protocol stream
+ID and retains no frame content or stream history. The callback must not block
+or call back into the connection. Peer resets, user resets, resource-limit
+refusals and ordinary aborts do not invoke it. Existing framing, admission,
+reset limits, stream cleanup and traffic behavior remain unchanged.

@@ -65,6 +65,143 @@ The [hardware deployment guide](hardware/README.md) uses the same selector and
 installed runner for independent KVM and physical VZ execution. Craig owns cron
 installation; the source scripts and examples do not establish deployment.
 
+### Native Claude tool smoke
+
+The optional `claude` section checks shipped Claude setup, the native executable,
+baseline, configuration and readable SafeYolo skill. It runs one headless task
+through the unchanged staged command and the `claude` / `inference` gateway.
+The task reads a fresh marker and the skill, then writes a known workspace file.
+Success requires completed client and tool results, independently checked file
+contents, and a matching current agent/run decision from the native gateway.
+The report exports observations and hashes, without client messages or tokens.
+
+For a trusted invocation, use a dedicated Ubuntu AMD64/systrap host and a clean,
+pinned controller checkout with the prerequisites for the retained run above.
+The [trusted caller](../../scripts/run_claude_blackbox.py) selects production
+inputs, completes the credential-free installed sections, provisions that
+installation, then invokes the maintained Claude section once. It uses the
+installer's `--yes` option to accept host preparation on this disposable host.
+Each attempt uses new private state. Explicit manual reuse preserves a
+verified installation and can reuse applicable credential-free proof.
+
+The operator supplies an executable provisioning helper. The caller runs
+`HELPER INSTALLED_ROOT CREDENTIAL_NAME` only after credential-free success.
+The helper must provision the named credential in that root through the supported
+[coding-client gateway setup](../../docs/coding-client-gateway.md) and return
+nonzero if provisioning fails. Use the existing sealed access-only route when
+the factory owns the subscription's renewal. Keep its rotating refresh token
+with that owner. A credential name alone does not establish authentication.
+Provider secrets stay in the host encrypted store, outside guest mounts.
+The caller does not approve requests or retry a model task. Existing policy,
+consent and first-request approvals still apply.
+
+From the controller checkout root in the trusted host account, replace the
+helper path with the operator's provisioner and `claude-account` with the name
+it provisions. Replace `/owned/claude-attempt` with a new private disk-backed
+directory. Use the repository default-branch ref for `--ref`.
+
+```sh
+.venv/bin/python scripts/run_claude_blackbox.py nightly --ref refs/heads/master --provision /owned/bin/provision-claude --credential claude-account --output /owned/claude-attempt
+```
+
+For exact production inputs, use `manual` instead of `nightly` and append
+`--host-run RUN_ID --guest-index sha256:DIGEST`. The existing selector still
+requires trusted production and completed-staging evidence. Default selection
+uses the newest completed compatible guest; an exact older guest is recorded
+as an explicit selection. Selection failures remain failed attempts.
+
+For manual execution without acquisition or installation, supply `--selection`
+and `--prepared-config` instead of the selector options. Use the original frozen
+production selection and its retained installed root on the same host.
+The caller verifies installed bytes and the current Linux runtime, then creates
+a separate instance under the attempt directory using the prepared-instance
+helper. It runs all default credential-free systrap sections against those
+inputs, with separate section state. Provisioning starts only after their
+maintained reports prove success and stopped cleanup.
+
+In the same host account and controller checkout, replace
+`/owned/inputs/selection.json` and `/owned/installed` with those retained operands.
+Use the helper and credential name described above and a new private output
+directory. The original homes, credentials, running or stopped owners and proof
+remain untouched. Only verified inputs, Linux settings and the prepared NATS
+executable are reused; host credentials are provisioned anew.
+
+```sh
+.venv/bin/python scripts/run_claude_blackbox.py manual --ref refs/heads/master --selection /owned/inputs/selection.json --prepared-config /owned/installed --provision /owned/bin/provision-claude --credential claude-account --output /owned/claude-attempt
+```
+
+If applicable original proof is available, append `--readiness /owned/no-secret-reports`
+to reuse it instead of running those sections. Replace that path with the
+original successful credential-free systrap report directory on this host.
+It must retain `selection.json`, `retained-run.json`, `installed-inputs.json`,
+`guest/installed-sections.json` and `guest/isolation/installed-rust-runtime.json`.
+Keep the isolation instance's `config.toml` at its recorded path. All default
+credential-free sections must have passed with stopped cleanup. Their installed
+inputs, Linux configuration and runtime must match the retained installation.
+A supplied missing, failed or inapplicable proof fails before provisioning.
+A cached root or hash check alone does not establish readiness.
+
+The report marks `selection_mode` as `retained-manual`. `readiness_reused` is
+false for newly executed readiness and true for reused proof. The report keeps
+the selection and readiness controller alongside the current invocation and
+controller. `installed` records the newly verified instance. `readiness_origin`
+names supplied proof, or is null when the sections ran in this attempt.
+`installation_origin` names the retained root. This mode does not discover the
+newest guest or establish automatic selection or installed behavior for another
+source revision. Failed readiness and cleanup remain failed attempts.
+
+For a default-branch merge, use `merge --source-revision FULL_MERGED_SHA` instead
+of `nightly`. The selected host package must match that exact source. If its
+production artifact is unavailable, the attempt fails before provisioning.
+The caller never builds a substitute or uses an older source as merge proof.
+Pull-request triggers and other branch refs cannot admit the Claude section.
+
+Deploy this command through the existing Rundeck `acceptance` project API 59
+`run/script` interface and its retained `ssh_exec.sh` wrapper on the owned
+Ubuntu host. Sylab supplies the protected controller, host provisioning helper,
+credential name, private attempt parent and trusted nightly/manual/default-
+branch merge bindings. Preserve the wrapper's decoded guest exit and returned
+standard output. Worker access to Rundeck and provider secrets in GitHub Actions
+are unnecessary. The existing Actions blackbox jobs and PR checks remain
+credential-free. This command is the deployment entry point; source availability
+does not establish that those trigger bindings are installed.
+
+The command returns the actual failing command exit, or zero after the smoke
+and its cleanup succeed. Standard output and `result.json` contain the same
+nonsecret JSON report, including the original selection and available smoke
+failure reports. Provisioner output is discarded. Other raw diagnostics stay
+in the attempt's `private.log`; do not upload that log, host vaults or instance
+state. Preserve the existing Rundeck
+timeout and the smoke's bounded task deadline. Do not replay a submitted
+invocation when its transport result is uncertain.
+
+For an already provisioned dedicated installation, first complete the
+credential-free retained installed run above. Reuse its frozen `selection.json`
+and prepared root. The root must have no prior agent homes and remain private.
+The lower-level entry remains available for exact retained-input execution.
+
+From the checkout root, replace `/owned/inputs/selection.json` with the frozen
+selection, `/owned/prepared` with the dedicated installed root, and
+`claude-account` with its existing host credential name. `/owned/claude-reports`
+must be a new private report directory on disk. This command creates a fresh
+agent home and workspace and stops its owned agent and services after the attempt:
+
+```sh
+SAFEYOLO_CLAUDE_SMOKE_CREDENTIAL=claude-account .venv/bin/python tests/blackbox/retained_inputs.py run --lane systrap --selection /owned/inputs/selection.json --prepared-config /owned/prepared --section claude --artifacts /owned/claude-reports
+```
+
+Expected success: exit zero, `guest/claude/claude-smoke.json` reports `passed`,
+and `guest/installed-sections.json` reports stopped cleanup. Failures retain
+their step, exit, timeout and available HTTP status categories. An authentication
+or approval failure is a failed attempt. Inspect that request through the existing
+host approval controls. Do not infer tool completion from a model reply or HTTP
+status alone. Preserve the reached failure when preparing a corrected run.
+
+Trusted caller deployment and its actual selected-input/report-return outcome
+require separate verification on the operator-owned host. This section does
+not establish fresh-install speed, interactive channel behavior, Codex behavior
+or results on other platforms.
+
 ## Build and test a contributor checkout
 
 For source-based acceptance, use a disposable supported host and a clean checkout
@@ -521,7 +658,7 @@ close helper, with matching origin and inspector observations.
 NATS and inspector. It checks service approval, contract binding and risky-route
 approval/retry, exact credential injection, live peer denial, test context and
 trace, populated exact owner-positive/live-peer-negative flow search/detail,
-Coord messages and resolved attention, Plumb approval/exchange/closure,
+Coord messages and resolved attention, collaboration approval/exchange/revocation,
 WebSocket peer effects, inspector filtering, transcript and export. Raw inspector
 exports may contain disposable gateway tokens and stay in private instance state;
 the workflow publishes selected reports instead of raw exports.
@@ -545,8 +682,7 @@ SQLite ownership, exact bodies, tags and correlated audit; enforce an open
 circuit before operator reset and avoid resurrecting it afterward; retain
 catalogue, policy, grants and scoped host/service revocations; preserve Coord
 messages/attention and the provider-owned lease snapshot; the fresh process must report unknown lease state without inventing held ownership.
-It retains approved Plumb messages before close returns 403. The same sequence
-checks stored OAuth refresh/use, trusted upstream TLS, stable CA/HMAC identity,
+The same sequence checks stored OAuth refresh/use, trusted upstream TLS, stable CA/HMAC identity,
 0600 private state and process-local task reset. Each process, listener, NATS
 server and owned origin must stop. The historical cross-backend executor was
 retired after [Lens verified the Linux replacement](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5951336164).

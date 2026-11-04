@@ -18,6 +18,14 @@ Two layers, and both are load-bearing:
 attributes a request to an agent by its UDS. An agent cannot forge or override
 its own attribution, and nothing an agent writes reaches those fields.
 
+For an explicitly selected remote home, the source SafeYolo derives the local
+agent ID from that same authenticated listener. The home authenticates the peer
+through a host-held credential over TLS, then qualifies the principal by source
+instance and agent ID. The home sets `origin_instance_id`, `origin_agent_id`
+and its qualified `sender_agent_id`. NATS remains private transport; it grants
+no peer principal authority. The home owns room grants and mutable room state.
+Remote message content retains the same untrusted treatment as local content.
+
 **Consumer obligation.** Any SafeYolo-owned interface that *presents* that
 provenance must preserve the distinction when rendering. A correct envelope is
 not sufficient on its own: if a body can render as though it were provenance,

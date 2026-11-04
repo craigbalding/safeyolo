@@ -121,12 +121,14 @@ def verify_installed(selection_path: Path, root: Path, artifacts: Path) -> dict:
 
 
 def run(selection_path: Path, lane: str, artifacts: Path, sections: list[str], yes: bool, *,
-        guest_archive: Path | None = None) -> int:
+        guest_archive: Path | None = None, prepared_config: Path | None = None) -> int:
     artifacts.mkdir(parents=True, exist_ok=False)
     report = {"started_at": datetime.now(UTC).isoformat(), "finished_at": None, "exit": None,
               "lane": lane, "host_id": platform.node(), "host_system": platform.system(), "host_architecture": platform.machine(),
-              "guest_input_mode": "retained-archive" if guest_archive else "native-index",
+              "guest_input_mode": "prepared-installation" if prepared_config else
+                                  "retained-archive" if guest_archive else "native-index",
               "guest_test_provisioning": "offline" if os.environ.get("SAFEYOLO_GUEST_TEST_INPUTS") else "online",
+              "reused_installation": prepared_config is not None,
               **controller_identity()}
 
     def save() -> None:
@@ -139,6 +141,19 @@ def run(selection_path: Path, lane: str, artifacts: Path, sections: list[str], y
         # branch nor a guest tag is consulted by any execution step.
         frozen = artifacts / "selection.json"
         frozen.write_text(json.dumps(selection, indent=2) + "\n")
+        section_options = [value for section in sections for value in ("--section", section)]
+        if prepared_config is not None:
+            if lane != "systrap":
+                raise ValueError("prepared retained execution requires systrap")
+            verify_installed(frozen, prepared_config, artifacts)
+            command = [str(ROOT / "tests/blackbox/run-installed.sh"), lane,
+                       "--prepared-config", str(prepared_config),
+                       "--install-commit", selection["host"]["source_revision"],
+                       "--artifacts", str(artifacts / "guest")]
+            command += section_options
+            result = subprocess.run(command, cwd=ROOT, check=False)
+            report["exit"] = result.returncode
+            return report["exit"]
         package = selection_path.parent / selection["host"]["archive"]["name"]
         if sha256(package) != selection["host"]["archive"]["sha256"]:
             raise ValueError("selected host archive checksum differs before installation")
@@ -149,8 +164,7 @@ def run(selection_path: Path, lane: str, artifacts: Path, sections: list[str], y
             options += ["--guest-index", selection["guest"]["index"]["digest"]]
         if lane != "package":
             options += ["--lane", lane]
-        for section in sections:
-            options += ["--section", section]
+        options += section_options
         if yes:
             options += ["--yes"]
         environment = dict(os.environ, SAFEYOLO_BLACKBOX_ARTIFACTS_DIR=str(artifacts),
@@ -177,6 +191,8 @@ def main() -> int:
     execute.add_argument("--section", action="append", default=[])
     execute.add_argument("--yes", action="store_true")
     execute.add_argument("--guest-archive", type=Path, help="Exact archive from --download-guest-archive for offline execution")
+    execute.add_argument("--prepared-config", type=Path,
+                         help="Reuse the exact selected installation for systrap sections; defaults to credential-free sections")
     verify = commands.add_parser("verify-installed")
     verify.add_argument("--selection", type=Path, required=True)
     verify.add_argument("--root", type=Path, required=True)
@@ -195,7 +211,8 @@ def main() -> int:
         print(prepare_guest(args.selection, args.archive, args.bundle, args.root, args.directory, yes=args.yes))
         return 0
     return run(args.selection.resolve(), args.lane, args.artifacts.resolve(), args.section, args.yes,
-               guest_archive=args.guest_archive.resolve() if args.guest_archive else None)
+               guest_archive=args.guest_archive.resolve() if args.guest_archive else None,
+               prepared_config=args.prepared_config.resolve() if args.prepared_config else None)
 
 
 if __name__ == "__main__":

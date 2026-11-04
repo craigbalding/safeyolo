@@ -1,6 +1,9 @@
 use std::{path::Path, process::Command, sync::Arc};
 
-use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
+use rcgen::{
+    BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair, KeyUsagePurpose,
+    SubjectPublicKeyInfo,
+};
 use rustls::{
     RootCertStore,
     client::{WebPkiServerVerifier, danger::ServerCertVerifier},
@@ -167,6 +170,40 @@ fn crl_empty_reason_bit_string_returns_a_parse_error_without_panicking() {
         rustls::client::VerifierBuilderError::InvalidCrl(_)
     ));
     assert!(format!("{error:?}").contains("UnsupportedRevocationReasonsPartitioning"));
+}
+
+#[test]
+fn compromised_emsign_public_key_is_rejected_even_with_a_configured_ca() {
+    let now = OffsetDateTime::now_utc();
+    let (pem, key) = ca_pem(now - Duration::days(1), now + Duration::days(365), true);
+    let ca = CertificateAuthority::from_pem(pem.as_bytes()).unwrap();
+    let issuer = Issuer::from_ca_cert_der(ca.certificate(), key).unwrap();
+    let public_key =
+        SubjectPublicKeyInfo::from_pem(include_str!("fixtures/emsign-distrusted-spki.pem"))
+            .unwrap();
+    // RUSTSEC-2026-0382 rejects this key in any path position. A new certificate
+    // under our own CA proves that rejection depends on the key, not its issuer.
+    let leaf = CertificateParams::new(vec!["example.invalid".into()])
+        .unwrap()
+        .signed_by(&public_key, &issuer)
+        .unwrap();
+    let error = verifier(&ca)
+        .verify_server_cert(
+            leaf.der(),
+            &[],
+            &ServerName::try_from("example.invalid").unwrap(),
+            &[],
+            UnixTime::since_unix_epoch(std::time::Duration::from_secs(now.unix_timestamp() as u64)),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::Other(ref cause))
+                if format!("{cause:?}").contains("CertDistrusted")
+        ),
+        "unexpected verification error: {error:?}"
+    );
 }
 
 #[test]

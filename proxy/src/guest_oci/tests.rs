@@ -359,9 +359,67 @@ fn complete_release_explicitly_selects_all_platforms_and_verifies_content() {
             .archive
             .verify(release.archives[i].as_slice())
             .unwrap();
-        assert_eq!(index.manifest(child.platform).digest, digest(&bytes[i]));
+        assert_eq!(
+            index.manifest(child.platform).unwrap().digest,
+            digest(&bytes[i])
+        );
     }
     assert_ne!(children[0].archive.digest, children[2].archive.digest);
+}
+
+#[test]
+fn custom_profile_validates_only_its_declared_consumers() {
+    let mut release = Release::new();
+    release.index["annotations"][PROFILE] = json!("kali-pentest");
+    for child in &mut release.children {
+        child["annotations"][PROFILE] = json!("kali-pentest");
+        child["annotations"][BUILD_INPUTS] = json!(digest(b"declared build inputs"));
+    }
+    release.refresh_children();
+    release.index["manifests"] = json!([release.index["manifests"][1]]);
+    let index = release.parse().unwrap();
+    assert_eq!(
+        index.platforms().collect::<Vec<_>>(),
+        vec![ConsumerPlatform::LinuxAmd64]
+    );
+    assert!(index.manifest(ConsumerPlatform::DarwinArm64).is_err());
+    let child_bytes = encode(&release.children[1]);
+    let children = index.validate_children([child_bytes.as_slice()]).unwrap();
+    assert_eq!(
+        children[0].build_inputs.as_deref(),
+        Some(digest(b"declared build inputs").as_str())
+    );
+    children[0]
+        .archive
+        .verify(release.archives[1].as_slice())
+        .unwrap();
+
+    release.index["annotations"]
+        .as_object_mut()
+        .unwrap()
+        .remove(PROFILE);
+    assert!(
+        release.parse().is_err(),
+        "default releases still need every consumer"
+    );
+}
+
+#[test]
+fn custom_profile_requires_matching_identity_and_declared_input_digest() {
+    let mut release = Release::new();
+    release.index["annotations"][PROFILE] = json!("kali-pentest");
+    assert!(release.selected_child().is_err());
+    release.children[0]["annotations"][PROFILE] = json!("kali-pentest");
+    release.refresh_children();
+    assert!(release.selected_child().is_err());
+    release.children[0]["annotations"][BUILD_INPUTS] = json!("unverified");
+    release.refresh_children();
+    assert!(release.selected_child().is_err());
+    release.children[0]["annotations"][BUILD_INPUTS] = json!(digest(b"inputs"));
+    release.refresh_children();
+    release.selected_child().unwrap();
+    release.index["manifests"] = json!([]);
+    assert!(release.parse().is_err());
 }
 
 #[test]
@@ -395,7 +453,8 @@ fn validates_actual_oras_1_3_4_layout_with_inferred_consumer_platforms() {
     let bytes = read(&descriptor.digest);
     descriptor.verify(bytes.as_slice()).unwrap();
     let index = GuestIndex::parse(&bytes, &descriptor.digest, "v1").unwrap();
-    let manifests = ConsumerPlatform::ALL.map(|platform| read(&index.manifest(platform).digest));
+    let manifests =
+        ConsumerPlatform::ALL.map(|platform| read(&index.manifest(platform).unwrap().digest));
     let children = index
         .validate_children(manifests.each_ref().map(Vec::as_slice))
         .unwrap();

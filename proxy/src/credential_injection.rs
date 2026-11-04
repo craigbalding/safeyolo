@@ -69,6 +69,7 @@ fn error(kind: ErrorKind, refreshed: u64) -> Error {
 
 /// Full URL can contain a signed query. It has no Debug/Serialize representation.
 pub struct RequestInfo<'a> {
+    pub authorization_guard: Option<&'a crate::credential_guard::CredentialGuard>,
     pub method: &'a str,
     pub host: &'a str,
     pub path: &'a str,
@@ -77,6 +78,7 @@ pub struct RequestInfo<'a> {
     pub request_id: Option<&'a str>,
 }
 struct Context {
+    authorization_guard: Option<crate::credential_guard::CredentialGuard>,
     selection: CredentialSelection,
     method: String,
     host: String,
@@ -88,6 +90,11 @@ struct Context {
 impl Context {
     fn new(selection: CredentialSelection, request: RequestInfo<'_>) -> Self {
         Self {
+            authorization_guard: selection
+                .authorization_binding
+                .as_ref()
+                .and(request.authorization_guard)
+                .cloned(),
             selection,
             method: request.method.into(),
             host: request.host.into(),
@@ -96,6 +103,22 @@ impl Context {
             full_url: request.full_url.clone(),
             request_id: request.request_id.map(str::to_owned),
         }
+    }
+
+    fn check_authorization(&self, snapshot: &CredentialSnapshot) -> Result<()> {
+        if self
+            .selection
+            .authorization_binding
+            .as_ref()
+            .is_some_and(|expected| {
+                self.authorization_guard
+                    .as_ref()
+                    .is_none_or(|guard| guard.approval_binding(snapshot.credential()) != *expected)
+            })
+        {
+            return Err(error(ErrorKind::Superseded, 0));
+        }
+        Ok(())
     }
 }
 
@@ -207,11 +230,21 @@ pub enum Start {
 pub struct HeaderReplacement {
     name: HeaderName,
     value: Option<HeaderValue>,
+    // A Codex subscription owns this header even when the imported login has
+    // no selected account. Other service credentials preserve existing headers.
+    chatgpt_account_id: Option<Option<HeaderValue>>,
     evidence: Evidence,
 }
 impl HeaderReplacement {
     pub fn name(&self) -> &HeaderName {
         &self.name
+    }
+    pub fn changed_headers(&self) -> impl Iterator<Item = HeaderName> + '_ {
+        std::iter::once(self.name.clone()).chain(
+            self.chatgpt_account_id
+                .as_ref()
+                .map(|_| HeaderName::from_static("chatgpt-account-id")),
+        )
     }
     /// Both name and value were validated before this point. Missing selected
     /// header mirrors Python's KeyError and preserves every input header.
@@ -225,6 +258,12 @@ impl HeaderReplacement {
         headers.remove(&self.name);
         if let Some(value) = self.value {
             headers.insert(self.name, value);
+        }
+        if let Some(account) = self.chatgpt_account_id {
+            headers.remove("chatgpt-account-id");
+            if let Some(account) = account {
+                headers.insert("chatgpt-account-id", account);
+            }
         }
         Ok(self.evidence)
     }
@@ -427,6 +466,7 @@ pub fn prepare(
         return Ok(Start::Blocked(deny(context, Missing::Initial, 0)));
     };
     let credential = snapshot.credential();
+    context.check_authorization(&snapshot)?;
     if credential.reference.is_some() {
         // Redirects do not need a provider read. No resolved value is cached in
         // the snapshot or the store, including after successful delivery.
@@ -534,6 +574,9 @@ fn finish_with_value(
     refreshed: u64,
     resolved: Option<Secret>,
 ) -> Result<Start> {
+    if let Some(snapshot) = &snapshot {
+        context.check_authorization(snapshot)?;
+    }
     let mut evidence = empty_evidence(refreshed);
     let selection = &context.selection;
     if context.scheme == "http" && selection.auth_kind.is_some() {
@@ -613,6 +656,25 @@ fn finish_with_value(
         })
         .transpose()?;
     let injected_header = selection.auth_kind.as_ref().map(|_| auth_header);
+    let chatgpt_account_id = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.credential())
+        .filter(|credential| {
+            credential.subscription_client == Some(crate::credentials::SubscriptionClient::Codex)
+        })
+        .map(|credential| {
+            credential
+                .chatgpt_account_id
+                .as_ref()
+                .map(|account| {
+                    let mut value = HeaderValue::from_str(account)
+                        .map_err(|_| error(ErrorKind::InvalidHeaderValue, refreshed))?;
+                    value.set_sensitive(true);
+                    Ok(value)
+                })
+                .transpose()
+        })
+        .transpose()?;
     evidence.metadata = json!({"gateway_service":selection.service,"gateway_capability":selection.capability,"gateway_agent":selection.agent,"gateway_account":selection.account,"gateway_injected_header":injected_header});
     let action = if selection.auth_kind.is_some() {
         "injected"
@@ -632,6 +694,7 @@ fn finish_with_value(
     Ok(Start::Ready(HeaderReplacement {
         name,
         value,
+        chatgpt_account_id,
         evidence,
     }))
 }

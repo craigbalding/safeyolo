@@ -32,6 +32,7 @@ use crate::tasks::{self, Registry};
 
 mod approvals;
 mod audit_events;
+mod coord_signals;
 mod gateway;
 mod services;
 mod traffic;
@@ -67,10 +68,10 @@ struct ServiceMutationState {
 impl ServiceMutationOwner {
     /// Admit one blocking service mutation into the process owner. A caller
     /// may drop the receiver, but the owner retains and joins the work.
-    pub(crate) async fn spawn_blocking(
+    pub(crate) async fn spawn_blocking<T: Send + 'static>(
         &self,
-        work: impl FnOnce() -> Result<Outcome, Error> + Send + 'static,
-    ) -> Result<oneshot::Receiver<Result<Outcome, Error>>, Error> {
+        work: impl FnOnce() -> Result<T, Error> + Send + 'static,
+    ) -> Result<oneshot::Receiver<Result<T, Error>>, Error> {
         let (sender, receiver) = oneshot::channel();
         let mut state = self.state.lock().await;
         while state.tasks.try_join_next().is_some() {}
@@ -139,7 +140,6 @@ pub enum Audit {
     },
     PolicyMutation(PolicyMutationAudit),
     PolicyActivated,
-    PlumbMutation(PlumbMutationAudit),
     DesktopPresented(DesktopPresentationAudit),
     DesktopPresentationFailed(DesktopPresentationFailureAudit),
     ModeChanged {
@@ -157,16 +157,6 @@ pub struct PolicyMutationAudit {
     pub(super) details: Value,
 }
 
-/// A committed native plumb mutation. The details are retained only until the
-/// canonical audit writer accepts the event.
-pub struct PlumbMutationAudit {
-    pub(super) event: &'static str,
-    pub(super) summary: String,
-    pub(super) details: Value,
-    pub(super) agent: Option<String>,
-    pub(super) decision: crate::audit::Decision,
-}
-
 pub struct DesktopPresentationAudit {
     pub(super) agent_id: String,
     pub(super) agent: String,
@@ -180,12 +170,6 @@ pub struct DesktopPresentationFailureAudit {
     pub(super) status: u16,
     pub(super) reason: &'static str,
     pub(super) approval_request_id: Option<String>,
-}
-
-impl Drop for PlumbMutationAudit {
-    fn drop(&mut self) {
-        crate::credentials::wipe_json(&mut self.details);
-    }
 }
 
 impl Drop for PolicyMutationAudit {
@@ -451,17 +435,6 @@ fn response(status: StatusCode, value: Value) -> Outcome {
     )
 }
 
-fn plumb_response(mut value: Value) -> Outcome {
-    let status = value
-        .as_object_mut()
-        .and_then(|object| object.remove("status"))
-        .and_then(|value| value.as_u64())
-        .and_then(|value| u16::try_from(value).ok())
-        .and_then(|value| StatusCode::from_u16(value).ok())
-        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    response(status, value)
-}
-
 fn unsupported(method: &Method) -> Outcome {
     // BaseHTTPRequestHandler.send_error escapes the method in its HTML body.
     let method_text = method
@@ -642,26 +615,6 @@ fn desktop_failure(
     ));
     outcome
 }
-/// Build the canonical operator plumb events while the process-owned mailbox
-/// worker still owns the committed projection and its audit responsibility.
-pub(crate) fn plumb_events(
-    event: &'static str,
-    summary: String,
-    details: Value,
-    agent: Option<String>,
-    decision: crate::audit::Decision,
-) -> Vec<crate::audit::Event> {
-    // PlumbMutation's retained event schema has no operator peer/path fields;
-    // canonical_events intentionally ignores those two common arguments.
-    Audit::PlumbMutation(PlumbMutationAudit {
-        event,
-        summary,
-        details,
-        agent,
-        decision,
-    })
-    .canonical_events("", "")
-}
 
 fn require_policy_path(path: Option<&Path>) -> Result<&Path, Box<Outcome>> {
     path.ok_or_else(|| {
@@ -721,274 +674,6 @@ async fn get_baseline(policy: Option<&Policy>, path: Option<&Path>) -> Outcome {
             json!({"error":"baseline response unavailable"}),
         ),
     }
-}
-
-fn read_audit_events(path: &Path) -> Vec<Value> {
-    let Ok(source) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    source
-        .lines()
-        .rev()
-        .take(50_000)
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect()
-}
-
-fn network_approval_key(event: &Value) -> Option<String> {
-    if event.pointer("/details/network_action/kind")?.as_str()? != "network_allow" {
-        return None;
-    }
-    let request_id = event.get("request_id")?.as_str()?;
-    Some(format!("network:{request_id}"))
-}
-
-fn approval_key(event: &Value) -> Option<String> {
-    if let Some(key) = network_approval_key(event) {
-        return Some(key);
-    }
-    let approval = event.get("approval")?.as_object()?;
-    let key = approval.get("key")?.as_str()?;
-    let target = approval.get("target")?.as_str()?;
-    Some(format!("{key}:{target}"))
-}
-
-fn credential_resolution_key(credential: &str, destination: &str) -> String {
-    if let Some(service) = destination.strip_prefix("gateway:") {
-        let mut parts = credential.splitn(3, ':');
-        if let (Some(agent), Some(method), Some(path)) = (parts.next(), parts.next(), parts.next())
-        {
-            return format!("gw:{agent}:{service}:{method}:{path}:{service}");
-        }
-    }
-    format!("{credential}:{destination}")
-}
-
-fn resolved_approval_keys(event: &Value) -> Vec<String> {
-    let Some(event_name) = event.get("event").and_then(Value::as_str) else {
-        return Vec::new();
-    };
-    let Some(details) = event.get("details").and_then(Value::as_object) else {
-        return Vec::new();
-    };
-    match event_name {
-        "admin.approval_added" | "admin.denial" => {
-            let destination = details.get("destination").and_then(Value::as_str);
-            let Some(destination) = destination else {
-                return Vec::new();
-            };
-            match details.get("cred_id") {
-                Some(Value::String(credential)) => {
-                    vec![credential_resolution_key(credential, destination)]
-                }
-                Some(Value::Array(credentials)) => credentials
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(|credential| credential_resolution_key(credential, destination))
-                    .collect(),
-                _ => Vec::new(),
-            }
-        }
-        "admin.gateway_grant" => {
-            let agent = details
-                .get("agent")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let service = details
-                .get("service")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if agent.is_empty() || service.is_empty() {
-                return Vec::new();
-            }
-            let method = details
-                .get("method")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let path = details
-                .get("path")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            vec![format!("gw:{agent}:{service}:{method}:{path}:{service}")]
-        }
-        "admin.agent_service_authorized" | "admin.agent_service_revoked" => {
-            let agent = details
-                .get("agent")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let service = details
-                .get("service")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if agent.is_empty() || service.is_empty() {
-                Vec::new()
-            } else {
-                vec![format!("{agent}:{service}:{service}")]
-            }
-        }
-        "admin.contract_binding_approved" => {
-            let agent = details
-                .get("agent")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let service = details
-                .get("service")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let capability = details
-                .get("capability")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if agent.is_empty() || service.is_empty() || capability.is_empty() {
-                Vec::new()
-            } else {
-                vec![format!("{agent}:{service}:{capability}:{service}")]
-            }
-        }
-        "admin.host_allowed" | "admin.host_denied" | "admin.network_action_rejected" => {
-            if let Some(key) = network_approval_key(event) {
-                return vec![key];
-            }
-            let Some(host) = details.get("host").and_then(Value::as_str) else {
-                return Vec::new();
-            };
-            let agent = details.get("agent").and_then(Value::as_str);
-            let port = details
-                .get("port")
-                .and_then(Value::as_u64)
-                .and_then(|port| u16::try_from(port).ok());
-            crate::approvals::NetworkScope::new(host, agent, port)
-                .ok()
-                .and_then(|scope| scope.resolved_key().ok())
-                .into_iter()
-                .collect()
-        }
-        "plumb.approved" | "plumb.denied" => {
-            let Some(request_id) = details.get("request_id").and_then(Value::as_str) else {
-                return Vec::new();
-            };
-            let Some(participants) = details.get("participants").and_then(Value::as_array) else {
-                return Vec::new();
-            };
-            let participants = participants
-                .iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>();
-            if participants.is_empty() {
-                Vec::new()
-            } else {
-                vec![format!("{request_id}:{}", participants.join(","))]
-            }
-        }
-        "admin.desktop_presented" => details
-            .get("agent_id")
-            .and_then(Value::as_str)
-            .filter(|agent_id| !agent_id.is_empty())
-            .map(|agent_id| format!("desktop.present:desktop:{agent_id}"))
-            .into_iter()
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn pending_approvals(path: &Path) -> Value {
-    let events = read_audit_events(path);
-    let mut pending = pending_approval_events(&events);
-    let mut events_by_request: std::collections::HashMap<&str, Vec<&Value>> =
-        std::collections::HashMap::new();
-    for event in &events {
-        if event["event"] == "security.credential_guard"
-            && event["approval"]["approval_type"] == "credential"
-            && let Some(id) = event["request_id"].as_str()
-        {
-            events_by_request.entry(id).or_default().push(event);
-        }
-    }
-    let credential_actions: std::collections::HashMap<_, _> = events_by_request
-        .into_iter()
-        .filter_map(|(id, events)| {
-            approvals::credential_view(events, id)
-                .ok()
-                .flatten()
-                .map(|mut view| (id, view["action"].take()))
-        })
-        .collect();
-    for event in pending.as_array_mut().expect("pending approval array") {
-        if let Some(action) = event["request_id"]
-            .as_str()
-            .and_then(|id| credential_actions.get(id))
-        {
-            event["action"] = action.clone();
-        }
-    }
-    pending
-}
-
-fn pending_approval_events(events: &[Value]) -> Value {
-    let mut durable_resolutions = std::collections::HashSet::new();
-    let mut pending: std::collections::HashMap<String, (usize, Value)> =
-        std::collections::HashMap::new();
-    // Walk newest-first audit input chronologically. Typed network requests
-    // retain their own decisions; unbound legacy prompts coalesce by scope.
-    for (sequence, event) in events.iter().rev().enumerate() {
-        for key in resolved_approval_keys(event) {
-            let repeatable = key.starts_with("desktop.present:desktop:")
-                || event.pointer("/details/network_action").is_some();
-            if repeatable {
-                let Some((_, prompt)) = pending.get(&key) else {
-                    continue;
-                };
-                let request_matches = event
-                    .get("details")
-                    .and_then(Value::as_object)
-                    .and_then(|details| details.get("approval_request_id"))
-                    .and_then(Value::as_str)
-                    .is_none_or(|request_id| {
-                        prompt.get("request_id").and_then(Value::as_str) == Some(request_id)
-                    });
-                if request_matches {
-                    pending.remove(&key);
-                }
-            } else {
-                durable_resolutions.insert(key.clone());
-                pending.remove(&key);
-            }
-        }
-        let Some(approval) = event.get("approval") else {
-            continue;
-        };
-        if event["event"] == "agent.network_action_prepared" {
-            if let Some(key) = network_approval_key(event)
-                && let Some((_, prompt)) = pending.get_mut(&key)
-                && prompt.pointer("/details/network_action")
-                    == event.pointer("/details/network_action")
-                && let Some(reason) = event.pointer("/details/untrusted_reason_text")
-            {
-                // Keep the original required prompt and immutable action. A
-                // preparation only annotates pending work, never reopens it.
-                prompt["details"]["untrusted_reason_text"] = reason.clone();
-            }
-            continue;
-        }
-        if !approval
-            .get("required")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        let Some(key) = approval_key(event) else {
-            continue;
-        };
-        if durable_resolutions.contains(&key) && event.pointer("/details/network_action").is_none()
-        {
-            continue;
-        }
-        pending.insert(key, (sequence, event.clone()));
-    }
-    let mut pending = pending.into_values().collect::<Vec<_>>();
-    pending.sort_unstable_by_key(|(sequence, _)| *sequence);
-    Value::Array(pending.into_iter().map(|(_, event)| event).collect())
 }
 
 fn json_toml_value(value: &Value) -> std::result::Result<toml_edit::Value, ()> {
@@ -1176,7 +861,7 @@ pub async fn respond<B>(
     request: Request<B>,
     expected_token: &str,
     registry: &Registry,
-    policy: Option<&Policy>,
+    policy: Option<&Arc<Policy>>,
 ) -> Result<Outcome, Error>
 where
     B: Body<Data = Bytes>,
@@ -1188,7 +873,7 @@ pub async fn respond_with_circuits<B>(
     request: Request<B>,
     expected_token: &str,
     registry: &Registry,
-    policy: Option<&Policy>,
+    policy: Option<&Arc<Policy>>,
     circuits: Option<&crate::circuits::CircuitBreaker>,
 ) -> Result<Outcome, Error>
 where
@@ -1203,7 +888,7 @@ pub(crate) async fn respond_with_stats<B>(
     request: Request<B>,
     expected_token: &str,
     registry: &Registry,
-    policy: Option<&Policy>,
+    policy: Option<&Arc<Policy>>,
     circuits: Option<&crate::circuits::CircuitBreaker>,
     stats: Option<&(dyn Fn() -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
 ) -> Result<Outcome, Error>
@@ -1235,7 +920,7 @@ pub(crate) struct ServiceAudit<'a> {
 /// persist configuration; the existing runtime watcher owns later activation.
 pub(crate) struct OperatorContext<'a> {
     pub tasks: &'a Registry,
-    pub policy: Option<&'a Policy>,
+    pub policy: Option<&'a Arc<Policy>>,
     pub circuits: Option<&'a crate::circuits::CircuitBreaker>,
     pub stats:
         Option<&'a (dyn Fn() -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
@@ -1250,7 +935,6 @@ pub(crate) struct OperatorContext<'a> {
     pub client_ip: Option<&'a str>,
     pub passthrough: Option<&'a std::sync::RwLock<crate::tunnels::Passthrough>>,
     pub service_audit: Option<ServiceAudit<'a>>,
-    pub plumb: Option<&'a crate::agent_api::plumb::PlumbOwner>,
     /// The listener supplies the outer state so task activation can publish a
     /// complete Runtime generation. Unit callers without it retain the raw
     /// registration-only behavior.
@@ -1262,7 +946,7 @@ pub(crate) async fn respond_with_view<B>(
     request: Request<B>,
     expected_token: &str,
     registry: &Registry,
-    policy: Option<&Policy>,
+    policy: Option<&Arc<Policy>>,
     circuits: Option<&crate::circuits::CircuitBreaker>,
     stats: Option<&(dyn Fn() -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
     view: Option<&std::sync::Arc<crate::traffic_view::TrafficView>>,
@@ -1289,7 +973,6 @@ where
             client_ip: None,
             passthrough: None,
             service_audit: None,
-            plumb: None,
             task_state: None,
         },
     )
@@ -1303,7 +986,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
 ) -> Result<Outcome, Error> {
     let OperatorContext {
         tasks: registry,
-        policy,
+        policy: policy_snapshot,
         circuits,
         stats,
         view,
@@ -1317,9 +1000,9 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         client_ip,
         passthrough,
         service_audit,
-        plumb,
         task_state,
     } = context;
+    let policy = policy_snapshot.map(Arc::as_ref);
     let method = request.method();
     if !matches!(
         *method,
@@ -1363,6 +1046,88 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             StatusCode::OK,
             json!({"schema_version":1,"state":"active","instance_id":instance_id}),
         ));
+    }
+    if path == "/admin/coord/signals" || path.starts_with("/admin/coord/signals/") {
+        return coord_signals::respond(request, &path, task_state).await;
+    }
+    if let Some(room) = path
+        .strip_prefix("/admin/coord/rooms/")
+        .and_then(|path| path.strip_suffix("/state"))
+        .filter(|room| !room.is_empty() && !room.contains('/'))
+    {
+        if method != Method::GET {
+            return Ok(unsupported(method));
+        }
+        let Some(state) = task_state else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"runtime is unavailable"}),
+            ));
+        };
+        let room = services::decode_name(room)?;
+        return Ok(
+            match crate::agent_api::coord::operator_state(state, &room).await {
+                Ok(value) => response(StatusCode::OK, value),
+                Err(error) => response(
+                    if error.unavailable {
+                        StatusCode::SERVICE_UNAVAILABLE
+                    } else {
+                        StatusCode::NOT_FOUND
+                    },
+                    json!({"error":"room state unavailable or not accessible"}),
+                ),
+            },
+        );
+    }
+    if matches!(*method, Method::POST | Method::DELETE) && path == "/admin/credentials/unlock" {
+        let Some(state) = task_state else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"runtime is unavailable"}),
+            ));
+        };
+        let unlock = *method == Method::POST;
+        let passphrase = if unlock {
+            let data = match read_json(request).await? {
+                ParsedBody::Value(data) => data,
+                _ => {
+                    return Ok(response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error":"unlock requires a passphrase"}),
+                    ));
+                }
+            };
+            let Some(passphrase) = data.0.get("passphrase").and_then(Value::as_str) else {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"unlock requires a passphrase"}),
+                ));
+            };
+            Some(crate::credentials::Secret::new(passphrase))
+        } else {
+            None
+        };
+        let owner = state
+            .read()
+            .map_err(|_| Error::ServiceMutation)?
+            .gateway_vault
+            .clone();
+        let result = tokio::task::spawn_blocking(move || match passphrase {
+            Some(passphrase) => owner.unlock(&passphrase),
+            None => owner.lock(),
+        })
+        .await
+        .map_err(|_| Error::ServiceMutation)?;
+        return Ok(match result {
+            Ok(()) => response(
+                StatusCode::OK,
+                json!({"status":if unlock { "unlocked" } else { "locked" }}),
+            ),
+            Err(_) => response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"credential storage could not be unlocked or locked; check the selected store and passphrase"}),
+            ),
+        });
     }
     if method == Method::PUT && path == "/admin/proxy/ignore-hosts" {
         let Some(passthrough) = passthrough else {
@@ -1485,11 +1250,17 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             }),
         ));
     }
+    if path == "/admin/approval-delegations" || path.starts_with("/admin/approval-delegations/") {
+        return approvals::delegations(request, &path, policy_snapshot, task_state, service_audit)
+            .await;
+    }
     if method == Method::GET && path == "/admin/approvals" {
-        if let (Some(writer), Some(policy)) = (audit, policy)
+        if let (Some(writer), Some(policy)) = (audit, policy_snapshot)
             && writer.approvals_enabled()
         {
-            let (writer, policy, state) = (writer.clone(), policy.clone(), task_state.cloned());
+            // Keep the accepted policy generation alive across reloads without
+            // copying its expanded host lists into each listing worker.
+            let (writer, policy, state) = (writer.clone(), Arc::clone(policy), task_state.cloned());
             return tokio::task::spawn_blocking(move || {
                 let records = match writer.approvals().list() {
                     Ok(records) => records,
@@ -1518,150 +1289,25 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                         }
                     }
                 }
-                // Plumb and desktop keep their existing owners. Historical
-                // prompts stay readable, but canonical requests appear once.
-                if let Some(events) = pending_approvals(writer.path()).as_array() {
-                    views.extend(
-                        events
-                            .iter()
-                            .filter(|event| {
-                                event["details"]["approval_id"].is_null()
-                                    && (policy.native_controls().is_none()
-                                        || matches!(
-                                            event["approval"]["approval_type"].as_str(),
-                                            Some("plumb" | "desktop_present")
-                                        ))
-                            })
-                            .cloned(),
-                    );
-                }
                 Ok(response(StatusCode::OK, json!({"approvals":views})))
             })
             .await
             .map_err(|_| Error::ServiceMutation)?;
         }
-        return Ok(response(
-            StatusCode::OK,
-            json!({"approvals":audit.map(|writer| pending_approvals(writer.path())).unwrap_or_else(|| Value::Array(Vec::new()))}),
-        ));
+        return Ok(response(StatusCode::OK, json!({"approvals":[]})));
     }
     if path.starts_with("/admin/approvals/") {
-        return approvals::respond(request, &path, policy, audit, task_state, service_audit).await;
-    }
-    if method == Method::GET && path == "/admin/plumb/pending" {
-        let Some(owner) = plumb else {
-            return Ok(response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                json!({"error":"plumb backing state unavailable"}),
-            ));
-        };
-        if !owner.available() {
-            return Ok(response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                json!({"error":"plumb backing state unavailable"}),
-            ));
-        }
-        return Ok(plumb_response(owner.list_pending().await));
-    }
-    if method == Method::GET && path == "/admin/plumb/conversations" {
-        let Some(owner) = plumb else {
-            return Ok(response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                json!({"error":"plumb backing state unavailable"}),
-            ));
-        };
-        if !owner.available() {
-            return Ok(response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                json!({"error":"plumb backing state unavailable"}),
-            ));
-        }
-        return Ok(plumb_response(owner.admin_list_conversations().await));
-    }
-    if method == Method::POST
-        && matches!(
-            path.as_str(),
-            "/admin/plumb/approve" | "/admin/plumb/deny" | "/admin/plumb/close"
+        return approvals::respond(
+            request,
+            &path,
+            policy_snapshot,
+            audit,
+            task_state,
+            service_audit,
         )
-    {
-        let data = match read_json(request).await? {
-            ParsedBody::Terminal(outcome) => return Ok(outcome),
-            ParsedBody::Absent => Value::Null,
-            ParsedBody::Value(data) => data.0.clone(),
-        };
-        let Some(fields) = data.as_object() else {
-            return Ok(response(
-                StatusCode::BAD_REQUEST,
-                json!({"error":"request body must be an object"}),
-            ));
-        };
-        let Some(owner) = plumb else {
-            return Ok(response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                json!({"error":"plumb backing state unavailable"}),
-            ));
-        };
-        if !owner.available() {
-            return Ok(response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                json!({"error":"plumb backing state unavailable"}),
-            ));
-        }
-        let writer = audit.cloned();
-        let result = match path.as_str() {
-            "/admin/plumb/approve" => {
-                let Some(request_id) = fields
-                    .get("request_id")
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                else {
-                    return Ok(response(
-                        StatusCode::BAD_REQUEST,
-                        json!({"error":"missing 'request_id'"}),
-                    ));
-                };
-                let operator_ttl = fields.get("ttl_seconds").and_then(|value| match value {
-                    Value::Number(value) => value.as_i64(),
-                    Value::String(value) => value.parse().ok(),
-                    _ => None,
-                });
-                owner
-                    .approve_owned(request_id.to_owned(), operator_ttl, writer.clone())
-                    .await?
-            }
-            "/admin/plumb/deny" => {
-                let Some(request_id) = fields
-                    .get("request_id")
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                else {
-                    return Ok(response(
-                        StatusCode::BAD_REQUEST,
-                        json!({"error":"missing 'request_id'"}),
-                    ));
-                };
-                owner
-                    .deny_owned(request_id.to_owned(), writer.clone())
-                    .await?
-            }
-            _ => {
-                let Some(conversation_id) = fields
-                    .get("conversation_id")
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
-                else {
-                    return Ok(response(
-                        StatusCode::BAD_REQUEST,
-                        json!({"error":"missing 'conversation_id'"}),
-                    ));
-                };
-                owner
-                    .close_owned(conversation_id.to_owned(), writer.clone())
-                    .await?
-            }
-        };
-        return Ok(plumb_response(result));
+        .await;
     }
+
     if method == Method::GET && path == "/admin/agents" {
         if let Some(host) = command_centre {
             let result = match host.agents("list", None).await {
@@ -1842,7 +1488,9 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                     approval_request_id.as_deref(),
                 ));
             }
-            Err(crate::desktop_present::Error::Failed) => {
+            Err(
+                crate::desktop_present::Error::Failed | crate::desktop_present::Error::Preview(_),
+            ) => {
                 return Ok(desktop_failure(
                     agent_id,
                     StatusCode::CONFLICT,
@@ -2122,13 +1770,24 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 fields.get("approval_request_id").and_then(Value::as_str),
             ) {
                 (Some(writer), Some(policy), Some(id)) => {
-                    approvals::credential_record(writer, policy, id)
+                    crate::approvals::pending::lookup(writer, id)
+                        .and_then(|record| {
+                            record
+                                .map(|record| {
+                                    crate::approvals::pending::current_view(
+                                        writer, policy, &record, task_state,
+                                    )
+                                })
+                                .transpose()
+                        })
+                        .map_err(|_| "credential approval state unavailable")
                 }
                 _ => Err("credential approval evidence unavailable"),
             };
             match current {
                 Ok(Some(view))
                     if view["status"] == "pending"
+                        && view["action"]["kind"] == "credential_allow"
                         && view["action"] == *expected
                         && view["action"]["host"] == destination
                         && view["action"]["credentials"] == json!(credentials) => {}
@@ -3359,235 +3018,6 @@ mod tests {
             retained.document()["gateway"]["literal"]["$serde_json::private::Number"],
             "17"
         );
-    }
-
-    #[tokio::test]
-    async fn plumb_resolution_events_remove_retained_pending_approval() {
-        let directory = tempfile::tempdir().unwrap();
-        let owner = crate::agent_api::plumb::PlumbOwner::for_data_dir(directory.path());
-        let requested = owner
-            .request_chat("alice", &[json!("bob")], None, None, None)
-            .await;
-        let request_id = requested["request_id"].as_str().unwrap().to_owned();
-        let participants = requested["participants"].clone();
-        let path = directory.path().join("approved.jsonl");
-        let writer = crate::audit::Writer::new(path.clone(), crate::audit::Settings::default());
-        let mut prompt = crate::audit::Event::new(
-            "plumb.requested",
-            crate::audit::Kind::Plumb,
-            crate::audit::Severity::Critical,
-            "Agent requested a plumb conversation",
-        );
-        prompt.addon = Some("plumb".into());
-        prompt.decision = Some(crate::audit::Decision::RequireApproval);
-        prompt.agent = Some("alice".into());
-        prompt.approval = Some(crate::audit::Approval {
-            required: true,
-            approval_type: crate::audit::ApprovalType::Plumb,
-            key: request_id.clone(),
-            target: "alice,bob".into(),
-            scope_hint: json!({"request_id":request_id,"participants":participants}).into(),
-        });
-        prompt.details = json!({
-            "request_id": request_id,
-            "participants": participants,
-        })
-        .into();
-        writer.emit(prompt).unwrap();
-        let approved = owner.approve(&request_id, None).await;
-        assert_eq!(approved["status"], 200);
-        let mutation = Audit::PlumbMutation(PlumbMutationAudit {
-            event: "plumb.approved",
-            summary: "chat approved: alice,bob".into(),
-            details: json!({
-                "request_id": request_id,
-                "participants": approved["participants"],
-                "conversation_id": approved["conversation_id"],
-            }),
-            agent: Some("alice".into()),
-            decision: crate::audit::Decision::Allow,
-        });
-        for event in mutation.canonical_events("127.0.0.1", "/admin/plumb/approve") {
-            writer.emit(event).unwrap();
-        }
-        assert!(writer.shutdown(std::time::Duration::from_secs(2)).unwrap());
-        assert_eq!(pending_approvals(&path), json!([]));
-
-        let denied_request = owner
-            .request_chat("alice", &[json!("bob")], None, None, None)
-            .await;
-        let denied_id = denied_request["request_id"].as_str().unwrap().to_owned();
-        let denied_path = directory.path().join("denied.jsonl");
-        let denied_writer =
-            crate::audit::Writer::new(denied_path.clone(), crate::audit::Settings::default());
-        let mut denied_prompt = crate::audit::Event::new(
-            "plumb.requested",
-            crate::audit::Kind::Plumb,
-            crate::audit::Severity::Critical,
-            "Agent requested a plumb conversation",
-        );
-        denied_prompt.addon = Some("plumb".into());
-        denied_prompt.decision = Some(crate::audit::Decision::RequireApproval);
-        denied_prompt.agent = Some("alice".into());
-        denied_prompt.approval = Some(crate::audit::Approval {
-            required: true,
-            approval_type: crate::audit::ApprovalType::Plumb,
-            key: denied_id.clone(),
-            target: "alice,bob".into(),
-            scope_hint: json!({"request_id":denied_id,"participants":["alice","bob"]}).into(),
-        });
-        denied_writer.emit(denied_prompt).unwrap();
-        assert_eq!(owner.deny(&denied_id).await["status"], 200);
-        let denied_mutation = Audit::PlumbMutation(PlumbMutationAudit {
-            event: "plumb.denied",
-            summary: format!("chat denied: {denied_id}"),
-            details: json!({
-                "request_id": denied_id,
-                "participants": denied_request["participants"],
-            }),
-            agent: Some("alice".into()),
-            decision: crate::audit::Decision::Deny,
-        });
-        for event in denied_mutation.canonical_events("127.0.0.1", "/admin/plumb/deny") {
-            denied_writer.emit(event).unwrap();
-        }
-        assert!(
-            denied_writer
-                .shutdown(std::time::Duration::from_secs(2))
-                .unwrap()
-        );
-        assert_eq!(pending_approvals(&denied_path), json!([]));
-    }
-
-    #[test]
-    fn resolved_keys_match_retained_operator_consumers() {
-        assert_eq!(
-            resolved_approval_keys(&json!({
-                "event":"admin.denial",
-                "details":{"cred_id":"alice:POST:/send","destination":"gateway:gmail"}
-            })),
-            vec!["gw:alice:gmail:POST:/send:gmail"]
-        );
-        assert_eq!(
-            resolved_approval_keys(&json!({
-                "event":"admin.gateway_grant",
-                "details":{"agent":"alice","service":"gmail","method":"POST","path":"/send"}
-            })),
-            vec!["gw:alice:gmail:POST:/send:gmail"]
-        );
-        assert_eq!(
-            resolved_approval_keys(&json!({
-                "event":"admin.agent_service_authorized",
-                "details":{"agent":"alice","service":"gmail"}
-            })),
-            vec!["alice:gmail:gmail"]
-        );
-        assert_eq!(
-            resolved_approval_keys(&json!({
-                "event":"admin.agent_service_revoked",
-                "details":{"agent":"alice","service":"gmail"}
-            })),
-            vec!["alice:gmail:gmail"]
-        );
-        assert_eq!(
-            resolved_approval_keys(&json!({
-                "event":"admin.contract_binding_approved",
-                "details":{"agent":"alice","service":"gmail","capability":"mail"}
-            })),
-            vec!["alice:gmail:mail:gmail"]
-        );
-    }
-
-    #[test]
-    fn preparation_annotates_only_its_existing_pending_request() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("audit.jsonl");
-        let action = json!({"kind":"network_allow","agent":"worker","port":443});
-        let prompt = json!({
-            "event":"security.network_guard","request_id":"req-selected",
-            "approval":{"required":true,"approval_type":"network_egress","key":"worker:origin:443","target":"origin:443"},
-            "details":{"network_action":action}
-        });
-        let preparation = json!({
-            "event":"agent.network_action_prepared","request_id":"req-selected",
-            "approval":{"required":false,"approval_type":"network_egress","key":"worker:origin:443","target":"origin:443"},
-            "details":{"network_action":action,"untrusted_reason_text":"Helper reason"}
-        });
-        std::fs::write(&path, format!("{preparation}\n")).unwrap();
-        assert_eq!(pending_approvals(&path), json!([]));
-        std::fs::write(&path, format!("{prompt}\n{preparation}\n")).unwrap();
-        let mut annotated = prompt.clone();
-        annotated["details"]["untrusted_reason_text"] = json!("Helper reason");
-        assert_eq!(pending_approvals(&path), json!([annotated]));
-        let resolution = json!({
-            "event":"admin.network_action_rejected","request_id":"req-selected",
-            "details":{"network_action":action,"approval_request_id":"req-selected"}
-        });
-        std::fs::write(&path, format!("{prompt}\n{resolution}\n{preparation}\n")).unwrap();
-        assert_eq!(pending_approvals(&path), json!([]));
-    }
-
-    #[test]
-    fn credential_denial_suppresses_a_later_retry() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("audit.jsonl");
-        let prompt = json!({
-            "event":"security.credential",
-            "request_id":"first",
-            "approval":{"required":true,"approval_type":"credential","key":"hmac:xyz","target":"api.openai.com"}
-        });
-        let denial = json!({
-            "event":"admin.denial",
-            "details":{"destination":"api.openai.com","cred_id":"hmac:xyz","reason":"user_denied"}
-        });
-        let retry = json!({
-            "event":"security.credential",
-            "request_id":"second",
-            "approval":{"required":true,"approval_type":"credential","key":"hmac:xyz","target":"api.openai.com"}
-        });
-        std::fs::write(&path, format!("{}\n{}\n{}\n", prompt, denial, retry)).unwrap();
-        assert_eq!(pending_approvals(&path), json!([]));
-    }
-
-    #[test]
-    fn desktop_present_approvals_are_visible_and_resolve_repeatably() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("desktop.jsonl");
-        let request = json!({
-            "event": "agent.desktop_present_requested",
-            "request_id": "req-one",
-            "approval": {
-                "required": true,
-                "approval_type": "desktop_present",
-                "key": "desktop.present",
-                "target": "desktop:alice"
-            }
-        });
-        std::fs::write(&path, format!("{}\n", request)).unwrap();
-        assert_eq!(pending_approvals(&path), json!([request]));
-
-        let presented = json!({
-            "event": "admin.desktop_presented",
-            "details": {
-                "agent_id": "alice",
-                "approval_request_id": "req-one"
-            }
-        });
-        std::fs::write(&path, format!("{}\n{}\n", request, presented)).unwrap();
-        assert_eq!(pending_approvals(&path), json!([]));
-
-        let retry = json!({
-            "event": "agent.desktop_present_requested",
-            "request_id": "req-two",
-            "approval": {
-                "required": true,
-                "approval_type": "desktop_present",
-                "key": "desktop.present",
-                "target": "desktop:alice"
-            }
-        });
-        std::fs::write(&path, format!("{}\n{}\n{}\n", request, presented, retry)).unwrap();
-        assert_eq!(pending_approvals(&path), json!([retry]));
     }
 
     // Source35 results SHA256: 6d86bb348eaf0657690a3221f59c149f47c3fba0c9bf1bc934d8f7279919be35.

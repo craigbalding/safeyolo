@@ -436,12 +436,12 @@ fn send_request(
     message.msg_iovlen = 1;
     if let Some(descriptor) = descriptor {
         message.msg_control = control.as_mut_ptr().cast();
-        message.msg_controllen = space;
+        message.msg_controllen = space as _;
         unsafe {
             let header = libc::CMSG_FIRSTHDR(&message);
             (*header).cmsg_level = libc::SOL_SOCKET;
             (*header).cmsg_type = libc::SCM_RIGHTS;
-            (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as usize;
+            (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as _;
             std::ptr::write(libc::CMSG_DATA(header).cast::<RawFd>(), descriptor);
         }
     }
@@ -1428,7 +1428,7 @@ mod tests {
             message.msg_iov = &mut iov;
             message.msg_iovlen = 1;
             message.msg_control = control.as_mut_ptr().cast();
-            message.msg_controllen = std::mem::size_of_val(&control);
+            message.msg_controllen = std::mem::size_of_val(&control) as _;
             let count =
                 unsafe { libc::recvmsg(server.as_raw_fd(), &mut message, libc::MSG_CMSG_CLOEXEC) };
             assert!(count > 0);

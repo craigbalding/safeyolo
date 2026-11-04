@@ -20,6 +20,8 @@ pub const SOURCE_ANNOTATION: &str = "org.opencontainers.image.source";
 pub const REVISION: &str = "org.opencontainers.image.revision";
 pub const COMPATIBILITY: &str = "dev.safeyolo.guest.compatibility";
 pub const BUILD_BASE: &str = "dev.safeyolo.guest.build-base";
+pub const PROFILE: &str = "dev.safeyolo.guest.profile";
+pub const BUILD_INPUTS: &str = "dev.safeyolo.guest.build-inputs";
 
 // Keep fields as raw JSON until their declared OCI type is decoded. Value's
 // private Number/RawValue representations must not reinterpret authored objects.
@@ -233,6 +235,7 @@ pub struct GuestAnnotations {
     pub version: String,
     pub revision: String,
     pub compatibility: String,
+    pub profile: Option<String>,
 }
 
 impl GuestAnnotations {
@@ -284,6 +287,16 @@ impl GuestAnnotations {
             version: version.into(),
             revision: revision.into(),
             compatibility: compatibility.into(),
+            profile: value
+                .get(PROFILE)
+                .map(|profile| {
+                    if profile.is_empty() {
+                        Err("guest profile must not be empty")
+                    } else {
+                        Ok(profile.clone())
+                    }
+                })
+                .transpose()?,
         })
     }
 }
@@ -293,7 +306,7 @@ impl GuestAnnotations {
 pub struct GuestIndex {
     pub identity: Descriptor,
     pub annotations: GuestAnnotations,
-    children: [Descriptor; 3],
+    children: [Option<Descriptor>; 3],
 }
 
 impl GuestIndex {
@@ -324,11 +337,18 @@ impl GuestIndex {
             }
             *slot = Some(Descriptor::parse(&manifest, MANIFEST_MEDIA_TYPE)?);
         }
-        let children = [
-            children[0].take().ok_or("missing darwin/arm64 guest")?,
-            children[1].take().ok_or("missing linux/amd64 guest")?,
-            children[2].take().ok_or("missing linux/arm64 guest")?,
-        ];
+        if annotations.profile.is_none() {
+            for (slot, name) in children
+                .iter()
+                .zip(["darwin/arm64", "linux/amd64", "linux/arm64"])
+            {
+                if slot.is_none() {
+                    return Err(format!("missing {name} guest").into());
+                }
+            }
+        } else if children.iter().all(Option::is_none) {
+            return Err("custom guest profile has no consumer platforms".into());
+        }
         Ok(Self {
             identity,
             annotations,
@@ -336,8 +356,17 @@ impl GuestIndex {
         })
     }
 
-    pub fn manifest(&self, platform: ConsumerPlatform) -> &Descriptor {
-        &self.children[platform.position()]
+    pub fn platforms(&self) -> impl Iterator<Item = ConsumerPlatform> + '_ {
+        ConsumerPlatform::ALL
+            .into_iter()
+            .filter(|platform| self.children[platform.position()].is_some())
+    }
+
+    pub fn manifest(&self, platform: ConsumerPlatform) -> Result<&Descriptor, Error> {
+        self.children[platform.position()].as_ref().ok_or_else(|| {
+            let (os, architecture) = platform.os_architecture();
+            format!("guest profile does not supply {os}/{architecture}").into()
+        })
     }
 
     /// Validate the selected child's raw bytes before following its config/archive.
@@ -346,7 +375,7 @@ impl GuestIndex {
         platform: ConsumerPlatform,
         bytes: &[u8],
     ) -> Result<GuestChild, Error> {
-        self.manifest(platform).verify(bytes)?;
+        self.manifest(platform)?.verify(bytes)?;
         let (value, annotations) = document(bytes, MANIFEST_MEDIA_TYPE)?;
         if GuestAnnotations::parse(&annotations)? != self.annotations {
             return Err("guest child annotations do not agree with the index".into());
@@ -377,23 +406,47 @@ impl GuestIndex {
         if layers.len() != 1 {
             return Err("guest child must have exactly one opaque archive layer".into());
         }
+        let build_inputs = if self.annotations.profile.is_some() {
+            let digest = annotation(&annotations, BUILD_INPUTS)?;
+            sha256_hex(digest)?;
+            Some(digest.into())
+        } else {
+            None
+        };
         Ok(GuestChild {
             platform,
             config: Descriptor::parse(&read_field(&value, "config")?, CONFIG_MEDIA_TYPE)?,
             archive: Descriptor::parse(&layers[0], ARCHIVE_MEDIA_TYPE)?,
             build_base: build_base.into(),
+            build_inputs,
         })
     }
 
-    /// Publisher check of all children in `ConsumerPlatform::ALL` order.
+    /// Publisher check of all declared children in `ConsumerPlatform::ALL` order.
     /// A consumer can validate just its selected chain with `validate_child`.
-    pub fn validate_children(&self, bytes: [&[u8]; 3]) -> Result<[GuestChild; 3], Error> {
-        let children = [
-            self.validate_child(ConsumerPlatform::DarwinArm64, bytes[0])?,
-            self.validate_child(ConsumerPlatform::LinuxAmd64, bytes[1])?,
-            self.validate_child(ConsumerPlatform::LinuxArm64, bytes[2])?,
-        ];
-        if children[0].archive.digest == children[2].archive.digest {
+    pub fn validate_children<'a>(
+        &self,
+        bytes: impl IntoIterator<Item = &'a [u8]>,
+    ) -> Result<Vec<GuestChild>, Error> {
+        let bytes: Vec<_> = bytes.into_iter().collect();
+        let platforms: Vec<_> = self.platforms().collect();
+        if bytes.len() != platforms.len() {
+            return Err("guest child count differs from its index".into());
+        }
+        let children: Vec<_> = platforms
+            .into_iter()
+            .zip(bytes)
+            .map(|(platform, bytes)| self.validate_child(platform, bytes))
+            .collect::<Result<_, _>>()?;
+        let darwin = children
+            .iter()
+            .find(|child| child.platform == ConsumerPlatform::DarwinArm64);
+        let linux = children
+            .iter()
+            .find(|child| child.platform == ConsumerPlatform::LinuxArm64);
+        if let (Some(darwin), Some(linux)) = (darwin, linux)
+            && darwin.archive.digest == linux.archive.digest
+        {
             return Err("darwin/arm64 and linux/arm64 must have distinct guest archives".into());
         }
         Ok(children)
@@ -406,6 +459,7 @@ pub struct GuestChild {
     pub config: Descriptor,
     pub archive: Descriptor,
     pub build_base: String,
+    pub build_inputs: Option<String>,
 }
 
 impl GuestChild {

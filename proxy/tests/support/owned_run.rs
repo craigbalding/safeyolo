@@ -65,6 +65,10 @@ pub fn subordinate_bases() -> (u32, u32) {
 
 impl OwnedRun {
     pub fn start(root: &Path) -> Self {
+        Self::start_agent(root, "alice")
+    }
+
+    pub fn start_agent(root: &Path, name: &str) -> Self {
         // Namespace checks read real host allocations, including when a caller
         // removes system tools from PATH to test a missing executable.
         let getent = root.join("bin/getent");
@@ -72,7 +76,7 @@ impl OwnedRun {
             symlink("/usr/bin/getent", getent).unwrap();
         }
         let (uid_base, gid_base) = subordinate_bases();
-        let directory = root.join("agents/alice");
+        let directory = root.join("agents").join(name);
         fs::create_dir_all(directory.join("config-share")).unwrap();
         let generation = uuid::Uuid::new_v4().simple().to_string();
         let id = format!("safeyolo-{generation}");

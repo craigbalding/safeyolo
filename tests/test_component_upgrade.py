@@ -92,7 +92,7 @@ def installation(binary, root, bundle, store, environment, *, legacy=False, omit
     initialized = command(binary, root, environment, "init")
     assert initialized.returncode == 0, initialized.stderr
     credential = command(binary, root, {**environment, "UPGRADE_TEST_CREDENTIAL": "kept"},
-                         "credentials", "add", "kept", "--value-env", "UPGRADE_TEST_CREDENTIAL")
+                         "credentials", "add", "kept", "--storage", "local", "--value-env", "UPGRADE_TEST_CREDENTIAL")
     assert credential.returncode == 0, credential.stderr
     (root / "agents/kept/home").mkdir(parents=True)
     (root / "agents/retained/home").mkdir(parents=True)

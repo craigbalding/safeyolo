@@ -3,10 +3,9 @@
 This guide is for developers who contribute to the host CLI, Rust proxy,
 agent sandbox, and operator integrations.
 
-Before changing agent attribution or sandbox lifecycle, read the
-[agent identity and run-lifecycle implementation plan](agent-lifecycle-identity-plan.md).
-It separates operator-facing names from durable agent identity and records
-restart behavior.
+Before changing agent attribution or sandbox lifecycle, read the current
+[networking and listener-lifecycle reference](networking-vsock-uds.md#agent-identity-and-listener-updates)
+and its [name, durable identity and run boundaries](networking-vsock-uds.md#names-durable-identity-and-sandbox-runs).
 
 ## Architecture Overview
 
@@ -43,142 +42,206 @@ for the contract and the per-sink obligations (terminal, web, log export).
 
 ## Building Integrations
 
+For live operator events, use the authenticated `/admin/events` WebSocket.
+Recorded events come from the canonical JSONL audit log through one host reader.
+Native `safeyolo watch` uses that stream and canonical APIs to show current
+pending signals and approvals. Separate `operator_state` controls trigger a
+refresh when shared host checks detect missed changes or unavailable state.
+A refresh does not prove audit delivery or replay missing history. See the
+[live operator event contract](operator-controls-627-evidence.md#live-operator-events)
+for selection, attachment, reconnect and failure limits. Use retained JSONL
+for forensic analysis. These operator clients do not need a broker connection.
+
 ### Option 1: Consume JSONL Events
 
-The simplest integration is tailing the JSONL log file. The proxy emits
-structured events for reached decisions; a write failure can leave an event
-unavailable, so do not infer a complete history from a successful request.
+On the host, use the account that owns the selected SafeYolo instance. The
+instance root defaults to `$HOME/.safeyolo`; `--root` or `SAFEYOLO_CONFIG_DIR`
+selects another instance. Its `config.toml` sets `audit_log_path`, which defaults
+to `logs/audit.jsonl` relative to that configuration file. Use that resolved path
+when consuming records. `SAFEYOLO_LOGS_DIR` and the former XDG `safeyolo.jsonl`
+location do not select the current audit destination. See
+[configuration and audit storage](CONFIGURATION.md#directory-structure).
 
-**Event format:**
-```json
-{
-  "timestamp": "2024-01-15T14:32:15.123Z",
-  "event": "security.credential",
-  "request_id": "req-abc123",
-  "data": {
-    "addon": "credential-guard",
-    "decision": "block",
-    "rule": "openai",
-    "host": "api.example.com",
-    "fingerprint": "hmac:a1b2c3d4e5f6",
-    "reason": "destination_mismatch",
-    "expected_hosts": ["api.openai.com"],
-    "confidence": "high",
-    "project_id": "default"
-  }
-}
-```
+Current records use `schema_version: 2`, a record timestamp in `ts`, an `event`
+name, `kind`, `severity`, `summary`, and an object in `details`. Optional envelope
+fields include `event_id`, `request_id`, `agent`, `addon`/`control`, `decision`,
+`host` and `approval`. The credential guard's decision event is
+`security.credential_guard`: its `decision` and destination `host` are at the
+envelope root. Detection fields such as `fingerprint`, `rule` and `reason_codes`
+are in `details`; blocked and warning records also carry `details.reason`.
+Not every record has a decision or a detected credential.
 
-**Event types:**
-| Event | Description |
-|-------|-------------|
-| `security.credential` | Credential detected, decision made |
-| `security.ratelimit` | Rate limit hit |
-| `security.circuit` | Circuit breaker state change |
-| `traffic.request` | Request logged |
-| `traffic.response` | Response logged |
-| `gateway.allow` | Service gateway allowed a request (capability match) |
-| `gateway.deny` | Service gateway denied a request (no matching capability) |
-| `gateway.risky_route` | Request matched a risky route, PDP evaluated |
-| `gateway.grant_added` | Operator approved a grant for a risky route |
-| `gateway.grant_consumed` | Once-grant consumed after successful (2xx) response |
-| `gateway.grant_expired` | Grant expired (TTL exceeded) |
-| `gateway.grant_revoked` | Grant revoked by operator |
-| `admin.policy_write` | Policy file updated |
-| `admin.approval_added` | Approval rule added |
-| `admin.mode_change` | Addon mode changed |
+| Credential decision | Meaning at the guard |
+|---------------------|----------------------|
+| `allow` | Credential use was allowed; this does not prove upstream delivery. |
+| `deny` | Credential use was denied. |
+| `require_approval` | Credential use was blocked pending approval. |
+| `budget_exceeded` | Credential use was blocked by a budget. |
+| `warn` | The guard recorded a violation while permitting forwarding. |
 
-**Python example:**
+Guard evaluation events such as `security.credential_guard.evaluated` carry
+`details.outcome` and `details.evaluations`, without an envelope decision.
+[The current audit contract](nsm-events.md#current-audit-contract) defines the
+shared envelope and validation limits. Its
+[scoped request decisions](nsm-events.md#scoped-request-decisions) and
+[correlation rules](nsm-events.md#correlation-and-trusted-attribution) explain
+instance/runtime/connection fields and host-owned run attribution. Other useful
+families include `network.connection`, `traffic.flow`, `security.indicator`,
+`security.network_guard`, `gateway.allow`/`gateway.deny`, operations and Admin
+events. Consult those contracts and the relevant producer before selecting an
+event; similarly named HTTP response fields are not audit envelopes. Service
+grant lifetimes and success-only consumption follow the
+[risk policy reference](service-gateway-v2-yaml-spec.md#policy-risk-appetite).
+
+For a small integration, save the following Python 3 code as
+`credential-blocks.py` in your host working directory. Set `AUDIT_LOG` to a
+readable, complete retained JSONL file from the selected instance. For the
+default destination, use `AUDIT_LOG="$HOME/.safeyolo/logs/audit.jsonl"`.
+The example reads the selected file from the beginning and prints one
+notification per retained blocked credential decision. It makes no approvals
+or policy changes and does not print credential values.
+
 ```python
 import json
-import os
-import time
-from pathlib import Path
+import sys
 
-
-def tail_events(log_path: Path):
-    """Tail JSONL log for events."""
-    with open(log_path) as f:
-        f.seek(0, 2)  # Start at end
-        while True:
-            line = f.readline()
-            if line:
-                yield json.loads(line)
-            else:
-                time.sleep(0.1)
-
-logs_dir = os.environ.get("SAFEYOLO_LOGS_DIR")
-if not logs_dir:
-    state_home = Path(
-        os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
-    )
-    logs_dir = state_home / "safeyolo"
-log_path = Path(logs_dir) / "safeyolo.jsonl"
-
-# React to blocked credentials
-for event in tail_events(log_path):
-    if event.get("event") == "security.credential":
-        data = event.get("data", {})
-        if data.get("decision") == "block":
-            # Send notification, update dashboard, etc.
-            print(f"Blocked: {data.get('fingerprint')} -> {data.get('host')}")
+with open(sys.argv[1], encoding="utf-8") as records:
+    for line in records:
+        event = json.loads(line)
+        if event["schema_version"] != 2:
+            raise ValueError("Expected current audit schema_version 2")
+        if event["event"] != "security.credential_guard":
+            continue
+        decision = event["decision"]
+        if decision in {"deny", "require_approval", "budget_exceeded"}:
+            fingerprint = event["details"]["fingerprint"]
+            print(f"Blocked ({decision}): {fingerprint} -> {event['host']}")
 ```
+
+Run it under the same host account:
+
+```sh
+python3 credential-blocks.py "$AUDIT_LOG"
+```
+
+For a `security.credential_guard` record with `decision: "require_approval"`,
+`details.fingerprint: "hmac:EXACT_REPORTED_FINGERPRINT"` and
+`host: "api.example.com"`, the notification is:
+
+```text
+Blocked (require_approval): hmac:EXACT_REPORTED_FINGERPRINT -> api.example.com
+```
+
+This finite file reader does not follow rotation,
+checkpoint, deduplicate or join traffic evidence. Invalid JSON, an unsupported
+schema version or a missing field used by the example stops it with an error.
+The example does not validate the complete envelope. Use `safeyolo logs` for the validated local
+reader and [the operator pivots](operator-guide.md#follow-local-nsm-evidence)
+for request/connection evidence. For live consumption, handle partial appended
+lines and rotation explicitly.
+
+The proxy emits events for reached decisions. Queue drops, retention, filtering,
+unselected rotated files and write failures can leave evidence unavailable.
+On file-write failure, the writer attempts stderr output; it does not replay
+failed batches. A successful request does not prove complete audit history.
+An allow or credential-injection event does not prove upstream or model receipt.
 
 ### Option 2: Use the Admin API
 
-The Admin API provides runtime control and status.
+The Admin application programming interface (API) provides host runtime control
+and status. Run the following examples only on the trusted host, under the
+account that owns the running instance. Select the same root as the installed
+CLI. Read the instance's `config.toml` for `admin_port` and
+`admin_api_token_file`; relative token paths resolve beside that file. The
+defaults are IPv4 loopback port 9090 and `data/admin_token`. With port zero,
+read the actual `admin_port` from the configured readiness file (default
+`data/ready.json`). Keep the Admin token on the host.
 
-**Base URL:** `http://localhost:9090`
+For the default installation, set these values in that host terminal. For
+another instance, substitute its root, actual Admin URL and resolved token path
+before running requests:
 
-**Authentication:** Bearer token
-```bash
-curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/stats
+```sh
+SAFEYOLO_ROOT="$HOME/.safeyolo"
+ADMIN_URL="http://127.0.0.1:9090"
+ADMIN_TOKEN_FILE="$SAFEYOLO_ROOT/data/admin_token"
 ```
 
-**Endpoints:**
+Requests require the exact `Authorization: Bearer TOKEN` header, except for
+`GET /health`. This read-only example supplies the token to curl on standard
+input and returns current control/runtime counters as JSON:
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check (no auth required) |
-| GET | `/stats` | Control and runtime counters |
-| GET | `/admin/policy/baseline` | Get baseline policy |
-| PUT | `/admin/policy/baseline` | Update baseline policy (see note below) |
-| POST | `/admin/policy/baseline/approve` | Add credential approval |
-| GET | `/admin/policy/task/{task_id}` | Get task-specific policy |
-| PUT | `/admin/policy/task/{task_id}` | Create/update task policy |
-| GET | `/admin/budgets` | Get budget usage stats |
-| POST | `/admin/budgets/reset` | Reset budget counters |
-| POST | `/admin/policy/validate` | Validate YAML policy content |
-
-> **Note on `PUT /admin/policy/baseline`:** Full baseline replacement is intended
-> for machine-to-machine automation. This operation may not preserve comments,
-> layout, or human-authored formatting in the policy file. Operators who use inline
-> comments as guidance should prefer incremental local updates or regenerate from
-> a canonical source.
-
-On the host, supply the selected instance's Admin URL and token.
-This example uses a credential fingerprint; service authorization and risk
-approval remain separate. SafeYolo does not expose addon-mode
-authoring; use the policy check/show/apply operations.
-
-**Add an approval via API:**
-```bash
-curl -X POST "http://localhost:9090/admin/policy/baseline/approve" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "destination": "api.openai.com",
-    "cred_id": "hmac:EXACT_REPORTED_FINGERPRINT",
-    "tier": "explicit"
-  }'
+```sh
+printf 'Authorization: Bearer %s\n' "$(cat "$ADMIN_TOKEN_FILE")" |
+  curl --fail-with-body --silent --show-error --header @- "$ADMIN_URL/stats"
 ```
 
-Use the installed commands for policy, credentials, services and
-operator diagnosis. The retired Python `safeyolo.api` client is not shipped.
-[Policy](installation.md#check-show-and-apply), [credentials](credentials.md) and
-[operator commands](operator-guide.md) describe the current operations and
-their authority. CLI and Commander use the authenticated Admin API; guest
-requests use the separately authenticated Agent API and listener identity.
+The guest Agent API is a separate interface at
+`http://_safeyolo.proxy.internal`, reached through the agent proxy path. It uses
+the guest's `/app/agent_token` and listener-bound identity. That token grants no
+host Admin authority. Do not copy the Admin token into a guest or use the guest
+Agent API as an Admin route. CLI and Commander use the authenticated Admin API.
+
+The following routes cover the integration examples; this is not an exhaustive
+API inventory. Request and response bodies are JSON. For current named controls,
+policy source is TOML carried as the JSON string `source`.
+
+| Method | Path | Current effect or response |
+|--------|------|----------------------------|
+| GET | `/health` | Returns `{"status":"ok"}` without authentication; it does not prove agent readiness. |
+| GET | `/stats` | Reads control and runtime counters. |
+| GET | `/admin/policy/baseline` | Reads effective policy and saved/active status, including `saved_matches_active`. |
+| POST | `/admin/policy/validate` | Validates `{"source":"TOML text"}` without saving or activating it. Valid input returns `{"valid":true}`; invalid policy returns HTTP 400 with `valid: false` and `error`. |
+| PUT | `/admin/policy/baseline` | Applies `{"source":"TOML text"}` through the saved/live transaction; success reports `status: "active"`. |
+| POST | `/admin/policy/baseline/approve` | Adds and activates a destination/fingerprint credential permission. |
+
+The route implementation is [admin_api.rs](../proxy/src/admin_api.rs).
+It also owns budget reporting/reset and registered task-policy routes; task
+registration and activation are distinct operations. Prefer the installed
+[policy check/show/apply workflow](installation.md#check-show-and-apply),
+[credential/service commands](credentials.md) and
+[operator guide](operator-guide.md) for ordinary operations. The retired Python
+`safeyolo.api` client is not shipped. Addon-mode authoring is not supported;
+named controls and exceptions use policy apply.
+
+Full policy apply replaces the saved source and may normalise referenced list
+paths. It need not preserve comments, layout or human-authored formatting.
+Preserve the current agent identities, grants and settings in any replacement.
+The existing transaction restores the previous saved source if activation fails
+and retains the previous live generation. Check saved/active state after an
+error rather than assuming a failed HTTP request made no change. The policy
+workflow explains mismatch and repair states.
+
+For credential approval automation, first inspect the actual pending request
+and decide whether its fingerprint may be used at its reported destination.
+Set `APPROVAL_JSON` to a host file containing those exact values, never the raw
+credential. The following JSON illustrates that file's format; replace both
+example values before submitting it:
+
+```json
+{
+  "destination": "api.openai.com",
+  "cred_id": "hmac:EXACT_REPORTED_FINGERPRINT",
+  "tier": "explicit"
+}
+```
+
+This operation persists a credential permission in the selected instance's
+policy and activates it. It grants neither a service capability nor a risky-route
+approval. Those remain separate operator decisions described in
+[authorization, binding and risk approval](credentials.md#authorization-binding-and-risk-approval).
+
+```sh
+printf 'Authorization: Bearer %s\n' "$(cat "$ADMIN_TOKEN_FILE")" |
+  curl --fail-with-body --silent --show-error \
+    --header @- --header 'Content-Type: application/json' \
+    --data-binary "@$APPROVAL_JSON" "$ADMIN_URL/admin/policy/baseline/approve"
+```
+
+Success returns `status: "added"`, the destination, credential ID, tier and
+permission count. Read policy state back before retrying agent traffic. As with
+policy apply, inspect state after an uncertain response before repeating a
+mutation.
 
 ## Development Setup
 
@@ -241,14 +304,19 @@ host target as the production input producers for Clippy, tests and builds.
 It retains the host target's Coord test runner. Production compilation, test
 compilation and test execution have separate bounded steps. A successful
 Clippy check does not supply the executable outputs needed by those steps.
-Overnight test compilation first prepares the shared library, library/bin tests
-and host binaries selected by the version integration test. A second step keeps
+Overnight test compilation prepares the library test, then binary tests and
+host binaries selected by the version integration test. A separate step prepares
+the agent API and native integration tests. The final compilation step keeps
 the complete default target selection, including examples, and reuses those
-outputs. Both steps use the unchanged release profile and flags. The dependency
+outputs. All steps use the unchanged release profile and flags. The dependency
 cache does not supply these workspace executables. Completed Cargo timing
 reports are retained even when a later compilation step fails; an interrupted
 compiler can leave no report for its unfinished command. The verbose job log
 still identifies the targets started before interruption.
+Linux library acquisition tests use the built CLI for the privileged rootfs
+remapper. Build `safeyolo` with the selected profile, then set
+`SAFEYOLO_NATIVE_CLI` to its absolute path when running those tests. Both Rust
+CI lanes supply this input.
 The input producers and native checks share the existing quick-job dependency
 cache namespace for each profile. The pinned cache action still separates
 operating systems, architectures, Rust toolchains, flags and lockfile inputs.
@@ -329,6 +397,11 @@ artifacts without this receipt also require a build. Damaged downloads or invali
 receipts fail the job. Consumer tests, terminal-input checks and complete package
 assembly still run.
 
+Linux input producers use Ubuntu 24.04 on both architectures. Complete Linux
+packages acquire tmux and its private libraries on that same runner. The packager
+derives the minimum glibc version from all shipped host executables and runtime
+libraries, so a floating runner can raise the package's runtime requirement.
+
 Use the `packages_only` input of `proxy-rust.yml` to produce complete host
 bundles without the contract matrix. It calls the existing
 `guest-test-inputs.yml` producer with production profile and package retention.
@@ -383,6 +456,28 @@ Start waits for readiness. Status and doctor use the owned process
 record and distinguish process, endpoint, sandbox and command state. Startup
 success does not prove a working guest or policy scenario. Stop shuts down the
 proxy and its Coord runtime; stop each disposable agent separately.
+For a fresh start, managed NATS and the proxy initialize concurrently. The
+command waits for both starts to finish. A Coord failure is reported and does
+not prevent proxy startup. With `SAFEYOLO_STARTUP_TIMINGS=1`, the proxy writes
+`startup` JSON records to `logs/proxy.log`, with source, profile, monotonic stage and elapsed seconds,
+and process CPU seconds for configuration, policy, credentials, flow recording,
+inspection, TLS and readiness publication. Listener projection separates the
+configuration read, reconciliation, writing, file sync and directory sync.
+Unchanged listeners keep the existing configuration file and reload identifier.
+Credential preparation separates grants, HMAC key loading and detector compilation.
+Vault unlock is deferred to credential-consuming operations and does not delay
+proxy readiness. Initialization and read-only credential commands create no store.
+Launcher and NATS-start timings go to the command's standard error.
+CPU time covers all threads in the emitting process and excludes its children.
+Component timings are nested;
+do not add their elapsed values to obtain total startup time.
+Doctor also sends a traced request through every configured agent Unix-domain
+socket. The reserved probe runs the normal request controls and terminates
+locally without external network access. The `pipeline` result lists each
+agent's control states and findings. Known disablement passes with its state
+shown. Missing controls, execution errors, incomplete evidence or an unavailable
+socket fail the check and make doctor exit with status 1. With no configured
+agent listener, doctor warns that it could not test the request pipeline.
 The Admin client reads the configured private token and the live readiness
 port, including an automatically assigned port. Stale ownership or an
 unavailable endpoint fails visibly. Token-file changes require a restart.
@@ -500,6 +595,14 @@ file storage; inspecting a page does not load the whole message into memory.
 Accepted reloads keep the view, scope and user filter, and apply updated targets.
 Failed reloads leave the targets unchanged. Rust pruning occurs on observation,
 exchange release or settings changes. Python uses its hook and interval schedule.
+
+On GNU/Linux, the proxy asks glibc to release already-free heap pages every
+30 seconds. A dedicated worker performs the allocator scan outside request
+tasks and stops when its proxy owner is dropped. Reloads keep the same worker.
+This does not change capture settings, evict traffic or release live allocations.
+A trim can release no pages; live capture and fragmentation still consume memory.
+If the worker cannot start, the proxy reports the failure and continues serving.
+Other platforms retain their existing allocator behavior.
 
 For HTTP, the inspector shows retained encoded body bytes, including a distinct
 empty body. Streamed bodies, unavailable local response bodies, and bodies whose
@@ -1088,8 +1191,9 @@ non-blocking. The command supplements the configured lint and static checks;
 it does not replace independent acceptance of the behaviour being changed.
 
 For a Python dependency repair, run the focused dependency controls from a
-Linux repository checkout with Python 3.12 or 3.13 and Bash. Install fish to
-exercise its activation control; the test reports a skip when fish is absent.
+Linux repository checkout with Python 3.12 or 3.13 and Bash. Install fish and
+zsh to exercise their activation controls; the tests report skips when a shell
+is absent. Run as an ordinary user; root skips the failed-deletion control.
 Use the configured proxy and certificate authority for package downloads.
 These commands create the two frozen environments and run the controls:
 
@@ -1103,17 +1207,50 @@ uv run --frozen --no-sync python -m unittest discover -s tools/acceptance/tests 
 Expected result: both test runs pass. The controls exercise JSON Web Token
 (JWT) verification, Semgrep and Model Context Protocol (MCP) authentication,
 HTTPS proxy certificate policy, chunked response parsing, virtualenv
-configuration and shell activation. HTTP fixtures listen on disposable
-loopback ports and close after each test. The seed-wheel test downloads the
-pip version in the acceptance lockfile from the default index, verifies its
+configuration, repeated activation-template substitution, fish quoting, zsh
+prompt substitution and Bash prompt decoding and expansion. The virtualenv
+controls also execute generated POSIX launchers at paths with spaces, long
+shebangs, quotes and backslashes through both seeders. They check rewritten
+pip-seeder RECORD hashes, failed symlink deletion as an ordinary user, and
+creation over prepared executable and library directory links. The filesystem
+controls also exercise existing, dangling and hard-linked generated files,
+current umask after a warm seed cache, metadata deletion paths, and
+stdlib-venv configuration boundaries. External target content and modes must
+stay unchanged. Activation controls cover Bash 4.2 compatibility and xonsh
+literals decoded as UTF-8, GBK and Big5. The xonsh control checks generated
+literals; it does not run a xonsh shell. Download controls reject altered bytes
+before cache promotion or pip-seeder installation, even when the downloader
+reports a different, valid file in its output.
+The acceptance dependency controls also exercise
+OpenTelemetry propagation limits, whitespace parsing and Semgrep trace/log
+export with requests and threading instrumentation. HTTP fixtures
+listen on disposable loopback ports and close after each test. The seed-wheel
+test downloads the pip version in the acceptance lockfile from the default index, verifies its
 published PyPI digest, and checks rejection after altering the downloaded
 file. The tests remove their temporary files.
 
+A lockfile update changes the tool selected by the next frozen sync. It does
+not replace activation scripts or launchers in existing environments. After
+the development sync, run `uv run --frozen --no-sync pre-commit clean`, then
+the normal hook command to recreate cached hook environments. Recreate other
+environments made by virtualenv with the updated tool and their normal
+creation command.
+
+Virtualenv repairs initial seed launchers. It does not patch pip's vendored
+distlib. Virtualenv 21.14.13 bundles pip 26.2.2 with vendored distlib 0.4.2.
+A later pip installation,
+reinstallation or upgrade can generate an unsafe POSIX launcher again when an
+attacker-influenced interpreter path contains shell syntax and needs a shell
+wrapper. Spaces or a long shebang select that wrapper. Running the launcher
+then interprets the path as shell syntax. Environment recreation repairs the
+initial launchers only; it does not protect later pip writes.
+
 These Linux controls do not execute Windows batch activation. Upstream
-virtualenv skips downloaded-wheel digest verification for custom indexes or
-missing PyPI digest metadata. A passing seed-wheel control establishes the
-default-index path with published metadata; it does not establish integrity
-for those skipped paths.
+virtualenv retains its custom-index exceptions to PyPI digest comparison.
+Missing default-index digest metadata refuses the downloaded bytes; a bundle
+request can then fall back to the verified embedded wheel. The controls check
+that fallback and the default-index path with published metadata. They do not
+establish integrity for custom-index exceptions.
 
 ### HTTP/2 gate verification
 

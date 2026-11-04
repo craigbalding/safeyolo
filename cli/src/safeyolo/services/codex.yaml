@@ -1,0 +1,17 @@
+schema_version: 1
+name: codex
+description: "Codex inference using a host-held ChatGPT subscription"
+default_host: chatgpt.com
+
+auth:
+  type: bearer
+  refresh_on_401: true
+
+capabilities:
+  inference:
+    description: "Create and compact Codex Responses"
+    routes:
+      - methods: [POST]
+        path: /backend-api/codex/responses
+      - methods: [POST]
+        path: /backend-api/codex/responses/compact

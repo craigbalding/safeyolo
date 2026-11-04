@@ -36,6 +36,10 @@ on:
         options:
           - default
           - lifecycle
+      cold_setup_only:
+        description: Public-install diagnostic only; time cold sandbox and tool setup without reentry or a model task
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -511,13 +515,18 @@ jobs:
           # Do not prepare the host, install tools, stage assets or change PATH here.
       - name: Observe one public bootstrap, first launch and normal repeat
         shell: bash
+        env:
+          COLD_SETUP_ONLY: ${{ inputs.cold_setup_only }}
         run: |
           umask 077
           cd "$PUBLIC_INSTALL_WORK"
+          options=()
+          if [[ $COLD_SETUP_ONLY == true ]]; then options=(--cold-setup-only --execution-mode native); fi
           set +e
           env -u GH_TOKEN -u GITHUB_TOKEN timeout --signal=INT --kill-after=150s 23m \
             python3 -I -B "$PUBLIC_INSTALL_WORK/observer/ubuntu_onboarding.py" \
             --host "$(hostname)" --platform linux-arm64 --observer-source "$GITHUB_SHA" \
+            "${options[@]}" \
             --observation-dir "$PUBLIC_INSTALL_WORK/private" \
             > "$PUBLIC_INSTALL_WORK/observer.stdout" 2> "$PUBLIC_INSTALL_WORK/observer.stderr"
           status=$?

@@ -146,6 +146,15 @@ impl<E> Builder<E> {
         self
     }
 
+    /// Observe content-free local HTTP/2 stream parser rejections.
+    pub fn on_stream_parse_error(
+        &mut self,
+        observer: h2::ext::StreamParseErrorObserver,
+    ) -> &mut Self {
+        self.h2_builder.stream_parse_errors = Some(observer);
+        self
+    }
+
     /// Sets the [`SETTINGS_INITIAL_WINDOW_SIZE`][spec] option for HTTP2
     /// stream-level flow control.
     ///

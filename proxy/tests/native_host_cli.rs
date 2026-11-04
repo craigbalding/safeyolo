@@ -87,6 +87,127 @@ fn initialize(root: &Path) {
 }
 
 #[test]
+fn host_subscription_import_keeps_provider_files_outside_agent_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let passphrase_file = directory.path().join("storage-passphrase");
+    fs::write(
+        &passphrase_file,
+        "synthetic-subscription-storage-passphrase",
+    )
+    .unwrap();
+    for storage in ["local", "passphrase"] {
+        let root = directory.path().join(storage);
+        initialize(&root);
+        let input = directory.path().join("host-login.json");
+        fs::write(&input, b"{\"private\": \"synthetic-not-json").unwrap();
+        let failed = cli(
+            &root,
+            &[
+                "credentials",
+                "import-client",
+                "account",
+                "--client",
+                "codex",
+                "--auth-file",
+                input.to_str().unwrap(),
+            ],
+        );
+        assert!(!failed.status.success());
+        assert!(!root.join("data/credentials.key").exists());
+        for (client, source) in [
+            (
+                "codex",
+                serde_json::json!({"auth_mode":"chatgpt", "tokens":{
+                    "access_token":"header.eyJleHAiOjIwMDAwMDAwMDB9.signature", "refresh_token":"synthetic-host-codex-refresh", "account_id":"host-account"
+                }}),
+            ),
+            (
+                "claude",
+                serde_json::json!({"claudeAiOauth":{
+                    "accessToken":"synthetic-host-claude-access", "refreshToken":"synthetic-host-claude-refresh", "expiresAt":2000000000000_i64, "scopes":["user:inference"]
+                }}),
+            ),
+        ] {
+            let bytes = serde_json::to_vec(&source).unwrap();
+            fs::write(&input, &bytes).unwrap();
+            let mut arguments = vec![
+                "credentials",
+                "import-client",
+                client,
+                "--client",
+                client,
+                "--auth-file",
+                input.to_str().unwrap(),
+                "--expires-at",
+                "2020-01-01T00:00:00Z",
+            ];
+            if !root.join("data/credentials.key").exists() {
+                let unselected = cli(&root, &arguments);
+                assert!(!unselected.status.success());
+                assert!(String::from_utf8_lossy(&unselected.stderr).contains("--storage"));
+                assert!(!root.join("data/credentials.key").exists());
+                assert!(!root.join("data/credentials.enc").exists());
+            }
+            arguments.extend(["--storage", storage]);
+            if storage == "passphrase" {
+                arguments.extend(["--passphrase-file", passphrase_file.to_str().unwrap()]);
+            }
+            let imported = cli(&root, &arguments);
+            assert!(
+                imported.status.success(),
+                "{}",
+                String::from_utf8_lossy(&imported.stderr)
+            );
+            assert_eq!(fs::read(&input).unwrap(), bytes);
+            assert!(!root.join("agents").exists());
+            let vault = if storage == "local" {
+                safeyolo_proxy::credentials::open_existing(&root.join("data"))
+                    .unwrap()
+                    .unwrap()
+            } else {
+                assert!(safeyolo_proxy::credentials::open_existing(&root.join("data")).is_err());
+                let ciphertext = fs::read(root.join("data/credentials.enc")).unwrap();
+                let wrong = directory.path().join("wrong-passphrase");
+                fs::write(&wrong, "synthetic-wrong-passphrase").unwrap();
+                let mut rejected = arguments.clone();
+                *rejected.last_mut().unwrap() = wrong.to_str().unwrap();
+                assert!(!cli(&root, &rejected).status.success());
+                assert_eq!(
+                    fs::read(root.join("data/credentials.enc")).unwrap(),
+                    ciphertext
+                );
+                safeyolo_proxy::credentials::Vault::unlock_existing(
+                    root.join("data/credentials.enc"),
+                    &safeyolo_proxy::credentials::Secret::new(
+                        fs::read_to_string(&passphrase_file).unwrap(),
+                    ),
+                )
+                .unwrap()
+            };
+            let stored = vault.get(client).unwrap().unwrap();
+            assert_eq!(stored.credential_type, "oauth2");
+            assert_eq!(stored.expires_at.as_deref(), Some("2020-01-01T00:00:00Z"));
+            let mut listing_arguments = vec!["credentials", "list"];
+            if storage == "passphrase" {
+                listing_arguments.extend(["--passphrase-file", passphrase_file.to_str().unwrap()]);
+                assert!(String::from_utf8_lossy(&imported.stderr).contains("credentials unlock"));
+            }
+            let listing = cli(&root, &listing_arguments);
+            let output = String::from_utf8_lossy(&listing.stdout);
+            assert!(listing.status.success());
+            assert!(!output.contains("synthetic-host"));
+            assert!(!String::from_utf8_lossy(&imported.stdout).contains("synthetic-host"));
+        }
+        for service in ["codex", "claude"] {
+            assert!(
+                root.join(format!("builtin-services/{service}.yaml"))
+                    .is_file()
+            );
+        }
+    }
+}
+
+#[test]
 fn host_events_preserve_configured_audit_rotation_and_retention() {
     use std::io::{Seek, SeekFrom};
 
@@ -150,7 +271,7 @@ fn holder_stop_pins_the_original_birth_and_run_before_delete() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("instance");
         initialize(&root);
-        value(cli(
+        let configured = value(cli(
             &root,
             &[
                 "agent",
@@ -162,7 +283,10 @@ fn holder_stop_pins_the_original_birth_and_run_before_delete() {
         ));
         let mut run = OwnedRun::start(&root);
         let path = root.join("agents/alice/runtime.json");
-        let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        saved["agent_id"] = configured["configuration"]["id"].clone();
+        saved["state"] = "running".into();
+        fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
         let foreign_root = temp.path().join("foreign");
         fs::create_dir_all(foreign_root.join("bin")).unwrap();
         let mut foreign = OwnedRun::start(&foreign_root);
@@ -185,6 +309,7 @@ fn holder_stop_pins_the_original_birth_and_run_before_delete() {
 case "$3" in
   state) printf '{{"id":"%s","status":"stopped"}}\n' "$4";;
   delete)
+    /bin/cp '{root}/agents/alice/runtime.json' '{root}/stopping.json'
     /bin/cp '{root}/changed.json' '{root}/agents/alice/runtime.json'
     if [ '{change}' = incarnation ]; then
       /bin/cp '{foreign}/agents/alice/userns.pid' '{root}/agents/alice/userns.pid'
@@ -210,6 +335,13 @@ esac
         run.assert_exited();
         let _ = foreign.child.kill();
         foreign.assert_exited();
+        let stopping: Value =
+            serde_json::from_slice(&fs::read(root.join("stopping.json")).unwrap()).unwrap();
+        assert_eq!(
+            stopping["state"], "stopping",
+            "authority stayed active at destructive stop"
+        );
+        assert_eq!(stopping["agent_id"], saved["agent_id"]);
         assert!(foreign_survived, "foreign incarnation was signalled");
         if change == "none" {
             assert!(
@@ -868,6 +1000,13 @@ esac
                 .unwrap();
         }
         wait_for(&|| root.join("starts").exists());
+        // The child can start before the parent publishes its PID and birth token.
+        // This launch's post_launch hook follows that publication.
+        let post_launch_line = format!("{} post_launch", results[0]["launch_id"].as_str().unwrap());
+        wait_for(&|| {
+            fs::read_to_string(root.join("hooks"))
+                .is_ok_and(|hooks| hooks.lines().any(|line| line == post_launch_line))
+        });
         fs::OpenOptions::new()
             .write(true)
             .open(root.join("transport-gate"))
@@ -1676,10 +1815,23 @@ fn workflow_stop_inherits_the_selected_lock_without_releasing_the_parent_barrier
         String::from_utf8_lossy(&rejected.stderr).contains("does not belong to the selected agent")
     );
     drop(lock);
-    assert_eq!(
-        unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-        0
-    );
+    // A concurrent fork can retain a close-on-exec copy until the child execs.
+    let (released, receive) = std::sync::mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let result = if unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        };
+        drop(contender);
+        // A retained lock can make the receiver time out and fail the test.
+        let _ = released.send(result);
+    });
+    receive
+        .recv_timeout(Duration::from_secs(5))
+        .expect("setup lock remained held after parent close")
+        .expect("acquire setup lock after parent close");
+    waiter.join().unwrap();
 }
 
 #[test]
@@ -1727,7 +1879,7 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     // paths within SUN_LEN while still passing the ordinary alias to the CLI.
     let root = temp.path().join("i");
     initialize(&root);
-    value(cli(
+    let configured = value(cli(
         &root,
         &[
             "agent",
@@ -1767,6 +1919,7 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     );
     let record = directory.join("runtime.json");
     let mut run = serde_json::json!({
+        "agent_id":configured["configuration"]["id"], "state":"running",
         "run_id":"0123456789abcdef0123456789abcdef",
         "backend_pid":child.id(), "backend_token":backend_token
     });
@@ -1774,6 +1927,7 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     let live = value(cli(&root, &["agent", "status", "marker"]));
     let stop = cli(&root, &["agent", "stop", "marker"]);
     let survived = child.try_wait().unwrap().is_none();
+    let record_preserved = fs::read(&record).unwrap() == serde_json::to_vec(&run).unwrap();
     let socket_preserved = socket.exists();
     fs::remove_file(&socket).unwrap();
     let without_control = cli(&root, &["agent", "status", "marker"]);
@@ -1782,6 +1936,7 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     child.wait().unwrap();
     assert_eq!(live["runtime_state"], "unknown");
     assert!(!stop.status.success());
+    assert!(record_preserved, "refused stop changed the current run");
     assert!(survived, "an unrelated live PID was signalled");
     assert!(socket_preserved);
     let without_control = value(without_control);
@@ -2341,7 +2496,7 @@ fn sentry_arguments_do_not_replace_birth_run_and_namespace_validation() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("instance");
     initialize(&root);
-    value(cli(
+    let configured = value(cli(
         &root,
         &[
             "agent",
@@ -2383,7 +2538,7 @@ fn sentry_arguments_do_not_replace_birth_run_and_namespace_validation() {
         b"unreconciled backend state",
     )
     .unwrap();
-    let saved = serde_json::json!({"run_id":run_id,"backend_pid":pid,"backend_token":token});
+    let saved = serde_json::json!({"agent_id":configured["configuration"]["id"],"run_id":run_id,"state":"running","backend_pid":pid,"backend_token":token});
     let mut results = Vec::new();
     for (field, replacement, generation, expected_state) in [
         (
@@ -3324,7 +3479,7 @@ fn fresh_proxy_uses_the_explicit_toml_and_keeps_the_other_instance_unchanged() {
     let source = format!(
         "parent_proxy = \"http://127.0.0.1:18080\"\nparent_proxy_agents = [\"marker\"]\nparent_proxy_hosts = [\"auth.example.test\"]\n{source}"
     );
-    fs::write(&selected, source).unwrap();
+    fs::write(&selected, &source).unwrap();
     let a_default = fs::read(a.join("config.toml")).unwrap();
     let b_default = fs::read(b.join("config.toml")).unwrap();
     let selected_cli = |args: &[&str]| {
@@ -3339,7 +3494,8 @@ fn fresh_proxy_uses_the_explicit_toml_and_keeps_the_other_instance_unchanged() {
     value(selected_cli(&["start"]));
     assert!(a.join("data/ready.json").is_file());
     assert!(!b.join("data/ready.json").exists());
-    assert!(fs::read_to_string(&selected).unwrap().contains("reload_id"));
+    // No listener changed, so startup must preserve the selected document.
+    assert_eq!(fs::read_to_string(&selected).unwrap(), source);
     let saved: toml::Value = toml::from_str(&fs::read_to_string(&selected).unwrap()).unwrap();
     assert_eq!(
         saved["parent_proxy"].as_str(),

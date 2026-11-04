@@ -115,13 +115,14 @@ fn periods_themes_quiet_output_and_topic_corrections() {
 #[test]
 fn plain_copy_safe_fences_and_transitive_definitions() {
     let mut value = source();
-    value["sections"][0]["items"][0]["body"] =
-        json!("Authored [link](relative) and <script> stay inert. The plumb route remains.");
-    value["definitions"] = json!({"plumb":"The path associates exchanges with a run_id.","run_id":"Identifier for a sandbox run."});
+    value["sections"][0]["items"][0]["body"] = json!(
+        "Authored [link](relative) and <script> stay inert. The collaboration route remains."
+    );
+    value["definitions"] = json!({"collaboration":"The path associates exchanges with a run_id.","run_id":"Identifier for a sandbox run."});
     let output = &checked_files(&value)[0].content;
     assert!(output.contains(r"\[link\](relative) and \<script\>"));
     assert!(output.contains("`run_id` — Identifier for a sandbox run."));
-    value["sections"] = json!([{"kind":"lens_caught","items":[{"title":"Fence safely","body":"The plumb example remains inert.",
+    value["sections"] = json!([{"kind":"lens_caught","items":[{"title":"Fence safely","body":"The collaboration example remains inert.",
         "attribution":"lens_review_finding","snippet":{"language":"text","code":"before\n```\nafter [example](missing)"},
         "lesson":"Use a longer fence.","evidence":source()["sections"][0]["items"][0]["evidence"]}]}]);
     assert!(

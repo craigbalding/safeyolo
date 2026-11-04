@@ -20,7 +20,7 @@ GUEST_PROXY = "http://127.0.0.1:8080"
 
 def is_mounted_forwarder(argv: list[str]) -> bool:
     """Recognize the guest listener and the mounted per-agent UDS route."""
-    if len(argv) != 3 or Path(argv[0]).name != "socat":
+    if len(argv) != 3 or Path(argv[0]).name != "sy-proxy-relay":
         return False
     listener, *options = argv[1].split(",")
     return (
@@ -58,7 +58,7 @@ def bridge(platform: str, proc_root: Path = Path("/proc")) -> dict:
                 continue
             if (
                 len(argv) == 3
-                and Path(argv[0]).name == "socat"
+                and Path(argv[0]).name == "sy-proxy-relay"
                 and argv[1].startswith("TCP-LISTEN:8080,")
                 and argv[2].startswith("VSOCK-CONNECT:2:1080,")
             ):

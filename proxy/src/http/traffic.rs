@@ -1,7 +1,10 @@
 //! Reached HTTP traffic hooks and stable, content-free per-exchange facts.
 //! Body ownership and validated completion remain with the existing HTTP driver.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 use hyper::{Request, header};
 use zeroize::Zeroizing;
@@ -33,6 +36,10 @@ pub(super) struct Traffic {
     client: Option<Zeroizing<String>>,
     connection_id: Zeroizing<String>,
     memory_encoding: Result<Zeroizing<Vec<u8>>, ContentError>,
+    identity: ConnectionIdentity,
+    prompt_content: crate::prompt_injection::Content,
+    model_request: AtomicBool,
+    observation: Option<Arc<crate::observations::Application>>,
 }
 
 impl Traffic {
@@ -70,13 +77,54 @@ impl Traffic {
                 request.headers(),
                 header::CONTENT_ENCODING,
             ),
+            identity: identity.clone(),
+            prompt_content: crate::prompt_injection::Content::from_headers(request.headers()),
+            model_request: AtomicBool::new(false),
+            observation: request
+                .extensions()
+                .get::<Arc<crate::observations::Application>>()
+                .cloned(),
         })
+    }
+
+    pub(super) fn selected_model_request(&self, selected: bool) {
+        self.model_request.store(selected, Ordering::Release);
+    }
+
+    pub(super) fn prompt_request(&self, content: Option<&[u8]>) {
+        self.prompt_content(
+            crate::security_indicators::Direction::Request,
+            self.prompt_content,
+            content,
+        );
+    }
+
+    pub(super) fn prompt_content(
+        &self,
+        direction: crate::security_indicators::Direction,
+        content_type: crate::prompt_injection::Content,
+        content: Option<&[u8]>,
+    ) {
+        if let Ok(runtime) = self.state.read() {
+            crate::prompt_injection::observe(
+                &runtime,
+                &self.identity,
+                &self.request_id,
+                &self.host,
+                direction,
+                content_type,
+                content,
+                self.model_request.load(Ordering::Acquire),
+            );
+        } else {
+            eprintln!("Prompt-injection sensor runtime unavailable");
+        }
     }
 
     /// The existing request-completion owner calls this once at its reached
     /// hook. Absent source content is zero bytes without decoding the header.
     pub(super) fn memory_request(&self, content: Option<&[u8]>) {
-        self.memory_request_size(|| {
+        self.memory_request_measured(content.is_some(), || {
             memory_decoded_size(
                 content,
                 self.memory_encoding
@@ -91,6 +139,14 @@ impl Traffic {
         &self,
         decoded_size: impl FnOnce() -> Result<u64, ContentError>,
     ) {
+        self.memory_request_measured(true, decoded_size);
+    }
+
+    fn memory_request_measured(
+        &self,
+        measured: bool,
+        decoded_size: impl FnOnce() -> Result<u64, ContentError>,
+    ) {
         let runtime = match self.state.read() {
             Ok(runtime) => runtime.clone(),
             Err(_) => {
@@ -98,14 +154,26 @@ impl Traffic {
                 return;
             }
         };
+        let mut observed_size = None;
         crate::memory_runtime::observe(runtime.memory_monitor.request(
             &self.connection_id,
             &self.host,
             &runtime.audit,
-            decoded_size,
+            || {
+                let result = decoded_size();
+                observed_size = result.ok();
+                result
+            },
             crate::circuit_runtime::now,
             crate::memory_runtime::sample,
         ));
+        if let Some(observation) = &self.observation {
+            let transformed = observed_size.is_some()
+                && self.memory_encoding.as_deref().is_ok_and(|encoding| {
+                    !encoding.is_empty() && !encoding.eq_ignore_ascii_case(b"identity")
+                });
+            observation.complete(if measured { observed_size } else { None }, transformed);
+        }
     }
 
     /// Call only for a reached, present, non-streamed response. The existing
@@ -196,7 +264,7 @@ impl Traffic {
         };
         let facts = self.request_facts(hooks.started);
         let logged = runtime.request_logger.request(
-            runtime.policy.as_ref(),
+            runtime.policy.as_deref(),
             &mut hooks.exchange,
             &facts,
             decoded_size,

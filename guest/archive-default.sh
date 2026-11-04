@@ -17,6 +17,9 @@ esac
 for file in "${files[@]}" build-base.txt; do
     [[ -e "$assets/$file" ]] || { echo "Missing finished build output: $assets/$file" >&2; exit 1; }
 done
+if [[ -f "$assets/build-inputs.json" ]]; then
+    files+=(build-inputs.json)
+fi
 if [[ "$platform" == linux/* ]]; then
     [[ -d "$assets/rootfs-tree" && -f "$assets/cache-paths.txt" ]] || exit 1
 else
@@ -34,6 +37,9 @@ sudo -n "$(command -v tar)" --format=pax --numeric-owner --acls --xattrs --xattr
     -C "$assets" -cf - -- "${files[@]}" | zstd -T1 -3 -q -c > "$temporary"
 mv -- "$temporary" "$destination/guest.tar.zst"
 cp -- "$assets/build-base.txt" "$destination/build-base.txt"
+if [[ -f "$assets/build-inputs.json" ]]; then
+    cp -- "$assets/build-inputs.json" "$destination/build-inputs.json"
+fi
 read -r archive_bytes < <(wc -c < "$destination/guest.tar.zst")
 # Keep the selected GNU du when sudo replaces PATH, as with tar above.
 du_command=$(command -v du)

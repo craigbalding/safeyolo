@@ -1,0 +1,623 @@
+# Coord operations reference
+
+Use the [operations guide](coord-operations.md) for first use, routine work
+and recovery. This reference covers detailed input rules, retry behavior and
+specialist procedures. Unless a section selects another host, run command-line
+interface (CLI) commands as the host account that owns the installed instance. Examples use
+`$HOME/.safeyolo`; select your actual root if it differs. Agents use their
+authenticated Model Context Protocol (MCP) tools inside the guest.
+
+## Retry a membership change
+
+Run grant and revoke as the host account that owns the instance. Room `chat`
+and configured agent `alice` must already exist in `$HOME/.safeyolo`. Grant
+replaces the manual permission set; revoke removes all current room sources for
+that agent. The following commands first grant receive-only access, then revoke
+it. Choose an operation ID before calling if you need lost-response recovery:
+
+```sh
+safeyolo --root "$HOME/.safeyolo" coord grant chat alice receive --operation-id chat-alice-receive
+safeyolo --root "$HOME/.safeyolo" coord revoke chat alice --operation-id chat-alice-revoke
+```
+
+Repeat the exact operation ID and input after an ambiguous response. SafeYolo
+returns the original result, including its membership generation and transition
+time. Permission order and duplicates do not change grant input. Omitting
+permissions grants `receive`, `send` and `page_operator`. Explicit permissions
+replace that manual set; other valid approved sources remain effective.
+Changing the canonical input under the same ID returns a conflict. Grant and revoke have separate ID scopes.
+To request a new change after a later grant or revoke, choose a new ID.
+When you omit `--operation-id`, SafeYolo generates one and includes it in the
+result; a lost response then also loses that retry handle.
+
+Membership changes commit with immutable operation history and metadata-only
+audit rows. The running proxy delivers staged Coord audit and attention hints
+through one common worker. Staging is not delivery. Failed delivery remains
+pending across restart; audit retries can produce duplicates with the same
+`event_id`. The audit directory must permit a sibling `.lock` file. The writer
+needs read and write access to recover an incomplete final line before append.
+Canonical brief and message bodies stay in their existing stores.
+These retry semantics do not apply to room creation or message sends.
+
+## Message input and chat controls
+
+Interactive chat requires both standard input and standard output to be terminals.
+If either is piped or redirected, the command exits before connecting. It does
+not consume input or emit terminal cursor controls. Use `--observe` for a
+non-interactive room stream.
+
+Chat displays arriving messages above the editable `op>` prompt. The draft and
+cursor remain intact. Enter sends the draft; `:q`, Ctrl-D or Ctrl-C detaches.
+`:paste` (or `:p`) reads the host clipboard. `:edit` (or `:e`) opens `$VISUAL`,
+then `$EDITOR`, with `vi` as the fallback. Clipboard/editor composition requires
+confirmation. No chat transcript or draft is saved separately from room history.
+Clipboard and editor input replace malformed UTF-8 bytes with the replacement
+character. Clipboard commands retain their ten-second timeout.
+Use `chat --observe` for a read-only stream without a terminal prompt.
+
+Scripted send accepts exactly one UTF-8 source: text, `--file FILE`, or `--stdin`.
+It preserves the selected payload, including trailing newlines and controls.
+Empty/whitespace-only input, multiple sources, unreadable/non-UTF-8 input and
+invalid notification targets fail without publication. `--content-type` accepts
+`text/markdown` (default) or `text/plain`. Repeat `--to` for several members.
+Without `--to`, scripted send notifies the room. Interactive chat also defaults
+to room attention, unless an approved Factory snapshot selects one
+operator-input agent. An explicit `--to` overrides that default.
+The command reports authorization, room, target and provider errors without
+printing credentials. `dispatch-trigger` remains the separate command for
+Dispatch publication requests.
+
+If publication acknowledgment is lost, the command reports acceptance as
+**UNKNOWN**. It does not resend automatically. Inspect history before deciding
+whether to send the message again. A later independent send remains available.
+Accepted messages with pending or lost attention retain that diagnosis.
+
+## Read and update a trusted brief
+
+For initial creation, follow the [brief walkthrough](coord-operations.md#read-and-update-a-trusted-brief).
+
+For a later update, read the current brief and use its revision as
+`--expected-revision`. Inspect the existing text before replacing it. Set accepts
+exactly one source: a Markdown argument, `--file FILE`, or `--stdin`. It preserves
+the input bytes, including trailing newlines. A different operation with a stale
+revision fails without changing the brief or emitting brief-change attention.
+
+If the result is uncertain, retry with the same `--operation-id`, original
+expected revision and exact Markdown. Keep the original input file for that
+retry. The command returns the original committed result even if a later
+operation has changed the brief. It does not reapply the old intent. Changed
+input under the same ID fails with an operation conflict. Read the current brief
+separately to inspect any later change. The operation ID is scoped to the
+operator and brief-set operation type across rooms. If you omit
+`--operation-id`, the command generates an ID and reports it in its result;
+choose the ID before the first attempt when you need ambiguous-result recovery.
+
+## Claim durable work
+
+The [work walkthrough](coord-operations.md#claim-durable-work) covers creation,
+claims, candidates, review and completion. Local work treats `external_ref` as
+opaque. An external assignee or description never decides ownership.
+
+### GitHub references
+
+To seed work from a GitHub issue or pull request, use the owning host account
+with an existing room (`chat` here). Replace the example URL with your actual
+issue or pull-request URL and choose an operation ID before running:
+
+```sh
+safeyolo --root "$HOME/.safeyolo" coord work import-github chat https://github.com/craigbalding/safeyolo/issues/1313 --operation-id github-review
+```
+
+This command validates and stores the GitHub HTTPS URL through normal work
+creation. The initial local title identifies the repository and issue number.
+The command does not fetch GitHub. A room member can use `import_github_work`
+with `room_name`, `url` and a chosen `operation_id` for the same operation.
+GitHub availability and service access do not affect creation or replay.
+
+For external metadata, a room member calls `read_github_work` with `room_name`
+and `work_id`. The result separates canonical `work` from `external` metadata.
+Available metadata contains an external title excerpt, issue or pull request
+state, canonical URL and observation time. GitHub owns that description;
+SafeYolo owns the claim, runtime state and completion. The adapter does not copy
+rich descriptions, assignees or commit identifiers. It never changes a
+candidate target or carries attestations to another target.
+
+The operator grants the caller the normal `github:read_work` service capability
+for `api.github.com` and binds a host-held credential through existing service
+controls. The native adapter obtains the caller's gateway token from
+`/gateway/services`. It sends GET requests through the caller's proxy route.
+The agent does not receive the upstream personal access token. The adapter
+does not follow redirects, retry requests or write to GitHub. Each external
+request has a 15-second deadline and a 1 MiB response limit. Title excerpts use
+at most 512 source UTF-8 bytes and the existing inert control-character display.
+Escaping can make the returned title longer than 512 bytes.
+Other service capabilities and generic opaque work references remain available.
+
+If GitHub fails or the caller lacks service access, `external.status` is
+`unavailable` beside the current local work. Ordinary reads and claim operations
+do not fetch external metadata. Room and service access are checked again after
+the external fetch. Revoked room access refuses the read; revoked service access
+prevents the metadata return. A member without GitHub access can still claim,
+release or complete work according to room permissions. `coord status ROOM`
+labels a recognized GitHub URL as an external reference without fetching it.
+
+### Claims, candidates and attestations
+
+SafeYolo does not fetch candidate targets or discover external candidate changes.
+Claims and completion do not change candidate identity. An explicit target
+change advances `target_generation`, even when the reference is reused.
+
+A member calls `attest_work` with `room_name`, `work_id`, `target_generation`,
+`kind`, `verdict`, `summary`, optional `evidence_refs` and a chosen `operation_id`.
+The current target must be set and match the supplied generation. A concurrent
+candidate change conflicts; read the current work before submitting new evidence.
+Independent attestations need no expected work version, so another author's
+submission does not invalidate the candidate. Authenticated identity supplies
+the author; caller-supplied authorship is rejected. `kind` can be `review`,
+`acceptance` or another stated kind. `verdict` is `approve`, `reject` or `abstain`.
+Attestations are immutable, including their target reference and generation.
+Evidence references remain untrusted external content and are never fetched.
+Attestations do not transfer ownership or complete work.
+
+`get_room_state` and `coord status ROOM` show the current candidate and exact
+counts of current acceptance dispositions and stale attestations. Conflicting
+dispositions remain attributed to their authors. The status view does not decide
+a majority or apply policy. Each work item shows at most eight attestation
+excerpts in 4096 bytes of item JSON, current first, with explicit truncation.
+Summaries show a UTF-8 prefix of at most 128 bytes. Use `list_work_attestations`
+with `room_name` and `work_id` for full records and evidence references. Pages
+contain at most 200 items and 65536 bytes of item JSON, ordered by
+`attestation_id`; follow `next_after`. Each page labels records current or stale
+against its returned `target_generation`. Pages do not share a snapshot.
+Prior acceptance stays in history after a target change and does not approve
+the new generation.
+
+Use `coord work change-target`, `coord work attest` and `coord work attestations`
+from the owning host account for the same operations. `coord work --help` lists
+their required arguments. `target_ref` is nonempty and at most 1024 UTF-8 bytes.
+Attestation kind is nonempty and at most 128 UTF-8 bytes; summary is nonempty
+and at most 1024. At most 16 evidence references of 1024 bytes each are allowed.
+The complete serialized attestation is at most 32768 bytes. Summaries and refs
+remain in canonical authorized storage; audit and attention hints contain only
+metadata. Retry an ambiguous operation with its original operation ID and inputs;
+the original target and author remain bound even after a later candidate change.
+
+The holder calls `release_work` or `complete_work` with the current version
+and generation. Completion accepts optional `short_result`. Reads require
+current `receive` permission. Mutations require `send` and `receive`. Revocation
+prevents the former member from reading, releasing or completing work.
+
+Claims survive elapsed time, model exit, and instance restart. They never
+expire or transfer automatically. `claim_expires_at` is reserved and stays
+null. The owning host account can inspect and recover an abandoned claim
+without relying on process liveness. Use `coord work --help` for the recovery
+commands. `release` requires the current expected version and generation;
+`reassign` also requires the new holder's durable `--agent-id`. The new holder
+must have current room send and receive permission.
+
+Choose an operation ID before a write. If the response is lost, retry the same
+operation ID and original inputs, including the original expectations. While
+room authority remains current, the retry returns the original result even
+after later mutations. Changed input under that ID conflicts. For a new intent,
+read the current work and use a new operation ID. A former holder cannot use
+stale versions or generations to change a later claim.
+
+Work mutations notify current receive-authorized agents except the agent actor;
+operator mutations notify all such agents. Attention resolves the original
+immutable version, which may differ from current work. Audit and wake hints
+contain metadata; canonical work storage contains titles, references and
+results. Work input is bounded to 262144 UTF-8 bytes. Lists return at most 200
+items ordered by `work_id`; use `next_after` to continue. Concurrent changes
+can affect later pages because pagination does not share a snapshot.
+
+## Raise a material signal
+
+The [signal walkthrough](coord-operations.md#raise-a-material-signal) covers
+creation, observation and resolution. Signal references are opaque strings
+and are never fetched. An optional `work_id` must identify work in the same room.
+
+On the owning host account, select existing room `chat` and configured member
+`bob`. If Bob's paging permission comes only from his manual grant, the following
+command removes it while preserving signal creation. Other valid approved
+permission sources remain effective:
+
+```sh
+safeyolo --root "$HOME/.safeyolo" coord grant chat bob send receive
+```
+
+The change affects future pages. Existing pending signals remain pending.
+An identical current blocker or decision from the same author deduplicates
+to the existing signal, even with another operation ID. A room permits at
+most five new pages per author and 20 total pages in 60 seconds. Excess claims
+are stored with `page_status=rate_limited` and `needs_operator=false`.
+Permission-denied pages likewise retain the claim with
+`page_status=permission_denied`. Granting permission later does not page an
+older claim automatically.
+
+Watch reads bounded metadata pages, then fetches each exact immutable revision
+through the administrative application programming interface (Admin API). Audit
+JSON Lines (JSONL) contains signal identity, kind, author, basis, revision, state
+and hash;
+it contains no summary or refs. `watch --jsonl FILE` and
+`coord watch --jsonl FILE` fetch the revision named by each signal event from
+the selected running instance. Historical revisions are labelled as revisions,
+not current pending claims. Terminal controls are escaped. Markup is displayed
+as text.
+
+An author corrects their own claim by creating a `correction` with
+`supersedes={"signal_id":"the prior signal ID","expected_revision":1}`.
+The prior signal's current projection becomes `superseded`; its original
+revision remains readable through `read_signal` with `revision=1`.
+A peer or a replacement durable identity cannot supersede that author's claim.
+Current lists omit resolved and superseded claims by default. Use
+`list_signals` with `state=all`, or read an exact revision, to inspect history.
+
+Choose an operation ID before writing. An identical retry returns its original
+result while current room authority remains valid. Changed input under the same
+ID conflicts. Correction expectations and resolution expectations refer to the
+current revision, not the creation revision. Each changed signal revision,
+current projection, operation outcome and metadata audit event commits in one
+SQLite transaction. A correction updates both claims in that transaction.
+
+Summaries permit 1–1024 UTF-8 bytes. References permit at most 16 strings of
+1024 bytes each. The complete mutation permits at most 32768 bytes. Unknown
+fields and unrecognised kinds or bases are refused. Lists contain at most 100
+items and 65536 bytes of items per page, ordered by `signal_id`. Follow
+`next_after`; pages do not share a snapshot. Room state includes bounded
+`signals` and `needs_operator` pages with counts and continuation values.
+
+## Observe messages and harness events
+
+Watch renders ordinary messages and published Codex/Pi session, turn, reasoning,
+tool, usage, stderr and supervisor events. Tool summaries show routing arguments;
+they do not dump tool request bodies or results. Unknown events appear with
+`--show-unknown`. Oversize summaries retain the omitted-middle marker.
+
+Text is complete by default. `--max-text COUNT` limits rendered text only.
+`--history COUNT` selects the retained tail; `--once` prints it and exits.
+`--since SEQUENCE` reads every message after the selected cursor. A live watcher
+retains its rendered cursor during NATS reconnection and reports loss/recovery.
+Terminal controls are shown as visible text in chat, rendered and raw modes.
+Bidirectional text controls are also named visibly.
+
+`--raw` displays message bodies without event summarization. `--json` emits
+canonical envelopes and exact payloads as JSONL, with controls JSON-escaped.
+`--redact` optionally hides common credential patterns and URL queries in each
+mode; stored messages are unchanged. `--no-color` or `NO_COLOR` disables color.
+`coord watch --jsonl FILE` renders a local harness JSONL stream; use `-` for stdin.
+
+`--compact` selects a concise transcript. It shows
+`$` for commands, `@` for tools and Coord receipts, `#` for agent text and
+lifecycle events, `>` for canonical operator messages, and `!` for failures.
+The operator marker comes from the Coord envelope. In a terminal, each wrapped
+body continuation carries a gutter, including with color disabled.
+Matching successful completions do not
+repeat their start line. A completion whose start precedes the selected history
+is still shown. Failed commands include a redacted final output line. Compact
+mode also shows file-change totals, short token counts and successful skill-file
+reads. A file-read line confirms the read, not that the agent followed the skill.
+Use `--plain` as an alias for `--no-color`. Raw, JSON and compact modes are
+mutually exclusive.
+
+The installed `bin/watch-backlog-factory` wrapper opens the existing Relay,
+Forge and Lens rooms in three tmux panes. Run it inside your operator tmux
+session. Set `SAFEYOLO_FACTORY_CONFIG_DIR` to the instance root first.
+Its default CLI is that root's `bin/safeyolo`; `SAFEYOLO_FACTORY_CLI` can select
+another installed executable. `SAFEYOLO_FACTORY_NATIVE_CONFIG` can select a
+different configuration file. The wrapper starts observers; it does not
+start or resume a factory. Its panes select `--compact --redact`, show unknown
+events, and cap rendered text at 600 characters with `--max-text 600`.
+
+## Request an optional catch-up narrative
+
+On the owning host account, select an existing room (`chat` here) in the
+instance. The proxy must be running. Use a host directory where you can save
+the catch-up files. The command below shows current canonical state without
+running a model or reading the transcript:
+
+```sh
+safeyolo --root "$HOME/.safeyolo" coord catch-up chat
+```
+
+To generate a narrative, export the bounded request below. Redirection creates
+or overwrites `catch-up-input.json` in your current directory. The file contains
+room data. Give that file to an already authorized model through its existing
+text interface. Request only the JSON response described by `output_example`.
+The model needs no Coord tools or mutation permissions. Save its returned JSON
+as `catch-up-summary.json` in your current directory.
+
+```sh
+safeyolo --root "$HOME/.safeyolo" coord catch-up chat --prompt > catch-up-input.json
+safeyolo --root "$HOME/.safeyolo" coord catch-up chat --summary catch-up-summary.json --evidence
+```
+
+The second command reads fresh canonical state first. It then displays a
+visibly derived narrative and its cited sources. Each assertion requires text
+and at least one source from the request: `state:<SHA256>` identifies the exact
+canonical projection, and `message:<SEQUENCE>` identifies a retained message in
+that room and instance. The response must repeat the request's `room_id` and
+`origin_instance_id`. References to another instance or room are rejected.
+Evidence reads use the selected instance and current room permissions.
+`--evidence` shows each available source with its original structured
+attribution. Message bodies remain historical author claims. External links
+and model text are never fetched or executed.
+
+Citations do not establish that the narrative is correct. If a narrative
+contradicts ownership, completion or acceptance, the canonical state displayed
+first takes precedence. If the state digest changed, the command marks that
+source unavailable; retain the original input to inspect the earlier
+projection. Missing, expired, deleted or inaccessible message evidence is also
+marked unavailable. The command never substitutes a nearby sequence.
+
+The default request selects the last 100 sequence positions without replaying
+the full transcript. `--max-messages` accepts 1 through 200. History contains at
+most 256 KiB of item JSON, with message bodies excerpted at 4096 UTF-8 bytes.
+Original body sizes, excerpt flags, earlier omissions and continuation values
+remain visible. Current state retains its existing bounds. State and history
+are separate reads, not one atomic snapshot. A history failure produces an
+explicit unavailable result with current state still present.
+
+For an older or longer interval, select its starting sequence with `--since`
+and follow `history.next_cursor` while `history.has_more` is true. Summarize
+these bounded chunks in the chosen model, preserving original source
+references in every combined assertion. Collaborating agents do not need to
+load those chunks. This example starts at the retained beginning:
+
+```sh
+safeyolo --root "$HOME/.safeyolo" coord catch-up chat --prompt --since 0 --max-messages 200
+```
+
+Summary input is limited to 65536 UTF-8 bytes, 32 assertions, 4096 bytes per
+assertion, eight sources per assertion and 64 distinct sources. Missing sources,
+unknown fields and invalid formats are rejected. Model output is inert text,
+with terminal controls made visible and every physical line kept inside a
+gutter. Generation, import and regeneration never create messages, claims,
+targets, attestations, acceptance or other operational changes. SafeYolo stores
+no summary and launches no model for this command. If generation or import
+fails, use `coord status` normally; an import failure still leaves the fetched
+canonical state visible.
+
+## Inspect room capabilities and resource leases
+
+On the owning host account, use an existing room and configured agent in the
+selected instance. Start that instance's proxy before reading state. The
+following examples use room `chat`, agent `bob` and the
+public collaboration label `rundeck:acceptance_runner`:
+
+```sh
+safeyolo --root "$HOME/.safeyolo" coord inventory advertise-capability chat bob rundeck:acceptance_runner --operation-id chat-bob-runner
+safeyolo --root "$HOME/.safeyolo" coord inventory advertise-resource chat rundeck acceptance_runner
+safeyolo --root "$HOME/.safeyolo" coord state chat
+```
+
+Advertising selects room visibility. It does not grant service access. A member's
+`verified` list contains only advertised labels that match current host service
+grants and the active gateway policy. A saved, rejected policy edit cannot
+create verified authorization. Revocation removes a label on the next state
+read. An agent can replace its expiring `declared` skills through
+`declare_capabilities`; those declarations
+cannot create verified authorization or availability. The Agent application
+programming interface (Agent API) and MCP expose the same projection to
+receive-authorized members.
+
+A trusted provider integration must atomically replace
+`<root>/coord-providers/<provider>.json` with public observations from that
+provider. Keep the directory outside agent-writable mounts. Coord only reads
+these observations; writing a JSON file does not establish provider provenance.
+The file contains `capabilities` and `leases` arrays. Capability observations
+identify `agent_id`, `capability` and `availability` (`available` or
+`unavailable`). Lease observations identify `resource`, `state` (`held` or
+`unleased`) and `holder_agent_id` (a current room member for `held`, null for
+`unleased`). Each observation contains integer Unix-millisecond `observed_at`
+and `valid_until` timestamps. Fresh evidence requires
+`observed_at <= now < valid_until`, with at most five minutes between the
+timestamps. Do not put credentials, accounts, connection configuration or raw
+errors in this file.
+
+Only fresh provider evidence can establish availability or lease ownership.
+Missing, failed, malformed or expired evidence produces `unknown`. An expired
+observation retains its timestamps and reports `freshness: "stale"`. Coord does
+not renew or transfer provider leases. Chat cannot change their holders. State
+reads select advertised provider filenames without registration, including
+after restart. Each file is limited to 512 KiB and 1,024 observations. Reads
+have a one-second deadline, a process-wide limit of 32 in flight and a limit
+of two per provider. A blocked file cannot consume the executor used for room
+authorization reads.
+
+To stop sharing a label, use `unadvertise-capability ROOM AGENT LABEL` or
+`unadvertise-resource ROOM PROVIDER RESOURCE` with the same command prefix.
+Advertisement changes accept an optional `--operation-id ID`; an identical retry
+returns the original result, while changed input under that ID conflicts.
+They use the existing atomic operation ledger and audit outbox. Raw provider
+payloads and errors are never returned in room state or those audit events.
+
+## Collaborate through a home SafeYolo
+
+Each mutable room has one home SafeYolo. Remote agents use the home for room
+state, messages, claims, briefs and attention. The peer instance keeps no copy
+of the room's mutable state. If the connection fails, remote operations can
+fail or have an unknown outcome. Reconnection reads home state; it does not
+merge claim histories.
+
+Run setup as the trusted host account on each instance. Both instances must
+have current SafeYolo, their own initialized roots, and running proxies
+and Coord. Keep federation credentials, certificate keys and configuration
+outside agent-writable mounts. The home operator must know the peer's actual
+`data/instance_id` and the remote agent's durable `agent_id` from that peer's
+policy. A human agent name alone does not identify a recreated agent.
+
+The examples use a home root at `/srv/home-safeyolo`, a peer root at
+`/srv/peer-safeyolo`, and an existing home room `shared`. Before running them,
+replace `sy-PEER`, `sy-HOME` and `ag-BOB` with the corresponding actual IDs.
+The home needs a Transport Layer Security (TLS) certificate for
+`home.example.test`, its private key, and the certificate authority (CA) file
+that the peer will pin. Use certificate files issued through your existing
+trusted host setup. SafeYolo does not create
+an operator identity or signing hierarchy.
+
+On the peer host, create a credential in an existing private directory:
+
+```sh
+/srv/peer-safeyolo/bin/safeyolo --root /srv/peer-safeyolo coord federation credential /srv/peer-safeyolo/federation-secret
+```
+
+Transfer that file privately to `/srv/home-safeyolo/peer-secret` on the home
+host. Keep both copies readable only by their owning host accounts. On the
+home, trust that peer and grant Bob the existing room permissions:
+
+```sh
+/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation trust sy-PEER /srv/home-safeyolo/peer-secret
+/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation member shared sy-PEER ag-BOB remote-bob --operation-id grant-remote-bob
+```
+
+Trust alone grants no room access. The home maps the instance and agent IDs to
+a home-qualified principal ID. The display name `remote-bob` is the name used
+for targeted attention in this home. It must differ from local agent names and
+remote names held by agents with active room grants. If the former principal
+has no active grants, a replacement durable ID can reuse its name. Old message
+authorship, work history and operation replay retain their original principal.
+Omitting permissions grants `send`, `receive` and `page_operator`, as for a
+local membership. An explicit permission list replaces
+that set. `member` and `unmember` use the existing membership retry contract.
+
+On the home, run the relay in the foreground. In this example the operator
+has selected TCP port 7443 and placed the certificate and key at the shown
+paths. The listener exposes only authenticated Coord operations. It exposes
+neither the Admin API nor the Agent API's other endpoints.
+
+```sh
+/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation serve 0.0.0.0:7443 /srv/home-safeyolo/home-cert.pem /srv/home-safeyolo/home-key.pem
+```
+
+The first JSON line reports the actual listener address and home instance ID.
+Keep that foreground process running while peers participate. Ctrl-C closes
+the listener and its connections. Federation does not bind, export or connect
+the private loopback NATS account to a peer. The separate TLS relay calls the
+home's current room authorization and kernel operations.
+
+On the peer, install the home's public CA file at the shown path. Configure an
+explicit route named `primary` using the peer's credential:
+
+```sh
+/srv/peer-safeyolo/bin/safeyolo --root /srv/peer-safeyolo coord federation home primary sy-HOME https://home.example.test:7443 /srv/peer-safeyolo/home-ca.pem /srv/peer-safeyolo/federation-secret
+```
+
+Bob uses ordinary Coord tools through his own authenticated Agent API. Set
+`home` to `primary` for remote operations. For example, these are tool arguments:
+
+```json
+{"room_name":"shared","home":"primary"}
+```
+
+Those arguments work with `join_room`, `get_room_state`, `read_brief` and
+`list_work`. Other room tools take their ordinary additional arguments.
+`wait_for_attention`, `wait_for_coord` and `read_attention` also accept `home`.
+Keep each attention cursor with its selected home. Omitting `home` selects the
+caller's local instance. Approvals and service credentials remain local.
+`read_github_work` reads home-owned work, then uses the caller's own GitHub
+service grant. It rechecks home room access before returning external metadata.
+
+Remote envelopes carry the authenticated source `origin_instance_id`, the
+home-qualified `sender_agent_id`, and the original source `origin_agent_id`.
+Claims and attestations use the home-qualified principal. These fields come
+from the two SafeYolos, never from the agent's message body. Peer content stays
+attributed and untrusted.
+
+After an unavailable mutation, reconcile with the home. For durable mutations,
+retry only the original operation ID and canonical input. A send has no such
+retry contract; inspect retained home history before repeating an uncertain
+send. A successful local operation during a partition remains home truth.
+
+On the home, revoke one membership or all access from the peer:
+
+```sh
+/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation unmember shared sy-PEER ag-BOB --operation-id revoke-remote-bob
+/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation revoke sy-PEER
+```
+
+Peer revocation disables authentication and revokes its memberships atomically.
+Re-trusting a peer does not restore revoked room grants. Regranting a room
+exposes its retained history, as for a local membership. A request authenticated
+before a trust change cannot use the new trust epoch to mutate work or signals.
+On the peer, `coord federation unhome primary` removes the outgoing route and
+prevents delivery of responses already in flight through that route.
+
+## Schedule an operator message
+
+Use a host scheduler when a message must be sent while the target sandbox is
+stopped. This recipe runs as the trusted host account that owns the instance.
+Its proxy and Coord must be running; the target guest may be stopped.
+First create the room and grant its intended recipient through the
+[room setup procedure](coord-operations.md#prepare-the-room-and-its-members).
+The example uses room `scheduled-work` and recipient `alice`.
+
+On that host, create `~/scheduled-coord-message.txt` with the intended UTF-8
+message. Keep the file and wrapper in host-owned paths outside agent-writable
+mounts. Create `~/bin/post-scheduled-coord` with this content and make it
+executable. Replace `/absolute/instance` with the selected instance path before
+running it:
+
+```sh
+#!/bin/sh
+set -eu
+exec /absolute/instance/bin/safeyolo --root /absolute/instance coord send scheduled-work --file "$HOME/scheduled-coord-message.txt" --to alice --content-type text/plain
+```
+
+On a Linux host with cron already running, use the owning account's
+`crontab -e` to add an entry in Coordinated Universal Time (UTC). Replace
+`/absolute/operator-home` with that account's home. This entry runs every day
+at 09:00 UTC when the host timezone is UTC; check `date '+%F %T %Z'` first.
+
+```cron
+0 9 * * * /absolute/operator-home/bin/post-scheduled-coord >>/absolute/operator-home/scheduled-coord.log 2>&1
+```
+
+On macOS, the same wrapper can be invoked by an operator-maintained LaunchAgent
+or the host account's existing cron setup. Use that scheduler's timezone and
+missed-run rules. No automatic wake or guest start is provided. History must
+show `sender_kind=operator`, with no agent identity. Check the log and retained
+message after execution; do not repeat an uncertain send without checking
+history. This recipe gives guest jobs no host scheduler or operator credentials.
+
+## Runtime files and credentials
+
+The current runtime resolves Coord under the selected configuration's `data_dir`.
+For the default instance this is `$HOME/.safeyolo/data/coord`. Select the
+instance with `--root` and its configuration.
+
+SafeYolo creates the Coord directory with mode `0700`. Its managed NATS runtime
+reuses `nats/creds` across ordinary stop/start cycles. When that file is absent,
+startup creates it with mode `0600`. Generated `nats/server.conf` is also mode
+`0600` and contains the NATS password. Keep both files private; do not print,
+copy into a command line, attach or log their contents. The runtime keeps
+retained JetStream data separately in `nats/jetstream` and canonical room state
+in `v0.db`. Preserve those stores during diagnosis.
+
+Status, doctor and lifecycle diagnostics provide health information without
+printing the credential. File modes protect against other host accounts;
+they do not protect a compromised owning account from its own files. Recover
+that account and host after suspected compromise.
+
+## Focused proof and remaining work
+
+For developers with the repository's acceptance tooling, these drivers exercise
+different boundaries:
+
+- `tests/proxy_contracts/test_native_coord_operator.py` runs installed CLI input,
+  pseudo-terminal (PTY) drafts, publication-count and observer scenarios against
+  disposable NATS. Only the test driver uses Python.
+- `tests/nested-linux/operator_coord_acceptance.py` uses an already running
+  disposable installed proxy and Ubuntu systrap guest. Supply their root,
+  guest name and exact commit with `--root`, `--agent` and `--commit`. The matching
+  guest helper must be staged at `/home/agent/.safeyolo/safeyolo-coord`. It
+  observes guest send/read, guest arrival during a PTY draft, attribution and
+  the room timeline, then stops that guest, proxy and Coord. Select disposable
+  inputs because the driver stops them. A host-only probe does not prove this
+  guest boundary.
+
+The [responsibility map](settings.md#operator-entry-responsibilities) retains
+installed exchange and physical Apple Virtualization framework observations
+at their actual driver/package revisions. Use the same installed CLI for
+[Dispatch period requests](dispatch-publication.md),
+[generation/site validation](dispatch-generation.md), and
+[Mattermost exchange and semantic actions](coord-mattermost.md).

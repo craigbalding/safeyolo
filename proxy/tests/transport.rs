@@ -34,6 +34,7 @@ fn config(directory: &TempDir) -> Config {
     }).to_string()).unwrap();
     Config {
         native_product: false,
+        ingress_bindings: vec![],
         native_settings: None,
         native_config_dir: None,
         native_config_path: None,
@@ -68,7 +69,7 @@ fn config(directory: &TempDir) -> Config {
         admin_port: None,
         admin_api_token_file: None,
         admin_shield_extra_ports: String::new(),
-        plumb: Default::default(),
+        collaboration: Default::default(),
         readiness_file: directory.path().join("ready.json"),
         reload_id: None,
         audit_log_path: Some(directory.path().join("audit.jsonl")),

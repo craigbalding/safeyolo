@@ -161,7 +161,7 @@ nodes:
 
   - id: con.gateway_never_share_token
     kind: conclusion
-    label: "Never print, persist, or send an sgw_ token to another agent (including via plumb)"
+    label: "Never print, persist, or send an sgw_ token to another agent (including through collaboration messages)"
     source: authored
 
   - id: con.gateway_correct_route
