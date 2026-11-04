@@ -132,8 +132,12 @@ handoff while using native work. Native assigned checks and peer challenges use
 the same durable work records and can enforce the selected participant and
 independence flag. Their [public review loop](coord-reference.md#assigned-checks-and-peer-challenges)
 does not yet select factory acceptance requirements or route native assignments
-to supervised roles. Do not infer acceptance from execution completion,
-challenge resolution or attestation counts.
+to supervised roles. An authorized work creator can explicitly select native
+[requirements and deciding participants](coord-reference.md#select-requirements-and-decide-output-acceptance).
+Those requirements apply equally to direct callers. Keep the declared message
+handoffs until native supervisor routing is supplied. Execution completion,
+challenge resolution and attestation counts do not substitute for an eligible
+acceptance decision about the current output.
 
 An approved factory retains the following state:
 

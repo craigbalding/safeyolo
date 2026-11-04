@@ -30,6 +30,18 @@ work/response expectations. Read `list_work_reviews` and immutable `read_work`
 versions for current obligations and history. These optional records do not yet
 select factory acceptance requirements or replace message handoffs.
 
+The work creator or operator can select native acceptance context with
+`set_work_requirements`. Later amendments require a recorded authority or the
+operator; ownership and production alone grant no policy authority. An explicit
+authorized delegation can name a worker. Selected checks and challenges govern
+`decide_work_acceptance`.
+Only named deciders may decide, and approval validates the exact current output
+and required review outcomes atomically. Read `acceptance_status` for pending
+obligations, stale approvals and conflicting decisions. Execution completion
+and check conclusions remain separate from output acceptance. Approved factory
+configuration selection and native supervisor routing remain pending; retain
+the current message handoffs.
+
 ## Route the request
 
 - For a new factory or substantial redesign, read

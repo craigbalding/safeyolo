@@ -13,7 +13,7 @@ use std::{
 };
 
 const NATS_VERSION: &str = "2.14.5";
-pub(crate) const SCHEMA_VERSION: u32 = 7;
+pub(crate) const SCHEMA_VERSION: u32 = 8;
 pub(crate) const COLLABORATION_MAX_ENVELOPE_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) mod brief;
 mod inventory;
@@ -69,7 +69,7 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
         }
         transaction.execute_batch(include_str!("coord_schema.sql"))?;
         transaction.execute("INSERT INTO instance(id) VALUES (?1)", [id.trim()])?;
-    } else if ![5, 6, SCHEMA_VERSION].contains(&version) {
+    } else if ![5, 6, 7, SCHEMA_VERSION].contains(&version) {
         return Err(format!(
             "Coord schema {version} is not operational; expected version {SCHEMA_VERSION}"
         )
@@ -82,8 +82,8 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
     transaction.execute_batch(include_str!("coord_signal_schema.sql"))?;
     transaction.execute_batch(include_str!("coord_federation_schema.sql"))?;
     transaction.execute_batch(include_str!("coord_membership_grants.sql"))?;
-    // Earlier writers drop unknown check/challenge fields when rewriting work.
-    // Fence them before any new review record can be created.
+    // Earlier writers drop selected requirements and decisions on rewrite.
+    // Fence them before accepting work with that authority context.
     transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     let stored: String = transaction.query_row("SELECT id FROM instance", [], |row| row.get(0))?;
     if stored != id.trim() {

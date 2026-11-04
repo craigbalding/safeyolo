@@ -42,6 +42,24 @@ pub(crate) fn bounded_items(items: Vec<Value>, total: usize, budget: usize) -> V
 }
 
 pub(crate) fn work_summary(mut work: Value) -> Value {
+    if let Some(requirements) = work
+        .as_object_mut()
+        .unwrap()
+        .remove("acceptance_requirements")
+        && !requirements.is_null()
+    {
+        work["selected_requirements"] = json!({"version":requirements["version"],"author":requirements["author"],
+            "independent":requirements["independent"],"required_checks":requirements["checks"].as_array().unwrap().len(),
+            "required_challenges":requirements["challenges"].as_array().unwrap().len()});
+    }
+    work.as_object_mut().unwrap().remove("acceptance_decisions");
+    for field in ["obligations", "decisions"] {
+        if let Some(items) = work["acceptance_status"][field].as_array() {
+            let total = items.len();
+            work["acceptance_status"][field] =
+                bounded_items(items.iter().take(8).cloned().collect(), total, 2048);
+        }
+    }
     // Descriptions and refs can fill a complete mutation. Status needs the
     // current ownership/version and a bounded title or completion result.
     let external_ref = work.as_object_mut().unwrap().remove("external_ref");
@@ -283,10 +301,19 @@ fn work_rows(output: &mut String, title: &str, page: &Value) {
             );
         }
         let evidence = &work["attestations"];
+        let status = &work["acceptance_status"];
+        if status["state"] != "not_selected" {
+            let _ = writeln!(
+                output,
+                "    output acceptance={} reason={}; use coord work show for requirements, obligations and decisions",
+                text(&status["state"]),
+                quoted(&status["reason"])
+            );
+        }
         let acceptance = &evidence["current_acceptance"];
         let _ = writeln!(
             output,
-            "    target generation={} ref={}; current acceptance approve={} reject={} abstain={}; stale attestations={}",
+            "    target generation={} ref={}; current acceptance attestations approve={} reject={} abstain={}; stale attestations={}",
             work["target_generation"],
             quoted(&work["target_ref"]),
             acceptance["approve"],

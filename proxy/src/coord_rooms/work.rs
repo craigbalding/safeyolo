@@ -4,6 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub(crate) mod acceptance;
 pub(crate) mod attestations;
 pub(crate) mod challenges;
 pub(crate) mod checks;
@@ -179,6 +180,32 @@ pub(crate) enum Mutation {
         deciders: Vec<subjects::Principal>,
         reason: String,
     },
+    SetRequirements {
+        work_id: String,
+        expected_version: i64,
+        expected_generation: i64,
+        expected_requirements_version: i64,
+        authorities: Vec<subjects::Principal>,
+        deciders: Vec<subjects::Principal>,
+        #[serde(default)]
+        independent: bool,
+        #[serde(default)]
+        checks: Vec<acceptance::ReviewReference>,
+        #[serde(default)]
+        challenges: Vec<acceptance::ReviewReference>,
+        reason: String,
+    },
+    DecideAcceptance {
+        work_id: String,
+        expected_version: i64,
+        expected_generation: i64,
+        expected_requirements_version: i64,
+        expected_target_generation: i64,
+        verdict: attestations::Verdict,
+        summary: String,
+        #[serde(default)]
+        evidence_refs: Vec<String>,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -198,6 +225,10 @@ pub(crate) struct Work {
     pub check: Option<checks::Check>,
     #[serde(default)]
     pub challenge: Option<challenges::Challenge>,
+    #[serde(default)]
+    pub acceptance_requirements: Option<acceptance::Requirements>,
+    #[serde(default)]
+    pub acceptance_decisions: Vec<acceptance::AcceptanceDecision>,
     pub state: String,
     pub claim_agent_id: Option<String>,
     pub claim_generation: i64,
@@ -324,6 +355,7 @@ fn current(conn: &Connection, room_id: &str, work_id: &str) -> Result<Work, Work
 }
 
 pub(crate) fn describe(conn: &Connection, work: Work) -> Result<Value, WorkError> {
+    let acceptance_status = acceptance::status(conn, &work)?;
     let status = if let Some(check) = &work.check {
         Some(
             json!({"kind":"check", "subject_current":subjects::is_current(conn, &work.room_id, &check.subject)?,
@@ -338,6 +370,7 @@ pub(crate) fn describe(conn: &Connection, work: Work) -> Result<Value, WorkError
         None
     };
     let mut value = serde_json::to_value(work)?;
+    value["acceptance_status"] = acceptance_status;
     if let Some(status) = status {
         value["review_status"] = status;
     }
@@ -362,6 +395,8 @@ fn new_work(
         cancellation: None,
         check: None,
         challenge: None,
+        acceptance_requirements: None,
+        acceptance_decisions: Vec::new(),
         state: "open".into(),
         claim_agent_id: None,
         claim_generation: 0,
@@ -497,6 +532,46 @@ pub(crate) fn mutate(
                 }
             }
             match mutation {
+                Mutation::SetRequirements {
+                    expected_requirements_version,
+                    authorities,
+                    deciders,
+                    independent,
+                    checks,
+                    challenges,
+                    reason,
+                    ..
+                } => acceptance::set_requirements(
+                    &tx,
+                    &mut work,
+                    actor,
+                    expected_requirements_version,
+                    authorities,
+                    deciders,
+                    independent,
+                    checks,
+                    challenges,
+                    reason,
+                    changed_at,
+                )?,
+                Mutation::DecideAcceptance {
+                    expected_requirements_version,
+                    expected_target_generation,
+                    verdict,
+                    summary,
+                    evidence_refs,
+                    ..
+                } => acceptance::decide(
+                    &tx,
+                    &mut work,
+                    actor,
+                    expected_requirements_version,
+                    expected_target_generation,
+                    verdict,
+                    summary,
+                    evidence_refs,
+                    changed_at,
+                )?,
                 Mutation::AnswerCheck {
                     verdict,
                     summary,

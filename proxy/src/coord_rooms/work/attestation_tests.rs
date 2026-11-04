@@ -435,13 +435,15 @@ fn failures_roll_back_target_and_attestation_with_all_delivery_records() {
             assert!(submit(&mut conn, Actor::Agent("alice"), &input, "retry").is_err());
             assert_eq!(counts(&conn), before);
             assert_eq!(
-                read(
-                    &mut conn,
-                    "owned",
-                    Actor::Operator,
-                    work["work_id"].as_str().unwrap()
-                )
-                .unwrap(),
+                canonical_record(
+                    read(
+                        &mut conn,
+                        "owned",
+                        Actor::Operator,
+                        work["work_id"].as_str().unwrap()
+                    )
+                    .unwrap()
+                ),
                 work
             );
             conn.execute_batch("DROP TRIGGER fail").unwrap();

@@ -353,7 +353,51 @@ Use `list_work_reviews` on `WORK_ID` to see both checks and the challenge.
 `read_work` with a `version` reads earlier answers and dispositions. Correcting
 a verdict about the same subject updates that check; it does not add a vote.
 Execution completion, check conclusion, challenge disposition and acceptance
-remain separate. Optional review does not create a new acceptance gate.
+remain separate. Review is advisory until an authorized caller selects it as
+an acceptance requirement.
+
+To select acceptance requirements for this example, Alice must be the original
+work creator, and no requirements must yet be selected. Bob must have room send
+and receive permission. Read the current work and both review records first.
+The next example assumes the original work is version 4/claim generation 1,
+the current output is generation 2, its answered `CURRENT_CHECK_ID` is version 3,
+and `CHALLENGE_ID` is version 4 with Bob's explicit dismissed disposition. Replace
+these IDs and expectations with the actual returned values before calling.
+Alice calls `set_work_requirements` once to select the policy and delegate later
+amendments to Bob:
+
+```json
+{"room_name":"chat","work_id":"WORK_ID","expected_version":4,"expected_generation":1,"expected_requirements_version":0,"authorities":[{"kind":"agent","id":"BOB_ID"}],"deciders":[{"kind":"agent","id":"BOB_ID"}],"independent":true,"checks":[{"work_id":"CURRENT_CHECK_ID","version":3}],"challenges":[{"work_id":"CHALLENGE_ID","version":4}],"reason":"Require the exact corrected-output check and explicit challenge disposition","operation_id":"select-acceptance"}
+```
+
+That operation returns work version 5 and requirements version 1. Only Bob or
+the operator can amend those selected requirements. Bob must supply current
+expectations and a reason. Alice's ownership grants no policy authority.
+The operator retains explicit authority recovery. Output publication,
+responses and advisory evidence remain available to Alice.
+
+Bob calls `decide_work_acceptance` after inspecting the exact correction and
+required review outcomes:
+
+```json
+{"room_name":"chat","work_id":"WORK_ID","expected_version":5,"expected_generation":1,"expected_requirements_version":1,"expected_target_generation":2,"verdict":"approve","summary":"Verified the corrected output and selected review outcomes","operation_id":"accept-correction"}
+```
+
+`read_work` now reports `acceptance_status.state=accepted` if all selected
+obligations are satisfied. Premature approval fails at the same native boundary
+for MCP, direct Agent API and host calls. Current reads explain a pending or
+rejected check, old-output subject, changed assignment, unresolved challenge,
+its explicit disposition, a stale approval or conflicting eligible decision. Correcting a
+verdict changes one author's effective decision; repeated submissions add no
+votes. A requirements amendment or output replacement invalidates earlier
+decisions. A changed required review invalidates an approval until an eligible
+decider explicitly reviews the new basis.
+
+Work with no selected requirements reports `not_selected`; execution still
+completes normally. Selecting requirements does not merge code or publish an
+artifact. The external application retains domain data, immutable bytes and
+final actions, and must check the expected external revision before such an
+action. See the [full authority and retry contract](coord-reference.md#select-requirements-and-decide-output-acceptance).
 
 An operator-directed interactive worker uses these same authenticated calls.
 Creating review work does not change its control arrangement or start a model
@@ -367,7 +411,10 @@ The executable public-boundary example is
 this sequence for both code and report artifacts using authenticated clients
 and real NATS/proxy processes. It also checks interrupted answer publication,
 old-receipt replay, historical subjects, producer separation and operator verdict
-correction. To run it from a Linux source checkout, first set
+correction. It also selects native requirements, refuses worker relaxation and
+premature approval, recovers an acceptance receipt after a discarded response
+and proxy restart, and resolves conflicting operator/agent decisions explicitly.
+To run it from a Linux source checkout, first set
 `SAFEYOLO_COORD_NATS_BINARY` to the reviewed platform NATS executable and
 `TMPDIR` to an existing owned disk-backed scratch directory outside the checkout.
 The [acceptance graph](../cli/src/safeyolo/agent_context/skills/safeyolo/references/graph/accept-safeyolo.yaml)
@@ -381,7 +428,7 @@ scripts/cargo_with_space.sh test --manifest-path proxy/Cargo.toml --release --lo
 The expected result is one passing test, with a code and a report journey
 reported separately. This deterministic example does not establish a real
 supervised-agent wakeup or independent model response. Those journeys and
-authoritative selected acceptance requirements remain required follow-on work.
+approved factory configuration selection remain required follow-on integration.
 
 ## Raise a material signal
 

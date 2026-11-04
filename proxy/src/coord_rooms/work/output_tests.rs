@@ -139,13 +139,15 @@ fn publication_fences_ownership_generations_and_producer_attribution() {
     assert!(next["next_after_version"].is_null());
     // Returning the old receipt is never a claim that it remains current.
     assert_eq!(
-        read(
-            &mut conn,
-            "owned",
-            Actor::Operator,
-            work["work_id"].as_str().unwrap()
-        )
-        .unwrap(),
+        canonical_record(
+            read(
+                &mut conn,
+                "owned",
+                Actor::Operator,
+                work["work_id"].as_str().unwrap()
+            )
+            .unwrap()
+        ),
         corrected
     );
 }
@@ -213,13 +215,15 @@ fn cancellation_reassignment_and_completion_do_not_erase_prior_outputs() {
         cancel_receipt
     );
     assert_eq!(
-        read(
-            &mut conn,
-            "owned",
-            Actor::Agent("bob"),
-            work["work_id"].as_str().unwrap()
-        )
-        .unwrap(),
+        canonical_record(
+            read(
+                &mut conn,
+                "owned",
+                Actor::Agent("bob"),
+                work["work_id"].as_str().unwrap()
+            )
+            .unwrap()
+        ),
         recovered
     );
     assert_eq!(
@@ -476,7 +480,7 @@ fn current_native_store_upgrade_keeps_claims_original_receipts_and_unknown_produ
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        7
+        8
     );
     assert_eq!(
         revision(&conn, "rm-owned", "work-retained", 2)

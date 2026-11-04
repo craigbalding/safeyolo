@@ -139,4 +139,4 @@ CREATE TABLE coord_capability_declarations (
        );
 CREATE INDEX coord_capability_declarations_expiry
        ON coord_capability_declarations(valid_until);
-PRAGMA user_version=7;
+PRAGMA user_version=8;
