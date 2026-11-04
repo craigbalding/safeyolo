@@ -24,19 +24,19 @@ git -C "$upstream" apply "$script_dir/gvisor/nofollow.patch"
 # The caller selects the build filesystem and preserves its required reserve.
 # Bazelisk honors the upstream .bazelversion; the source pins the Go toolchain.
 cd -- "$upstream"
-bazel test --jobs=1 --config="$configuration" //pkg/sentry/vfs:vfs_test \
+bazel test --jobs=1 --config="$configuration" --compilation_mode=opt //pkg/sentry/vfs:vfs_test \
   --test_filter='TestShouldFollowSymlinkDirectoryRequirement|TestSymlinkTargetTrailingSlash'
 targets=(//runsc:runsc //runsc/cmd/sentry:gvisor_sentry \
   //runsc/prewarmer:prewarmer_binary //runsc/fdparking:fdparking_binary)
 names=(runsc gvisor-bin/gvisor_sentry gvisor-bin/gvisor-sentry-prewarmer gvisor-bin/runsc-fd-parking)
-bazel build --jobs=1 --config="$configuration" "${targets[@]}"
+bazel build --jobs=1 --config="$configuration" --compilation_mode=opt "${targets[@]}"
 
 mkdir -p "$(dirname -- "$output")"
 stage=$(mktemp -d "$(dirname -- "$output")/runsc-build.XXXXXX")
 trap 'rm -rf -- "$stage"' EXIT
 mkdir "$stage/gvisor-bin"
 for index in "${!targets[@]}"; do
-  binary=$(bazel cquery --config="$configuration" --output=files "${targets[$index]}")
+  binary=$(bazel cquery --config="$configuration" --compilation_mode=opt --output=files "${targets[$index]}")
   [[ -n $binary && $binary != *$'\n'* ]] || { package_error "expected one output for ${targets[$index]}"; exit 1; }
   native_executable "$binary" "$platform"
   cp -- "$binary" "$stage/${names[$index]}"
