@@ -112,10 +112,14 @@ jobs:
           echo "$RUNSC_WORK/tools" >> "$GITHUB_PATH"
           # Upstream generates the AMD64 VDSO while building native ARM64 tools.
           sudo -n apt-get update -qq
-          sudo -n apt-get install -y --no-install-recommends crossbuild-essential-amd64
+          sudo -n apt-get install -y --no-install-recommends crossbuild-essential-amd64 clang libbpf-dev
+          ln -s /usr/bin/clang "$RUNSC_WORK/tools/clang"
           /usr/bin/x86_64-linux-gnu-gcc --version
           /usr/bin/aarch64-linux-gnu-gcc --version
-          dpkg-query -W crossbuild-essential-amd64 gcc-x86-64-linux-gnu g++-x86-64-linux-gnu
+          /usr/bin/clang --version
+          /usr/bin/clang -print-targets | grep -w bpf
+          test -r /usr/include/bpf/bpf_helpers.h
+          dpkg-query -W crossbuild-essential-amd64 gcc-x86-64-linux-gnu g++-x86-64-linux-gnu clang libbpf-dev
       - name: Run the focused upstream tests and build all four runtime files
         if: inputs.runsc_build_run == ''
         shell: bash
