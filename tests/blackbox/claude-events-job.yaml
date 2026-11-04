@@ -21,8 +21,8 @@
       - script: |
           set -euo pipefail
           umask 077
-          source /etc/safeyolo-claude/events.env
-          cd /usr/local/lib/safeyolo-claude
-          exec "${CLAUDE_EVENTS_PYTHON:-python3}" scripts/claude_blackbox_events.py --config /etc/safeyolo-claude/events.json
+          source /var/lib/rundeck/harness/claude-events/events.env
+          cd /var/lib/rundeck/harness/claude-events/source
+          exec "${CLAUDE_EVENTS_PYTHON:-python3}" scripts/claude_blackbox_events.py --config /var/lib/rundeck/harness/claude-events/events.json
         scriptInterpreter: /bin/bash
         interpreterArgsQuoted: false

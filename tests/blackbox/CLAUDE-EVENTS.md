@@ -14,12 +14,12 @@ enables real credentialed tasks and production package dispatches. Complete the
 private bindings before importing the scheduled job.
 
 On devstack, install a clean checkout of the reviewed commit at
-`/usr/local/lib/safeyolo-claude`, readable by `rundeck`. Python 3.12 or 3.13,
+`/var/lib/rundeck/harness/claude-events/source`, readable by `rundeck`. Python 3.12 or 3.13,
 Bash, Git, `gh`, and the existing harness jobs must be available. No Python
 package installation or product build is required for this entry. Keep the
 controller's frozen environment and existing runtime prerequisites intact.
 
-Create `/etc/safeyolo-claude/events.env`, readable only by the trusted account.
+Create `/var/lib/rundeck/harness/claude-events/events.env`, readable only by the trusted account.
 Set its actual `PATH` and, when needed, `CLAUDE_EVENTS_PYTHON`. Bind `gh` to the
 existing authorized repository principal using the supported private service
 binding. The principal needs repository/Actions read access and Actions write
@@ -37,7 +37,7 @@ to bind that private input to the new attempt.
 Keep secrets and provisioning output private. The entry sources that file in
 the SSH child, then runs the unchanged caller with its own new output directory.
 
-Create `/etc/safeyolo-claude/events.json` in the `rundeck` account. Replace
+Create `/var/lib/rundeck/harness/claude-events/events.json` in the `rundeck` account. Replace
 `PRIVATE_BINDING_PATH` with that remote file and `ACTIVATION_UTC` with the actual
 UTC activation timestamp, such as `2026-11-04T20:00:00Z`. The timestamp excludes
 older historical events from automatic admission. The current nonsecret
@@ -124,9 +124,9 @@ run the credentialed task once.
 ```sh
 set -euo pipefail
 umask 077
-source /etc/safeyolo-claude/events.env
-cd /usr/local/lib/safeyolo-claude
-exec "${CLAUDE_EVENTS_PYTHON:-python3}" scripts/claude_blackbox_events.py --config /etc/safeyolo-claude/events.json --event-run EVENT_RUN_ID
+source /var/lib/rundeck/harness/claude-events/events.env
+cd /var/lib/rundeck/harness/claude-events/source
+exec "${CLAUDE_EVENTS_PYTHON:-python3}" scripts/claude_blackbox_events.py --config /var/lib/rundeck/harness/claude-events/events.json --event-run EVENT_RUN_ID
 ```
 
 Each admitted attempt has one private directory at
