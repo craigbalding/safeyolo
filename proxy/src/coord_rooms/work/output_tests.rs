@@ -19,6 +19,7 @@ fn submit(
     operation: &str,
 ) -> Result<Value, WorkError> {
     mutate(
+        None,
         conn,
         "owned",
         actor,
@@ -354,10 +355,12 @@ fn cancelled_work_has_its_own_status_and_open_work_needs_creator_authority() {
         1
     );
     let created = mutate(
+        None,
         &mut conn,
         "owned",
         Actor::Agent("bob"),
         Mutation::Create {
+            factory: None,
             assignee: None,
             title: "My open work".into(),
             external_ref: None,
@@ -481,7 +484,7 @@ fn current_native_store_upgrade_keeps_claims_original_receipts_and_unknown_produ
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        9
+        10
     );
     assert_eq!(
         revision(&conn, "rm-owned", "work-retained", 2)
@@ -492,6 +495,7 @@ fn current_native_store_upgrade_keeps_claims_original_receipts_and_unknown_produ
     assert_eq!(counts(&conn), before);
     assert_eq!(
         mutate(
+            None,
             &mut conn,
             "owned",
             Actor::Agent("alice"),

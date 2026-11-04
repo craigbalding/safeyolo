@@ -1,5 +1,7 @@
 //! Operator-owned Factory entry. Coord and role checkpoints own work state.
 
+pub(crate) mod work;
+
 use crate::{
     Error, agent_api::coord::OperatorCoord, coord_setup, coord_supervisor, host_agents, host_boot,
     host_lifecycle, host_platform,
@@ -42,10 +44,13 @@ pub(crate) struct Snapshot {
     pub(crate) name: String,
     pub(crate) room: String,
     roles: BTreeMap<String, Role>,
+    #[serde(default)]
     handoffs: Vec<coord_supervisor::Handoff>,
     operator_input: coord_supervisor::OperatorInput,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     updates: Vec<coord_supervisor::Update>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    work: Option<work::Policy>,
 }
 
 fn named(name: &str) -> Result<(), Error> {
@@ -77,6 +82,9 @@ impl Snapshot {
         named(&self.room)?;
         if self.roles.is_empty() {
             return Err("Factory roles are empty".into());
+        }
+        if let Some(work) = &self.work {
+            work.validate(self)?;
         }
         let mut agents = BTreeSet::new();
         let value = serde_json::to_value(self)?;

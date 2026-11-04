@@ -39,7 +39,7 @@ async fn request(client: &Client, work: &Value, op: &str) -> Value {
     client.call("request_check",&json!({"room_name":"shared","subject":subject(work),"criterion":"Verify the retained artifact includes the required result",
         "reviewer":principal(BOB),"independent":true,"operation_id":op})).await.unwrap()["work"].clone()
 }
-fn answer(work: &Value, verdict: &str, op: &str) -> Value {
+pub(super) fn answer(work: &Value, verdict: &str, op: &str) -> Value {
     json!({"room_name":"shared","work_id":work["work_id"],"expected_version":work["version"],"expected_generation":work["claim_generation"],"verdict":verdict,"summary":"Inspected retained artifact bytes","operation_id":op})
 }
 pub(super) fn requirements(

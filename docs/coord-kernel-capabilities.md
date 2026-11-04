@@ -825,9 +825,15 @@ grant policy authority. Eligible decisions bind the current
 output/context and an approval's required review basis. Current reads explain
 pending, stale, rejected and conflicting obligations without vote counts.
 See [selected acceptance](coord-reference.md#select-requirements-and-decide-output-acceptance).
-Approved factory configuration selection and native supervisor routing remain
-unimplemented. Existing factory message handoffs
-remain required; an attributed check conclusion alone does not accept its subject.
+An approved Factory's `[work]` selects creator and policy authority roles,
+acceptance deciders, independence and per-output required checks. Native
+creation binds the exact snapshot and configured durable identities. Output
+publication creates those checks atomically; replay retains their original IDs.
+Stored policy survives later Factory approval changes. Explicit authority
+amendments remain attributable. See [Factory policy](factories.md#select-native-work-policy).
+The selected native supervisor routes current participant actions without a
+duplicate message workflow. Message assignments keep their declared protocol.
+An attributed check conclusion alone does not accept its subject.
 
 A published output selects the current **work target**:
 

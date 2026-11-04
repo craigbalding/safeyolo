@@ -1,12 +1,13 @@
 # Supervised factories
 
 For GitHub release planning, use the [issue-planning guide](issue-planning.md).
-Factory checkpoints still identify active assignments.
+Native Work records identify native assignments; supervisor checkpoints retain
+delivery and session recovery state.
 
 SafeYolo factory files are small, explicit bindings for existing supervised
 agents. Markdown remains the role contract; TOML says which approved agent has
-each role, which one coord room the factory uses, and which exact handoffs may
-wake each worker. Factory v1 does not interpret role prose at runtime and has
+each role, which one Coord room the factory uses, and which message handoffs
+or native work policy apply. Factory v1 does not interpret role prose at runtime and has
 no scripts, conditions, regex routes, hooks, discovery, inference, or live
 reload.
 
@@ -84,9 +85,9 @@ bounded natural-language messages only when the canonical sender kind is
 `operator`, routes them only to the named role, and never treats them as agent
 handoffs. The declared types are optional operator shorthand rather than a
 natural-language parser; they cannot overlap a handoff request or response.
-`factory check`, `approve`, and `run` reject a graph in which any role is
-unreachable from that operator edge; old source-only v1 snapshots therefore
-fail closed instead of starting an inert factory.
+For a message-only Factory, `factory check`, `approve`, and `run` reject a graph
+in which any role is unreachable from that operator edge. A Factory with
+`[work]` can receive native assignments without a message route to every role.
 
 The operator entry targets the coordinator selected by this approved
 Factory. Use `factory send NAME TEXT` for natural-language direction and
@@ -126,25 +127,104 @@ receipt. See [work publication and recovery](coord-reference.md#claims-outputs-a
 These operations are also available to an operator-directed interactive worker
 through that worker's authenticated Coord client.
 
-Native output publication does not send a factory handoff. Current Factory
-supervisors use the declared message request/response routes. Keep that
-handoff while using native work. Native assigned checks and peer challenges use
-the same durable work records and can enforce the selected participant and
-independence flag. Current Factory snapshots do not select acceptance requirements
-or native work delivery. The [public review loop](coord-reference.md#assigned-checks-and-peer-challenges)
-remains available to authenticated participants. An authorized work creator can explicitly select native
+Native output publication does not send a message handoff. With `[work]`, the
+approved snapshot enables [native work delivery](codex-coord-supervisor.md#native-work-delivery)
+for its supervised roles and selects the policy described below. Native Work
+mutations settle that lifecycle; no parallel `TASK` or `REVIEW_READY` record is
+required. A Factory without `[work]` retains its declared message protocol.
+An explicitly configured message assignment still requires its declared reply.
+
+Native checks and peer challenges retain the selected participants and enforce
+independence from the actual producer. The [public review loop](coord-reference.md#assigned-checks-and-peer-challenges)
+also supports work created outside a Factory with explicitly selected
 [requirements and deciding participants](coord-reference.md#select-requirements-and-decide-output-acceptance).
-Those requirements apply equally to direct callers. Keep the declared message
-handoffs for the current Factory snapshot. Standalone supervisors can explicitly
-enable [native work delivery](codex-coord-supervisor.md#native-work-delivery);
-that setting does not select approved Factory policy. Execution completion,
-challenge resolution and attestation counts do not substitute for an eligible
-acceptance decision about the current output.
+Direct callers use the same authority. Execution completion, challenge
+resolution and attestation counts do not substitute for an eligible acceptance
+decision about the current output.
+
+### Select native work policy
+
+For a new or stopped Factory, add `[work]` to its operator-authored TOML before
+approval. The following complete example supervises only Bob as reviewer.
+Alice is an ordinary interactive agent with send/receive access to the same
+room. Alice has no Factory supervisor. Supply `reviewer.md` beside this file
+with instructions to inspect exact artifacts, answer assigned checks, dispose
+of challenges explicitly and decide acceptance from current native evidence.
+
+```toml
+schema = "safeyolo.factory/v1"
+name = "reports"
+room = "reports"
+
+[roles.reviewer]
+agent = "bob"
+contract = "reviewer.md"
+
+[operator_input]
+to = "reviewer"
+types = ["DIRECTION"]
+
+[work]
+authorities = ["reviewer"]
+deciders = ["reviewer"]
+independent = true
+
+[[work.checks]]
+reviewer = "reviewer"
+criterion = "Verify the exact report against the requested result"
+independent = true
+```
+
+`creators`, `authorities` and `deciders` name declared roles, not supplied actor
+IDs. The server resolves them from the instance's configured durable agent
+identities. Omitted `creators` allows only the operator to create work with this
+selection. Omitted `authorities` reserves amendments to the operator. At least
+one `decider` is required. Both independence flags default to `false`; each
+check selects its own independence separately from output acceptance.
+`handoffs` can be omitted when all assignments use native work.
+Selected policy and generated requirements use the existing 32 KiB serialized
+review-record limit. An oversized mutation is refused atomically; retained
+external artifacts remain available.
+
+After approval, use the exact selected snapshot hash with `create_work`:
+`factory={"name":"reports","snapshot_id":"HASH"}`. On the owning host, use
+`coord work create ROOM TITLE --factory JSON --assignee JSON`. Obtain the hash
+from `ROOT/factories/reports/approved` and Alice's durable ID from her grant
+receipt. The operator can create from the owning host. An agent needs room send
+and receive access and one selected creator role. A stale snapshot or wrong room
+is refused.
+Omitting `factory` creates generic work; it does not modify an existing selected
+work item or satisfy an application's selected Work ID.
+
+Creation retains the snapshot reference, resolved participants, check templates
+and versioned acceptance requirements in native Work. Each output publication
+atomically creates and selects an exact-output check for every template. The
+publication receipt includes those IDs in `factory.current_checks`. Retrying
+the same operation returns that receipt without creating more checks. A
+replacement output creates new checks and replaces only the previous generated
+requirements. Earlier checks and all explicitly selected challenges remain
+recorded. Additional explicitly selected checks remain required.
+
+Existing selected authorities or the operator can amend requirements with a
+reason, including explicit delegation to a worker. Ownership alone grants no
+amendment authority. An amendment affects current acceptance; the next output
+publication applies the retained check templates again. Approving a new Factory
+snapshot does not silently change existing Work policy. Optional checks and
+advisory challenges remain optional until an authorized requirements amendment
+selects them. There is no universal objection veto.
+
+Publication can retain a correction even when a configured reviewer is
+unavailable or is its actual producer. The independent check remains pending
+and cannot be answered by that producer. The operator can reassign review work
+or recover selected authority through the existing native commands. Read
+`acceptance_status` for the unmet obligation. An interactive worker uses its
+own authenticated client while the reviewer uses its one supervisor; assignment
+never starts a second controller. See the [executable interactive example](coord-operations.md#share-work-with-an-interactive-producer).
 
 An approved factory retains the following state:
 
 - The approved immutable snapshot binds the room, operator edge, role and agent
-  bindings, handoffs, context routes, repair policy, and exact bytes and SHA-256 of every Markdown
+  bindings, handoffs, native work policy, context routes, repair policy, and exact bytes and SHA-256 of every Markdown
   role contract. Approval selects the snapshot that the next `factory run`
   will use; it does not alter running agents.
 - Each running role uses the exact snapshot last staged into that agent by

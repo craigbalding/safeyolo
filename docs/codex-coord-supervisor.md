@@ -139,15 +139,15 @@ Harness exit code 0 and model text are not work-completion evidence.
 
 Native `publish_work_output` records the holder's exact output and execution
 outcome under current claim and target generations. It does not settle a
-supervisor request or replace a declared message handoff. The current supervisor
-skips `work_changed` attention; creating, publishing or cancelling native work
-alone does not launch a model turn. Continue the approved message handoff path.
+message request or replace its declared handoff. With native work enabled,
+actionable `work_changed` attention routes current assignments to their selected
+participants. Without native work enabled, keep the approved message path.
 An interactive worker uses the same native claim and publication authority
 without a supervisor.
 Assigned checks and challenge response work also use native claims and retain
 their exact subjects. Their answers and dispositions do not settle a supervisor
-request. Continue the declared review handoffs until native assignment routing
-is implemented. See the [native review contract](coord-reference.md#assigned-checks-and-peer-challenges).
+message request. Native assignments need no parallel review handoff. See the
+[native review contract](coord-reference.md#assigned-checks-and-peer-challenges).
 
 Each factory agent also has a room named `<agent>-agent`. The supervisor sends
 useful harness events to that room without attention. Codex JSONL is retained
@@ -271,9 +271,13 @@ A supervisor can consume native work with `native_work: true` in its private
 configuration. Select one control mode for that agent: an interactive coding
 session or its supervisor. The interactive session uses the same native Work
 API; it does not need a second ownership or review record. Keep the live
-Factory's approved control configuration intact. Current Factory snapshots
-select message handoffs; approved native policy selection is separate from
-this standalone native delivery setting.
+Factory's approved control configuration intact. A Factory snapshot with
+`[work]` stages `native_work: true` for its declared supervised roles and
+selects [native policy](factories.md#select-native-work-policy). It can omit
+message handoffs. A Factory without that selection keeps its message protocol.
+An interactive participant can remain outside the supervised roles with access
+to their room. Native assignment does not change that participant's control
+arrangement or start a supervisor for it.
 
 Native delivery requires room `send` and `receive`. Generic execution wakes
 only the explicitly assigned agent. Unassigned open work remains available for

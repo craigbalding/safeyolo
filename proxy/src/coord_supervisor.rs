@@ -207,7 +207,7 @@ impl Config {
                     .any(|(r, a)| !simple_name(r) || !simple_name(a))
                 || !hash(&f.contract_sha256)
                 || !hash(&f.snapshot_id)
-                || f.handoffs.is_empty()
+                || (!self.native_work && f.handoffs.is_empty())
                 || !f.roles.contains_key(&f.operator_input.to)
                 || f.operator_input.types.is_empty()
                 || f.operator_input.types.iter().any(|t| !type_name(t))
@@ -272,7 +272,7 @@ impl Config {
                     break;
                 }
             }
-            if f.roles.keys().any(|r| !reached.contains(r)) {
+            if !self.native_work && f.roles.keys().any(|r| !reached.contains(r)) {
                 return Err("factory role is unreachable from operator input".into());
             }
             let mut updates = BTreeSet::new();

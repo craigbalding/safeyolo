@@ -427,8 +427,8 @@ scripts/cargo_with_space.sh test --manifest-path proxy/Cargo.toml --release --lo
 
 The expected result is one passing test, with a code and a report journey
 reported separately. The deterministic example does not establish model behavior.
-The following example exercises actual supervised model responses. Approved
-factory policy selection remains separate from standalone native delivery.
+The following example exercises actual supervised model responses. The later
+Factory example also uses an actual interactive producer and approved policy.
 
 ### Wake a supervised native reviewer
 
@@ -440,8 +440,9 @@ supervised agent, set `native_work` to `true` in its private
 `~/.safeyolo/coord-supervisor.json`, preserve its checkpoint, then resume the
 agent. The reviewer needs `send` and `receive` in the configured room.
 `coordinators` can be empty when only native work supplies assignments.
-The current approved Factory snapshot still governs a Factory's control mode;
-do not use this standalone setting to change a running Factory.
+For a Factory, approve `[work]` in its TOML and stage it at a stopped boundary.
+The selected snapshot enables native delivery for its supervised roles. Do not
+use the standalone setting to change a running Factory.
 
 An assigned native `request_check` wakes its named reviewer. The reviewer
 receives a narrow `native_in_flight` action containing the work ID and current
@@ -488,7 +489,7 @@ The controller supplies the producer's interactive native calls; it does not
 supply the review verdict or disposition. This proves native API attribution and
 actual supervisor/model behavior in one owned Linux process environment. It does
 not establish separate guest isolation, deployment, approved Factory policy
-selection or automatic changes to an interactive agent's control mode.
+selection or actual interactive coding-client participation.
 
 The companion
 `supervision::native_delivery_is_not_completed_by_narration_and_restart_uses_current_work`
@@ -496,6 +497,62 @@ uses a deterministic model event seam with real NATS and the Agent API. It prove
 that a completed model turn leaves execution pending until a canonical native
 transition, and that restart can retire the settled delivery without another
 model invocation.
+
+### Share work with an interactive producer
+
+Approve a Factory with [native work policy](factories.md#select-native-work-policy)
+for its supervised reviewer. Keep the producer as an ordinary interactive
+agent outside the Factory's supervised roles. Grant both participants send and
+receive access to the shared room. The operator creates assigned Work with the
+exact approved `factory={name,snapshot_id}` reference. The interactive producer
+then claims and publishes through its authenticated Coord client. Publication
+creates the policy's required exact-output checks atomically. The reviewer
+receives those native assignments through its existing supervisor.
+
+The compact executable example is
+[`native_coord/factory.rs`](../proxy/tests/native_coord/factory.rs), with its
+[interactive client driver](../proxy/tests/native_coord/factory_interactive.py).
+It uses one native Work loop:
+
+1. The operator creates policy-selected Work assigned to interactive Alice.
+2. Alice's actual Codex terminal retains and publishes an incomplete report,
+   then completes execution. Supervised Bob independently rejects its check.
+3. The operator directs the same Alice terminal to raise a challenge, retain a
+   corrected report, publish the correction and respond to the challenge.
+4. The operator explicitly selects the challenge as required. Bob reads the
+   correction, answers its generated check, records a challenge disposition and
+   decides current output acceptance. Alice reads that independent result.
+
+The controller supplies operator prompts and the explicit policy amendment. It
+does not perform Alice's producer mutations or supply Bob's conclusions. Alice
+has no supervisor; Bob has one. Terminal markers only synchronize observation;
+the test verifies each outcome from canonical native Work. Native client
+sessions retain their own history. The example creates no parallel task or
+review state.
+
+From a Linux source checkout, set the preceding NATS and disk-backed scratch
+variables. Set `SAFEYOLO_COORD_INTERACTIVE_HOME` and `SAFEYOLO_COORD_MODEL_HOME`
+to distinct owned private homes with an authorized native Codex login and
+selected provider configuration. Set `SAFEYOLO_CODEX_BIN` to the existing native
+Codex executable. Keep those credentials outside the checkout and test output.
+The fixture binds its own authenticated MCP sockets, approves its own Factory,
+stages only Bob's disposable supervisor, and stops its owned clients and runtime.
+Run the focused public API control, then the actual interactive journey:
+
+```sh
+scripts/cargo_with_space.sh test --manifest-path proxy/Cargo.toml --release --locked --test native_coord factory::factory_selection_enforces_native_obligations_for_direct_callers -- --ignored --nocapture
+scripts/cargo_with_space.sh test --manifest-path proxy/Cargo.toml --release --locked --test native_coord factory::interactive_coding_client_and_factory_supervisor_share_native_work -- --ignored --nocapture
+```
+
+Each command should report one passing test. The API control refuses an
+unauthorized Factory creator, worker policy relaxation and premature acceptance.
+The interactive journey proves the approved-policy/API/terminal/supervisor/model
+boundary in an owned Linux process environment. It does not establish separate
+guest isolation or deployment and does not change a live Factory. Applications
+can retain their domain artifacts and canonical Work IDs while removing writable
+assignment, claim, required-check, challenge and acceptance copies. Rebuildable
+display projections remain possible. External final actions still validate
+their exact revision at the external authority.
 
 ## Raise a material signal
 

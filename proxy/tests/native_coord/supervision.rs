@@ -10,16 +10,16 @@ fn requirements(work: &Value, checks: &[Value], challenges: &[Value], op: &str) 
     selection
 }
 
-struct ReviewRun {
-    retained: PathBuf,
-    root: PathBuf,
-    alice: Client,
-    bob: Client,
-    proxy: tokio::process::Child,
+pub(super) struct ReviewRun {
+    pub(super) retained: PathBuf,
+    pub(super) root: PathBuf,
+    pub(super) alice: Client,
+    pub(super) bob: Client,
+    pub(super) proxy: tokio::process::Child,
     _cleanup: NatsCleanup,
 }
 impl ReviewRun {
-    async fn start() -> Self {
+    pub(super) async fn start() -> Self {
         let nats = std::env::var("SAFEYOLO_COORD_NATS_BINARY").expect("set pinned NATS binary");
         let retained = tempfile::Builder::new()
             .prefix("coord-native-supervision-")

@@ -34,10 +34,12 @@ fn db(root: &tempfile::TempDir) -> Connection {
 }
 fn create(conn: &mut Connection) -> Value {
     mutate(
+        None,
         conn,
         "owned",
         Actor::Operator,
         Mutation::Create {
+            factory: None,
             assignee: None,
             title: "Private title π".into(),
             external_ref: Some("opaque:external-description".into()),
@@ -55,6 +57,7 @@ fn change(
 ) -> Result<Value, WorkError> {
     let input = json!({"action":action,"work_id":work["work_id"],"expected_version":work["version"],"expected_generation":work["claim_generation"]});
     mutate(
+        None,
         conn,
         "owned",
         actor,
@@ -93,6 +96,8 @@ mod acceptance_tests;
 mod action_tests;
 #[path = "attestation_tests.rs"]
 mod attestation_tests;
+#[path = "factory_tests.rs"]
+mod factory_tests;
 #[path = "output_tests.rs"]
 mod output_tests;
 #[path = "review_tests.rs"]
@@ -219,6 +224,7 @@ fn ownership_replay_generations_revocation_and_operator_recovery() {
         404
     );
     let reassigned = mutate(
+        None,
         &mut conn,
         "owned",
         Actor::Operator,
@@ -369,10 +375,12 @@ fn bounded_reads_cross_room_refusal_and_untrusted_inputs() {
     );
     assert!(
         mutate(
+            None,
             &mut conn,
             "owned",
             Actor::Operator,
             Mutation::Create {
+                factory: None,
                 assignee: None,
                 title: " ".into(),
                 external_ref: None
@@ -383,10 +391,12 @@ fn bounded_reads_cross_room_refusal_and_untrusted_inputs() {
     );
     assert!(
         mutate(
+            None,
             &mut conn,
             "owned",
             Actor::Operator,
             Mutation::Create {
+                factory: None,
                 assignee: None,
                 title: "x".repeat(MAX_REQUEST_BYTES),
                 external_ref: None
@@ -405,10 +415,12 @@ fn bounded_reads_cross_room_refusal_and_untrusted_inputs() {
     assert!(list(&mut conn, "owned", Actor::Operator, "", 1, Some("unknown")).is_err());
     for n in 0..3 {
         mutate(
+            None,
             &mut conn,
             "owned",
             Actor::Agent("alice"),
             Mutation::Create {
+                factory: None,
                 assignee: None,
                 title: format!("item {n}"),
                 external_ref: None,

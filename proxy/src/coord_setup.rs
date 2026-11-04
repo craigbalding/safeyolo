@@ -672,7 +672,7 @@ pub(crate) fn factory_config(
     ];
     if shape
         .keys()
-        .any(|k| !required.contains(&k.as_str()) && k != "updates")
+        .any(|k| !required.contains(&k.as_str()) && k != "updates" && k != "work")
         || required.iter().any(|k| !shape.contains_key(*k))
     {
         return Err("invalid factory snapshot shape".into());
@@ -743,6 +743,7 @@ pub(crate) fn factory_config(
                 .into(),
         ],
         coordinators,
+        native_work: snapshot.get("work").is_some_and(|w| !w.is_null()),
         harness: harness.into(),
         factory: Some(factory),
         ..Config::default()
