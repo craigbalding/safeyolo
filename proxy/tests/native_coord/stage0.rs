@@ -133,7 +133,8 @@ async fn native_stage0_replay_and_delivery_survive_current_master_and_process_cr
         ],
     )
     .await;
-    assert_eq!(count(root, "PRAGMA user_version"), 6);
+    let base_version = count(root, "PRAGMA user_version");
+    assert!((5..=7).contains(&base_version));
     let db = Connection::open(root.join("data/coord/v0.db")).unwrap();
     let staged: Vec<String> = db
         .prepare("SELECT event_id FROM coord_outbox WHERE destination='audit-jsonl'")
@@ -147,6 +148,7 @@ async fn native_stage0_replay_and_delivery_survive_current_master_and_process_cr
     let args = &["grant", "shared", "alice", "--operation-id", "grant-retry"];
     let (a, b) = tokio::join!(coord_json(root, args), coord_json(root, args));
     assert_eq!(a, b);
+    assert_eq!(count(root, "PRAGMA user_version"), 7);
     let conflicted = coord_cli(
         root,
         &[
@@ -462,26 +464,47 @@ async fn native_stage0_replay_and_delivery_survive_current_master_and_process_cr
     );
     assert!(!String::from_utf8_lossy(&watched.stderr).contains("drift"));
     crash(proxy).await;
+    if base_version < 7 {
+        let old = std::env::var("SAFEYOLO_COORD_BASE_BINARY").expect("set current-base executable");
+        let refused = tokio::process::Command::new(old)
+            .arg("--root")
+            .arg(root)
+            .args(["coord", "brief", "show", "shared"])
+            .output()
+            .await
+            .unwrap();
+        assert!(!refused.status.success());
+        assert_eq!(count(root, "PRAGMA user_version"), 7);
+    }
     assert_eq!(
-        base(root, &["coord", "brief", "show", "shared"]).await["markdown"],
+        coord_json(root, &["brief", "show", "shared"]).await["markdown"],
         "Private canonical Stage0 brief updated"
     );
-    base(
+    let sent = coord_cli(
         root,
         &[
-            "coord",
             "send",
             "shared",
-            "Current-master rollback message",
+            "Retained message after current-writer restart",
             "--to",
             "bob",
         ],
     )
     .await;
-    let rollback_history = base(root, &["coord", "history", "shared"]).await;
-    assert_eq!(
-        rollback_history.as_array().unwrap().last().unwrap()["body"],
-        "Current-master rollback message"
+    assert!(
+        sent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    let resumed_history = coord_cli(root, &["history", "shared"]).await;
+    assert!(
+        resumed_history.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resumed_history.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&resumed_history.stdout)
+            .contains("Retained message after current-writer restart")
     );
     let proxy = start_proxy(root).await;
     assert_eq!(
@@ -493,7 +516,7 @@ async fn native_stage0_replay_and_delivery_survive_current_master_and_process_cr
             .unwrap()
             .last()
             .unwrap()["body"],
-        "Current-master rollback message"
+        "Retained message after current-writer restart"
     );
     until(|| {
         count(
@@ -507,7 +530,7 @@ async fn native_stage0_replay_and_delivery_survive_current_master_and_process_cr
     let refused = coord_cli(root, &["room", "list"]).await;
     assert!(!refused.status.success());
     assert_eq!(count(root, "PRAGMA user_version"), 999);
-    db.execute_batch("PRAGMA user_version=6").unwrap();
+    db.execute_batch("PRAGMA user_version=7").unwrap();
     assert_eq!(
         coord_json(root, &["room", "list"]).await["rooms"][0]["room_id"],
         room["room_id"]

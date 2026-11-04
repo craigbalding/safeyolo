@@ -13,6 +13,7 @@ use std::{
 };
 
 const NATS_VERSION: &str = "2.14.5";
+pub(crate) const SCHEMA_VERSION: u32 = 7;
 pub(crate) const COLLABORATION_MAX_ENVELOPE_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) mod brief;
 mod inventory;
@@ -68,10 +69,11 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
         }
         transaction.execute_batch(include_str!("coord_schema.sql"))?;
         transaction.execute("INSERT INTO instance(id) VALUES (?1)", [id.trim()])?;
-    } else if ![5, 6].contains(&version) {
-        return Err(
-            format!("Coord schema {version} is not operational; expected version 6").into(),
-        );
+    } else if ![5, 6, SCHEMA_VERSION].contains(&version) {
+        return Err(format!(
+            "Coord schema {version} is not operational; expected version {SCHEMA_VERSION}"
+        )
+        .into());
     }
     transaction.execute_batch(include_str!("coord_work_schema.sql"))?;
     if version == 5 {
@@ -80,6 +82,9 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
     transaction.execute_batch(include_str!("coord_signal_schema.sql"))?;
     transaction.execute_batch(include_str!("coord_federation_schema.sql"))?;
     transaction.execute_batch(include_str!("coord_membership_grants.sql"))?;
+    // Earlier writers drop unknown check/challenge fields when rewriting work.
+    // Fence them before any new review record can be created.
+    transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     let stored: String = transaction.query_row("SELECT id FROM instance", [], |row| row.get(0))?;
     if stored != id.trim() {
         return Err("Coord identity differs from this SafeYolo instance; preserve the store and select its owning root".into());
@@ -106,7 +111,9 @@ fn open_with_flags(root: &Path, flags: rusqlite::OpenFlags) -> Result<Connection
     let connection = Connection::open_with_flags(directory(root)?.join("v0.db"), flags)?;
     connection.busy_timeout(Duration::from_secs(5))?;
     connection.execute_batch("PRAGMA foreign_keys=ON;")?;
-    if connection.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))? != 6 {
+    if connection.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))?
+        != SCHEMA_VERSION
+    {
         return Err("Coord store is not operational".into());
     }
     Ok(connection)

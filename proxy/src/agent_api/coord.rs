@@ -33,7 +33,7 @@ const MAX_DECLARATION_REQUEST_BYTES: usize = 32 * 1024;
 const MAX_PAGE: usize = 200;
 const ROOM_MAX_BYTES: usize = 4 * 1024 * 1024;
 const NATS_USER: &str = "safeyolo";
-const CURRENT_SCHEMA_VERSION: i64 = 6;
+const CURRENT_SCHEMA_VERSION: i64 = crate::coord_rooms::SCHEMA_VERSION as i64;
 const MAX_DECLARATIONS_PER_AGENT: usize = 32;
 const MAX_DECLARATION_TTL_SECONDS: i64 = 3600;
 const PROJECTION_PAGE: u64 = 200;
@@ -4370,7 +4370,7 @@ mod tests {
         let db = directory.path().join("v0.db");
         let conn = Connection::open(&db).unwrap();
         conn.execute_batch(
-            "PRAGMA user_version=6;
+            "PRAGMA user_version=7;
              CREATE TABLE rooms(room_id TEXT PRIMARY KEY, name TEXT NOT NULL);
              CREATE TABLE memberships(
                  room_id TEXT NOT NULL,
@@ -4646,7 +4646,7 @@ mod tests {
         let db = directory.path().join("v0.db");
         let conn = Connection::open(&db).unwrap();
         conn.execute_batch(
-            "PRAGMA user_version=6;
+            "PRAGMA user_version=7;
              CREATE TABLE coord_brief_revisions(
                  room_id TEXT NOT NULL,
                  revision INTEGER NOT NULL,
@@ -4851,7 +4851,7 @@ mod tests {
         let db = directory.path().join("v0.db");
         let conn = Connection::open(&db).unwrap();
         conn.execute_batch(
-            "PRAGMA user_version=6;
+            "PRAGMA user_version=7;
              CREATE TABLE rooms(room_id TEXT PRIMARY KEY, name TEXT NOT NULL);
              CREATE TABLE memberships(
                  room_id TEXT NOT NULL,
@@ -4896,7 +4896,7 @@ mod tests {
         let db = directory.path().join("v0.db");
         let conn = Connection::open(&db).unwrap();
         conn.execute_batch(
-            "PRAGMA user_version=6;
+            "PRAGMA user_version=7;
              CREATE TABLE coord_message_attention_projection(
                  room_id TEXT PRIMARY KEY,
                  last_sequence INTEGER NOT NULL,
@@ -4940,7 +4940,7 @@ mod tests {
         conn.execute_batch(include_str!("../coord_schema.sql"))
             .unwrap();
         conn.execute_batch(
-            "PRAGMA user_version=6; INSERT INTO rooms VALUES('rm-owned','owned',0);
+            "PRAGMA user_version=7; INSERT INTO rooms VALUES('rm-owned','owned',0);
             INSERT INTO coord_message_attention_projection VALUES('rm-owned',0,0);",
         )
         .unwrap();

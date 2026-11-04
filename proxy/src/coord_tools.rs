@@ -305,6 +305,11 @@ impl Client {
             | "complete_work"
             | "publish_work_output"
             | "cancel_work"
+            | "request_check"
+            | "answer_check"
+            | "raise_challenge"
+            | "respond_challenge"
+            | "resolve_challenge"
             | "attest_work" => {
                 let mut body = args
                     .as_object()
@@ -325,7 +330,14 @@ impl Client {
             }
             "read_work" => (
                 Method::GET,
-                format!("{base}/work?work_id={}", segment(text(args, "work_id")?)),
+                format!(
+                    "{base}/work?work_id={}{}",
+                    segment(text(args, "work_id")?),
+                    args.get("version")
+                        .map(|_| integer(args, "version", 0).map(|v| format!("&version={v}")))
+                        .transpose()?
+                        .unwrap_or_default()
+                ),
                 Value::Null,
                 60.0,
             ),
@@ -355,6 +367,17 @@ impl Client {
                     "{base}/work?work_id={}&outputs=true&after={}&limit={}",
                     segment(text(args, "work_id")?),
                     integer(args, "after_version", 0)?,
+                    integer(args, "limit", 50)?
+                ),
+                Value::Null,
+                60.0,
+            ),
+            "list_work_reviews" => (
+                Method::GET,
+                format!(
+                    "{base}/work?work_id={}&reviews=true&after={}&limit={}",
+                    segment(text(args, "work_id")?),
+                    segment(args.get("after").and_then(Value::as_str).unwrap_or("")),
                     integer(args, "limit", 50)?
                 ),
                 Value::Null,
@@ -454,27 +477,40 @@ fn validate_arguments(args: &Value, schema: &Value) -> Result<(), Error> {
         let property = schema["properties"]
             .get(field)
             .ok_or_else(|| format!("unknown argument {field}"))?;
-        let valid = match property["type"].as_str() {
-            Some("string") => value.is_string(),
-            Some("integer") => value.as_u64().is_some(),
-            Some("number") => value.is_number(),
-            Some("boolean") => value.is_boolean(),
-            Some("object") => validate_arguments(value, property).is_ok(),
-            Some("array") => value
-                .as_array()
-                .is_some_and(|a| a.iter().all(Value::is_string)),
-            _ => {
-                value.is_string()
-                    || value
-                        .as_array()
-                        .is_some_and(|a| a.iter().all(Value::is_string))
-            }
-        };
-        if !valid {
-            return Err(format!("invalid type for {field}").into());
+        if !valid_property(value, property) {
+            return Err(format!("invalid type or value for {field}").into());
         }
     }
     Ok(())
+}
+
+fn valid_property(value: &Value, property: &Value) -> bool {
+    if property
+        .get("enum")
+        .and_then(Value::as_array)
+        .is_some_and(|values| !values.contains(value))
+    {
+        return false;
+    }
+    if let Some(choices) = property.get("oneOf").and_then(Value::as_array) {
+        return choices.iter().filter(|s| valid_property(value, s)).count() == 1;
+    }
+    match property["type"].as_str() {
+        Some("string") => value.is_string(),
+        Some("integer") => value.as_u64().is_some(),
+        Some("number") => value.is_number(),
+        Some("boolean") => value.is_boolean(),
+        Some("object") => validate_arguments(value, property).is_ok(),
+        Some("array") => value
+            .as_array()
+            .is_some_and(|a| a.iter().all(|v| valid_property(v, &property["items"]))),
+        _ => {
+            value.is_string()
+                || value
+                    .as_array()
+                    .is_some_and(|a| a.iter().all(Value::is_string))
+        }
+    }
 }
 
 pub fn tools() -> Vec<Value> {
@@ -482,6 +518,11 @@ pub fn tools() -> Vec<Value> {
     let integer = json!({"type":"integer","minimum":0});
     let number = json!({"type":"number","minimum":0});
     let array = json!({"type":"array","items":{"type":"string"}});
+    let principal = json!({"type":"object","properties":{"kind":{"type":"string","enum":["agent","operator"]},"id":string},"required":["kind","id"],"additionalProperties":false});
+    let subject = json!({"oneOf":[
+        {"type":"object","properties":{"kind":{"type":"string","enum":["work","check"]},"work_id":string,"version":integer},"required":["kind","work_id","version"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"type":"string","enum":["output"]},"work_id":string,"target_generation":integer},"required":["kind","work_id","target_generation"],"additionalProperties":false}
+    ]});
     let mut result = Vec::new();
     let mut add = |name: &str, description: &str, properties: Value, required: &[&str]| {
         result.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}}));
@@ -530,8 +571,72 @@ pub fn tools() -> Vec<Value> {
     );
     add(
         "read_work",
-        "Read the current canonical work, version, claim generation and candidate target_ref/target_generation. Room receive permission is checked on every read.",
-        json!({"room_name":string,"work_id":string}),
+        "Read current canonical work and derived review_status, or an exact immutable work version when version is supplied. Check answers and challenge response/disposition history remain in those revisions. Room receive permission is checked on every read. Work completion and challenge resolution are separate facts.",
+        json!({"room_name":string,"work_id":string,"version":integer}),
+        &["room_name", "work_id"],
+    );
+    add(
+        "request_check",
+        "Request a check as ordinary durable work over an exact work version, output generation or answered-check version. Name the reviewer and criterion. independent=true requires separation from the transport-attributed subject producer. Only the assigned reviewer may claim and answer it. Requester comes from transport. This optional check creates no acceptance gate. Retry with the original operation_id and inputs.",
+        json!({"room_name":string,"subject":subject,"criterion":string,"reviewer":principal,"independent":{"type":"boolean"},"external_ref":string,"operation_id":string}),
+        &["room_name", "subject", "criterion", "reviewer"],
+    );
+    add(
+        "answer_check",
+        "Record the assigned reviewer's attributed verdict and settle check work atomically. Supply current check work version and claim generation. Verdict is approve, reject or abstain; rejection and uncertainty still finish the check. The retained reviewer may correct a completed answer on the same check; history remains, and earlier answers are not extra votes. A historical subject remains historical. Summary 1..1024 bytes; up to 16 evidence refs of 1024 bytes. No subject acceptance is inferred.",
+        json!({"room_name":string,"work_id":string,"expected_version":integer,"expected_generation":integer,"verdict":{"type":"string","enum":["approve","reject","abstain"]},"summary":string,"evidence_refs":array,"operation_id":string}),
+        &[
+            "room_name",
+            "work_id",
+            "expected_version",
+            "expected_generation",
+            "verdict",
+            "summary",
+        ],
+    );
+    add(
+        "raise_challenge",
+        "Raise an attributed objection to an exact work/output/check subject as ordinary responder work. Retain assertion, grounds, evidence, named responder and deciding participants. independent=true separates the deciders from producer and responder. A response, cancellation or replacement never resolves the challenge. This optional challenge creates no acceptance gate. Supply operation_id before writing.",
+        json!({"room_name":string,"subject":subject,"assertion":string,"grounds":string,"evidence_refs":array,"responder":principal,"deciders":{"type":"array","items":principal,"minItems":1},"independent":{"type":"boolean"},"external_ref":string,"operation_id":string}),
+        &[
+            "room_name",
+            "subject",
+            "assertion",
+            "grounds",
+            "responder",
+            "deciders",
+        ],
+    );
+    add(
+        "respond_challenge",
+        "Record the assigned responder's answer and complete its response work, leaving the challenge unresolved. An optional correction identifies an exact retained work/output/check revision. A corrected response invalidates the previous disposition while preserving its history. Supply current work version, claim generation and original operation_id for retry. Summary 1..1024 bytes; up to 16 evidence refs of 1024 bytes.",
+        json!({"room_name":string,"work_id":string,"expected_version":integer,"expected_generation":integer,"summary":string,"evidence_refs":array,"correction":subject,"operation_id":string}),
+        &[
+            "room_name",
+            "work_id",
+            "expected_version",
+            "expected_generation",
+            "summary",
+        ],
+    );
+    add(
+        "resolve_challenge",
+        "Record an explicit upheld, dismissed or withdrawn disposition as a named deciding participant. The operator may also decide, with independence still enforced. Supply the expected challenge work version, claim generation and response work version (0 if none). Resolution retains its actor, reason, evidence and correction. If response work is unfinished, resolution cancels that assignment rather than reporting successful execution. Retry original operation_id and inputs.",
+        json!({"room_name":string,"work_id":string,"expected_version":integer,"expected_generation":integer,"expected_response_version":integer,"decision":{"type":"string","enum":["upheld","dismissed","withdrawn"]},"reason":string,"evidence_refs":array,"operation_id":string}),
+        &[
+            "room_name",
+            "work_id",
+            "expected_version",
+            "expected_generation",
+            "expected_response_version",
+            "decision",
+            "reason",
+        ],
+    );
+    add(
+        "list_work_reviews",
+        "Read bounded current checks and challenges related to a work item, including objections to its checks. review_status distinguishes answered/pending checks, unresolved/resolved challenges and current/stale subjects. At most200 items and 65536 item JSON bytes; continue with next_after. Excerpts and details_truncated require read_work for full records. Use read_work(version) for history. Pages do not share a snapshot.",
+        json!({"room_name":string,"work_id":string,"after":string,"limit":integer}),
         &["room_name", "work_id"],
     );
     add(

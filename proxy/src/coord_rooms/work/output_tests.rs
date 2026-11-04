@@ -476,7 +476,7 @@ fn current_native_store_upgrade_keeps_claims_original_receipts_and_unknown_produ
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        6
+        7
     );
     assert_eq!(
         revision(&conn, "rm-owned", "work-retained", 2)

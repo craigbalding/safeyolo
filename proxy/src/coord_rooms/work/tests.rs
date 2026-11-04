@@ -83,6 +83,8 @@ fn counts(conn: &Connection) -> Vec<i64> {
 mod attestation_tests;
 #[path = "output_tests.rs"]
 mod output_tests;
+#[path = "review_tests.rs"]
+mod review_tests;
 
 #[test]
 fn ownership_replay_generations_revocation_and_operator_recovery() {
