@@ -8,6 +8,9 @@ runtime=$(cd -- "$1" && pwd)
 mkdir -m 0700 -- "$2"
 work=$(cd -- "$2" && pwd)
 mkdir "$work/reports" "$work/bundle" "$work/bundle/rootfs" "$work/home"
+# The gofer uses reduced host credentials; this owned canary directory must
+# permit the guest to create its controls without granting access elsewhere.
+chmod 1777 "$work/home"
 version=$("$runtime/runsc" --version)
 [[ ${version%%$'\n'*} == 'runsc version release-20261005.0-safeyolo.1' ]] || { package_error "unexpected runtime: $version"; exit 1; }
 while IFS= read -r name; do native_executable "$runtime/$name" "$(host_platform)"; done < <(runsc_files)
