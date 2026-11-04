@@ -1,48 +1,155 @@
 # Pending #622 physical VZ witness
 
-This procedure is prepared work. It has not established a VM boot under the
-changed policy. Sylab owns execution and Bristol resource exclusion. The forced
-`sy-agent` SSH entry can observe the VM, but cannot attach this separate policy.
-Tart cannot run nested Virtualization.framework (VZ). If Sylab cannot bind an
-existing trusted host launch facility, Craig must launch from a normal Bristol
-terminal as `sy-agent`, UID 502. Do not retry either unavailable route.
+This procedure prepares one Virtualization.framework (VZ) boot, guest command
+and bidirectional VirtioFS share operation under the six added denials. Physical
+execution under that policy is unverified. Criterion 12 of #622 remains open;
+#622 stays 11/12 and #500 stays 13/14. The accepted shell, toolchain, SafeYolo
+test and negative-control results do not need another run.
 
-Use two terminals: the outside terminal launches the existing foreground runner;
-the factory terminal observes through the approved SSH entry. Prepare the
-observer command before launch, because the runner has a 60-second deadline.
-Closing a terminal or reaching that deadline does not establish cleanup.
+Sylab owns the physical reservation and evaluates this preparation before any
+request to Craig. The forced `sy-agent` Secure Shell (SSH) entry can prepare and
+observe this fixture, but cannot attach a second policy. Tart cannot run nested
+VZ. Do not retry either route or change the installed account, profile or
+Keychain. The remaining host operation is a protected profile copy and one
+UID-502 launch from an approved trusted Bristol terminal.
 
-## Inputs and protected policy
+Use two terminals: the trusted Bristol terminal launches the foreground runner;
+the factory terminal observes through the existing SSH entry. Prepare the
+observer before launch because the runner has a 60-second deadline. A deadline
+or a closed terminal does not establish cleanup. No proxy, coding client,
+desktop, host TCP listener or production agent is started by this procedure.
 
-The existing fixture is `/Users/sy-agent/s622-20261020`, called `LAB` below.
-The helper is `/Users/sy-agent/full-guest-lab/development-install/safeyolo-vm`.
-Its signed identity reports source `1ed8780308763cb96a2f4eebeed55b550e0175e6`,
-development profile and release optimization. It is an existing workload input,
-not a product binary built from PR #1159. Keep the existing images read-only.
-The reserved overlay is a 1 GiB sparse file. This fixture initramfs uses a tmpfs
-upper layer; the overlay is supplied to the helper but is not mounted by this
-initramfs. This witness makes no disk-persistence claim.
+## Retained inputs
 
-Immediately before execution, Sylab must refresh the physical reservation,
-current #622 direction, PR head, profile identity, overlay ownership and absence
-of a helper using this fixture. Preserve other issues' VMs and inputs. The
-existing policy was root-owned with SHA-256
-`ec39eca32a8ac8ba2ceea9dcb4f587523bfbe2fdb8f2948b0386527ab9c32d80`.
-If it changed, review the new policy and preserve all current local grants.
+The package is `/Users/sy-agent/forge587-13260/instance`, called `PACKAGE` below.
+Its helper reports clean production source
+`7d4b812b69e46708b2132b749641af2bac2668ea`, release optimization and no debugging
+entitlement. Its SHA-256 is
+`a851f70365bf17aba2f83e11ca1fb4bd7d3fd7a7327ec9efc99c05c7449f6328`.
+This is a qualified workload input, not a binary built from PR #1159.
 
-A host administrator prepares a protected test copy at
-`/Library/PrivilegedHelperTools/s622-20261020.sb`. First check that this name is
-absent, including symlinks. The source below is the current installed profile.
-Append exactly the six committed denial forms; do not copy the agent-writable
-staging profile as trusted configuration. In the administrator's Bristol shell:
+The package's `share/` links resolve into the retained guest tree
+`/Users/sy-agent/.local/share/safeyolo/guests/trees/sha256/01d3a982fc07370d73e31a0f5314416ce5af6511e5338e96bc63be2315e1fe8a`:
+
+| File | SHA-256 |
+|---|---|
+| `Image` | `cfb99c160084f605b4acf9e7d7a50e4805e07de0c6fa7a88918067100a9066c0` |
+| `initramfs.cpio.gz` | `1ca27b00cef28f6e7065f84524fc65bf48ed71c91b1bf498a4dc8532c5a6ec15` |
+| `rootfs-base.ext4` | `5d2286d5deb330073b9af96b54a62ee1982707308a52223e2e714fc642f0063f` |
+
+Read-only inspection on 4 November 2026 found the package, resolved images,
+scripts and retained account inputs owned by UID 502. The #587 runtime is
+stopped; its runtime and launch context both name generation
+`f5cda6aab12944c6b6c43d156c82a994`. Its retained local CLI is `e23f0559`; its
+proxy/helper package is `7d4b812b`. Do not restart or modify that agent. The
+[Lens assessment](https://github.com/craigbalding/safeyolo/issues/622#issuecomment-6619214285)
+explains reuse of #587/#1393 and the missing combined policy proof. #616 remains
+a separate assessment of the VZ grants.
+
+The explicit Python runtime
+`/Users/sy-agent/full-guest-lab/venv/bin/python3` is Python 3.12.14 with Paramiko.
+Only that runtime is reused from `full-guest-lab`. No old fixture image, source
+tree or SSH key is used. The runner `/Users/sy-agent/bin/run-vz-test` has SHA-256
+`534297944736aa9cb1fef615c88628577d5236a32d183c92f952d4d32ebd7593`.
+Its supported command is `safeyolo-vm run`; invoke the runner with this explicit
+Python to avoid its environment-dependent `python3` shebang.
+
+## Worker preparation
+
+From `/workspace` in the factory terminal, use the existing SSH configuration.
+Stage this disposable fixture once as UID 502. If the directory already exists,
+inspect its inputs and logs before deciding whether to reuse it; do not overwrite
+a previous result. The shared home, status and marker directories are disposable.
+The new guest uses an explicit tmpfs upper layer and no overlay disk. It makes
+no persistence claim and does not use the retained #587 home or overlay.
+
+```sh
+ssh -F ~/.ssh/seatbelt-agent/config seatbelt-mac \
+  '/Users/sy-agent/full-guest-lab/venv/bin/python3 -I -B -' <<'PY'
+import os, shutil
+from pathlib import Path
+import paramiko
+assert os.getuid() == 502
+package = Path('/Users/sy-agent/forge587-13260/instance')
+lab = Path('/Users/sy-agent/s622-20261104')
+key = paramiko.Ed25519Key.from_private_key_file(str(package / 'data/vm_ssh_key'))
+authorized = (package / 'agents/local587/config-share/authorized_keys').read_text()
+assert authorized.split()[:2] == [key.get_name(), key.get_base64()]
+lab.mkdir(mode=0o700)
+for name in ('config', 'observers', 'home', 'status', 'share'):
+    (lab / name).mkdir(mode=0o700)
+for name in ('guest-init', 'guest-init-static', 'guest-init-per-run',
+             'guest-shell-bridge', 'guest-sudo', 'safeyolo-guest'):
+    shutil.copyfile(package / 'assets/guest' / name, lab / 'config' / name)
+    (lab / 'config' / name).chmod(0o755)
+for name, value in {'authorized_keys': authorized, 'agent-name': 'seatbelt622\n',
+                    'agent.env': 'export SAFEYOLO_DETACH=1\n',
+                    'proxy.env': '', 'per-run-go': ''}.items():
+    (lab / 'config' / name).write_text(value)
+    (lab / 'config' / name).chmod(0o644)
+(lab / 'config').chmod(0o755)
+for name in ('home', 'status', 'share'):
+    (lab / name).chmod(0o777)
+(lab / 'share/host-marker').write_text('seatbelt-622-owned-share\n')
+(lab / 'share/host-marker').chmod(0o644)
+print('Prepared', lab, 'without starting a VM')
+PY
+tar -C /workspace -cf - tests/blackbox/harness/macos_process_argv.py \
+  tests/blackbox/harness/process_identity.py | \
+  ssh -F ~/.ssh/seatbelt-agent/config seatbelt-mac \
+  '/usr/bin/tar -xf - -C /Users/sy-agent/s622-20261104/observers --strip-components 3'
+```
+
+The copied scripts are the retained package's guest boot path. The
+config share contains a public SSH key and detach setting, without instance
+credentials or a coding command. The private key stays at
+`PACKAGE/data/vm_ssh_key`. The unchanged repository observers read exact process
+arguments and birth identities without host `ps`. The retained per-run script
+requires `safeyolo-guest` even in detach mode, so its existing binary is copied
+with the scripts; no command supervisor is enabled and no native input is built.
+
+Immediately before execution, Sylab refreshes the Bristol reservation, current
+#622 direction, PR head and retained input identities. In the factory terminal,
+require no fixture process, occupied socket or previous boot marker:
+
+```sh
+ssh -F ~/.ssh/seatbelt-agent/config seatbelt-mac \
+  '/Users/sy-agent/full-guest-lab/venv/bin/python3 -I -B -' <<'PY'
+import os, sys
+from pathlib import Path
+lab = Path('/Users/sy-agent/s622-20261104')
+sys.path.insert(0, str(lab / 'observers'))
+from macos_process_argv import owned_account_processes
+assert os.getuid() == 502
+assert owned_account_processes(502, [str(lab)]) == []
+for name in ('shell.sock', 'control.sock', 'helper-process.json', 'share/guest-marker'):
+    assert not os.path.lexists(lab / name), name
+assert not list((lab / 'status').iterdir())
+print('PASS: prepared fixture is idle')
+PY
+```
+
+Preserve other VMs and inputs. The overall issue remains Project Size L /
+Uncertainty High: the trusted outside-profile host launch remains unproved.
+The bounded preparation uses known tools and does not change that estimate.
+
+## Protected policy and one host launch
+
+In an approved trusted Bristol administrator terminal, use `/bin/bash`. Preserve
+the configured proxy and certificate environment. A host administrator creates
+`/Library/PrivilegedHelperTools/s622-20261020.sb` from the root-owned installed
+profile plus exactly the six committed denial forms. Do not promote the
+agent-writable staging profile to trusted configuration.
 
 ```sh
 sudo -n /bin/sh <<'SH'
 set -eu
 profile=/Library/PrivilegedHelperTools/s622-20261020.sb
+base=/Library/PrivilegedHelperTools/seatbelt-agent/agent-dev.sb
 [ ! -e "$profile" ] && [ ! -L "$profile" ]
+[ "$(shasum -a 256 "$base" | awk '{print $1}')" = ec39eca32a8ac8ba2ceea9dcb4f587523bfbe2fdb8f2948b0386527ab9c32d80 ]
 umask 022
-cat /Library/PrivilegedHelperTools/seatbelt-agent/agent-dev.sb > "$profile"
+cat "$base" > "$profile"
 cat >> "$profile" <<'SB'
 (deny job-creation)
 (deny lsopen appleevent-send)
@@ -53,154 +160,162 @@ cat >> "$profile" <<'SB'
 SB
 chown root:wheel "$profile"
 chmod 644 "$profile"
-shasum -a 256 "$profile"
+[ "$(shasum -a 256 "$profile" | awk '{print $1}')" = 05516d438610c5126595e15f5078f4a7f63a162bd910192c9dd5f19cfd5b3b7c ]
+stat -f '%Su:%Sg %Lp %N' "$profile"
+shasum -a 256 "$base" "$profile"
 SH
 ```
 
-With the recorded base and exact staged suffix, the expected hash is
-`05516d438610c5126595e15f5078f4a7f63a162bd910192c9dd5f19cfd5b3b7c`.
-Review any difference before launch. The protected copy is a scoped test input;
-the active SSH profile and daemon configuration are not changed.
+Require `root:wheel 644` and the expected hashes. If an input differs, stop and
+review the difference. This construction preserves all current local VZ, Fuse,
+home-extension, Metal, toolchain, directory and loopback grants. The installed
+SSH profile remains unchanged. Its account shell is the fixed-profile
+`agent-shell-launcher`, SHA-256
+`36b37b40a1efe93aa5bd55f8e37789b9c0ad0ee9cc3ddcf800229605fb7b63e1`;
+the separate `agent-entry` binary does not change that binding.
 
-The owner stages the unchanged repository observers
-`tests/blackbox/harness/macos_process_argv.py` and `process_identity.py` under
-`LAB/observers/`. They inspect exact arguments and process birth identity without
-invoking host `ps`. The existing `full-guest-lab/venv` has Paramiko. Its existing
-`config/data/vm_ssh_key` matches `fixture/authorized_keys` in the prepared
-`sshd-initramfs.cpio.gz`; keep that private key in place.
-
-## Launch and host canary
-
-In the outside Bristol terminal as UID 502, use `/bin/bash`. Preserve the normal
-home, temporary-directory, PATH and configured certificate variables. Define:
+After the worker reports the fixture idle and has the observer ready, run this
+in the same trusted administrator terminal. `sudo` selects UID 502 and its home;
+it invokes `sandbox-exec` directly, without an unsandboxed account login shell.
+The explicit Python runner directly spawns the selected helper. Retain the
+terminal output and the printed status; `HOST_LOG` is in the acting host user's
+home because that user cannot write the private fixture directory.
 
 ```sh
-set -eu
-LAB=/Users/sy-agent/s622-20261020
-SCOPED_PROFILE=/Library/PrivilegedHelperTools/s622-20261020.sb
+set -euo pipefail
+LAB=/Users/sy-agent/s622-20261104
+PACKAGE=/Users/sy-agent/forge587-13260/instance
 PYTHON=/Users/sy-agent/full-guest-lab/venv/bin/python3
-test "$(id -u)" = 502
-test ! -e "$LAB/shell.sock" && test ! -L "$LAB/shell.sock"
-test ! -e "$LAB/control.sock" && test ! -L "$LAB/control.sock"
-test ! -L "$LAB/overlay.img"
-test "$(stat -f '%u:%z:%b' "$LAB/overlay.img")" = 502:1073741824:0
-"$PYTHON" -I -B "$LAB/observers/macos_process_argv.py" --owned-roots 502 "$LAB"
-# Only this disposable marker directory is shared with guest UID 1000.
-chmod 777 "$LAB/share"
-chmod 644 "$LAB/share/host-marker"
-CANARY_DIR=$(mktemp -d /Users/Shared/s622-canary.XXXXXX)
-printf 'CANARY_DIR=%s\n' "$CANARY_DIR"
-printf 'outside-seatbelt-622\n' > "$CANARY_DIR/canary"
-cat "$CANARY_DIR/canary"
-/usr/bin/sandbox-exec -f "$SCOPED_PROFILE" \
+SCOPED_PROFILE=/Library/PrivilegedHelperTools/s622-20261020.sb
+HOST_LOG=$(mktemp "$HOME/s622-20261104-launch.XXXXXX")
+test ! -L "$SCOPED_PROFILE"
+test "$(stat -f '%u:%g:%Lp' "$SCOPED_PROFILE")" = 0:0:644
+test "$(shasum -a 256 "$SCOPED_PROFILE" | awk '{print $1}')" = 05516d438610c5126595e15f5078f4a7f63a162bd910192c9dd5f19cfd5b3b7c
+set +e
+sudo -n -H --preserve-env=HTTP_PROXY,HTTPS_PROXY,http_proxy,https_proxy,NO_PROXY,no_proxy,SSL_CERT_FILE,REQUESTS_CA_BUNDLE,NODE_EXTRA_CA_CERTS \
+  -u sy-agent /usr/bin/sandbox-exec -f "$SCOPED_PROFILE" \
   -D AGENT_HOME=/Users/sy-agent -D TOOLCHAIN_ROOT=/opt/homebrew \
-  "$PYTHON" -I -B - "$CANARY_DIR/canary" <<'PY'
-import errno, sys
-from pathlib import Path
-try:
-    Path(sys.argv[1]).read_bytes()
-except OSError as error:
-    assert error.errno == errno.EPERM, error
-    print('PASS: existing outside file denied under the scoped profile')
-else:
-    raise AssertionError('outside canary was readable')
-PY
-```
-
-Require the outside read to print the marker and the confined read to report
-EPERM. The process observer must report `owned_processes: []`. Stop on a failed
-prerequisite. Do not replace an occupied socket or overlay. Then run the helper
-directly through the existing runner, with no intervening shell:
-
-```sh
-runner_status=0
-/usr/bin/sandbox-exec -f "$SCOPED_PROFILE" \
-  -D AGENT_HOME=/Users/sy-agent -D TOOLCHAIN_ROOT=/opt/homebrew \
-  /Users/sy-agent/bin/run-vz-test --timeout-seconds 60 -- \
-  /Users/sy-agent/full-guest-lab/development-install/safeyolo-vm run \
-  --kernel /Users/sy-agent/full-guest-lab/images/Image \
-  --initrd /Users/sy-agent/full-guest-lab/sshd-initramfs.cpio.gz \
-  --rootfs /Users/sy-agent/full-guest-lab/images/rootfs-base.ext4 \
-  --overlay "$LAB/overlay.img" --cpus 2 --memory 1024 \
-  --cmdline 'console=hvc0 root=/dev/vda rw' \
+  "$PYTHON" -I -B /Users/sy-agent/bin/run-vz-test --timeout-seconds 60 -- \
+  "$PACKAGE/bin/safeyolo-vm" run \
+  --kernel "$PACKAGE/share/Image" --initrd "$PACKAGE/share/initramfs.cpio.gz" \
+  --rootfs "$PACKAGE/share/rootfs-base.ext4" --cpus 2 --memory 1024 \
+  --cmdline 'console=hvc0 root=/dev/vda rw quiet safeyolo.ephemeral_upper=1' \
   --serial-log "$LAB/serial.log" --no-terminal \
   --shell-socket "$LAB/shell.sock" --control-socket "$LAB/control.sock" \
-  --share "$LAB/share:workspace:rw" > "$LAB/helper.log" 2>&1 || runner_status=$?
-printf 'runner_status=%s\n' "$runner_status"
+  --share "$LAB/share:workspace:rw" --share "$LAB/config:config:ro" \
+  --share "$LAB/status:status:rw" --share "$LAB/home:home:rw" \
+  2>&1 | tee "$HOST_LOG"
+launch_status=("${PIPESTATUS[@]}")
+set -e
+printf 'runner_status=%s log_status=%s host_log=%s\n' \
+  "${launch_status[0]}" "${launch_status[1]}" "$HOST_LOG"
 ```
 
-## Observe the actual guest and stop it
+This is a prepared command, not evidence that the host launch succeeded. Keep
+the profile-copy receipt with the launch output to bind the trusted policy,
+actor and inherited helper confinement. Worker observations below bind the
+actual helper, its runner parent and guest operation. Require both printed
+statuses to be 0 and the worker's guest/share checks to pass. Retain diagnostics
+on any failure.
 
-From the factory terminal with the existing SSH configuration, send this program
-on stdin. Do not put a here-document inside the remote forced shell. The probe
-connects to this fixture's private shell socket, then authenticates to the actual
-guest through that same socket. No host TCP listener or forwarding is added.
+## Worker observation and guest stop
+
+From the factory terminal, send this program through the existing SSH entry.
+Do not place a here-document inside the remote forced-shell command. The probe
+uses only this fixture's private Unix-domain sockets (UDS). Readiness means an
+actual SSH identification and a guest command, not elapsed time or socket-file
+presence. Save status and process evidence before testing their assertions.
 
 ```sh
 ssh -F ~/.ssh/seatbelt-agent/config seatbelt-mac \
   '/Users/sy-agent/full-guest-lab/venv/bin/python3 -I -B -' <<'PY'
-import dataclasses, json, os, socket, sys, time
+import errno, json, os, socket, sys, time
 from pathlib import Path
 import paramiko
-lab = Path('/Users/sy-agent/s622-20261020')
-old = Path('/Users/sy-agent/full-guest-lab')
-sys.path.insert(0, str(old / 'source/cli/src'))
+lab = Path('/Users/sy-agent/s622-20261104')
+package = Path('/Users/sy-agent/forge587-13260/instance')
 sys.path.insert(0, str(lab / 'observers'))
-from safeyolo.vm_diagnostics import probe_shell_socket
 from macos_process_argv import process_argv
 from process_identity import _darwin_process_info
 deadline = time.monotonic() + 40
 while True:
-    banner = probe_shell_socket(lab / 'shell.sock', timeout=0.5)
-    if banner.banner:
+    try:
+        with socket.socket(socket.AF_UNIX) as probe:
+            probe.settimeout(0.5)
+            probe.connect(str(lab / 'shell.sock'))
+            banner = probe.recv(256)
+    except OSError as error:
+        if error.errno not in (errno.ENOENT, errno.ECONNREFUSED) and not isinstance(error, TimeoutError):
+            raise
+        banner = b''  # Expected while this fixture's helper/guest is starting.
+    ready = lab / 'status/vm-status'
+    if banner.startswith(b'SSH-2.0-') and ready.is_file() and ready.read_text().strip() == 'ready':
         break
-    assert time.monotonic() < deadline, banner
+    assert time.monotonic() < deadline, ('SSH readiness deadline', banner)
     time.sleep(0.1)
-print('SSH banner:', dataclasses.asdict(banner), flush=True)
+print('SSH banner:', banner, flush=True)
 with socket.socket(socket.AF_UNIX) as control:
     control.settimeout(3)
     control.connect(str(lab / 'control.sock'))
     control.sendall(b'{"operation":"status"}\n')
     status = json.loads(control.makefile('rb').readline(2 * 1024 * 1024))
-assert status['ok'] is True and status['vm']['state'] == 'running', status
-assert status['helper']['git_sha'] == '1ed8780308763cb96a2f4eebeed55b550e0175e6', status
+(lab / 'helper-status.json').write_text(json.dumps(status, indent=2) + '\n')
 pid = status['pid']
 info = _darwin_process_info(pid)
-assert info is not None and info.pbi_uid == 502
+assert info is not None
 argv = [os.fsdecode(arg) for arg in process_argv(pid)]
-assert argv[0] == str(old / 'development-install/safeyolo-vm')
-assert argv[argv.index('--control-socket') + 1] == str(lab / 'control.sock')
-identity = dict(pid=pid, birth=[info.pbi_start_tvsec, info.pbi_start_tvusec], argv=argv)
-(lab / 'helper-status.json').write_text(json.dumps(status, indent=2) + '\n')
+parent = _darwin_process_info(info.pbi_ppid)
+assert parent is not None
+parent_argv = [os.fsdecode(arg) for arg in process_argv(info.pbi_ppid)]
+identity = dict(pid=pid, uid=info.pbi_uid,
+                birth=[info.pbi_start_tvsec, info.pbi_start_tvusec], argv=argv,
+                parent=dict(pid=info.pbi_ppid, uid=parent.pbi_uid,
+                            birth=[parent.pbi_start_tvsec, parent.pbi_start_tvusec],
+                            argv=parent_argv))
 (lab / 'helper-process.json').write_text(json.dumps(identity, indent=2) + '\n')
-print('VM status:', status, flush=True)
-assert 'SSHD_FIXTURE_READY' in (lab / 'serial.log').read_text()
+print('VM status and process:', status, identity, flush=True)
+assert status['ok'] is True and status['vm']['state'] == 'running', status
+assert status['helper']['git_sha'] == '7d4b812b69e46708b2132b749641af2bac2668ea', status
+assert info.pbi_uid == parent.pbi_uid == 502, identity
+assert argv[0] == str(package / 'bin/safeyolo-vm') and argv[1] == 'run', argv
+for flag, expected in {
+    '--kernel': package / 'share/Image', '--initrd': package / 'share/initramfs.cpio.gz',
+    '--rootfs': package / 'share/rootfs-base.ext4',
+    '--shell-socket': lab / 'shell.sock', '--control-socket': lab / 'control.sock',
+}.items():
+    assert argv[argv.index(flag) + 1] == str(expected), argv
+assert parent_argv[1:] == ['-I', '-B', '/Users/sy-agent/bin/run-vz-test',
+                            '--timeout-seconds', '60', '--', *argv], parent_argv
+assert (lab / 'status/vm-status').read_text().strip() == 'ready'
 stream = socket.socket(socket.AF_UNIX)
 stream.settimeout(3)
 stream.connect(str(lab / 'shell.sock'))
 client = paramiko.SSHClient()
-# The disposable guest generates its host key at boot. Its private UDS is the
-# fixture endpoint, as in the existing run-sshd.py observer.
+# This disposable guest generates its host key at boot. The private UDS and
+# verified helper identify the fixture; no unrelated SSH endpoint is used.
 client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 try:
     client.connect('seatbelt-622', username='agent', sock=stream,
-                   pkey=paramiko.Ed25519Key.from_private_key_file(str(old / 'config/data/vm_ssh_key')),
+                   pkey=paramiko.Ed25519Key.from_private_key_file(str(package / 'data/vm_ssh_key')),
                    look_for_keys=False, allow_agent=False, timeout=3, banner_timeout=3, auth_timeout=3)
-    command = ("set -eu; id; uname -r; sudo -n mkdir -p /workspace; "
-               "sudo -n mount -t virtiofs workspace /workspace; "
+    command = ("set -eu; test \"$(id -u)\" = 1000; id; uname -r; "
                "test \"$(cat /workspace/host-marker)\" = seatbelt-622-owned-share; "
                "printf 'guest-to-host-622\\n' > /workspace/guest-marker; "
                "findmnt -n -t virtiofs -o SOURCE,TARGET /workspace")
     stdin, stdout, stderr = client.exec_command(command, timeout=10)
     stdin.close()
     output, error = stdout.read().decode(), stderr.read().decode()
-    assert stdout.channel.recv_exit_status() == 0, (output, error)
+    result = stdout.channel.recv_exit_status()
+    (lab / 'guest-result.json').write_text(json.dumps(
+        dict(status=result, stdout=output, stderr=error), indent=2) + '\n')
+    assert result == 0, (output, error)
+    assert output.splitlines()[-1].split() == ['workspace', '/workspace'], output
     assert (lab / 'share/guest-marker').read_text() == 'guest-to-host-622\n'
     print('Guest identity and mounted share:', output, flush=True)
     print('PASS: host-to-guest and guest-to-host share markers', flush=True)
 finally:
-    # Request poweroff even when a share assertion fails. This request alone
-    # does not establish termination; the foreground runner and checks below do.
+    # A poweroff request is best effort. The foreground runner still owns
+    # stopping and reaping the exact helper, including on any assertion failure.
     try:
         if client.get_transport() and client.get_transport().is_active():
             client.exec_command('sudo -n /usr/bin/busybox poweroff -f', timeout=3)
@@ -211,30 +326,29 @@ finally:
 PY
 ```
 
-Require a real SSH identification, VM state `running`, the expected helper
-identity, `SSHD_FIXTURE_READY` in the serial log, guest `id`/kernel output and
-`workspace /workspace` as the mounted VirtioFS share. Require the host to see the
-guest marker. Retain actual stdout/stderr and logs. A failed command remains a
-failed witness even if cleanup succeeds.
+Retain stdout/stderr, `serial.log`, `helper-status.json`, `helper-process.json`
+and `guest-result.json`. A failed command remains a failed witness even if
+cleanup succeeds. A runner status of 124 records a deadline, not productivity.
 
-## Verify teardown and remove only owned inputs
+## Owned teardown
 
-If guest poweroff fails, the existing runner still owns stopping and reaping its
-exact helper. For an explicit earlier stop, use another outside Bristol terminal
-as UID 502. Check the saved birth identity and complete arguments before sending
-TERM to that exact helper; an inspection error must stop this command:
+If guest poweroff fails, the runner still stops and reaps its exact helper.
+For an earlier stop, the worker can send TERM only after comparing the saved
+UID, process birth and complete arguments. Inspection failure stops this command:
 
 ```sh
-/Users/sy-agent/full-guest-lab/venv/bin/python3 -I -B - <<'PY'
+ssh -F ~/.ssh/seatbelt-agent/config seatbelt-mac \
+  '/Users/sy-agent/full-guest-lab/venv/bin/python3 -I -B -' <<'PY'
 import json, os, signal, sys
 from pathlib import Path
-lab = Path('/Users/sy-agent/s622-20261020')
+lab = Path('/Users/sy-agent/s622-20261104')
 sys.path.insert(0, str(lab / 'observers'))
 from macos_process_argv import process_argv
 from process_identity import _darwin_process_info
 owned = json.loads((lab / 'helper-process.json').read_text())
 info = _darwin_process_info(owned['pid'])
 if info is not None:
+    assert info.pbi_uid == owned['uid'] == 502
     assert [info.pbi_start_tvsec, info.pbi_start_tvusec] == owned['birth']
     assert [os.fsdecode(arg) for arg in process_argv(owned['pid'])] == owned['argv']
     os.kill(owned['pid'], signal.SIGTERM)
@@ -242,15 +356,22 @@ if info is not None:
 PY
 ```
 
-After the foreground runner has returned, in the outside terminal where `LAB`
-and `CANARY_DIR` remain defined:
+After the trusted host terminal's foreground runner has returned, the worker
+checks process and listener absence through SSH. File presence alone is not a
+cleanup failure. If inspection fails or finds a survivor, retain all fixture
+inputs and diagnostics and report the exact process or socket. Do not signal by
+name or remove a running fixture.
 
 ```sh
-"$PYTHON" -I -B "$LAB/observers/macos_process_argv.py" --owned-roots 502 "$LAB"
-"$PYTHON" -I -B - "$LAB" <<'PY'
-import errno, socket, sys
+ssh -F ~/.ssh/seatbelt-agent/config seatbelt-mac \
+  '/Users/sy-agent/full-guest-lab/venv/bin/python3 -I -B -' <<'PY'
+import errno, os, socket, sys
 from pathlib import Path
-lab = Path(sys.argv[1])
+lab = Path('/Users/sy-agent/s622-20261104')
+sys.path.insert(0, str(lab / 'observers'))
+from macos_process_argv import owned_account_processes
+assert os.getuid() == 502
+assert owned_account_processes(502, [str(lab)]) == []
 for name in ('shell.sock', 'control.sock'):
     with socket.socket(socket.AF_UNIX) as stream:
         stream.settimeout(2)
@@ -260,38 +381,31 @@ for name in ('shell.sock', 'control.sock'):
             assert error.errno in (errno.ENOENT, errno.ECONNREFUSED), error
         else:
             raise AssertionError(f'owned socket is still listening: {name}')
-print('PASS: neither owned socket has a listener')
+print('PASS: no owned process or socket listener')
+# These names are exclusive to this disposable fixture. Keep guest/host logs,
+# boot markers, config and observers for Lens, including after workload failure.
+for name in ('shell.sock', 'control.sock', 'control.sock.lock'):
+    (lab / name).unlink(missing_ok=True)
+print('PASS: owned socket files removed; diagnostics retained')
 PY
 ```
 
-Require `owned_processes: []` and no listener. The observer raises on failed or
-truncated process inspection. If either check fails, retain the overlay, account
-context and diagnostics; report the exact surviving process or socket. Do not
-signal by name. Runner status 124 records a deadline, not a passing workload.
-
-When both checks pass, remove only these fixture files in that outside terminal.
-Keep the policy/source snapshots, observers and result logs for Lens:
+After successful teardown, the host administrator verifies and removes only
+the protected test profile. Run this in the trusted Bristol terminal:
 
 ```sh
-rm -f "$LAB/shell.sock" "$LAB/control.sock" "$LAB/control.sock.lock" \
-  "$LAB/overlay.img" "$LAB/share/host-marker" "$LAB/share/guest-marker"
-rmdir "$LAB/share"
-rm "$CANARY_DIR/canary"
-rmdir "$CANARY_DIR"
-test ! -e "$LAB/overlay.img" && test ! -L "$LAB/overlay.img"
-test ! -e "$LAB/shell.sock" && test ! -L "$LAB/shell.sock"
-test ! -e "$LAB/control.sock" && test ! -L "$LAB/control.sock"
+sudo -n /bin/sh <<'SH'
+set -eu
+profile=/Library/PrivilegedHelperTools/s622-20261020.sb
+[ ! -L "$profile" ]
+[ "$(stat -f '%u:%g:%Lp' "$profile")" = 0:0:644 ]
+[ "$(shasum -a 256 "$profile" | awk '{print $1}')" = 05516d438610c5126595e15f5078f4a7f63a162bd910192c9dd5f19cfd5b3b7c ]
+rm "$profile"
+[ ! -e "$profile" ] && [ ! -L "$profile" ]
+SH
 ```
 
-The host administrator removes only the protected test copy after its identity
-is checked against the reviewed copy:
-
-```sh
-sudo -n rm /Library/PrivilegedHelperTools/s622-20261020.sb
-test ! -e /Library/PrivilegedHelperTools/s622-20261020.sb && \
-  test ! -L /Library/PrivilegedHelperTools/s622-20261020.sb
-```
-
-Do not remove the active profile, helper, images or other lab directories.
-Return the actor/profile/helper identity, commands, runner result,
-boot/banner/share/canary observations and final process/socket/file absence.
+Do not remove the active profile, package, images, private key or retained
+#587/#1393 state. Return the trusted copy/launch receipt, actor/profile/helper
+identities, guest command/share result, runner status and final process/socket
+absence. Lens independently decides criterion 12 after physical execution.

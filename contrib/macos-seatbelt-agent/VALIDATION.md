@@ -144,8 +144,14 @@ must still return nonzero and retain the printed lab path with its root SSH log
 and pending marker intact.
 
 The [physical VZ witness procedure](VZ-WITNESS.md) supplies the missing boot,
-SSH banner, manual VirtioFS mount, bidirectional share markers, host canary and
-owned teardown commands. That procedure is prepared, not an execution result.
+SSH banner, guest command, bidirectional VirtioFS share markers and owned
+teardown commands. It binds the retained #587 package/helper at `7d4b812b` and
+its guest images to the installed profile plus the six committed denials.
+The prepared fixture uses separate disposable config, home, status and marker
+shares with an explicit tmpfs upper layer. It does not restart the retained
+agent or replay accepted negative controls. The protected profile copy and
+UID-502 launch still require a trusted Bristol terminal. This is preparation,
+not a physical execution result or criterion 12 acceptance.
 
 ## Execution-boundary hardening, 2026-10-20
 
