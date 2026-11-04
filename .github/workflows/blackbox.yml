@@ -9,6 +9,9 @@ name: Nightly native blackbox
 # source separately. Dispatch can pin a production run and a staged index.
 
 on:
+  workflow_run:
+    workflows: [Native proxy contracts]
+    types: [completed]
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
@@ -25,11 +28,53 @@ permissions:
   actions: read
 
 concurrency:
-  group: blackbox-native-${{ github.ref }}
+  group: blackbox-native-${{ github.ref }}-${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || 'installed' }}
   cancel-in-progress: false
 
 jobs:
+  claude-event:
+    name: Record trusted Claude invocation
+    runs-on: ubuntu-24.04
+    if: >-
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.path == '.github/workflows/proxy-rust.yml'))
+    steps:
+      - name: Write nonsecret event operands
+        env:
+          HOST_RUN: ${{ inputs.host_run }}
+          GUEST_INDEX: ${{ inputs.guest_index }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+          event = json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+          kind = os.environ['GITHUB_EVENT_NAME']
+          parent = event.get('workflow_run', {})
+          request = {
+              'trigger': {'schedule': 'nightly', 'workflow_dispatch': 'manual', 'workflow_run': 'merge'}[kind],
+              'ref': os.environ['GITHUB_REF'],
+              'source_revision': parent.get('head_sha') if kind == 'workflow_run' else None,
+              'push_run': parent.get('id') if kind == 'workflow_run' else None,
+              'host_run': os.environ.get('HOST_RUN') or None,
+              'guest_index': os.environ.get('GUEST_INDEX') or None,
+              'event_run': int(os.environ['GITHUB_RUN_ID']),
+              'event_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
+          }
+          pathlib.Path('claude-event.json').write_text(json.dumps(request) + '\n')
+          PY
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: claude-event-${{ github.run_attempt }}
+          path: claude-event.json
+          retention-days: 30
+          if-no-files-found: error
+
   systrap:
+    if: github.event_name != 'workflow_run'
     permissions:
       contents: read
       actions: read
@@ -96,6 +141,7 @@ jobs:
           if-no-files-found: warn
 
   macos-package:
+    if: github.event_name != 'workflow_run'
     name: Installed host package — GitHub macOS
     runs-on: macos-latest
     timeout-minutes: 60

@@ -92,7 +92,8 @@ def scheduled_lanes_from_workflow(path: Path = WORKFLOW_PATH) -> dict[str, bool]
                         )
                     )
 
-        if lanes and job.get("if") is not None:
+        # Excluding merge notifications leaves the scheduled installed lane intact.
+        if lanes and job.get("if") not in (None, "github.event_name != 'workflow_run'"):
             raise ValueError(
                 f"{path}: scheduled lane job {job_name!r} has an unsupported "
                 "job-level if condition"

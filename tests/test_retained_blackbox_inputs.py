@@ -482,8 +482,9 @@ def test_private_annotations_and_extra_receipt_fields_do_not_enter_reports(retai
 
 def test_cadence_and_consumers_have_no_product_build_steps():
     workflow = yaml.safe_load((ROOT / ".github/workflows/blackbox.yml").read_text())
-    assert set(workflow["jobs"]) == {"systrap", "macos-package"}
-    for job in workflow["jobs"].values():
+    assert set(workflow["jobs"]) == {"systrap", "macos-package", "claude-event"}
+    for name in ("systrap", "macos-package"):
+        job = workflow["jobs"][name]
         commands = "\n".join(step.get("run", "") for step in job["steps"])
         assert "select_blackbox_artifacts.py" in commands and "retained_inputs.py run" in commands
         for builder in ("cargo", "rustup", "build_host_packages", "build-rootfs", "make -C vm", "guest-test-inputs"):
