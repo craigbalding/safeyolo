@@ -114,6 +114,7 @@ command family to its current operating instructions.
 | --- | --- |
 | Manual installation, custom roots, builds or recovery | [Installation reference](docs/installation.md) |
 | Try a useful task and decide its access | [Demo](docs/demo.md) |
+| Run a non-HTTP client with protocol-specific networking needs | [Client transports, relays and agent runbook](cli/src/safeyolo/agent_context/skills/safeyolo/references/non-http-clients.md) |
 | Controlled experiments | [The Lab](cli/README.md#lab) and [agent debugging](docs/agent-debugging.md) |
 | Claim shared work or coordinate agents | [Work claims](docs/coord-operations.md#claim-durable-work), [Factories](docs/factories.md), [Coord](docs/coord-operations.md), [Mattermost](docs/coord-mattermost.md) |
 | A different agent or setup | [Host scripts](contrib/HOST_SCRIPT_GUIDE.md) |
