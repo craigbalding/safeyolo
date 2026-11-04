@@ -17,6 +17,7 @@ import hashlib
 import http.client
 import json
 import os
+import select
 import socket
 import subprocess
 import threading
@@ -122,6 +123,36 @@ def wait_file(path, child):
         time.sleep(0.05)
 
 
+def capture_guest_command(command, env, path, failures):
+    """Drain the guest CLI's pipe into a private file owned only by the parent."""
+    child = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+    finished = threading.Event()
+
+    def capture():
+        try:
+            with child.stdout as stream:
+                descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "wb") as log:
+                    while True:
+                        readable, _, _ = select.select([stream], [], [], 0.1)
+                        if readable:
+                            chunk = os.read(stream.fileno(), 65536)
+                            if not chunk:
+                                return
+                            log.write(chunk)
+                            log.flush()
+                        elif finished.is_set():
+                            failures.append(f"guest output pipe remained open after exit: {path.name}")
+                            return
+        except OSError as error:
+            # Report a failed capture after owned teardown; it is not success.
+            failures.append(f"guest output capture failed for {path.name}: {error}")
+
+    reader = threading.Thread(target=capture)
+    reader.start()
+    return child, reader, finished
+
+
 def prepare(base, root, admin_port, parent_port):
     prepare_native_instance(base, root)
     root.chmod(0o755)
@@ -179,6 +210,7 @@ def run(args):
                        diagnostics=output / "native.log")
     producer, caller = root / "workspaces/proofspot", root / "workspaces/caller"
     children = []
+    capture_failures = []
     parent = ParentObserver()
     parent_thread = threading.Thread(target=parent.serve_forever)
     parent_thread.start()
@@ -220,13 +252,9 @@ def run(args):
         report["runsc"] = {**doctor["linux"], "sha256": _sha256(runtime_path)}
 
         def guest_process(name, command):
-            log = (output / f"{name}.log").open("wb")
-            try:
-                child = subprocess.Popen(guest_command_args(cli, name, command, env=env),
-                                         env=env, stdout=log, stderr=log)
-            finally:
-                log.close()
-            children.append(child)
+            child, reader, finished = capture_guest_command(
+                guest_command_args(cli, name, command, env=env), env, output / f"{name}.log", capture_failures)
+            children.append((name, child, reader, finished))
             return child
 
         server = guest_process("proofspot", "echo $$ > /workspace/server.pid; "
@@ -306,13 +334,24 @@ def run(args):
                 native("stop")
             except (RuntimeError, subprocess.TimeoutExpired) as error:
                 failures.append(str(error))
-            for child in children:
+            report["commands"] = []
+            for name, child, reader, finished in children:
+                forced_stop = False
                 try:
                     child.wait(timeout=20)
                 except subprocess.TimeoutExpired:
+                    forced_stop = True
                     child.kill()
                     child.wait(timeout=5)
                     failures.append("native guest command survived owned stop")
+                finally:
+                    finished.set()
+                    reader.join(timeout=5)
+                report["commands"].append({"agent": name, "exit": child.returncode,
+                                            "forced_stop": forced_stop, "log": f"{name}.log"})
+                if reader.is_alive():
+                    failures.append(f"guest output capture survived owned stop: {name}")
+            failures.extend(capture_failures)
             failures.extend(surviving_processes(processes))
             if (root / "data/ready.json").exists():
                 failures.append("proxy readiness survived owned stop")

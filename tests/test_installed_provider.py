@@ -4,6 +4,7 @@ import hashlib
 import http.client
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -12,10 +13,48 @@ from pathlib import Path
 import pytest
 import tomlkit
 
-from tests.blackbox.installed_provider import ParentObserver, client_observation, origin_observation, prepare
+from tests.blackbox.installed_provider import (
+    ParentObserver,
+    capture_guest_command,
+    client_observation,
+    origin_observation,
+    prepare,
+)
 from tests.blackbox.native_credentials import native_cli
 
 SCRIPTS = Path(__file__).parent / "blackbox/isolation"
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_guest_output_uses_pipes_and_keeps_private_log_ownership(tmp_path, exit_code):
+    program = '''
+import os, stat, sys
+assert stat.S_ISFIFO(os.fstat(1).st_mode)
+assert stat.S_ISFIFO(os.fstat(2).st_mode)
+sys.stdout.buffer.write(b'o' * 131072)
+sys.stdout.buffer.flush()
+sys.stderr.buffer.write(b'e' * 131072)
+sys.stderr.buffer.flush()
+sys.exit(int(sys.argv[1]))
+'''
+    log = tmp_path / "guest.log"
+    failures = []
+    child, reader, finished = capture_guest_command(
+        [sys.executable, "-c", program, str(exit_code)], os.environ, log, failures)
+    try:
+        # Waiting before capture finishes exercises output beyond pipe capacity.
+        assert child.wait(timeout=10) == exit_code
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=5)
+        finished.set()
+        reader.join(timeout=5)
+    assert not reader.is_alive() and failures == []
+    assert child.returncode == exit_code
+    assert log.read_bytes() == b'o' * 131072 + b'e' * 131072
+    assert log.stat().st_uid == os.getuid() and log.stat().st_gid == os.getgid()
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
 
 
 def test_producer_records_accept_before_parsing_and_never_records_authorization(tmp_path):
