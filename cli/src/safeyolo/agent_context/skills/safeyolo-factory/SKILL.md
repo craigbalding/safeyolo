@@ -20,6 +20,16 @@ effect. Producer identity comes from the authenticated route and cannot be
 supplied by a bridge. Native publication does not yet replace the supervisor's
 declared message handoffs or establish acceptance from attestation counts.
 
+`request_check` and `raise_challenge` return ordinary work IDs with exact
+subjects and named participants. The assigned participant claims that work.
+`answer_check` records and settles a check; corrections preserve earlier answers
+on the same work ID. `respond_challenge` completes response work while leaving
+the challenge unresolved. Only named deciding participants or the operator can
+call `resolve_challenge`, subject to the selected independence flag and current
+work/response expectations. Read `list_work_reviews` and immutable `read_work`
+versions for current obligations and history. These optional records do not yet
+select factory acceptance requirements or replace message handoffs.
+
 ## Route the request
 
 - For a new factory or substantial redesign, read

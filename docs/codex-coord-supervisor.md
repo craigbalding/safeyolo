@@ -144,6 +144,10 @@ skips `work_changed` attention; creating, publishing or cancelling native work
 alone does not launch a model turn. Continue the approved message handoff path.
 An interactive worker uses the same native claim and publication authority
 without a supervisor.
+Assigned checks and challenge response work also use native claims and retain
+their exact subjects. Their answers and dispositions do not settle a supervisor
+request. Continue the declared review handoffs until native assignment routing
+is implemented. See the [native review contract](coord-reference.md#assigned-checks-and-peer-challenges).
 
 Each factory agent also has a room named `<agent>-agent`. The supervisor sends
 useful harness events to that room without attention. Codex JSONL is retained

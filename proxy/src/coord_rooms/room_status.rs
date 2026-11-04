@@ -41,7 +41,7 @@ pub(crate) fn bounded_items(items: Vec<Value>, total: usize, budget: usize) -> V
     json!({"total":total,"shown":items.len(),"truncated":items.len()<total,"items":items})
 }
 
-fn work_summary(mut work: Value) -> Value {
+pub(crate) fn work_summary(mut work: Value) -> Value {
     // Descriptions and refs can fill a complete mutation. Status needs the
     // current ownership/version and a bounded title or completion result.
     let external_ref = work.as_object_mut().unwrap().remove("external_ref");
@@ -84,6 +84,46 @@ fn work_summary(mut work: Value) -> Value {
         );
         cancellation.insert("reason".into(), json!(excerpt));
     }
+    for field in ["check", "challenge"] {
+        if let Some(review) = work[field].as_object_mut() {
+            for text in ["criterion", "assertion", "grounds"] {
+                if let Some(value) = review.get(text).and_then(Value::as_str) {
+                    let excerpt = prefix(value, WORK_TEXT_BYTES).to_owned();
+                    review.insert(
+                        format!("{text}_truncated"),
+                        json!(excerpt.len() < value.len()),
+                    );
+                    review.insert(text.into(), json!(excerpt));
+                }
+            }
+            if let Some(refs) = review.remove("evidence_refs") {
+                review.insert(
+                    "evidence_ref_count".into(),
+                    json!(refs.as_array().unwrap().len()),
+                );
+            }
+            for field in ["answer", "response", "disposition"] {
+                if let Some(record) = review.get_mut(field).and_then(Value::as_object_mut) {
+                    if let Some(refs) = record.remove("evidence_refs") {
+                        record.insert(
+                            "evidence_ref_count".into(),
+                            json!(refs.as_array().unwrap().len()),
+                        );
+                    }
+                    for text in ["summary", "reason"] {
+                        if let Some(value) = record.get(text).and_then(Value::as_str) {
+                            let excerpt = prefix(value, WORK_TEXT_BYTES).to_owned();
+                            record.insert(
+                                format!("{text}_truncated"),
+                                json!(excerpt.len() < value.len()),
+                            );
+                            record.insert(text.into(), json!(excerpt));
+                        }
+                    }
+                }
+            }
+        }
+    }
     work
 }
 
@@ -105,7 +145,7 @@ pub(crate) fn work_page(
             row.get::<_, String>(0)
         })?
         .map(|row| {
-            let mut work = work_summary(serde_json::from_str(&row?)?);
+            let mut work = work_summary(super::work::describe(conn, serde_json::from_str(&row?)?)?);
             let mut counts = attestations::counts(conn, &work)?;
             let total =
                 counts["current_total"].as_u64().unwrap() + counts["stale_total"].as_u64().unwrap();
@@ -230,6 +270,16 @@ fn work_rows(output: &mut String, title: &str, page: &Value) {
                 text(&work["cancellation"]["author"]["kind"]),
                 text(&work["cancellation"]["author"]["id"]),
                 quoted(&work["cancellation"]["reason"])
+            );
+        }
+        if work["review_status"].is_object() {
+            let status = &work["review_status"];
+            let _ = writeln!(
+                output,
+                "    {}: {} subject_current={}; use coord work reviews/show for exact subjects and dispositions",
+                text(&status["kind"]),
+                text(&status["state"]),
+                status["subject_current"]
             );
         }
         let evidence = &work["attestations"];

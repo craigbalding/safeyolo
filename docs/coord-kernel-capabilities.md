@@ -484,6 +484,7 @@ short_result?
 target_ref?/target_generation
 output?  # authenticated producer, execution outcome and publication revision
 cancellation?  # actor, reason and time
+check?/challenge?  # assigned subject, participant, answer or disposition
 timestamps/version
 ```
 
@@ -782,6 +783,21 @@ At this point the core operator-noise problem is substantially solved.
 
 Attestations record attributed evidence about an exact output. They do not
 assign a check or settle a peer challenge.
+
+Native assigned checks and peer challenges reuse ordinary work records and
+claims. A check fixes its subject, criterion, reviewer and independence flag;
+answer and check completion commit together. Corrections retain one effective
+answer and immutable earlier revisions. A challenge fixes its contested subject,
+responder and deciding participants. Response completion leaves the challenge
+unresolved until an authorized explicit disposition. Cancellation and output
+replacement do not erase it. Current work and related-review reads expose these
+facts without interpreting messages. See the authoritative [review operation
+contract](coord-reference.md#assigned-checks-and-peer-challenges) and
+[code/report example](coord-operations.md#run-an-assigned-review-loop).
+
+These are optional review records. Selected acceptance requirements and native
+supervisor routing remain unimplemented. Existing factory message handoffs
+remain required; an attributed check conclusion alone does not accept its subject.
 
 A published output selects the current **work target**:
 

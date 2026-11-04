@@ -300,6 +300,89 @@ its own open work. The operator can cancel any unfinished work with
 It does not stop an external command. Inspect that command's actual state before
 repeating or replacing an uncertain effect.
 
+## Run an assigned review loop
+
+Use the same operations for a code commit, retained report or tooling artifact.
+The application retains artifact bytes; Coord retains exact references and
+collaboration state. Alice and Bob must have room send and receive permission.
+Their names below represent their actual durable agent IDs. Start after Alice
+has claimed `WORK_ID` and published output generation 1 as described above.
+Replace every example ID with the returned ID, and read current versions before
+each mutation. The following JSON objects are separate authenticated MCP calls.
+
+Alice calls `request_check`:
+
+```json
+{"room_name":"chat","subject":{"kind":"output","work_id":"WORK_ID","target_generation":1},"criterion":"Verify the retained artifact includes the requested result","reviewer":{"kind":"agent","id":"BOB_ID"},"independent":true,"operation_id":"request-first-check"}
+```
+
+Give Bob the returned check `work_id`. Bob claims that check with `claim_work`.
+If the claim returns version 2 and generation 1, Bob can record a defect with
+`answer_check`:
+
+```json
+{"room_name":"chat","work_id":"CHECK_ID","expected_version":2,"expected_generation":1,"verdict":"reject","summary":"The retained artifact omits the requested result","operation_id":"answer-first-check"}
+```
+
+The check becomes done. The output has a recorded rejection. Bob can raise the
+specific objection with `raise_challenge`:
+
+```json
+{"room_name":"chat","subject":{"kind":"output","work_id":"WORK_ID","target_generation":1},"assertion":"The requested result is missing","grounds":"Inspected the retained artifact","responder":{"kind":"agent","id":"ALICE_ID"},"deciders":[{"kind":"agent","id":"BOB_ID"}],"independent":true,"operation_id":"raise-omission"}
+```
+
+Alice claims the returned challenge response work. She retains the correction
+in her application and publishes its reference with `publish_work_output` on
+the original `WORK_ID`. If publication selects output generation 2 and the
+challenge claim returned version 2/generation 1, she calls `respond_challenge`:
+
+```json
+{"room_name":"chat","work_id":"CHALLENGE_ID","expected_version":2,"expected_generation":1,"summary":"The retained correction includes the requested result","correction":{"kind":"output","work_id":"WORK_ID","target_generation":2},"operation_id":"respond-with-correction"}
+```
+
+The response becomes done at version 3. The challenge remains unresolved.
+After inspecting the exact correction, Bob calls `resolve_challenge`:
+
+```json
+{"room_name":"chat","work_id":"CHALLENGE_ID","expected_version":3,"expected_generation":1,"expected_response_version":3,"decision":"dismissed","reason":"Verified the identified correction includes the result","operation_id":"dispose-omission"}
+```
+
+The disposition records Bob and its exact response/correction. Request a new
+check for output generation 2. The first check remains bound to generation 1.
+Use `list_work_reviews` on `WORK_ID` to see both checks and the challenge.
+`read_work` with a `version` reads earlier answers and dispositions. Correcting
+a verdict about the same subject updates that check; it does not add a vote.
+Execution completion, check conclusion, challenge disposition and acceptance
+remain separate. Optional review does not create a new acceptance gate.
+
+An operator-directed interactive worker uses these same authenticated calls.
+Creating review work does not change its control arrangement or start a model
+turn. The host CLI supplies corresponding `coord work request-check`,
+`answer-check`, `raise-challenge`, `respond-challenge` and `resolve-challenge`
+commands. `coord work --help` describes the JSON arguments and explicit recovery
+commands. A named operator reviewer uses `answer-check` from the owning host.
+
+The executable public-boundary example is
+[`native_coord/reviews.rs`](../proxy/tests/native_coord/reviews.rs). It runs
+this sequence for both code and report artifacts using authenticated clients
+and real NATS/proxy processes. It also checks interrupted answer publication,
+old-receipt replay, historical subjects, producer separation and operator verdict
+correction. To run it from a Linux source checkout, first set
+`SAFEYOLO_COORD_NATS_BINARY` to the reviewed platform NATS executable and
+`TMPDIR` to an existing owned disk-backed scratch directory outside the checkout.
+The [acceptance graph](../cli/src/safeyolo/agent_context/skills/safeyolo/references/graph/accept-safeyolo.yaml)
+identifies the pin and tool setup. This command builds the native target and
+runs only the example:
+
+```sh
+scripts/cargo_with_space.sh test --manifest-path proxy/Cargo.toml --release --locked --test native_coord reviews::code_and_report_checks_challenges_corrections_and_independent_dispositions -- --ignored --nocapture
+```
+
+The expected result is one passing test, with a code and a report journey
+reported separately. This deterministic example does not establish a real
+supervised-agent wakeup or independent model response. Those journeys and
+authoritative selected acceptance requirements remain required follow-on work.
+
 ## Raise a material signal
 
 A **signal** retains an attributed blocker, decision, result or correction so

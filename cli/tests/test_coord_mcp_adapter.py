@@ -86,6 +86,7 @@ def test_discovery_and_rpc_errors(adapter):
         "create_work", "list_work", "read_work", "claim_work", "release_work", "complete_work",
         "create_signal", "read_signal", "list_signals",
         "publish_work_output", "list_work_outputs", "cancel_work", "attest_work", "list_work_attestations",
+        "request_check", "answer_check", "raise_challenge", "respond_challenge", "resolve_challenge", "list_work_reviews",
         "import_github_work", "read_github_work",
     }
     for name, required in {
@@ -140,6 +141,45 @@ def test_native_exact_work_target_requests(adapter):
     request = urlsplit(calls[-1][1])
     assert request.path == "/api/coord/rooms/backlog/work"
     assert parse_qs(request.query) == {"work_id": ["work-example"], "attestations": ["true"], "limit": ["2"], "after": ["att-previous"]}
+
+
+def test_native_assigned_review_requests_and_revision_reads(adapter):
+    call, _, calls, _, _ = adapter
+    subject = {"kind": "output", "work_id": "work-output", "target_generation": 3}
+    reviewer = {"kind": "agent", "id": "bob"}
+    check = {"subject": subject, "criterion": "Inspect the retained result", "reviewer": reviewer, "independent": True, "operation_id": "request-check"}
+    call("request_check", {"room_name": "backlog", **check})
+    assert calls[-1][2] == {"action": "request_check", **check}
+    answer = {"work_id": "work-check", "expected_version": 2, "expected_generation": 1, "verdict": "reject", "summary": "Observed omission", "operation_id": "answer-check"}
+    call("answer_check", {"room_name": "backlog", **answer})
+    assert calls[-1][2] == {"action": "answer_check", **answer}
+    challenge = {"subject": {"kind": "check", "work_id": "work-check", "version": 3}, "assertion": "The conclusion omits evidence", "grounds": "Retained result", "responder": {"kind": "agent", "id": "alice"}, "deciders": [reviewer], "independent": True}
+    call("raise_challenge", {"room_name": "backlog", **challenge})
+    assert calls[-1][2] == {"action": "raise_challenge", **challenge}
+    response = {"work_id": "work-objection", "expected_version": 2, "expected_generation": 1, "summary": "Retained correction", "correction": subject}
+    call("respond_challenge", {"room_name": "backlog", **response})
+    assert calls[-1][2] == {"action": "respond_challenge", **response}
+    disposition = {"work_id": "work-objection", "expected_version": 3, "expected_generation": 1, "expected_response_version": 3, "decision": "dismissed", "reason": "Inspected correction"}
+    call("resolve_challenge", {"room_name": "backlog", **disposition})
+    assert calls[-1][2] == {"action": "resolve_challenge", **disposition}
+    call("read_work", {"room_name": "backlog", "work_id": "work-objection", "version": 3})
+    assert parse_qs(urlsplit(calls[-1][1]).query) == {"work_id": ["work-objection"], "version": ["3"]}
+    call("list_work_reviews", {"room_name": "backlog", "work_id": "work-output", "after": "work-previous", "limit": 1})
+    assert parse_qs(urlsplit(calls[-1][1]).query) == {"work_id": ["work-output"], "reviews": ["true"], "after": ["work-previous"], "limit": ["1"]}
+
+
+@pytest.mark.parametrize("change", [
+    {"subject": {"kind": "output", "work_id": "work-output", "target_generation": 1, "producer": "forged"}},
+    {"subject": {"kind": "output", "work_id": "work-output", "version": 1}},
+    {"subject": {"kind": "unknown", "work_id": "work-output", "version": 1}},
+    {"deciders": ["bob"]}, {"deciders": [{"kind": "agent", "id": "bob", "author": "forged"}]},
+    {"independent": "true"}, {"author": "forged"},
+])
+def test_malformed_review_subjects_and_actors_never_send(adapter, change):
+    call, _, calls, _, _ = adapter
+    result = call("raise_challenge", {"room_name": "backlog", "subject": {"kind": "output", "work_id": "work-output", "target_generation": 1}, "assertion": "Omission", "grounds": "Evidence", "responder": {"kind": "agent", "id": "alice"}, "deciders": [{"kind": "agent", "id": "bob"}], **change})
+    assert result["isError"] is True
+    assert calls == []
 
 
 def test_github_import_uses_local_create_replay_without_remote_access(adapter):
@@ -203,7 +243,7 @@ def test_untrusted_field_types_do_not_reach_transport(value):
     assert result.returncode == 0, result.stderr
     response = json.loads(result.stdout)
     assert response["result"]["isError"] is True
-    assert "invalid type for body" in response["result"]["content"][0]["text"]
+    assert "invalid type or value for body" in response["result"]["content"][0]["text"]
 
 
 def test_whole_page_resolution_and_failure_hide_cursor(adapter):

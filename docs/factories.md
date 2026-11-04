@@ -128,9 +128,12 @@ through that worker's authenticated Coord client.
 
 Native output publication does not send a factory handoff. The current
 supervisor still uses the declared message request/response routes. Keep that
-handoff while using native work. Assigned checks, peer challenges and native
-acceptance routing are not yet implemented. Do not infer independence or
-acceptance from execution completion or attestation counts.
+handoff while using native work. Native assigned checks and peer challenges use
+the same durable work records and can enforce the selected participant and
+independence flag. Their [public review loop](coord-reference.md#assigned-checks-and-peer-challenges)
+does not yet select factory acceptance requirements or route native assignments
+to supervised roles. Do not infer acceptance from execution completion,
+challenge resolution or attestation counts.
 
 An approved factory retains the following state:
 

@@ -22,6 +22,8 @@ mod github;
 mod inventory;
 #[path = "native_coord/outputs.rs"]
 mod outputs;
+#[path = "native_coord/reviews.rs"]
+mod reviews;
 #[path = "native_coord/room_status.rs"]
 mod room_status;
 #[path = "native_coord/signals.rs"]

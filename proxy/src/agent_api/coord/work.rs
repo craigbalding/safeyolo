@@ -47,6 +47,8 @@ pub(super) async fn respond(
         "limit",
         "attestations",
         "outputs",
+        "reviews",
+        "version",
     ]
     .map(|key| query_parameter(request.path_and_query, key));
     let [
@@ -56,6 +58,8 @@ pub(super) async fn respond(
         Ok(limit),
         Ok(attestations),
         Ok(outputs),
+        Ok(reviews),
+        Ok(version),
     ] = fields
     else {
         return response(400, json!({"error":"invalid work query"}));
@@ -90,6 +94,31 @@ pub(super) async fn respond(
     } else {
         0
     };
+    let reviews = match reviews.as_deref() {
+        None | Some("false") => false,
+        Some("true") if work_id.is_some() && !outputs && !attestations => true,
+        _ => {
+            return response(
+                400,
+                json!({"error":"reviews=true requires work_id and excludes outputs/attestations"}),
+            );
+        }
+    };
+    let version = match version {
+        None => None,
+        Some(v) if work_id.is_some() && !outputs && !attestations && !reviews => {
+            match v.parse::<i64>() {
+                Ok(v) if v > 0 => Some(v),
+                _ => return response(400, json!({"error":"version must be positive"})),
+            }
+        }
+        _ => {
+            return response(
+                400,
+                json!({"error":"version requires a single work revision read"}),
+            );
+        }
+    };
     let limit = match limit.as_deref().unwrap_or("50").parse::<usize>() {
         Ok(value) => value,
         Err(_) => return response(400, json!({"error":"invalid work page limit"})),
@@ -113,6 +142,12 @@ pub(super) async fn respond(
                 work::mutate(&mut conn, &room, actor, mutation, operation.as_deref())
             }
             None => match work_id {
+                Some(id) if reviews => {
+                    work::reviews::list(&mut conn, &room, actor, &id, &after, limit)
+                }
+                Some(id) if version.is_some() => {
+                    work::read_at_version(&mut conn, &room, actor, &id, version.unwrap())
+                }
                 Some(id) if outputs => {
                     work::outputs::list(&mut conn, &room, actor, &id, after_version, limit)
                 }

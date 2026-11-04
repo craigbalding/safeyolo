@@ -266,6 +266,93 @@ results. Work input is bounded to 262144 UTF-8 bytes. Lists return at most 200
 items ordered by `work_id`; use `next_after` to continue. Concurrent changes
 can affect later pages because pagination does not share a snapshot.
 
+### Assigned checks and peer challenges
+
+An assigned check and a challenge response are ordinary native work records.
+Their `work_id`, version, claim generation, creator and immutable history use
+the same authority and retry rules as other work. `request_check` retains a
+criterion, exact subject, named reviewer and `independent` flag. A participant
+is `{"kind":"agent","id":"DURABLE_AGENT_ID"}` or
+`{"kind":"operator","id":"operator"}`. Named agents must currently have room
+send and receive permission. The creator/requester and every answer author
+come from authenticated transport.
+
+Subject input selects one exact revision:
+
+| `kind` | Required fields | Meaning |
+|---|---|---|
+| `work` | `work_id`, `version` | That immutable work revision. |
+| `output` | `work_id`, `target_generation` | The original work revision that selected that output. |
+| `check` | `work_id`, `version` | An answered check revision, including its attributed conclusion. |
+
+Canonical subjects retain the reference, original work revision, root work ID,
+target reference and known producer. A caller cannot provide the producer.
+Historical subjects remain available. With `independent=true`, the named
+reviewer must differ from the subject's authenticated producer. Unknown
+producer attribution cannot establish independence. Reassigning or integrating
+the work does not change the original output's producer.
+
+Only the named agent can claim and answer a check. `answer_check` requires
+the current check work version and claim generation. It records `approve`,
+`reject` or `abstain` and completes the check in one transaction. A negative or
+uncertain conclusion still completes check execution. The retained reviewer
+can correct the answer using the current expectations and a new operation ID.
+There is one effective answer per check; earlier answers remain in immutable
+work revisions. A late answer about an old output remains historical and
+cannot approve a replacement. An operator assigned as reviewer answers through
+the host CLI without an agent claim. Generic `complete_work` cannot substitute
+for an answer.
+
+`raise_challenge` retains an assertion, grounds, evidence references, exact
+subject, named responder and nonempty `deciders` list. Only the named responder
+can claim its response work. `respond_challenge` records the answer and optional
+exact `correction` subject, then completes that response work. The challenge
+remains unresolved. A corrected response invalidates the previous disposition;
+the earlier response and disposition remain in work history.
+
+`resolve_challenge` requires the current challenge work version, claim
+generation and `expected_response_version` (zero before any response). A named
+decider or the operator records `upheld`, `dismissed` or `withdrawn`, with a
+reason and optional evidence. The disposition identifies its author, response
+revision and any correction. With `independent=true`, a decider must differ
+from the producer and responder, including when the operator decides. A stale
+response or challenge expectation conflicts. If the disposition arrives before
+the response finishes, it explicitly cancels the response assignment rather
+than reporting successful execution. Cancellation alone does not resolve a
+challenge. Replacing an output also leaves its original challenges intact.
+
+The operator uses ordinary `coord work reassign` to recover an unavailable
+reviewer or responder. Reassignment changes the named participant and claim
+generation and clears the effective answer/response. Reassigning challenge
+response work reopens its disposition. Independence still applies. Use
+`coord work recover-challenge-deciders` with current expectations, a reason
+and a new `deciders` JSON array when deciding participants are unavailable.
+Only the operator can change that list. Revocation continues to prevent a
+former participant from reading or mutating work, including retries.
+
+`read_work` adds `review_status` for current review work. It distinguishes
+`pending`/`answered` checks, `unresolved`/`resolved` challenges and current/stale
+subjects. `list_work_reviews` returns related checks and challenges, including
+objections to the work's checks, regardless of response execution state. It
+returns at most 200 items and 65536 bytes of item JSON. Follow `next_after`;
+pages do not share a snapshot. Excerpts and `details_truncated` identify omitted
+details. Read the full record with `read_work`. Supply its positive `version`
+argument to read an exact immutable revision. Current receive permission is
+required for history. The equivalent host commands are `coord work reviews`
+and `coord work show --version`.
+
+Criteria, assertions, grounds, response summaries and disposition reasons are
+nonempty and at most 1024 UTF-8 bytes each. Evidence arrays contain at most 16
+references of 1024 bytes each. A serialized review record is at most 32768 bytes.
+The existing 262144-byte work mutation bound also applies. References remain
+external content. Work `external_ref` preserves opaque run/batch context.
+
+These operations record optional review work. They do not select acceptance
+requirements, infer acceptance from a check verdict or launch a supervised
+model turn. The current supervisor still needs its declared message handoffs.
+Selected acceptance requirements and native supervision remain unimplemented.
+See the [working review example](coord-operations.md#run-an-assigned-review-loop).
+
 ### Open retained native state
 
 Before installing a release that changes native work storage, stop the affected
@@ -273,11 +360,12 @@ factory roles and other Coord writers. Preserve the instance root, role homes,
 checkpoints, source trees and retained artifacts. Install matching host and
 guest executables before resuming those roles.
 
-The current store uses native schema 6. Bootstrap transactionally upgrades the
-current native schema 5 work projection to admit cancellation. It preserves
+The current store uses native schema 7. Bootstrap transactionally upgrades the
+retained native schema 5 work projection to admit cancellation and fences
+schema 5/6 writers before storing assigned checks or challenges. It preserves
 claim IDs and generations, immutable revision bytes, operation receipts,
 attention, outbox rows and retained messages. A failed upgrade rolls back. An
-older executable refuses schema 6; do not run mixed writers or overwrite the
+older executable refuses schema 7; do not run mixed writers or overwrite the
 store to make an older executable start. Unsupported implementation generations
 remain refused.
 
