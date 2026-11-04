@@ -297,6 +297,11 @@ def run(args):
                 # A broken receipt must not prevent stopping the owned instance.
                 processes = []
                 failures.append(f"cannot inspect owned processes: {error}")
+            # The producer was stopped during the unavailable-provider case.
+            # Its removed PID file must not hide a surviving original backend.
+            processes.extend({"pid": row["runtime"]["backend_pid"],
+                              "start_token": row["runtime"]["backend_token"]}
+                             for row in report.get("participants", {}).values())
             try:
                 native("stop")
             except (RuntimeError, subprocess.TimeoutExpired) as error:
