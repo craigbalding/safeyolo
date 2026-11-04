@@ -68,12 +68,15 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
         }
         transaction.execute_batch(include_str!("coord_schema.sql"))?;
         transaction.execute("INSERT INTO instance(id) VALUES (?1)", [id.trim()])?;
-    } else if version != 5 {
+    } else if ![5, 6].contains(&version) {
         return Err(
-            format!("Coord schema {version} is not operational; expected version 5").into(),
+            format!("Coord schema {version} is not operational; expected version 6").into(),
         );
     }
     transaction.execute_batch(include_str!("coord_work_schema.sql"))?;
+    if version == 5 {
+        transaction.execute_batch(include_str!("coord_work_upgrade_6.sql"))?;
+    }
     transaction.execute_batch(include_str!("coord_signal_schema.sql"))?;
     transaction.execute_batch(include_str!("coord_federation_schema.sql"))?;
     transaction.execute_batch(include_str!("coord_membership_grants.sql"))?;
@@ -103,7 +106,7 @@ fn open_with_flags(root: &Path, flags: rusqlite::OpenFlags) -> Result<Connection
     let connection = Connection::open_with_flags(directory(root)?.join("v0.db"), flags)?;
     connection.busy_timeout(Duration::from_secs(5))?;
     connection.execute_batch("PRAGMA foreign_keys=ON;")?;
-    if connection.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))? != 5 {
+    if connection.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))? != 6 {
         return Err("Coord store is not operational".into());
     }
     Ok(connection)

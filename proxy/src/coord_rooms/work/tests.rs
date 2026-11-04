@@ -81,6 +81,8 @@ fn counts(conn: &Connection) -> Vec<i64> {
 
 #[path = "attestation_tests.rs"]
 mod attestation_tests;
+#[path = "output_tests.rs"]
+mod output_tests;
 
 #[test]
 fn ownership_replay_generations_revocation_and_operator_recovery() {
@@ -382,17 +384,7 @@ fn bounded_reads_cross_room_refusal_and_untrusted_inputs() {
         .is_err()
     );
     assert!(list(&mut conn, "owned", Actor::Operator, "", 201, None).is_err());
-    assert!(
-        list(
-            &mut conn,
-            "owned",
-            Actor::Operator,
-            "",
-            1,
-            Some("cancelled")
-        )
-        .is_err()
-    );
+    assert!(list(&mut conn, "owned", Actor::Operator, "", 1, Some("unknown")).is_err());
     for n in 0..3 {
         mutate(
             &mut conn,

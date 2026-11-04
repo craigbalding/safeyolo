@@ -5,7 +5,7 @@ use super::{
 };
 use serde_json::{Value, json};
 
-pub(super) const HELP: &str = "safeyolo [--root ROOT] coord work create ROOM TITLE [--external-ref REF] [--operation-id ID]\nsafeyolo [--root ROOT] coord work import-github ROOM URL [--operation-id ID]\nsafeyolo [--root ROOT] coord work list ROOM [--state open|claimed|done] [--after WORK_ID] [--limit N]\nsafeyolo [--root ROOT] coord work show ROOM WORK_ID\nsafeyolo [--root ROOT] coord work release ROOM WORK_ID --expected-version N --expected-generation N [--operation-id ID]\nsafeyolo [--root ROOT] coord work complete ROOM WORK_ID --expected-version N --expected-generation N [--short-result TEXT] [--operation-id ID]\nsafeyolo [--root ROOT] coord work reassign ROOM WORK_ID --agent-id AGENT_ID --expected-version N --expected-generation N [--operation-id ID]\nsafeyolo [--root ROOT] coord work change-target ROOM WORK_ID --expected-version N --expected-target-generation N --target-ref REF [--operation-id ID]\nsafeyolo [--root ROOT] coord work attest ROOM WORK_ID --target-generation N --kind KIND --verdict approve|reject|abstain --summary TEXT [--evidence-refs JSON_ARRAY] [--operation-id ID]\nsafeyolo [--root ROOT] coord work attestations ROOM WORK_ID [--after ATTESTATION_ID] [--limit N]\n\nUse the owning host account. Agents claim through claim_work using their authenticated durable ID. Reassign can claim open work or replace a holder; release explicitly removes a claim. Time and process liveness never transfer ownership. Each claim or reassignment increments claim_generation. All changes increment version. Repeat an operation ID with its original inputs to recover an ambiguous result; changed input conflicts. Current room authority is checked on every agent read or mutation, including retries. Work changes notify current receive-authorized agents except the agent actor. Attention resolves the original immutable work version. Canonical work input is bounded to 262144 UTF-8 bytes. Lists return up to 200 items ordered by work_id; next_after is a continuation value, not a snapshot across pages. external_ref and target_ref remain opaque to local work operations. import-github validates a GitHub issue or pull request HTTPS URL and seeds local work without network access. Agents can use read_github_work for separate, read-only external metadata through their own GitHub service grant. GitHub state never changes local claims, completion or targets. target_ref is never fetched. New work has no candidate (target_generation=0). An explicit change-target advances target_generation even if the ref is reused after squash/rebase. Old attestations remain visible as stale. Target generation is separate from claim generation. Attest uses the current target generation, without an expected work version, and derives its author from identity. It does not complete work or decide a vote. Attestation kind is nonempty and at most 128 UTF-8 bytes; summary is nonempty and at most 1024; at most 16 evidence refs of 1024 bytes each; the complete serialized record is at most 32768 bytes. target_ref is nonempty and at most 1024 UTF-8 bytes. Evidence refs are untrusted external content. Attestation lists contain at most 200 items and 65536 item JSON bytes, ordered by attestation_id with next_after; pages do not share a snapshot. --evidence-refs accepts a JSON array of strings.";
+pub(super) const HELP: &str = "safeyolo [--root ROOT] coord work create ROOM TITLE [--external-ref REF] [--operation-id ID]\nsafeyolo [--root ROOT] coord work import-github ROOM URL [--operation-id ID]\nsafeyolo [--root ROOT] coord work list ROOM [--state open|claimed|done|cancelled] [--after WORK_ID] [--limit N]\nsafeyolo [--root ROOT] coord work show ROOM WORK_ID\nsafeyolo [--root ROOT] coord work release ROOM WORK_ID --expected-version N --expected-generation N [--operation-id ID]\nsafeyolo [--root ROOT] coord work complete ROOM WORK_ID --expected-version N --expected-generation N [--short-result TEXT] [--operation-id ID]\nsafeyolo [--root ROOT] coord work reassign ROOM WORK_ID --agent-id AGENT_ID --expected-version N --expected-generation N [--operation-id ID]\nsafeyolo [--root ROOT] coord work cancel ROOM WORK_ID --expected-version N --expected-generation N --reason TEXT [--operation-id ID]\nsafeyolo [--root ROOT] coord work attest ROOM WORK_ID --target-generation N --kind KIND --verdict approve|reject|abstain --summary TEXT [--evidence-refs JSON_ARRAY] [--operation-id ID]\nsafeyolo [--root ROOT] coord work attestations ROOM WORK_ID [--after ATTESTATION_ID] [--limit N]\nsafeyolo [--root ROOT] coord work outputs ROOM WORK_ID [--after-version N] [--limit N]\n\nUse the owning host account. Agents claim through claim_work using their authenticated durable ID. Reassign can claim open work, replace a holder or reopen done/cancelled work; release explicitly removes a claim. Time and process liveness never transfer ownership. Each claim or reassignment increments claim_generation. All changes increment version. Repeat an operation ID with its original inputs to recover an ambiguous result; changed input conflicts. Current room authority is checked on every agent read or mutation, including retries. Work changes notify current receive-authorized agents except the agent actor. Attention resolves the original immutable work version. Canonical work input is bounded to 262144 UTF-8 bytes. Lists return up to 200 items ordered by work_id; next_after is a continuation value, not a snapshot across pages. external_ref and target_ref remain opaque to local work operations. import-github validates a GitHub issue or pull request HTTPS URL and seeds local work without network access. Agents can use read_github_work for separate, read-only external metadata through their own GitHub service grant. GitHub state never changes local claims, completion or targets. target_ref is never fetched. New work has no candidate (target_generation=0). The holder uses publish_work_output to atomically select a retained immutable target_ref and attributed execution outcome. Publication requires expected version, claim generation and target generation. It advances target_generation and leaves work completion separate. A retained holder may correct done work; another producer needs operator reassignment. Earlier outputs and attestations remain readable. Integrations use the actual producer's authenticated transport; neither an arbitrary producer field nor host publication on behalf of a holder is supported. Cancellation clears ownership and advances the claim generation without reporting successful completion. Outputs lists return original publications ordered by work_version, at most 200 items and 65536 item JSON bytes, with next_after_version. Target generation is separate from claim generation. Attest uses the current target generation, without an expected work version, and derives its author from identity. It does not complete work or decide a vote. Attestation kind is nonempty and at most 128 UTF-8 bytes; summary is nonempty and at most 1024; at most 16 evidence refs of 1024 bytes each; the complete serialized record is at most 32768 bytes. target_ref is nonempty and at most 1024 UTF-8 bytes. Evidence refs are untrusted external content. Attestation lists contain at most 200 items and 65536 item JSON bytes, ordered by attestation_id with next_after; pages do not share a snapshot. --evidence-refs accepts a JSON array of strings.";
 
 pub(super) fn run(root: &Path, arguments: &[String]) -> Result<Value, Error> {
     let [command, room, rest @ ..] = arguments else {
@@ -22,12 +22,13 @@ pub(super) fn run(root: &Path, arguments: &[String]) -> Result<Value, Error> {
                 "import-github" => &["--operation-id"],
                 "list" => &["--state", "--after", "--limit"],
                 "attestations" => &["--after", "--limit"],
-                "change-target" => &[
+                "cancel" => &[
                     "--expected-version",
-                    "--expected-target-generation",
-                    "--target-ref",
+                    "--expected-generation",
+                    "--reason",
                     "--operation-id",
                 ],
+                "outputs" => &["--after-version", "--limit"],
                 "attest" => &[
                     "--target-generation",
                     "--kind",
@@ -64,8 +65,8 @@ pub(super) fn run(root: &Path, arguments: &[String]) -> Result<Value, Error> {
             let value = if [
                 "expected_version",
                 "expected_generation",
-                "expected_target_generation",
                 "target_generation",
+                "after_version",
                 "limit",
             ]
             .contains(&field.as_str())
@@ -121,6 +122,20 @@ pub(super) fn run(root: &Path, arguments: &[String]) -> Result<Value, Error> {
                 .map_or(Some(50), Value::as_u64)
                 .ok_or("limit must be positive")? as usize,
         )?),
+        ("outputs", [id]) => Ok(work::outputs::list(
+            &mut conn,
+            room,
+            Actor::Operator,
+            id,
+            options
+                .get("after_version")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            options
+                .get("limit")
+                .map_or(Some(50), Value::as_u64)
+                .ok_or("limit must be positive")? as usize,
+        )?),
         ("create", [title]) => {
             let operation = options.remove("operation_id");
             Ok(work::mutate(
@@ -137,7 +152,7 @@ pub(super) fn run(root: &Path, arguments: &[String]) -> Result<Value, Error> {
                 operation.as_ref().and_then(Value::as_str),
             )?)
         }
-        ("release" | "complete" | "reassign" | "change-target" | "attest", [id]) => {
+        ("release" | "complete" | "reassign" | "cancel" | "attest", [id]) => {
             let operation = options.remove("operation_id");
             options.insert("action".into(), json!(command.replace('-', "_")));
             options.insert("work_id".into(), json!(id));

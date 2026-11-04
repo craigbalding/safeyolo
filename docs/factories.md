@@ -118,6 +118,20 @@ to read or replace that context with an explicit expected revision.
 
 ## Authority and intake
 
+Use native work claims for durable ownership and `publish_work_output` for the
+holder's exact output and attributed execution outcome. The producer retains
+the external artifact first. Reassignment and cancellation fence uncommitted
+publication attempts; an operation-ID retry recovers a previously committed
+receipt. See [work publication and recovery](coord-reference.md#claims-outputs-and-attestations).
+These operations are also available to an operator-directed interactive worker
+through that worker's authenticated Coord client.
+
+Native output publication does not send a factory handoff. The current
+supervisor still uses the declared message request/response routes. Keep that
+handoff while using native work. Assigned checks, peer challenges and native
+acceptance routing are not yet implemented. Do not infer independence or
+acceptance from execution completion or attestation counts.
+
 An approved factory retains the following state:
 
 - The approved immutable snapshot binds the room, operator edge, role and agent

@@ -213,9 +213,10 @@ your workflow determines who may accept the work and what proof is sufficient.
 |---|---|
 | Create work | `state=open`, `version=1`, `claim_generation=0`; no holder or candidate. |
 | Alice claims it | `state=claimed`; her durable ID becomes the holder; `claim_generation` advances. |
-| Bind a candidate | `target_ref` identifies the candidate; `target_generation` advances independently of the claim. |
+| Publish an output | The holder atomically records the exact `target_ref`, a new `target_generation`, its authenticated producer identity and execution outcome. |
 | Record review | An immutable attestation names its author and exact target generation. |
 | Complete work | `state=done`; the result and last holder remain visible. |
+| Cancel unfinished work | `state=cancelled`; ownership clears and the claim generation advances. Earlier outputs and evidence remain readable. |
 
 On the owning host, create work for the same repository check. The operation ID
 identifies this creation attempt; choose a new ID for a different task:
@@ -243,19 +244,22 @@ resolve that ownership with the operator or designated coordinator.
 Alice now performs the check and sends her finding, or prepares a correction
 if the assigned work calls for one. To record review of a specific result:
 
-1. Read the current work. In `change_work_target`, copy its `version` to
-   `expected_version` and its `target_generation` to `expected_target_generation`.
-   Supply `room_name`, `work_id`, a `target_ref` identifying the exact report or
-   commit, and a chosen `operation_id`. New work starts with target generation `0`.
+1. Retain the exact report, commit or other immutable artifact in its application.
+   Read current work. In `publish_work_output`, copy `version` to
+   `expected_version`, `claim_generation` to `expected_generation` and
+   `target_generation` to `expected_target_generation`. Supply `room_name`,
+   `work_id`, the immutable `target_ref`, an `execution_outcome` of `succeeded`,
+   `failed` or `uncertain`, a short `summary`, optional `evidence_refs` and a
+   chosen `operation_id`. New work starts with target generation `0`.
 2. Ask the reviewer to inspect that exact candidate. The reviewer calls
    `attest_work` with `room_name`, `work_id`, the returned `target_generation`,
    `kind` such as `review` or `acceptance`, `verdict` (`approve`, `reject` or
    `abstain`), a `summary`, optional `evidence_refs`, and an `operation_id`.
    An agent reviewer needs current room send and receive permission. The
    operator can record their own verdict with `coord work attest`.
-3. If the candidate changes, call `change_work_target` again and request review
-   of the new generation. Do this even if a squash or rebase reuses the same
-   reference. Earlier attestations remain readable as stale history.
+3. If the candidate changes, retain the correction, call `publish_work_output`
+   with its exact immutable reference, and request review of the new generation.
+   Earlier attestations remain readable as stale history.
 4. Once the assigned outcome meets your workflow's acceptance requirements,
    Alice reads the current work again and calls `complete_work` with
    `room_name`, `work_id`, the returned `version` as `expected_version`, and
@@ -281,6 +285,20 @@ Completing the Coord record does not merge a pull request, close a GitHub issue
 or prove product acceptance. Those actions remain with the actors and evidence required
 by your workflow. For supervised implementation and review, use the
 [Factory guide](factories.md).
+
+Alice can correct an output after completion while she remains its retained
+holder. A different producer needs operator reassignment. The original producer
+and execution outcome remain in `list_work_outputs`; the owning host can use
+`safeyolo coord work outputs chat WORK_ID`, replacing `WORK_ID` with the actual
+identifier. A report's execution can succeed while a reviewer rejects its
+conclusion. Publication, work completion and acceptance are separate facts.
+
+If an assignment is no longer required, its holder can call `cancel_work` with
+the current version and claim generation and a reason. The creator can cancel
+its own open work. The operator can cancel any unfinished work with
+`coord work cancel`. Cancellation retains the artifact and review evidence.
+It does not stop an external command. Inspect that command's actual state before
+repeating or replacing an uncertain effect.
 
 ## Raise a material signal
 
@@ -424,7 +442,8 @@ and work target before repeating an operation.
 |---|---|
 | Send reports acceptance **UNKNOWN** | Read `coord history ROOM` for the intended message and its canonical sender. Do not resend automatically. Message sends have no operation-ID retry contract. |
 | A durable write's response was lost | Retry the original operation ID with the exact original inputs and expectations. Changed input conflicts. For a new intent, read current state and choose a new ID. |
-| An agent has stopped with a claim | Read current work and preserve the agent's checkout. Claims do not expire. Resume the holder, or use host `coord work release` or `reassign` with the current version and claim generation. Reassignment also needs the new holder's durable `--agent-id` and current send/receive permission. |
+| An agent has stopped with a claim | Read current work and preserve the agent's checkout. Claims do not expire. Resume the holder, or use host `coord work release` or `reassign` with the current version and claim generation. Reassignment also needs the new holder's durable `--agent-id` and current send/receive permission. Reassignment can reopen done or cancelled work; it does not change the original output's producer. |
+| Output publication was interrupted | Keep the retained external artifact. Retry `publish_work_output` with the exact original operation ID and inputs. A committed request returns its original receipt. An uncommitted stale request is refused after cancellation, reassignment or a later output. Read current work to distinguish a recovered old receipt from the current output. |
 | A review refers to an older candidate | Read current work and its attestations. Bind the new candidate and review that generation. Old approval does not approve the replacement. |
 | A member cannot read or write | Check current membership and the durable agent ID with `coord status ROOM`. A recreated agent does not inherit the old identity's grants or claims. |
 | Coord is unavailable while the proxy runs | Follow [runtime reconciliation](#reconcile-a-running-proxy). Preserve the store and managed runtime. |

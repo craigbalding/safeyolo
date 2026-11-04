@@ -137,6 +137,14 @@ guess an ID from a response.
 A failed wait or canonical-object resolution cannot advance the safe cursor.
 Harness exit code 0 and model text are not work-completion evidence.
 
+Native `publish_work_output` records the holder's exact output and execution
+outcome under current claim and target generations. It does not settle a
+supervisor request or replace a declared message handoff. The current supervisor
+skips `work_changed` attention; creating, publishing or cancelling native work
+alone does not launch a model turn. Continue the approved message handoff path.
+An interactive worker uses the same native claim and publication authority
+without a supervisor.
+
 Each factory agent also has a room named `<agent>-agent`. The supervisor sends
 useful harness events to that room without attention. Codex JSONL is retained
 as emitted. Pi telemetry retains sessions, turn lifecycle, complete tool

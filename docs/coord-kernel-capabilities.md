@@ -467,28 +467,28 @@ This is where the platform starts becoming genuinely better than a generic colla
 
 ### 4. Minimal work objects and atomic task claims
 
-Now introduce the smallest thing that could reasonably be called task management:
+A native work record contains:
 
 ```text
 work_id
 room_id
 title
 external_ref?
-state = open | claimed | done
+state = open | claimed | done | cancelled
 claim_agent_id?
 claim_generation
 claimed_at?
 claim_expires_at? = NULL  # reserved for a future optional lease mode
 created_by
 short_result?
+target_ref?/target_generation
+output?  # authenticated producer, execution outcome and publication revision
+cancellation?  # actor, reason and time
 timestamps/version
 ```
 
-No boards. No subtasks. No arbitrary workflow states. No dependency graph.
-
-Agents and operator may create work. There is no first-class priority in the
-initial model; the sticky operator brief carries priorities until dogfood
-demonstrates a need for machine-orderable work.
+Agents and the operator may create work. The operator brief carries priorities;
+work records do not infer priority from message or document text.
 
 Claims are atomic, durable generation-protected ownership. They do not expire
 or transfer automatically. A claimant may release; the operator may
@@ -497,11 +497,8 @@ force-release or reassign. Every successful claim or reassignment increments
 Agent liveness never renews or releases work: an MCP process being alive does
 not prove that the model is still doing the work.
 
-Status may flag an old claim as potentially stale using age/activity evidence,
-but that is advisory and never changes ownership. If later dogfood proves
-abandoned claims are an operational problem, the reserved nullable
-`claim_expires_at` permits an optional lease mode with explicit claimant
-renewal. Until then, reserve the term **lease** for actual resource ownership.
+`claim_expires_at` remains null. Elapsed time does not change ownership.
+The term **lease** refers to actual resource ownership.
 
 All mutations use the foundation's `operation_id` idempotency contract.
 `operation_id` protects ambiguous retries; `version` and `claim_generation`
@@ -514,15 +511,41 @@ create_work
 claim_work
 release_work
 complete_work
+publish_work_output
+list_work_outputs
+cancel_work
 ```
 
 Native agents use `create_work`, `list_work`, `read_work`, `claim_work`,
-`release_work` and `complete_work` through MCP or the native Coord client.
+`release_work`, `complete_work`, `publish_work_output`, `list_work_outputs` and
+`cancel_work` through MCP or the native Coord client.
 Reads require current room `receive` permission. Mutations require both
 `send` and `receive`, because they read and change canonical work. The
 owning host account uses `coord work` for creation, reads and explicit
 release, completion or reassignment. It can recover a removed or revoked
 holder without granting that holder room access.
+
+Output publication validates the current holder, work version, claim generation
+and target generation together. It atomically selects the exact immutable
+reference and records the authenticated producer's execution outcome. The
+application retains the artifact before publication. An interrupted request
+uses the original operation ID and inputs to recover the committed receipt or
+attempt an uncommitted publication under still-current authority. A stale or
+cancelled assignment cannot select an output. External artifact retention and
+external execution remain application responsibilities.
+
+The retained holder can correct a completed output. Operator reassignment can
+reopen completed or cancelled work for another producer in a new claim
+generation. Neither transition erases earlier output publications or evidence.
+`list_work_outputs` reads original publications from immutable work revisions.
+Changing the output advances `target_generation` and makes earlier attestations
+stale. Publication and generic completion do not establish independent acceptance.
+
+Cancellation is an explicit unfinished-work transition. The current holder,
+creator of open work, or operator can cancel. It clears ownership, advances the
+claim generation, and records the actor and reason. It does not terminate an
+external process or report successful completion. Room state lists cancelled
+work separately from active work and completed work.
 
 Each mutation accepts an optional `operation_id`; omitted IDs are generated
 and returned. Canonical input contains the resolved room ID and typed mutation,
@@ -757,18 +780,21 @@ At this point the core operator-noise problem is substantially solved.
 
 ### 7. Attestations, not voting
 
-Only after the work model is stable would I add independent review/acceptance semantics.
+Attestations record attributed evidence about an exact output. They do not
+assign a check or settle a peer challenge.
 
-Add a mutable **work target**:
+A published output selects the current **work target**:
 
 ```text
 target_ref
 target_generation
 ```
 
-Changing the candidate increments `target_generation`.
+Publishing a replacement increments `target_generation`. The output receipt
+retains its transport-derived producer, execution outcome and claim generation.
+An operator or bridge cannot publish on behalf of that producer.
 
-Then agents can attach attestations:
+Authorized agents can attach attestations:
 
 ```text
 kind: review | acceptance | ...
@@ -779,7 +805,8 @@ summary
 evidence_refs[]
 ```
 
-Don't hardwire "2 of 3 wins". Status displays evidence; the operator or higher-level policy decides what it means.
+Status displays attributed evidence without a vote threshold. The approved
+workflow determines which evidence establishes acceptance.
 
 This directly solves one of the best lessons from the dogfood: Bob accepted `654724a`, then CodeQL-driven changes moved the candidate to `79a626c`, making the acceptance stale. The agents noticed manually and reran C.
 
@@ -789,7 +816,7 @@ Key acceptance tests:
 * Claude updates candidate → generation 4.
 * Bob's generation-3 approval remains in history but **does not appear as approval of generation 4**.
 * Status clearly says generation 4 lacks acceptance.
-* Bob reruns and approves generation 4; current status becomes green.
+* Bob reruns and approves generation 4; current status records that approval.
 * Codey cannot forge an attestation authored by Bob.
 * Two independent agents can submit conflicting attestations; both remain visible.
 * No majority result is invented.

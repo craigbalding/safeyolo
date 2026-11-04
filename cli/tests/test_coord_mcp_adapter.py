@@ -85,7 +85,7 @@ def test_discovery_and_rpc_errors(adapter):
         "list_approvals", "read_approval", "resolve_approval",
         "create_work", "list_work", "read_work", "claim_work", "release_work", "complete_work",
         "create_signal", "read_signal", "list_signals",
-        "change_work_target", "attest_work", "list_work_attestations",
+        "publish_work_output", "list_work_outputs", "cancel_work", "attest_work", "list_work_attestations",
         "import_github_work", "read_github_work",
     }
     for name, required in {
@@ -113,11 +113,23 @@ def test_discovery_and_rpc_errors(adapter):
 
 def test_native_exact_work_target_requests(adapter):
     call, _, calls, _, _ = adapter
-    target = {"work_id": "work-example", "expected_version": 3, "expected_target_generation": 2,
-              "target_ref": "opaque:branch?candidate=π", "operation_id": "target-change"}
-    call("change_work_target", {"room_name": "backlog", **target})
+    target = {"work_id": "work-example", "expected_version": 3, "expected_generation": 1,
+              "expected_target_generation": 2, "target_ref": "opaque:sha256:candidate-π",
+              "execution_outcome": "succeeded", "summary": "Retained exact candidate",
+              "evidence_refs": ["opaque:sha256:evidence"], "operation_id": "publish-output"}
+    call("publish_work_output", {"room_name": "backlog", **target})
     assert calls[-1][0:2] == ("POST", "http://_safeyolo.proxy.internal/api/coord/rooms/backlog/work")
-    assert calls[-1][2] == {"action": "change_target", **target}
+    assert calls[-1][2] == {"action": "publish_output", **target}
+    call("list_work_outputs", {"room_name": "backlog", "work_id": "work-example", "after_version": 3, "limit": 2})
+    assert calls[-1][0] == "GET"
+    request = urlsplit(calls[-1][1])
+    assert request.path == "/api/coord/rooms/backlog/work"
+    assert parse_qs(request.query) == {"work_id": ["work-example"], "outputs": ["true"], "limit": ["2"], "after": ["3"]}
+    cancel = {"work_id": "work-example", "expected_version": 4, "expected_generation": 1,
+              "reason": "The requested run was cancelled", "operation_id": "cancel-output"}
+    call("cancel_work", {"room_name": "backlog", **cancel})
+    assert calls[-1][0:2] == ("POST", "http://_safeyolo.proxy.internal/api/coord/rooms/backlog/work")
+    assert calls[-1][2] == {"action": "cancel", **cancel}
     evidence = {"work_id": "work-example", "target_generation": 3, "kind": "acceptance",
                 "verdict": "reject", "summary": "Check this exact candidate", "evidence_refs": ["https://untrusted.invalid/ref"],
                 "operation_id": "attestation"}

@@ -40,14 +40,22 @@ pub(super) async fn respond(
     } else {
         None
     };
-    let fields = ["work_id", "after", "state", "limit", "attestations"]
-        .map(|key| query_parameter(request.path_and_query, key));
+    let fields = [
+        "work_id",
+        "after",
+        "state",
+        "limit",
+        "attestations",
+        "outputs",
+    ]
+    .map(|key| query_parameter(request.path_and_query, key));
     let [
         Ok(work_id),
         Ok(after),
         Ok(state),
         Ok(limit),
         Ok(attestations),
+        Ok(outputs),
     ] = fields
     else {
         return response(400, json!({"error":"invalid work query"}));
@@ -62,6 +70,25 @@ pub(super) async fn respond(
                 json!({"error":"attestations must be true or false; true requires work_id"}),
             );
         }
+    };
+    let outputs = match outputs.as_deref() {
+        None | Some("false") => false,
+        Some("true") if work_id.is_some() && !attestations => true,
+        _ => {
+            return response(
+                400,
+                json!({"error":"outputs must be true or false; true requires work_id and excludes attestations"}),
+            );
+        }
+    };
+    let after_version = if outputs {
+        match after.parse::<i64>() {
+            Ok(v) => v,
+            Err(_) if after.is_empty() => 0,
+            Err(_) => return response(400, json!({"error":"invalid output after version"})),
+        }
+    } else {
+        0
     };
     let limit = match limit.as_deref().unwrap_or("50").parse::<usize>() {
         Ok(value) => value,
@@ -86,6 +113,9 @@ pub(super) async fn respond(
                 work::mutate(&mut conn, &room, actor, mutation, operation.as_deref())
             }
             None => match work_id {
+                Some(id) if outputs => {
+                    work::outputs::list(&mut conn, &room, actor, &id, after_version, limit)
+                }
                 Some(id) if attestations => {
                     work::attestations::list(&mut conn, &room, actor, &id, &after, limit)
                 }
