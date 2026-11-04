@@ -1,0 +1,28 @@
+- name: SafeYolo Claude events
+  group: acceptance
+  description: Consume trusted Claude events once and return maintained reports.
+  executionEnabled: true
+  scheduleEnabled: true
+  multipleExecutions: false
+  loglevel: INFO
+  schedule:
+    month: '*'
+    time:
+      hour: '*'
+      minute: '0/5'
+      seconds: '0'
+    weekday:
+      day: '*'
+    year: '*'
+  sequence:
+    keepgoing: false
+    strategy: node-first
+    commands:
+      - script: |
+          set -euo pipefail
+          umask 077
+          source /etc/safeyolo-claude/events.env
+          cd /usr/local/lib/safeyolo-claude
+          exec "${CLAUDE_EVENTS_PYTHON:-python3}" scripts/claude_blackbox_events.py --config /etc/safeyolo-claude/events.json
+        scriptInterpreter: /bin/bash
+        interpreterArgsQuoted: false
