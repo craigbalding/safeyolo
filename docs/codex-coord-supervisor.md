@@ -245,7 +245,7 @@ automatic runtime transition. Peer message text that looks like a brief has no
 such authority.
 
 For each returned object, the supervisor atomically stores a narrow canonical
-checkpoint before it adopts the returned cursor. Only a `TASK` from a
+checkpoint before it adopts the returned cursor. In message mode, only a `TASK` from a
 configured coordinator with an absolute `target` URL and exactly
 `assignee=<worker-name>` becomes work. That task stays in flight until the
 supervisor observes a canonical `DONE`, `BLOCKED`, or `FAILED` in the same room
@@ -265,6 +265,52 @@ the supervisor keeps a bounded set of stable attention IDs for deduplication.
 That historical list stays in the state file and is not included in the model
 prompt. Active work and handoff identifiers remain in the supplied checkpoint.
 
+## Native work delivery
+
+A supervisor can consume native work with `native_work: true` in its private
+configuration. Select one control mode for that agent: an interactive coding
+session or its supervisor. The interactive session uses the same native Work
+API; it does not need a second ownership or review record. Keep the live
+Factory's approved control configuration intact. Current Factory snapshots
+select message handoffs; approved native policy selection is separate from
+this standalone native delivery setting.
+
+Native delivery requires room `send` and `receive`. Generic execution wakes
+only the explicitly assigned agent. Unassigned open work remains available for
+an explicit claim. Checks name their reviewer; challenges name their responder
+and deciders. Selected requirements name acceptance deciders. Delivery never
+changes those authorities or the immutable output producer.
+
+For a `work_changed` edge, the supervisor verifies its original work ID, room
+and version. It then calls `read_work_actions` for current participant actions,
+including newly ready acceptance on a review's root work. Unrelated changes,
+already received results and retired assignments cause no model turn. A
+historical exact-subject check remains assigned until answered, cancelled or
+reassigned; output replacement alone does not cancel that check or resolve an
+objection.
+
+The supervisor saves each action in `native_in_flight` before calling
+`receive_work_action` and advancing attention. Coord stores an immutable
+receipt under the participant's canonical `action_key` in its existing operation
+ledger. A claim remains part of the original execution delivery. A changed
+assignment generation, response or acceptance basis can create a new action.
+Partial pages retain their attention cursor until every relevant action fits
+the existing checkpoint bound.
+
+After restart and after each turn, the supervisor reads current native actions.
+Canonical completion, answer, response, disposition, cancellation, reassignment
+or supersession retires the corresponding actionable delivery. Model prose,
+process exit and `turn.completed` do not. Informational result deliveries have
+`requires_action: false` and can be consumed by a completed turn. Pending native
+actions remain in the checkpoint through uncertainty. Disabling `native_work`
+or removing their room is refused while those deliveries remain pending.
+
+A delivery receipt does not prove execution, review or acceptance. Recover an
+ambiguous native write with its original operation ID and inputs. Read current
+work separately before acting on an old receipt. For uncertain external effects,
+inspect their own authority and retained artifact before repeating anything.
+Neither delivery nor generation fencing promises exactly-once external execution.
+
 ## State and failure bounds
 
 The private state file is
@@ -274,7 +320,7 @@ single-owner lock protect it across supervisor restarts. It contains only:
 - one harness session ID;
 - one safe attention cursor;
 - at most 256 recent attention IDs;
-- at most 16 narrow returned objects that are still in flight;
+- at most 16 narrow message or native work deliveries that are still in flight;
 - at most 16 independently correlated outbound handoffs awaiting responses;
 - one current, bounded brief revision and Markdown body per configured room;
 - an optional task-local repair selection and its canonical selecting message;
@@ -421,6 +467,7 @@ selection. It contains no inferred workflow state. The defaults are:
 
 | Setting | Default | Purpose |
 |---|---:|---|
+| `native_work` | false | Consume native assigned work and review transitions in configured rooms. |
 | `wait_seconds` | 300 | One supervisor-owned Coord long poll. |
 | `page_limit` | 16 | Maximum returned and in-flight objects. |
 | `startup_timeout_seconds` | 480 | Bound before a launched harness turn starts. |

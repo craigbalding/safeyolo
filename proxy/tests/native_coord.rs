@@ -30,6 +30,8 @@ mod room_status;
 mod signals;
 #[path = "native_coord/stage0.rs"]
 mod stage0;
+#[path = "native_coord/supervision.rs"]
+mod supervision;
 #[path = "native_coord/work.rs"]
 mod work;
 

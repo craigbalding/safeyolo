@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub(crate) mod acceptance;
+pub(crate) mod actions;
 pub(crate) mod attestations;
 pub(crate) mod challenges;
 pub(crate) mod checks;
@@ -76,6 +77,12 @@ pub(crate) enum Mutation {
     Create {
         title: String,
         external_ref: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        assignee: Option<subjects::Principal>,
+    },
+    ReceiveAction {
+        work_id: String,
+        action_key: String,
     },
     Claim {
         work_id: String,
@@ -214,6 +221,8 @@ pub(crate) struct Work {
     pub room_id: String,
     pub title: String,
     pub external_ref: Option<String>,
+    #[serde(default)]
+    pub assignee: Option<subjects::Principal>,
     pub target_ref: Option<String>,
     pub target_generation: i64,
     // Retained work without a publication has no inferred producer or outcome.
@@ -389,6 +398,7 @@ fn new_work(
         room_id: room_id.into(),
         title,
         external_ref,
+        assignee: None,
         target_ref: None,
         target_generation: 0,
         output: None,
@@ -432,8 +442,15 @@ pub(crate) fn mutate(
     conn.busy_timeout(std::time::Duration::from_secs(30))?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let room_id = authorize(&tx, room, actor, true)?;
-    let generated = uuid::Uuid::new_v4().simple().to_string();
-    let operation = operation.unwrap_or(&generated);
+    let generated = match &mutation {
+        Mutation::ReceiveAction { action_key, .. } => action_key.clone(),
+        _ => uuid::Uuid::new_v4().simple().to_string(),
+    };
+    // Delivery uses its canonical action key, independent of a caller retry ID.
+    let operation = match &mutation {
+        Mutation::ReceiveAction { .. } => generated.as_str(),
+        _ => operation.unwrap_or(&generated),
+    };
     if operation.trim().is_empty() {
         return Err(invalid("operation ID must be nonempty"));
     }
@@ -461,16 +478,39 @@ pub(crate) fn mutate(
         return Ok(serde_json::from_str(&result)?);
     }
     let changed_at = now();
+    if let Mutation::ReceiveAction {
+        work_id,
+        action_key,
+    } = &mutation
+    {
+        let action = actions::for_source(&tx, &room_id, actor, work_id)?
+            .into_iter()
+            .find(|a| a.key == *action_key)
+            .ok_or_else(|| conflict("work action is no longer current for this participant"))?;
+        let result = json!({"action":action,"operation_id":operation});
+        tx.execute("INSERT INTO coord_operations(principal_kind,principal_id,operation_type,operation_id,request_hash,outcome_kind,outcome_json,created_at) VALUES(?1,?2,?3,?4,?5,'success',?6,?7)", params![actor.kind(),actor.id(),operation_type,operation,request_hash,result.to_string(),changed_at])?;
+        tx.commit()?;
+        return Ok(result);
+    }
     let mut attestation = None;
     let mut work = match mutation {
         Mutation::Create {
             title,
             external_ref,
+            assignee,
         } => {
             if title.trim().is_empty() {
                 return Err(invalid("work title must be nonempty"));
             }
-            new_work(&room_id, actor, title, external_ref, changed_at)
+            if let Some(assignee) = &assignee {
+                if assignee.kind != "agent" {
+                    return Err(invalid("execution assignment requires a durable agent ID"));
+                }
+                assignee.validate(&tx, &room_id)?;
+            }
+            let mut work = new_work(&room_id, actor, title, external_ref, changed_at);
+            work.assignee = assignee;
+            work
         }
         Mutation::RequestCheck {
             subject,
@@ -736,6 +776,23 @@ pub(crate) fn mutate(
                         return Err(conflict("work is not open for claim"));
                     }
                     member(&tx, &room_id, agent_id, true)?;
+                    if action == "claim"
+                        && work
+                            .assignee
+                            .as_ref()
+                            .is_some_and(|p| p.kind != "agent" || p.id != agent_id)
+                    {
+                        return Err(WorkError(
+                            403,
+                            "only the assigned participant may claim work".into(),
+                        ));
+                    }
+                    if action == "reassign" && work.check.is_none() && work.challenge.is_none() {
+                        work.assignee = Some(subjects::Principal {
+                            kind: "agent".into(),
+                            id: agent_id.into(),
+                        });
+                    }
                     checks::assign(&mut work, agent_id, action == "reassign")?;
                     challenges::assign(&mut work, agent_id, action == "reassign")?;
                     work.state = "claimed".into();
@@ -774,6 +831,7 @@ pub(crate) fn mutate(
                     }
                 }
                 Mutation::Create { .. }
+                | Mutation::ReceiveAction { .. }
                 | Mutation::RequestCheck { .. }
                 | Mutation::RaiseChallenge { .. } => unreachable!(),
             }
@@ -833,7 +891,14 @@ fn stage_attention(
         })
         .collect::<Vec<_>>();
     for (agent, granted_at) in recipients {
-        if !matches!(actor, Actor::Operator) && actor.id() == agent {
+        // A review answer may make a different action ready for its author
+        // (for example an explicitly non-independent acceptance decision).
+        if !matches!(actor, Actor::Operator)
+            && actor.id() == agent
+            && !actions::for_source(conn, &work.room_id, Actor::Agent(&agent), &work.work_id)?
+                .iter()
+                .any(|a| a.requires_action)
+        {
             continue;
         }
         let suffix = uuid::Uuid::new_v4().simple().to_string();

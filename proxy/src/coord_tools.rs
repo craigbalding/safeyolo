@@ -345,6 +345,24 @@ impl Client {
                 Value::Null,
                 60.0,
             ),
+            "read_work_actions" => (
+                Method::GET,
+                format!(
+                    "{base}/work?work_id={}&actions=true&include_received={}",
+                    segment(text(args, "work_id")?),
+                    args.get("include_received")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                ),
+                Value::Null,
+                60.0,
+            ),
+            "receive_work_action" => (
+                Method::POST,
+                format!("{base}/work"),
+                json!({"action":"receive_action","work_id":text(args,"work_id")?,"action_key":text(args,"action_key")?}),
+                60.0,
+            ),
             "list_work" => {
                 let mut path = format!("{base}/work?limit={}", integer(args, "limit", 50)?);
                 for key in ["after", "state"] {
@@ -523,6 +541,8 @@ pub fn tools() -> Vec<Value> {
     let number = json!({"type":"number","minimum":0});
     let array = json!({"type":"array","items":{"type":"string"}});
     let principal = json!({"type":"object","properties":{"kind":{"type":"string","enum":["agent","operator"]},"id":string},"required":["kind","id"],"additionalProperties":false});
+    let mut execution_assignee = principal.clone();
+    execution_assignee["properties"]["kind"]["enum"] = json!(["agent"]);
     let subject = json!({"oneOf":[
         {"type":"object","properties":{"kind":{"type":"string","enum":["work","check"]},"work_id":string,"version":integer},"required":["kind","work_id","version"],"additionalProperties":false},
         {"type":"object","properties":{"kind":{"type":"string","enum":["output"]},"work_id":string,"target_generation":integer},"required":["kind","work_id","target_generation"],"additionalProperties":false}
@@ -552,9 +572,21 @@ pub fn tools() -> Vec<Value> {
     );
     add(
         "create_work",
-        "Create open work in an authorized room. external_ref is opaque. Content is attributed to the authenticated agent. Supply operation_id before a write to recover an ambiguous result.",
-        json!({"room_name":string,"title":string,"external_ref":string,"operation_id":string}),
+        "Create open work in an authorized room. Optional assignee names the durable agent eligible to claim and receive native execution delivery. Unassigned open work is available for an explicit claim and does not wake competing supervisors. external_ref is opaque. Content is attributed to the authenticated agent. Supply operation_id before a write to recover an ambiguous result.",
+        json!({"room_name":string,"title":string,"external_ref":string,"assignee":execution_assignee,"operation_id":string}),
         &["room_name", "title"],
+    );
+    add(
+        "read_work_actions",
+        "Derive your current actions and result notices from native work and its review root. Requires current room receive permission; recording a delivery receipt also requires send. Only explicitly assigned execution, named checks/responses/dispositions and eligible selected acceptance decisions are actionable. A historical exact-subject review remains assigned until answered/cancelled/reassigned. Default excludes actions with your immutable delivery receipt; include_received=true supports checkpoint reconciliation. Actions carry current versions; read_work supplies full content. No claim, verdict or acceptance is inferred from delivery.",
+        json!({"room_name":string,"work_id":string,"include_received":{"type":"boolean"}}),
+        &["room_name", "work_id"],
+    );
+    add(
+        "receive_work_action",
+        "Record delivery of your exact current native action. The canonical action_key is the idempotency key, so retries return the original receipt after current room authority is checked. A new stale action is rejected. Save the action in your existing supervisor checkpoint before receiving it. Receipt creation neither changes Work nor performs its action. Never infer an external effect from delivery or replay an uncertain external effect.",
+        json!({"room_name":string,"work_id":string,"action_key":string}),
+        &["room_name", "work_id", "action_key"],
     );
     add(
         "import_github_work",

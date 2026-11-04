@@ -558,12 +558,35 @@ Lists use bounded pages ordered by `work_id`; pages do not share a snapshot.
 
 The current work projection, immutable version, operation result, metadata
 audit and attention outbox commit in one SQLite transaction. Work changes
-notify current receive-authorized members except the agent actor. Operator
-changes notify every current receive-authorized agent. A `work_changed` edge
+notify current receive-authorized members. The agent actor is also notified
+when a current native action requires that participant; otherwise
+its own edge is omitted. Operator changes notify every current receive-authorized agent. A `work_changed` edge
 resolves its original immutable work version, with current membership-generation
 authorization. Work titles, references and results do not enter audit or wake
 hints. Completion retains the final holder and claim timestamp in state `done`;
 release clears the holder and timestamp and returns the item to `open`.
+
+An optional creation `assignee` selects the agent eligible to claim generic
+execution. Operator reassignment changes that assignment and advances the claim
+generation. This selection is independent of the actual publication producer.
+Unassigned open work does not wake competing native supervisors.
+
+`read_work_actions(room_name, work_id, include_received?)` derives current
+participant actions from that work and its review root. It routes assigned
+execution, named checks and challenge responses, explicit challenge disposition,
+and eligible selected acceptance when required obligations are satisfied.
+Creator/requester result notices remain informational. It reads canonical work;
+it stores no competing task, review or acceptance projection.
+
+`receive_work_action(room_name, work_id, action_key)` commits an immutable
+participant delivery receipt to the existing operation ledger. The canonical
+key is its retry ID. Current room authority is checked even on replay; a new
+stale or substituted participant's action is rejected. A successful receipt
+neither advances Work's version nor claims or completes its action. An old
+receipt remains recoverable after the action settles. Default action reads
+exclude received keys; `include_received=true` supports pending checkpoint
+reconciliation against current native authority. See
+[native supervision](codex-coord-supervisor.md#native-work-delivery).
 
 `external_ref` is deliberately opaque:
 
