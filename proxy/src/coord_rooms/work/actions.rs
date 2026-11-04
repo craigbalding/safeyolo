@@ -45,7 +45,15 @@ fn for_work(conn: &Connection, work: &Work, actor: Actor<'_>) -> Result<Vec<Acti
     };
     let unfinished = ["open", "claimed"].contains(&work.state.as_str());
     if let Some(check) = &work.check {
-        if unfinished && check.reviewer == participant {
+        if unfinished
+            && check.reviewer == participant
+            && (!check.independent
+                || check
+                    .subject
+                    .producer
+                    .as_ref()
+                    .is_some_and(|p| p != &participant))
+        {
             push(
                 &mut actions,
                 work,

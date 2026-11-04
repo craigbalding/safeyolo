@@ -572,8 +572,8 @@ pub fn tools() -> Vec<Value> {
     );
     add(
         "create_work",
-        "Create open work in an authorized room. Optional assignee names the durable agent eligible to claim and receive native execution delivery. Unassigned open work is available for an explicit claim and does not wake competing supervisors. external_ref is opaque. Content is attributed to the authenticated agent. Supply operation_id before a write to recover an ambiguous result.",
-        json!({"room_name":string,"title":string,"external_ref":string,"assignee":execution_assignee,"operation_id":string}),
+        "Create open work in an authorized room. Optional assignee names the durable agent eligible to claim and receive native execution delivery. Unassigned open work is available for an explicit claim and does not wake competing supervisors. factory selects the exact currently approved Factory snapshot and its native work policy. Creation is limited to that policy's creators or the operator. Publication binds its required exact-output checks atomically. external_ref is opaque. Content is attributed to the authenticated agent. Supply operation_id before a write to recover an ambiguous result.",
+        json!({"room_name":string,"title":string,"external_ref":string,"assignee":execution_assignee,"factory":{"type":"object","properties":{"name":string,"snapshot_id":string},"required":["name","snapshot_id"],"additionalProperties":false},"operation_id":string}),
         &["room_name", "title"],
     );
     add(

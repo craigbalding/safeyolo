@@ -79,6 +79,7 @@ fn work_mutation(
     op: &str,
 ) -> Value {
     work::mutate(
+        None,
         conn,
         "shared",
         actor,
@@ -130,7 +131,7 @@ fn combined_status_uses_current_claims_corrections_and_brief_without_chat() {
         "reassign",
     );
     // A crossed completion from the former holder cannot become current fact.
-    assert!(work::mutate(&mut conn,"shared",work::Actor::Agent(BOB),serde_json::from_value(json!({"action":"complete","work_id":owned["work_id"],"expected_version":2,"expected_generation":1})).unwrap(),Some("stale-complete")).is_err());
+    assert!(work::mutate(None, &mut conn,"shared",work::Actor::Agent(BOB),serde_json::from_value(json!({"action":"complete","work_id":owned["work_id"],"expected_version":2,"expected_generation":1})).unwrap(),Some("stale-complete")).is_err());
     let released = work_mutation(
         &mut conn,
         work::Actor::Agent(ALICE),

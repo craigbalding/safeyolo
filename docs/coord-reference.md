@@ -468,9 +468,35 @@ External applications can use these native requirements and decisions instead
 of separately writable acceptance state. They retain domain data, immutable
 artifacts and final effects. Coord does not fetch or interpret those artifacts.
 A final merge, publication or other external action must validate its expected
-revision at that system's own authority. Approved factory configuration selection
-and native supervisor routing are still separate pending integration; the current
-message handoffs remain necessary.
+revision at that system's own authority. An approved Factory can select native
+policy and delivery through `[work]`; see [Factory policy](factories.md#select-native-work-policy).
+Native assignments use their Work IDs instead of a duplicate message workflow.
+Existing message assignments keep their declared reply protocol.
+
+`create_work` accepts optional `factory={name,snapshot_id}`. The host equivalent
+is `coord work create ROOM TITLE --factory JSON`. The currently approved exact
+snapshot must declare a work policy for that room. Only its selected creator
+roles or the operator can use that selection. Normal room authority still
+applies. Transport identity supplies the creator; role bindings resolve to the
+instance's configured durable agent IDs. The reference, resolved check templates
+and initial requirements are retained with Work. They do not follow later
+Factory approval changes.
+
+For selected Factory work, `publish_work_output` also creates the configured
+exact-output checks and replaces their prior generated requirements in the same
+transaction. `factory.current_checks` in the publication receipt identifies the
+new checks. Publication replay recovers the original IDs and creates no new
+logical assignment. Explicitly selected additional checks and challenges are
+preserved. The requirements version advances, making earlier acceptance stale.
+An authorized requirements amendment can change current obligations or delegate
+authority; ownership alone cannot. The next publication reapplies the retained
+templates. Generic work without `factory` keeps explicit policy selection.
+
+A revoked or ineligible reviewer does not prevent retention of an output.
+Acceptance explains the pending obligation. Independence still prevents the
+actual producer from claiming or answering the check. The operator can use
+ordinary review reassignment and authority recovery; no process timeout grants
+that authority. Advisory challenges do not become required automatically.
 
 ### Open retained native state
 
@@ -479,13 +505,13 @@ factory roles and other Coord writers. Preserve the instance root, role homes,
 checkpoints, source trees and retained artifacts. Install matching host and
 guest executables before resuming those roles.
 
-The current store uses native schema 9. Bootstrap transactionally upgrades the
+The current store uses native schema 10. Bootstrap transactionally upgrades the
 retained native schema 5 work projection to admit cancellation and fences
-schema 5/6/7/8 writers before storing reviews, requirements, decisions or explicit
-execution assignments. It preserves
+schema 5/6/7/8/9 writers before storing reviews, requirements, decisions,
+execution assignments or selected Factory policy. It preserves
 claim IDs and generations, immutable revision bytes, operation receipts,
 attention, outbox rows and retained messages. A failed upgrade rolls back. An
-older executable refuses schema 9; do not run mixed writers or overwrite the
+older executable refuses schema 10; do not run mixed writers or overwrite the
 store to make an older executable start. Unsupported implementation generations
 remain refused.
 

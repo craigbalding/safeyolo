@@ -150,6 +150,9 @@ def test_native_work_delivery_uses_current_actions_and_canonical_receipt_keys(ad
     assignee = {"kind": "agent", "id": "bob"}
     call("create_work", {"room_name": "backlog", "title": "Inspect output", "assignee": assignee, "operation_id": "assigned"})
     assert calls[-1][2] == {"action": "create", "title": "Inspect output", "assignee": assignee, "operation_id": "assigned"}
+    factory = {"name": "reports", "snapshot_id": "a" * 64}
+    call("create_work", {"room_name": "backlog", "title": "Selected report", "factory": factory, "operation_id": "factory"})
+    assert calls[-1][2] == {"action": "create", "title": "Selected report", "factory": factory, "operation_id": "factory"}
     call("read_work_actions", {"room_name": "backlog", "work_id": "work-output", "include_received": True})
     assert parse_qs(urlsplit(calls[-1][1]).query) == {"work_id": ["work-output"], "actions": ["true"], "include_received": ["true"]}
     call("receive_work_action", {"room_name": "backlog", "work_id": "work-output", "action_key": "action-exact"})

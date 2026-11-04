@@ -106,11 +106,13 @@ async fn qualified_identity_peer_epochs_and_membership_replay_preserve_authority
     assert_ne!(principal("ab", "c"), principal("a", "bc"));
     assert!(authenticate(&conn, secret.trim().as_bytes(), "ag-alice").is_err());
     let create = || Mutation::Create {
+        factory: None,
         assignee: None,
         title: "home-owned".into(),
         external_ref: None,
     };
     let created = work::mutate(
+        None,
         &mut conn,
         "shared",
         Actor::Remote(&remote),
@@ -121,6 +123,7 @@ async fn qualified_identity_peer_epochs_and_membership_replay_preserve_authority
     assert_eq!(
         created,
         work::mutate(
+            None,
             &mut conn,
             "shared",
             Actor::Remote(&remote),
@@ -149,6 +152,7 @@ async fn qualified_identity_peer_epochs_and_membership_replay_preserve_authority
     assert!(authenticate(&conn, secret.trim().as_bytes(), "ag-bob").is_err());
     assert_eq!(
         work::mutate(
+            None,
             &mut conn,
             "shared",
             Actor::Remote(&remote),
@@ -195,6 +199,7 @@ async fn qualified_identity_peer_epochs_and_membership_replay_preserve_authority
     // Regranting cannot authorize a request authenticated in the old epoch.
     assert_eq!(
         work::mutate(
+            None,
             &mut conn,
             "shared",
             Actor::Remote(&remote),

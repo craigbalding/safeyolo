@@ -9,6 +9,7 @@ pub(crate) mod actions;
 pub(crate) mod attestations;
 pub(crate) mod challenges;
 pub(crate) mod checks;
+mod factory_policy;
 pub(crate) mod github;
 pub(crate) mod outputs;
 pub(crate) mod reviews;
@@ -79,6 +80,8 @@ pub(crate) enum Mutation {
         external_ref: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         assignee: Option<subjects::Principal>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        factory: Option<crate::factory::work::Reference>,
     },
     ReceiveAction {
         work_id: String,
@@ -223,6 +226,8 @@ pub(crate) struct Work {
     pub external_ref: Option<String>,
     #[serde(default)]
     pub assignee: Option<subjects::Principal>,
+    #[serde(default)]
+    pub factory: Option<crate::factory::work::Selection>,
     pub target_ref: Option<String>,
     pub target_generation: i64,
     // Retained work without a publication has no inferred producer or outcome.
@@ -399,6 +404,7 @@ fn new_work(
         title,
         external_ref,
         assignee: None,
+        factory: None,
         target_ref: None,
         target_generation: 0,
         output: None,
@@ -431,6 +437,7 @@ pub(crate) fn revision(
 }
 
 pub(crate) fn mutate(
+    factory_files: Option<(&std::path::Path, &std::path::Path)>,
     conn: &mut Connection,
     room: &str,
     actor: Actor<'_>,
@@ -498,6 +505,7 @@ pub(crate) fn mutate(
             title,
             external_ref,
             assignee,
+            factory,
         } => {
             if title.trim().is_empty() {
                 return Err(invalid("work title must be nonempty"));
@@ -510,6 +518,17 @@ pub(crate) fn mutate(
             }
             let mut work = new_work(&room_id, actor, title, external_ref, changed_at);
             work.assignee = assignee;
+            if let Some(reference) = factory {
+                factory_policy::select(
+                    factory_files,
+                    &tx,
+                    room,
+                    actor,
+                    &mut work,
+                    reference,
+                    changed_at,
+                )?;
+            }
             work
         }
         Mutation::RequestCheck {
@@ -843,21 +862,40 @@ pub(crate) fn mutate(
         }
     };
     work.updated_at = changed_at;
+    if action == "publish_output" {
+        factory_policy::publication(&tx, &mut work, actor, operation, changed_at)?;
+    }
+    let result = record_change(&tx, &work, actor, operation, action, attestation)?;
+    tx.execute("INSERT INTO coord_operations(principal_kind,principal_id,operation_type,operation_id,request_hash,outcome_kind,outcome_json,created_at) VALUES(?1,?2,?3,?4,?5,'success',?6,?7)", params![actor.kind(),actor.id(),operation_type,operation,request_hash,result.to_string(),changed_at])?;
+    tx.commit()?;
+    Ok(result)
+}
+
+fn record_change(
+    conn: &Connection,
+    work: &Work,
+    actor: Actor<'_>,
+    operation: &str,
+    action: &str,
+    attestation: Option<Value>,
+) -> Result<Value, WorkError> {
+    let room_id = &work.room_id;
+    let changed_at = work.updated_at;
+    let operation_type = format!("coord.work.{action}");
     let mut result = json!({"work":work,"operation_id":operation});
     let document = result["work"].to_string();
     let mut revision = result["work"].clone();
     if let Some(record) = attestation {
-        tx.execute("INSERT INTO coord_work_attestations(attestation_id,work_id,room_id,work_version,target_generation,kind,verdict) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        conn.execute("INSERT INTO coord_work_attestations(attestation_id,work_id,room_id,work_version,target_generation,kind,verdict) VALUES(?1,?2,?3,?4,?5,?6,?7)",
             params![record["attestation_id"].as_str(),work.work_id,room_id,work.version,work.target_generation,record["kind"].as_str(),record["verdict"].as_str()])?;
         revision["attestation"] = record.clone();
         result["attestation"] = record;
     }
     let revision_document = revision.to_string();
     let content_hash = hash(revision_document.as_bytes());
-    tx.execute("INSERT INTO coord_work_revisions(work_id,room_id,version,document_json,content_hash,actor_kind,actor_id,operation_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![work.work_id,room_id,work.version,revision_document,content_hash,actor.kind(),actor.id(),operation,changed_at])?;
-    tx.execute("INSERT INTO coord_work(work_id,room_id,version,state,document_json) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(work_id) DO UPDATE SET version=excluded.version,state=excluded.state,document_json=excluded.document_json",params![work.work_id,room_id,work.version,work.state,document])?;
-    tx.execute("INSERT INTO coord_operations(principal_kind,principal_id,operation_type,operation_id,request_hash,outcome_kind,outcome_json,created_at) VALUES(?1,?2,?3,?4,?5,'success',?6,?7)", params![actor.kind(),actor.id(),operation_type,operation,request_hash,result.to_string(),changed_at])?;
-    stage_attention(&tx, &work, actor, changed_at)?;
+    conn.execute("INSERT INTO coord_work_revisions(work_id,room_id,version,document_json,content_hash,actor_kind,actor_id,operation_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![work.work_id,room_id,work.version,revision_document,content_hash,actor.kind(),actor.id(),operation,changed_at])?;
+    conn.execute("INSERT INTO coord_work(work_id,room_id,version,state,document_json) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(work_id) DO UPDATE SET version=excluded.version,state=excluded.state,document_json=excluded.document_json",params![work.work_id,room_id,work.version,work.state,document])?;
+    stage_attention(conn, work, actor, changed_at)?;
     let event_id = format!("evt-{}", uuid::Uuid::new_v4().simple());
     let timestamp = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
@@ -865,8 +903,7 @@ pub(crate) fn mutate(
     let event_type = format!("coord.work_{action}");
     let event = json!({"schema_version":crate::audit::SCHEMA_VERSION,"event_id":event_id,"ts":timestamp,"event":event_type,"kind":"coord","severity":"low","summary":"Coord work changed","addon":"coord",
         "details":{"actor_kind":actor.kind(),"actor_id":actor.id(),"room_id":room_id,"object_id":work.work_id,"version":work.version,"claim_generation":work.claim_generation,"target_generation":work.target_generation,"attestation_id":result.get("attestation").and_then(|a|a.get("attestation_id")),"content_hash":content_hash,"operation_id":operation,"operation_type":operation_type}});
-    tx.execute("INSERT INTO coord_outbox(event_id,destination,event_type,payload_json,created_at) VALUES(?1,'audit-jsonl',?2,?3,?4)", params![event_id,event_type,event.to_string(),changed_at])?;
-    tx.commit()?;
+    conn.execute("INSERT INTO coord_outbox(event_id,destination,event_type,payload_json,created_at) VALUES(?1,'audit-jsonl',?2,?3,?4)", params![event_id,event_type,event.to_string(),changed_at])?;
     Ok(result)
 }
 

@@ -169,9 +169,17 @@ pub(super) async fn respond(
             .as_ref()
             .map_or(Actor::Agent(&principal), Actor::Remote);
         match mutation {
-            Some((mutation, operation)) => {
-                work::mutate(&mut conn, &room, actor, mutation, operation.as_deref())
-            }
+            Some((mutation, operation)) => work::mutate(
+                caller
+                    .instance_root
+                    .as_deref()
+                    .zip(caller.policy_file.as_deref()),
+                &mut conn,
+                &room,
+                actor,
+                mutation,
+                operation.as_deref(),
+            ),
             None => match work_id {
                 Some(id) if actions => {
                     work::actions::read(&mut conn, &room, actor, &id, include_received)

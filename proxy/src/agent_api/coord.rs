@@ -152,6 +152,7 @@ pub struct CoordClient {
     owner: Arc<CoordOwner>,
     policy_file: Option<PathBuf>,
     provider_directory: Option<PathBuf>,
+    instance_root: Option<PathBuf>,
     remote: Option<crate::coord_rooms::federation::RemoteAgent>,
     relay_config: Option<PathBuf>,
     request_run: Option<Arc<(crate::host_runs::AgentRun, PathBuf)>>,
@@ -172,6 +173,7 @@ impl CoordClient {
             owner,
             policy_file,
             provider_directory,
+            instance_root: None,
             remote: None,
             relay_config: None,
             request_run: None,
@@ -205,8 +207,9 @@ impl CoordClient {
         Ok(())
     }
 
-    pub(crate) fn with_provider_directory(mut self, root: Option<&Path>) -> Self {
+    pub(crate) fn with_instance_root(mut self, root: Option<&Path>) -> Self {
         if let Some(root) = root {
+            self.instance_root = Some(root.to_path_buf());
             self.provider_directory = Some(root.join("coord-providers"));
         }
         self
@@ -3058,7 +3061,7 @@ impl OperatorCoord {
                 config.policy_file.clone(),
                 config.data_dir.map(|dir| dir.join("coord")),
             )
-            .with_provider_directory(config.native_config_dir.as_deref())
+            .with_instance_root(config.native_config_dir.as_deref())
             .with_collaboration_config(config.collaboration.clone()),
         })
     }

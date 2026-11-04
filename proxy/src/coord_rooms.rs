@@ -13,7 +13,7 @@ use std::{
 };
 
 const NATS_VERSION: &str = "2.14.5";
-pub(crate) const SCHEMA_VERSION: u32 = 9;
+pub(crate) const SCHEMA_VERSION: u32 = 10;
 pub(crate) const COLLABORATION_MAX_ENVELOPE_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) mod brief;
 mod inventory;
@@ -69,7 +69,7 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
         }
         transaction.execute_batch(include_str!("coord_schema.sql"))?;
         transaction.execute("INSERT INTO instance(id) VALUES (?1)", [id.trim()])?;
-    } else if ![5, 6, 7, 8, SCHEMA_VERSION].contains(&version) {
+    } else if ![5, 6, 7, 8, 9, SCHEMA_VERSION].contains(&version) {
         return Err(format!(
             "Coord schema {version} is not operational; expected version {SCHEMA_VERSION}"
         )

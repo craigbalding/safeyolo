@@ -2,6 +2,7 @@ use super::*;
 
 fn submit(conn: &mut Connection, actor: Actor<'_>, value: Value, op: &str) -> Value {
     mutate(
+        None,
         conn,
         "owned",
         actor,
@@ -26,6 +27,7 @@ fn actions(conn: &mut Connection, who: &str, work: &Value, received: bool) -> Ve
 }
 fn receive(conn: &mut Connection, who: &str, action: &Value) -> Result<Value, WorkError> {
     mutate(
+        None,
         conn,
         "owned",
         Actor::Agent(who),
@@ -42,7 +44,7 @@ fn assignment_delivery_survives_claim_and_restart_without_becoming_execution() {
     let root = fixture();
     let mut conn = db(&root);
     let before = counts(&conn);
-    assert_eq!(mutate(&mut conn,"owned",Actor::Operator,serde_json::from_value(json!({"action":"create","title":"Host cannot hold an execution claim","assignee":{"kind":"operator","id":"operator"}})).unwrap(),None).unwrap_err().0,400);
+    assert_eq!(mutate(None, &mut conn,"owned",Actor::Operator,serde_json::from_value(json!({"action":"create","title":"Host cannot hold an execution claim","assignee":{"kind":"operator","id":"operator"}})).unwrap(),None).unwrap_err().0,400);
     assert_eq!(counts(&conn), before);
     let work = submit(
         &mut conn,

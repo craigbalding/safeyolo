@@ -62,7 +62,7 @@ fn definition(work: &Work, challenge: bool) -> Result<Value, WorkError> {
     Ok(value)
 }
 
-fn select(
+pub(super) fn select(
     conn: &Connection,
     work: &Work,
     refs: Vec<ReviewReference>,
@@ -249,6 +249,9 @@ fn obligations(
                 != Some((work.work_id.clone(), work.target_generation))
             {
                 "stale_subject"
+            } else if check.independent && check.subject.producer.as_ref() == Some(&check.reviewer)
+            {
+                "ineligible_reviewer"
             } else if review.state == "cancelled" {
                 "cancelled_check"
             } else if let Some(answer) = &check.answer

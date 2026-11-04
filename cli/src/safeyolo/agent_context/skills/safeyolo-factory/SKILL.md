@@ -27,8 +27,8 @@ on the same work ID. `respond_challenge` completes response work while leaving
 the challenge unresolved. Only named deciding participants or the operator can
 call `resolve_challenge`, subject to the selected independence flag and current
 work/response expectations. Read `list_work_reviews` and immutable `read_work`
-versions for current obligations and history. These optional records do not yet
-select factory acceptance requirements or replace message handoffs.
+versions for current obligations and history. Checks and challenges remain
+advisory unless selected in native acceptance requirements.
 
 The work creator or operator can select native acceptance context with
 `set_work_requirements`. Later amendments require a recorded authority or the
@@ -38,9 +38,16 @@ authorized delegation can name a worker. Selected checks and challenges govern
 Only named deciders may decide, and approval validates the exact current output
 and required review outcomes atomically. Read `acceptance_status` for pending
 obligations, stale approvals and conflicting decisions. Execution completion
-and check conclusions remain separate from output acceptance. Approved factory
-configuration selection and native supervisor routing remain pending; retain
-the current message handoffs.
+and check conclusions remain separate from output acceptance. An approved
+Factory's `[work]` selects creator and policy authority roles, deciders,
+independence and required check templates. Create Work with its exact approved
+`{name,snapshot_id}` reference. Publication atomically creates exact-output
+checks and selects their requirements. Later Factory approval does not alter
+that retained policy. Native participant actions use the existing supervisor;
+no duplicate message workflow is needed for native assignments. Explicit
+message assignments retain their declared replies. Keep interactive workers
+outside the supervised roles, with their own authenticated client and room
+access. Do not change a running Factory merely to exercise this path.
 
 ## Route the request
 

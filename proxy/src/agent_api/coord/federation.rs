@@ -313,6 +313,7 @@ async fn receive(
         owner: client.owner.clone(),
         policy_file: client.policy_file.clone(),
         provider_directory: client.provider_directory.clone(),
+        instance_root: client.instance_root.clone(),
         remote: Some(remote.clone()),
         relay_config: client.relay_config.clone(),
         request_run: None,
