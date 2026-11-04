@@ -2,19 +2,13 @@
 """Compose a native HTTP service through two real Linux/systrap sandboxes.
 
 On an owned Linux host, supply Python 3.11+, tomlkit, a prepared installation
-with the selected CLI/proxy/guest binaries and pinned runsc, and a free Admin
-port. --root and --output must be new disk-backed directories with traversable
-parents. Run as the ordinary host account with access to the native host
-preparation operations. Before creating agents, the driver runs host prepare
---yes on the host. That command explains and applies missing prerequisites,
-including its installation-scoped namespace entry and AppArmor profiles when
-required. Only those host operations use sudo.
-
-The driver reuses immutable inputs, creates two credential-free agents, grants
-only the caller's reader capability, exercises refusal and revocation, then
-stops its guests, proxy and broker. It retains native host preparation and
-preserves the prepared installation. No model, external service credential or
-Coord message is used.
+with the selected CLI/proxy/guest binaries, pinned runsc and native host
+preparation, and a free Admin port. --root and --output must be new disk-backed
+directories with traversable parents. The driver reuses immutable inputs and
+creates two credential-free agents. It grants only the caller's reader
+capability, exercises refusal and revocation, then stops its guests, proxy and
+broker. It preserves the prepared installation.
+No model, external service credential or Coord message is used.
 """
 
 from __future__ import annotations
@@ -160,15 +154,10 @@ def capture_guest_command(command, env, path, failures):
     return child, reader, finished
 
 
-def prepare(base, root, admin_port, parent_port, *, env, diagnostics):
+def prepare(base, root, admin_port, parent_port):
     prepare_native_instance(base, root)
-    # The namespace entry belongs to this instance. Native host preparation
-    # must not write through the prepared installation's shared host directory.
-    if (root / "host").is_symlink():
-        (root / "host").unlink()
     root.chmod(0o755)
     (root / "data").chmod(0o755)
-    (root / "data/tmp").mkdir(mode=0o755)
     (root / ".safeyolo-platform-smoke").touch()
     copy_prepared_nats(base, root)
     config = tomlkit.parse((root / "config.toml").read_text())
@@ -189,11 +178,6 @@ egress = "deny"
 enabled = true
 action = "block"
 ''')
-    # This is the host CLI, before any sandbox exists. Guest workloads use
-    # guest_command_args only after the host prerequisites have succeeded.
-    return json.loads(checked(
-        [str(base / "bin/safeyolo"), "--root", str(root), "host", "prepare", "--yes"],
-        env=env, diagnostics=diagnostics))
 
 
 def inputs(base, revision):
@@ -233,8 +217,8 @@ def run(args):
     parent_thread.start()
     try:
         report["inputs"] = inputs(base, args.revision)
-        report["host_preparation"] = prepare(
-            base, root, args.admin_port, parent.server_port, env=env, diagnostics=output / "native.log")
+        prepare(base, root, args.admin_port, parent.server_port)
+        (root / "data/tmp").mkdir(mode=0o755)
         _require_disposable(root)
         for name in NAMES:
             workspace = root / "workspaces" / name
@@ -252,14 +236,14 @@ def run(args):
             native("agent", "start", name, "--sandbox-only")
             status = json.loads(native("agent", "status", name))
             listener = next(row for row in _agent_listeners(root) if row["agent_id"] == name)
-            report["participants"][name] = {
-                "runtime": running_guest(root, name, status),
-                "ingress": runsc_identity(root, name, Path(listener["path"]), platform="systrap"),
-                "interfaces": native("agent", "shell", name, "-c", "ls /sys/class/net").split(),
-                "guest_sha256": _sha256(root / "agents" / name / "config-share/safeyolo-guest"),
-            }
-            assert report["participants"][name]["interfaces"] == ["lo"]
-            assert report["participants"][name]["guest_sha256"] == report["inputs"]["guest"]["sha256"]
+            participant = report["participants"][name] = {"runtime": running_guest(root, name, status)}
+            participant["ingress"] = runsc_identity(root, name, Path(listener["path"]), platform="systrap")
+            # Netlink does not depend on the absent /sys/class/net directory.
+            participant["interfaces"] = json.loads(native("agent", "shell", name, "-c", "ip -j link show"))
+            assert [link["ifname"] for link in participant["interfaces"]] == ["lo"], participant["interfaces"]
+            assert "LOOPBACK" in participant["interfaces"][0]["flags"], participant["interfaces"]
+            participant["guest_sha256"] = _sha256(root / "agents" / name / "config-share/safeyolo-guest")
+            assert participant["guest_sha256"] == report["inputs"]["guest"]["sha256"]
         native_config = _native_config(root / "config.toml", root)
         report["proxy"] = _runtime_observation(root, native_config, base / "bin/safeyolo-proxy",
             config_path=root / "config.toml", working_directory=root, require_running=True,
@@ -332,13 +316,11 @@ def run(args):
         assert parent.accepts == 1
         report["status"] = "passed"
     finally:
-        report["origin"] = origin_observation(producer)
-        report["clients"] = client_observation(caller)
         failures = []
         if (root / ".safeyolo-platform-smoke").is_file():
             try:
                 processes = owned_processes(root)
-            except (OSError, ValueError) as error:
+            except (OSError, ValueError, KeyError) as error:
                 # A broken receipt must not prevent stopping the owned instance.
                 processes = []
                 failures.append(f"cannot inspect owned processes: {error}")
@@ -347,10 +329,18 @@ def run(args):
             processes.extend({"pid": row["runtime"]["backend_pid"],
                               "start_token": row["runtime"]["backend_token"]}
                              for row in report.get("participants", {}).values())
+            # Creation or startup can fail before participants has a receipt.
+            # These directories belong to this new, disposable instance.
+            for name in NAMES:
+                if (root / "agents" / name).is_dir():
+                    try:
+                        native("agent", "stop", name)
+                    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                        failures.append(f"agent stop {name}: {error}")
             try:
                 native("stop")
-            except (RuntimeError, subprocess.TimeoutExpired) as error:
-                failures.append(str(error))
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                failures.append(f"global stop: {error}")
             report["commands"] = []
             for name, child, reader, finished in children:
                 forced_stop = False
@@ -384,10 +374,18 @@ def run(args):
         parent_thread.join(timeout=10)
         if parent_thread.is_alive():
             failures.append("parent observer thread survived stop")
+        for name, workspace, observation in (("origin", producer, origin_observation),
+                                              ("clients", caller, client_observation)):
+            try:
+                report[name] = observation(workspace)
+            except (OSError, ValueError) as error:
+                failures.append(f"cannot read {name} observations: {error}")
         report.update(cleanup="failed" if failures else "stopped", cleanup_failures=failures,
                       finished_at=datetime.now(UTC).isoformat())
         (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
-        assert not failures, failures
+        # Cleanup findings must not replace an exception from the journey.
+        if report["status"] == "passed":
+            assert not failures, failures
     return report
 
 

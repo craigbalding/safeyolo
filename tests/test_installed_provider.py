@@ -15,13 +15,14 @@ from pathlib import Path
 import pytest
 import tomlkit
 
+from tests.blackbox import installed_provider
+from tests.blackbox.installed_host_smoke import _process_start_token
 from tests.blackbox.installed_provider import (
     ParentObserver,
     capture_guest_command,
     client_observation,
     origin_observation,
     prepare,
-    run,
 )
 from tests.blackbox.native_credentials import native_cli
 
@@ -129,6 +130,111 @@ else:
     assert not (tmp_path / "response").exists() and not (tmp_path / "headers").exists()
 
 
+@pytest.mark.parametrize(("stage", "stop_error"), [
+    ("startup", None), ("startup", RuntimeError("fixture stop failure")),
+    ("startup", subprocess.TimeoutExpired("fixture stop", 1)), ("startup", OSError("fixture stop failure")),
+    ("loopback", None), ("extra_interface", None), ("no_interfaces", None), ("corrupt_clients", None),
+])
+def test_network_observation_and_owned_cleanup_on_partial_failure(tmp_path, monkeypatch, stage, stop_error):
+    """Use live process births with controlled native startup, netlink and stop results."""
+    base, root, output = tmp_path / "base", tmp_path / "instance", tmp_path / "report"
+    base.mkdir()
+    for name in ("config.toml", "policy.toml"):
+        (base / name).write_text("fixture input")
+    calls, backends = [], {}
+    guest = b"fixture guest bytes"
+
+    def prepare_instance(*_args):
+        (root / "data").mkdir(parents=True)
+        (root / ".safeyolo-platform-smoke").touch()
+
+    def native(command, **_kwargs):
+        arguments = command[3:]
+        calls.append(arguments)
+        if arguments[:2] == ["agent", "create"]:
+            directory = root / "agents" / arguments[2] / "config-share"
+            directory.mkdir(parents=True)
+            (directory / "safeyolo-guest").write_bytes(guest)
+        elif arguments[:2] == ["agent", "start"]:
+            name = arguments[2]
+            child = backends[name] = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+            directory = root / "agents" / name
+            (directory / "container.pid").write_text(str(child.pid))
+            runtime = {"name": name, "agent_id": f"ag-{name}", "run_id": f"run-{name}",
+                       "backend_pid": child.pid, "backend_token": _process_start_token(child.pid)}
+            (directory / "runtime.json").write_text(json.dumps(runtime))
+            if stage == "startup":
+                raise RuntimeError("original operation failure")
+        elif arguments[:2] == ["agent", "status"]:
+            return json.dumps({"name": arguments[2], "agent_id": f"ag-{arguments[2]}",
+                               "run_id": f"run-{arguments[2]}", "runtime_state": "running"})
+        elif arguments[:2] == ["agent", "shell"]:
+            assert arguments[3:] == ["-c", "ip -j link show"]
+            links = [{"ifname": "lo", "flags": ["LOOPBACK", "UP", "LOWER_UP"]}]
+            if stage == "extra_interface":
+                links.append({"ifname": "eth0", "flags": ["BROADCAST", "UP"]})
+            return json.dumps([] if stage == "no_interfaces" else links)
+        elif arguments[:2] == ["agent", "stop"]:
+            if arguments[2] == "proofspot" and stop_error:
+                raise stop_error
+            if child := backends.get(arguments[2]):
+                child.terminate()
+                child.wait(timeout=5)
+        elif arguments == ["stop"] and stop_error:
+            raise RuntimeError("fixture global stop failure")
+        return ""
+
+    def after_interfaces(*_args, **_kwargs):
+        if stage == "corrupt_clients":
+            (root / "workspaces/caller/results.tsv").write_text("incomplete")
+        raise RuntimeError("original operation failure")
+
+    monkeypatch.setattr(installed_provider, "checked", native)
+    monkeypatch.setattr(installed_provider, "prepare", prepare_instance)
+    monkeypatch.setattr(installed_provider, "inputs", lambda *_: {
+        "guest": {"sha256": hashlib.sha256(guest).hexdigest()}})
+    monkeypatch.setattr(installed_provider, "_agent_listeners", lambda *_: [
+        {"agent_id": name, "path": str(root / f"{name}.sock")} for name in installed_provider.NAMES])
+    monkeypatch.setattr(installed_provider, "runsc_identity", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(installed_provider, "_native_config", lambda *_: {})
+    monkeypatch.setattr(installed_provider, "_runtime_observation", after_interfaces)
+    try:
+        error = AssertionError if stage in {"extra_interface", "no_interfaces"} else RuntimeError
+        with pytest.raises(error) as failure:
+            installed_provider.run(Namespace(prepared_config=base, root=root, output=output,
+                                            revision="fixture", admin_port=19437))
+        if error is RuntimeError:
+            assert str(failure.value) == "original operation failure"
+        report = json.loads((output / "result.json").read_text())
+        assert report["status"] == "failed"
+        assert calls[-3:] == [["agent", "stop", "proofspot"], ["agent", "stop", "caller"], ["stop"]]
+        assert report["cleanup"] == ("failed" if stop_error or stage == "corrupt_clients" else "stopped")
+        if stop_error:
+            assert any("agent stop proofspot:" in finding for finding in report["cleanup_failures"])
+            assert any("global stop:" in finding for finding in report["cleanup_failures"])
+            assert any(f"owned process {backends['proofspot'].pid} is still live" == finding
+                       for finding in report["cleanup_failures"])
+        else:
+            assert all(child.poll() is not None for child in backends.values())
+            if stage == "corrupt_clients":
+                assert len(report["cleanup_failures"]) == 1
+                assert report["cleanup_failures"][0].startswith("cannot read clients observations:")
+            else:
+                assert report["cleanup_failures"] == []
+        if stage == "startup":
+            assert report["participants"] == {}
+        else:
+            assert report["participants"]["proofspot"]["runtime"]["backend_pid"] == backends["proofspot"].pid
+            assert "interfaces" in report["participants"]["proofspot"]
+            if stage == "loopback":
+                assert set(report["participants"]) == set(installed_provider.NAMES)
+    finally:
+        for child in backends.values():
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+
+
 def test_parent_observer_counts_connections_before_http(tmp_path):
     with ParentObserver() as parent:
         thread = threading.Thread(target=parent.serve_forever)
@@ -150,67 +256,21 @@ def test_parent_observer_counts_connections_before_http(tmp_path):
 
 @pytest.mark.skipif(sys.platform != "linux" or not os.environ.get("SAFEYOLO_NATIVE_CLI"),
                     reason="Requires the selected native Linux CLI")
-@pytest.mark.parametrize(("host_exit", "prepared_host"), [(0, False), (0, True), (19, False)])
-def test_host_preparation_precedes_native_use_and_preserves_prepared_inputs(
-        tmp_path, monkeypatch, host_exit, prepared_host):
-    """Use native init/status and a host-prepare stand-in without host privilege."""
+def test_prepared_configuration_is_readable_by_native_cli(tmp_path):
+    """Use the real config reader without starting a proxy, broker or sandbox."""
     cli = native_cli()
     base, root = tmp_path / "base", tmp_path / "instance"
     subprocess.run([str(cli), "--root", str(base), "init"], check=True, capture_output=True)
     (base / "bin").mkdir()
-    host_cli = base / "bin/safeyolo"
-    host_cli.write_text(f"#!{sys.executable}\n" + f'''
-import json, os, pathlib, sys
-if sys.argv[3:] == ['host', 'prepare', '--yes']:
-    root = pathlib.Path(sys.argv[2])
-    assert (root / 'data/tmp').is_dir()
-    assert not (root / 'host').exists() and not (root / 'host').is_symlink()
-    (root / 'host-command.json').write_text(json.dumps({{
-        'arguments': sys.argv[1:], 'uid': os.getuid(),
-        'platform': os.environ['SAFEYOLO_RUNSC_PLATFORM'], 'tmpdir': os.environ['TMPDIR']}}))
-    if {host_exit}:
-        print('fixture host preparation failure', file=sys.stderr)
-        sys.exit({host_exit})
-    (root / 'host').mkdir()
-    print('{{"state": "prepared", "applied": ["fixture host preparation"]}}')
-else:
-    os.execv({str(cli)!r}, [{str(cli)!r}, *sys.argv[1:]])
-''')
-    host_cli.chmod(0o755)
-    if prepared_host:
-        (base / "host").mkdir()
-        (base / "host/prepared-sentinel").write_text("preserved")
+    (base / "bin/safeyolo").symlink_to(cli)
+    (base / "host").mkdir()
+    (base / "host/prepared-sentinel").write_text("preserved")
     (base / "data/coord/nats/bin").mkdir(parents=True)
     config = tomlkit.parse((base / "config.toml").read_text())
     config["linux"] = {"host_uid": os.getuid(), "host_gid": os.getgid(), "uid_base": 100000,
                        "gid_base": 100000, "runsc": shutil.which("true"), "runsc_origin": "system"}
     (base / "config.toml").write_text(tomlkit.dumps(config))
-    original = (base / "config.toml").read_bytes()
-    env = os.environ | {"SAFEYOLO_RUNSC_PLATFORM": "systrap", "TMPDIR": str(root / "data/tmp")}
-    diagnostics = tmp_path / "native.log"
-    if host_exit:
-        # Exercise the driver's actual failure and cleanup path. Input identity
-        # is checked separately; this stand-in has no proxy or guest payload.
-        monkeypatch.setattr("tests.blackbox.installed_provider.inputs", lambda *_args: {})
-        output = tmp_path / "report"
-        diagnostics = output / "native.log"
-        with pytest.raises(RuntimeError, match=f"safeyolo failed with exit {host_exit}"):
-            run(Namespace(prepared_config=base, root=root, output=output, revision="fixture", admin_port=19437))
-        assert "fixture host preparation failure" in diagnostics.read_text()
-        report = json.loads((output / "result.json").read_text())
-        assert report["status"] == "failed" and report["cleanup"] == "stopped"
-        assert report["cleanup_failures"] == [] and report["commands"] == []
-        assert not (root / "agents").exists()
-    else:
-        assert prepare(base, root, 19437, 19438, env=env, diagnostics=diagnostics) == {
-            "state": "prepared", "applied": ["fixture host preparation"]}
-        subprocess.run([str(cli), "--root", str(root), "status"], check=True, capture_output=True)
-    assert json.loads((root / "host-command.json").read_text()) == {
-        "arguments": ["--root", str(root), "host", "prepare", "--yes"],
-        "uid": os.getuid(), "platform": "systrap", "tmpdir": str(root / "data/tmp")}
-    assert (base / "config.toml").read_bytes() == original
-    if prepared_host:
-        assert list((base / "host").iterdir()) == [base / "host/prepared-sentinel"]
-        assert (base / "host/prepared-sentinel").read_text() == "preserved"
-    else:
-        assert not (base / "host").exists()
+    prepare(base, root, 19437, 19438)
+    assert (root / "host").resolve() == base / "host"
+    assert (base / "host/prepared-sentinel").read_text() == "preserved"
+    subprocess.run([str(cli), "--root", str(root), "status"], check=True, capture_output=True)
