@@ -98,6 +98,15 @@ The [work walkthrough](coord-operations.md#claim-durable-work) covers creation,
 claims, candidates, review and completion. Local work treats `external_ref` as
 opaque. An external assignee or description never decides ownership.
 
+Local `create_work` can explicitly assign generic execution with
+`assignee={"kind":"agent","id":"DURABLE_AGENT_ID"}`. Only that agent may claim
+the assignment; operator reassignment remains available. A native supervisor
+uses `read_work_actions` and `receive_work_action` to retain delivery in its
+existing checkpoint. These operations use the authenticated participant and
+never claim, answer or accept work. See the
+[native delivery contract](codex-coord-supervisor.md#native-work-delivery)
+for action receipt recovery and interactive control.
+
 ### GitHub references
 
 To seed work from a GitHub issue or pull request, use the owning host account
@@ -470,12 +479,13 @@ factory roles and other Coord writers. Preserve the instance root, role homes,
 checkpoints, source trees and retained artifacts. Install matching host and
 guest executables before resuming those roles.
 
-The current store uses native schema 8. Bootstrap transactionally upgrades the
+The current store uses native schema 9. Bootstrap transactionally upgrades the
 retained native schema 5 work projection to admit cancellation and fences
-schema 5/6/7 writers before storing reviews, requirements or decisions. It preserves
+schema 5/6/7/8 writers before storing reviews, requirements, decisions or explicit
+execution assignments. It preserves
 claim IDs and generations, immutable revision bytes, operation receipts,
 attention, outbox rows and retained messages. A failed upgrade rolls back. An
-older executable refuses schema 8; do not run mixed writers or overwrite the
+older executable refuses schema 9; do not run mixed writers or overwrite the
 store to make an older executable start. Unsupported implementation generations
 remain refused.
 

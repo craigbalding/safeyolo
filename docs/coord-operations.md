@@ -426,9 +426,76 @@ scripts/cargo_with_space.sh test --manifest-path proxy/Cargo.toml --release --lo
 ```
 
 The expected result is one passing test, with a code and a report journey
-reported separately. This deterministic example does not establish a real
-supervised-agent wakeup or independent model response. Those journeys and
-approved factory configuration selection remain required follow-on integration.
+reported separately. The deterministic example does not establish model behavior.
+The following example exercises actual supervised model responses. Approved
+factory policy selection remains separate from standalone native delivery.
+
+### Wake a supervised native reviewer
+
+Use a running, native-work-enabled supervisor for the named reviewer, or keep
+that agent interactive and use the same native operations manually. Select one
+control arrangement for that agent. Native work creation does not change the
+selected coding client or start another controller. For a stopped standalone
+supervised agent, set `native_work` to `true` in its private
+`~/.safeyolo/coord-supervisor.json`, preserve its checkpoint, then resume the
+agent. The reviewer needs `send` and `receive` in the configured room.
+`coordinators` can be empty when only native work supplies assignments.
+The current approved Factory snapshot still governs a Factory's control mode;
+do not use this standalone setting to change a running Factory.
+
+An assigned native `request_check` wakes its named reviewer. The reviewer
+receives a narrow `native_in_flight` action containing the work ID and current
+versions. The reviewer reads full Work, claims it and calls `answer_check`.
+A response hands a challenge to its named deciding participant for an explicit
+`resolve_challenge`. Satisfied selected obligations make `decide_acceptance`
+ready for the eligible decider. These transitions use native authority and
+immutable output identity; no parallel `TASK`, `REVIEW_READY` or text terminal
+record is needed for that native lifecycle. Existing message assignments retain
+their configured handoff protocol.
+
+For generic execution, create assigned work with the recipient's durable agent
+ID from its grant receipt. These tool arguments use a placeholder ID; replace it
+with the actual configured agent ID:
+
+```json
+{"room_name":"chat","title":"Find the documented test command and retain a report","assignee":{"kind":"agent","id":"AGENT_ID"},"operation_id":"assigned-readme-check"}
+```
+
+The agent receives `execute_work`. It claims, retains its artifact, publishes
+an immutable output reference, and explicitly completes its execution. Output
+publication, execution completion, check conclusion and output acceptance remain
+separate. Unassigned open work does not wake competing supervisors. See the
+[delivery, retry and recovery contract](codex-coord-supervisor.md#native-work-delivery).
+
+For a reproducible Linux source proof, prepare a disposable role home with a
+private native Codex subscription login and executable Coord MCP registration.
+Reuse an already authorized login privately; do not place authentication bytes
+in the checkout or output. Set `SAFEYOLO_COORD_MODEL_HOME` to that absolute role
+home, and set the NATS and scratch variables used by the preceding example.
+The test binds its own authenticated native socket paths to the MCP subprocess
+and preserves the selected provider. It starts an owned NATS/proxy instance,
+runs bounded real model turns, retains its private fixture and stops its owned
+runtime:
+
+```sh
+scripts/cargo_with_space.sh test --manifest-path proxy/Cargo.toml --release --locked --test native_coord supervision::real_model_wakes_for_report_check_challenge_disposition_and_acceptance -- --ignored --nocapture
+```
+
+Expected output is one passing test. The model independently rejects a report
+that lacks the exact requested line, reads its retained correction, explicitly
+disposes of the challenge, approves the corrected check and decides acceptance.
+The controller supplies the producer's interactive native calls; it does not
+supply the review verdict or disposition. This proves native API attribution and
+actual supervisor/model behavior in one owned Linux process environment. It does
+not establish separate guest isolation, deployment, approved Factory policy
+selection or automatic changes to an interactive agent's control mode.
+
+The companion
+`supervision::native_delivery_is_not_completed_by_narration_and_restart_uses_current_work`
+uses a deterministic model event seam with real NATS and the Agent API. It proves
+that a completed model turn leaves execution pending until a canonical native
+transition, and that restart can retire the settled delivery without another
+model invocation.
 
 ## Raise a material signal
 

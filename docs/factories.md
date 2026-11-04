@@ -126,16 +126,18 @@ receipt. See [work publication and recovery](coord-reference.md#claims-outputs-a
 These operations are also available to an operator-directed interactive worker
 through that worker's authenticated Coord client.
 
-Native output publication does not send a factory handoff. The current
-supervisor still uses the declared message request/response routes. Keep that
+Native output publication does not send a factory handoff. Current Factory
+supervisors use the declared message request/response routes. Keep that
 handoff while using native work. Native assigned checks and peer challenges use
 the same durable work records and can enforce the selected participant and
-independence flag. Their [public review loop](coord-reference.md#assigned-checks-and-peer-challenges)
-does not yet select factory acceptance requirements or route native assignments
-to supervised roles. An authorized work creator can explicitly select native
+independence flag. Current Factory snapshots do not select acceptance requirements
+or native work delivery. The [public review loop](coord-reference.md#assigned-checks-and-peer-challenges)
+remains available to authenticated participants. An authorized work creator can explicitly select native
 [requirements and deciding participants](coord-reference.md#select-requirements-and-decide-output-acceptance).
 Those requirements apply equally to direct callers. Keep the declared message
-handoffs until native supervisor routing is supplied. Execution completion,
+handoffs for the current Factory snapshot. Standalone supervisors can explicitly
+enable [native work delivery](codex-coord-supervisor.md#native-work-delivery);
+that setting does not select approved Factory policy. Execution completion,
 challenge resolution and attestation counts do not substitute for an eligible
 acceptance decision about the current output.
 

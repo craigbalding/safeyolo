@@ -446,6 +446,7 @@ fn completion_retains_one_result_without_manufacturing_a_signal() {
         "owned",
         Actor::Agent("alice"),
         work::Mutation::Create {
+            assignee: None,
             title: "Real work".into(),
             external_ref: None,
         },

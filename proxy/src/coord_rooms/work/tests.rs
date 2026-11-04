@@ -38,6 +38,7 @@ fn create(conn: &mut Connection) -> Value {
         "owned",
         Actor::Operator,
         Mutation::Create {
+            assignee: None,
             title: "Private title π".into(),
             external_ref: Some("opaque:external-description".into()),
         },
@@ -88,6 +89,8 @@ fn canonical_record(mut value: Value) -> Value {
 
 #[path = "acceptance_tests.rs"]
 mod acceptance_tests;
+#[path = "action_tests.rs"]
+mod action_tests;
 #[path = "attestation_tests.rs"]
 mod attestation_tests;
 #[path = "output_tests.rs"]
@@ -370,6 +373,7 @@ fn bounded_reads_cross_room_refusal_and_untrusted_inputs() {
             "owned",
             Actor::Operator,
             Mutation::Create {
+                assignee: None,
                 title: " ".into(),
                 external_ref: None
             },
@@ -383,6 +387,7 @@ fn bounded_reads_cross_room_refusal_and_untrusted_inputs() {
             "owned",
             Actor::Operator,
             Mutation::Create {
+                assignee: None,
                 title: "x".repeat(MAX_REQUEST_BYTES),
                 external_ref: None
             },
@@ -404,6 +409,7 @@ fn bounded_reads_cross_room_refusal_and_untrusted_inputs() {
             "owned",
             Actor::Agent("alice"),
             Mutation::Create {
+                assignee: None,
                 title: format!("item {n}"),
                 external_ref: None,
             },

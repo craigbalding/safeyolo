@@ -100,6 +100,28 @@ range, assumptions, and uncertainty. If capacity looks tight, offer smaller
 topology, fewer simultaneous agents, reused mounted sources, or shorter
 evidence retention without pushing one choice.
 
+## Prove native work delivery
+
+For an explicitly native-work-enabled standalone supervisor, use the native
+Work ID and current versions in `native_in_flight`. Assigned checks, challenge
+responses and dispositions, and selected acceptance decisions carry their
+existing native authority. Do not copy that lifecycle into writable message
+`TASK` or review records. Message assignments retain their configured protocol.
+
+Read current Work before a mutation. Retain immutable artifacts before output
+publication. Delivery receipts are separate from claims and domain outcomes.
+A model turn or final text does not complete an actionable native delivery.
+After a restart, inspect canonical state and retained artifacts before repeating
+an uncertain effect; retry a known native operation with its original ID.
+
+Use the source example `proxy/tests/native_coord/supervision.rs` for a real
+supervised model response and a focused restart control. It uses an owned
+native NATS/proxy instance and authenticated participants. Actual model verdicts
+are distinct from its deterministic event seam. Its private login prerequisites
+and process-boundary limits are in `docs/coord-operations.md`. Current Factory
+snapshots select message handoffs; this standalone setting does not authorize
+changing a running Factory's control or approved policy.
+
 ## Teardown and handoff
 
 Restore injected faults, stop only the nested resources created for the run,

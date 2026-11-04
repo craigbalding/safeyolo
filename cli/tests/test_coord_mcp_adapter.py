@@ -87,7 +87,7 @@ def test_discovery_and_rpc_errors(adapter):
         "create_signal", "read_signal", "list_signals",
         "publish_work_output", "list_work_outputs", "cancel_work", "attest_work", "list_work_attestations",
         "request_check", "answer_check", "raise_challenge", "respond_challenge", "resolve_challenge", "list_work_reviews",
-        "set_work_requirements", "decide_work_acceptance",
+        "set_work_requirements", "decide_work_acceptance", "read_work_actions", "receive_work_action",
         "import_github_work", "read_github_work",
     }
     for name, required in {
@@ -142,6 +142,18 @@ def test_native_exact_work_target_requests(adapter):
     request = urlsplit(calls[-1][1])
     assert request.path == "/api/coord/rooms/backlog/work"
     assert parse_qs(request.query) == {"work_id": ["work-example"], "attestations": ["true"], "limit": ["2"], "after": ["att-previous"]}
+
+
+
+def test_native_work_delivery_uses_current_actions_and_canonical_receipt_keys(adapter):
+    call, _, calls, _, _ = adapter
+    assignee = {"kind": "agent", "id": "bob"}
+    call("create_work", {"room_name": "backlog", "title": "Inspect output", "assignee": assignee, "operation_id": "assigned"})
+    assert calls[-1][2] == {"action": "create", "title": "Inspect output", "assignee": assignee, "operation_id": "assigned"}
+    call("read_work_actions", {"room_name": "backlog", "work_id": "work-output", "include_received": True})
+    assert parse_qs(urlsplit(calls[-1][1]).query) == {"work_id": ["work-output"], "actions": ["true"], "include_received": ["true"]}
+    call("receive_work_action", {"room_name": "backlog", "work_id": "work-output", "action_key": "action-exact"})
+    assert calls[-1][2] == {"action": "receive_action", "work_id": "work-output", "action_key": "action-exact"}
 
 
 def test_native_assigned_review_requests_and_revision_reads(adapter):

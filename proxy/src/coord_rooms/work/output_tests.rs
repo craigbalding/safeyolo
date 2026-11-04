@@ -358,6 +358,7 @@ fn cancelled_work_has_its_own_status_and_open_work_needs_creator_authority() {
         "owned",
         Actor::Agent("bob"),
         Mutation::Create {
+            assignee: None,
             title: "My open work".into(),
             external_ref: None,
         },
@@ -480,7 +481,7 @@ fn current_native_store_upgrade_keeps_claims_original_receipts_and_unknown_produ
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        8
+        9
     );
     assert_eq!(
         revision(&conn, "rm-owned", "work-retained", 2)

@@ -49,6 +49,8 @@ pub(super) async fn respond(
         "outputs",
         "reviews",
         "version",
+        "actions",
+        "include_received",
     ]
     .map(|key| query_parameter(request.path_and_query, key));
     let [
@@ -60,11 +62,40 @@ pub(super) async fn respond(
         Ok(outputs),
         Ok(reviews),
         Ok(version),
+        Ok(actions),
+        Ok(include_received),
     ] = fields
     else {
         return response(400, json!({"error":"invalid work query"}));
     };
     let after = after.unwrap_or_default();
+    let actions = match actions.as_deref() {
+        None | Some("false") => false,
+        Some("true") if work_id.is_some() => true,
+        _ => return response(400, json!({"error":"actions=true requires work_id"})),
+    };
+    let include_received = match include_received.as_deref() {
+        None | Some("false") => false,
+        Some("true") if actions => true,
+        _ => {
+            return response(
+                400,
+                json!({"error":"include_received=true requires actions=true"}),
+            );
+        }
+    };
+    if actions
+        && [
+            attestations.as_deref(),
+            outputs.as_deref(),
+            reviews.as_deref(),
+            version.as_deref(),
+        ]
+        .iter()
+        .any(|v| v.is_some())
+    {
+        return response(400, json!({"error":"actions excludes other work views"}));
+    }
     let attestations = match attestations.as_deref() {
         None | Some("false") => false,
         Some("true") if work_id.is_some() => true,
@@ -142,6 +173,9 @@ pub(super) async fn respond(
                 work::mutate(&mut conn, &room, actor, mutation, operation.as_deref())
             }
             None => match work_id {
+                Some(id) if actions => {
+                    work::actions::read(&mut conn, &room, actor, &id, include_received)
+                }
                 Some(id) if reviews => {
                     work::reviews::list(&mut conn, &room, actor, &id, &after, limit)
                 }

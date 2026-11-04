@@ -8,7 +8,7 @@ const BOB: &str = "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 fn principal(id: &str) -> Value {
     json!({"kind":"agent","id":id})
 }
-fn subject(work: &Value) -> Value {
+pub(super) fn subject(work: &Value) -> Value {
     json!({"kind":"output","work_id":work["work_id"],"target_generation":work["target_generation"]})
 }
 fn hash(bytes: &[u8]) -> String {
@@ -18,10 +18,10 @@ fn hash(bytes: &[u8]) -> String {
         .map(|b| format!("{b:02x}"))
         .collect()
 }
-async fn claim(client: &Client, work: &Value, op: &str) -> Value {
+pub(super) async fn claim(client: &Client, work: &Value, op: &str) -> Value {
     client.call("claim_work",&json!({"room_name":"shared","work_id":work["work_id"],"expected_version":work["version"],"expected_generation":work["claim_generation"],"operation_id":op})).await.unwrap()["work"].clone()
 }
-async fn read(client: &Client, work: &Value) -> Value {
+pub(super) async fn read(client: &Client, work: &Value) -> Value {
     client
         .call(
             "read_work",
@@ -30,7 +30,7 @@ async fn read(client: &Client, work: &Value) -> Value {
         .await
         .unwrap()
 }
-async fn publish(client: &Client, work: &Value, path: &Path, op: &str) -> Value {
+pub(super) async fn publish(client: &Client, work: &Value, path: &Path, op: &str) -> Value {
     let digest = hash(&fs::read(path).unwrap());
     client.call("publish_work_output",&json!({"room_name":"shared","work_id":work["work_id"],"expected_version":work["version"],"expected_generation":work["claim_generation"],
         "expected_target_generation":work["target_generation"],"target_ref":format!("file://{}#sha256={digest}",path.display()),"execution_outcome":"succeeded","summary":"Retained exact artifact","operation_id":op})).await.unwrap()["work"].clone()
@@ -42,7 +42,12 @@ async fn request(client: &Client, work: &Value, op: &str) -> Value {
 fn answer(work: &Value, verdict: &str, op: &str) -> Value {
     json!({"room_name":"shared","work_id":work["work_id"],"expected_version":work["version"],"expected_generation":work["claim_generation"],"verdict":verdict,"summary":"Inspected retained artifact bytes","operation_id":op})
 }
-fn requirements(work: &Value, checks: &[Value], challenges: &[Value], op: &str) -> Value {
+pub(super) fn requirements(
+    work: &Value,
+    checks: &[Value],
+    challenges: &[Value],
+    op: &str,
+) -> Value {
     json!({"room_name":"shared","work_id":work["work_id"],"expected_version":work["version"],
         "expected_generation":work["claim_generation"],"expected_requirements_version":work["acceptance_requirements"]["version"].as_i64().unwrap_or(0),
         "authorities":[principal(BOB)],"deciders":[principal(BOB),{"kind":"operator","id":"operator"}],"independent":true,
@@ -50,7 +55,7 @@ fn requirements(work: &Value, checks: &[Value], challenges: &[Value], op: &str) 
         "challenges":challenges.iter().map(|w|json!({"work_id":w["work_id"],"version":w["version"]})).collect::<Vec<_>>(),
         "reason":"Select the independent review obligations for this retained output","operation_id":op})
 }
-fn acceptance(work: &Value, verdict: &str, op: &str) -> Value {
+pub(super) fn acceptance(work: &Value, verdict: &str, op: &str) -> Value {
     json!({"room_name":"shared","work_id":work["work_id"],"expected_version":work["version"],
         "expected_generation":work["claim_generation"],"expected_requirements_version":work["acceptance_requirements"]["version"],
         "expected_target_generation":work["target_generation"],"verdict":verdict,

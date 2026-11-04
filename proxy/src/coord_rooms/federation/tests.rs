@@ -106,6 +106,7 @@ async fn qualified_identity_peer_epochs_and_membership_replay_preserve_authority
     assert_ne!(principal("ab", "c"), principal("a", "bc"));
     assert!(authenticate(&conn, secret.trim().as_bytes(), "ag-alice").is_err());
     let create = || Mutation::Create {
+        assignee: None,
         title: "home-owned".into(),
         external_ref: None,
     };
