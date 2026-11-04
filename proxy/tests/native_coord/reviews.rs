@@ -42,6 +42,20 @@ async fn request(client: &Client, work: &Value, op: &str) -> Value {
 fn answer(work: &Value, verdict: &str, op: &str) -> Value {
     json!({"room_name":"shared","work_id":work["work_id"],"expected_version":work["version"],"expected_generation":work["claim_generation"],"verdict":verdict,"summary":"Inspected retained artifact bytes","operation_id":op})
 }
+fn requirements(work: &Value, checks: &[Value], challenges: &[Value], op: &str) -> Value {
+    json!({"room_name":"shared","work_id":work["work_id"],"expected_version":work["version"],
+        "expected_generation":work["claim_generation"],"expected_requirements_version":work["acceptance_requirements"]["version"].as_i64().unwrap_or(0),
+        "authorities":[principal(BOB)],"deciders":[principal(BOB),{"kind":"operator","id":"operator"}],"independent":true,
+        "checks":checks.iter().map(|w|json!({"work_id":w["work_id"],"version":w["version"]})).collect::<Vec<_>>(),
+        "challenges":challenges.iter().map(|w|json!({"work_id":w["work_id"],"version":w["version"]})).collect::<Vec<_>>(),
+        "reason":"Select the independent review obligations for this retained output","operation_id":op})
+}
+fn acceptance(work: &Value, verdict: &str, op: &str) -> Value {
+    json!({"room_name":"shared","work_id":work["work_id"],"expected_version":work["version"],
+        "expected_generation":work["claim_generation"],"expected_requirements_version":work["acceptance_requirements"]["version"],
+        "expected_target_generation":work["target_generation"],"verdict":verdict,
+        "summary":"Inspected the exact retained output and selected review outcomes","operation_id":op})
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires pinned NATS; real assigned checks, challenges and attributed dispositions"]
@@ -94,9 +108,51 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
         fs::write(&corrected, correction).unwrap();
         let first_hash = hash(&fs::read(&first).unwrap());
         let created=alice.call("create_work",&json!({"room_name":"shared","title":kind,"external_ref":format!("opaque:run-{kind}"),"operation_id":format!("create-{kind}")})).await.unwrap()["work"].clone();
+        let created = alice
+            .call(
+                "set_work_requirements",
+                &requirements(&created, &[], &[], &format!("select-{kind}")),
+            )
+            .await
+            .unwrap()["work"]
+            .clone();
         let owned = claim(&alice, &created, &format!("claim-{kind}")).await;
-        let output = publish(&alice, &owned, &first, &format!("publish-{kind}")).await;
+        let mut output = publish(&alice, &owned, &first, &format!("publish-{kind}")).await;
         let requested = request(&alice, &output, &format!("request-{kind}")).await;
+        output = bob
+            .call(
+                "set_work_requirements",
+                &requirements(
+                    &output,
+                    std::slice::from_ref(&requested),
+                    &[],
+                    &format!("require-check-{kind}"),
+                ),
+            )
+            .await
+            .unwrap()["work"]
+            .clone();
+        assert!(
+            alice
+                .call(
+                    "set_work_requirements",
+                    &requirements(&output, &[], &[], &format!("worker-relax-{kind}"))
+                )
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("403")
+        );
+        assert!(
+            bob.call(
+                "decide_work_acceptance",
+                &acceptance(&output, "approve", &format!("early-accept-{kind}"))
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("409")
+        );
         assert!(alice.call("claim_work",&json!({"room_name":"shared","work_id":requested["work_id"],"expected_version":1,"expected_generation":0,"operation_id":format!("wrong-reviewer-{kind}")})).await.unwrap_err().to_string().contains("403"));
         let checking = claim(&bob, &requested, &format!("review-claim-{kind}")).await;
         assert!(
@@ -127,10 +183,38 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
         let rejected = bob.call("answer_check", &reject).await.unwrap();
         assert_eq!(rejected["work"]["state"], "done");
         assert_eq!(rejected["work"]["check"]["answer"]["verdict"], "reject");
+        output=alice.call("complete_work",&json!({"room_name":"shared","work_id":output["work_id"],"expected_version":output["version"],"expected_generation":1,"operation_id":format!("finish-execution-{kind}")})).await.unwrap()["work"].clone();
+        assert_eq!(
+            read(&bob, &output).await["acceptance_status"]["obligations"][0]["status"],
+            "rejected_check"
+        );
         let raised=bob.call("raise_challenge",&json!({"room_name":"shared","subject":subject(&output),"assertion":"Required result omitted","grounds":"Read retained artifact bytes",
             "evidence_refs":[format!("sha256:{first_hash}")],"responder":principal(ALICE),"deciders":[principal(BOB)],"independent":true,"operation_id":format!("raise-{kind}")})).await.unwrap()["work"].clone();
+        output = bob
+            .call(
+                "set_work_requirements",
+                &requirements(
+                    &output,
+                    std::slice::from_ref(&rejected["work"]),
+                    std::slice::from_ref(&raised),
+                    &format!("require-challenge-{kind}"),
+                ),
+            )
+            .await
+            .unwrap()["work"]
+            .clone();
         let responding = claim(&alice, &raised, &format!("respond-claim-{kind}")).await;
-        let replacement = publish(&alice, &output, &corrected, &format!("correct-{kind}")).await;
+        let mut replacement =
+            publish(&alice, &output, &corrected, &format!("correct-{kind}")).await;
+        let pending = read(&bob, &replacement).await;
+        assert_eq!(
+            pending["acceptance_status"]["obligations"][0]["status"],
+            "stale_subject"
+        );
+        assert_eq!(
+            pending["acceptance_status"]["obligations"][1]["status"],
+            "unresolved_challenge"
+        );
         assert_eq!(
             read(&bob, &rejected["work"]).await["review_status"]["subject_current"],
             false
@@ -172,6 +256,19 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
         );
         assert_eq!(bob.call("answer_check", &reject).await.unwrap(), rejected);
         let next_check = request(&alice, &replacement, &format!("next-check-{kind}")).await;
+        replacement = bob
+            .call(
+                "set_work_requirements",
+                &requirements(
+                    &replacement,
+                    std::slice::from_ref(&next_check),
+                    std::slice::from_ref(&disposed["work"]),
+                    &format!("require-corrected-check-{kind}"),
+                ),
+            )
+            .await
+            .unwrap()["work"]
+            .clone();
         let next_claim = claim(&bob, &next_check, &format!("next-claim-{kind}")).await;
         let approved = bob
             .call(
@@ -181,6 +278,49 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
             .await
             .unwrap();
         assert_eq!(approved["work"]["check"]["answer"]["verdict"], "approve");
+        assert_eq!(
+            read(&bob, &replacement).await["acceptance_status"]["state"],
+            "pending"
+        );
+        let accept = acceptance(&replacement, "approve", &format!("accept-{kind}"));
+        if kind == "code" {
+            // Intentionally discard a committed response, then recover its
+            // original receipt after process restart through the public API.
+            let mut body = accept.clone();
+            body.as_object_mut().unwrap().remove("room_name");
+            body["action"] = json!("decide_acceptance");
+            let body = body.to_string();
+            let mut socket = tokio::net::UnixStream::connect(root.join("bob.sock"))
+                .await
+                .unwrap();
+            let token = fs::read_to_string(root.join("data/agent_token")).unwrap();
+            socket.write_all(format!("POST /api/coord/rooms/shared/work HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",token.trim(),body.len()).as_bytes()).await.unwrap();
+            stage0::until(|| {
+                Connection::open(root.join("data/coord/v0.db"))
+                    .unwrap()
+                    .query_row(
+                        "SELECT count(*) FROM coord_operations WHERE operation_id='accept-code'",
+                        [],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .unwrap()
+                    == 1
+            })
+            .await;
+            drop(socket);
+            stage0::crash(proxy).await;
+            proxy = stage0::start_proxy(&root).await;
+        }
+        let accepted = bob.call("decide_work_acceptance", &accept).await.unwrap();
+        assert_eq!(
+            bob.call("decide_work_acceptance", &accept).await.unwrap(),
+            accepted
+        );
+        assert_eq!(
+            read(&bob, &replacement).await["acceptance_status"]["state"],
+            "accepted"
+        );
+        assert_eq!(accepted["work"]["state"], "done");
         let reviews = bob
             .call(
                 "list_work_reviews",
@@ -197,6 +337,71 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
         );
         assert_eq!(hash(&fs::read(&first).unwrap()), first_hash);
         if kind == "report" {
+            let id = accepted["work"]["work_id"].as_str().unwrap();
+            let version = accepted["work"]["version"].to_string();
+            let requirements_version =
+                accepted["work"]["acceptance_requirements"]["version"].to_string();
+            let rejected = coord_json(
+                &root,
+                &[
+                    "work",
+                    "decide-acceptance",
+                    "shared",
+                    id,
+                    "--expected-version",
+                    &version,
+                    "--expected-generation",
+                    "1",
+                    "--expected-requirements-version",
+                    &requirements_version,
+                    "--expected-target-generation",
+                    "2",
+                    "--verdict",
+                    "reject",
+                    "--summary",
+                    "Operator has a conflicting observation",
+                    "--operation-id",
+                    "operator-acceptance-reject",
+                ],
+            )
+            .await;
+            assert_eq!(
+                read(&bob, &replacement).await["acceptance_status"]["state"],
+                "conflicting"
+            );
+            let version = rejected["work"]["version"].to_string();
+            coord_json(
+                &root,
+                &[
+                    "work",
+                    "decide-acceptance",
+                    "shared",
+                    id,
+                    "--expected-version",
+                    &version,
+                    "--expected-generation",
+                    "1",
+                    "--expected-requirements-version",
+                    &requirements_version,
+                    "--expected-target-generation",
+                    "2",
+                    "--verdict",
+                    "approve",
+                    "--summary",
+                    "Operator explicitly corrected the observation",
+                    "--operation-id",
+                    "operator-acceptance-correct",
+                ],
+            )
+            .await;
+            assert_eq!(
+                read(&bob, &replacement).await["acceptance_status"]["state"],
+                "accepted"
+            );
+            assert_eq!(
+                bob.call("decide_work_acceptance", &accept).await.unwrap(),
+                accepted
+            );
             let subject = subject(&replacement).to_string();
             let human = coord_json(
                 &root,
@@ -279,7 +484,7 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
             assert_eq!(page["items"].as_array().unwrap().len(), 4);
         }
         println!(
-            "{kind}: exact-subject rejection -> challenge -> retained correction -> independent disposition -> current check approval; original evidence unchanged"
+            "{kind}: selected requirements -> exact-subject rejection -> challenge -> retained correction -> independent disposition -> current check approval -> output acceptance; original evidence unchanged"
         );
     }
     stage0::crash(proxy).await;

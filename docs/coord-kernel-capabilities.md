@@ -795,8 +795,15 @@ facts without interpreting messages. See the authoritative [review operation
 contract](coord-reference.md#assigned-checks-and-peer-challenges) and
 [code/report example](coord-operations.md#run-an-assigned-review-loop).
 
-These are optional review records. Selected acceptance requirements and native
-supervisor routing remain unimplemented. Existing factory message handoffs
+Reviews remain advisory unless an authorized caller selects them in the native
+versioned acceptance context. The creator selects initial requirements; recorded
+authorities or the operator amend them. A non-operator holder or output producer
+cannot relax its own selected requirements. Eligible decisions bind the current
+output/context and an approval's required review basis. Current reads explain
+pending, stale, rejected and conflicting obligations without vote counts.
+See [selected acceptance](coord-reference.md#select-requirements-and-decide-output-acceptance).
+Approved factory configuration selection and native supervisor routing remain
+unimplemented. Existing factory message handoffs
 remain required; an attributed check conclusion alone does not accept its subject.
 
 A published output selects the current **work target**:

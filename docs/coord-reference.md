@@ -200,16 +200,16 @@ Evidence references remain untrusted external content and are never fetched.
 Attestations do not transfer ownership or complete work.
 
 `get_room_state` and `coord status ROOM` show the current candidate and exact
-counts of current acceptance dispositions and stale attestations. Conflicting
-dispositions remain attributed to their authors. The status view does not decide
-a majority or apply policy. Each work item shows at most eight attestation
+counts of current acceptance attestations and stale attestations. These counts
+are attributed reports. They do not decide acceptance by majority or replace
+the selected requirements and decisions described below. Each work item shows at most eight attestation
 excerpts in 4096 bytes of item JSON, current first, with explicit truncation.
 Summaries show a UTF-8 prefix of at most 128 bytes. Use `list_work_attestations`
 with `room_name` and `work_id` for full records and evidence references. Pages
 contain at most 200 items and 65536 bytes of item JSON, ordered by
 `attestation_id`; follow `next_after`. Each page labels records current or stale
 against its returned `target_generation`. Pages do not share a snapshot.
-Prior acceptance stays in history after a target change and does not approve
+Prior attestation evidence stays in history after a target change and does not approve
 the new generation.
 
 Use `coord work attest` and `coord work attestations` from the owning host
@@ -347,11 +347,120 @@ references of 1024 bytes each. A serialized review record is at most 32768 bytes
 The existing 262144-byte work mutation bound also applies. References remain
 external content. Work `external_ref` preserves opaque run/batch context.
 
-These operations record optional review work. They do not select acceptance
-requirements, infer acceptance from a check verdict or launch a supervised
-model turn. The current supervisor still needs its declared message handoffs.
-Selected acceptance requirements and native supervision remain unimplemented.
+These operations record review work. A review is advisory until an authorized
+caller selects it as an acceptance requirement as described below. A check
+verdict alone does not accept an output or launch a supervised model turn.
+The current supervisor still needs its declared message handoffs.
 See the [working review example](coord-operations.md#run-an-assigned-review-loop).
+
+### Select requirements and decide output acceptance
+
+Use `set_work_requirements` to select acceptance context on existing work.
+Supply `room_name`, `work_id`, its current `expected_version` and
+`expected_generation`, and `expected_requirements_version` (0 initially).
+`authorities` names participants allowed to amend the context. `deciders`
+names participants eligible to decide acceptance. Each participant uses the
+same agent/operator principal format as assigned reviews. At least one decider
+is required. An empty authorities list leaves later amendments to the operator.
+The operator retains recovery authority; the operator must be an explicitly
+selected decider to decide acceptance.
+
+The authenticated work creator or operator selects the initial context.
+Later amendments require an existing selected authority or the operator.
+A non-operator holder or attributed output producer cannot amend its own
+requirements, including after release or reassignment while its output remains
+current. Changing ownership does not relabel the producer. A worker can still
+publish corrections, report failure, request advisory reviews and respond to
+challenges while acceptance is pending.
+
+`checks` and `challenges` are arrays of `{work_id, version}` references to
+current related review work. Omitted arrays select no obligations of that kind.
+Selection records each review's definition, selected revision and original
+subject. The selection must be current when it commits. Answers and dispositions
+can change without reselecting the obligation. A reassigned reviewer, responder
+or deciding participant changes that definition and needs an authorized
+reselection. Operator recovery of a participant does not silently change the
+acceptance policy. Duplicate references are refused. Reviews in another room
+or about unrelated work cannot satisfy an obligation.
+
+With `independent=true`, acceptance deciders must differ from the current output's
+transport-attributed producer. Selection before publication records that
+requirement; the decision operation enforces it against the eventual producer.
+Each required review retains its own selected independence flag. A producer's
+required deterministic check can therefore be paired with independent output
+acceptance. Without this option, the selected participants decide the policy;
+Coord adds no universal independence rule or quorum.
+
+Every selection or amendment needs a nonempty `reason`, advances the context's
+own `version`, and records its transport-derived author and time in
+`work.acceptance_requirements`. The complete selected context is bounded to
+32768 serialized UTF-8 bytes. Earlier contexts remain in immutable work
+revisions. Removing an obligation needs the same authority and attributed
+amendment; it does not resolve or erase its original challenge.
+
+An eligible decider calls `decide_work_acceptance` with the current work version,
+claim generation, `expected_target_generation`, `expected_requirements_version`,
+`verdict`, `summary`, optional `evidence_refs` and a chosen `operation_id`.
+An approval atomically validates the output, context, required check answers and
+challenge dispositions in the existing SQLite transaction. Direct Agent API,
+MCP and host calls use that same boundary.
+
+A required check must concern the current output generation, have its selected
+assignment and have an effective `approve` answer. A pending, cancelled,
+rejected, uncertain or old-output check cannot satisfy it. Nested checks follow
+their immutable subjects to the original output generation. A selected challenge
+remains an obligation across output replacement. It needs an explicit current
+disposition by its selected deciding participants. That disposition and its
+exact response/correction remain visible. An upheld objection can concern an
+earlier output; Coord does not infer the corrected output's domain verdict
+from that label. The selected acceptance decider judges the current output.
+An unresolved required challenge prevents approval. Advisory reviews add no
+undeclared gate.
+
+`reject` and `abstain` decisions remain possible while review obligations are
+outstanding. All decisions require a published output. Summary/evidence limits
+match assigned review answers. Each author has one effective decision in
+`work.acceptance_decisions`; a correction replaces that author's current entry
+and retains earlier entries in immutable work revisions. The complete effective
+decision array is bounded to 262144 serialized UTF-8 bytes. An authorized amendment
+removes decisions by participants who are no longer selected from that effective
+array; their immutable history remains readable. This lets an authority recover
+an unavailable participant without retaining its data in the bounded current array.
+
+`read_work` derives `acceptance_status` from current native state. It lists each
+selected obligation, its status, eligible decisions and explicit stale reasons.
+Output replacement or a requirements amendment makes earlier decisions stale.
+A changed required answer, response or disposition invalidates an approval's
+review basis. Fixing that review does not resurrect the old approval. A rejection
+of the same output/context persists until an explicit corrected decision or an
+authorized context change. Conflicting eligible approvals and rejections remain
+`conflicting`; extra submissions never outvote another author. A selected
+decider must correct the applicable decision, or a policy authority must amend
+the context explicitly.
+
+An output is `accepted` only with satisfied obligations, a current eligible
+approval and no current eligible rejection. Execution need not be done, and
+generic work completion does not create acceptance. Acceptance of a retained
+artifact after cancellation leaves execution cancelled. It does not revive a
+claim or authorize publication from the cancelled assignment. Work with no selected context
+reports `not_selected`; ordinary execution still completes normally. Attestation
+counts remain attributed evidence and never bypass selected acceptance.
+
+The host commands are `coord work set-requirements` and
+`coord work decide-acceptance`; their options match these fields. Use
+`coord work --help` for argument syntax. Room status includes bounded acceptance
+excerpts and explicit truncation; use `read_work` or `coord work show` for full
+requirements, decisions and reasons. Mutation receipts retain their original
+work revision. Retry the exact operation ID and inputs after uncertainty, then
+read current work before acting on a recovered receipt.
+
+External applications can use these native requirements and decisions instead
+of separately writable acceptance state. They retain domain data, immutable
+artifacts and final effects. Coord does not fetch or interpret those artifacts.
+A final merge, publication or other external action must validate its expected
+revision at that system's own authority. Approved factory configuration selection
+and native supervisor routing are still separate pending integration; the current
+message handoffs remain necessary.
 
 ### Open retained native state
 
@@ -360,12 +469,12 @@ factory roles and other Coord writers. Preserve the instance root, role homes,
 checkpoints, source trees and retained artifacts. Install matching host and
 guest executables before resuming those roles.
 
-The current store uses native schema 7. Bootstrap transactionally upgrades the
+The current store uses native schema 8. Bootstrap transactionally upgrades the
 retained native schema 5 work projection to admit cancellation and fences
-schema 5/6 writers before storing assigned checks or challenges. It preserves
+schema 5/6/7 writers before storing reviews, requirements or decisions. It preserves
 claim IDs and generations, immutable revision bytes, operation receipts,
 attention, outbox rows and retained messages. A failed upgrade rolls back. An
-older executable refuses schema 7; do not run mixed writers or overwrite the
+older executable refuses schema 8; do not run mixed writers or overwrite the
 store to make an older executable start. Unsupported implementation generations
 remain refused.
 

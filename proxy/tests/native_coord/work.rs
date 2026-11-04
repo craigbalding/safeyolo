@@ -16,13 +16,17 @@ async fn change(
     client.call(&format!("{action}_work"),&json!({"room_name":"shared","work_id":work["work_id"],"expected_version":work["version"],"expected_generation":work["claim_generation"],"operation_id":operation})).await
 }
 async fn read(client: &Client, work: &Value) -> Value {
-    client
+    let mut record = client
         .call(
             "read_work",
             &json!({"room_name":"shared","work_id":work["work_id"]}),
         )
         .await
-        .unwrap()
+        .unwrap();
+    // This suite compares canonical work with operation receipts. The reviews
+    // suite independently exercises the current acceptance projection.
+    record.as_object_mut().unwrap().remove("acceptance_status");
+    record
 }
 async fn create(client: &Client, title: &str) -> Value {
     client.call("create_work",&json!({"room_name":"shared","title":title,"external_ref":"github://unavailable/changed-description","operation_id":title})).await.unwrap()["work"].clone()

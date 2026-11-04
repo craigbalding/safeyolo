@@ -79,6 +79,15 @@ fn counts(conn: &Connection) -> Vec<i64> {
     .collect()
 }
 
+// A current read adds derived status; receipts retain the canonical work record.
+fn canonical_record(mut value: Value) -> Value {
+    value.as_object_mut().unwrap().remove("acceptance_status");
+    value.as_object_mut().unwrap().remove("review_status");
+    value
+}
+
+#[path = "acceptance_tests.rs"]
+mod acceptance_tests;
 #[path = "attestation_tests.rs"]
 mod attestation_tests;
 #[path = "output_tests.rs"]
@@ -326,13 +335,15 @@ fn failure_at_each_write_rolls_back_projection_history_retry_audit_and_attention
         assert!(change(&mut conn, Actor::Agent("alice"), "claim", &open, "retry").is_err());
         assert_eq!(counts(&conn), before);
         assert_eq!(
-            read(
-                &mut conn,
-                "owned",
-                Actor::Operator,
-                open["work_id"].as_str().unwrap()
-            )
-            .unwrap(),
+            canonical_record(
+                read(
+                    &mut conn,
+                    "owned",
+                    Actor::Operator,
+                    open["work_id"].as_str().unwrap()
+                )
+                .unwrap()
+            ),
             open
         );
         conn.execute_batch("DROP TRIGGER fail").unwrap();

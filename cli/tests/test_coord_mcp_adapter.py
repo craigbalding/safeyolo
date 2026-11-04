@@ -87,6 +87,7 @@ def test_discovery_and_rpc_errors(adapter):
         "create_signal", "read_signal", "list_signals",
         "publish_work_output", "list_work_outputs", "cancel_work", "attest_work", "list_work_attestations",
         "request_check", "answer_check", "raise_challenge", "respond_challenge", "resolve_challenge", "list_work_reviews",
+        "set_work_requirements", "decide_work_acceptance",
         "import_github_work", "read_github_work",
     }
     for name, required in {
@@ -166,6 +167,25 @@ def test_native_assigned_review_requests_and_revision_reads(adapter):
     assert parse_qs(urlsplit(calls[-1][1]).query) == {"work_id": ["work-objection"], "version": ["3"]}
     call("list_work_reviews", {"room_name": "backlog", "work_id": "work-output", "after": "work-previous", "limit": 1})
     assert parse_qs(urlsplit(calls[-1][1]).query) == {"work_id": ["work-output"], "reviews": ["true"], "after": ["work-previous"], "limit": ["1"]}
+
+
+def test_native_acceptance_requirements_and_decisions_share_the_work_endpoint(adapter):
+    call, _, calls, _, _ = adapter
+    requirements = {"work_id": "work-output", "expected_version": 3, "expected_generation": 1,
+                    "expected_requirements_version": 0, "authorities": [{"kind": "agent", "id": "coordinator"}],
+                    "deciders": [{"kind": "agent", "id": "reviewer"}], "independent": True,
+                    "checks": [{"work_id": "work-check", "version": 2}], "challenges": [], "reason": "Select review"}
+    call("set_work_requirements", {"room_name": "backlog", **requirements})
+    assert calls[-1][2] == {"action": "set_requirements", **requirements}
+    decision = {"work_id": "work-output", "expected_version": 4, "expected_generation": 1,
+                "expected_requirements_version": 1, "expected_target_generation": 2,
+                "verdict": "approve", "summary": "Observed the retained revision"}
+    call("decide_work_acceptance", {"room_name": "backlog", **decision})
+    assert calls[-1][2] == {"action": "decide_acceptance", **decision}
+    call("set_work_requirements", {"room_name": "backlog", **requirements, "checks": [{"work_id": "work-check", "version": 2, "verdict": "approve"}]})
+    assert len(calls) == 2
+    call("decide_work_acceptance", {"room_name": "backlog", **decision, "author": "forged"})
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize("change", [

@@ -310,6 +310,8 @@ impl Client {
             | "raise_challenge"
             | "respond_challenge"
             | "resolve_challenge"
+            | "set_work_requirements"
+            | "decide_work_acceptance"
             | "attest_work" => {
                 let mut body = args
                     .as_object()
@@ -318,6 +320,8 @@ impl Client {
                 body.remove("room_name");
                 let action = match name {
                     "publish_work_output" => "publish_output",
+                    "set_work_requirements" => "set_requirements",
+                    "decide_work_acceptance" => "decide_acceptance",
                     _ => name.trim_end_matches("_work"),
                 };
                 body.insert("action".into(), json!(action));
@@ -523,6 +527,7 @@ pub fn tools() -> Vec<Value> {
         {"type":"object","properties":{"kind":{"type":"string","enum":["work","check"]},"work_id":string,"version":integer},"required":["kind","work_id","version"],"additionalProperties":false},
         {"type":"object","properties":{"kind":{"type":"string","enum":["output"]},"work_id":string,"target_generation":integer},"required":["kind","work_id","target_generation"],"additionalProperties":false}
     ]});
+    let review_refs = json!({"type":"array","items":{"type":"object","properties":{"work_id":string,"version":integer},"required":["work_id","version"],"additionalProperties":false}});
     let mut result = Vec::new();
     let mut add = |name: &str, description: &str, properties: Value, required: &[&str]| {
         result.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}}));
@@ -571,7 +576,7 @@ pub fn tools() -> Vec<Value> {
     );
     add(
         "read_work",
-        "Read current canonical work and derived review_status, or an exact immutable work version when version is supplied. Check answers and challenge response/disposition history remain in those revisions. Room receive permission is checked on every read. Work completion and challenge resolution are separate facts.",
+        "Read current canonical work with derived review_status and acceptance_status, or an exact immutable work version when version is supplied. acceptance_status explains selected obligations and current/stale/conflicting eligible decisions without vote counts. Check answers, requirements and decision history remain in immutable revisions. Room receive permission is checked on every read. Execution completion, check conclusion and output acceptance are separate facts.",
         json!({"room_name":string,"work_id":string,"version":integer}),
         &["room_name", "work_id"],
     );
@@ -580,6 +585,36 @@ pub fn tools() -> Vec<Value> {
         "Request a check as ordinary durable work over an exact work version, output generation or answered-check version. Name the reviewer and criterion. independent=true requires separation from the transport-attributed subject producer. Only the assigned reviewer may claim and answer it. Requester comes from transport. This optional check creates no acceptance gate. Retry with the original operation_id and inputs.",
         json!({"room_name":string,"subject":subject,"criterion":string,"reviewer":principal,"independent":{"type":"boolean"},"external_ref":string,"operation_id":string}),
         &["room_name", "subject", "criterion", "reviewer"],
+    );
+    add(
+        "set_work_requirements",
+        "Select durable acceptance requirements as the work creator, or amend them as an existing selected authority other than the holder or attributed producer. The operator can recover policy authority. Supply current work/claim versions and expected_requirements_version (0 initially). Checks and challenges name existing related review work and its current version; their selected definitions remain bound. Only selected obligations govern acceptance. Name eligible deciders and whether independence is required. Every amendment needs a reason and invalidates earlier acceptance decisions. Actor comes from transport. Retry the original operation_id and inputs.",
+        json!({"room_name":string,"work_id":string,"expected_version":integer,"expected_generation":integer,"expected_requirements_version":integer,"authorities":{"type":"array","items":principal},"deciders":{"type":"array","items":principal},"independent":{"type":"boolean"},"checks":review_refs,"challenges":review_refs,"reason":string,"operation_id":string}),
+        &[
+            "room_name",
+            "work_id",
+            "expected_version",
+            "expected_generation",
+            "expected_requirements_version",
+            "authorities",
+            "deciders",
+            "reason",
+        ],
+    );
+    add(
+        "decide_work_acceptance",
+        "Record one effective attributed acceptance decision per eligible decider for the exact current output and selected requirements. Approval atomically checks all required review outcomes and configured producer independence; reject/abstain remain possible with outstanding obligations. Direct calls cannot skip those checks. Supply current work version, claim generation, output generation and requirements version. Changes to the output, requirements or an approval's required review basis make that approval stale. Conflicting eligible decisions need explicit correction or an authorized requirements amendment; no vote count decides acceptance. Read current acceptance_status for reasons. Retry original operation_id and inputs.",
+        json!({"room_name":string,"work_id":string,"expected_version":integer,"expected_generation":integer,"expected_requirements_version":integer,"expected_target_generation":integer,"verdict":{"type":"string","enum":["approve","reject","abstain"]},"summary":string,"evidence_refs":array,"operation_id":string}),
+        &[
+            "room_name",
+            "work_id",
+            "expected_version",
+            "expected_generation",
+            "expected_requirements_version",
+            "expected_target_generation",
+            "verdict",
+            "summary",
+        ],
     );
     add(
         "answer_check",
