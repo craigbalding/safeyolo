@@ -17,6 +17,9 @@ on:
           - clean-public-install
           - installed-update
           - runsc-build
+      runsc_build_run:
+        description: Optional runsc-build run whose complete runtime files should be reused for qualification
+        type: string
       host_run:
         description: Optional exact default-branch production run for retained mode
         type: string
@@ -64,6 +67,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -83,6 +87,14 @@ jobs:
           git rev-parse HEAD
           df -Pk "$RUNSC_WORK"
           test "$(df -Pk "$RUNSC_WORK" | awk 'NR == 2 {print $4}')" -ge 10485760
+          sha256sum scripts/build_runsc.sh scripts/native_package.sh scripts/gvisor/nofollow.patch scripts/probe_runsc_nofollow.py
+          cp scripts/build_runsc.sh scripts/native_package.sh scripts/gvisor/nofollow.patch scripts/probe_runsc_nofollow.py scripts/qualify_runsc_nofollow.sh "$RUNSC_WORK/reports/"
+      - name: Acquire the pinned upstream source and compiler
+        if: inputs.runsc_build_run == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$RUNSC_WORK/reports/inputs.log") 2>&1
           git init "$RUNSC_WORK/source"
           git -C "$RUNSC_WORK/source" remote add origin https://github.com/google/gvisor.git
           git -C "$RUNSC_WORK/source" fetch --depth=1 origin 97e8e896904cb364319cd9758241d3f0bd27a6f4
@@ -90,8 +102,6 @@ jobs:
           test "$(git -C "$RUNSC_WORK/source" rev-parse HEAD)" = 97e8e896904cb364319cd9758241d3f0bd27a6f4
           test "$(cat "$RUNSC_WORK/source/.bazelversion")" = 8.3.1
           grep -Fx 'go 1.26.3' "$RUNSC_WORK/source/go.mod"
-          sha256sum scripts/build_runsc.sh scripts/native_package.sh scripts/gvisor/nofollow.patch scripts/probe_runsc_nofollow.py
-          cp scripts/build_runsc.sh scripts/native_package.sh scripts/gvisor/nofollow.patch scripts/probe_runsc_nofollow.py "$RUNSC_WORK/reports/"
           cp "$RUNSC_WORK/source/"{.bazelversion,.bazelrc,MODULE.bazel,go.mod,go.sum} "$RUNSC_WORK/reports/"
           curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
             https://github.com/bazelbuild/bazel/releases/download/8.3.1/bazel-8.3.1-linux-arm64 \
@@ -101,6 +111,7 @@ jobs:
           "$RUNSC_WORK/tools/bazel" --version
           echo "$RUNSC_WORK/tools" >> "$GITHUB_PATH"
       - name: Run the focused upstream tests and build all four runtime files
+        if: inputs.runsc_build_run == ''
         shell: bash
         run: |
           set -euo pipefail
@@ -141,6 +152,34 @@ jobs:
           (cd "$RUNSC_WORK/runtime"; sha256sum runsc gvisor-bin/*) | tee "$RUNSC_WORK/reports/SHA256SUMS"
           "$RUNSC_WORK/runtime/runsc" --version | tee "$RUNSC_WORK/reports/version.txt"
           df -Pk "$RUNSC_WORK"
+      - name: Reuse the matching complete runtime without rebuilding
+        if: inputs.runsc_build_run != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN: ${{ inputs.runsc_build_run }}
+        run: |
+          set -euo pipefail
+          [[ $BUILD_RUN =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN" > "$RUNSC_WORK/reports/reused-run.json"
+          build_head=$(jq -r .head_sha "$RUNSC_WORK/reports/reused-run.json")
+          build_attempt=$(jq -r .run_attempt "$RUNSC_WORK/reports/reused-run.json")
+          gh run download "$BUILD_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name "runsc-arm64-$build_head-$BUILD_RUN-$build_attempt" --dir "$RUNSC_WORK/reused"
+          for source in build_runsc.sh nofollow.patch probe_runsc_nofollow.py; do
+            cmp "$RUNSC_WORK/reports/$source" "$RUNSC_WORK/reused/reports/$source"
+          done
+          grep -F 'Build exit: 0;' "$RUNSC_WORK/reused/reports/build.log"
+          mv "$RUNSC_WORK/reused/runtime" "$RUNSC_WORK/runtime"
+          (cd "$RUNSC_WORK/runtime"; sha256sum --check --strict ../reused/reports/SHA256SUMS)
+          chmod +x "$RUNSC_WORK/runtime/runsc" "$RUNSC_WORK/runtime/gvisor-bin/"*
+          mv "$RUNSC_WORK/reused/reports" "$RUNSC_WORK/reports/reused-build"
+      - name: Qualify the selected runtime on both guest filesystems
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/qualify_runsc_nofollow.sh "$RUNSC_WORK/runtime" "$RUNSC_WORK/qualification" \
+            2>&1 | tee "$RUNSC_WORK/reports/qualification.log"
       - name: Retain runtime files and the reached build result
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -149,6 +188,7 @@ jobs:
           path: |
             ${{ env.RUNSC_WORK }}/runtime/
             ${{ env.RUNSC_WORK }}/reports/
+            ${{ env.RUNSC_WORK }}/qualification/reports/
             ${{ env.RUNSC_WORK }}/source/bazel-testlogs/pkg/sentry/vfs/vfs_test/test.log
             ${{ env.RUNSC_WORK }}/source/bazel-testlogs/pkg/sentry/vfs/vfs_test/test.xml
           include-hidden-files: true
