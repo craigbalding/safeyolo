@@ -3483,6 +3483,31 @@ else:
     return home, command, env
 
 
+@pytest.mark.parametrize("settings_source", ["inline", "file"])
+def test_claude_launch_preserves_caller_settings_and_bypass_defaults(tmp_path, settings_source):
+    home, command, env = _stage_native_client(tmp_path, "claude")
+    caller_settings = json.dumps({"model": "caller-model", "env": {"USER_PREFERENCE": "keep"}})
+    if settings_source == "file":
+        path = tmp_path / "caller settings.json"
+        path.write_text(caller_settings)
+        caller_settings = str(path)
+    arguments = ["--settings", caller_settings, "--probe", "two words", ""]
+    result = subprocess.run([str(command), *arguments], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    actual = Path(env["TEST_EXEC_LOG"]).read_bytes().split(b"\0")[:-1]
+    assert actual[-len(arguments):] == [value.encode() for value in arguments]
+    assert actual.count(b"--settings") == 1
+    assert b"--dangerously-skip-permissions" in actual
+    context = actual[actual.index(b"--append-system-prompt") + 1].decode()
+    assert context == (home / ".safeyolo/AGENTS.md").read_text().rstrip("\n")
+    settings = json.loads((home / ".claude/settings.json").read_text())
+    assert settings["disableAutoMode"] == "disable"
+    assert settings["skipDangerousModePermissionPrompt"] is True
+    assert settings["permissions"]["defaultMode"] == "bypassPermissions"
+    config = json.loads((home / ".claude.json").read_text())
+    assert "safeyolo-coord" in config["mcpServers"]
+
+
 @pytest.mark.parametrize(("harness", "entry"), [("claude", "ordinary"), ("codex", "ordinary"),
                                                   ("codex", "interactive"), ("codex", "supervised")])
 @pytest.mark.parametrize("lookup_failure", [False, True])
@@ -3983,6 +4008,7 @@ def test_ordinary_native_setup_and_reapply_do_not_invoke_python(tmp_path, script
         settings = json.loads((agent_home / ".claude/settings.json").read_text())
         assert settings["permissions"]["defaultMode"] == "bypassPermissions"
         assert settings["skipDangerousModePermissionPrompt"] is True
+        assert settings["disableAutoMode"] == "disable"
 
 
 @pytest.mark.parametrize("copy", ["0", "1"])
@@ -4060,7 +4086,7 @@ def test_claude_native_setup_preserves_selected_identity_settings_and_mcp_on_rea
     (operator_home / ".claude.json").write_text(json.dumps(identity))
     host_settings = operator_home / ".claude/settings.json"
     host_settings.parent.mkdir()
-    host_settings.write_text(json.dumps({"model": "operator-model", "permissions": {"allow": ["Read"], "defaultMode": "default"}, "hostPreference": 7}))
+    host_settings.write_text(json.dumps({"model": "operator-model", "permissions": {"allow": ["Read"], "defaultMode": "auto"}, "disableAutoMode": None, "hostPreference": 7}))
     config_path = agent_home / ".claude.json"
     config_path.parent.mkdir()
     config_path.write_text(json.dumps({"custom": {"keep": True}, "mcpServers": {"unrelated": {"command": "other"}},
@@ -4086,6 +4112,7 @@ def test_claude_native_setup_preserves_selected_identity_settings_and_mcp_on_rea
     settings = json.loads(settings_path.read_text())
     assert settings["hostPreference"] == 7 and settings["agentPreference"] == 42
     assert settings["model"] == "operator-model"
+    assert settings["disableAutoMode"] == "disable"
     assert settings["permissions"] == {"allow": ["Read"], "deny": ["Write"], "defaultMode": "bypassPermissions"}
 
 

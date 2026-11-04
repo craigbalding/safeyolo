@@ -548,6 +548,7 @@ fn stage_claude_state(home: &Path, operator_home: Option<&Path>) -> Result<(), E
         }
     }
     settings.insert("skipDangerousModePermissionPrompt".into(), json!(true));
+    settings.insert("disableAutoMode".into(), json!("disable"));
     let permissions = settings
         .entry("permissions")
         .or_insert_with(|| json!({}))
