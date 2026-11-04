@@ -3156,9 +3156,10 @@ where
     };
     // Credential enforcement is deliberately after network and circuit
     // admission, but before test-context observation or any
-    // outbound connection. The ordered parser view remains alive here so the
-    // guard sees each original field. Combining repeated values can hide a
-    // credential from entropy detection or change its approval fingerprint.
+    // outbound connection. Gateway token fields are consumed or rejected by
+    // gateway selection below, rather than approved as upstream credentials.
+    // The guard still sees every other original field. Combining repeated
+    // values can hide a credential or change its approval fingerprint.
     if let Some(policy) = runtime.policy.as_ref() {
         let guard = runtime.credential_guard.as_ref().ok_or_else(|| {
             if let Some(hook) = trace
@@ -3191,7 +3192,9 @@ where
             Some(request_id),
             &identity.connection_id,
             false,
-            ordered_headers.recording_pairs(),
+            ordered_headers
+                .recording_pairs()
+                .filter(|(_, value)| !crate::services::has_gateway_token(value)),
             crate::credential_guard::Options {
                 block: runtime.operator_modes.credential_block(),
             },

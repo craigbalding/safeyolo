@@ -56,6 +56,17 @@ capabilities:
       - methods: [GET]
         path: /api/v1/**
 """
+POLICY = '''[hosts."proofspot.safeyolo.internal"]
+service = "proofspot"
+egress = "deny"
+[hosts."proofspot.safeyolo.internal:8088"]
+egress = "allow"
+[hosts."*"]
+egress = "deny"
+[controls.network]
+enabled = true
+action = "block"
+'''
 NAMES = ("proofspot", "caller")
 
 
@@ -167,17 +178,7 @@ def prepare(base, root, admin_port, parent_port):
                   gateway_services_dir="services", gateway_builtin_services_dir="builtin-services")
     (root / "config.toml").write_text(tomlkit.dumps(config))
     (root / "services/proofspot.yaml").write_text(SERVICE)
-    (root / "policy.toml").write_text('''[hosts."proofspot.safeyolo.internal"]
-service = "proofspot"
-egress = "deny"
-[hosts."proofspot.safeyolo.internal:8088"]
-egress = "allow"
-[hosts."*"]
-egress = "deny"
-[controls.network]
-enabled = true
-action = "block"
-''')
+    (root / "policy.toml").write_text(POLICY)
 
 
 def inputs(base, revision):
