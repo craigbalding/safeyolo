@@ -64,8 +64,6 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-    env:
-      RUNSC_WORK: ${{ runner.temp }}/runsc-build
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,6 +72,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          RUNSC_WORK="$RUNNER_TEMP/runsc-build"
+          printf 'RUNSC_WORK=%s\n' "$RUNSC_WORK" >> "$GITHUB_ENV"
           mkdir -p "$RUNSC_WORK/reports" "$RUNSC_WORK/tools"
           exec > >(tee "$RUNSC_WORK/reports/inputs.log") 2>&1
           date -u --iso-8601=seconds
