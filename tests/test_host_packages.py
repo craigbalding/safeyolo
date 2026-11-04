@@ -24,6 +24,88 @@ REPO = Path(__file__).resolve().parents[1]
 REVISION = "a" * 40
 
 
+@pytest.fixture
+def prepared_runsc(tmp_path):
+    if os.uname().sysname != "Linux":
+        pytest.skip("gVisor runtime acquisition requires Linux")
+    directory = tmp_path / "prepared-runsc"
+    (directory / "gvisor-bin").mkdir(parents=True)
+    executable(directory / "runsc", "runsc version release-20261005.0-safeyolo.1")
+    for name in ("gvisor_sentry", "gvisor-sentry-prewarmer", "runsc-fd-parking"):
+        shutil.copy2(directory / "runsc", directory / "gvisor-bin" / name)
+    return directory
+
+
+@pytest.mark.parametrize("defect", [None, "missing", "version", "architecture"])
+def test_runsc_acquisition_checks_the_complete_prepared_input(
+    tmp_path, monkeypatch, prepared_runsc, defect,
+):
+    monkeypatch.setenv("SAFEYOLO_RUNSC_ARTIFACTS", str(prepared_runsc))
+    if defect == "missing":
+        (prepared_runsc / "gvisor-bin/runsc-fd-parking").unlink()
+    elif defect == "version":
+        executable(prepared_runsc / "runsc", "runsc version release-20261005.0")
+    elif defect == "architecture":
+        sidecar = prepared_runsc / "gvisor-bin/gvisor_sentry"
+        contents = bytearray(sidecar.read_bytes())
+        contents[18:20] = (62 if os.uname().machine in ("aarch64", "arm64") else 183).to_bytes(2, "little")
+        sidecar.write_bytes(contents)
+    destination = tmp_path / "acquired"
+    result = run("bash", str(REPO / "scripts/acquire_runsc.sh"), str(destination))
+    assert (result.returncode == 0) == (defect is None), result.stderr
+    if defect is not None:
+        assert not destination.exists()
+    else:
+        assert sorted(str(path.relative_to(destination)) for path in destination.rglob("*")
+                      if path.is_file()) == [
+            "gvisor-bin/gvisor-sentry-prewarmer", "gvisor-bin/gvisor_sentry",
+            "gvisor-bin/runsc-fd-parking", "runsc",
+        ]
+        for path in destination.rglob("*"):
+            if path.is_file():
+                assert path.read_bytes() == (prepared_runsc / path.relative_to(destination)).read_bytes()
+
+
+def test_runsc_acquisition_reuses_its_build_and_refuses_corrupt_cached_companions(
+    tmp_path, monkeypatch, prepared_runsc,
+):
+    scripts = tmp_path / "scripts"
+    (scripts / "gvisor").mkdir(parents=True)
+    for name in ("native_package.sh", "acquire_runsc.sh"):
+        shutil.copy2(REPO / "scripts" / name, scripts / name)
+    shutil.copy2(REPO / "scripts/gvisor/nofollow.patch", scripts / "gvisor/nofollow.patch")
+    build_calls = tmp_path / "build-calls"
+    (scripts / "build_runsc.sh").write_text(
+        '#!/bin/bash\nset -eu\nprintf "build\\n" >> "$RUNSC_TEST_BUILD_CALLS"\n'
+        'mkdir -p "$2/gvisor-bin"\ncp "$RUNSC_TEST_FIXTURE/runsc" "$2/runsc"\n'
+        'cp "$RUNSC_TEST_FIXTURE/gvisor-bin/"* "$2/gvisor-bin/"\n',
+    )
+    (scripts / "build_runsc.sh").chmod(0o755)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "bazel").write_text('#!/bin/sh\nprintf "bazel 8.3.1\\n"\n')
+    (tools / "git").write_text('#!/bin/sh\nif [ "$1" = init ]; then mkdir "$2"; fi\n')
+    for tool in tools.iterdir():
+        tool.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tools}:{os.environ['PATH']}")
+    monkeypatch.delenv("SAFEYOLO_RUNSC_ARTIFACTS", raising=False)
+    monkeypatch.setenv("RUNSC_TEST_FIXTURE", str(prepared_runsc))
+    monkeypatch.setenv("RUNSC_TEST_BUILD_CALLS", str(build_calls))
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    for name in ("first", "second"):
+        result = run("bash", str(scripts / "acquire_runsc.sh"), str(tmp_path / name))
+        assert result.returncode == 0, result.stderr
+    assert build_calls.read_text().splitlines() == ["build"]
+    companion, = cache.glob("**/runtime/gvisor-bin/gvisor_sentry")
+    with companion.open("ab") as stream:
+        stream.write(b"corruption after the valid ELF header")
+    result = run("bash", str(scripts / "acquire_runsc.sh"), str(tmp_path / "corrupt"))
+    assert result.returncode != 0 and "FAILED" in result.stdout
+    assert not (tmp_path / "corrupt").exists()
+    assert build_calls.read_text().splitlines() == ["build"]
+
+
 def run(*arguments, **kwargs):
     return subprocess.run(arguments, capture_output=True, text=True, timeout=30, **kwargs)
 
@@ -347,7 +429,7 @@ def package_inputs(tmp_path, request, monkeypatch):
     shutil.copy2(shutil.which("tmux"), runtime / "tmux")
     runsc = tmp_path / "gvisor"
     (runsc / "gvisor-bin").mkdir(parents=True)
-    executable(runsc / "runsc", "runsc version release-20261005.0")
+    executable(runsc / "runsc", "runsc version release-20261005.0-safeyolo.1")
     for name in ("gvisor-bin/checkpointgofer", "gvisor-bin/gvisor-sentry-prewarmer",
                  "gvisor-bin/gvisor_sentry", "gvisor-bin/runsc-fd-parking", "gvisor-bin/runsc-metric-server"):
         shutil.copy2(runsc / "runsc", runsc / name)
@@ -645,7 +727,7 @@ def test_native_bundle_metadata_records_guest_discovery_without_pinning_an_archi
     assert set(fields) == {"source_commit", "profile", "platform", "minimum_runtime",
                            "guest_compatibility", "guest_repository", "guest_discovery_tag",
                            "runsc_version", "runsc_source", "runsc_origin"}
-    assert fields["runsc_version"] == "release-20261005.0"
+    assert fields["runsc_version"] == "release-20261005.0-safeyolo.1"
     assert fields["runsc_origin"] == "bundled"
     assert fields["guest_compatibility"] == "v1"
     assert fields["guest_repository"] == "ghcr.io/craigbalding/safeyolo-guest"

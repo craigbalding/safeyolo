@@ -211,7 +211,14 @@ jobs:
         if: inputs.retain_packages && inputs.profile == 'production'
         run: |
           sudo -n apt-get update -qq
-          sudo -n apt-get install -y -qq --no-install-recommends tmux
+          case "$(uname -m)" in
+            aarch64) cross_compiler_package=crossbuild-essential-amd64 ;;
+            x86_64) cross_compiler_package=crossbuild-essential-arm64 ;;
+          esac
+          sudo -n apt-get install -y -qq --no-install-recommends tmux \
+            "$cross_compiler_package" clang libbpf-dev
+          # The upstream BPF build uses the distro Clang target support.
+          export PATH="/usr/bin:$PATH"
           scripts/build_host_packages.sh --output "$RUNNER_TEMP/host-package" \
             --artifacts proxy/target/release --guest-artifacts guest/command/target/release \
             --runtime-artifacts "$(dirname "$(command -v tmux)")" --profile production

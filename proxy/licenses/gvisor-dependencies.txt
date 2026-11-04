@@ -1,4 +1,5 @@
-Notices for the unmodified gVisor release-20261005.0 Linux payload.
+Notices for gVisor release-20261005.0, used by SafeYolo's patched Linux runtime.
+SafeYolo's source changes are recorded in scripts/gvisor/nofollow.patch.
 Module names and versions below come from the Go build information in the shipped Go executables.
 License and notice texts come from the corresponding versioned Go module archives.
 

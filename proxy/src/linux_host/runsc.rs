@@ -10,7 +10,7 @@ use std::{
     process::Command,
 };
 
-pub(super) const VERSION: &str = "release-20261005.0";
+pub(super) const VERSION: &str = "release-20261005.0-safeyolo.1";
 pub(super) const FILES: &[&str] = &[
     "runsc",
     "gvisor-bin/gvisor-sentry-prewarmer",

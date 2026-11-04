@@ -588,14 +588,23 @@ Alpine host qualification is separate from the accepted Alpine guest images.
 
 ## Linux host preparation in new source bundles
 
-The tested newer Linux release and current source bundles include the required
-gVisor `release-20261005.0` payload for the bundle's architecture.
+The Linux host-package producer selects the required patched
+gVisor `release-20261005.0-safeyolo.1` payload for the bundle's architecture.
 The installer checks the required files' checksums, architecture, executable
 permissions and runtime version. It uses that private runtime;
 it does not replace a system `runsc` or add a package repository.
-The earlier `host-7a38` manual alternative still needs its manual prerequisites.
 
-The host-package producer downloads and verifies the pinned upstream runtime.
+The host-package producer builds the patched runtime from pinned upstream source.
+The patch repairs final-directory symlink refusal with `O_DIRECTORY | O_NOFOLLOW`
+while retaining trailing-slash traversal. The build uses Bazel 8.3.1, Go 1.26.3
+and the upstream opt profile. Source builders need the upstream C/C++ cross
+compilers, Clang with BPF target support, and `libbpf` development headers.
+The producer caches the complete four-file runtime. To reuse a prepared runtime,
+set `SAFEYOLO_RUNSC_ARTIFACTS` to its directory before building the host package.
+That directory must contain `runsc` and its three `gvisor-bin` companions from
+the same patched build. The producer checks all four executable headers and
+`runsc`'s version. Sandbox creation preserves upstream's companion version checks.
+Use this prepared-input path if the pinned Bazel cannot run on your build host.
 The public installer downloads the host archive with that runtime already
 inside it. Selecting the bundled runtime needs no separate gVisor download.
 
