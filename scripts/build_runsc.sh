@@ -25,7 +25,7 @@ git -C "$upstream" apply "$script_dir/gvisor/nofollow.patch"
 # Bazelisk honors the upstream .bazelversion; the source pins the Go toolchain.
 cd -- "$upstream"
 bazel test --jobs=1 --config="$configuration" --compilation_mode=opt //pkg/sentry/vfs:vfs_test \
-  --test_filter='TestShouldFollowSymlinkDirectoryRequirement|TestSymlinkTargetTrailingSlash'
+  --test_filter='TestShouldFollowSymlinkDirectoryRequirement|TestSymlinkTargetTrailingSlash' --test_arg=-test.v
 targets=(//runsc:runsc //runsc/cmd/sentry:gvisor_sentry \
   //runsc/prewarmer:prewarmer_binary //runsc/fdparking:fdparking_binary)
 names=(runsc gvisor-bin/gvisor_sentry gvisor-bin/gvisor-sentry-prewarmer gvisor-bin/runsc-fd-parking)

@@ -110,6 +110,12 @@ jobs:
           chmod +x "$RUNSC_WORK/tools/bazel"
           "$RUNSC_WORK/tools/bazel" --version
           echo "$RUNSC_WORK/tools" >> "$GITHUB_PATH"
+          # Upstream generates the AMD64 VDSO while building native ARM64 tools.
+          sudo -n apt-get update -qq
+          sudo -n apt-get install -y --no-install-recommends crossbuild-essential-amd64
+          /usr/bin/x86_64-linux-gnu-gcc --version
+          /usr/bin/aarch64-linux-gnu-gcc --version
+          dpkg-query -W crossbuild-essential-amd64 gcc-x86-64-linux-gnu g++-x86-64-linux-gnu
       - name: Run the focused upstream tests and build all four runtime files
         if: inputs.runsc_build_run == ''
         shell: bash
