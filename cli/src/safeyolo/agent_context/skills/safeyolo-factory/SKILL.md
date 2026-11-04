@@ -32,8 +32,9 @@ select factory acceptance requirements or replace message handoffs.
 
 The work creator or operator can select native acceptance context with
 `set_work_requirements`. Later amendments require a recorded authority or the
-operator; a non-operator holder or attributed producer cannot amend its own
-requirements. Selected checks and challenges govern `decide_work_acceptance`.
+operator; ownership and production alone grant no policy authority. An explicit
+authorized delegation can name a worker. Selected checks and challenges govern
+`decide_work_acceptance`.
 Only named deciders may decide, and approval validates the exact current output
 and required review outcomes atomically. Read `acceptance_status` for pending
 obligations, stale approvals and conflicting decisions. Execution completion

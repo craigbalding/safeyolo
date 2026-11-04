@@ -136,14 +136,10 @@ pub(super) fn set_requirements(
     if !matches!(actor, Actor::Operator) {
         let authorized = previous.map_or_else(
             || work.created_by == json!(principal),
-            |r| {
-                r.authorities.contains(&principal)
-                    && work.claim_agent_id.as_deref() != Some(actor.id())
-                    && !producer(work, &principal)
-            },
+            |r| r.authorities.contains(&principal),
         );
         if !authorized {
-            return Err(WorkError(403, "initial requirements require the work creator; amendments require a recorded authority other than the holder or output producer".into()));
+            return Err(WorkError(403, "initial requirements require the work creator; amendments require a recorded authority".into()));
         }
     }
     subjects::evidence(&reason, &[])?;

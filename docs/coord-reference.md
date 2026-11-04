@@ -367,9 +367,10 @@ selected decider to decide acceptance.
 
 The authenticated work creator or operator selects the initial context.
 Later amendments require an existing selected authority or the operator.
-A non-operator holder or attributed output producer cannot amend its own
-requirements, including after release or reassignment while its output remains
-current. Changing ownership does not relabel the producer. A worker can still
+Ownership or output production alone does not grant policy authority. A worker
+can amend requirements only if a previous authorized selection explicitly names
+it as an authority. Each amendment records its author and reason and invalidates
+earlier acceptance. Changing ownership does not relabel the producer. A worker can still
 publish corrections, report failure, request advisory reviews and respond to
 challenges while acceptance is pending.
 

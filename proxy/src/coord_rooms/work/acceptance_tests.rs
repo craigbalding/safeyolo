@@ -274,8 +274,8 @@ fn requirement_authority_independence_recovery_and_changed_definitions_are_enfor
         .0,
         403
     );
-    // An explicit operator recovery can delegate authority. Holding/producing
-    // the output still does not let the worker amend its own requirements.
+    // The operator can explicitly delegate policy authority to a worker.
+    // Ownership alone never grants that authority; an explicit delegation does.
     let next = submit(
         &mut conn,
         Actor::Operator,
@@ -287,17 +287,6 @@ fn requirement_authority_independence_recovery_and_changed_definitions_are_enfor
     assert_eq!(
         submit(
             &mut conn,
-            Actor::Agent("alice"),
-            requirements(&next, &[], &[]),
-            "delegated-worker-relax"
-        )
-        .unwrap_err()
-        .0,
-        403
-    );
-    assert_eq!(
-        submit(
-            &mut conn,
             Actor::Agent("carol"),
             requirements(&next, &[], &[]),
             "removed-authority"
@@ -306,10 +295,23 @@ fn requirement_authority_independence_recovery_and_changed_definitions_are_enfor
         .0,
         403
     );
+    let delegated = submit(
+        &mut conn,
+        Actor::Agent("alice"),
+        requirements(&next, &[], &[]),
+        "explicitly-delegated-worker-policy",
+    )
+    .unwrap()["work"]
+        .clone();
+    assert_eq!(
+        delegated["acceptance_requirements"]["author"],
+        principal("alice")
+    );
+    assert_eq!(delegated["acceptance_requirements"]["version"], 3);
     let restored = submit(
         &mut conn,
         Actor::Operator,
-        requirements(&next, &[], &[]),
+        requirements(&delegated, &[], &[]),
         "restore-policy",
     )
     .unwrap()["work"]

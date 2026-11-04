@@ -370,10 +370,10 @@ amendments to Bob:
 {"room_name":"chat","work_id":"WORK_ID","expected_version":4,"expected_generation":1,"expected_requirements_version":0,"authorities":[{"kind":"agent","id":"BOB_ID"}],"deciders":[{"kind":"agent","id":"BOB_ID"}],"independent":true,"checks":[{"work_id":"CURRENT_CHECK_ID","version":3}],"challenges":[{"work_id":"CHALLENGE_ID","version":4}],"reason":"Require the exact corrected-output check and explicit challenge disposition","operation_id":"select-acceptance"}
 ```
 
-That operation returns work version 5 and requirements version 1. Alice cannot
-amend those selected requirements as their current holder/producer. Bob can
-amend them as the recorded policy authority, with current expectations and a
-reason. The operator retains explicit authority recovery. Output publication,
+That operation returns work version 5 and requirements version 1. Only Bob or
+the operator can amend those selected requirements. Bob must supply current
+expectations and a reason. Alice's ownership grants no policy authority.
+The operator retains explicit authority recovery. Output publication,
 responses and advisory evidence remain available to Alice.
 
 Bob calls `decide_work_acceptance` after inspecting the exact correction and
