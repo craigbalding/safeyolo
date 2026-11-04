@@ -255,14 +255,16 @@ fn obligations(
                 "stale_subject"
             } else if review.state == "cancelled" {
                 "cancelled_check"
-            } else if review.state != "done" || check.answer.is_none() {
-                "pending_check"
-            } else {
-                match check.answer.as_ref().unwrap().verdict {
+            } else if let Some(answer) = &check.answer
+                && review.state == "done"
+            {
+                match answer.verdict {
                     attestations::Verdict::Approve => "satisfied",
                     attestations::Verdict::Reject => "rejected_check",
                     attestations::Verdict::Abstain => "uncertain_check",
                 }
+            } else {
+                "pending_check"
             }
         } else {
             let challenge = review.challenge.as_ref().unwrap();
@@ -274,8 +276,8 @@ fn obligations(
             match &challenge.disposition {
                 None => "unresolved_challenge",
                 Some(disposition)
-                    if !challenge.deciders.contains(&disposition.author)
-                        && !(disposition.author.kind == "operator"
+                    if !(challenge.deciders.contains(&disposition.author)
+                        || disposition.author.kind == "operator"
                             && disposition.author.id == "operator") =>
                 {
                     "disposition_author_changed"
