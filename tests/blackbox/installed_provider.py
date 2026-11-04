@@ -4,10 +4,17 @@
 On an owned Linux host, supply Python 3.11+, tomlkit, a prepared installation
 with the selected CLI/proxy/guest binaries and pinned runsc, and a free Admin
 port. --root and --output must be new disk-backed directories with traversable
-parents. The driver reuses immutable inputs, creates two credential-free agents,
-grants only the caller's reader capability, exercises refusal and revocation,
-then stops its guests, proxy and broker. It preserves the prepared installation.
-No model, external service credential or Coord message is used.
+parents. Run as the ordinary host account with access to the native host
+preparation operations. Before creating agents, the driver runs host prepare
+--yes on the host. That command explains and applies missing prerequisites,
+including its installation-scoped namespace entry and AppArmor profiles when
+required. Only those host operations use sudo.
+
+The driver reuses immutable inputs, creates two credential-free agents, grants
+only the caller's reader capability, exercises refusal and revocation, then
+stops its guests, proxy and broker. It retains native host preparation and
+preserves the prepared installation. No model, external service credential or
+Coord message is used.
 """
 
 from __future__ import annotations
@@ -153,10 +160,15 @@ def capture_guest_command(command, env, path, failures):
     return child, reader, finished
 
 
-def prepare(base, root, admin_port, parent_port):
+def prepare(base, root, admin_port, parent_port, *, env, diagnostics):
     prepare_native_instance(base, root)
+    # The namespace entry belongs to this instance. Native host preparation
+    # must not write through the prepared installation's shared host directory.
+    if (root / "host").is_symlink():
+        (root / "host").unlink()
     root.chmod(0o755)
     (root / "data").chmod(0o755)
+    (root / "data/tmp").mkdir(mode=0o755)
     (root / ".safeyolo-platform-smoke").touch()
     copy_prepared_nats(base, root)
     config = tomlkit.parse((root / "config.toml").read_text())
@@ -177,6 +189,11 @@ egress = "deny"
 enabled = true
 action = "block"
 ''')
+    # This is the host CLI, before any sandbox exists. Guest workloads use
+    # guest_command_args only after the host prerequisites have succeeded.
+    return json.loads(checked(
+        [str(base / "bin/safeyolo"), "--root", str(root), "host", "prepare", "--yes"],
+        env=env, diagnostics=diagnostics))
 
 
 def inputs(base, revision):
@@ -216,8 +233,8 @@ def run(args):
     parent_thread.start()
     try:
         report["inputs"] = inputs(base, args.revision)
-        prepare(base, root, args.admin_port, parent.server_port)
-        (root / "data/tmp").mkdir(mode=0o755)
+        report["host_preparation"] = prepare(
+            base, root, args.admin_port, parent.server_port, env=env, diagnostics=output / "native.log")
         _require_disposable(root)
         for name in NAMES:
             workspace = root / "workspaces" / name

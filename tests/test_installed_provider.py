@@ -2,12 +2,14 @@
 
 import hashlib
 import http.client
+import json
 import os
 import shutil
 import stat
 import subprocess
 import sys
 import threading
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,7 @@ from tests.blackbox.installed_provider import (
     client_observation,
     origin_observation,
     prepare,
+    run,
 )
 from tests.blackbox.native_credentials import native_cli
 
@@ -147,17 +150,67 @@ def test_parent_observer_counts_connections_before_http(tmp_path):
 
 @pytest.mark.skipif(sys.platform != "linux" or not os.environ.get("SAFEYOLO_NATIVE_CLI"),
                     reason="Requires the selected native Linux CLI")
-def test_prepared_configuration_is_readable_by_native_cli(tmp_path):
-    """Use the real config reader without starting a proxy, broker or sandbox."""
+@pytest.mark.parametrize(("host_exit", "prepared_host"), [(0, False), (0, True), (19, False)])
+def test_host_preparation_precedes_native_use_and_preserves_prepared_inputs(
+        tmp_path, monkeypatch, host_exit, prepared_host):
+    """Use native init/status and a host-prepare stand-in without host privilege."""
     cli = native_cli()
     base, root = tmp_path / "base", tmp_path / "instance"
     subprocess.run([str(cli), "--root", str(base), "init"], check=True, capture_output=True)
     (base / "bin").mkdir()
-    (base / "bin/safeyolo").symlink_to(cli)
+    host_cli = base / "bin/safeyolo"
+    host_cli.write_text(f"#!{sys.executable}\n" + f'''
+import json, os, pathlib, sys
+if sys.argv[3:] == ['host', 'prepare', '--yes']:
+    root = pathlib.Path(sys.argv[2])
+    assert (root / 'data/tmp').is_dir()
+    assert not (root / 'host').exists() and not (root / 'host').is_symlink()
+    (root / 'host-command.json').write_text(json.dumps({{
+        'arguments': sys.argv[1:], 'uid': os.getuid(),
+        'platform': os.environ['SAFEYOLO_RUNSC_PLATFORM'], 'tmpdir': os.environ['TMPDIR']}}))
+    if {host_exit}:
+        print('fixture host preparation failure', file=sys.stderr)
+        sys.exit({host_exit})
+    (root / 'host').mkdir()
+    print('{{"state": "prepared", "applied": ["fixture host preparation"]}}')
+else:
+    os.execv({str(cli)!r}, [{str(cli)!r}, *sys.argv[1:]])
+''')
+    host_cli.chmod(0o755)
+    if prepared_host:
+        (base / "host").mkdir()
+        (base / "host/prepared-sentinel").write_text("preserved")
     (base / "data/coord/nats/bin").mkdir(parents=True)
     config = tomlkit.parse((base / "config.toml").read_text())
     config["linux"] = {"host_uid": os.getuid(), "host_gid": os.getgid(), "uid_base": 100000,
                        "gid_base": 100000, "runsc": shutil.which("true"), "runsc_origin": "system"}
     (base / "config.toml").write_text(tomlkit.dumps(config))
-    prepare(base, root, 19437, 19438)
-    subprocess.run([str(cli), "--root", str(root), "status"], check=True, capture_output=True)
+    original = (base / "config.toml").read_bytes()
+    env = os.environ | {"SAFEYOLO_RUNSC_PLATFORM": "systrap", "TMPDIR": str(root / "data/tmp")}
+    diagnostics = tmp_path / "native.log"
+    if host_exit:
+        # Exercise the driver's actual failure and cleanup path. Input identity
+        # is checked separately; this stand-in has no proxy or guest payload.
+        monkeypatch.setattr("tests.blackbox.installed_provider.inputs", lambda *_args: {})
+        output = tmp_path / "report"
+        diagnostics = output / "native.log"
+        with pytest.raises(RuntimeError, match=f"safeyolo failed with exit {host_exit}"):
+            run(Namespace(prepared_config=base, root=root, output=output, revision="fixture", admin_port=19437))
+        assert "fixture host preparation failure" in diagnostics.read_text()
+        report = json.loads((output / "result.json").read_text())
+        assert report["status"] == "failed" and report["cleanup"] == "stopped"
+        assert report["cleanup_failures"] == [] and report["commands"] == []
+        assert not (root / "agents").exists()
+    else:
+        assert prepare(base, root, 19437, 19438, env=env, diagnostics=diagnostics) == {
+            "state": "prepared", "applied": ["fixture host preparation"]}
+        subprocess.run([str(cli), "--root", str(root), "status"], check=True, capture_output=True)
+    assert json.loads((root / "host-command.json").read_text()) == {
+        "arguments": ["--root", str(root), "host", "prepare", "--yes"],
+        "uid": os.getuid(), "platform": "systrap", "tmpdir": str(root / "data/tmp")}
+    assert (base / "config.toml").read_bytes() == original
+    if prepared_host:
+        assert list((base / "host").iterdir()) == [base / "host/prepared-sentinel"]
+        assert (base / "host/prepared-sentinel").read_text() == "preserved"
+    else:
+        assert not (base / "host").exists()
