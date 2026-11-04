@@ -141,11 +141,51 @@ prevents the metadata return. A member without GitHub access can still claim,
 release or complete work according to room permissions. `coord status ROOM`
 labels a recognized GitHub URL as an external reference without fetching it.
 
-### Claims, candidates and attestations
+### Claims, outputs and attestations
 
-SafeYolo does not fetch candidate targets or discover external candidate changes.
-Claims and completion do not change candidate identity. An explicit target
-change advances `target_generation`, even when the reference is reused.
+The current holder uses `publish_work_output` to select an immutable output
+reference and record its execution outcome in one transaction. The operation
+requires `room_name`, `work_id`, `expected_version`, `expected_generation`
+(the claim generation), `expected_target_generation`, `target_ref`,
+`execution_outcome`, `summary`, and an optional `evidence_refs` array.
+`execution_outcome` is `succeeded`, `failed`, or `uncertain`. It reports the
+producer's execution result; it does not establish acceptance of the output.
+
+Retain the external artifact before publication. Use a reference that identifies
+its actual immutable revision, such as an exact commit or a retained report's
+content digest. SafeYolo does not fetch the reference or detect changed bytes
+behind a mutable URL. A final external action must check the expected revision
+at that system's authority.
+
+Authenticated transport supplies `output.producer`; a caller cannot supply
+another actor or producer. A bridge must use the producing agent's authenticated
+route. Host commands cannot publish on behalf of a holder. Artifact content and
+authorship claims inside it remain external, unverified evidence.
+
+Publication requires a current claim or the retained holder of completed work.
+Another producer needs explicit operator reassignment. Every new publication
+advances `target_generation`, including an explicitly reused reference. Earlier
+attestations become stale. Publication records its `work_version`, claim
+generation, producer, outcome, summary, evidence references and timestamp in
+`work.output`. It does not release the claim, complete work, or change
+`external_ref`. That opaque context reference remains bound to the same work
+through cancellation and reassignment.
+
+The canonical receipt contains `work` and `operation_id`. Retain the chosen
+operation ID and original inputs before sending. After an interrupted request,
+retry those exact inputs. A committed operation returns its original receipt;
+an uncommitted operation can succeed once if the claim and output generations
+are still current. Reassignment, cancellation or a later output can instead
+make the uncommitted request stale. Keep the external artifact in either case.
+An old successful receipt does not imply that its output is still current;
+read current work separately. This protocol does not make external execution
+exactly once and does not authorize repeating an uncertain external action.
+
+Use `list_work_outputs` with `room_name` and `work_id` to read original
+publications ordered by `work_version`. At most 200 items and 65536 bytes of
+item JSON are returned. Continue with `next_after_version` as `after_version`.
+Later attestations and ownership changes do not duplicate publications. Pages
+do not share a snapshot. The host command is `coord work outputs ROOM WORK_ID`.
 
 A member calls `attest_work` with `room_name`, `work_id`, `target_generation`,
 `kind`, `verdict`, `summary`, optional `evidence_refs` and a chosen `operation_id`.
@@ -172,9 +212,11 @@ against its returned `target_generation`. Pages do not share a snapshot.
 Prior acceptance stays in history after a target change and does not approve
 the new generation.
 
-Use `coord work change-target`, `coord work attest` and `coord work attestations`
-from the owning host account for the same operations. `coord work --help` lists
-their required arguments. `target_ref` is nonempty and at most 1024 UTF-8 bytes.
+Use `coord work attest` and `coord work attestations` from the owning host
+account for attributed evidence. `coord work --help` lists their arguments.
+`target_ref` is nonempty and at most 1024 UTF-8 bytes. Output summaries are
+nonempty and at most 1024 bytes; at most 16 evidence references of 1024 bytes
+each are allowed. A serialized output publication is at most 32768 bytes.
 Attestation kind is nonempty and at most 128 UTF-8 bytes; summary is nonempty
 and at most 1024. At most 16 evidence references of 1024 bytes each are allowed.
 The complete serialized attestation is at most 32768 bytes. Summaries and refs
@@ -187,6 +229,16 @@ and generation. Completion accepts optional `short_result`. Reads require
 current `receive` permission. Mutations require `send` and `receive`. Revocation
 prevents the former member from reading, releasing or completing work.
 
+The holder can cancel unfinished work through `cancel_work`, with the current
+`expected_version`, `expected_generation` and a nonempty `reason` of at most
+1024 UTF-8 bytes. The creator can cancel its own open work. Other members cannot
+cancel that work. The owning host uses `coord work cancel` and can cancel any
+unfinished work. Cancellation selects `state=cancelled`, clears the holder and
+advances the claim generation. It preserves earlier outputs and evidence and
+records the cancelling actor, reason and time. It does not report successful
+completion or stop external execution. `coord status ROOM` separates cancelled
+work from active work and completed work.
+
 Claims survive elapsed time, model exit, and instance restart. They never
 expire or transfer automatically. `claim_expires_at` is reserved and stays
 null. The owning host account can inspect and recover an abandoned claim
@@ -194,6 +246,10 @@ without relying on process liveness. Use `coord work --help` for the recovery
 commands. `release` requires the current expected version and generation;
 `reassign` also requires the new holder's durable `--agent-id`. The new holder
 must have current room send and receive permission.
+Reassignment can also reopen completed or cancelled work in a new claim
+generation. The previous output retains its original producer and generation
+until a new publication replaces it. Membership or process silence never
+grants an agent reassignment authority.
 
 Choose an operation ID before a write. If the response is lost, retry the same
 operation ID and original inputs, including the original expectations. While
@@ -209,6 +265,27 @@ contain metadata; canonical work storage contains titles, references and
 results. Work input is bounded to 262144 UTF-8 bytes. Lists return at most 200
 items ordered by `work_id`; use `next_after` to continue. Concurrent changes
 can affect later pages because pagination does not share a snapshot.
+
+### Open retained native state
+
+Before installing a release that changes native work storage, stop the affected
+factory roles and other Coord writers. Preserve the instance root, role homes,
+checkpoints, source trees and retained artifacts. Install matching host and
+guest executables before resuming those roles.
+
+The current store uses native schema 6. Bootstrap transactionally upgrades the
+current native schema 5 work projection to admit cancellation. It preserves
+claim IDs and generations, immutable revision bytes, operation receipts,
+attention, outbox rows and retained messages. A failed upgrade rolls back. An
+older executable refuses schema 6; do not run mixed writers or overwrite the
+store to make an older executable start. Unsupported implementation generations
+remain refused.
+
+A retained target without an output publication has no inferred producer or
+execution outcome. Its holder can publish an attributed output under its current
+claim and target generations. Earlier successful operation retries still return
+their original receipts. Check current state separately before acting on a
+recovered receipt, and inspect uncertain external effects before any repeat.
 
 ## Raise a material signal
 

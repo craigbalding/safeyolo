@@ -242,7 +242,7 @@ async fn native_github_read_uses_caller_service_and_preserves_local_work() {
         "unavailable"
     );
     let mut work=alice.call("claim_work",&json!({"room_name":"shared","work_id":seed["work"]["work_id"],"expected_version":1,"expected_generation":0,"operation_id":"claim"})).await.unwrap()["work"].clone();
-    work=alice.call("change_work_target",&json!({"room_name":"shared","work_id":work["work_id"],"expected_version":work["version"],"expected_target_generation":0,"target_ref":"opaque:explicit-candidate","operation_id":"target"})).await.unwrap()["work"].clone();
+    work=alice.call("publish_work_output",&json!({"room_name":"shared","work_id":work["work_id"],"expected_version":work["version"],"expected_generation":work["claim_generation"],"execution_outcome":"succeeded","summary":"Retained candidate","expected_target_generation":0,"target_ref":"opaque:explicit-candidate","operation_id":"target"})).await.unwrap()["work"].clone();
     work=bob.call("attest_work",&json!({"room_name":"shared","work_id":work["work_id"],"target_generation":1,"kind":"review","verdict":"approve","summary":"Controlled fixture target, not independent issue acceptance","operation_id":"review"})).await.unwrap()["work"].clone();
     service(root, false).await;
     let open = external(root, "alice", &work).await;

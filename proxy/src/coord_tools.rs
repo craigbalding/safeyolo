@@ -299,15 +299,20 @@ impl Client {
                 }
                 (Method::GET, path, Value::Null, 60.0)
             }
-            "create_work" | "claim_work" | "release_work" | "complete_work"
-            | "change_work_target" | "attest_work" => {
+            "create_work"
+            | "claim_work"
+            | "release_work"
+            | "complete_work"
+            | "publish_work_output"
+            | "cancel_work"
+            | "attest_work" => {
                 let mut body = args
                     .as_object()
                     .ok_or("work arguments must be an object")?
                     .clone();
                 body.remove("room_name");
                 let action = match name {
-                    "change_work_target" => "change_target",
+                    "publish_work_output" => "publish_output",
                     _ => name.trim_end_matches("_work"),
                 };
                 body.insert("action".into(), json!(action));
@@ -344,6 +349,17 @@ impl Client {
                 }
                 (Method::GET, path, Value::Null, 60.0)
             }
+            "list_work_outputs" => (
+                Method::GET,
+                format!(
+                    "{base}/work?work_id={}&outputs=true&after={}&limit={}",
+                    segment(text(args, "work_id")?),
+                    integer(args, "after_version", 0)?,
+                    integer(args, "limit", 50)?
+                ),
+                Value::Null,
+                60.0,
+            ),
             "join_room" => (Method::POST, format!("{base}/join"), json!({}), 60.0),
             "read_brief" => (Method::GET, format!("{base}/brief"), Value::Null, 60.0),
             "get_room_state" => (Method::GET, format!("{base}/state"), Value::Null, 60.0),
@@ -519,15 +535,36 @@ pub fn tools() -> Vec<Value> {
         &["room_name", "work_id"],
     );
     add(
-        "change_work_target",
-        "Explicitly change the work candidate using its current version and target generation. Every successful change advances target_generation, including a reused opaque ref after squash/rebase. Prior attestations remain stale history. Requires room send and receive; does not transfer ownership or complete work. Pick operation_id before writing; retry its original inputs after an ambiguous response. target_ref is never fetched.",
-        json!({"room_name":string,"work_id":string,"expected_version":integer,"expected_target_generation":integer,"target_ref":string,"operation_id":string}),
+        "publish_work_output",
+        "Publish a retained immutable output reference and execution outcome atomically under your current claim. Supply current version, claim generation and target generation. Producer comes from authenticated identity; integrations cannot supply it. Publication also permits correction by the retained holder of done work. It advances target_generation and invalidates prior target attestations; it does not complete work or establish acceptance. Retain the external artifact first. Pick operation_id before writing; retry exact original inputs after a lost response. Stale or cancelled assignments cannot publish. target_ref is opaque and never fetched. Summary: 1..1024 UTF-8 bytes; evidence_refs: at most 16 strings of 1024 bytes each.",
+        json!({"room_name":string,"work_id":string,"expected_version":integer,"expected_generation":integer,"expected_target_generation":integer,"target_ref":string,"execution_outcome":{"type":"string","enum":["succeeded","failed","uncertain"]},"summary":string,"evidence_refs":array,"operation_id":string}),
         &[
             "room_name",
             "work_id",
             "expected_version",
+            "expected_generation",
             "expected_target_generation",
             "target_ref",
+            "execution_outcome",
+            "summary",
+        ],
+    );
+    add(
+        "list_work_outputs",
+        "Read original immutable output publications, including producer and execution outcome, ordered by work_version. Later attestations do not duplicate outputs. Requires current room receive permission. At most 200 items and 65536 item JSON bytes; continue with next_after_version as after_version. Pages do not share a snapshot. References remain external content.",
+        json!({"room_name":string,"work_id":string,"after_version":integer,"limit":integer}),
+        &["room_name", "work_id"],
+    );
+    add(
+        "cancel_work",
+        "Cancel unfinished work with its current version and claim generation and a nonempty reason of at most 1024 UTF-8 bytes. Only the holder, creator of open work, or operator can cancel. Cancellation is distinct from completion, clears ownership and advances the claim generation. Prior outputs and evidence remain readable. Operator reassignment can start a new generation. Pick operation_id before writing; retry original inputs after an ambiguous response.",
+        json!({"room_name":string,"work_id":string,"expected_version":integer,"expected_generation":integer,"reason":string,"operation_id":string}),
+        &[
+            "room_name",
+            "work_id",
+            "expected_version",
+            "expected_generation",
+            "reason",
         ],
     );
     add(
@@ -623,7 +660,7 @@ pub fn tools() -> Vec<Value> {
     );
     add(
         "get_room_state",
-        "Read the canonical bounded room projection: brief revision/excerpt, current members and authorized capabilities, declarations, provider-owned leases, active work, completed work, current signals, operator needs and latest current results. Work includes its target generation, current acceptance disposition counts and bounded attributed current/stale attestations. No majority or automatic completion is inferred. Counts and truncation expose omitted items. Declarations and signal claims remain attributed reports, not verified capabilities or independent attestation. Stale provider evidence is unknown; durable claims do not expire.",
+        "Read the canonical bounded room projection: brief revision/excerpt, current members and authorized capabilities, declarations, provider-owned leases, active work, completed work, cancelled work, current signals, operator needs and latest current results. Work includes its output producer and execution outcome, target generation, current acceptance disposition counts and bounded attributed current/stale attestations. No majority or automatic completion is inferred. Counts and truncation expose omitted items. Declarations and signal claims remain attributed reports, not verified capabilities or independent attestation. Stale provider evidence is unknown; durable claims do not expire.",
         json!({"room_name":string}),
         &["room_name"],
     );

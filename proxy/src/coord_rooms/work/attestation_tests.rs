@@ -2,8 +2,8 @@ use super::*;
 use crate::coord_rooms::room_status;
 
 fn target(work: &Value, reference: &str) -> Value {
-    json!({"action":"change_target","work_id":work["work_id"],"expected_version":work["version"],
-        "expected_target_generation":work["target_generation"],"target_ref":reference})
+    json!({"action":"publish_output","work_id":work["work_id"],"expected_version":work["version"],
+        "expected_generation":work["claim_generation"],"expected_target_generation":work["target_generation"],"target_ref":reference,"execution_outcome":"succeeded","summary":"Retained candidate"})
 }
 fn attest(work: &Value) -> Value {
     json!({"action":"attest","work_id":work["work_id"],"target_generation":work["target_generation"],
@@ -24,7 +24,7 @@ fn submit(
     )
 }
 fn page(conn: &Connection) -> Value {
-    room_status::work_page(conn, "rm-owned", false).unwrap()["items"][0].clone()
+    room_status::work_page(conn, "rm-owned", None).unwrap()["items"][0].clone()
 }
 
 #[test]
@@ -172,9 +172,11 @@ fn attestation_authorization_validation_and_retry_authority() {
     let root = fixture();
     let mut conn = db(&root);
     let open = create(&mut conn)["work"].clone();
+    let open =
+        change(&mut conn, Actor::Agent("alice"), "claim", &open, "claim").unwrap()["work"].clone();
     let work = submit(
         &mut conn,
-        Actor::Operator,
+        Actor::Agent("alice"),
         &target(&open, "opaque:target"),
         "target",
     )
@@ -222,7 +224,7 @@ fn attestation_authorization_validation_and_retry_authority() {
         assert_eq!(
             submit(
                 &mut conn,
-                Actor::Operator,
+                Actor::Agent("alice"),
                 &target(&work, &reference),
                 "invalid"
             )
@@ -298,9 +300,12 @@ fn target_attestation_races_and_independent_submissions_preserve_identity() {
         let root = fixture();
         let mut conn = db(&root);
         let open = create(&mut conn)["work"].clone();
+        let open =
+            change(&mut conn, Actor::Agent("alice"), "claim", &open, "claim").unwrap()["work"]
+                .clone();
         let work = submit(
             &mut conn,
-            Actor::Operator,
+            Actor::Agent("alice"),
             &target(&open, "candidate-1"),
             "target",
         )
@@ -315,7 +320,16 @@ fn target_attestation_races_and_independent_submissions_preserve_identity() {
                 std::thread::spawn(move || {
                     let mut conn = super::super::super::open(&path).unwrap();
                     barrier.wait();
-                    submit(&mut conn, Actor::Agent("bob"), &input, "racing")
+                    submit(
+                        &mut conn,
+                        Actor::Agent(if input["action"] == "publish_output" {
+                            "alice"
+                        } else {
+                            "bob"
+                        }),
+                        &input,
+                        "racing",
+                    )
                 })
             })
             .collect();
@@ -341,9 +355,11 @@ fn target_attestation_races_and_independent_submissions_preserve_identity() {
     let root = fixture();
     let mut conn = db(&root);
     let open = create(&mut conn)["work"].clone();
+    let open =
+        change(&mut conn, Actor::Agent("alice"), "claim", &open, "claim").unwrap()["work"].clone();
     let work = submit(
         &mut conn,
-        Actor::Operator,
+        Actor::Agent("alice"),
         &target(&open, "candidate"),
         "target",
     )
@@ -376,12 +392,12 @@ fn target_attestation_races_and_independent_submissions_preserve_identity() {
         page(&conn)["attestations"]["current_acceptance"],
         json!({"approve":10,"reject":10,"abstain":0})
     );
-    assert_eq!(page(&conn)["state"], "open");
+    assert_eq!(page(&conn)["state"], "claimed");
 }
 
 #[test]
 fn failures_roll_back_target_and_attestation_with_all_delivery_records() {
-    for action in ["change_target", "attest"] {
+    for action in ["publish_output", "attest", "cancel"] {
         for table in [
             "coord_work_revisions",
             "coord_work",
@@ -390,15 +406,18 @@ fn failures_roll_back_target_and_attestation_with_all_delivery_records() {
             "coord_attention_edges",
             "coord_outbox",
         ] {
-            if action == "change_target" && table == "coord_work_attestations" {
+            if action != "attest" && table == "coord_work_attestations" {
                 continue;
             }
             let root = fixture();
             let mut conn = db(&root);
             let open = create(&mut conn)["work"].clone();
+            let open =
+                change(&mut conn, Actor::Agent("alice"), "claim", &open, "claim").unwrap()["work"]
+                    .clone();
             let work = submit(
                 &mut conn,
-                Actor::Operator,
+                Actor::Agent("alice"),
                 &target(&open, "first"),
                 "target",
             )
@@ -406,12 +425,14 @@ fn failures_roll_back_target_and_attestation_with_all_delivery_records() {
                 .clone();
             let input = if action == "attest" {
                 attest(&work)
+            } else if action == "cancel" {
+                json!({"action":"cancel","work_id":work["work_id"],"expected_version":work["version"],"expected_generation":work["claim_generation"],"reason":"Cancel the attempt"})
             } else {
                 target(&work, "second")
             };
             let before = counts(&conn);
             conn.execute_batch(&format!("CREATE TRIGGER fail BEFORE INSERT ON {table} BEGIN SELECT RAISE(ABORT,'fixture failure'); END;")).unwrap();
-            assert!(submit(&mut conn, Actor::Agent("bob"), &input, "retry").is_err());
+            assert!(submit(&mut conn, Actor::Agent("alice"), &input, "retry").is_err());
             assert_eq!(counts(&conn), before);
             assert_eq!(
                 read(
@@ -424,10 +445,10 @@ fn failures_roll_back_target_and_attestation_with_all_delivery_records() {
                 work
             );
             conn.execute_batch("DROP TRIGGER fail").unwrap();
-            let result = submit(&mut conn, Actor::Agent("bob"), &input, "retry").unwrap();
-            assert_eq!(result["work"]["version"], 3);
+            let result = submit(&mut conn, Actor::Agent("alice"), &input, "retry").unwrap();
+            assert_eq!(result["work"]["version"], 4);
             assert_eq!(
-                submit(&mut conn, Actor::Agent("bob"), &input, "retry").unwrap(),
+                submit(&mut conn, Actor::Agent("alice"), &input, "retry").unwrap(),
                 result
             );
         }
@@ -439,9 +460,11 @@ fn bounded_status_prefers_current_and_full_evidence_pages_remain_accessible() {
     let root = fixture();
     let mut conn = db(&root);
     let open = create(&mut conn)["work"].clone();
+    let open =
+        change(&mut conn, Actor::Agent("alice"), "claim", &open, "claim").unwrap()["work"].clone();
     let work = submit(
         &mut conn,
-        Actor::Operator,
+        Actor::Agent("alice"),
         &target(&open, "opaque"),
         "target",
     )
@@ -471,8 +494,14 @@ fn bounded_status_prefers_current_and_full_evidence_pages_remain_accessible() {
         work["work_id"].as_str().unwrap(),
     )
     .unwrap();
-    let work =
-        submit(&mut conn, Actor::Operator, &target(&latest, "new"), "new").unwrap()["work"].clone();
+    let work = submit(
+        &mut conn,
+        Actor::Agent("alice"),
+        &target(&latest, "new"),
+        "new",
+    )
+    .unwrap()["work"]
+        .clone();
     submit(
         &mut conn,
         Actor::Agent("alice"),

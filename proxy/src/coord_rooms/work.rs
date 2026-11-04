@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 pub(crate) mod attestations;
 pub(crate) mod github;
+pub(crate) mod outputs;
 
 // Reuse the Coord message content bound for a complete work mutation.
 pub(crate) const MAX_REQUEST_BYTES: usize = 256 * 1024;
@@ -87,11 +88,22 @@ pub(crate) enum Mutation {
         expected_generation: i64,
         agent_id: String,
     },
-    ChangeTarget {
+    PublishOutput {
         work_id: String,
         expected_version: i64,
+        expected_generation: i64,
         expected_target_generation: i64,
         target_ref: String,
+        execution_outcome: outputs::ExecutionOutcome,
+        summary: String,
+        #[serde(default)]
+        evidence_refs: Vec<String>,
+    },
+    Cancel {
+        work_id: String,
+        expected_version: i64,
+        expected_generation: i64,
+        reason: String,
     },
     Attest {
         work_id: String,
@@ -112,6 +124,11 @@ pub(crate) struct Work {
     pub external_ref: Option<String>,
     pub target_ref: Option<String>,
     pub target_generation: i64,
+    // Retained work without a publication has no inferred producer or outcome.
+    #[serde(default)]
+    pub output: Option<outputs::Publication>,
+    #[serde(default)]
+    pub cancellation: Option<Value>,
     pub state: String,
     pub claim_agent_id: Option<String>,
     pub claim_generation: i64,
@@ -185,10 +202,10 @@ pub(crate) fn list(
     let tx = conn.transaction()?;
     let room_id = authorize(&tx, room, actor, false)?;
     if !(1..=MAX_PAGE).contains(&limit)
-        || state.is_some_and(|s| !["open", "claimed", "done"].contains(&s))
+        || state.is_some_and(|s| !["open", "claimed", "done", "cancelled"].contains(&s))
     {
         return Err(invalid(
-            "limit must be 1..200; state must be open, claimed or done",
+            "limit must be 1..200; state must be open, claimed, done or cancelled",
         ));
     }
     let mut rows = tx.prepare("SELECT document_json FROM coord_work WHERE room_id=?1 AND work_id>?2 AND (?3 IS NULL OR state=?3) ORDER BY work_id LIMIT ?4")?;
@@ -283,6 +300,8 @@ pub(crate) fn mutate(
             external_ref,
             target_ref: None,
             target_generation: 0,
+            output: None,
+            cancellation: None,
             state: "open".into(),
             claim_agent_id: None,
             claim_generation: 0,
@@ -301,44 +320,68 @@ pub(crate) fn mutate(
         // not on another author's submission or on ownership changes.
         if !matches!(mutation, Mutation::Attest { .. }) {
             let version = input["expected_version"].as_i64().unwrap();
-            let target_change = matches!(mutation, Mutation::ChangeTarget { .. });
-            let generation = input[if target_change {
-                "expected_target_generation"
-            } else {
-                "expected_generation"
-            }]
-            .as_i64()
-            .unwrap();
+            let generation = input["expected_generation"].as_i64().unwrap();
             if version < 1 || generation < 0 {
                 return Err(invalid(
                     "expected version must be positive and expected generation nonnegative",
                 ));
             }
-            if work.version != version
-                || generation
-                    != if target_change {
-                        work.target_generation
-                    } else {
-                        work.claim_generation
-                    }
-            {
+            if work.version != version || generation != work.claim_generation {
                 return Err(conflict(
                     "stale work version or generation; read current work before changing it",
                 ));
             }
         }
         match mutation {
-            Mutation::ChangeTarget { target_ref, .. } => {
-                if target_ref.trim().is_empty() || target_ref.len() > 1024 {
-                    return Err(invalid("target_ref must contain 1..1024 UTF-8 bytes"));
+            Mutation::PublishOutput {
+                expected_target_generation,
+                target_ref,
+                execution_outcome,
+                summary,
+                evidence_refs,
+                ..
+            } => {
+                outputs::publish(
+                    &mut work,
+                    actor,
+                    expected_target_generation,
+                    target_ref,
+                    execution_outcome,
+                    summary,
+                    evidence_refs,
+                    changed_at,
+                )?;
+            }
+            Mutation::Cancel { reason, .. } => {
+                if !["open", "claimed"].contains(&work.state.as_str()) {
+                    return Err(conflict("only unfinished work may be cancelled"));
                 }
-                work.target_generation = work
-                    .target_generation
+                let author = json!({"kind":actor.kind(),"id":actor.id()});
+                let owns =
+                    work.state == "claimed" && work.claim_agent_id.as_deref() == Some(actor.id());
+                if !(matches!(actor, Actor::Operator)
+                    || owns
+                    || work.state == "open" && work.created_by == author)
+                {
+                    return Err(WorkError(
+                        403,
+                        "only the holder, open-work creator or operator may cancel work".into(),
+                    ));
+                }
+                if reason.trim().is_empty() || reason.len() > 1024 {
+                    return Err(invalid(
+                        "cancellation reason must contain 1..1024 UTF-8 bytes",
+                    ));
+                }
+                work.state = "cancelled".into();
+                work.claim_generation = work
+                    .claim_generation
                     .checked_add(1)
-                    .ok_or_else(|| conflict("target generation cannot advance"))?;
-                // An explicit change can advance a reused opaque ref after an
-                // external squash/rebase. Only operation replay is a no-op.
-                work.target_ref = Some(target_ref);
+                    .ok_or_else(|| conflict("claim generation cannot advance"))?;
+                work.claim_agent_id = None;
+                work.claimed_at = None;
+                work.cancellation =
+                    Some(json!({"author":author,"reason":reason,"cancelled_at":changed_at}));
             }
             Mutation::Attest {
                 target_generation,
@@ -394,7 +437,7 @@ pub(crate) fn mutate(
                         }
                     },
                 };
-                if work.state == "done" || (action == "claim" && work.state != "open") {
+                if action == "claim" && work.state != "open" {
                     return Err(conflict("work is not open for claim"));
                 }
                 member(&tx, &room_id, agent_id, true)?;
@@ -405,6 +448,7 @@ pub(crate) fn mutate(
                     .checked_add(1)
                     .ok_or_else(|| conflict("claim generation cannot advance"))?;
                 work.claimed_at = Some(changed_at);
+                work.cancellation = None;
             }
             Mutation::Release { .. } | Mutation::Complete { .. } => {
                 if work.state != "claimed" {

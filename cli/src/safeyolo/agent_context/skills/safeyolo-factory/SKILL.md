@@ -10,6 +10,16 @@ design and troubleshooting copilot, not a new controller, runner, queue, or
 workflow engine. The factory TOML, role contracts, approved snapshot, Coord
 state, and supervisors remain authoritative.
 
+For native output publication, the producing worker retains its immutable
+artifact first, then calls `publish_work_output` with current work version,
+claim generation and target generation. Retry an interrupted publication with
+the exact original operation ID and inputs. Read current work separately from
+the recovered receipt. Cancellation and reassignment can reject an uncommitted
+stale publication; they do not remove the external artifact or stop an external
+effect. Producer identity comes from the authenticated route and cannot be
+supplied by a bridge. Native publication does not yet replace the supervisor's
+declared message handoffs or establish acceptance from attestation counts.
+
 ## Route the request
 
 - For a new factory or substantial redesign, read

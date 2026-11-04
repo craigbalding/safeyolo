@@ -133,7 +133,7 @@ async fn native_stage0_replay_and_delivery_survive_current_master_and_process_cr
         ],
     )
     .await;
-    assert_eq!(count(root, "PRAGMA user_version"), 5);
+    assert_eq!(count(root, "PRAGMA user_version"), 6);
     let db = Connection::open(root.join("data/coord/v0.db")).unwrap();
     let staged: Vec<String> = db
         .prepare("SELECT event_id FROM coord_outbox WHERE destination='audit-jsonl'")
@@ -507,7 +507,7 @@ async fn native_stage0_replay_and_delivery_survive_current_master_and_process_cr
     let refused = coord_cli(root, &["room", "list"]).await;
     assert!(!refused.status.success());
     assert_eq!(count(root, "PRAGMA user_version"), 999);
-    db.execute_batch("PRAGMA user_version=5").unwrap();
+    db.execute_batch("PRAGMA user_version=6").unwrap();
     assert_eq!(
         coord_json(root, &["room", "list"]).await["rooms"][0]["room_id"],
         room["room_id"]

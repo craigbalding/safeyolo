@@ -20,6 +20,8 @@ mod federation;
 mod github;
 #[path = "native_coord/inventory.rs"]
 mod inventory;
+#[path = "native_coord/outputs.rs"]
+mod outputs;
 #[path = "native_coord/room_status.rs"]
 mod room_status;
 #[path = "native_coord/signals.rs"]
