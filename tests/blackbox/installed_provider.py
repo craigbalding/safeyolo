@@ -199,7 +199,9 @@ def run(args):
     base, root, output = args.prepared_config.resolve(), args.root.resolve(), args.output.resolve()
     assert not root.exists(), "--root must be new"
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
+    runtime_revision = args.runtime_revision or args.revision
     report = {"started_at": datetime.now(UTC).isoformat(), "revision": args.revision,
+              "runtime_revision": runtime_revision,
               "root": str(root), "status": "failed", "cleanup": "unverified"}
     original = {base / name: (base / name).read_bytes() for name in ("config.toml", "policy.toml")}
     cli = str(base / "bin/safeyolo")
@@ -217,7 +219,7 @@ def run(args):
     parent_thread = threading.Thread(target=parent.serve_forever)
     parent_thread.start()
     try:
-        report["inputs"] = inputs(base, args.revision)
+        report["inputs"] = inputs(base, runtime_revision)
         prepare(base, root, args.admin_port, parent.server_port)
         (root / "data/tmp").mkdir(mode=0o755)
         _require_disposable(root)
@@ -396,6 +398,7 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--revision", required=True)
+    parser.add_argument("--runtime-revision", help="binary source commit; defaults to --revision")
     parser.add_argument("--admin-port", type=int, required=True)
     args = parser.parse_args()
     report = run(args)

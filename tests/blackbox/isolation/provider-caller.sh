@@ -58,5 +58,7 @@ await_phase closed
 request closed GET "$url"
 touch closed.ready
 await_phase stopped
+# Stopping a sandbox reloads the proxy's listeners and gateway tokens.
+refresh_token
 request stopped GET "$url"
 touch stopped.ready

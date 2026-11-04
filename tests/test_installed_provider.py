@@ -92,11 +92,16 @@ args = sys.argv[1:]
 header = sys.stdin.read()
 if args[-1].endswith('/gateway/services'):
     assert header == 'Authorization: Bearer fixture-agent-token\n'
-    print('{"authorized":{"proofspot":{"token":"sgw_fixture-proof"}}}')
+    # Model the separate token generations after reauthorization and listener reload.
+    generation = pathlib.Path('generation')
+    number = int(generation.read_text()) + 1 if generation.exists() else 1
+    generation.write_text(str(number))
+    print('{"authorized":{"proofspot":{"token":"sgw_fixture-proof' + str(number) + '"}}}')
 else:
-    assert header == 'Authorization: Bearer sgw_fixture-proof\n'
     counter = pathlib.Path('counter')
     index = int(counter.read_text()) if counter.exists() else 0
+    generation = 1 if index < 6 else 2 if index < 8 else 3
+    assert header == f'Authorization: Bearer sgw_fixture-proof{generation}\n'
     statuses = [403, 403, 403, 403, 200, 403, 200, 503, 503]
     expected = [('DELETE', '/api/v1/value'), ('GET', '/outside'), ('GET', '/api/v1/value'),
                 ('GET', '/api/v1/value'),
@@ -126,6 +131,7 @@ else:
         "method": 403, "path": 403, "destination": 403, "port": 403, "allowed": 200,
         "revoked": 403, "recovered": 200, "closed": 503, "stopped": 503}
     assert observations["allowed"]["body_sha256"] == hashlib.sha256(b"native-http-service\n").hexdigest()
+    assert (tmp_path / "generation").read_text() == "3"
     assert "sgw_" not in result.stdout + result.stderr + (tmp_path / "results.tsv").read_text()
     assert not (tmp_path / "response").exists() and not (tmp_path / "headers").exists()
 
@@ -189,10 +195,13 @@ def test_network_observation_and_owned_cleanup_on_partial_failure(tmp_path, monk
             (root / "workspaces/caller/results.tsv").write_text("incomplete")
         raise RuntimeError("original operation failure")
 
+    def selected_inputs(_base, revision):
+        assert revision == "runtime"
+        return {"guest": {"sha256": hashlib.sha256(guest).hexdigest()}}
+
     monkeypatch.setattr(installed_provider, "checked", native)
     monkeypatch.setattr(installed_provider, "prepare", prepare_instance)
-    monkeypatch.setattr(installed_provider, "inputs", lambda *_: {
-        "guest": {"sha256": hashlib.sha256(guest).hexdigest()}})
+    monkeypatch.setattr(installed_provider, "inputs", selected_inputs)
     monkeypatch.setattr(installed_provider, "_agent_listeners", lambda *_: [
         {"agent_id": name, "path": str(root / f"{name}.sock")} for name in installed_provider.NAMES])
     monkeypatch.setattr(installed_provider, "runsc_identity", lambda *_args, **_kwargs: {})
@@ -202,11 +211,12 @@ def test_network_observation_and_owned_cleanup_on_partial_failure(tmp_path, monk
         error = AssertionError if stage in {"extra_interface", "no_interfaces"} else RuntimeError
         with pytest.raises(error) as failure:
             installed_provider.run(Namespace(prepared_config=base, root=root, output=output,
-                                            revision="fixture", admin_port=19437))
+                                            revision="fixture", runtime_revision="runtime", admin_port=19437))
         if error is RuntimeError:
             assert str(failure.value) == "original operation failure"
         report = json.loads((output / "result.json").read_text())
         assert report["status"] == "failed"
+        assert report["revision"] == "fixture" and report["runtime_revision"] == "runtime"
         assert calls[-3:] == [["agent", "stop", "proofspot"], ["agent", "stop", "caller"], ["stop"]]
         assert report["cleanup"] == ("failed" if stop_error or stage == "corrupt_clients" else "stopped")
         if stop_error:

@@ -2,6 +2,7 @@
 
 import json
 import os
+import signal
 import socket
 import stat
 import subprocess
@@ -11,6 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+import tomlkit
 
 from tests.blackbox.installed_provider import POLICY as NATIVE_POLICY
 from tests.blackbox.installed_provider import SERVICE as NATIVE_SERVICE
@@ -68,7 +70,8 @@ agent_id = "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         policy += '[agents.proofspot]\nagent_id = "ag-cccccccccccccccccccccccccccccccc"\n'
     with _origin("127.0.0.1") as parent, launch_proxy(
         "rust", tmp_path, policy, native_product=True, agent_api=True,
-        agents=("caller", "unrelated"), gateway_services_dir=tmp_path / "services",
+        agents=("caller", "unrelated", "proofspot") if provider else ("caller", "unrelated"),
+        gateway_services_dir=tmp_path / "services",
         gateway_builtin_services_dir=tmp_path / "builtin",
         parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
     ) as proxy:
@@ -122,6 +125,38 @@ agent_id = "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             wire = _wire(parent.requests[0])
             assert _header_values(wire, b"authorization") == []
             assert token.encode() not in wire
+        else:
+            # Native agent stop removes its listener through a full proxy reload.
+            path = tmp_path / "config.toml"
+            config = tomlkit.parse(path.read_text())
+            config["listeners"] = [row for row in config["listeners"] if row["agent_id"] != "proofspot"]
+            config["reload_id"] = "provider-listener-removed"
+            path.write_text(tomlkit.dumps(config))
+            proxy.process.send_signal(signal.SIGHUP)
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    marker = json.loads(proxy.readiness_file.read_text())
+                except (FileNotFoundError, json.JSONDecodeError):
+                    pass  # Reload removes readiness until the new listeners are published.
+                else:
+                    if marker.get("reload_id") == config["reload_id"]:
+                        assert marker["listeners"] == 2
+                        break
+                assert proxy.process.poll() is None
+                assert time.monotonic() < deadline, "Provider listener removal did not reload"
+                time.sleep(0.025)
+            status, _, body = request(proxy.paths["caller"], url, headers=authorization)
+            assert status == 403 and json.loads(body)["error"] == "INVALID_TOKEN"
+            status, _, body = request(proxy.paths["caller"], AGENT_API + "/gateway/services",
+                                     headers={"Authorization": "Bearer fixture-agent-api-token-one"})
+            assert status == 200
+            refreshed = json.loads(body)["authorized"]["proofspot"]["token"]
+            assert refreshed != token
+            status, _, _ = request(proxy.paths["caller"], url,
+                                   headers={"Authorization": f"Bearer {refreshed}"})
+            assert status in {502, 503}
+            assert parent.accepts == 0
 
 
 def test_native_unmapped_gateway_token_cannot_reach_parent(tmp_path):
