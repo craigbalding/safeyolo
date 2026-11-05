@@ -111,6 +111,38 @@ fn current_ordinary_families_round_trip_their_owned_fields() {
 }
 
 #[test]
+fn current_approval_types_round_trip_the_writer_and_reader() {
+    for approval_type in [
+        ApprovalType::Credential,
+        ApprovalType::NetworkEgress,
+        ApprovalType::GatewayRoute,
+        ApprovalType::Service,
+        ApprovalType::ContractBinding,
+        ApprovalType::CoordRoom,
+        ApprovalType::DesktopPresent,
+    ] {
+        let mut event = Event::new(
+            "coord.access_requested",
+            Kind::Coord,
+            Severity::High,
+            "Worker requested approval",
+        );
+        event.approval = Some(Approval {
+            required: true,
+            approval_type,
+            key: "apr-current".into(),
+            target: "owned-room".into(),
+            scope_hint: serde_json::json!({"room_id":"rm-current"}).into(),
+        });
+        let bytes = event.record(OffsetDateTime::UNIX_EPOCH).encode().unwrap();
+        let row = crate::audit::parse_record(&bytes).unwrap();
+        assert_eq!(row["approval"]["approval_type"], approval_type.as_str());
+        assert_eq!(row["approval"]["key"], "apr-current");
+        assert!(crate::operator_events::is_operator_event(&row));
+    }
+}
+
+#[test]
 fn optional_event_id_and_timestamp_are_construction_time_fields() {
     let now = OffsetDateTime::parse(
         "2026-01-02T03:04:05+05:30",

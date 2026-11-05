@@ -40,6 +40,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 if __package__:
     from .harness.sinkhole_parent import Request as ParentRequest
+    from .installed_access import setup_coord
     from .installed_host_smoke import (
         SmokeError,
         _native_config,
@@ -51,6 +52,7 @@ if __package__:
     from .native_credentials import native_cli, store_credential
 else:
     from harness.sinkhole_parent import Request as ParentRequest
+    from installed_access import setup_coord
     from installed_host_smoke import (
         SmokeError,
         _native_config,
@@ -379,21 +381,6 @@ def fixture_python(env: dict, code: str, *args: str):
     bootstrap = "import sys; sys.path.insert(0, " + repr(str(reference)) + ");\n"
     result = run([sys.executable, "-I", "-c", bootstrap + code, *args], env)
     return json.loads(result) if result.strip() else None
-
-
-def fixture_coord(env: dict, code: str):
-    """Bind the unshipped reader to NATS owned by the installed native CLI."""
-    return fixture_python(env, """
-import json,os
-from pathlib import Path
-from safeyolo.coord import nats_runtime
-nats=Path(os.environ['SAFEYOLO_COORD_DATA_DIR'])/'nats'
-process=json.loads((nats/'process.json').read_text())
-# Native startup verifies this process and publishes its endpoint. The reference
-# lifecycle's nats.pid.json/test_instance contract is not used by this driver.
-nats_runtime.client_url=lambda: f"nats://127.0.0.1:{process['client_port']}"
-nats_runtime.client_user_credentials=lambda: ('safeyolo',(nats/'creds').read_text().strip())
-""" + code)
 
 
 def ensure_nats(cli: Path, env: dict, client_port: int | None = None,
@@ -730,28 +717,22 @@ print(json.dumps({'policy':'created'}))
         stages.append(start(active, root, env, args.rust_revision))
         agent_token = (root / "data/agent_token").read_text().strip()
         alice = socket_for(root, "alice")
-        initial_coord = fixture_coord(env, """
-import asyncio,json
-from safeyolo.coord import api
-api.bootstrap()
-async def exercise():
-    room_id=await api.create_room('r638-rollback')
-    api.grant('r638-rollback','agent','ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',operation_id='r638-grant-alice')
-    api.grant('r638-rollback','agent','ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',operation_id='r638-grant-bob')
-    api.advertise_resource('r638-rollback','fixture','slot',advertised=True,
-                           operation_id='r638-resource-advertisement')
-    sent=await api.send('r638-rollback','agent','ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','python-created-r638',
-        declared_content_type='text/plain',sender_agent_name='alice',notify=['bob'])
-    page=await api.read_room('r638-rollback','agent','ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
-    assert len(page['messages'])==1
-    state=await api.get_room_state('r638-rollback','agent','ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
-    assert state['resource_leases'][0]['state']=='held'
-    assert state['resource_leases'][0]['holder_agent_id']=='ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
-    return {'room_id':room_id,'message_id':sent['envelope']['msg_id'],
-            'sequence':page['messages'][0]['sequence'],'attention_status':sent['attention_status'],
-            'provider_owned_lease':state['resource_leases'][0]['state']}
-print(json.dumps(asyncio.run(exercise())))
-""")
+        initial_coord = setup_coord(str(args.cli), root, "alice", "bob", room="r638-rollback")
+        run([str(args.cli), "--root", str(root), "coord", "inventory", "advertise-resource",
+             "r638-rollback", "fixture", "slot", "--operation-id", "r638-resource-advertisement"], env)
+        status, sent = json_request(alice, "POST", "/api/coord/rooms/r638-rollback/send", agent_token,
+                                   {"body": "initial-native-r638", "declared_content_type": "text/plain",
+                                    "notify": ["bob"]})
+        check(status == 200 and sent.get("envelope", {}).get("msg_id"),
+              f"initial native Coord send failed: {status} {sent}")
+        bob = socket_for(root, "bob")
+        status, page = json_request(bob, "GET", "/api/coord/rooms/r638-rollback/messages?since=0&limit=5", agent_token)
+        check(status == 200 and [m.get("body") for m in page.get("messages", [])] == ["initial-native-r638"],
+              f"initial native Coord read failed: {status} {page}")
+        lease = check_provider_lease("native_initial", bob, agent_token, provider_snapshot,
+                                     provider_expected, provider_checks, args.output)
+        initial_coord.update(message_id=sent["envelope"]["msg_id"], sequence=page["messages"][0]["sequence"],
+                             attention_status=sent["attention_status"], provider_owned_lease=lease["state"])
         status, denied = request(alice, "GET",
                                  f"http://{args.origin_host}:{origin.server_port}/initial")
         check(status == 403 and not origin.seen,
@@ -794,7 +775,7 @@ print(json.dumps(asyncio.run(exercise())))
         bob = socket_for(root, "bob")
         coord_status, coord_page = json_request(
             bob, "GET", "/api/coord/rooms/r638-rollback/messages?since=0&limit=5", agent_token)
-        check(coord_status == 200 and any(m.get("body") == "python-created-r638"
+        check(coord_status == 200 and any(m.get("body") == "initial-native-r638"
                                           for m in coord_page.get("messages", [])),
               f"native Coord did not read initial retained message: {coord_status} {coord_page}")
         attention_status, attention_page = json_request(
@@ -1097,24 +1078,22 @@ print(json.dumps({'test_context':'removed_after_flow'}))
               f"replacement native process did not use native grant/binding: {replacement_gateway_status}")
         check(origin.seen[-1]["authorization"] == "Bearer synthetic-r638-access-v1",
               "replacement native process did not inject native-refreshed vault credential")
-        replacement_coord_read = fixture_coord(env, """
-import asyncio,json
-from safeyolo.coord import api
-api.bootstrap()
-async def exercise():
-    page=await api.read_room('r638-rollback','agent','ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',since_sequence=0,limit=5)
-    assert [m['body'] for m in page['messages']]==['python-created-r638','native-written-r638']
-    attention=await api.wait_for_attention('ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',since_sequence=0,timeout_seconds=0.1,limit=5)
-    assert attention['edges']
-    state=await api.get_room_state('r638-rollback','agent','ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
-    assert state['resource_leases'][0]['state']=='held'
-    sent=await api.send('r638-rollback','agent','ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','python-rollback-r638',
-        declared_content_type='text/plain',sender_agent_name='bob',notify=['alice'])
-    return {'messages_read':len(page['messages']),'attention_edges':len(attention['edges']),
-            'new_message_id':sent['envelope']['msg_id'],
-            'provider_owned_lease':state['resource_leases'][0]['state']}
-print(json.dumps(asyncio.run(exercise())))
-""")
+        status, page = json_request(bob, "GET", "/api/coord/rooms/r638-rollback/messages?since=0&limit=5", agent_token)
+        check(status == 200 and [m.get("body") for m in page.get("messages", [])] == [
+            "initial-native-r638", "native-written-r638"],
+              f"replacement native Coord lost retained messages: {status} {page}")
+        status, attention = json_request(bob, "GET", "/api/coord/attention/wait?since=0&limit=5&timeout=0.1", agent_token)
+        check(status == 200 and attention.get("edges"),
+              f"replacement native Coord lost retained attention: {status} {attention}")
+        lease = check_provider_lease("native_replacement", bob, agent_token, provider_snapshot,
+                                     provider_expected, provider_checks, args.output)
+        status, sent = json_request(bob, "POST", "/api/coord/rooms/r638-rollback/send", agent_token,
+                                   {"body": "replacement-native-r638", "declared_content_type": "text/plain",
+                                    "notify": ["alice"]})
+        check(status == 200 and sent.get("envelope", {}).get("msg_id"),
+              f"replacement native Coord send failed: {status} {sent}")
+        replacement_coord_read = {"messages_read": len(page["messages"]), "attention_edges": len(attention["edges"]),
+                                  "new_message_id": sent["envelope"]["msg_id"], "provider_owned_lease": lease["state"]}
         native_flow(root, alice, agent_token, flow_id, "native")
         status, _ = json_request(alice, "POST", f"/api/flows/{flow_id}/tag", agent_token,
                                  {"tag": "replacement", "value": "rollback"})
@@ -1253,7 +1232,7 @@ print(json.dumps({'native_grant_read':True,
         status, returned_coord = json_request(
             alice, "GET", "/api/coord/rooms/r638-rollback/messages?since=0&limit=5", agent_token)
         check(status == 200 and [m.get("body") for m in returned_coord.get("messages", [])] == [
-            "python-created-r638", "native-written-r638", "python-rollback-r638"],
+            "initial-native-r638", "native-written-r638", "replacement-native-r638"],
               f"return Rust lost Coord history: {status} {returned_coord}")
         lease = check_provider_lease("native_return", bob, agent_token, provider_snapshot,
                                      provider_expected, provider_checks, args.output)
