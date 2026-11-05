@@ -281,3 +281,19 @@ def test_recipe_with_unspecified_binding_reports_the_prerequisite_and_full_effec
         assert any("mode" in condition for condition in required["unverified_binding_conditions"])
         assert required["access"] == "available"
         assert "executed" in required["modeled_effects"]["direct"][0]["possible_effects"]
+
+
+def test_existing_risk_approval_consumes_the_same_temporary_combined_authority(tmp_path):
+    with job_fixture(tmp_path / "ordinary-risk", extra='\n[[risk]]\nenables = ["changed_job_execution"]\ndecision = "require_approval"\n') as fixture:
+        value = challenge(fixture)
+        _escalate(fixture, value)
+        assert _decide(fixture, value)["status"] == "approved"
+        status, headers, raw = request(fixture.proxy.paths["alice"], f"http://127.0.0.1:{fixture.port}{EXECUTION}",
+                                       method="POST", headers={"Authorization": "Bearer " + fixture.tokens["alice"]})
+        assert status == 428, raw
+        approval_id = next(value for name, value in headers.items() if name.lower() == "x-safeyolo-approval-id")
+        pending = _admin(fixture, "GET", "/admin/approvals/" + approval_id)
+        assert pending["assessment"]["model"]["rules"]["changed_job_execution"]["status"] == "match"
+        assert pending["assessment"]["risk_policy"]["effect"] == "prompt"
+        assert _admin(fixture, "POST", "/admin/approvals/" + approval_id, {"decision": "approve", "option": "run"})["status"] == "approved"
+        assert traffic(fixture, path=EXECUTION, method="POST")[0] == 200

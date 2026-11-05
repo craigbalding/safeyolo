@@ -144,7 +144,7 @@ pub(crate) async fn bind_risky(
     let mut action = json!({"kind":"gateway_route","agent":agent,"agent_id":agent_id,
         "service":selection.service,"capability":selection.capability,"credential":selection.vault_token,
         "account":selection.account,"host":request.host,"method":request.method,"path":path,
-        "run":run,"binding_id":selection.binding_id,
+        "scheme":scheme,"port":request.port,"run":run,"binding_id":selection.binding_id,
         "irreversible":selection.risky_route.as_ref().is_some_and(|route| route.irreversible)});
     action["prepared_assessment"] = super::route_challenge::assessment(runtime, policy, &action)?;
     let ttl = runtime
