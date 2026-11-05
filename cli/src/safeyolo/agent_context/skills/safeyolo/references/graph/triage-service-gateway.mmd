@@ -14,6 +14,8 @@ flowchart TD
     sym.gateway_contract_not_enforceable(["Gateway response 'decision: contract_not_enforceable'"])
     sym.gateway_sgw_token_rejected(["Using an 'sgw_' token in the service call returned 401 / 403 from the service"])
     sym.gateway_credential_leak_attempt(["credential-guard blocked my request even though I thought I was using a gateway token"])
+    sym.gateway_route_challenge(["An approved service returned GATEWAY_ROUTE_CHALLENGE"])
+    ev.gateway_reconsider_route["Read the host-recorded scope, reviewed guidance, uncertainty and alternative gateway permissions before deciding whether this operation is needed"]
     ev.gateway_list_services["GET /gateway/services -- list authorized and available services and their capabilities"]
     ev.gateway_request_access["POST /gateway/request-access with '{service, capability, reason}' -- request a narrow capability with a clear purpose"]
     ev.gateway_read_decision["Read 'decision' and 'requested_bindings' in the response body"]
@@ -39,6 +41,7 @@ flowchart TD
     ask.gateway_watch_grant[["Ask operator to run 'safeyolo watch' and grant the specific capability I requested"]]
     ask.gateway_restart_after_yaml_change[["Ask operator to restart SafeYolo ('safeyolo stop && safeyolo start') so the service_gateway addon re-reads the on-disk service registry after a new service YAML or credential binding was added post-startup"]]
 
+    sym.gateway_route_challenge -->|"next_check"| ev.gateway_reconsider_route
     sym.gateway_want_to_call_service -->|"next_check"| ev.gateway_list_services
     sym.gateway_no_capability_listed -->|"next_check"| ev.gateway_list_services
     sym.gateway_available_not_authorized -->|"next_check"| ev.gateway_request_access
@@ -76,6 +79,8 @@ flowchart TD
     class sym.gateway_contract_not_enforceable symptom
     class sym.gateway_sgw_token_rejected symptom
     class sym.gateway_credential_leak_attempt symptom
+    class sym.gateway_route_challenge symptom
+    class ev.gateway_reconsider_route evidence
     class ev.gateway_list_services evidence
     class ev.gateway_request_access evidence
     class ev.gateway_read_decision evidence
@@ -102,6 +107,7 @@ flowchart TD
     class ask.gateway_restart_after_yaml_change operator_ask
 
     %% Entry symptoms (bind an observed symptom here)
+    style sym.gateway_route_challenge stroke-width:3px
     style sym.gateway_want_to_call_service stroke-width:3px
     style sym.gateway_no_capability_listed stroke-width:3px
     style sym.gateway_available_not_authorized stroke-width:3px

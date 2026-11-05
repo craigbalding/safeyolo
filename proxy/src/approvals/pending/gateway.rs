@@ -76,7 +76,7 @@ pub(super) fn option_current(runtime: &Runtime, option: &OptionScope) -> Result<
     Ok(true)
 }
 
-fn credential_bindings(
+pub(super) fn credential_bindings(
     runtime: &Runtime,
     names: &[String],
 ) -> Result<(BTreeMap<String, String>, Option<String>)> {

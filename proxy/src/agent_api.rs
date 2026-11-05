@@ -33,6 +33,7 @@ mod flows;
 mod gateway;
 mod memory;
 mod operator_actions;
+mod route_challenges;
 mod trace;
 pub use gateway::GatewayContext;
 pub use memory::MemoryContext;
@@ -82,6 +83,8 @@ const ENDPOINTS: &[&str] = &[
     "/api/flows/diff",
     "/api/flows/request-body-search",
     "/gateway/request-access",
+    "/gateway/challenges/{challenge_id}",
+    "/gateway/challenges/{challenge_id}/escalate (POST)",
     "/gateway/submit-binding",
     "/desktop/present",
     "/operator-actions",

@@ -42,7 +42,7 @@ Each approval shows its fixed permission and options. Inspect leaves it pending.
 Explain shows SafeYolo facts, the selected option's effect, non-grants and unknown scope. It records an audit event and leaves the approval unchanged.
 Ask sends a fixed context question to the requesting agent's existing Coord room. Context reads its untrusted reply separately. Neither changes approval authority. Delivery failure or the 120-second reply deadline leaves approve/reject usable. Repeating ask reads the same exchange while it is open; ask again after a timeout to send a new question.
 Persistent network approval is reusable for the selected agent and host/port. Persistent credential approval changes shared policy. The run option instead binds supported access to the current worker run.
-Gateway route approval defaults to once; --option selects an offered lifetime. Service access can require an offered credential option.
+Gateway risk approval defaults to once; --option selects an offered lifetime. A missing-route challenge offers a finite run-bound exception only after explicit escalation. Service access can require an offered credential option.
 Reject records a refusal without adding a policy deny rule. Terminal decisions cannot grant again.
 Helper uses its Agent API token (default /app/agent_token) and the existing guest proxy route.
 If evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable.
@@ -349,6 +349,16 @@ fn show_explanation(view: &Value) -> Result<(), Error> {
         safe(text(&view["status"]))
     );
     show_request_history(view)?;
+    if view["action"]["route_exception"] == true {
+        println!(
+            "Host-recorded route scope: {}",
+            context_json(&view["action"])?
+        );
+        println!(
+            "Policy and reviewed guidance: {}",
+            context_json(&view["guidance"])?
+        );
+    }
     let facts = &view["observed"];
     for (label, key) in [
         ("Agent", "agent"),
@@ -555,7 +565,9 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
         // Markdown/HTML headings and all terminal controls.
         println!(
             "{} (untrusted text): {}",
-            if view["action"]["kind"] == "operator_action" {
+            if view["action"]["kind"] == "operator_action"
+                || view["action"]["route_exception"] == true
+            {
                 "Agent-provided reason"
             } else {
                 "Helper reason"

@@ -3449,6 +3449,7 @@ where
     let mut gateway_injected_header = None;
     let mut gateway_recording_header = None;
     let mut gateway_evidence = None;
+    let mut route_challenge_selection = None;
     let mut provider_route = None;
     let gateway_trace = trace
         .as_ref()
@@ -3554,7 +3555,7 @@ where
                 )?;
                 return Ok((prior_block(reply), "deny".into()));
             }
-            crate::services::GatewayDecision::Selected { credential } => {
+            crate::services::GatewayDecision::Selected { mut credential } => {
                 if let Some(hook) = &gateway_trace {
                     hook.evaluated("selected", None);
                 }
@@ -3585,7 +3586,84 @@ where
                     )?;
                     return Ok((prior_block(reply), "deny".into()));
                 }
-                if let Some(risky) = credential.risky_route.as_ref() {
+                if credential.missing_route_allow {
+                    let Some(run) = identity
+                        .current_agent_run()
+                        .filter(|run| run.current(policy))
+                    else {
+                        return Ok((
+                            prior_block(gateway_response(
+                                403,
+                                "ROUTE_DENIED",
+                                request_id,
+                                gateway_trace.as_ref(),
+                            )?),
+                            "deny".into(),
+                        ));
+                    };
+                    if let Some(risky) = &credential.risky_route {
+                        let risk = policy.evaluate_risky_route(crate::policy::RiskyRouteRequest {
+                            service: &credential.service,
+                            agent: &run.agent,
+                            account: &credential.account,
+                            tactics: &risky.tactics,
+                            enables: &risky.enables,
+                            irreversible: risky.irreversible,
+                            method: request.method().as_str(),
+                            path: destination.path.split('?').next().unwrap_or("/"),
+                        });
+                        if !matches!(
+                            risk.effect,
+                            crate::policy::Effect::Allow | crate::policy::Effect::Prompt
+                        ) {
+                            return Ok((
+                                prior_block(gateway_response(
+                                    403,
+                                    "GATEWAY_RISKY_ROUTE",
+                                    request_id,
+                                    gateway_trace.as_ref(),
+                                )?),
+                                "deny".into(),
+                            ));
+                        }
+                    }
+                    grant_lease = crate::approvals::pending::route_challenge::grant(
+                        &runtime,
+                        run,
+                        &credential,
+                        crate::policy::NetworkRequest {
+                            agent: Some(&run.agent),
+                            host: &destination.policy_host,
+                            port: Some(destination.port),
+                            method: request.method().as_str(),
+                            path: &destination.path,
+                        },
+                        &destination.scheme,
+                    )?;
+                    if grant_lease.is_none() {
+                        route_challenge_selection = Some(credential.clone());
+                    } else {
+                        runtime.audit.emit(identity.request_event("gateway.route_exception_used", crate::audit::Kind::Gateway, request_id,
+                            "Explicit retry uses a temporary service route permission", json!({"grant_id":grant_lease.as_ref().map(|lease| &lease.grant().grant_id),"method":request.method().as_str(),"path":destination.path.split('?').next().unwrap_or("/")})))?;
+                        credential.authorization_binding = grant_lease
+                            .as_ref()
+                            .and_then(|lease| lease.grant().delegated.as_deref())
+                            .and_then(|encoded| {
+                                serde_json::from_str::<crate::policy::delegation::IssuedAccess>(
+                                    encoded,
+                                )
+                                .ok()
+                            })
+                            .and_then(|issued| {
+                                issued.action["credential_binding"]
+                                    .as_str()
+                                    .map(str::to_owned)
+                            });
+                    }
+                }
+                if !credential.missing_route_allow
+                    && let Some(risky) = credential.risky_route.as_ref()
+                {
                     let risky_path = destination.path.split('?').next().unwrap_or("/");
                     let mut granted = None;
                     if let Some(store) = runtime.gateway_grants.as_ref() {
@@ -4098,6 +4176,36 @@ where
             )?;
             return Ok((prior_block(blocked), "deny".into()));
         }
+    }
+    if let Some(selection) = route_challenge_selection {
+        if let Some(hook) = &gateway_trace {
+            hook.evaluated("challenged", None);
+        }
+        let run = identity
+            .current_agent_run()
+            .ok_or("current agent run unavailable")?;
+        let challenge = crate::approvals::pending::route_challenge::observe(
+            &runtime,
+            run,
+            &selection,
+            crate::policy::NetworkRequest {
+                agent: Some(&run.agent),
+                host: &destination.policy_host,
+                port: Some(destination.port),
+                method: request.method().as_str(),
+                path: &destination.path,
+            },
+            &destination.scheme,
+            request_id,
+        )
+        .await?;
+        let reply = Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-blocked-by", "service-gateway")
+            .header("x-safeyolo-request-id", request_id)
+            .body(full(challenge.to_string()))?;
+        return Ok((prior_block(reply), "route_challenge".into()));
     }
     if let Some(evidence) = gateway_evidence {
         publish_gateway_evidence(&runtime, identity, request_id, &evidence)?;
