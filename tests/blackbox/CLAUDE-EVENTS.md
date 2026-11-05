@@ -22,7 +22,9 @@ controller's frozen environment and existing runtime prerequisites intact.
 Create `/var/lib/rundeck/harness/claude-events/events.env`, readable only by the trusted account.
 Set its actual `PATH` and, when needed, `CLAUDE_EVENTS_PYTHON`. Bind `gh` to the
 existing authorized repository principal using the supported private service
-binding. The principal needs repository/Actions read access and Actions write
+binding. Reuse an installed binding and Sylab's existing `github-repository`
+credential; do not repeat a completed private delivery or request a new login.
+The principal needs repository/Actions read access and Actions write
 access for the existing production dispatch. Do not put that credential in
 source, JSON configuration, GitHub Actions or returned reports.
 
@@ -34,14 +36,26 @@ clean source checkout readable by UID 1000. Keep the accepted controller at
 The producer uses Python 3.12 or 3.13 and the existing `cryptography` dependency
 used by the provisioner. No product build or model call is needed for setup.
 
-Sylab supplies one private access-only JSON file on that Ubuntu host. The file
-contains exactly `value` (the selected provider access token) and `expires_at`
-(its actual timezone-aware ISO 8601 expiry). Select both from the current
-credential on its original operator host through the approved private delivery
-route. Do not supply a full client login, refresh token, client secret or vault.
-Renewal material stays in the original host's encrypted store. Protect the
-delivered file at `0600` and its parent at `0700`, owned by UID 1000. Replace
-the complete file atomically when Sylab supplies a new access lease.
+Sylab supplies an encrypted access-only source directory on that Ubuntu host.
+Reuse the accepted RSA/Fernet handoff. The directory contains the receiver-owned
+RSA key `transport-private.pem` and encrypted `sealed-access.json`; it contains
+no plaintext access JSON. Protect the directory at `0700` and both files at
+`0600`, owned by UID 1000. Keep the receiver's private key on Ubuntu. Give only
+its public key to the original operator host through the existing private route.
+
+On the original operator host, Sylab selects the current access value and actual
+finite expiry from its encrypted store. In memory, seal exactly `value`,
+`expires_at` and `source_expires_at` using Fernet. Wrap the Fernet key with the
+receiver's RSA public key using OAEP with SHA-256 for both OAEP and MGF1. The
+envelope JSON contains base64 `wrapped_key` and the Fernet `ciphertext` string,
+as consumed by the accepted provisioner. Both expiry fields are timezone-aware
+ISO 8601 timestamps. Set `source_expires_at` to the actual source credential
+expiry; `expires_at` may be the same or an earlier lease expiry. Do not extend
+either timestamp when copying the lease. Deliver only the sealed envelope and
+replace that complete file atomically when Sylab supplies new applicable access.
+Do not write the decrypted payload to a file. Do not supply a full client login,
+refresh token, client secret or vault. Renewal material stays in the original
+host's encrypted store.
 
 The existing Agent API `GET /gateway/services` binding supplies an agent-scoped
 `sgw_` token for its own proxy. It does not export the provider credential or
@@ -51,8 +65,8 @@ value imported into the separate installed instance. See the
 
 Create a private shell binding at an operator-selected absolute path on Ubuntu,
 owned by UID 1000, with mode `0600` and a `0700` parent. Before using the following
-contents, replace each uppercase placeholder: `ACCESS_JSON` is the absolute
-private input path, `PYTHON` is the provisioner's existing Python executable
+contents, replace each uppercase placeholder: `SEALED_SOURCE` is the absolute
+encrypted source directory, `PYTHON` is the provisioner's existing Python executable
 with `cryptography`, `PROVISION_HELPER` is the accepted executable helper,
 `CREDENTIAL_NAME` is its selected credential name, and `BINDING_SOURCE` is the
 absolute path of the new source checkout. Include the existing private
@@ -62,7 +76,7 @@ the private binding reads any secret.
 
 ```sh
 set +x
-CLAUDE_ACCESS_SOURCE='ACCESS_JSON'
+CLAUDE_ACCESS_SOURCE='SEALED_SOURCE'
 CLAUDE_ACCESS_PYTHON='PYTHON'
 CLAUDE_PROVISION='PROVISION_HELPER'
 CLAUDE_CREDENTIAL='CREDENTIAL_NAME'
@@ -71,16 +85,20 @@ source 'BINDING_SOURCE/scripts/claude_access_binding.sh'
 
 For each admitted event, the unchanged SSH payload exports `CLAUDE_EVENT_RUN`
 and `CLAUDE_EVENT_OUTPUT`, then sources the private binding under `set -euo
-pipefail`. The binding rereads the access file and creates a new private
-`${CLAUDE_EVENT_OUTPUT}.provision` directory beside the caller output. Keep
+pipefail`. The binding rereads and decrypts the sealed source in memory.
+The binding creates a new private `${CLAUDE_EVENT_OUTPUT}.provision` directory
+beside the caller output. Keep
 their shared parent at `0700`. Fresh RSA/Fernet transport keys seal the existing
 helper's exact `value`, `expires_at`, `source_expires_at` payload. Both expiry
-fields retain the source's actual expiry. The binding exports
+fields retain their source values. Decrypted access exists only in the trusted
+processes' memory and the provisioner's stdin. The reusable source and the
+per-attempt transport retain only ciphertext and protected local keys.
+The binding exports
 `SAFEYOLO_CLAUDE_PROVISION_DIR`, `CLAUDE_PROVISION` and `CLAUDE_CREDENTIAL` for
 the unchanged caller. The helper imports through stdin only after the caller's
 credential-free readiness succeeds. It removes both transport files on success.
 
-A missing, public, malformed or expired source fails before the caller starts.
+A missing, public, malformed, altered or expired source fails before the caller starts.
 The helper requires more than ten minutes of remaining access; the producer
 applies the same condition. The helper checks expiry again at import, so access
 that expires during selection/readiness also fails closed. Fresh transport

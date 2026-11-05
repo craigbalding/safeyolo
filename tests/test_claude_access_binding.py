@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from scripts import claude_blackbox_events as events
 from tests import test_claude_blackbox_events as event_tests
@@ -28,13 +28,31 @@ transport = event_tests.transport
 
 
 def access_input(tmp_path):
-    private = tmp_path / "private source"
-    private.mkdir(mode=0o700)
-    source = private / "access.json"
+    source = tmp_path / "private sealed source"
+    source.mkdir(mode=0o700)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    keyfile = source / "transport-private.pem"
+    keyfile.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                          serialization.NoEncryption()))
+    keyfile.chmod(0o600)
     access = {"value": "SYNTHETIC-ACCESS-ONE", "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat()}
-    source.write_text(json.dumps(access))
-    source.chmod(0o600)
+    access["source_expires_at"] = (datetime.now(UTC) + timedelta(hours=2)).isoformat()
+    replace_access(source, access)
     return source, access
+
+
+def replace_access(source, access):
+    # Model the existing private sender: only ciphertext is persisted/delivered.
+    key = serialization.load_pem_private_key((source / "transport-private.pem").read_bytes(), password=None)
+    transport_key = Fernet.generate_key()
+    wrapped = key.public_key().encrypt(transport_key,
+                                      padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
+    envelope = {"wrapped_key": base64.b64encode(wrapped).decode(),
+                "ciphertext": Fernet(transport_key).encrypt(json.dumps(access).encode()).decode()}
+    pending = source / "sealed-access.pending"
+    pending.write_text(json.dumps(envelope))
+    pending.chmod(0o600)
+    pending.replace(source / "sealed-access.json")
 
 
 def binding_environment(source, output):
@@ -62,41 +80,62 @@ def test_each_attempt_rereads_access_without_extending_expiry(tmp_path):
     for attempt in (1, 2, 3):
         if attempt == 3:
             access.update(value="SYNTHETIC-ACCESS-TWO", expires_at=(datetime.now(UTC) + timedelta(minutes=45)).isoformat())
-            source.write_text(json.dumps(access))
+            replace_access(source, access)
+        before = {path.name: path.read_bytes() for path in source.iterdir()}
         output = tmp_path / f"42-{attempt}"
         result = source_binding(source, output)
         assert result.returncode == 0 and not result.stdout and not result.stderr
         directory = output.with_name(output.name + ".provision")
-        assert unseal(directory) == dict(access, source_expires_at=access["expires_at"])
+        assert unseal(directory) == access
         assert directory.stat().st_mode & 0o777 == 0o700
         for path in directory.iterdir():
             assert path.stat().st_mode & 0o777 == 0o600
             assert access["value"].encode() not in path.read_bytes()
         envelopes.append((directory / "sealed-access.json").read_bytes())
         assert not output.exists()  # The unchanged caller must create its own output.
+        assert {path.name: path.read_bytes() for path in source.iterdir()} == before
+        for path in tmp_path.rglob("*"):
+            if path.is_file():
+                assert b"SYNTHETIC" not in path.read_bytes()
     assert len(set(envelopes)) == 3
-    assert json.loads(source.read_bytes()) == access
+    assert unseal(source) == access
 
 
-@pytest.mark.parametrize("fault", ["missing", "expired", "short", "naive", "empty", "refresh", "malformed", "public-file", "public-parent"])
+@pytest.mark.parametrize("fault", ["missing", "expired", "short", "naive", "source-expiry", "empty", "refresh", "malformed", "tampered", "wrong-key", "plaintext", "public-file", "public-key", "public-source"])
 def test_unavailable_or_unusable_source_cannot_prepare_input(tmp_path, fault):
     source, access = access_input(tmp_path)
+    envelope = source / "sealed-access.json"
     if fault == "missing":
-        source.unlink()
+        envelope.unlink()
     elif fault in {"expired", "short"}:
         access["expires_at"] = (datetime.now(UTC) + timedelta(minutes=-1 if fault == "expired" else 10)).isoformat()
     elif fault == "naive":
         access["expires_at"] = "2099-01-01T00:00:00"
+    elif fault == "source-expiry":
+        access["source_expires_at"] = (datetime.now(UTC) + timedelta(minutes=15)).isoformat()
     elif fault == "empty":
         access["value"] = ""
     elif fault == "refresh":
         access["refresh_token"] = "SYNTHETIC-RENEWAL-MUST-STAY-ON-ORIGINAL-HOST"
     if fault != "missing":
-        source.write_text("invalid SYNTHETIC-ACCESS-ONE" if fault == "malformed" else json.dumps(access))
+        replace_access(source, access)
+    if fault == "malformed":
+        envelope.write_text("invalid SYNTHETIC-ACCESS-ONE")
+    if fault == "tampered":
+        sealed = json.loads(envelope.read_bytes())
+        sealed["ciphertext"] = Fernet(Fernet.generate_key()).encrypt(b"SYNTHETIC-TAMPERING").decode()
+        envelope.write_text(json.dumps(sealed))
+    if fault == "wrong-key":
+        (source / "transport-private.pem").write_bytes(rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    if fault == "plaintext":
+        envelope.write_text(json.dumps(access))
     if fault == "public-file":
+        envelope.chmod(0o644)
+    if fault == "public-key":
+        (source / "transport-private.pem").chmod(0o644)
+    if fault == "public-source":
         source.chmod(0o644)
-    if fault == "public-parent":
-        source.parent.chmod(0o755)
     result = source_binding(source, tmp_path / "42-1")
     assert result.returncode == 2 and not result.stdout
     assert b"SYNTHETIC" not in result.stderr
@@ -165,7 +204,7 @@ def test_admitted_attempts_connect_new_input_to_exact_helper_and_caller(connecte
     for attempt in (1, 2):
         if attempt == 2:
             access["value"] = "SYNTHETIC-ACCESS-TWO"
-            source.write_text(json.dumps(access))
+            replace_access(source, access)
         request["event_attempt"] = attempt
         result = admit(config, request)
         assert result["exit"] == result["guest_exit"] == 0, result
@@ -194,10 +233,10 @@ def test_admitted_attempts_connect_new_input_to_exact_helper_and_caller(connecte
 def test_unavailable_input_stops_the_actual_event_payload_before_caller(connected, fault):
     config, request, controller, source, access, imports, _ = connected
     if fault == "missing":
-        source.unlink()
+        (source / "sealed-access.json").unlink()
     else:
         access["expires_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
-        source.write_text(json.dumps(access))
+        replace_access(source, access)
     result = admit(config, request)
     assert result["exit"] == result["guest_exit"] == 2
     assert not (controller / "events").exists() and not imports.exists()

@@ -12,7 +12,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
@@ -22,26 +22,37 @@ def require_private(info: os.stat_result) -> None:
         raise ValueError("input and provisioning paths must be private and operator-owned")
 
 
-def read_access(source: Path) -> dict:
-    """Read a selected access lease without accepting renewal material."""
-    require_private(source.parent.stat())
-    with source.open("rb") as stream:
+def read_private(path: Path) -> bytes:
+    """Read a private operator-owned file through its checked descriptor."""
+    with path.open("rb") as stream:
         info = os.fstat(stream.fileno())
         require_private(info)
         if not stat.S_ISREG(info.st_mode):
             raise ValueError("access input must be a regular file")
-        access = json.load(stream)
-    if not isinstance(access, dict) or set(access) != {"value", "expires_at"}:
-        raise ValueError("expected only value and expires_at")
+        return stream.read()
+
+
+def read_access(source: Path) -> dict:
+    """Decrypt the existing access-only handoff in memory; retain no plaintext."""
+    require_private(source.stat())
+    sealed = json.loads(read_private(source / "sealed-access.json"))
+    key = serialization.load_pem_private_key(read_private(source / "transport-private.pem"), password=None)
+    if not isinstance(key, rsa.RSAPrivateKey):
+        raise ValueError("expected the receiver's RSA transport key")
+    transport = key.decrypt(base64.b64decode(sealed["wrapped_key"], validate=True),
+                            padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
+    access = json.loads(Fernet(transport).decrypt(sealed["ciphertext"].encode()))
+    if not isinstance(access, dict) or set(access) != {"value", "expires_at", "source_expires_at"}:
+        raise ValueError("expected access-only payload")
     if not isinstance(access["value"], str) or not access["value"]:
         raise ValueError("access value must be a nonempty string")
-    if not isinstance(access["expires_at"], str):
-        raise ValueError("access expiry must be a timestamp")
     expires = datetime.fromisoformat(access["expires_at"])
+    source_expires = datetime.fromisoformat(access["source_expires_at"])
     # The existing consumer requires more than ten minutes of remaining access.
-    if expires.utcoffset() is None or expires <= datetime.now(UTC) + timedelta(minutes=10):
+    if (expires.utcoffset() is None or source_expires.utcoffset() is None
+            or not datetime.now(UTC) + timedelta(minutes=10) < expires <= source_expires):
         raise ValueError("access expiry is not usable")
-    return dict(access, source_expires_at=access["expires_at"])
+    return access
 
 
 def prepare(source: Path, output: Path) -> None:
@@ -65,12 +76,12 @@ def prepare(source: Path, output: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, required=True, help="Private access-only JSON supplied by the operator")
+    parser.add_argument("--source", type=Path, required=True, help="Private directory with the existing sealed access-only handoff")
     parser.add_argument("--output", type=Path, required=True, help="New per-attempt provisioning directory")
     args = parser.parse_args()
     try:
         prepare(args.source, args.output)
-    except (OSError, ValueError, TypeError) as exc:
+    except (OSError, ValueError, TypeError, KeyError, InvalidToken) as exc:
         # JSON parsing diagnostics can contain private input. Report only the class.
         print("Claude access preparation failed: " + type(exc).__name__, file=sys.stderr)
         return 2
