@@ -79,6 +79,14 @@ case "$(uname -r)" in
         ;;
 esac
 
+stop_guest_clock() {
+    if [ -n "${CLOCK_SYNC_PID:-}" ]; then
+        kill "$CLOCK_SYNC_PID" 2>/dev/null || true
+        wait "$CLOCK_SYNC_PID" 2>/dev/null || true
+        CLOCK_SYNC_PID=
+    fi
+}
+
 # Invalidate VirtioFS readdir cache so per-run files the host wrote while
 # the guest was paused/snapshotted become visible. Read of the directory
 # is enough; content isn't used.
@@ -237,11 +245,7 @@ PID1_IDLE_CHILD=""
 graceful_shutdown() {
     trap - TERM INT
     stop_guest_schedulers
-    if [ -n "${CLOCK_SYNC_PID:-}" ]; then
-        kill "$CLOCK_SYNC_PID" 2>/dev/null || true
-        wait "$CLOCK_SYNC_PID" 2>/dev/null || true
-        CLOCK_SYNC_PID=
-    fi
+    stop_guest_clock
     if [ -n "${PID1_IDLE_CHILD:-}" ]; then
         kill "$PID1_IDLE_CHILD" 2>/dev/null || true
         wait "$PID1_IDLE_CHILD" 2>/dev/null || true
@@ -374,6 +378,7 @@ fi
 # which is us. Call the reboot() syscall directly via busybox, which relies
 # on PSCI (CONFIG_ARM_PSCI_FW=y) to hand off to VZ.
 stop_guest_schedulers
+stop_guest_clock
 sync
 /usr/bin/busybox poweroff -f 2>/dev/null || true
 # Unreachable if poweroff succeeded. The fallback keeps PID 1 alive. The host
