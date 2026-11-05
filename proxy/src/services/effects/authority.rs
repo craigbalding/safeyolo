@@ -44,10 +44,12 @@ pub(crate) fn prepared(policy: &Policy, action: &Value, grants: &[Grant]) -> Res
         result["risk_policy"] = json!(risk_decision(policy, service, action, &[]));
         return Ok(result);
     };
-    let (permissions, gaps) = project(policy, service, model, action, &active)?;
+    let (permissions, gaps, candidate_permissions) =
+        project(policy, service, model, action, &active)?;
     let assessed = model.assess(service, &permissions)?;
-    result["risk_policy"] = json!(risk_decision(policy, service, action, &assessed.enables()));
-    result["enables"] = json!(assessed.enables());
+    let enables = assessed.enables_for(&candidate_permissions);
+    result["risk_policy"] = json!(risk_decision(policy, service, action, &enables));
+    result["enables"] = json!(enables);
     result["model"] = json!(assessed);
     result["unresolved_conditions"] = json!(gaps);
     result["alternatives"] = json!(alternatives(policy, service, model, action, &permissions)?);
@@ -106,12 +108,13 @@ fn project(
     model: &EffectModel,
     action: &Value,
     grants: &[Grant],
-) -> Result<(Vec<Permission>, Vec<String>), Error> {
+) -> Result<(Vec<Permission>, Vec<String>, BTreeSet<String>), Error> {
     let snapshot = policy.gateway().ok_or("gateway unavailable")?;
     let agent = action["agent"].as_str().unwrap_or("");
     let mut permissions = Vec::new();
     let mut gaps = Vec::new();
     let mut candidate_modeled = false;
+    let mut candidate_permissions = BTreeSet::new();
     let candidate_scopes = candidate_scopes(model, action);
     for token in snapshot
         .tokens
@@ -232,6 +235,8 @@ fn project(
                     path: "",
                 };
                 let (mut patterns, mut unresolved_paths) = effective.gateway_path_patterns(request);
+                patterns.extend(policy.risk_path_patterns());
+                patterns.extend(service.risky_routes.iter().map(|route| route.path.clone()));
                 if derived {
                     let (independent, unresolved) = policy.gateway_path_patterns(request);
                     patterns.extend(independent);
@@ -338,7 +343,7 @@ fn project(
                         binding.map_or("", |binding| binding.binding_id.as_str()),
                         crate::approvals::pending::digest(&json!(path_arguments))
                     );
-                    permissions.push(Permission {
+                    let permission = Permission {
                         id,
                         operation: name.clone(),
                         enforcement: enforced.and(enforcement.clone()),
@@ -352,7 +357,28 @@ fn project(
                         proposed: is_candidate
                             && decision.effect != Effect::Allow
                             && temporary.is_none(),
-                    });
+                    };
+                    let mut permission_action = action.clone();
+                    permission_action["method"] = json!(operation.method);
+                    permission_action["path"] = json!(path);
+                    permission_action["account"] = json!(token.account);
+                    let direct = model.assess(service, std::slice::from_ref(&permission))?;
+                    let risk =
+                        risk_decision(policy, service, &permission_action, &direct.enables());
+                    // A denied route is not baseline authority. Keep the
+                    // candidate so its own prohibited effects remain visible.
+                    // An unresolved partition cannot establish a whole-region
+                    // denial from its representative alone.
+                    if !is_candidate
+                        && permission.unresolved.is_empty()
+                        && !matches!(risk.effect, Effect::Allow | Effect::Prompt)
+                    {
+                        continue;
+                    }
+                    if is_candidate {
+                        candidate_permissions.insert(permission.id.clone());
+                    }
+                    permissions.push(permission);
                 }
             }
         }
@@ -362,7 +388,7 @@ fn project(
     }
     permissions.sort_by(|a, b| a.id.cmp(&b.id));
     permissions.dedup_by(|a, b| a.id == b.id);
-    Ok((permissions, gaps))
+    Ok((permissions, gaps, candidate_permissions))
 }
 
 /// Partition only model path parameters, using literal boundaries from current
@@ -696,9 +722,16 @@ fn alternatives(
                         .is_ok_and(|have| {
                             scope_contains(&have.direct[0].scopes, &required.direct[0].scopes)
                                 && required.direct[0]
-                                    .possible_effects
+                                    .effects
                                     .iter()
-                                    .all(|effect| have.direct[0].possible_effects.contains(effect))
+                                    .filter(|effect| effect.status == assessment::Match::Match)
+                                    .all(|effect| {
+                                        have.direct[0].effects.iter().any(|available| {
+                                            available.effect == effect.effect
+                                                && available.resource == effect.resource
+                                                && available.status == assessment::Match::Match
+                                        })
+                                    })
                         })
                 });
             steps.push(json!({"operation":step.operation,"capability":mapping.capability,"enforcement":step.enforcement,"method":modeled.method,"path":path,
@@ -713,8 +746,17 @@ fn alternatives(
         let assessment = model.assess(service, &permissions)?;
         let decisions: Vec<_> = actions
             .iter()
-            .map(|action| risk_decision(policy, service, action, &assessment.enables()))
+            .enumerate()
+            .map(|(index, action)| {
+                let enables = assessment.enables_for(&[format!("alternative:{id}:{index}")].into());
+                risk_decision(policy, service, action, &enables)
+            })
             .collect();
+        for (step, decision) in steps.iter_mut().zip(&decisions) {
+            if !matches!(decision.effect, Effect::Allow | Effect::Prompt) {
+                step["access"] = json!("denied");
+            }
+        }
         output.push(json!({"id":id,"required_access":steps,"assessment":assessment,"risk_policy":decisions,
             "prerequisites":alternative.prerequisites,"unverified_prerequisites":alternative.unverified_prerequisites,
             "goal_suitability":"Unverified. Permission availability does not establish that this recipe meets the operator's goal.",

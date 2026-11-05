@@ -149,7 +149,9 @@ argument, including its declared execution default.
 
 The evaluator reports direct effects, persistent effects, scoped combinations,
 contributing permission identifiers, rule identifiers, evidence, prerequisites and
-gaps. Rule results are `match`, `non_match` or `unresolved`. A known unrestricted
+gaps. Each conditional effect retains its resource and evaluated status; an effect
+on one resource cannot satisfy a rule about another. Rule results are `match`,
+`non_match` or `unresolved`. A known unrestricted
 job scope includes a concrete job. Unresolved alias identity stays unknown.
 Composite identities retain their namespace: equal job identifiers in different
 projects do not establish a same-job combination. Path policy partitions can also
@@ -168,8 +170,12 @@ still receives the policy decision for its modeled effects.
 An unspecified recipe binding is reported as an unverified binding condition.
 An uninstantiated constraint cannot exclude effects from the proposed access.
 
-Named possible effects and matching rule identifiers enter the existing risk
-policy's `enables` conditions. The model supplies semantics; operator policy
+The current route's possible effects and the matching rule combinations it
+contributes to enter the existing risk policy's `enables` conditions. Unrelated
+permissions remain visible in the assessment without changing that route's risk
+decision. Access denied by current risk policy is excluded from baseline authority;
+the candidate remains visible so its own prohibited effects can be explained.
+The model supplies semantics; operator policy
 supplies allow, approval or denial decisions. An unresolved combination is not
 asserted as a matching rule. Missing coverage, absent rules and uncertainty do not
 create automatic denial. The intentionally partial model does not certify current

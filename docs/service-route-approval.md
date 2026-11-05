@@ -45,6 +45,10 @@ It does not verify upstream state. Expired modification access does not prove
 that earlier edits were undone. Operator policy controls risk decisions through
 the existing `enables` conditions, using named effects and matching rule identifiers.
 A configured effect prohibition applies through alternative endpoints as well.
+The risk decision uses the current route's effects and the rule combinations it
+contributes to. A prohibited edit does not prohibit an independent inspection or
+diagnostic recipe. Risk-denied access is excluded from baseline authority; a denied
+candidate still reports the effects that explain its prohibition.
 
 Decide whether the operation is needed for the operator's task. Distinguish a
 direct operator request, an inference during troubleshooting, and a suggestion

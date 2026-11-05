@@ -143,6 +143,37 @@ def test_alternative_recipe_needs_access_and_effect_denial_applies_to_other_endp
         assert fixture.sink.deliveries == []
 
 
+@pytest.mark.parametrize("denied_effect", ["executable_changed", "changed_job_execution"])
+def test_prohibited_edit_does_not_deny_independent_inspection_or_recipe(tmp_path, denied_effect):
+    def modify(source):
+        source["capabilities"]["operator"]["routes"].append({"methods": ["PATCH"], "path": DEFINITION})
+    with job_fixture(tmp_path / denied_effect, modify=modify,
+                     extra=f'\n[[risk]]\nenables = ["{denied_effect}"]\ndecision = "deny"\n') as fixture:
+        status, raw = traffic(fixture)
+        assert status == 403
+        denied = json.loads(raw)
+        assert denied["error"] == "GATEWAY_RISKY_ROUTE"
+        assert denied_effect in denied["assessment"]["enables"]
+        assert traffic(fixture, method="GET")[0] == 200
+        assert fixture.sink.deliveries[-1]["authorization_is_vaulted"]
+        assert fixture.sink.deliveries[-1]["method"] == "GET"
+
+        # A missing inspection route and its permitted diagnostic recipe must
+        # also remain usable when another admitted route is risk-denied.
+        value = challenge(fixture, path=DEFINITION.replace("alpha", "beta"), method="GET")
+        assessed = value["guidance"]["assessment"]
+        assert assessed["risk_policy"]["effect"] == "allow"
+        assert assessed["enables"] == ["inspected"]
+        recipe = assessed["alternatives"][0]
+        assert recipe["required_access"][0]["access"] == "available"
+        assert recipe["risk_policy"][0]["effect"] == "allow"
+        if denied_effect == "executable_changed":
+            assert not any(row["method"] == "PATCH" for row in assessed["model"]["direct"])
+            assert traffic(fixture, path=EXECUTION, method="POST")[0] == 200
+        assert len(fixture.sink.deliveries) == (2 if denied_effect == "executable_changed" else 1)
+        assert _admin(fixture, "GET", "/admin/approvals")["approvals"] == []
+
+
 def test_new_temporary_route_authority_invalidates_a_pending_assessment(tmp_path):
     with job_fixture(tmp_path / "grant-change") as fixture:
         original = challenge(fixture)

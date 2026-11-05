@@ -44,12 +44,20 @@ pub enum Match {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct ScopedEffect {
+    pub effect: String,
+    pub resource: String,
+    pub status: Match,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct DirectEffects {
     pub permission: Permission,
     pub method: String,
     pub path: String,
     pub coverage: Coverage,
     pub scopes: ResourceScopes,
+    pub effects: Vec<ScopedEffect>,
     pub possible_effects: Vec<String>,
     pub excluded_effects: Vec<String>,
     pub unresolved_effects: Vec<String>,
@@ -93,13 +101,33 @@ impl Assessment {
     /// Stable authored identifiers for the existing risk policy's `enables`.
     /// Unresolved combinations are reported separately, not asserted as matches.
     pub fn enables(&self) -> Vec<String> {
+        self.enables_for(
+            &self
+                .direct
+                .iter()
+                .map(|direct| direct.permission.id.clone())
+                .collect(),
+        )
+    }
+
+    /// Only effects and combinations contributed by these permissions affect
+    /// their risk decision. Unrelated authority is still reported in `direct`.
+    pub fn enables_for(&self, permissions: &BTreeSet<String>) -> Vec<String> {
         self.direct
             .iter()
+            .filter(|direct| permissions.contains(&direct.permission.id))
             .flat_map(|direct| direct.possible_effects.iter().cloned())
             .chain(
                 self.rules
                     .iter()
-                    .filter(|(_, rule)| rule.status == Match::Match)
+                    .filter(|(_, rule)| {
+                        rule.combinations.iter().any(|combination| {
+                            combination.status == Match::Match
+                                && !combination
+                                    .contributing_permissions
+                                    .is_disjoint(permissions)
+                        })
+                    })
                     .map(|(id, _)| id.clone()),
             )
             .collect::<BTreeSet<_>>()
@@ -183,6 +211,7 @@ impl EffectModel {
             path: operation.path.clone(),
             coverage: operation.coverage,
             scopes,
+            effects: Vec::new(),
             possible_effects: Vec::new(),
             excluded_effects: Vec::new(),
             unresolved_effects: Vec::new(),
@@ -211,6 +240,11 @@ impl EffectModel {
             } else {
                 condition
             };
+            result.effects.push(ScopedEffect {
+                effect: effect.effect.clone(),
+                resource: effect.resource.clone(),
+                status: state,
+            });
             match state {
                 Match::Match => result.possible_effects.push(effect.effect.clone()),
                 Match::NonMatch => result.excluded_effects.push(effect.effect.clone()),
@@ -237,17 +271,17 @@ impl EffectModel {
                 direct
                     .iter()
                     .filter_map(|direct| {
-                        let operation = &self.operations[&direct.permission.operation];
-                        if !operation
+                        let annotations: Vec<_> = direct
                             .effects
                             .iter()
-                            .any(|item| &item.effect == effect && &item.resource == resource)
-                        {
-                            return None;
-                        }
-                        if direct.possible_effects.contains(effect) {
+                            .filter(|item| &item.effect == effect && &item.resource == resource)
+                            .collect();
+                        if annotations.iter().any(|item| item.status == Match::Match) {
                             Some((direct, false))
-                        } else if direct.unresolved_effects.contains(effect) {
+                        } else if annotations
+                            .iter()
+                            .any(|item| item.status == Match::Unresolved)
+                        {
                             Some((direct, true))
                         } else {
                             None

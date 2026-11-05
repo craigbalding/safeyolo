@@ -155,3 +155,79 @@ fn explicit_path_exclusions_remove_only_the_denied_job_from_overlap() {
         Match::Match
     );
 }
+
+#[test]
+fn conditional_effect_status_cannot_cross_resource_annotations() {
+    let original = service();
+    let mut grants = original.effect_model.as_ref().unwrap().regressions[0]
+        .grants
+        .clone();
+    grants[0].operation = "edit_definition".into();
+    grants[0].enforcement = Some("description_only".into());
+    let permissions: Vec<_> = grants
+        .iter()
+        .map(|grant| Permission::example(grant.operation.clone(), grant))
+        .collect();
+    for (condition, expected) in [
+        (json!({"kind":"always"}), Match::Match),
+        (
+            json!({"kind":"equals","argument":"body.secondary","value":"changed"}),
+            Match::Unresolved,
+        ),
+    ] {
+        let mut source = original.raw.clone();
+        let model = &mut source["effect_model"];
+        model["regressions"] = json!([]);
+        model["resources"]["secondary_job"] = model["resources"]["job"].clone();
+        let edit = &mut model["operations"]["edit_definition"];
+        edit["resources"]["secondary_job"] = edit["resources"]["job"].clone();
+        edit["arguments"]["body.secondary"] = json!({
+            "location":"body", "field":"secondary", "required":false,
+            "omission":{"kind":"unresolved","reason":"Unverified secondary default"},
+            "evidence":["spec","semantics"]
+        });
+        edit["effects"].as_array_mut().unwrap().push(json!({
+            "effect":"executable_changed", "resource":"secondary_job",
+            "when":condition, "evidence":["spec","semantics"]
+        }));
+        let loaded = ServiceDefinition::from_yaml(&source.to_string()).unwrap();
+        let result = loaded
+            .effect_model
+            .as_ref()
+            .unwrap()
+            .assess(&loaded, &permissions)
+            .unwrap();
+        let edit = result
+            .direct
+            .iter()
+            .find(|item| item.method == "PATCH")
+            .unwrap();
+        assert!(edit.effects.iter().any(|effect| {
+            effect.effect == "executable_changed"
+                && effect.resource == "job"
+                && effect.status == Match::NonMatch
+        }));
+        assert!(edit.effects.iter().any(|effect| {
+            effect.effect == "executable_changed"
+                && effect.resource == "secondary_job"
+                && effect.status == expected
+        }));
+        assert_eq!(
+            result.rules["changed_job_execution"].status,
+            Match::NonMatch
+        );
+
+        // The same valid multi-resource definition can still satisfy the rule
+        // when the effect on its actual job resource is possible.
+        source["effect_model"]["operations"]["edit_definition"]["effects"][0]["when"] =
+            json!({"kind":"always"});
+        let loaded = ServiceDefinition::from_yaml(&source.to_string()).unwrap();
+        let result = loaded
+            .effect_model
+            .as_ref()
+            .unwrap()
+            .assess(&loaded, &permissions)
+            .unwrap();
+        assert_eq!(result.rules["changed_job_execution"].status, Match::Match);
+    }
+}

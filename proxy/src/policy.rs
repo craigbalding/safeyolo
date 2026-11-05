@@ -1755,6 +1755,21 @@ impl Policy {
         (patterns, unresolved)
     }
 
+    /// Risk decisions can differ within a route-admitted operation. Include
+    /// their prefix boundaries in the effect evaluator's existing partition;
+    /// the ordinary risk PDP still decides each cell.
+    pub(crate) fn risk_path_patterns(&self) -> Vec<String> {
+        self.task
+            .as_ref()
+            .into_iter()
+            .flat_map(|task| &task.rules)
+            .chain(&self.rules)
+            .filter(|rule| rule.action == Action::RiskyRoute && !rule.inferred)
+            .filter_map(|rule| rule.condition.path_prefix.as_ref())
+            .map(|prefix| format!("{prefix}**"))
+            .collect()
+    }
+
     /// Mirrors the separate existing addon-enable query without changing the
     /// network decision or implementing warn/block mode. Required addons resist
     /// configured bypasses as in the existing engine.
