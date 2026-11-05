@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -40,7 +42,7 @@ def _run_per_run(tmp_path, release, staged, initial_failure, shutdown):
         "/app": tmp_path / "app",
         "/dev/console": tmp_path / "console",
     }
-    # Redirect only guest paths. Commands still use the real Bash and setsid.
+    # Redirect only guest paths. Commands still use the real Bash.
     path_pattern = r"(?<![A-Za-z0-9_/])(?:" + "|".join(re.escape(path) for path in paths) + r")(?=/|[\s\"';]|$)"
     source = re.sub(
         path_pattern,
@@ -94,6 +96,22 @@ def _run_per_run(tmp_path, release, staged, initial_failure, shutdown):
         cleanup += 'kill -TERM "$$"\n'
     else:
         cleanup = source[source.rindex("stop_guest_schedulers\n") : source.rindex("sync\n")]
+    environment = {
+        **os.environ, "TRACE": str(tmp_path / "trace"), "RELEASE": release,
+        "INITIAL_FAILURE": str(int(initial_failure)),
+    }
+    if shutil.which("setsid") is None:
+        # macOS lacks this guest executable. Keep the child PID and session
+        # ownership used by the shell's liveness check and shutdown paths.
+        launcher = tmp_path / "setsid"
+        launcher.write_text(
+            f"#!{sys.executable}\n"
+            "import os, sys\n"
+            "os.setsid()\n"
+            "os.execvp(sys.argv[1], sys.argv[1:])\n"
+        )
+        launcher.chmod(0o755)
+        environment["PATH"] = f"{tmp_path}{os.pathsep}{os.environ['PATH']}"
     result = subprocess.run(
         ["bash", "-ec", (
             'uname() { printf "%s\\n" "$RELEASE"; }\n'
@@ -106,12 +124,16 @@ def _run_per_run(tmp_path, release, staged, initial_failure, shutdown):
                if release == "vz-test" else 'test -z "$CLOCK_SYNC_PID"\n')
             + cleanup
         )],
-        env={**os.environ, "TRACE": str(tmp_path / "trace"), "RELEASE": release,
-             "INITIAL_FAILURE": str(int(initial_failure))},
+        env=environment,
         capture_output=True,
         text=True,
         timeout=5,
     )
+    print(result.stdout, end="")
+    print(result.stderr, end="")
+    console = tmp_path / "console"
+    if console.exists():
+        print(console.read_text(), end="")
     assert result.returncode == 0, result.stderr
     expected = []
     if release == "vz-test":
