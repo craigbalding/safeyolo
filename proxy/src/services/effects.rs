@@ -470,6 +470,31 @@ impl EffectModel {
             operation.request.method == modeled.method && operation.request.path == modeled.path,
             "Enforcement method/path differs from modeled operation",
         )?;
+        // The executor considers every grantable operation, including names
+        // absent from the approved selection. Check overlapping paths through
+        // that dispatcher before attributing its checks to the named operation.
+        for other in contract.grantable_operations().filter(|other| {
+            other
+                .request
+                .method
+                .eq_ignore_ascii_case(&operation.request.method)
+        }) {
+            if let Some(path) =
+                overlapping_request_path(&operation.request.path, &other.request.path)
+            {
+                let selected = contract
+                    .match_operation(&operation.request.method, &super::normalize_path(&path));
+                require(
+                    selected.is_some_and(|selected| std::ptr::eq(selected, operation)),
+                    format!(
+                        "Unsupported enforcement mapping {}/{}: request path {path} selects {} instead of the mapped operation",
+                        mapping.capability,
+                        mapping.operation,
+                        selected.map_or("no operation", |selected| selected.name.as_str())
+                    ),
+                )?;
+            }
+        }
         require(
             operation.requires_enforcement.is_empty()
                 || ["request_shape", "transport_hygiene"]
@@ -581,6 +606,50 @@ impl EffectModel {
         }
         Ok(scopes)
     }
+}
+
+/// Find a common request path for the executor's segment templates. A native
+/// `*` or `**` matches the remaining path, including an empty remainder. Native
+/// specificity is constant for each matching template, so one common path per
+/// pair suffices to check which operation wins; the dispatcher decides priority.
+fn overlapping_request_path(left: &str, right: &str) -> Option<String> {
+    let left: Vec<_> = left.split('/').filter(|part| !part.is_empty()).collect();
+    let right: Vec<_> = right.split('/').filter(|part| !part.is_empty()).collect();
+    let parameter = |part: &str| part.starts_with('{') && part.ends_with('}');
+    let wildcard = |part: &str| ["*", "**"].contains(&part);
+    let concrete = |part: &str| {
+        if parameter(part) {
+            "scope".into()
+        } else {
+            part.to_owned()
+        }
+    };
+    let mut path: Vec<String> = Vec::new();
+    for index in 0..left.len().max(right.len()) {
+        let (a, b) = (left.get(index), right.get(index));
+        let tail = if a.is_some_and(|part| wildcard(part)) {
+            Some(&right[index..])
+        } else if b.is_some_and(|part| wildcard(part)) {
+            Some(&left[index..])
+        } else {
+            None
+        };
+        if let Some(tail) = tail {
+            path.extend(
+                tail.iter()
+                    .take_while(|part| !wildcard(part))
+                    .map(|part| concrete(part)),
+            );
+            break;
+        }
+        match (a, b) {
+            (Some(a), Some(b)) if a == b || parameter(a) || parameter(b) => {
+                path.push(concrete(if parameter(a) { b } else { a }));
+            }
+            _ => return None,
+        }
+    }
+    Some(format!("/{}", path.join("/")))
 }
 
 fn keys(value: &Value, allowed: &[&str]) -> Result<(), Error> {

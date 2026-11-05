@@ -19,6 +19,169 @@ fn loaded() -> ServiceDefinition {
     ServiceDefinition::from_value(generated()).unwrap()
 }
 
+fn competing_edit_spec(path: &str, method: &str, before: bool) -> Value {
+    let mut spec: Value = serde_json::from_str(SPEC).unwrap();
+    spec["paths"][path][method] = json!({
+        "operationId":"other_edit", "responses":{"200":{"description":"fixture"}}
+    });
+    let operations =
+        spec["x-safeyolo-service"]["capabilities"]["describe_job"]["contract"]["operations"]
+            .as_array_mut()
+            .unwrap();
+    let other = json!({"name":"other_edit", "request":{
+        "body":{"deny_unknown":false,"allow":{}},
+        "query":{"deny_unknown":true,"allow":{}},
+        "transport":{"require_no_body":false}
+    }});
+    if before {
+        operations.insert(0, other);
+    } else {
+        operations.push(other);
+    }
+    spec
+}
+
+#[test]
+fn semantic_mapping_accounts_for_operation_selection_across_future_bindings() {
+    for (path, method, before, shadowed) in [
+        ("/projects/demo/jobs/alpha/definition", "patch", false, true),
+        // Current description-only examples use alpha. A future beta binding
+        // must not silently lose the same advertised executable-edit exclusion.
+        ("/projects/demo/jobs/beta/definition", "patch", false, true),
+        (
+            "/projects/demo/jobs/alpha/definition/",
+            "patch",
+            false,
+            true,
+        ),
+        (
+            "/projects/{other_project}/jobs/{other_job}/definition",
+            "patch",
+            true,
+            true,
+        ),
+        (
+            "/{section}/demo/{resource}/alpha/definition",
+            "patch",
+            true,
+            true,
+        ),
+        (
+            "/projects/{other_project}/jobs/{other_job}/definition",
+            "patch",
+            false,
+            false,
+        ),
+        ("/projects/**", "patch", true, false),
+        ("/projects/**", "patch", false, false),
+        ("/projects/{project}/jobs/{job}/other", "patch", true, false),
+        (
+            "/other/{project}/jobs/{job}/definition",
+            "patch",
+            true,
+            false,
+        ),
+        (
+            "/projects/{project}/jobs/{job}/definition/detail",
+            "patch",
+            true,
+            false,
+        ),
+        ("/projects/demo/jobs/alpha/definition", "post", true, false),
+    ] {
+        let result = generate(&competing_edit_spec(path, method, before).to_string());
+        if shadowed {
+            let problem = result.unwrap_err().to_string();
+            assert!(
+                problem.contains("Unsupported enforcement mapping describe_job/edit_definition")
+                    && problem.contains("selects other_edit"),
+                "{path}: {problem}"
+            );
+        } else {
+            result.unwrap_or_else(|error| panic!("{method} {path}: {error}"));
+        }
+    }
+    let mut spec = competing_edit_spec("/projects/demo/jobs/alpha/definition", "patch", true);
+    spec["x-safeyolo-service"]["capabilities"]["describe_job"]["contract"]["operations"][0]["requires_enforcement"] =
+        json!("state_enforcement");
+    // The executor cannot select this unsupported operation.
+    generate(&spec.to_string()).unwrap();
+}
+
+#[test]
+fn loader_rejects_a_mapping_shadowed_by_an_operation_outside_the_approved_selection() {
+    let path = "/projects/demo/jobs/alpha/definition";
+    let mut raw = generated();
+    let mut other = raw["effect_model"]["operations"]["status"].clone();
+    other["method"] = json!("PATCH");
+    other["path"] = json!(path);
+    raw["effect_model"]["operations"]["other_edit"] = other;
+    raw["capabilities"]["describe_job"]["contract"]["operations"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "name":"other_edit", "request":{"method":"PATCH", "path":path,
+                "body":{"deny_unknown":false,"allow":{}},
+                "query":{"deny_unknown":true,"allow":{}},
+                "transport":{"require_no_body":false}}
+        }));
+    let error = ServiceDefinition::from_yaml(&raw.to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("Unsupported enforcement mapping describe_job/edit_definition"),
+        "{error}"
+    );
+
+    // Keep the existing executor boundary visible: a route compiled from only
+    // edit_definition can dispatch to the more specific, unselected operation.
+    raw.as_object_mut().unwrap().remove("effect_model");
+    let service = ServiceDefinition::from_value(raw).unwrap();
+    let contract = service.capabilities["describe_job"]
+        .contract
+        .as_ref()
+        .unwrap();
+    let binding = ContractBinding {
+        binding_id: "fixture".into(),
+        agent: "fixture-agent".into(),
+        service: service.name.clone(),
+        capability: "describe_job".into(),
+        template: contract.template.clone(),
+        bound_values: json!({"project":"demo","job":"alpha"})
+            .as_object()
+            .unwrap()
+            .clone(),
+        grantable_operations: vec!["edit_definition".into()],
+    };
+    let token = safeyolo_proxy::services::TokenBinding {
+        token: safeyolo_proxy::credentials::Secret::new("synthetic-test-token"),
+        agent: json!("fixture-agent"),
+        service: json!(service.name),
+        capability: json!("describe_job"),
+        vault_token: json!("synthetic-credential-reference"),
+        account: json!("fixture"),
+    };
+    let routes =
+        safeyolo_proxy::services::compile_routes(&service, &token, std::slice::from_ref(&binding));
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].path, path);
+    let headers = vec![("Content-Type".into(), "application/json".into())];
+    let result = enforce_request(
+        contract,
+        Some(&binding),
+        "Authorization",
+        ContractRequest {
+            method: "PATCH",
+            target: &routes[0].path,
+            headers: &headers,
+            body: br#"{"steps":["execute"]}"#,
+        },
+    )
+    .unwrap();
+    assert_eq!(result.operation, "other_edit");
+    assert_eq!(result.body.unwrap()["steps"], json!(["execute"]));
+}
+
 #[test]
 fn generated_fixture_loads_through_the_current_catalogue() {
     let generated = generated();

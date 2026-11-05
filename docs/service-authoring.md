@@ -118,6 +118,13 @@ not establish identity presence.
 A semantic enforcement reference rejects unsupported request fields, state or
 response requirements, body ranges, type-only checks and unresolved binding
 references. These declarations cannot silently claim enforcement in this model.
+The reference also checks operation selection across overlapping path templates.
+If another grantable operation can replace the named operation in the executor,
+the mapping is unsupported and validation fails. This check includes operations
+absent from the approved selection list and paths from future bindings. Disjoint
+operations, lower-priority matches and later ties remain supported. The validator
+checks full path templates. It does not prove that binding-value domains or
+equivalent checks make an overlap harmless.
 Existing contract declarations without an effect model retain their documented
 [request-check limits](service-gateway-v2-yaml-spec.md#request-checks-and-limits).
 
