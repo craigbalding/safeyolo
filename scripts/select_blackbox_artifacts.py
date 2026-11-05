@@ -34,12 +34,13 @@ def capture(*arguments: str) -> bytes:
 
 
 def gh(endpoint: str) -> dict:
-    return json.loads(capture("gh", "api", f"repos/{REPOSITORY}/{endpoint}"))
+    path = f"repos/{REPOSITORY}" + (f"/{endpoint}" if endpoint else "")
+    return json.loads(capture("gh", "api", path))
 
 
 def pages(endpoint: str, field: str) -> list[dict]:
-    result = json.loads(capture("gh", "api", "--paginate", "--slurp",
-                                f"repos/{REPOSITORY}/{endpoint}"))
+    path = f"repos/{REPOSITORY}" + (f"/{endpoint}" if endpoint else "")
+    result = json.loads(capture("gh", "api", "--paginate", "--slurp", path))
     return [row for page in result for row in page[field]]
 
 

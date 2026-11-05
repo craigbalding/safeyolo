@@ -37,7 +37,8 @@ class GitHub:
         self.log = log
 
     def api(self, endpoint: str, payload: dict | None = None, *, raw: bool = False):
-        command = ["gh", "api", f"repos/{REPOSITORY}/{endpoint}"]
+        path = f"repos/{REPOSITORY}" + (f"/{endpoint}" if endpoint else "")
+        command = ["gh", "api", path]
         if payload is not None:
             command += ["--method", "POST", "--input", "-"]
         result = subprocess.run(command, input=json.dumps(payload).encode() if payload is not None else None,
