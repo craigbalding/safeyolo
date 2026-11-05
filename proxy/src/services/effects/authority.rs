@@ -44,15 +44,20 @@ pub(crate) fn prepared(policy: &Policy, action: &Value, grants: &[Grant]) -> Res
         result["risk_policy"] = json!(risk_decision(policy, service, action, &[]));
         return Ok(result);
     };
-    let (permissions, gaps, candidate_permissions) =
-        project(policy, service, model, action, &active)?;
-    let assessed = model.assess(service, &permissions)?;
-    let enables = assessed.enables_for(&candidate_permissions);
+    let projected = project(policy, service, model, action, &active)?;
+    let assessed = model.assess(service, &projected.permissions)?;
+    let enables = assessed.enables_for(&projected.candidate_permissions);
     result["risk_policy"] = json!(risk_decision(policy, service, action, &enables));
     result["enables"] = json!(enables);
     result["model"] = json!(assessed);
-    result["unresolved_conditions"] = json!(gaps);
-    result["alternatives"] = json!(alternatives(policy, service, model, action, &permissions)?);
+    result["unresolved_conditions"] = json!(projected.gaps);
+    result["alternatives"] = json!(alternatives(
+        policy,
+        service,
+        model,
+        action,
+        &projected.permissions
+    )?);
     Ok(result)
 }
 
@@ -102,13 +107,19 @@ pub(crate) fn risk_decision(
     }
 }
 
+struct RoutePermissions {
+    permissions: Vec<Permission>,
+    gaps: Vec<String>,
+    candidate_permissions: BTreeSet<String>,
+}
+
 fn project(
     policy: &Policy,
     service: &ServiceDefinition,
     model: &EffectModel,
     action: &Value,
     grants: &[Grant],
-) -> Result<(Vec<Permission>, Vec<String>, BTreeSet<String>), Error> {
+) -> Result<RoutePermissions, Error> {
     let snapshot = policy.gateway().ok_or("gateway unavailable")?;
     let agent = action["agent"].as_str().unwrap_or("");
     let mut permissions = Vec::new();
@@ -388,7 +399,11 @@ fn project(
     }
     permissions.sort_by(|a, b| a.id.cmp(&b.id));
     permissions.dedup_by(|a, b| a.id == b.id);
-    Ok((permissions, gaps, candidate_permissions))
+    Ok(RoutePermissions {
+        permissions,
+        gaps,
+        candidate_permissions,
+    })
 }
 
 /// Partition only model path parameters, using literal boundaries from current
