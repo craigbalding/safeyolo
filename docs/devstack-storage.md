@@ -39,8 +39,11 @@ be admitted on a host with about 16 GiB free when the measured initial allocatio
 and host headroom fit. Unknown measurements and an actual physical requirement
 above available capacity refuse before lease creation or allocation.
 
-A guest copy uses the source file's size rounded to the destination filesystem's
-block size. A new file also budgets one directory-entry block and one inode;
+A guest copy expands directory destinations and follows symbolic links before
+observing capacity. An existing file is observed directly; a new file uses its
+resolved parent directory. The guest's GNU `df`, `stat` and `readlink` tools
+supply that observation. The copy uses the source file's size rounded to the
+destination filesystem's block size. A new file also budgets one directory-entry block and one inode;
 overwriting an existing file requires no new inode. The guest does not inherit
 the host's 10 GiB or 4,096-inode floor. For example, a 64 KiB copy can fit on a
 guest root with 12 MiB free. Future build output needs its own actual filesystem
@@ -75,6 +78,7 @@ host image. The independent emergency release provides finite headroom for that
 growth as well as service writes. It does not constrain or stop an existing VM.
 `scp` preflight budgets a file's observed size; it cannot reserve space against
 unrelated concurrent writers or guarantee that a changing source stays that size.
+A destination that changes between the check and `scp` can invalidate the observation.
 
 ## Deploy the reviewed candidate
 

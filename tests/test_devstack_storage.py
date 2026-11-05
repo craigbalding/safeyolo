@@ -320,9 +320,10 @@ def test_installer_rejects_changed_binding_before_any_write(tmp_path):
     assert (jobs / "_common.sh").read_text() == "operator edit\n"
 
 
-@pytest.mark.skipif(not os.environ.get("DEVSTACK_STORAGE_JOB_SOURCES"),
-                    reason="requires the operator-supplied nonsecret actual host job sources and binding receipt")
-def test_bound_host_entry_points_and_crontab(config, tmp_path, monkeypatch):
+@pytest.fixture
+def bound_host_jobs(config, tmp_path, monkeypatch):
+    if not os.environ.get("DEVSTACK_STORAGE_JOB_SOURCES"):
+        pytest.skip("requires the operator-supplied nonsecret actual host job sources and binding receipt")
     sources = Path(os.environ["DEVSTACK_STORAGE_JOB_SOURCES"])
     jobs = tmp_path / "jobs"
     shutil.copytree(sources, jobs)
@@ -369,7 +370,17 @@ def test_bound_host_entry_points_and_crontab(config, tmp_path, monkeypatch):
                               minimum_free_gib=10, minimum_free_inodes=4096, maximum_output_bytes=1024,
                               emergency_bytes=8192,
                               install_cron=True)
-    installed = install.install(args)
+    return args, install.install(args)
+
+
+def test_bound_host_entry_points_and_crontab(bound_host_jobs, tmp_path, monkeypatch):
+    args, installed = bound_host_jobs
+    jobs = args.jobs
+    sources = Path(os.environ["DEVSTACK_STORAGE_JOB_SOURCES"])
+    binary = tmp_path / "bin"
+    pool = args.pool
+    cron_file = tmp_path / "crontab"
+    allocation = tmp_path / "allocator-invoked"
     # A repeat does not replace backups, add another schedule or lose other jobs.
     assert install.install(args) == installed
     assert cron_file.read_text().count("# safeyolo-devstack-storage") == 1
@@ -465,3 +476,60 @@ def test_bound_host_entry_points_and_crontab(config, tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="changed after the bound observation"):
         install.install(args)
     assert changed.read_text().endswith("# subsequent operator edit\n")
+
+
+@pytest.mark.parametrize("destination_form", ["file-link", "directory-entry-link", "dangling-link"])
+def test_bound_guest_copy_follows_destination_symlinks(bound_host_jobs, tmp_path, monkeypatch, destination_form):
+    args, _ = bound_host_jobs
+    scp = shutil.which("scp")
+    sftp = Path("/usr/lib/openssh/sftp-server")
+    if scp is None or not sftp.exists():
+        pytest.skip("native local transfer requires OpenSSH scp and its SFTP server")
+    source = tmp_path / "source/a"
+    source.parent.mkdir()
+    source.write_bytes(b"x")
+    high = tmp_path / "guest-high 'quoted"
+    low = tmp_path / "guest-low"
+    high.mkdir()
+    low.mkdir()
+    target = low / source.name
+    if destination_form != "dangling-link":
+        target.write_bytes(b"original")
+    link = high / source.name
+    link.symlink_to(Path("..") / low.name / source.name)
+    destination = high if destination_form == "directory-entry-link" else link
+    binary = tmp_path / "bin"
+    # Run the remote observation shell unchanged. Only df synthesizes the
+    # two guest filesystems; no actual filesystem is filled.
+    (binary / "df").write_text(
+        f"#!{sys.executable}\nimport os, sys\nfrom pathlib import Path\n"
+        f"low = Path({str(low)!r})\n"
+        "path = Path(sys.argv[-1]).resolve()\n"
+        "available = os.environ['GUEST_LOW_KIB'] if path.is_relative_to(low) else '12288'\n"
+        "print('Filesystem Total Used Available Capacity Mounted')\n"
+        "print('guest 20000000 0', available if '-Pk' in sys.argv else '10000', '0% /guest')\n")
+    copied = tmp_path / "scp-invoked"
+    # The installed harness still invokes scp. Its native local SFTP server
+    # follows the link and performs the actual write without SSH or a guest.
+    (binary / "scp").write_text(
+        f"#!/bin/bash\ntouch {shlex.quote(str(copied))}\n"
+        f"exec {shlex.quote(scp)} -D {shlex.quote(str(sftp))} \"$@\"\n")
+    for executable in ("df", "scp"):
+        (binary / executable).chmod(0o700)
+    command = (f"source {shlex.quote(str(args.jobs / '_common.sh'))}; "
+               f"harness_scp_to fixture {shlex.quote(str(source))} {shlex.quote(str(destination))}")
+    monkeypatch.setenv("GUEST_LOW_KIB", "0")
+    refused = subprocess.run(["bash", "-c", command], capture_output=True, text=True, timeout=15)
+    assert refused.returncode == 75, refused.stderr
+    assert not copied.exists()
+    if destination_form == "dangling-link":
+        assert not target.exists()
+    else:
+        assert target.read_bytes() == b"original"
+    for available in (12 * 1024, int(5.7 * guard.GIB) // 1024):
+        monkeypatch.setenv("GUEST_LOW_KIB", str(available))
+        copied.unlink(missing_ok=True)
+        admitted = subprocess.run(["bash", "-c", command], capture_output=True, text=True, timeout=15)
+        assert admitted.returncode == 0, admitted.stderr
+        assert copied.exists() and target.read_bytes() == b"x"
+        assert link.is_symlink()

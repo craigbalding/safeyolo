@@ -244,13 +244,15 @@ def check_copy(config: dict, args: argparse.Namespace) -> None:
     if args.direction == "to":
         required = Path(args.source).stat().st_size
         check(config, required)
-        # Resolve directory destinations just as scp does. Guest capacity is
-        # for this copy, independent of the host's service reserve.
+        # Resolve scp's directory/file destination and follow symlinks before
+        # observing the filesystem that will receive the guest payload.
         command = (f"target={shlex.quote(args.destination)}; "
                    f'if [ -d "$target" ]; then target="$target"/{shlex.quote(Path(args.source).name)}; fi; '
-                   'parent=$(dirname -- "$target"); '
-                   'df -Pk -- "$parent"; df -Pi -- "$parent"; stat -f -c %S -- "$parent"; '
-                   'if [ -e "$target" ]; then echo 0; else echo 1; fi')
+                   'target=$(readlink -f -- "$target") || exit 1; '
+                   'if [ -e "$target" ]; then filesystem="$target"; new_file=0; '
+                   'else filesystem=$(dirname -- "$target"); new_file=1; fi; '
+                   'df -Pk -- "$filesystem" && df -Pi -- "$filesystem" && '
+                   'stat -f -c %S -- "$filesystem" && echo "$new_file"')
         data = remote_read(args.key, args.ip, command, 8192)
         rows = data.decode().splitlines()
         # Both df invocations have one header and one filesystem row.
