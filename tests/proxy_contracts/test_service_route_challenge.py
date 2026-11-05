@@ -121,14 +121,14 @@ def _decide(fixture, challenge, decision="approve", *, status=200):
 
 
 @contextmanager
-def route_fixture(directory, *, ttl=30, extra=""):
+def route_fixture(directory, *, ttl=30, extra="", service_source=None):
     if sys.platform != "linux":
         pytest.skip("current-run fixture observes a Linux backend birth and argv")
     directory.mkdir(parents=True)
     services, builtin = directory / "services", directory / "builtin"
     services.mkdir()
     builtin.mkdir()
-    (services / "fixture.yaml").write_text(FIXTURE.read_text())
+    (services / "fixture.yaml").write_text(service_source if service_source is not None else FIXTURE.read_text())
     token_file = directory / "operator-token"
     token_file.write_text("fixture-route-operator")
     data = directory / "data"
@@ -314,7 +314,7 @@ def test_destination_and_literal_metacharacter_scope(tmp_path):
         with route_fixture(tmp_path / "literal", extra=f'[hosts."127.0.0.1:{port}"]\negress="allow"') as fixture:
             challenge = _challenge(fixture,"/literal*name")
             assert challenge["guidance"]["reviewed_risk"] is None
-            assert not challenge["guidance"]["assessment"]["risk_guidance_available"]
+            assert not challenge["guidance"]["risk_guidance_available"]
             _escalate(fixture,challenge)
             _decide(fixture,challenge)
             assert _traffic(fixture,"/literal*name")[0] == 200

@@ -1,5 +1,8 @@
-//! Authored possible effects. Loading this model does not evaluate consequences,
-//! assert execution, or change access policy.
+//! Authored possible effects. Loading validates references and enforcement;
+//! assessment evaluates potential authority without asserting upstream state.
+
+pub mod assessment;
+pub(crate) mod authority;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -200,9 +203,17 @@ pub struct ExpectedGrant {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Scope {
-    Known { value: String },
+    Known {
+        value: String,
+    },
     Unrestricted,
-    Unresolved { reason: String },
+    /// A policy partition containing every value except these literal values.
+    Except {
+        values: BTreeSet<String>,
+    },
+    Unresolved {
+        reason: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]

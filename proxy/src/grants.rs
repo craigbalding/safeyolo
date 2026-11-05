@@ -637,7 +637,7 @@ impl Store {
             |document, state, context| {
                 let mut approval = approval;
                 if let Some((runtime, record)) = &mut approval
-                    && !crate::approvals::pending::check_saved(runtime, &document.to_string(), record)? {
+                    && !crate::approvals::pending::check_saved_grants(runtime, &document.to_string(), record, &state.grants)? {
                     record.status = "superseded".into();
                     return Err(invalid("approval is superseded; make a new request"));
                 }

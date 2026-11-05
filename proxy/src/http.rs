@@ -3586,6 +3586,72 @@ where
                     )?;
                     return Ok((prior_block(reply), "deny".into()));
                 }
+                if policy
+                    .gateway()
+                    .and_then(|gateway| gateway.registry())
+                    .and_then(|registry| {
+                        registry
+                            .services
+                            .get(&credential.service)
+                            .map(|service| service.effect_model.is_some())
+                    })
+                    .unwrap_or(false)
+                {
+                    let action = json!({"kind":"gateway_route","agent":credential.agent,
+                        "service":credential.service,"capability":credential.capability,"account":credential.account,
+                        "credential":credential.vault_token,"binding_id":credential.binding_id,"run":identity.current_agent_run(),
+                        "host":destination.policy_host,"scheme":destination.scheme,"port":destination.port,
+                        "method":request.method().as_str(),"path":destination.path.split('?').next().unwrap_or("/")});
+                    let assessed = crate::approvals::pending::route_challenge::assessment(
+                        &runtime, policy, &action,
+                    )?;
+                    let risk: crate::policy::Decision =
+                        serde_json::from_value(assessed["risk_policy"].clone())?;
+                    // A configured effect prohibition applies before every grant
+                    // lookup, including a request through another endpoint.
+                    if !matches!(
+                        risk.effect,
+                        crate::policy::Effect::Allow | crate::policy::Effect::Prompt
+                    ) {
+                        let mut event = identity.request_event("gateway.risky_route",crate::audit::Kind::Gateway,request_id,
+                            "Operator policy prohibits modeled service effects",json!({"service":credential.service,"method":request.method().as_str(),"path":action["path"],"assessment":assessed}));
+                        event.decision = Some(crate::audit::Decision::Deny);
+                        event.severity = crate::audit::Severity::High;
+                        runtime.audit.emit(event)?;
+                        let mut reply = gateway_response(
+                            403,
+                            "GATEWAY_RISKY_ROUTE",
+                            request_id,
+                            gateway_trace.as_ref(),
+                        )?;
+                        *reply.body_mut() = full(serde_json::to_vec(
+                            &json!({"error":"GATEWAY_RISKY_ROUTE","assessment":assessed}),
+                        )?);
+                        return Ok((prior_block(reply), "deny".into()));
+                    }
+                    let enables: Vec<String> = serde_json::from_value(assessed["enables"].clone())?;
+                    if credential.risky_route.is_none()
+                        && risk.effect == crate::policy::Effect::Prompt
+                        && risk.matched_resource.is_some()
+                    {
+                        credential.risky_route = Some(crate::services::RiskyRoute {
+                            path: action["path"].as_str().unwrap_or("/").into(),
+                            methods: vec![request.method().as_str().into()],
+                            description:
+                                "Prepared service effects require approval under operator policy."
+                                    .into(),
+                            tactics: Vec::new(),
+                            enables: Vec::new(),
+                            irreversible: false,
+                            group: None,
+                        });
+                    }
+                    if let Some(route) = &mut credential.risky_route {
+                        route.enables.extend(enables);
+                        route.enables.sort();
+                        route.enables.dedup();
+                    }
+                }
                 if credential.missing_route_allow {
                     let Some(run) = identity
                         .current_agent_run()

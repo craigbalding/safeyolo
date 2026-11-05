@@ -22,7 +22,7 @@ Use a disk-backed output path for large specifications.
 cargo build --manifest-path proxy/Cargo.toml --locked --release --bin safeyolo
 proxy/target/release/safeyolo services generate proxy/tests/fixtures/service-authoring/job.openapi.json > /tmp/job-proposal.yaml
 proxy/target/release/safeyolo services check /tmp/job-proposal.yaml
-cargo test --manifest-path proxy/Cargo.toml --locked --release --test service_authoring
+cargo test --manifest-path proxy/Cargo.toml --locked --release --test service_authoring --test service_effects
 ```
 
 Generation prints JavaScript Object Notation (JSON), which is also valid YAML.
@@ -130,11 +130,62 @@ Existing contract declarations without an effect model retain their documented
 
 The fixture includes both permission-addition orders, shared and disjoint jobs,
 description-only and executable edits, omitted defaults and unresolved identity.
-Its regression effects and rule outcomes are authored expectations. Validation
-checks structure, references and scope claims; it does not evaluate consequence
-rules or prove every expected effect. Native tests separately demonstrate the
-enforcement facts stated in the fixture documentation. Runtime consequence
-assessment and approval integration are separate work.
+Its regression effects and rule outcomes are authored expectations. Loading
+checks structure, references and scope claims. The `service_effects` tests execute
+every shared regression through the runtime evaluator and compare possible,
+observed and excluded effects, scopes and rule outcomes. Native authoring tests
+separately demonstrate the enforcement facts stated in the fixture documentation.
+
+## Runtime assessment
+
+For a temporary route request, SafeYolo projects the agent's current baseline
+and temporary gateway permissions, bindings and explicit denials into the adopted
+model. The candidate adds its exact method and literal path. The assessment covers
+all permitted arguments. Submitted payloads and agent explanations cannot narrow
+that authority. For example, a description-only sample does not exclude executable
+editing when `steps` remains allowed. An enforced description-only allowlist can
+exclude that effect. A preview equality binding still permits an omitted query
+argument, including its declared execution default.
+
+The evaluator reports direct effects, persistent effects, scoped combinations,
+contributing permission identifiers, rule identifiers, evidence, prerequisites and
+gaps. Each conditional effect retains its resource and evaluated status; an effect
+on one resource cannot satisfy a rule about another. Rule results are `match`,
+`non_match` or `unresolved`. A known unrestricted
+job scope includes a concrete job. Unresolved alias identity stays unknown.
+Composite identities retain their namespace: equal job identifiers in different
+projects do not establish a same-job combination. Path policy partitions can also
+report `except` with excluded literal values. Complex path patterns outside the
+supported literal, whole-segment and tail-wildcard partition remain unresolved.
+For a known candidate resource, the ordinary policy decision on that exact
+resource can still establish overlap. Whole-segment stars retain the native
+policy's ability to span slashes; unknown remainder regions remain explicit.
+This limit affects assessment certainty; it does not change request admission.
+
+Reviewed alternative recipes use the same evaluator. Their required operations,
+methods, paths, bindings and access availability remain separate from suitability
+for the operator's goal. Upstream existence, credentials, runner state and other
+unverified prerequisites remain explicit. A recipe that uses another endpoint
+still receives the policy decision for its modeled effects.
+An unspecified recipe binding is reported as an unverified binding condition.
+An uninstantiated constraint cannot exclude effects from the proposed access.
+
+The current route's possible effects and the matching rule combinations it
+contributes to enter the existing risk policy's `enables` conditions. Unrelated
+permissions remain visible in the assessment without changing that route's risk
+decision. Access denied by current risk policy is excluded from baseline authority;
+the candidate remains visible so its own prohibited effects can be explained.
+The model supplies semantics; operator policy
+supplies allow, approval or denial decisions. An unresolved combination is not
+asserted as a matching rule. Missing coverage, absent rules and uncertainty do not
+create automatic denial. The intentionally partial model does not certify current
+upstream state. Expired edit permission does not prove that an earlier edit was
+undone, and expiry does not cancel an admitted operation.
+
+The [route-approval workflow](service-route-approval.md) presents this assessment
+before operator work, rechecks it at escalation and approval, and requires an
+explicit retry after a current approval. No runtime model call, arbitrary-script
+interpretation or upstream behavior probe contributes to the assessment.
 
 Definitions grant no access. Generated annotations remain proposals until the
 operator adopts them through the existing catalogue workflow. Loading a model with

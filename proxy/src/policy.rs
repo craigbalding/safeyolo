@@ -166,7 +166,7 @@ pub enum Effect {
     Budget,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Decision {
     pub effect: Effect,
     /// The actual authored rule, rather than Python's synthetic simple-rule '*'.
@@ -1717,6 +1717,57 @@ impl Policy {
             ),
             Effect::Deny,
         )
+    }
+
+    /// Paths that can change this gateway decision. The effect evaluator uses
+    /// these boundaries and calls the ordinary decision function on each
+    /// partition; it does not implement another rule precedence order.
+    pub(crate) fn gateway_path_patterns(&self, request: GatewayRequest<'_>) -> (Vec<String>, bool) {
+        let context = Context {
+            service: request.service,
+            capability: request.capability,
+            agent: Some(request.agent),
+            method: request.method,
+            ..Default::default()
+        };
+        let mut unresolved = false;
+        let patterns = self
+            .task
+            .as_ref()
+            .into_iter()
+            .flat_map(|task| &task.rules)
+            .chain(&self.rules)
+            .filter(|rule| {
+                rule.action == Action::Gateway && !rule.inferred && rule.condition.matches(&context)
+            })
+            .filter_map(|rule| {
+                if rule.resource == "*" {
+                    return Some("/**".into());
+                }
+                let Some((service, path)) = rule.resource.split_once(':') else {
+                    unresolved = true;
+                    return None;
+                };
+                glob(&request.service.to_lowercase(), &service.to_lowercase())
+                    .then(|| path.to_owned())
+            })
+            .collect();
+        (patterns, unresolved)
+    }
+
+    /// Risk decisions can differ within a route-admitted operation. Include
+    /// their prefix boundaries in the effect evaluator's existing partition;
+    /// the ordinary risk PDP still decides each cell.
+    pub(crate) fn risk_path_patterns(&self) -> Vec<String> {
+        self.task
+            .as_ref()
+            .into_iter()
+            .flat_map(|task| &task.rules)
+            .chain(&self.rules)
+            .filter(|rule| rule.action == Action::RiskyRoute && !rule.inferred)
+            .filter_map(|rule| rule.condition.path_prefix.as_ref())
+            .map(|prefix| format!("{prefix}**"))
+            .collect()
     }
 
     /// Mirrors the separate existing addon-enable query without changing the

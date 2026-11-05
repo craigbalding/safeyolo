@@ -63,11 +63,11 @@ request-check facts:
   binding alone cannot exclude execution from the possible grant effects.
 - The diagnostic inspection request passes its generated read contract.
 
-These tests do not run an upstream job API or evaluate consequence rules.
-Regression expected effects and overlap results are reviewed authoring inputs
-for a future evaluator. Loading checks their references and scope claims against
-current path enforcement. Validation does not prove that each semantic claim or
-regression expectation is correct.
+These enforcement tests do not run an upstream job API. The separate
+`proxy/tests/service_effects.rs` tests execute the reviewed regression effects and
+overlap expectations through the evaluator. Loading checks references and scope
+claims against current path enforcement. Structural validation alone does not
+prove that each semantic claim or regression expectation is correct.
 
 ## Coverage and assumptions
 
