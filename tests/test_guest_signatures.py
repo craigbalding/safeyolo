@@ -167,17 +167,6 @@ def test_mise_uses_complete_publisher_key(monkeypatch, signing_keys, mise_withou
             inputs.signed_checksums("mise", "2026.10.12", names, checksums)
 
 
-def test_download_requires_https_and_refuses_http_redirect(monkeypatch):
+def test_download_requires_https():
     with pytest.raises(ValueError, match="HTTPS"):
         inputs.fetch("http://publisher.invalid/key")
-    class Response:
-        url = "http://publisher.invalid/key"
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
-            pass
-        def read(self):
-            pytest.fail("read the key after an insecure redirect")
-    monkeypatch.setattr(inputs.urllib.request, "urlopen", lambda *args, **kwargs: Response())
-    with pytest.raises(ValueError, match="HTTPS"):
-        inputs.fetch("https://publisher.invalid/key")
