@@ -5,7 +5,9 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+pub mod authoring;
 mod catalog;
+pub mod effects;
 pub(crate) use catalog::{CatalogMetadata, ServiceLoadProblem, scan_service_files};
 use std::sync::Arc;
 
@@ -78,6 +80,8 @@ pub struct ServiceDefinition {
     pub auth: Option<AuthConfig>,
     pub capabilities: BTreeMap<String, Capability>,
     pub risky_routes: Vec<RiskyRoute>,
+    /// Authored possibilities and evidence, separate from route authorization.
+    pub effect_model: Option<effects::EffectModel>,
     /// Original definition includes descriptive and declared response/state fields.
     pub raw: Value,
 }
@@ -147,14 +151,24 @@ impl ServiceDefinition {
                 risky_routes.push(risky_route(entry, None)?);
             }
         }
-        Ok(Self {
+        let effect_model = object
+            .get("effect_model")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?;
+        let service = Self {
             name,
             default_host,
             auth,
             capabilities,
             risky_routes,
+            effect_model,
             raw,
-        })
+        };
+        if let Some(model) = &service.effect_model {
+            model.validate(&service)?;
+        }
+        Ok(service)
     }
 }
 fn array(value: Option<&Value>) -> Result<&[Value], Error> {

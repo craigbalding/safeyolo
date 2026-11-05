@@ -43,6 +43,8 @@ user_facing_docs = [
     "docs/guest-oci.md",
     "docs/credentials.md",
     "docs/coding-client-gateway.md",
+    "docs/service-authoring.md",
+    "docs/service-gateway-v2-yaml-spec.md",
     "docs/delegated-approvals.md",
     "docs/settings.md",
     "docs/operator-guide.md",
