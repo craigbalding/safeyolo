@@ -1,4 +1,4 @@
-# Run non-HTTP clients in agent containers
+# Run non-HTTP clients in agent sandboxes
 
 Use the client's supported proxy mode first. When a protocol needs more, an
 external relay or gateway can provide the missing transport.
@@ -10,7 +10,7 @@ external relay or gateway can provide the missing transport.
 
 ## Choose a transport
 
-In standard isolated SafeYolo containers, external connections use the
+In standard isolated SafeYolo sandboxes, external connections use the
 configured Hypertext Transfer Protocol (HTTP) proxy. CONNECT carries
 Transmission Control Protocol (TCP) streams. Direct User Datagram Protocol
 (UDP) and Domain Name System (DNS) egress are unavailable. See the
@@ -25,7 +25,9 @@ Check these conditions before choosing a service:
 - **Protocol handling:** SafeYolo classifies bytes after CONNECT. Binary
   protocols can use opaque forwarding; text that resembles an HTTP request
   can enter the HTTP parser and fail. A successful CONNECT is not proof of
-  application compatibility. See the [classifier](https://github.com/craigbalding/safeyolo/blob/master/proxy/src/tunnels.rs).
+  application compatibility. Opaque payloads do not receive HTTP inspection or
+  credential scanning. See the [classifier](https://github.com/craigbalding/safeyolo/blob/master/proxy/src/tunnels.rs)
+  and [CONNECT handling](https://github.com/craigbalding/safeyolo/blob/master/proxy/src/http.rs).
 - **Encryption:** Transport Layer Security (TLS) does not imply HTTPS.
   When TLS starts immediately after CONNECT, non-HTTP payloads need the operator's
   [TLS passthrough setting](https://github.com/craigbalding/safeyolo/blob/master/docs/TLS_CERTIFICATE.md#certificate-pinning-and-passthrough).
@@ -43,8 +45,9 @@ Address Translation (TURN) lets baresip send media to a relay over TCP; the
 relay exchanges UDP with the remote media server. The signalling and relay
 accounts can be independent.
 
-This topology has worked in SafeYolo. The commands below are a reference
-recipe; verify the installed client and the actual call.
+This topology was reported working in SafeYolo. The commands below are a
+reference recipe; live third-party integrations were not rerun for this guide.
+Verify the installed client and the actual call.
 
 Before starting, you need:
 
@@ -52,17 +55,20 @@ Before starting, you need:
   [TURN module's TCP support](https://github.com/baresip/baresip/blob/main/modules/turn/turn.c).
 - Temporary username/password credentials from your own
   [Twilio Network Traversal Service (NTS) account](https://www.twilio.com/docs/stun-turn/api).
-  Create them with your own account's credentials; the client's SIP credentials
-  are insufficient. NTS credentials expire after at most 24 hours. Your account
-  [pays for relay use](https://www.twilio.com/docs/stun-turn/faq); the client's
-  Twilio administrator is not required.
+  Generate them outside the sandbox with that account's authorized credentials;
+  supply only the temporary NTS credentials to baresip. The client's SIP
+  credentials are insufficient. NTS credentials expire after at most 24 hours.
+  Your account [pays for relay use](https://www.twilio.com/docs/stun-turn/faq);
+  the client's Twilio administrator is not required.
 - Permission for the relay hostname and port. This example uses Twilio's
   [plain TCP endpoint on port 3478](https://www.twilio.com/docs/stun-turn/regions).
   Use the hostname from the returned TCP TURN endpoint. Changing only the port
   to 443 does not enable TLS in the client. A TLS variant also needs the
-  passthrough configuration above.
+  passthrough configuration above and verification of the relay's certificate.
+  Port 3478 adds no TLS encryption; media confidentiality depends on the call's
+  own encryption.
 
-Run the forwarder in a dedicated terminal **inside the agent container**, from
+Run the forwarder in a dedicated terminal **inside the agent sandbox**, from
 any directory. Replace `PROXY_HOST` and `PROXY_PORT` with the host and port in
 the existing `HTTP_PROXY` value; this recipe expects an `http://` proxy.
 Replace `TURN_HOST` with the returned relay hostname. Local port `13478` must
@@ -78,7 +84,10 @@ The [socat PROXY address](https://manpages.debian.org/trixie/socat/socat.1.en.ht
 sends the relay hostname to the proxy without local DNS. `fork` accepts the
 separate media/control connections.
 
-In the same container, add this line to baresip's active `config` if absent:
+In the same sandbox, use the profile directory from your working baresip
+invocation (`-f DIR` if set; normally `~/.baresip` on Linux). Edits to its
+`config` and `accounts` files persist across restarts. Add this line to that
+`config` if absent:
 
 ```text
 module turn.so
@@ -109,13 +118,13 @@ These are candidates with documented transport support, not a SafeYolo
 compatibility matrix. Check the installed version, proxy support, DNS startup
 and TLS handling before relying on one.
 
-| Need | Adapter and container-side transport | Requirement or tradeoff |
+| Need | Adapter and sandbox-side transport | Requirement or tradeoff |
 | --- | --- | --- |
-| A fixed UDP service, such as syslog or StatsD | [wstunnel](https://github.com/erebe/wstunnel): local UDP socket to secure WebSocket (`wss://`), with `--http-proxy` and `--tls-verify-certificate` | Run its server outside the container. Use datagram framing; a raw UDP-to-TCP pipe loses message boundaries. TCP retransmission can delay later packets. |
+| A fixed UDP service, such as syslog or StatsD | [wstunnel](https://github.com/erebe/wstunnel): local UDP socket to secure WebSocket (`wss://`), with `--http-proxy` and `--tls-verify-certificate` | Run its server outside the sandbox. Use datagram framing; a raw UDP-to-TCP pipe loses message boundaries. TCP retransmission can delay later packets. |
 | Private database or shell access | [Tailscale userspace networking](https://tailscale.com/docs/concepts/userspace-networking) with a local SOCKS5 proxy and [TCP relay fallback](https://tailscale.com/docs/reference/faq/firewall-ports) | Requires access to the destination network. Configure the daemon's upstream proxy separately from the application's local proxy. No kernel tunnel device is needed. |
 | Incoming webhooks or callbacks | [ngrok](https://ngrok.com/docs/gateway/agent/config/v3#proxy_url): outbound TLS tunnel using `proxy_url` | Publishes a reachable endpoint. Account for authentication, additional service endpoints and non-HTTP TLS passthrough. |
 | An application that insists on DNS queries | [dnscrypt-proxy](https://github.com/DNSCrypt/dnscrypt-proxy/blob/master/dnscrypt-proxy/example-dnscrypt-proxy.toml): local resolver to DNS over HTTPS (DoH) | Use `http_proxy` with a DoH resolver and `http3 = false`. Ensure startup does not require external DNS. Name resolution does not supply a route for application traffic. |
-| A remote desktop or terminal | [Apache Guacamole](https://guacamole.apache.org/): browser access to an external gateway | The gateway reaches the desktop or shell. The target application executes outside the container. |
+| A remote desktop or terminal | [Apache Guacamole](https://guacamole.apache.org/): browser access to an external gateway | The gateway reaches the desktop or shell. The target application executes outside the sandbox. |
 
 ## Agent runbook
 
@@ -127,6 +136,9 @@ and TLS handling before relying on one.
    who pays. The relay's onward reach is not constrained by SafeYolo's outer
    hostname permission; use the relay's own access controls for that scope.
 3. **Configure:** preserve the supplied proxy and certificate environment.
+   Use the public certificate authority (CA) certificate; keep the host's
+   private signing key outside the sandbox. Keep certificate verification
+   enabled, including for passthrough.
    Bind local adapters to loopback. Keep credentials out of command arguments
    and reports. If access or passthrough is missing, follow
    [troubleshooting and escalation](troubleshooting.md). Do not substitute a

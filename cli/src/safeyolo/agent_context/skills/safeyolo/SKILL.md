@@ -61,7 +61,7 @@ do not reload Coord or GitHub references already supplied by the role contract.
   host commands to ask the operator to run.
 - Read [Non-HTTP clients](references/non-http-clients.md) for protocol-specific
   transports, UDP media, external relays, loopback adapters, and verification
-  inside agent containers. It includes a baresip/TURN example and an agent runbook.
+  inside agent sandboxes. It includes a baresip/TURN example and an agent runbook.
 - For a client-selected destination IP, read [Select a target IP](references/troubleshooting.md#select-a-target-ip).
   It covers ordinary curl syntax, the CONNECT response ID and linked evidence
   after a TLS failure. Address acquisition is separate from target selection.
