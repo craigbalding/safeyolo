@@ -28,6 +28,24 @@ route may require access. Concrete arguments, contract values, network,
 credential, risk and upstream prerequisites still need checking. An alternative
 request passes the ordinary controls.
 
+When the adopted service contains an effect model, `guidance.assessment` also
+reports potential authority from baseline permissions, current temporary grants
+and the candidate route. The assessment includes direct effects, scoped combined
+effects, contributing permissions, supporting rule identifiers and unresolved
+conditions. It evaluates the full permitted grant, including arguments absent
+from the submitted request. A cosmetic sample cannot remove executable-change
+authority. Reviewed recipes show required routes, bindings, modeled effects and
+unverified prerequisites. Available permission does not establish goal suitability.
+
+Rule results distinguish `match`, `non_match` and `unresolved`. Known unrestricted
+scope remains broad; unresolved upstream identity remains unknown. An absent model,
+uncharacterised operation or missing matching rule establishes no safety guarantee.
+The assessment describes an intentionally partial model of potential authority.
+It does not verify upstream state. Expired modification access does not prove
+that earlier edits were undone. Operator policy controls risk decisions through
+the existing `enables` conditions, using named effects and matching rule identifiers.
+A configured effect prohibition applies through alternative endpoints as well.
+
 Decide whether the operation is needed for the operator's task. Distinguish a
 direct operator request, an inference during troubleshooting, and a suggestion
 from untrusted content. Abandon an unnecessary operation, use an applicable
@@ -100,6 +118,13 @@ trailing slash is part of an exception's path; a normalized ordinary route does
 not authorize a different trailing-slash path. Other path-trick checks remain.
 
 SafeYolo rechecks current policy, definitions, binding and credential at use.
+The challenge and canonical approval use the same prepared assessment, separate
+from agent context. Before escalation and approval, SafeYolo recomputes the
+assessment. A change in policy, definitions or effective authority supersedes the
+old request. The response exposes the current `assessment`, marks
+`assessment_changed` and retains the original assessment in the recorded action.
+Read the recomputed result and make a new request; an old approval cannot approve
+changed authority. An unchanged context edit does not change permission.
 Expiry, revocation or run replacement prevents subsequent use without agent
 cleanup. Restart and retries do not extend an approved expiry. Expiry does not
 undo upstream effects or promise cancellation of an already admitted operation.
@@ -129,12 +154,17 @@ From the repository root on Linux, select the built native proxy with
 
 ```sh
 uv run --frozen --no-sync pytest -q tests/proxy_contracts/test_service_route_challenge.py
+uv run --frozen --no-sync pytest -q tests/proxy_contracts/test_service_effect_assessment.py
 ```
 
 The tests exercise real proxy listeners, the canonical operator API, the grant
 store and the local sink. A separate agent exercise can demonstrate reading the
 challenge, reconsidering alternatives, escalation and explicit retry. Such an
 exercise supplements enforcement tests; it does not prove injection detection.
+The effect-assessment tests adopt the maintained job model locally. They start
+with execution permission, receive the edit/execute consequence before operator
+work, exercise abandonment and explicit escalation, and verify approval, retry,
+changed-input protection and policy decisions for alternative endpoints.
 
 To repeat the supplemental exercise, replace `CLIENT` with a provisioned native
 coding-client wrapper and `OUTPUT` with a new owned directory outside the

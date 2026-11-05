@@ -866,6 +866,7 @@ impl IssuedAccess {
                 "credential_binding",
                 "scheme",
                 "port",
+                "prepared_assessment",
             ],
             _ => return Err(invalid("unsupported issued permission type")),
         };

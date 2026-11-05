@@ -80,6 +80,9 @@ class _OriginHandler(BaseHTTPRequestHandler):
         self.rfile.read(int(self.headers.get("Content-Length", "0")))
         self._reply()
 
+    do_PATCH = do_POST
+    do_PUT = do_POST
+
     def _reply(self):
         raw_head = self.raw_requestline + self.headers.as_bytes()
         with self.server.lock:

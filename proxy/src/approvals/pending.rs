@@ -578,6 +578,9 @@ impl Record {
             view["approval"]["approval_type"] = json!("gateway_route");
             view["guidance"] = route_challenge::guidance(policy, self);
         }
+        if !self.authority.action["prepared_assessment"].is_null() {
+            view["assessment"] = self.authority.action["prepared_assessment"].clone();
+        }
         if let Some(reason) = &self.untrusted_reason_text {
             view["untrusted_reason_text"] = json!(reason);
         }
@@ -939,6 +942,32 @@ pub(crate) fn current_view(
     } else {
         true
     };
+    if record.authority.action["prepared_assessment"].is_object()
+        && let Some(runtime) = runtime.as_deref()
+    {
+        let selected = state.map(|state| saved_policy(state, policy)).transpose()?;
+        let current = route_challenge::assessment(
+            runtime,
+            selected.as_ref().unwrap_or(policy),
+            &record.authority.action,
+        )?;
+        view["assessment_changed"] = json!(
+            current["input_revision"]
+                != record.authority.action["prepared_assessment"]["input_revision"]
+        );
+        view["assessment"] = current.clone();
+        if route_challenge::is_exception(record) {
+            if current["model"].is_object() {
+                view["guidance"]["alternatives"] = current["alternatives"].clone();
+            }
+            view["guidance"]["assessment"] = current;
+        }
+        if matches!(view["status"].as_str(), Some("pending" | "challenged"))
+            && view["assessment_changed"] == true
+        {
+            view["status"] = json!("superseded");
+        }
+    }
     drop(runtime);
     if view["status"] == "approved" && view["result"].get("issued_access").is_some() {
         let issued: crate::policy::delegation::IssuedAccess =
@@ -1099,6 +1128,32 @@ pub(crate) fn check_saved(
     source: &str,
     record: &Record,
 ) -> Result<bool> {
+    let grants = if record.authority.action["prepared_assessment"].is_object() {
+        let store = state
+            .read()
+            .map_err(|_| invalid("runtime unavailable"))?
+            .gateway_grants
+            .clone()
+            .ok_or_else(|| invalid("gateway grant store unavailable"))?;
+        store
+            .list_grants(time::OffsetDateTime::now_utc())?
+            .into_iter()
+            .map(|entry| entry.grant)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    check_saved_grants(state, source, record, &grants)
+}
+
+/// Grant transactions already own the grant mutex. Use their canonical state
+/// instead of recursively locking the store during the final approval check.
+pub(crate) fn check_saved_grants(
+    state: &crate::RuntimeState,
+    source: &str,
+    record: &Record,
+    grants: &[crate::grants::Grant],
+) -> Result<bool> {
     let runtime = state
         .read()
         .map_err(|_| invalid("runtime unavailable"))?
@@ -1128,7 +1183,9 @@ pub(crate) fn check_saved(
     ) && matches!(
         record.current_status(&saved)?.as_str(),
         "pending" | "challenged"
-    ) && gateway::credentials_current(&runtime, record)?)
+    ) && gateway::credentials_current(&runtime, record)?
+        && route_challenge::assessment_current(policy, record, grants)?
+        && route_challenge::assessment_current(&saved, record, grants)?)
 }
 
 pub(crate) fn resolve(
@@ -1177,8 +1234,14 @@ pub(crate) fn resolve_as(
         if record.status != "pending" { return Ok(()); }
         let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?.clone();
         let credentials_current = gateway::credentials_current(&runtime, record)?;
+        let assessment_current = if record.authority.action["prepared_assessment"].is_object() {
+            let current = route_challenge::assessment(&runtime,&policy,&record.authority.action)?;
+            let current_saved = route_challenge::assessment(&runtime,&saved,&record.authority.action)?;
+            current["input_revision"] == record.authority.action["prepared_assessment"]["input_revision"]
+                && current_saved["input_revision"] == current["input_revision"]
+        } else { true };
         drop(runtime);
-        if !credentials_current {
+        if !credentials_current || !assessment_current {
             record.status = "superseded".into();
             return Ok(());
         }

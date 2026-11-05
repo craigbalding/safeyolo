@@ -85,7 +85,11 @@ acceptance alone does not establish support for a proposed feature.
 The optional `effect_model` is typed and validated. Use the
 [service-authoring workflow](service-authoring.md) to generate a model, reusable
 rules, alternatives and regression inputs from reviewed local evidence. Its
-effects describe possibilities and do not grant access or change policy.
+effects describe possibilities and do not grant access or change policy. The
+runtime evaluates adopted rules over current authority and a candidate route;
+see the [assessment and approval workflow](service-route-approval.md). Named
+effects and matching rule identifiers can participate in existing risk-policy
+`enables` conditions. Missing annotations or rules do not establish safety.
 
 ```yaml
 schema_version: 1          # required — integer 1
