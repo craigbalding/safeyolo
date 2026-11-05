@@ -41,7 +41,25 @@ pub(crate) fn bounded_items(items: Vec<Value>, total: usize, budget: usize) -> V
     json!({"total":total,"shown":items.len(),"truncated":items.len()<total,"items":items})
 }
 
-fn work_summary(mut work: Value) -> Value {
+pub(crate) fn work_summary(mut work: Value) -> Value {
+    if let Some(requirements) = work
+        .as_object_mut()
+        .unwrap()
+        .remove("acceptance_requirements")
+        && !requirements.is_null()
+    {
+        work["selected_requirements"] = json!({"version":requirements["version"],"author":requirements["author"],
+            "independent":requirements["independent"],"required_checks":requirements["checks"].as_array().unwrap().len(),
+            "required_challenges":requirements["challenges"].as_array().unwrap().len()});
+    }
+    work.as_object_mut().unwrap().remove("acceptance_decisions");
+    for field in ["obligations", "decisions"] {
+        if let Some(items) = work["acceptance_status"][field].as_array() {
+            let total = items.len();
+            work["acceptance_status"][field] =
+                bounded_items(items.iter().take(8).cloned().collect(), total, 2048);
+        }
+    }
     // Descriptions and refs can fill a complete mutation. Status needs the
     // current ownership/version and a bounded title or completion result.
     let external_ref = work.as_object_mut().unwrap().remove("external_ref");
@@ -61,24 +79,91 @@ fn work_summary(mut work: Value) -> Value {
             work[field] = json!(excerpt);
         }
     }
+    if let Some(output) = work["output"].as_object_mut() {
+        let refs = output.remove("evidence_refs").unwrap();
+        output.insert(
+            "evidence_ref_count".into(),
+            json!(refs.as_array().unwrap().len()),
+        );
+        let summary = output["summary"].as_str().unwrap();
+        let excerpt = prefix(summary, WORK_TEXT_BYTES).to_owned();
+        output.insert(
+            "summary_truncated".into(),
+            json!(excerpt.len() < summary.len()),
+        );
+        output.insert("summary".into(), json!(excerpt));
+    }
+    if let Some(cancellation) = work["cancellation"].as_object_mut() {
+        let reason = cancellation["reason"].as_str().unwrap();
+        let excerpt = prefix(reason, WORK_TEXT_BYTES).to_owned();
+        cancellation.insert(
+            "reason_truncated".into(),
+            json!(excerpt.len() < reason.len()),
+        );
+        cancellation.insert("reason".into(), json!(excerpt));
+    }
+    for field in ["check", "challenge"] {
+        if let Some(review) = work[field].as_object_mut() {
+            for text in ["criterion", "assertion", "grounds"] {
+                if let Some(value) = review.get(text).and_then(Value::as_str) {
+                    let excerpt = prefix(value, WORK_TEXT_BYTES).to_owned();
+                    review.insert(
+                        format!("{text}_truncated"),
+                        json!(excerpt.len() < value.len()),
+                    );
+                    review.insert(text.into(), json!(excerpt));
+                }
+            }
+            if let Some(refs) = review.remove("evidence_refs") {
+                review.insert(
+                    "evidence_ref_count".into(),
+                    json!(refs.as_array().unwrap().len()),
+                );
+            }
+            for field in ["answer", "response", "disposition"] {
+                if let Some(record) = review.get_mut(field).and_then(Value::as_object_mut) {
+                    if let Some(refs) = record.remove("evidence_refs") {
+                        record.insert(
+                            "evidence_ref_count".into(),
+                            json!(refs.as_array().unwrap().len()),
+                        );
+                    }
+                    for text in ["summary", "reason"] {
+                        if let Some(value) = record.get(text).and_then(Value::as_str) {
+                            let excerpt = prefix(value, WORK_TEXT_BYTES).to_owned();
+                            record.insert(
+                                format!("{text}_truncated"),
+                                json!(excerpt.len() < value.len()),
+                            );
+                            record.insert(text.into(), json!(excerpt));
+                        }
+                    }
+                }
+            }
+        }
+    }
     work
 }
 
-pub(crate) fn work_page(conn: &Connection, room: &str, completed: bool) -> Result<Value, Error> {
+pub(crate) fn work_page(
+    conn: &Connection,
+    room: &str,
+    terminal_state: Option<&str>,
+) -> Result<Value, Error> {
     let total: i64 = conn.query_row(
-        "SELECT count(*) FROM coord_work WHERE room_id=?1 AND (state='done')=?2",
-        params![room, completed],
+        "SELECT count(*) FROM coord_work WHERE room_id=?1 AND ((?2 IS NULL AND state IN ('open','claimed')) OR state=?2)",
+        params![room, terminal_state],
         |row| row.get(0),
     )?;
     // Recent completions first; active work uses stable durable IDs. A claim's
     // age never changes ownership. Released claims are already open in this table.
-    let mut query = conn.prepare("SELECT document_json FROM coord_work WHERE room_id=?1 AND (state='done')=?2 ORDER BY CASE WHEN ?2 THEN json_extract(document_json,'$.updated_at') ELSE 0 END DESC,work_id LIMIT ?3")?;
+    let mut query = conn.prepare("SELECT document_json FROM coord_work WHERE room_id=?1 AND ((?2 IS NULL AND state IN ('open','claimed')) OR state=?2) ORDER BY CASE WHEN ?2 IS NOT NULL THEN json_extract(document_json,'$.updated_at') ELSE 0 END DESC,work_id LIMIT ?3")?;
     let items = query
-        .query_map(params![room, completed, MAX_ITEMS as i64], |row| {
+        .query_map(params![room, terminal_state, MAX_ITEMS as i64], |row| {
             row.get::<_, String>(0)
         })?
         .map(|row| {
-            let mut work = work_summary(serde_json::from_str(&row?)?);
+            let mut work = work_summary(super::work::describe(conn, serde_json::from_str(&row?)?)?);
             let mut counts = attestations::counts(conn, &work)?;
             let total =
                 counts["current_total"].as_u64().unwrap() + counts["stale_total"].as_u64().unwrap();
@@ -115,7 +200,7 @@ pub(crate) fn work_page(conn: &Connection, room: &str, completed: bool) -> Resul
     Ok(bounded_items(items, total as usize, SECTION_BYTES))
 }
 
-pub(crate) const HELP: &str = "safeyolo [--root ROOT] coord status ROOM [--json]\n\nRead the canonical room state through Admin API. Show the brief revision and a UTF-8 prefix of at most 2048 bytes, current agent members, advertised authorized capabilities, expiring declarations, provider-owned leases, active work, recent completions, operator needs and latest current results/corrections. No chat replay or model is used. Each section shows at most 50 items and 64 KiB of item JSON, with counts and truncation. Per-member verified and declared capability arrays also have byte limits. Work titles and completion results show at most 512 UTF-8 bytes each. Recognized GitHub URLs are labelled external references without a network fetch; read_github_work reads external metadata through the caller's service access. Each work item shows its current target generation and acceptance counts, with up to eight attestation excerpts in 4096 item JSON bytes, current first. Attestation summaries show at most 128 UTF-8 bytes; evidence refs are counted and remain untrusted external content. Counts include omitted current and stale attestations. No majority or automatic completion is inferred. Use coord brief show, coord work show, coord work attestations and coord signal show for full canonical records. Availability without fresh provider evidence is unknown. Claims remain owned until an explicit transition. Bare coord status reports the owned NATS process.";
+pub(crate) const HELP: &str = "safeyolo [--root ROOT] coord status ROOM [--json]\n\nRead the canonical room state through Admin API. Show the brief revision and a UTF-8 prefix of at most 2048 bytes, current agent members, advertised authorized capabilities, expiring declarations, provider-owned leases, active work, recent completions, cancelled work, operator needs and latest current results/corrections. No chat replay or model is used. Each section shows at most 50 items and 64 KiB of item JSON, with counts and truncation. Per-member verified and declared capability arrays also have byte limits. Work titles and completion results show at most 512 UTF-8 bytes each. Recognized GitHub URLs are labelled external references without a network fetch; read_github_work reads external metadata through the caller's service access. Each work item shows its output producer, execution outcome, current target generation and acceptance counts, with up to eight attestation excerpts in 4096 item JSON bytes, current first. Attestation summaries show at most 128 UTF-8 bytes; evidence refs are counted and remain untrusted external content. Counts include omitted current and stale attestations. No majority or automatic completion is inferred. Use coord brief show, coord work show, coord work attestations and coord signal show for full canonical records. Availability without fresh provider evidence is unknown. Claims remain owned until an explicit transition. Bare coord status reports the owned NATS process.";
 
 fn text(value: &Value) -> &str {
     value.as_str().unwrap_or("none")
@@ -185,11 +270,50 @@ fn work_rows(output: &mut String, title: &str, page: &Value) {
                 quoted(&work["github_reference"]["url"])
             );
         }
+        if work["output"].is_object() {
+            let _ = writeln!(
+                output,
+                "    output v{} producer={}:{} execution={} claim_generation={}; use coord work outputs for publication history",
+                work["output"]["work_version"],
+                text(&work["output"]["producer"]["kind"]),
+                text(&work["output"]["producer"]["id"]),
+                text(&work["output"]["execution_outcome"]),
+                work["output"]["claim_generation"]
+            );
+        }
+        if work["cancellation"].is_object() {
+            let _ = writeln!(
+                output,
+                "    cancelled by {}:{} reason={}",
+                text(&work["cancellation"]["author"]["kind"]),
+                text(&work["cancellation"]["author"]["id"]),
+                quoted(&work["cancellation"]["reason"])
+            );
+        }
+        if work["review_status"].is_object() {
+            let status = &work["review_status"];
+            let _ = writeln!(
+                output,
+                "    {}: {} subject_current={}; use coord work reviews/show for exact subjects and dispositions",
+                text(&status["kind"]),
+                text(&status["state"]),
+                status["subject_current"]
+            );
+        }
         let evidence = &work["attestations"];
+        let status = &work["acceptance_status"];
+        if status["state"] != "not_selected" {
+            let _ = writeln!(
+                output,
+                "    output acceptance={} reason={}; use coord work show for requirements, obligations and decisions",
+                text(&status["state"]),
+                quoted(&status["reason"])
+            );
+        }
         let acceptance = &evidence["current_acceptance"];
         let _ = writeln!(
             output,
-            "    target generation={} ref={}; current acceptance approve={} reject={} abstain={}; stale attestations={}",
+            "    target generation={} ref={}; current acceptance attestations approve={} reject={} abstain={}; stale attestations={}",
             work["target_generation"],
             quoted(&work["target_ref"]),
             acceptance["approve"],
@@ -327,6 +451,7 @@ pub(crate) fn render(state: &Value) -> String {
     }
     work_rows(&mut output, "Active work", &state["active_work"]);
     work_rows(&mut output, "Completed work", &state["completed_work"]);
+    work_rows(&mut output, "Cancelled work", &state["cancelled_work"]);
     signal_rows(&mut output, "Needs operator", &state["needs_operator"]);
     signal_rows(
         &mut output,

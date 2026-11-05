@@ -106,10 +106,13 @@ async fn qualified_identity_peer_epochs_and_membership_replay_preserve_authority
     assert_ne!(principal("ab", "c"), principal("a", "bc"));
     assert!(authenticate(&conn, secret.trim().as_bytes(), "ag-alice").is_err());
     let create = || Mutation::Create {
+        factory: None,
+        assignee: None,
         title: "home-owned".into(),
         external_ref: None,
     };
     let created = work::mutate(
+        None,
         &mut conn,
         "shared",
         Actor::Remote(&remote),
@@ -120,6 +123,7 @@ async fn qualified_identity_peer_epochs_and_membership_replay_preserve_authority
     assert_eq!(
         created,
         work::mutate(
+            None,
             &mut conn,
             "shared",
             Actor::Remote(&remote),
@@ -148,6 +152,7 @@ async fn qualified_identity_peer_epochs_and_membership_replay_preserve_authority
     assert!(authenticate(&conn, secret.trim().as_bytes(), "ag-bob").is_err());
     assert_eq!(
         work::mutate(
+            None,
             &mut conn,
             "shared",
             Actor::Remote(&remote),
@@ -194,6 +199,7 @@ async fn qualified_identity_peer_epochs_and_membership_replay_preserve_authority
     // Regranting cannot authorize a request authenticated in the old epoch.
     assert_eq!(
         work::mutate(
+            None,
             &mut conn,
             "shared",
             Actor::Remote(&remote),
@@ -204,14 +210,20 @@ async fn qualified_identity_peer_epochs_and_membership_replay_preserve_authority
         .0,
         403
     );
-    assert_eq!(
-        work::read(
-            &mut conn,
-            "shared",
-            Actor::Remote(&renewed),
-            created["work"]["work_id"].as_str().unwrap()
-        )
-        .unwrap(),
-        created["work"]
-    );
+    let current = work::read(
+        &mut conn,
+        "shared",
+        Actor::Remote(&renewed),
+        created["work"]["work_id"].as_str().unwrap(),
+    )
+    .unwrap();
+    let mut expected = created["work"].clone();
+    expected["acceptance_status"] = json!({
+        "state": "not_selected",
+        "target_generation": 0,
+        "reason": "no acceptance requirements selected; execution and attestations do not imply acceptance",
+    });
+    assert_eq!(current, expected);
+    assert_eq!(current["acceptance_status"]["state"], "not_selected");
+    assert_eq!(current["acceptance_status"]["target_generation"], 0);
 }

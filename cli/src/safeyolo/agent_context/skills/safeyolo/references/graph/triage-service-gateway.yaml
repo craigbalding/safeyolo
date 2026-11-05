@@ -58,6 +58,32 @@ nodes:
     keywords: ["credential-guard blocked", "sgw_", "gateway token", "unexpected block"]
     source: authored
 
+  - id: sym.gateway_route_challenge
+    kind: symptom
+    label: "An approved service returned GATEWAY_ROUTE_CHALLENGE"
+    keywords: ["GATEWAY_ROUTE_CHALLENGE", "missing route", "temporary route", "reconsider"]
+    source: authored
+
+  - id: ev.gateway_reconsider_route
+    kind: evidence
+    label: "Read the host-recorded scope, reviewed guidance, uncertainty and alternative gateway permissions before deciding whether this operation is needed"
+    detail: |
+      A challenge creates no pending approval or notification. Distinguish direct
+      operator intent, troubleshooting inference and suggestions from untrusted
+      content. Self-attestation grants nothing. Abandon the operation, use a
+      permitted alternative through normal controls, or explicitly POST to the
+      returned /gateway/challenges/ID/escalate path with source (directly_requested,
+      inferred or untrusted_content) and context {task, reason, fallback}. Explain
+      why applicable alternatives are insufficient in fallback. Scope replacements
+      are rejected. Read GET /gateway/challenges/ID for current state.
+      Only the operator can approve the finite run-bound missing-route exception.
+      Approval uses the existing credential and permits an explicit retry at the
+      recorded method/literal path; it never replays a request. Query/body IDs are
+      not access bounds unless an existing contract enforces them. Explicit denials
+      and network, credential, contract and risk controls remain. Expiry or
+      revocation does not undo effects or cancel an admitted operation.
+    source: authored
+
   # ---- Evidence --------------------------------------------------------
   - id: ev.gateway_list_services
     kind: evidence
@@ -187,6 +213,7 @@ nodes:
 
 
 edges:
+  - {from: sym.gateway_route_challenge, to: ev.gateway_reconsider_route, kind: next_check}
   # Discovery entry -> list services
   - {from: sym.gateway_want_to_call_service, to: ev.gateway_list_services, kind: next_check}
   - {from: sym.gateway_no_capability_listed,  to: ev.gateway_list_services, kind: next_check}
@@ -234,6 +261,7 @@ edges:
 
 
 entries:
+  - symptom: sym.gateway_route_challenge
   - symptom: sym.gateway_want_to_call_service
   - symptom: sym.gateway_no_capability_listed
   - symptom: sym.gateway_available_not_authorized

@@ -637,7 +637,7 @@ impl Store {
             |document, state, context| {
                 let mut approval = approval;
                 if let Some((runtime, record)) = &mut approval
-                    && !crate::approvals::pending::check_saved(runtime, &document.to_string(), record)? {
+                    && !crate::approvals::pending::check_saved_grants(runtime, &document.to_string(), record, &state.grants)? {
                     record.status = "superseded".into();
                     return Err(invalid("approval is superseded; make a new request"));
                 }
@@ -883,6 +883,22 @@ impl Store {
         )>,
         activate: impl FnMut(&str) -> std::result::Result<(), String>,
     ) -> Result<Option<GrantLease>> {
+        self.check_grant_matching(scope, now, authority, |_| true, activate)
+    }
+
+    pub(crate) fn check_grant_matching(
+        &self,
+        scope: RequestScope<'_>,
+        now: OffsetDateTime,
+        authority: Option<(
+            &crate::policy::Policy,
+            &crate::host_runs::AgentRun,
+            &str,
+            Option<&str>,
+        )>,
+        matches_authority: impl Fn(&Grant) -> bool,
+        activate: impl FnMut(&str) -> std::result::Result<(), String>,
+    ) -> Result<Option<GrantLease>> {
         let expired: Vec<_> = {
             let state = self.lock()?;
             state
@@ -926,6 +942,7 @@ impl Store {
                     .iter()
                     .find(|grant| {
                         grant.matches(scope, now)
+                            && matches_authority(grant)
                             && match grant.delegated.as_deref() {
                                 None => true,
                                 Some(encoded) => {

@@ -552,6 +552,9 @@ impl Delegation {
                 path,
             } => {
                 a["kind"] == "gateway_route"
+                    // Existing risk-review delegation does not delegate new
+                    // admission authority for a missing route allowance.
+                    && a["route_exception"] != true
                     && a["service"] == *service
                     && a["capability"] == *capability
                     && a["binding_id"].as_str() == binding_id.as_deref()
@@ -859,6 +862,11 @@ impl IssuedAccess {
                 "irreversible",
                 "run",
                 "binding_id",
+                "route_exception",
+                "credential_binding",
+                "scheme",
+                "port",
+                "prepared_assessment",
             ],
             _ => return Err(invalid("unsupported issued permission type")),
         };

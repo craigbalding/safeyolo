@@ -2,6 +2,7 @@
 
 import json
 import os
+import signal
 import socket
 import stat
 import subprocess
@@ -11,7 +12,10 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+import tomlkit
 
+from tests.blackbox.installed_provider import POLICY as NATIVE_POLICY
+from tests.blackbox.installed_provider import SERVICE as NATIVE_SERVICE
 from tests.proxy_contracts.harness import launch_proxy, request
 from tests.proxy_contracts.test_gateway_redirect import AGENT_API, _origin, _wire
 
@@ -47,6 +51,128 @@ agent_id = "ag-provider"
 def _header_values(wire: bytes, name: bytes) -> list[bytes]:
     return [line.split(b":", 1)[1].strip() for line in wire.split(b"\r\n\r\n", 1)[0].split(b"\r\n")[1:]
             if line.split(b":", 1)[0].lower() == name.lower()]
+
+
+@pytest.mark.parametrize("provider", [False, True], ids=["ordinary-service", "unavailable-provider"])
+def test_native_service_tokens_reach_gateway_with_credential_guard_enabled(tmp_path, provider):
+    """Use the installed recipe's policy with native credential controls at their defaults."""
+    (tmp_path / "builtin").mkdir()
+    (tmp_path / "services").mkdir()
+    (tmp_path / "services/proofspot.yaml").write_text(NATIVE_SERVICE)
+    policy = NATIVE_POLICY + '''[agents.caller]
+agent_id = "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+[agents.caller.services.proofspot]
+capability = "reader"
+[agents.unrelated]
+agent_id = "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+'''
+    if provider:
+        policy += '[agents.proofspot]\nagent_id = "ag-cccccccccccccccccccccccccccccccc"\n'
+    with _origin("127.0.0.1") as parent, launch_proxy(
+        "rust", tmp_path, policy, native_product=True, agent_api=True,
+        agents=("caller", "unrelated", "proofspot") if provider else ("caller", "unrelated"),
+        gateway_services_dir=tmp_path / "services",
+        gateway_builtin_services_dir=tmp_path / "builtin",
+        parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+    ) as proxy:
+        status, _, body = request(proxy.paths["caller"], AGENT_API + "/gateway/services",
+                                 headers={"Authorization": "Bearer fixture-agent-api-token-one"})
+        assert status == 200
+        service = json.loads(body)["authorized"]["proofspot"]
+        assert service["host"] == "proofspot.safeyolo.internal"
+        token = service["token"]
+        url = "http://proofspot.safeyolo.internal:8088/api/v1/value"
+        authorization = {"Authorization": f"Bearer {token}"}
+        for method, target in (("DELETE", url), ("GET", url.replace("/api/v1/value", "/outside"))):
+            status, headers, body = request(proxy.paths["caller"], target,
+                                            method=method, headers=authorization)
+            assert status == 403
+            assert headers["x-blocked-by"] == "service-gateway"
+            assert json.loads(body)["error"] == "ROUTE_DENIED"
+        for agent, target in (("unrelated", url),
+                              ("caller", url.replace("proofspot.", "unrelated.")),
+                              ("caller", url.replace(":8088/", ":8089/"))):
+            status, _, _ = request(proxy.paths[agent], target, headers=authorization)
+            assert status == 403
+        # An unrelated credential still needs approval even beside a valid gateway token.
+        secret = "B7mQ2rV9xC4nT8pL3wF6kH1sD5jY0aZ7qN2eR9vM4uP8"
+        for headers in ({"Authorization": f"Bearer {secret}"},
+                        authorization | {"X-Api-Key": secret}):
+            status, headers, _ = request(proxy.paths["caller"], url, headers=headers)
+            assert status == 428 and headers["x-blocked-by"] == "credential-guard"
+        status, headers, body = request(proxy.paths["caller"], url,
+                                        headers={"X-Wrong-Header": token})
+        assert status == 503 and headers["x-blocked-by"] == "service-gateway"
+        assert json.loads(body)["error"] == "GATEWAY_CONFIGURATION_ERROR"
+        status, headers, body = request(proxy.paths["caller"], url,
+                                        headers={"Authorization": "Bearer sgw_invalid"})
+        assert status == 403 and headers["x-blocked-by"] == "service-gateway"
+        assert json.loads(body)["error"] == "INVALID_TOKEN"
+        # Mixing a real credential into a token-bearing field cannot reach transport.
+        for value in (f"Bearer {token}, Bearer {secret}", f"Bearer {secret} {token}"):
+            status, headers, _ = request(proxy.paths["caller"], url,
+                                         headers={"Authorization": value})
+            assert status in {403, 503} and headers["x-blocked-by"] == "service-gateway"
+        if provider:
+            status, _, body = request(proxy.paths["caller"], url)
+            assert status == 403 and json.loads(body)["error"] == "GATEWAY_AUTH_REQUIRED"
+        assert parent.accepts == 0
+        status, _, _ = request(proxy.paths["caller"], url, headers=authorization)
+        assert status in ({502, 503} if provider else {200})
+        assert len(proxy.events("gateway.allow")) == 1
+        assert parent.accepts == (0 if provider else 1)
+        if not provider:
+            wire = _wire(parent.requests[0])
+            assert _header_values(wire, b"authorization") == []
+            assert token.encode() not in wire
+        else:
+            # Native agent stop removes its listener through a full proxy reload.
+            path = tmp_path / "config.toml"
+            config = tomlkit.parse(path.read_text())
+            config["listeners"] = [row for row in config["listeners"] if row["agent_id"] != "proofspot"]
+            config["reload_id"] = "provider-listener-removed"
+            path.write_text(tomlkit.dumps(config))
+            proxy.process.send_signal(signal.SIGHUP)
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    marker = json.loads(proxy.readiness_file.read_text())
+                except (FileNotFoundError, json.JSONDecodeError):
+                    pass  # Reload removes readiness until the new listeners are published.
+                else:
+                    if marker.get("reload_id") == config["reload_id"]:
+                        assert marker["listeners"] == 2
+                        break
+                assert proxy.process.poll() is None
+                assert time.monotonic() < deadline, "Provider listener removal did not reload"
+                time.sleep(0.025)
+            status, _, body = request(proxy.paths["caller"], url, headers=authorization)
+            assert status == 403 and json.loads(body)["error"] == "INVALID_TOKEN"
+            status, _, body = request(proxy.paths["caller"], AGENT_API + "/gateway/services",
+                                     headers={"Authorization": "Bearer fixture-agent-api-token-one"})
+            assert status == 200
+            refreshed = json.loads(body)["authorized"]["proofspot"]["token"]
+            assert refreshed != token
+            status, _, _ = request(proxy.paths["caller"], url,
+                                   headers={"Authorization": f"Bearer {refreshed}"})
+            assert status in {502, 503}
+            assert parent.accepts == 0
+
+
+def test_native_unmapped_gateway_token_cannot_reach_parent(tmp_path):
+    policy = NATIVE_POLICY.replace('service = "proofspot"\n', "")
+    with _origin("127.0.0.1") as parent, launch_proxy(
+        "rust", tmp_path, policy, native_product=True, agents=("caller",),
+        parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+    ) as proxy:
+        for name in ("Authorization", "X-Api-Key"):
+            status, headers, body = request(
+                proxy.paths["caller"], "http://proofspot.safeyolo.internal:8088/api/v1/value",
+                headers={name: "Bearer sgw_unmapped" if name == "Authorization" else "sgw_unmapped"},
+            )
+            assert status == 503 and headers["x-blocked-by"] == "service-gateway"
+            assert json.loads(body)["error"] == "GATEWAY_CONFIGURATION_ERROR"
+        assert parent.accepts == 0
 
 
 def _subordinate_bases():

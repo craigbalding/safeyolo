@@ -14,18 +14,26 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 mod attestations;
 #[path = "native_coord/catch_up.rs"]
 mod catch_up;
+#[path = "native_coord/factory.rs"]
+mod factory;
 #[path = "native_coord/federation.rs"]
 mod federation;
 #[path = "native_coord/github.rs"]
 mod github;
 #[path = "native_coord/inventory.rs"]
 mod inventory;
+#[path = "native_coord/outputs.rs"]
+mod outputs;
+#[path = "native_coord/reviews.rs"]
+mod reviews;
 #[path = "native_coord/room_status.rs"]
 mod room_status;
 #[path = "native_coord/signals.rs"]
 mod signals;
 #[path = "native_coord/stage0.rs"]
 mod stage0;
+#[path = "native_coord/supervision.rs"]
+mod supervision;
 #[path = "native_coord/work.rs"]
 mod work;
 

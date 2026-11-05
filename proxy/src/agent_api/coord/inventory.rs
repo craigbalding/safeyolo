@@ -347,6 +347,7 @@ struct Inventory {
     needs_operator: Value,
     active_work: Value,
     completed_work: Value,
+    cancelled_work: Value,
     latest_results: Value,
     remote_agents: HashMap<String, (String, String)>,
 }
@@ -437,9 +438,11 @@ fn read_inventory(
     )
     .map_err(|_| CoordError::Data)?;
     let active_work =
-        room_status::work_page(&conn, &access.room_id, false).map_err(|_| CoordError::Data)?;
-    let completed_work =
-        room_status::work_page(&conn, &access.room_id, true).map_err(|_| CoordError::Data)?;
+        room_status::work_page(&conn, &access.room_id, None).map_err(|_| CoordError::Data)?;
+    let completed_work = room_status::work_page(&conn, &access.room_id, Some("done"))
+        .map_err(|_| CoordError::Data)?;
+    let cancelled_work = room_status::work_page(&conn, &access.room_id, Some("cancelled"))
+        .map_err(|_| CoordError::Data)?;
     let latest_results = crate::coord_rooms::signals::latest_results(&conn, &access.room_id)
         .map_err(|_| CoordError::Data)?;
     conn.execute_batch("COMMIT")
@@ -454,6 +457,7 @@ fn read_inventory(
         needs_operator,
         active_work,
         completed_work,
+        cancelled_work,
         latest_results,
         remote_agents,
     })
@@ -622,7 +626,7 @@ fn project(
         .unwrap()
         .remove("items")
         .unwrap();
-    let state = json!({"room_id":current.access.room_id,"room_name":current.access.room_name,"origin_instance_id":current.access.instance_id,"brief":room_status::brief_excerpt(current.access.brief),"members":members,"resource_leases":leases,"signals":current.signals,"needs_operator":current.needs_operator,"active_work":current.active_work,"completed_work":current.completed_work,"latest_results":current.latest_results,"bounds":{"members":member_counts,"resource_leases":lease_counts,"max_items":room_status::MAX_ITEMS,"section_bytes":SECTION_BYTES,"max_state_bytes":MAX_STATE_BYTES}});
+    let state = json!({"room_id":current.access.room_id,"room_name":current.access.room_name,"origin_instance_id":current.access.instance_id,"brief":room_status::brief_excerpt(current.access.brief),"members":members,"resource_leases":leases,"signals":current.signals,"needs_operator":current.needs_operator,"active_work":current.active_work,"completed_work":current.completed_work,"cancelled_work":current.cancelled_work,"latest_results":current.latest_results,"bounds":{"members":member_counts,"resource_leases":lease_counts,"max_items":room_status::MAX_ITEMS,"section_bytes":SECTION_BYTES,"max_state_bytes":MAX_STATE_BYTES}});
     if state.to_string().len() > MAX_STATE_BYTES {
         return Err(CoordError::Data);
     }

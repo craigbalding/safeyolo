@@ -15,7 +15,7 @@ fn count(root: &Path, sql: &str) -> i64 {
 }
 fn target(work: &Value) -> Value {
     json!({"room_name":"shared","work_id":work["work_id"],"expected_version":work["version"],
-        "expected_target_generation":work["target_generation"],"target_ref":"https://github.com/craigbalding/safeyolo/pull/1311"})
+        "expected_generation":work["claim_generation"],"execution_outcome":"succeeded","summary":"Retained exact candidate","expected_target_generation":work["target_generation"],"target_ref":"https://github.com/craigbalding/safeyolo/pull/1311"})
 }
 fn evidence(work: &Value, operation: &str) -> Value {
     json!({"room_name":"shared","work_id":work["work_id"],"target_generation":work["target_generation"],"kind":"acceptance","verdict":"approve",
@@ -39,7 +39,7 @@ async fn read(client: &Client, work: &Value) -> Value {
 async fn change(client: &Client, work: &Value, operation: &str) -> Value {
     let mut input = target(work);
     input["operation_id"] = json!(operation);
-    client.call("change_work_target", &input).await.unwrap()
+    client.call("publish_work_output", &input).await.unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -98,26 +98,8 @@ async fn native_attestations_exact_candidate_authorship_replay_and_recovery() {
             .to_string()
             .contains("400")
     );
-    // The owning-host target operation uses the same core and advances a reused PR ref.
-    work = coord_json(
-        root,
-        &[
-            "work",
-            "change-target",
-            "shared",
-            work["work_id"].as_str().unwrap(),
-            "--expected-version",
-            &old["work"]["version"].to_string(),
-            "--expected-target-generation",
-            "3",
-            "--target-ref",
-            work["target_ref"].as_str().unwrap(),
-            "--operation-id",
-            "squash",
-        ],
-    )
-    .await["work"]
-        .clone();
+    // The producing holder explicitly advances a reused external reference.
+    work = change(&alice, &old["work"], "squash").await["work"].clone();
     assert_eq!(work["target_generation"], 4);
     let stale_state = state(&alice).await;
     let stale = &stale_state["active_work"]["items"][0]["attestations"];
@@ -226,7 +208,7 @@ async fn native_attestations_exact_candidate_authorship_replay_and_recovery() {
     );
 
     // Interrupt each new mutation while SQLite prevents entry to its transaction.
-    for action in ["change_work_target", "attest_work"] {
+    for action in ["publish_work_output", "attest_work"] {
         work = read(&alice, &work).await;
         let mut input = if action == "attest_work" {
             evidence(&work, action)

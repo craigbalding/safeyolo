@@ -442,10 +442,13 @@ fn completion_retains_one_result_without_manufacturing_a_signal() {
     let root = fixture();
     let mut conn = db(&root);
     let work = work::mutate(
+        None,
         &mut conn,
         "owned",
         Actor::Agent("alice"),
         work::Mutation::Create {
+            factory: None,
+            assignee: None,
             title: "Real work".into(),
             external_ref: None,
         },
@@ -454,6 +457,7 @@ fn completion_retains_one_result_without_manufacturing_a_signal() {
     .unwrap();
     let id = work["work"]["work_id"].as_str().unwrap().to_owned();
     work::mutate(
+        None,
         &mut conn,
         "owned",
         Actor::Agent("alice"),
@@ -472,6 +476,7 @@ fn completion_retains_one_result_without_manufacturing_a_signal() {
         short_result: Some("one concise completion".into()),
     };
     let result = work::mutate(
+        None,
         &mut conn,
         "owned",
         Actor::Agent("alice"),
@@ -482,6 +487,7 @@ fn completion_retains_one_result_without_manufacturing_a_signal() {
     assert_eq!(
         result,
         work::mutate(
+            None,
             &mut conn,
             "owned",
             Actor::Agent("alice"),

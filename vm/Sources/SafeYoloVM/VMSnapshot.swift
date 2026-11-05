@@ -29,7 +29,16 @@ enum VMSnapshot {
         var errorDescription: String? {
             switch self {
             case .saveFailed(let e):           return "save failed: \(e.localizedDescription)"
-            case .restoreFailed(let e):        return "restore failed: \(e.localizedDescription)"
+            case .restoreFailed(let e):
+                // Keep the framework's error identities without printing userInfo.
+                var details: [String] = []
+                var cause: NSError? = e as NSError
+                while let current = cause, details.count < 4 {
+                    details.append("\(current.domain) code=\(current.code)")
+                    cause = current.userInfo[NSUnderlyingErrorKey] as? NSError
+                }
+                if cause != nil { details.append("further underlying errors omitted") }
+                return "restore failed: \(e.localizedDescription) [\(details.joined(separator: "; underlying: "))]"
             case .pauseFailed(let e):          return "pause failed: \(e.localizedDescription)"
             case .resumeFailed(let e):         return "resume failed: \(e.localizedDescription)"
             case .sidecarMissing(let url):     return "snapshot sidecar missing: \(url.path)"

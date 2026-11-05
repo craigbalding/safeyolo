@@ -82,6 +82,14 @@ The following is a field/type sketch, not a definition to install. Descriptions
 are recommended for operator decisions but are not required by the loader.
 Unknown fields can remain in the raw document without being enforced; parser
 acceptance alone does not establish support for a proposed feature.
+The optional `effect_model` is typed and validated. Use the
+[service-authoring workflow](service-authoring.md) to generate a model, reusable
+rules, alternatives and regression inputs from reviewed local evidence. Its
+effects describe possibilities and do not grant access or change policy. The
+runtime evaluates adopted rules over current authority and a candidate route;
+see the [assessment and approval workflow](service-route-approval.md). Named
+effects and matching rule identifiers can participate in existing risk-policy
+`enables` conditions. Missing annotations or rules do not establish safety.
 
 ```yaml
 schema_version: 1          # required — integer 1
@@ -126,6 +134,7 @@ capabilities:             # optional — defaults to {}
       - methods: [string] # required for each route; scalar also accepted
         path: string      # required for each route — glob pattern
     contract: {}          # optional — see Capability Contracts
+effect_model: {}          # optional — see the service-authoring workflow
 ```
 
 `auth.type: bearer` injects the stored value as `scheme + space + value`.
@@ -388,6 +397,12 @@ matching `exfiltration` cannot catch an omitted tag, and a route omitted from
 `risky_routes` does not enter this risk check. Review service definitions as
 operator-controlled inputs; do not assume an independent floor detects omissions.
 Other network, credential and authored route policy still applies.
+
+For a missing route allow, the current agent run instead receives a
+[route challenge](service-route-approval.md). Reconsideration creates no pending
+operator work. Only explicit escalation can request a finite exact-route
+exception with the existing credential. Explicit denials and other controls
+remain in force. Existing risky-route grants do not supply admission permission.
 
 ## Complete Example: Gmail
 

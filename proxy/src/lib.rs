@@ -734,7 +734,7 @@ impl Runtime {
                             runtime.coord.owner(),
                             config.policy_file.clone(),
                         )
-                        .with_provider_directory(config.native_config_dir.as_deref())
+                        .with_instance_root(config.native_config_dir.as_deref())
                         .with_collaboration_config(config.collaboration.clone()),
                     )
                 })
@@ -747,7 +747,7 @@ impl Runtime {
                                 .as_ref()
                                 .map(|_| config.data_dir().join("coord")),
                         )
-                        .with_provider_directory(config.native_config_dir.as_deref())
+                        .with_instance_root(config.native_config_dir.as_deref())
                         .with_collaboration_config(config.collaboration.clone()),
                     )
                 });

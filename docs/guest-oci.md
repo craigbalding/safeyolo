@@ -536,6 +536,14 @@ full fingerprints remain the trusted identities. Resolution, verification,
 a missing architecture or an incompatible tool interface fails the build. There is no
 embedded old-version fallback. Actions commit pins and source lockfiles remain.
 
+The resolve step supplies its scoped Actions `GITHUB_TOKEN` as `GH_TOKEN` for
+GitHub release API requests. For local resolution, you may set `GH_TOKEN` or
+`GITHUB_TOKEN`; a nonempty `GH_TOKEN` takes precedence. Without either variable,
+public lookups remain unauthenticated and subject to GitHub's anonymous rate
+limit. Only the initial release API request receives the token. Redirects and
+asset, checksum, signature and public-key downloads do not receive it. The token
+is not stored in the frozen input record.
+
 The rootfs builder uses signed `trixie`, `trixie-updates` and `trixie-security`
 repositories. APT update errors fail. The builder upgrades inherited packages,
 installs the guest packages and rejects remaining upgradable packages.

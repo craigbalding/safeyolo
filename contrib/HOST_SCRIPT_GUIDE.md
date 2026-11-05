@@ -68,6 +68,10 @@ Claude setup selects the host identity/onboarding fields from `~/.claude.json`
 and preserves agent-side MCP servers and unrelated configuration. It merges
 host settings over retained agent settings, including permission keys, then
 sets workspace onboarding/trust and `permissions.defaultMode=bypassPermissions`.
+It also sets `skipDangerousModePermissionPrompt=true` and
+`disableAutoMode="disable"` to skip the bypass acknowledgement and disable
+auto mode. A caller's `--settings` argument keeps
+its normal precedence; omitted keys retain these file-based defaults.
 Reapply preserves unselected settings and projects. Invalid agent configuration
 or non-object trust/MCP fields stop setup before those documents change.
 Non-object permission fields also stop setup unless valid host preferences
@@ -75,6 +79,16 @@ replace them.
 Malformed settings JSON recovers to defaults; missing or invalid host identity
 metadata leaves the retained agent identity intact. Claude credentials still use
 the explicit sharing path described below.
+
+After updating the installed SafeYolo bundle, an existing Claude agent receives
+these defaults when you stop it and reapply `assets/contrib/claude-host-setup.sh`
+with `agent configure --host-script`, as shown above. Restart the agent to use
+the updated settings. No manual settings-file edit is required.
+
+These permission defaults do not disable remote organisation-policy retrieval.
+For a gateway-backed Claude session, use the existing
+[authentication and approval workflow](../docs/coding-client-gateway.md#configure-the-guest-client).
+The host script does not retrieve a gateway token for the client.
 
 With `SAFEYOLO_CLAUDE_COPY_HOST_STATE=0`, the shipped Claude script prepares guest
 defaults and SafeYolo context without reading host Claude state. Existing agent
