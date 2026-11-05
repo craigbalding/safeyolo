@@ -82,6 +82,10 @@ The following is a field/type sketch, not a definition to install. Descriptions
 are recommended for operator decisions but are not required by the loader.
 Unknown fields can remain in the raw document without being enforced; parser
 acceptance alone does not establish support for a proposed feature.
+The optional `effect_model` is typed and validated. Use the
+[service-authoring workflow](service-authoring.md) to generate a model, reusable
+rules, alternatives and regression inputs from reviewed local evidence. Its
+effects describe possibilities and do not grant access or change policy.
 
 ```yaml
 schema_version: 1          # required — integer 1
@@ -126,6 +130,7 @@ capabilities:             # optional — defaults to {}
       - methods: [string] # required for each route; scalar also accepted
         path: string      # required for each route — glob pattern
     contract: {}          # optional — see Capability Contracts
+effect_model: {}          # optional — see the service-authoring workflow
 ```
 
 `auth.type: bearer` injects the stored value as `scheme + space + value`.
