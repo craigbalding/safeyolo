@@ -54,7 +54,7 @@ def jobs_with_guard(original: dict[str, str], command: list[str]) -> dict[str, s
     end = provision.index("RUN_ID=", start)
     provision = provision[:start] + provision[end:]
     provision = replace_once(provision, 'reserve_guest_lease "$GUEST_NAME"',
-                              'harness_storage check --path "$POOL_DIR" --required-gib "$DISK_GB"\n'
+                              'harness_storage check-image --path "$POOL_DIR" --size "${DISK_GB}G"\n'
                               'reserve_guest_lease "$GUEST_NAME"')
     result["provision.sh"] = provision
     for name, arguments in (

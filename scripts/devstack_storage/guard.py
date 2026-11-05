@@ -224,19 +224,46 @@ def remote_read(key: str, ip: str, command: str, limit: int) -> bytes:
     return output[0]
 
 
+def check_image(config: dict, path: Path, size: str) -> None:
+    check(config, extra_path=path)
+    # qemu-img is already the provisioner's allocator. Its initial required
+    # size accounts for the sparse format, unlike fully-allocated/virtual size.
+    code, output, truncated = capture(
+        ["qemu-img", "measure", "--output=json", "-O", "qcow2", "--size", size], 8192)
+    if code != 0 or any(truncated):
+        raise NoSpace("cannot measure the new sparse image allocation")
+    measurement = json.loads(output[0])
+    required = measurement.get("required") if isinstance(measurement, dict) else None
+    if type(required) is not int or required < 0:
+        raise NoSpace("sparse image measurement has no valid required byte count")
+    check(config, required, path)
+
+
 def check_copy(config: dict, args: argparse.Namespace) -> None:
     check(config)
     if args.direction == "to":
         required = Path(args.source).stat().st_size
         check(config, required)
-        parent = shlex.quote(str(Path(args.destination).parent))
-        data = remote_read(args.key, args.ip, f"df -Pk -- {parent}; df -Pi -- {parent}", 8192)
+        # Resolve directory destinations just as scp does. Guest capacity is
+        # for this copy, independent of the host's service reserve.
+        command = (f"target={shlex.quote(args.destination)}; "
+                   f'if [ -d "$target" ]; then target="$target"/{shlex.quote(Path(args.source).name)}; fi; '
+                   'parent=$(dirname -- "$target"); '
+                   'df -Pk -- "$parent"; df -Pi -- "$parent"; stat -f -c %S -- "$parent"; '
+                   'if [ -e "$target" ]; then echo 0; else echo 1; fi')
+        data = remote_read(args.key, args.ip, command, 8192)
         rows = data.decode().splitlines()
         # Both df invocations have one header and one filesystem row.
         blocks, inodes = rows[1].split(), rows[3].split()
-        if (int(blocks[3]) * 1024 < config["minimum_free_gib"] * GIB + required
-                or (int(inodes[1]) > 0 and int(inodes[3]) < config["minimum_free_inodes"])):
-            raise NoSpace("guest destination is below its byte/inode reserve")
+        block_size, new_file = int(rows[4]), int(rows[5])
+        if block_size <= 0 or new_file not in (0, 1):
+            raise NoSpace("cannot determine guest copy allocation")
+        # Round the payload to actual blocks. A new file can also need a
+        # directory-entry block and one inode; an overwrite needs no new inode.
+        required = ((required + block_size - 1) // block_size + new_file) * block_size
+        if (int(blocks[3]) * 1024 < required
+                or (int(inodes[1]) > 0 and int(inodes[3]) < new_file)):
+            raise NoSpace("guest destination cannot fit this copy's payload and metadata")
     else:
         data = remote_read(args.key, args.ip, f"stat -c%s -- {shlex.quote(args.source)}", 128)
         required = int(data.strip())
@@ -314,8 +341,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--config", type=Path, required=True)
     commands = result.add_subparsers(dest="operation", required=True)
     capacity = commands.add_parser("check")
-    capacity.add_argument("--required-gib", type=float, default=0)
+    capacity.add_argument("--required-bytes", type=int, default=0)
     capacity.add_argument("--path", type=Path)
+    image_space = commands.add_parser("check-image")
+    image_space.add_argument("--path", type=Path, required=True)
+    image_space.add_argument("--size", required=True)
     commands.add_parser("sweep")
     image = commands.add_parser("download")
     image.add_argument("destination")
@@ -345,12 +375,9 @@ def main() -> int:
         if config["maximum_output_bytes"] < 0 or getattr(args, "maximum_bytes", 0) < 0:
             raise ValueError("output limits must be nonnegative")
         if args.operation == "check":
-            if not math.isfinite(args.required_gib) or args.required_gib < 0:
-                raise ValueError("disk size must be finite and nonnegative")
-            # The observed host is about 200 GiB. One extra GiB covers qcow2
-            # metadata for a disk that can fit there, beyond its virtual size.
-            required = math.ceil((args.required_gib + 1) * GIB) if args.required_gib else 0
-            check(config, required, args.path)
+            check(config, args.required_bytes, args.path)
+        elif args.operation == "check-image":
+            check_image(config, args.path, args.size)
         elif args.operation == "sweep":
             sweep(config)
         elif args.operation == "download":

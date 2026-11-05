@@ -138,7 +138,7 @@ def test_copy_refuses_low_or_unknown_guest_storage(config, tmp_path, monkeypatch
         return (f"Filesystem 1024-blocks Used Available Capacity Mounted on\n"
                 f"disk 20000 10000 {available} 50% /\n"
                 f"Filesystem Inodes IUsed IFree IUse% Mounted on\n"
-                f"disk 20000 10000 {inodes} 50% /\n").encode()
+                f"disk 20000 10000 {inodes} 50% /\n4096\n1\n").encode()
 
     monkeypatch.setattr(guard, "remote_read", remote)
     with pytest.raises(guard.NoSpace):
@@ -146,9 +146,65 @@ def test_copy_refuses_low_or_unknown_guest_storage(config, tmp_path, monkeypatch
                                                    destination="/owned/destination", key="unused", ip="fixture"))
 
 
-def test_full_disk_growth_budget_before_allocation(config):
-    assert invoke(config, "check", "--required-gib", "1000000").returncode == 75
+def test_known_growth_budget_before_allocation(config):
+    assert invoke(config, "check", "--required-bytes", "1000000000000000").returncode == 75
     assert invoke(config, "check").returncode == 0
+
+
+@pytest.mark.parametrize("size", ["20G", "90G"])
+def test_sparse_image_admits_initial_growth_and_refuses_physical_shortfall(config, tmp_path, monkeypatch, size):
+    guard.check(config)
+    config.update(minimum_free_gib=10, minimum_free_inodes=4096)
+    monkeypatch.setattr(guard.os, "statvfs", lambda _: SimpleNamespace(
+        f_bavail=17 * guard.GIB, f_frsize=1, f_files=12997824, f_favail=12339577))
+    qemu = tmp_path / "bin/qemu-img"
+    qemu.write_text('#!/bin/bash\nsize=${@: -1}; size=${size%G}\n'
+                    'printf \'{"required":%s,"fully-allocated":%s}\\n\' '
+                    '"${MEASURE_REQUIRED_BYTES:-327680}" "$((size*1073741824+327680))"\n')
+    qemu.chmod(0o700)
+    guard.check_image(config, tmp_path, size)
+    monkeypatch.setenv("MEASURE_REQUIRED_BYTES", str(8 * guard.GIB))
+    with pytest.raises(guard.NoSpace):
+        guard.check_image(config, tmp_path, size)
+    monkeypatch.delenv("MEASURE_REQUIRED_BYTES")
+    guard.check_image(config, tmp_path, size)
+
+
+@pytest.mark.parametrize("measurement", ["{}", "[]", '{"required":true}', '{"required":-1}'])
+def test_sparse_image_unknown_measurement_refuses(config, tmp_path, measurement):
+    qemu = tmp_path / "bin/qemu-img"
+    qemu.write_text("#!/bin/bash\nprintf '%s\\n' " + shlex.quote(measurement) + "\n")
+    qemu.chmod(0o700)
+    result = invoke(config, "check-image", "--path", str(tmp_path), "--size", "20G")
+    assert result.returncode == 75
+
+
+@pytest.mark.parametrize("guest_free,free_inodes,new_file,admitted", [
+    (12 * 1024**2, 1, 1, True),
+    (int(5.7 * guard.GIB), 1, 1, True),
+    (32 * 1024, 1, 1, False),
+    (12 * 1024**2, 0, 1, False),
+    (12 * 1024**2, 0, 0, True),
+])
+def test_guest_copy_budgets_payload_and_metadata_independently(config, tmp_path, monkeypatch,
+                                                            guest_free, free_inodes, new_file, admitted):
+    guard.check(config)
+    config.update(minimum_free_gib=10, minimum_free_inodes=4096)
+    monkeypatch.setattr(guard.os, "statvfs", lambda _: SimpleNamespace(
+        f_bavail=17 * guard.GIB, f_frsize=1, f_files=12997824, f_favail=12339577))
+    source = tmp_path / "payload"
+    source.write_bytes(b"p" * 65536)
+    observation = (f"Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+                   f"disk 20000000 10000 {guest_free // 1024} 50% /data\n"
+                   f"Filesystem Inodes IUsed IFree IUse% Mounted on\n"
+                   f"disk 20000 10000 {free_inodes} 50% /data\n4096\n{new_file}\n").encode()
+    monkeypatch.setattr(guard, "remote_read", lambda *_: observation)
+    args = argparse.Namespace(direction="to", source=str(source), destination="/data/payload", key="unused", ip="fixture")
+    if admitted:
+        guard.check_copy(config, args)
+    else:
+        with pytest.raises(guard.NoSpace):
+            guard.check_copy(config, args)
 
 
 def test_download_stops_on_new_pressure_and_removes_only_its_stage(config, tmp_path, monkeypatch):
@@ -275,13 +331,30 @@ def test_bound_host_entry_points_and_crontab(config, tmp_path, monkeypatch):
     pool.mkdir()
     (harness / "ssh").mkdir(parents=True)
     (harness / "ssh/id_ed25519.pub").write_text("fixture public key\n")
-    # The cached base is a tiny stand-in. No download, guest boot or disk
-    # allocation should be reached by these refusal controls.
+    # The cached base and allocator are stand-ins. Useful admission reaches
+    # the allocator marker without a real disk allocation or guest boot.
     (pool / "ubuntu-24.04-server-cloudimg-amd64.img").write_text("cached\n")
     binary = tmp_path / "bin"
+    # Synthetic host bytes match the supplied receipt. Keep real path failures
+    # and inode observations so the existing refusal controls still apply.
+    python = binary / "guard-python"
+    python.write_text(f"#!{sys.executable}\n"
+                      "import os, runpy, sys\nfrom types import SimpleNamespace\n"
+                      "original = os.statvfs\n"
+                      "def space(path):\n"
+                      "    actual = original(path)\n"
+                      "    return SimpleNamespace(f_bavail=17606909952, f_frsize=1, "
+                      "f_files=actual.f_files, f_favail=actual.f_favail)\n"
+                      "os.statvfs = space\n"
+                      "script = sys.argv.pop(1); sys.argv[0] = script\n"
+                      "runpy.run_path(script, run_name='__main__')\n")
+    python.chmod(0o700)
     (binary / "virsh").write_text("#!/bin/bash\nexit 0\n")
     allocation = tmp_path / "allocator-invoked"
-    (binary / "qemu-img").write_text(f"#!/bin/bash\ntouch {shlex.quote(str(allocation))}\nexit 1\n")
+    (binary / "qemu-img").write_text(
+        '#!/bin/bash\nif [[ $1 = measure ]]; then '
+        'printf \'{"required":%s,"fully-allocated":21475164160}\\n\' "${MEASURE_REQUIRED_BYTES:-327680}"; '
+        f'else touch {shlex.quote(str(allocation))}; exit 7; fi\n')
     cron_file = tmp_path / "crontab"
     cron_file.write_text("5 0 * * * preserve-existing-entry\n")
     (binary / "crontab").write_text(
@@ -292,8 +365,8 @@ def test_bound_host_entry_points_and_crontab(config, tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_DIR", str(harness))
     monkeypatch.setenv("POOL_DIR", str(pool))
     args = argparse.Namespace(bindings=sources.parent / "host-bindings-14047.json", jobs=jobs,
-                              state=harness / "storage", pool=pool, harness=harness, python=Path(sys.executable),
-                              minimum_free_gib=0, minimum_free_inodes=0, maximum_output_bytes=1024,
+                              state=harness / "storage", pool=pool, harness=harness, python=python,
+                              minimum_free_gib=10, minimum_free_inodes=4096, maximum_output_bytes=1024,
                               emergency_bytes=8192,
                               install_cron=True)
     installed = install.install(args)
@@ -329,10 +402,43 @@ def test_bound_host_entry_points_and_crontab(config, tmp_path, monkeypatch):
     fetched = subprocess.run(["bash", str(jobs / "ssh_fetch.sh"), "fixture", str(source), "1024"],
                              capture_output=True, text=True)
     assert len(base64.b64decode(receipt(fetched)["content_b64"])) == 1024
-    rejected = subprocess.run(["bash", str(jobs / "provision.sh"), "--scenario", "fixture", "--flavor", "bare",
-                               "--reuse", "--disk", "1000000"], capture_output=True)
+    copied = tmp_path / "scp-invoked"
+    (binary / "scp").write_text(f"#!/bin/bash\ntouch {shlex.quote(str(copied))}\n")
+    (binary / "scp").chmod(0o700)
+    (binary / "ssh").write_text(
+        '#!/bin/bash\nif [[ ${@: -1} = *"df -Pk"* ]]; then\n'
+        '  [[ ${GUEST_UNKNOWN:-0} = 0 ]] || exit 1\n'
+        '  printf \'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
+        'disk 20000000 10000 %s 50%% /data\\n'
+        'Filesystem Inodes IUsed IFree IUse%% Mounted on\\n'
+        'disk 20000 10000 %s 50%% /data\\n4096\\n1\\n\' '
+        '"$GUEST_FREE_KIB" "${GUEST_FREE_INODES:-1}"\n'
+        'else exec bash -c "${@: -1}"; fi\n')
+    copy_command = f"source {shlex.quote(str(jobs / '_common.sh'))}; harness_scp_to fixture {shlex.quote(str(source))} /data/payload"
+    for available in (12 * 1024, int(5.7 * guard.GIB) // 1024):
+        monkeypatch.setenv("GUEST_FREE_KIB", str(available))
+        copied.unlink(missing_ok=True)
+        assert subprocess.run(["bash", "-c", copy_command], capture_output=True).returncode == 0
+        assert copied.exists()
+    for failure in ("bytes", "inodes", "unknown"):
+        copied.unlink(missing_ok=True)
+        monkeypatch.setenv("GUEST_FREE_KIB", "1" if failure == "bytes" else "12288")
+        monkeypatch.setenv("GUEST_FREE_INODES", "0" if failure == "inodes" else "1")
+        monkeypatch.setenv("GUEST_UNKNOWN", "1" if failure == "unknown" else "0")
+        assert subprocess.run(["bash", "-c", copy_command], capture_output=True).returncode == 75
+        assert not copied.exists()
+    for name in ("GUEST_FREE_KIB", "GUEST_FREE_INODES", "GUEST_UNKNOWN"):
+        monkeypatch.delenv(name)
+    monkeypatch.setenv("MEASURE_REQUIRED_BYTES", "1000000000000000")
+    provision = ["bash", str(jobs / "provision.sh"), "--scenario", "fixture", "--flavor", "bare", "--reuse", "--disk", "20"]
+    rejected = subprocess.run(provision, capture_output=True)
     assert rejected.returncode == 75 and not allocation.exists()
     assert not (pool / ".guest-lease").exists()
+    monkeypatch.delenv("MEASURE_REQUIRED_BYTES")
+    for disk in ("20", "90"):
+        allocation.unlink(missing_ok=True)
+        admitted = subprocess.run([*provision[:-1], disk], capture_output=True)
+        assert admitted.returncode == 7 and allocation.exists()
     protected = pool / "sy-protected-retained.qcow2"
     protected.write_bytes(b"retained")
     rejected = subprocess.run(["bash", str(jobs / "provision.sh"), "--scenario", "fixture", "--flavor", "bare",

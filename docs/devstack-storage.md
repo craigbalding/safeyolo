@@ -15,26 +15,36 @@ verifies the four job sources against that binding before changing them.
 | Existing consumer | Storage effect | Protection |
 | --- | --- | --- |
 | `_common.sh` `ensure_base_img` | Downloads a cached cloud image into the pool | Check available bytes and inodes before each 64 KiB write. Stop only the new download on pressure; remove its private partial file. |
-| `provision.sh` | Creates a sparse guest disk and seed | Before taking the guest lease, require the full requested virtual disk size, 1 GiB for qcow2 metadata, and the free-space floor. Existing provision locks and leases remain in use. Automatic deletion of inactive guests is removed. `--clean` refuses; exact retirement requires owner and next-use selection. |
-| `_common.sh` `harness_scp_to` | Copies a known file into an existing guest disk | Check host capacity for the payload and observe bytes and inodes on the actual guest destination filesystem before `scp`. |
+| `provision.sh` | Creates a sparse guest disk and seed | Before taking the guest lease, use `qemu-img measure` to check the new image's initial physical requirement above the host floor. Existing provision locks and leases remain in use. Automatic deletion of inactive guests is removed. `--clean` refuses; exact retirement requires owner and next-use selection. |
+| `_common.sh` `harness_scp_to` | Copies a known file into an existing guest disk | Check host capacity for the payload. On the actual guest destination filesystem, require payload blocks and metadata for this copy, independently of the host reserve. |
 | `_common.sh` `harness_scp_from` | Copies a guest file onto the host | Observe the remote size and require that capacity above the host floor before `scp`. |
 | `ssh_exec.sh` | Captures a guest command's stdout and stderr | Retain at most 1 MiB per stream in memory. Drain excess output so the remote command can finish. The receipt preserves its exit and reports `stdout_truncated` and `stderr_truncated`. The existing timeout still applies. |
 | `ssh_fetch.sh` | Returns a file prefix with the full file's size and SHA-256 | Apply the caller's existing `MAX_BYTES` before transfer. Do not copy the entire file to the host first. A complete returned file must match its hash. |
 
-The default floor is 10 GiB and 4,096 available inodes. The byte floor follows
-the existing build reserve and gives a substantial margin on the observed
-approximately 200 GiB root filesystem. These host operations create few files;
-the inode floor leaves room for service records and recovery. Filesystems that
-report no fixed inode total use the byte check. Missing paths, failed remote
+The default **host** floor is 10 GiB and 4,096 available inodes. This is the
+configured host service headroom for ongoing database/log writes and recovery
+between cron checks. It is not a guest build requirement. These host operations
+create few files; the inode floor leaves room for service records and recovery.
+Filesystems that report no fixed inode total use the byte check. Missing paths, failed remote
 observations and failed status writes refuse new children with exit 75.
 
 The installer also allocates a private 2 GiB emergency file with
 `posix_fallocate`. Sparse file length is insufficient. Normal admission requires
 that file to be fully allocated **and** the configured floor to remain free.
-For example, a new 20 GiB guest requires 31 GiB available after the emergency
-file is allocated. A thin initial qcow2 file does not waive its later growth.
-The 1 GiB metadata margin covers disks that fit on this observed host; this is
-not a general disk-sizing rule for other hosts.
+For sparse provisioning, the guard uses the `required` field from
+[`qemu-img measure --size`](https://www.qemu.org/docs/master/tools/qemu-img.html)
+with the same qcow2 format. It checks the initial physical image size, without
+reserving the virtual disk's full possible size. Thus a sparse 20 GiB guest can
+be admitted on a host with about 16 GiB free when the measured initial allocation
+and host headroom fit. Unknown measurements and an actual physical requirement
+above available capacity refuse before lease creation or allocation.
+
+A guest copy uses the source file's size rounded to the destination filesystem's
+block size. A new file also budgets one directory-entry block and one inode;
+overwriting an existing file requires no new inode. The guest does not inherit
+the host's 10 GiB or 4,096-inode floor. For example, a 64 KiB copy can fit on a
+guest root with 12 MiB free. Future build output needs its own actual filesystem
+and growth check at the existing build consumer.
 
 Each minute, cron checks the same backing filesystems. If space is low or
 unknown, cron unlinks only the dedicated emergency file. This returns its
@@ -60,6 +70,9 @@ can still exhaust the filesystem. The mechanism does not impose a VM quota,
 interrupt existing guest work, compact the database, or delete service history
 or logs. Rundeck input scripts and its internal records can still grow the
 database. Their separate qualified-history maintenance remains operator-owned.
+Sparse-image admission covers initial creation; later guest writes can grow its
+host image. The independent emergency release provides finite headroom for that
+growth as well as service writes. It does not constrain or stop an existing VM.
 `scp` preflight budgets a file's observed size; it cannot reserve space against
 unrelated concurrent writers or guarantee that a changing source stays that size.
 
@@ -102,6 +115,11 @@ candidate commit, installed source/configuration, actual consumer entry points,
 crontab entry and a scheduler-driven effect. Keep private scripts, credentials
 and raw guest output out of the receipt.
 
+Include the installed QEMU command's initial-size measurement in that consumer
+receipt. `qemu-img measure --output=json -O qcow2 --size 20G` creates no image.
+The local controls use a stand-in for that command and do not prove its native
+startup or output on Devstack.
+
 Use synthetic observation thresholds to exercise pressure without filling the
 disk. While no protected allocator is running, temporarily set
 `minimum_free_gib` just above the measured available space. A guarded command
@@ -126,7 +144,7 @@ DEVSTACK_STORAGE_JOB_SOURCES=/evidence/operator/devstack-storage/host-jobs-14047
   uv run --frozen --no-sync pytest -q tests/test_devstack_storage.py
 ```
 
-The control uses an 8 KiB emergency file, a local SSH stand-in and a user-crontab
+The control uses an 8 KiB emergency file, local SSH/QEMU stand-ins and a user-crontab
 stand-in. It tests the actual source transformations and installed cron body,
 including refusal/recovery and independent space release. It does not establish
 the live SSH, cron or Devstack deployment result.
