@@ -22,7 +22,7 @@ def test_both_architectures_share_stable_release_and_verified_checksums(monkeypa
     release = {"tag_name": "v" + version, "draft": False, "prerelease": False, "html_url": "https://official.invalid/release", "assets": assets}
     responses = {"https://api.github.com/repos/jdx/mise/releases/latest": json.dumps(release).encode(),
                  "https://official.invalid/checksums": ("\n".join(rows) + "\n").encode()}
-    monkeypatch.setattr(inputs, "fetch", responses.__getitem__)
+    monkeypatch.setattr(inputs, "fetch", lambda url, **kwargs: responses[url])
     monkeypatch.setattr(inputs, "signed_checksums", lambda *args: {"signer": "verified fixture"})
     resolved = inputs.resolve(["mise"], False)
     for arch in inputs.ARCHITECTURES:
@@ -43,7 +43,7 @@ def test_resolver_never_falls_back(monkeypatch, fault):
     if fault == "missing-architecture":
         assets.pop(1)
     release = {"tag_name": "v1.2.3", "draft": False, "prerelease": False, "html_url": "https://official.invalid/release", "assets": assets}
-    def fetch(url):
+    def fetch(url, **kwargs):
         if fault == "network":
             raise OSError("offline")
         return json.dumps(release).encode() if "/releases/" in url else "\n".join(
