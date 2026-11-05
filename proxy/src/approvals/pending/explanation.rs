@@ -65,6 +65,15 @@ pub(crate) fn explain(
             ],
             "cls.approval_credguard",
         ),
+        "gateway_route" if action["route_exception"] == true => (
+            "The service route has no allow rule. The agent explicitly escalated the host-recorded challenge after reconsideration.",
+            vec![
+                "Only the recorded method and literal path within this run, destination and credential binding. Query and body values are not grant bounds unless an existing contract enforces them.",
+                "No bypass of an explicit denial, network, credential or contract control. The vaulted credential stays on the host.",
+                "Approval permits an explicit retry. Expiry does not undo upstream effects or cancel an admitted operation.",
+            ],
+            "cls.approval_gateway_grant",
+        ),
         "gateway_route" => (
             "The service risk policy required approval for the selected method and exact request path.",
             vec![

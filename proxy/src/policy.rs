@@ -1438,6 +1438,8 @@ impl Policy {
                 && (!port_only || rule.condition.ports.is_some())
                 && (if exact {
                     rule.resource == resource
+                } else if action == Action::Gateway {
+                    crate::services::gateway_resource_matches(resource, &rule.resource)
                 } else {
                     resource_matches(resource, &rule.resource)
                 })

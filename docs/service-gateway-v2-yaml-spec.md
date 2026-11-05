@@ -389,6 +389,12 @@ matching `exfiltration` cannot catch an omitted tag, and a route omitted from
 operator-controlled inputs; do not assume an independent floor detects omissions.
 Other network, credential and authored route policy still applies.
 
+For a missing route allow, the current agent run instead receives a
+[route challenge](service-route-approval.md). Reconsideration creates no pending
+operator work. Only explicit escalation can request a finite exact-route
+exception with the existing credential. Explicit denials and other controls
+remain in force. Existing risky-route grants do not supply admission permission.
+
 ## Complete Example: Gmail
 
 Gmail illustrates the ownership question: reading an operator's inbox exposes

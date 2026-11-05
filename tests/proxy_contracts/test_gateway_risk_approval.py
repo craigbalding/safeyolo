@@ -1,4 +1,4 @@
-"""Running service-gateway grant contracts on both proxies."""
+"""Running service-gateway grant contracts through the current native proxy."""
 
 from __future__ import annotations
 
@@ -201,14 +201,14 @@ egress = "allow"
 [hosts."*"]
 egress = "deny"
 [agents.alice]
+agent_id = "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 [agents.bob]
-[addons.credential_guard]
+agent_id = "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+[controls.credentials]
 enabled = true
-detection_level = "none"
 standard_auth_headers = []
-[addons.credential_guard.settings]
 use_default_credential_rules = false
-[addons.credential_guard.settings.entropy]
+[controls.credentials.entropy]
 min_length = 1000
 [[risk]]
 account = "agent"
@@ -226,7 +226,7 @@ def test_running_gateway_prompt_requires_audit_append(proxy_backend, tmp_path):
     with _origin() as origin:
         port = origin.server_address[1]
         with policy_proxy(
-            proxy_backend, directory, _gateway_policy(port), agent_api=True,
+            proxy_backend, directory, _gateway_policy(port), agent_api=True, native_product=True,
             agent_api_token=AGENT_TOKEN.encode(), admin_port=0,
             admin_api_token_file=operator_token_file,
             gateway_services_dir=services,
@@ -257,6 +257,7 @@ def test_running_gateway_prompt_requires_audit_append(proxy_backend, tmp_path):
                 proxy, "alice", (port, RISK_PATH), gateway_token, method="POST")
             assert status == 428 and origin.accepts == 0
             healthy_id = request_id(headers)
+            approval_id = next(value for name, value in headers.items() if name.lower() == "x-safeyolo-approval-id")
             assert all(healthy_id in ids for ids in pending_ids())
             assert any(row.get("event") == "gateway.risky_route"
                        and row.get("request_id") == healthy_id
@@ -271,7 +272,7 @@ def test_running_gateway_prompt_requires_audit_append(proxy_backend, tmp_path):
                     proxy, "alice", (port, RISK_PATH), gateway_token, method="POST")
                 failed_id = request_id(headers)
                 assert failed_id != healthy_id
-                assert status == (503 if proxy_backend == "python" else 502), body
+                assert status == 502, body
                 assert b"wait_for_approval" not in body
                 assert origin.accepts == 0
                 assert audit.read_bytes() == before
@@ -293,7 +294,11 @@ def test_running_gateway_prompt_requires_audit_append(proxy_backend, tmp_path):
             recovered_id = request_id(headers)
             assert status == 428 and recovered_id not in (healthy_id, failed_id)
             assert origin.accepts == 1
-            assert all(recovered_id in ids for ids in pending_ids())
+            # Canonical requests coalesce equivalent authority; the audit still
+            # records the recovered traffic request separately.
+            canonical, watched = pending_ids()
+            assert healthy_id in canonical and recovered_id in watched
+            assert next(value for name, value in headers.items() if name.lower() == "x-safeyolo-approval-id") == approval_id
             assert any(row.get("event") == "gateway.risky_route"
                        and row.get("request_id") == recovered_id
                        and row.get("decision") == "require_approval"
@@ -309,7 +314,7 @@ def test_running_gateway_risk_approval_and_once_grant(proxy_backend, tmp_path):
         port = origin.server_address[1]
         policy = _gateway_policy(port)
         with policy_proxy(
-            proxy_backend, directory, policy, agent_api=True,
+            proxy_backend, directory, policy, agent_api=True, native_product=True,
             agent_api_token=AGENT_TOKEN.encode(), admin_port=0,
             admin_api_token_file=operator_token_file,
             gateway_services_dir=services,
@@ -337,7 +342,7 @@ def test_running_gateway_risk_approval_and_once_grant(proxy_backend, tmp_path):
             assert len(origin.deliveries) == before
             event = _wait_for(
                 lambda: next((row for row in api.pending_approvals()
-                              if row.get("approval", {}).get("approval_type") == "gateway_route"
+                              if row.get("approval", {}).get("approval_type") == "gateway_risky_route"
                               and row.get("agent") == "alice"), None),
                 "owned risky-route approval request",
             )
@@ -392,29 +397,25 @@ def test_running_gateway_risk_approval_and_once_grant(proxy_backend, tmp_path):
             assert status == 428 and len(origin.deliveries) == before + 1
             audit = _wait_for(
                 lambda: read_events(directory / "audit.jsonl")
-                if any(row.get("event") == "admin.gateway_grant"
+                if any(row.get("event") == "admin.approval_decided"
                        for row in read_events(directory / "audit.jsonl")) else None,
-                "operator grant audit",
+                "canonical operator decision audit",
             )
             prompts = [row for row in audit if row.get("event") == "gateway.risky_route"]
             assert any(
                 row.get("request_id") == event["request_id"]
                 and row.get("agent") == "alice"
                 and row.get("decision") == "require_approval"
-                and (proxy_backend == "python" or row.get("details", {}).get(
-                    "attribution", {}).get("evidence_owner") == "alice")
+                and row.get("details", {}).get(
+                    "attribution", {}).get("evidence_owner") == "alice"
                 for row in prompts
             )
-            assert any(row.get("event") == "admin.gateway_grant"
-                       and row.get("details", {}).get("grant_id") == grant_id for row in audit)
-            if proxy_backend == "rust":
-                assert any(row.get("event") == "gateway.evaluated"
-                           and row.get("details", {}).get("outcome") == "grant_consumed"
-                           and row.get("details", {}).get("grant_id") == grant_id
-                           for row in read_events(proxy.audit_log))
-            else:
-                assert any(row.get("event") == "gateway.grant_consumed"
-                           and row.get("details", {}).get("grant_id") == grant_id for row in audit)
+            assert any(row.get("event") == "admin.approval_decided"
+                       and row.get("details", {}).get("result", {}).get("grant_id") == grant_id for row in audit)
+            assert any(row.get("event") == "gateway.evaluated"
+                       and row.get("details", {}).get("outcome") == "grant_consumed"
+                       and row.get("details", {}).get("grant_id") == grant_id
+                       for row in read_events(proxy.audit_log))
             (directory / "gateway-approval-observations.json").write_text(json.dumps({
                 "backend": proxy_backend, "logical_host": "127.0.0.1",
                 "dial_host": origin.server_address[0], "dial_port": port,
@@ -437,7 +438,7 @@ def test_running_gateway_session_grant_revocation(proxy_backend, tmp_path):
         origin.release_post.set()
         port = origin.server_address[1]
         with policy_proxy(
-            proxy_backend, directory, _gateway_policy(port), agent_api=True,
+            proxy_backend, directory, _gateway_policy(port), agent_api=True, native_product=True,
             agent_api_token=AGENT_TOKEN.encode(), admin_port=0,
             admin_api_token_file=operator_token_file,
             gateway_services_dir=services,
@@ -515,13 +516,12 @@ def test_running_gateway_session_grant_revocation(proxy_backend, tmp_path):
                                 and row.get("request_id") == denied_request_id)
             assert denied_audit["agent"] == "alice"
             assert denied_audit["decision"] == "require_approval"
-            if proxy_backend == "rust":
-                attribution = denied_audit["details"]["attribution"]
-                assert attribution["evidence_owner"] == "alice"
-                assert attribution["trusted_transport_identity"] == "alice"
-                assert attribution["attribution_provenance"] == {
-                    "transport_source": "uds", "uds_agent": "alice",
-                }
+            attribution = denied_audit["details"]["attribution"]
+            assert attribution["evidence_owner"] == "alice"
+            assert attribution["trusted_transport_identity"] == "alice"
+            assert attribution["attribution_provenance"] == {
+                "transport_source": "uds", "uds_agent": "alice",
+            }
             (directory / "gateway-session-observations.json").write_text(json.dumps({
                 "backend": proxy_backend,
                 "logical_host": "127.0.0.1", "dial_host": origin.server_address[0],

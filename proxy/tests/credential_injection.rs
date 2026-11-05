@@ -15,6 +15,7 @@ fn now() -> OffsetDateTime {
 }
 fn selection(kind: Option<&str>) -> CredentialSelection {
     CredentialSelection {
+        missing_route_allow: false,
         authorization_binding: None,
         binding_id: None,
         agent: "alice".into(),
