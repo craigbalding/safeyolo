@@ -84,6 +84,7 @@ docs = [
     "cli/src/safeyolo/agent_context/skills/readme-usability/references/safeyolo.md",
     "cli/src/safeyolo/agent_context/skills/safeyolo/references/coord.md",
     "cli/src/safeyolo/agent_context/skills/safeyolo/references/desktop.md",
+    "cli/src/safeyolo/agent_context/skills/safeyolo/references/non-http-clients.md",
     "proxy/src/bin/safeyolo.rs",
     "proxy/src/demo.rs",
     "proxy/src/lab.rs",
