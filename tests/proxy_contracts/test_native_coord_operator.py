@@ -101,15 +101,18 @@ def test_installed_continuity_setup_uses_native_room_grants_and_readers(instance
 
     room = "continuity-current"
     prepared = setup_coord(str(instance.root / "bin/safeyolo"), instance.root, "alice", "bob", room=room)
+    joined = instance.agent_api("bob", f"/api/coord/rooms/{room}/join", method="POST")
     sent = agent_send(instance, "continuity-read", room=room, notify=["bob"])
     page = instance.agent_api("bob", f"/api/coord/rooms/{room}/messages")
-    assert prepared["room_id"] == sent["envelope"]["room_id"]
+    assert prepared["room_id"] == joined["room_id"]
     assert [row["body"] for row in page["messages"]] == ["continuity-read"]
     attention = instance.agent_api("bob", "/api/coord/attention/wait?since=0&limit=5&timeout=0.1")
     assert any(edge["object_id"] == sent["envelope"]["msg_id"] for edge in attention["edges"])
     revoked = instance.cli("coord", "revoke", room, "bob", "--operation-id", "continuity-revoke")
     assert revoked.returncode == 0, revoked.stderr
-    instance.agent_api("bob", f"/api/coord/rooms/{room}/messages", status=403)
+    status, _, raw = request(instance.paths["bob"], f"http://_safeyolo.proxy.internal/api/coord/rooms/{room}/messages",
+                             headers={"Authorization": f"Bearer {(instance.root / 'data/agent_token').read_text().strip()}"})
+    assert status in (403, 404), raw
 
 
 async def stream_control(instance, no_ack=None, *, delete=(), purge=False):

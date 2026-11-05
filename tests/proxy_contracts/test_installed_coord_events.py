@@ -107,6 +107,18 @@ def test_installed_collaboration_matches_event_resolves_and_revokes(instance, mo
         assert result["operator_event"] == "coord.access_requested"
         assert result["revoked_read_status"] in (403, 404)
         assert result["peer_message_id"]
+        records = [json.loads(line) for line in (instance.root / "logs/audit.jsonl").read_text().splitlines()]
+        recorded = next(row for row in records if row.get("event") == "coord.access_requested"
+                        and row.get("approval", {}).get("key") == result["approval_id"])
+        selected = instance.root / "approval-event.jsonl"
+        selected.write_text(json.dumps(recorded) + "\n")
+        shown = instance.cli("logs", "--file", str(selected), "--json")
+        assert shown.returncode == 0, shown.stderr
+        assert json.loads(shown.stdout)["inputs"][0]["events"][0]["record"] == recorded
+        recorded["approval"]["approval_type"] = "invented"
+        selected.write_text(json.dumps(recorded) + "\n")
+        refused = instance.cli("logs", "--file", str(selected), "--json")
+        assert refused.returncode != 0 and "audit record is invalid" in refused.stderr
     finally:
         backend.terminate()
         backend.wait(timeout=5)
