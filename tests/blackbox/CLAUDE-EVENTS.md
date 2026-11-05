@@ -26,16 +26,74 @@ binding. The principal needs repository/Actions read access and Actions write
 access for the existing production dispatch. Do not put that credential in
 source, JSON configuration, GitHub Actions or returned reports.
 
-On the owned Ubuntu host, create a private shell binding at an operator-selected
-absolute path. The binding sets `CLAUDE_PROVISION` to the existing helper and
-`CLAUDE_CREDENTIAL` to its existing credential name. It supplies the existing
-per-attempt private `SAFEYOLO_CLAUDE_PROVISION_DIR` binding and host-process
-GitHub/registry access. The binding must prepare fresh applicable provisioning
-input for each invocation; dated input is not current authentication proof.
-It can use the exported `CLAUDE_EVENT_RUN` and `CLAUDE_EVENT_OUTPUT` operands
-to bind that private input to the new attempt.
-Keep secrets and provisioning output private. The entry sources that file in
-the SSH child, then runs the unchanged caller with its own new output directory.
+On the owned Ubuntu host, install the reviewed
+[access producer](../../scripts/prepare_claude_access.py) and
+[shell binding](../../scripts/claude_access_binding.sh) together in a separate
+clean source checkout readable by UID 1000. Keep the accepted controller at
+`/home/agent/375-build-storage-d62/claude356-caller-9c67/source` unchanged.
+The producer uses Python 3.12 or 3.13 and the existing `cryptography` dependency
+used by the provisioner. No product build or model call is needed for setup.
+
+Sylab supplies one private access-only JSON file on that Ubuntu host. The file
+contains exactly `value` (the selected provider access token) and `expires_at`
+(its actual timezone-aware ISO 8601 expiry). Select both from the current
+credential on its original operator host through the approved private delivery
+route. Do not supply a full client login, refresh token, client secret or vault.
+Renewal material stays in the original host's encrypted store. Protect the
+delivered file at `0600` and its parent at `0700`, owned by UID 1000. Replace
+the complete file atomically when Sylab supplies a new access lease.
+
+The existing Agent API `GET /gateway/services` binding supplies an agent-scoped
+`sgw_` token for its own proxy. It does not export the provider credential or
+this helper's sealed input. That token cannot replace the provider access
+value imported into the separate installed instance. See the
+[gateway credential contract](../../docs/credentials.md#store-a-local-credential).
+
+Create a private shell binding at an operator-selected absolute path on Ubuntu,
+owned by UID 1000, with mode `0600` and a `0700` parent. Before using the following
+contents, replace each uppercase placeholder: `ACCESS_JSON` is the absolute
+private input path, `PYTHON` is the provisioner's existing Python executable
+with `cryptography`, `PROVISION_HELPER` is the accepted executable helper,
+`CREDENTIAL_NAME` is its selected credential name, and `BINDING_SOURCE` is the
+absolute path of the new source checkout. Include the existing private
+host-process GitHub/registry binding in this file as required by the caller.
+Keep credentials out of these placeholders and disable shell tracing before
+the private binding reads any secret.
+
+```sh
+set +x
+CLAUDE_ACCESS_SOURCE='ACCESS_JSON'
+CLAUDE_ACCESS_PYTHON='PYTHON'
+CLAUDE_PROVISION='PROVISION_HELPER'
+CLAUDE_CREDENTIAL='CREDENTIAL_NAME'
+source 'BINDING_SOURCE/scripts/claude_access_binding.sh'
+```
+
+For each admitted event, the unchanged SSH payload exports `CLAUDE_EVENT_RUN`
+and `CLAUDE_EVENT_OUTPUT`, then sources the private binding under `set -euo
+pipefail`. The binding rereads the access file and creates a new private
+`${CLAUDE_EVENT_OUTPUT}.provision` directory beside the caller output. Keep
+their shared parent at `0700`. Fresh RSA/Fernet transport keys seal the existing
+helper's exact `value`, `expires_at`, `source_expires_at` payload. Both expiry
+fields retain the source's actual expiry. The binding exports
+`SAFEYOLO_CLAUDE_PROVISION_DIR`, `CLAUDE_PROVISION` and `CLAUDE_CREDENTIAL` for
+the unchanged caller. The helper imports through stdin only after the caller's
+credential-free readiness succeeds. It removes both transport files on success.
+
+A missing, public, malformed or expired source fails before the caller starts.
+The helper requires more than ten minutes of remaining access; the producer
+applies the same condition. The helper checks expiry again at import, so access
+that expires during selection/readiness also fails closed. Fresh transport
+files do not renew the access lease or extend its expiry. Scheduled use can
+continue only while Sylab supplies applicable access input. This setup does
+not establish indefinite automatic readiness or refresh copied credentials.
+
+An existing provisioning directory refuses preparation, including after a
+failed or interrupted attempt. Do not remove it to retry. Inspect the original
+execution and `provision-result.json` first. An unfinished receipt with
+`credential_add_exit: null` can represent an uncertain import. Keep the helper's
+existing refusal and recovery behavior. Do not export the source file,
+transport files, provisioner output or private logs.
 
 Create `/var/lib/rundeck/harness/claude-events/events.json` in the `rundeck` account. Replace
 `PRIVATE_BINDING_PATH` with that remote file and `ACTIVATION_UTC` with the actual
