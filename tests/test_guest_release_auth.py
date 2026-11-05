@@ -5,7 +5,9 @@ copies headers, processes redirect statuses and raises HTTP errors normally.
 """
 import io
 import json
+import os
 import shutil
+import subprocess
 import sys
 import traceback
 from email.message import Message
@@ -206,6 +208,20 @@ def test_release_api_failure_is_visible_without_fallback_or_token(tmp_path, monk
     assert len(requests) == 1
     captured = capsys.readouterr()
     assert TOKEN not in "".join(traceback.format_exception(error.value)) + captured.out + captured.err
+
+
+@pytest.mark.parametrize("variable", ["GH_TOKEN", "GITHUB_TOKEN"])
+@pytest.mark.parametrize("line_break", ["\n", "\r", "\r\n"])
+def test_cli_rejects_token_line_breaks_without_disclosing_credentials(tmp_path, variable, line_break):
+    output = tmp_path / "inputs.json"
+    environment = {**os.environ, "GH_TOKEN": "", "GITHUB_TOKEN": "unused-fallback-token"}
+    environment[variable] = TOKEN + line_break
+    result = subprocess.run([sys.executable, str(ROOT / "guest/resolve_inputs.py"), "resolve", "--tools", "gh",
+                             "--output", str(output)], env=environment, capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0
+    assert TOKEN not in result.stdout + result.stderr
+    assert "GitHub API token must not contain line breaks" in result.stderr
+    assert not output.exists()
 
 
 def test_resolve_workflow_supplies_its_scoped_token_to_the_resolver_step():

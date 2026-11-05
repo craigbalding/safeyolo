@@ -52,6 +52,8 @@ def fetch(url: str, *, github_api: bool = False) -> bytes:
     if github_api:
         token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
         if token:
+            if "\r" in token or "\n" in token:
+                raise ValueError("GitHub API token must not contain line breaks")
             # urllib omits unredirected headers from every redirected request.
             request.add_unredirected_header("Authorization", f"Bearer {token}")
     with urllib.request.build_opener(HTTPSRedirectHandler()).open(request, timeout=120) as response:
