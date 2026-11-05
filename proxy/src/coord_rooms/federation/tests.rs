@@ -210,14 +210,20 @@ async fn qualified_identity_peer_epochs_and_membership_replay_preserve_authority
         .0,
         403
     );
-    assert_eq!(
-        work::read(
-            &mut conn,
-            "shared",
-            Actor::Remote(&renewed),
-            created["work"]["work_id"].as_str().unwrap()
-        )
-        .unwrap(),
-        created["work"]
-    );
+    let current = work::read(
+        &mut conn,
+        "shared",
+        Actor::Remote(&renewed),
+        created["work"]["work_id"].as_str().unwrap(),
+    )
+    .unwrap();
+    let mut expected = created["work"].clone();
+    expected["acceptance_status"] = json!({
+        "state": "not_selected",
+        "target_generation": 0,
+        "reason": "no acceptance requirements selected; execution and attestations do not imply acceptance",
+    });
+    assert_eq!(current, expected);
+    assert_eq!(current["acceptance_status"]["state"], "not_selected");
+    assert_eq!(current["acceptance_status"]["target_generation"], 0);
 }

@@ -4367,42 +4367,28 @@ mod tests {
         }
     }
 
+    fn current_coord_db(directory: &tempfile::TempDir) -> PathBuf {
+        std::fs::create_dir(directory.path().join("data")).unwrap();
+        std::fs::write(directory.path().join("data/instance_id"), "instance").unwrap();
+        std::fs::write(directory.path().join("config.toml"), "admin_port=0\n").unwrap();
+        crate::coord_rooms::bootstrap(directory.path()).unwrap();
+        directory.path().join("data/coord/v0.db")
+    }
+
     fn coord_client_with_receive_access(directory: &tempfile::TempDir) -> CoordClient {
         let policy_file = directory.path().join("policy.toml");
         std::fs::write(&policy_file, "[agents.alice]\nagent_id = 'ag-alice'\n").unwrap();
-        let db = directory.path().join("v0.db");
-        let conn = Connection::open(&db).unwrap();
+        let db = current_coord_db(directory);
+        let conn = open_db(&db, true).unwrap();
         conn.execute_batch(
-            "PRAGMA user_version=7;
-             CREATE TABLE rooms(room_id TEXT PRIMARY KEY, name TEXT NOT NULL);
-             CREATE TABLE memberships(
-                 room_id TEXT NOT NULL,
-                 principal_kind TEXT NOT NULL,
-                 principal_id TEXT NOT NULL,
-                 permissions TEXT NOT NULL,
-                 granted_at INTEGER NOT NULL,
-                 revoked_at INTEGER,
-                 PRIMARY KEY(room_id, principal_kind, principal_id, granted_at)
-             );
-             CREATE TABLE instance(id TEXT PRIMARY KEY);
-             CREATE TABLE coord_briefs(
-                 room_id TEXT PRIMARY KEY,
-                 revision INTEGER NOT NULL,
-                 markdown TEXT NOT NULL,
-                 content_hash TEXT NOT NULL,
-                 updated_at INTEGER NOT NULL
-             );
-             INSERT INTO rooms(room_id, name) VALUES ('rm-shared', 'shared');
-             INSERT INTO instance(id) VALUES ('instance');
+            "INSERT INTO rooms(room_id, name, created_at) VALUES ('rm-shared', 'shared', 0);
              INSERT INTO memberships
                  (room_id, principal_kind, principal_id, permissions, granted_at)
                  VALUES ('rm-shared', 'agent', 'ag-alice', 'receive', 7);",
         )
         .unwrap();
-        conn.execute_batch(include_str!("../coord_membership_grants.sql"))
-            .unwrap();
         CoordClient::with_owner(
-            Arc::new(CoordOwner::new(Some(directory.path().to_owned()))),
+            Arc::new(CoordOwner::new(Some(directory.path().join("data/coord")))),
             Some(policy_file),
         )
     }
@@ -4645,24 +4631,17 @@ mod tests {
 
     #[test]
     fn brief_attention_object_reads_created_at_as_public_updated_at() {
-        let directory = tempfile::tempdir().unwrap();
-        let db = directory.path().join("v0.db");
-        let conn = Connection::open(&db).unwrap();
+        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let db = current_coord_db(&directory);
+        let conn = open_db(&db, true).unwrap();
         conn.execute_batch(
-            "PRAGMA user_version=7;
-             CREATE TABLE coord_brief_revisions(
-                 room_id TEXT NOT NULL,
-                 revision INTEGER NOT NULL,
-                 markdown TEXT NOT NULL,
-                 content_hash TEXT NOT NULL,
-                 created_at INTEGER NOT NULL,
-                 PRIMARY KEY(room_id, revision)
-             );
+            "INSERT INTO rooms(room_id, name, created_at) VALUES ('rm-shared', 'shared', 0);
              INSERT INTO coord_brief_revisions
-                 (room_id, revision, markdown, content_hash, created_at)
+                 (room_id, revision, markdown, content_hash, actor_kind, actor_id,
+                  operation_id, created_at)
                  VALUES ('rm-shared', 3, '# brief',
                          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-                         1234);",
+                         'operator', 'operator', 'brief-revision', 1234);",
         )
         .unwrap();
         drop(conn);
@@ -4787,8 +4766,10 @@ mod tests {
 
     #[tokio::test]
     async fn room_wait_route_normalizes_nan_timeout_before_duration_conversion() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let client = coord_client_with_receive_access(&directory);
+        let access = client.access("shared", "ag-alice").await.unwrap();
+        assert_eq!(access.permissions, vec!["receive"]);
         let (_, cancellation) = tokio::sync::watch::channel(false);
         let outcome = respond_payload(
             test_coord_request(
@@ -4850,31 +4831,11 @@ mod tests {
 
     #[test]
     fn access_snapshot_keeps_only_newest_active_generation() {
-        let directory = tempfile::tempdir().unwrap();
-        let db = directory.path().join("v0.db");
-        let conn = Connection::open(&db).unwrap();
+        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let db = current_coord_db(&directory);
+        let conn = open_db(&db, true).unwrap();
         conn.execute_batch(
-            "PRAGMA user_version=7;
-             CREATE TABLE rooms(room_id TEXT PRIMARY KEY, name TEXT NOT NULL);
-             CREATE TABLE memberships(
-                 room_id TEXT NOT NULL,
-                 principal_kind TEXT NOT NULL,
-                 principal_id TEXT NOT NULL,
-                 permissions TEXT NOT NULL,
-                 granted_at INTEGER NOT NULL,
-                 revoked_at INTEGER,
-                 PRIMARY KEY(room_id, principal_kind, principal_id, granted_at)
-             );
-             CREATE TABLE instance(id TEXT PRIMARY KEY);
-             CREATE TABLE coord_briefs(
-                 room_id TEXT PRIMARY KEY,
-                 revision INTEGER NOT NULL,
-                 markdown TEXT NOT NULL,
-                 content_hash TEXT NOT NULL,
-                 updated_at INTEGER NOT NULL
-             );
-             INSERT INTO rooms(room_id, name) VALUES ('rm-shared', 'shared');
-             INSERT INTO instance(id) VALUES ('instance');
+            "INSERT INTO rooms(room_id, name, created_at) VALUES ('rm-shared', 'shared', 0);
              INSERT INTO memberships
                  (room_id, principal_kind, principal_id, permissions, granted_at)
                  VALUES ('rm-shared', 'agent', 'ag-alice', 'receive', 7);
@@ -4883,8 +4844,6 @@ mod tests {
                  VALUES ('rm-shared', 'agent', 'ag-alice', 'send', 8);",
         )
         .unwrap();
-        conn.execute_batch(include_str!("../coord_membership_grants.sql"))
-            .unwrap();
         drop(conn);
 
         let access = read_access(&db, "shared", "ag-alice").unwrap();
@@ -4895,16 +4854,11 @@ mod tests {
 
     #[test]
     fn projection_advances_across_manifestless_messages() {
-        let directory = tempfile::tempdir().unwrap();
-        let db = directory.path().join("v0.db");
-        let conn = Connection::open(&db).unwrap();
+        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let db = current_coord_db(&directory);
+        let conn = open_db(&db, true).unwrap();
         conn.execute_batch(
-            "PRAGMA user_version=7;
-             CREATE TABLE coord_message_attention_projection(
-                 room_id TEXT PRIMARY KEY,
-                 last_sequence INTEGER NOT NULL,
-                 updated_at INTEGER NOT NULL
-             );
+            "INSERT INTO rooms(room_id, name, created_at) VALUES ('rm-shared', 'shared', 0);
              INSERT INTO coord_message_attention_projection
                  (room_id, last_sequence, updated_at) VALUES ('rm-shared', 0, 0);",
         )
@@ -4937,13 +4891,11 @@ mod tests {
 
     #[test]
     fn retention_gap_stages_a_current_audit_record_with_the_recorded_loss() {
-        let directory = tempfile::tempdir().unwrap();
-        let db = directory.path().join("v0.db");
-        let conn = Connection::open(&db).unwrap();
-        conn.execute_batch(include_str!("../coord_schema.sql"))
-            .unwrap();
+        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let db = current_coord_db(&directory);
+        let conn = open_db(&db, true).unwrap();
         conn.execute_batch(
-            "PRAGMA user_version=7; INSERT INTO rooms VALUES('rm-owned','owned',0);
+            "INSERT INTO rooms VALUES('rm-owned','owned',0);
             INSERT INTO coord_message_attention_projection VALUES('rm-owned',0,0);",
         )
         .unwrap();

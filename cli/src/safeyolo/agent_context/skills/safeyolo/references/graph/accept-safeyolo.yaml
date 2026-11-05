@@ -499,7 +499,7 @@ nodes:
         - path: proxy/tests/native_coord/federation.rs
           sha256: b4f44c1465fd834f467ca5fb4f703efb3c372a57d327644deb8a8e2545e81578
         - path: proxy/src/agent_api/coord.rs
-          sha256: 61948dd294e57b0ab6a6a6ce2600f54e92abdece0acdae8d6dfdd36cb9f5ee37
+          sha256: 792f0f3ed78860ae668b2f68a7bfb304a6a53f54c4bebc0e5afd9c0bf03e0d36
         - path: proxy/src/agent_api/coord/federation.rs
           sha256: fe5736a043c1ff65ad41bef62be0e66ae36a2eb9f0a6d07addf867998b72c5bf
         - path: proxy/src/agent_api/coord/federation/tests.rs
@@ -507,7 +507,7 @@ nodes:
         - path: proxy/src/coord_rooms/federation.rs
           sha256: ee3732ccad8e2df401630722af5ce80ae248b2db6e74640af06d5b7f8b0f34d4
         - path: proxy/src/coord_rooms/federation/tests.rs
-          sha256: 05c79dba3a6ce58ce0bfac9443da576c3d15db4482aca378defbb30accb53e42
+          sha256: 28b822cdd49a65e275a4e654882a18eea818830667c695de5a4d16083af257da
         - path: proxy/src/coord_federation_schema.sql
           sha256: 342a5fb315c9b2013afb291b0223ab2c83312af3f5a8ee2b7dfda6f6b493d12b
         - path: proxy/src/coord_rooms/membership.rs
