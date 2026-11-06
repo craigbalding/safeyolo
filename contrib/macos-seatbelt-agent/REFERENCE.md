@@ -51,6 +51,8 @@ LaunchServices, or control of other VM/container runtimes.
   provide the alternative Python client setup described below.
 - [probe.py](probe.py) exercises representative workloads and denied operations
   against operator-created disposable fixtures.
+- [test-boundary.py](test-boundary.py) and [boundary-helper.m](boundary-helper.m)
+  exercise execution services with unique, owned jobs and signed test bundles.
 - [VALIDATION.md](VALIDATION.md) records the tested versions, results, source
   hashes, and remaining limitations.
 
@@ -72,6 +74,93 @@ and [sshd configuration reference](https://github.com/openssh/openssh-portable/b
 The signed shell launcher uses the hardened runtime without library-injection entitlements.
 Keep its parent directories, profile, session script, and authorized keys outside
 the writable home. Do not add user-writable dynamic libraries to the shell-launcher binary.
+
+## Delegated and deferred execution
+
+**Delegated execution** asks a host service to run code outside the caller's
+process tree. **Deferred execution** writes a file an unsandboxed consumer
+executes later. Direct children inherit Seatbelt. An existing host watcher
+does not acquire the caller's profile when the caller changes a file.
+
+```text
+confined agent → direct children → inherited Seatbelt
+       |
+       +→ writes files → later host consumer → protect this handoff
+```
+
+The baseline explicitly denies launchd job creation, LaunchServices open requests,
+AppleEvents, and the observed ServiceManagement broker `com.apple.xpc.smd`.
+Other Mach services remain denied by default. Writes under `Library/LaunchAgents`
+and replacement of its `Library` parent are denied. Setup requires real
+directories at those paths, not aliases. Ordinary rc files, project metadata,
+tools and caches remain writable.
+
+Cron and at/batch use `/private/var/at` on the tested release; `/usr/lib/cron` is
+an alias. Its explicit write denial does not depend on atrun being disabled.
+Protecting the spool does not protect code named by an existing job.
+
+On macOS 26.6.2, confined `launchctl kickstart` started an operator-created test
+job outside Seatbelt despite `deny job-creation`. Changing that job to attach
+a protected profile before executing its writable helper restored the tested
+file boundary. See the [execution-boundary results](VALIDATION.md#execution-boundary-hardening-2026-10-20).
+A deny on the `launchctl` filename would leave its service request available
+to other callers.
+
+## External-consumer review
+
+Before enabling the account, use the trusted Mac administrator terminal. For
+each host consumer of agent-writable files, apply one of these dispositions:
+
+1. Run the consumer through the same Seatbelt entry before it reads controlled code.
+2. Protect all executable and configuration inputs it consumes from agent writes.
+3. Explicitly neutralize executable configuration before use.
+
+A protected executable or plist is insufficient when its scripts, interpreter,
+working directory, environment, hooks or project configuration remain writable.
+Review consumers under other users too, when they read this home or workspace.
+Unknown consumers remain unverified.
+
+From this contribution directory, `sudo ./configure-ssh --check` reports known
+account state without activating SSH changes. It rejects an existing crontab,
+reports account-owned at/batch jobs and atrun's observed state, lists account
+processes, and identifies standard launchd plists naming the account or home.
+It names user/GUI domains to inspect for jobs without plists on disk. Missing
+or unreadable domains are unverified. These are review inputs, not a complete audit.
+
+For the default account, first get its UID with `id -u sy-agent`. Replace `502`
+in these examples with that result. Run from the same administrator terminal:
+
+```sh
+sudo crontab -l -u sy-agent
+sudo atq
+sudo launchctl print user/502
+sudo launchctl print gui/502
+sudo launchctl print system/com.apple.atrun
+sudo launchctl print-disabled system
+sudo sfltool dumpbtm
+```
+
+Check login/background items, local build/watch daemons, package helpers and
+operator-created schedulers. Check host IDE/Git integrations, interpreter
+discovery and project task/hook runners. Check console, GUI, automatic login
+and remote IDE entries: writable rc files become host code if a shell starts
+before confinement. Keep the account password outside the agent.
+
+Pillar's [sandbox escape research](https://www.pillar.security/blog/the-week-of-sandbox-escapes)
+describes writable environments, Git metadata and task/hook inputs consumed
+outside agent sandboxes. [Beltdown](https://www.accomplish.ai/blog/beltdown-escaping-the-claude-code-sandbox/)
+describes unsandboxed harness Git commands honoring writable configuration.
+A list of names such as `.git`, `.venv` or `.vscode` cannot cover this behavior.
+
+Stop or change only an identified unsafe job through its owner. Stop pre-existing
+unconfined shells and tmux servers; changing the login shell does not confine
+them. Inspect the account's crontab before explicitly removing it or choosing
+another dedicated account. The helper does not remove jobs or operator data.
+
+After applying the required dispositions, pass `--reviewed-consumers` to
+`configure-ssh`. This confirms your review for that setup invocation. It does
+not bypass crontab or path checks, change host consumers, or audit arbitrary
+code. Recheck affected consumers when adding host automation or another entry.
 
 ## SSH identities
 
@@ -135,8 +224,9 @@ before changing admission.
 Before converting an existing account, stop its unconfined shells and tmux
 servers. Changing the login shell does not confine already-running processes.
 Keep the account password outside the agent and review any personal credentials
-or other login paths associated with the account. The helper does not perform
-that review or terminate sessions.
+or other login paths associated with the account. The helper supplies the
+[external-consumer checks](#external-consumer-review); the operator completes
+the review. The helper does not terminate sessions or audit personal credentials.
 
 ## Remote Login troubleshooting
 
@@ -190,6 +280,24 @@ It does not create an account, remove privileges, enable Remote Login, change
 its allowed-user group, terminate processes, or audit personal credentials and
 other login paths.
 
+The checker also rejects an existing account crontab and reports account-owned
+at/batch jobs. It creates `Library` as the account if absent, including during
+`--check`, then checks `Library` and any `LaunchAgents` directory without following
+symlinks. It inspects existing files throughout `LaunchAgents` before activation.
+Hardlinks share file contents and permissions across all their names. If the
+account can change a multiply-linked file, including its attributes or
+permissions, setup refuses and names that file. Resolve the extra links or
+protect the shared file from account changes, then rerun the check. Read-only
+mode alone is insufficient when the account owns the file and can restore write
+access. File symlinks may point inside the protected directory. An outside
+target and all its parents must resist account changes under the existing kernel
+permission checks. Unresolved or uninspectable inputs refuse activation.
+
+Creating `Library` is the only home-directory preparation in preflight. No
+existing home entry is removed or replaced. Complete the
+[external-consumer review](#external-consumer-review) before confirming it with
+`--reviewed-consumers`.
+
 The helper stages preflight files and compiles [check-account.c](check-account.c)
 using Command Line Tools under root's private home, before trusting the selected
 configuration directory. It moves the backup beside that configuration only
@@ -221,6 +329,7 @@ boundary. Home-installed tools execute only after normal confinement attaches.
 After installing the launcher files, the guide runs [configure-ssh](configure-ssh).
 The helper owns the login-shell and SSH-configuration transition together.
 `--check` performs preflight and candidate validation without activating either.
+It can create the account's missing `Library` directory as described above.
 Launcher files and authorized keys are installed separately in README step 2.
 
 | Stage | Behaviour |
@@ -337,6 +446,11 @@ Claude/Codex/Pi guest, it discovers the matching Linux native Coord executable
 at `$HOME/.safeyolo/safeyolo-coord`, staged by the existing native host setup.
 Both dispatch `ssh-proxy HOST PORT` to the same native CONNECT implementation.
 Set `SAFEYOLO_SSH_PROXY_EXECUTABLE` to an explicit executable if needed.
+This takes precedence over `SAFEYOLO_CLI` and automatic discovery.
+Run `configure-client --check` with the same environment to check the selected
+executable's identity and `ssh-proxy` support without reading keys or changing
+client files. Pass the explicit selection through `sudo` when running the root
+account fixture. `sudo` can use a different PATH.
 Do not copy a macOS host binary into a Linux client or a host Admin credential
 into the guest. A missing or incompatible native transport fails preparation;
 there is no Python or direct-network fallback.
@@ -626,6 +740,41 @@ Apple's [security command source](https://github.com/apple-oss-distributions/Sec
 documents creation, unlocking and login-keychain registration.
 
 ## Validation and adaptation
+
+### Execution services
+
+Run `python3 test-boundary.py` from this contribution directory on a disposable
+Mac, outside Seatbelt, as a normal test user with no crontab and a working GUI
+launchd domain. Command Line Tools, Python 3.9 or newer, and tmux must already
+be installed. The test creates unique signed bundles, scoped profiles, launchd
+jobs and harmless markers in a fresh home subdirectory. It briefly registers
+its own modern services for positive controls, then unregisters each one.
+It never approves a LaunchDaemon in System Settings or changes login policy.
+
+The test checks registration from outside the sandbox as well as inside it.
+`requiresApproval` is registration, even when `SMAppService.register` returns
+false. Signing errors or an absent service alone are not proof of confinement.
+The test also shows the unsafe existing-job case, corrects that job to attach
+Seatbelt, and checks the helper's parent and actual outside-file access.
+
+On success, expect a final `status: pass` and `fixture_removed` result. On
+failure, keep the printed fixture and identities. Inspect the exact job with
+`launchctl print DOMAIN/LABEL` before any retry. Remove only the verified owned
+job with `launchctl bootout DOMAIN/LABEL`. For modern services, use that fixture's
+`Boundary.app/Contents/MacOS/probe unregister login`, `agent` or `daemon`, then
+verify its corresponding `status`. Inspect an accepted cron/at entry for the
+unique marker before removing that exact test entry. Do not delete an unknown
+job or the test bundle while it remains registered. The script uses these same
+owned cleanup paths; an uncertain or failed cleanup retains the fixture.
+
+This test exercises a scoped process under the supplied profile. It does not
+convert a real account, establish absence of host consumers, or run VZ.
+`test-configure-ssh.sh` covers account setup and real SSH in a disposable test
+account. It requires administrator control and refuses an existing account,
+test UID or fixed entry directory. Do not run it on the active factory account.
+Physical VZ remains a separate workload under the operator's adapted profile.
+
+### Files, networking and developer tools
 
 **Prepare fixtures from the trusted operator session on a disposable Mac.**
 Use a disposable account, a canary file outside its home, and a live loopback
