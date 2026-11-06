@@ -72,6 +72,14 @@ def test_manual_only_job_cannot_count_as_scheduled(tmp_path: Path) -> None:
         scheduled_lanes_from_workflow(workflow)
 
 
+def test_merge_notification_exclusion_preserves_scheduled_lane(tmp_path: Path) -> None:
+    workflow = _write_workflow(
+        tmp_path / "scheduled-job.yml",
+        job_condition="github.event_name != 'workflow_run'",
+    )
+    assert scheduled_lanes_from_workflow(workflow) == {"systrap": True}
+
+
 def test_conditional_lane_step_cannot_count_as_scheduled(tmp_path: Path) -> None:
     workflow = _write_workflow(
         tmp_path / "manual-step.yml",

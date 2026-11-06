@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS coord_work (
     work_id TEXT PRIMARY KEY,
     room_id TEXT NOT NULL REFERENCES rooms(room_id),
     version INTEGER NOT NULL CHECK(version > 0),
-    state TEXT NOT NULL CHECK(state IN ('open','claimed','done')),
+    state TEXT NOT NULL CHECK(state IN ('open','claimed','done','cancelled')),
     document_json TEXT NOT NULL,
     FOREIGN KEY(work_id, version) REFERENCES coord_work_revisions(work_id, version)
         DEFERRABLE INITIALLY DEFERRED

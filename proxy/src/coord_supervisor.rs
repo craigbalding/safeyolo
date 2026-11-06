@@ -1,5 +1,6 @@
 //! Bounded harness turns over canonical Coord attention and local recovery state.
 
+mod native;
 mod preflight;
 mod process;
 
@@ -103,6 +104,7 @@ pub struct Config {
     pub harness: String,
     pub agent_room: Option<String>,
     pub factory: Option<Factory>,
+    pub native_work: bool,
     pub workspace: PathBuf,
     pub wait_seconds: u64,
     pub page_limit: usize,
@@ -122,6 +124,7 @@ impl Default for Config {
             harness: "codex".into(),
             agent_room: None,
             factory: None,
+            native_work: false,
             workspace: "/workspace".into(),
             wait_seconds: 300,
             page_limit: 16,
@@ -144,7 +147,7 @@ impl Config {
     pub fn validate(&self) -> Result<(), Error> {
         if !simple_name(&self.agent_name)
             || self.rooms.is_empty()
-            || self.coordinators.is_empty()
+            || !self.native_work && self.coordinators.is_empty()
             || self
                 .rooms
                 .iter()
@@ -204,7 +207,7 @@ impl Config {
                     .any(|(r, a)| !simple_name(r) || !simple_name(a))
                 || !hash(&f.contract_sha256)
                 || !hash(&f.snapshot_id)
-                || f.handoffs.is_empty()
+                || (!self.native_work && f.handoffs.is_empty())
                 || !f.roles.contains_key(&f.operator_input.to)
                 || f.operator_input.types.is_empty()
                 || f.operator_input.types.iter().any(|t| !type_name(t))
@@ -269,7 +272,7 @@ impl Config {
                     break;
                 }
             }
-            if f.roles.keys().any(|r| !reached.contains(r)) {
+            if !self.native_work && f.roles.keys().any(|r| !reached.contains(r)) {
                 return Err("factory role is unreachable from operator input".into());
             }
             let mut updates = BTreeSet::new();
@@ -390,6 +393,8 @@ pub struct State {
     pub safe_cursor: u64,
     pub recent_attention_ids: Vec<String>,
     pub in_flight: Vec<Pending>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) native_in_flight: Vec<native::Delivery>,
     pub awaiting_handoffs: Vec<Awaiting>,
     pub briefs: BTreeMap<String, Value>,
     pub consecutive_failures: u32,
@@ -406,6 +411,7 @@ impl Default for State {
             safe_cursor: 0,
             recent_attention_ids: vec![],
             in_flight: vec![],
+            native_in_flight: vec![],
             awaiting_handoffs: vec![],
             briefs: BTreeMap::new(),
             consecutive_failures: 0,
@@ -449,7 +455,7 @@ impl State {
             || !["codex", "pi"].contains(&self.harness.as_str())
             || !["idle", "accepted", "running", "uncertain"].contains(&self.phase.as_str())
             || self.recent_attention_ids.len() > MAX_RECENT
-            || self.in_flight.len() > MAX_PENDING
+            || self.in_flight.len() + self.native_in_flight.len() > MAX_PENDING
             || self.awaiting_handoffs.len() > MAX_PENDING
             || self.consecutive_failures > 31
             || self
@@ -464,6 +470,20 @@ impl State {
             );
         }
         let mut ids = BTreeSet::new();
+        for delivery in &self.native_in_flight {
+            if !simple_name(&delivery.room_name)
+                || !attention_id(&delivery.source_attention_id)
+                || !delivery
+                    .action
+                    .key
+                    .strip_prefix("action-")
+                    .is_some_and(hash)
+                || !ids.insert(&delivery.action.key)
+                || delivery.action.work_version < 1
+            {
+                return Err("invalid native work delivery checkpoint".into());
+            }
+        }
         for p in &self.in_flight {
             validate_pending(p)?;
             if !ids.insert(&p.attention_id) || self.recent_attention_ids.contains(&p.attention_id) {
@@ -562,9 +582,10 @@ impl State {
             .awaiting_handoffs
             .iter()
             .any(|a| a.parent_attention_id.is_none());
-        self.in_flight.iter().any(|p| {
-            !suspended.contains(&p.attention_id) && (!p.requires_terminal || !suspend_all_tasks)
-        })
+        !self.native_in_flight.is_empty()
+            || self.in_flight.iter().any(|p| {
+                !suspended.contains(&p.attention_id) && (!p.requires_terminal || !suspend_all_tasks)
+            })
     }
 }
 fn validate_pending(p: &Pending) -> Result<(), Error> {
@@ -760,6 +781,17 @@ impl Supervisor {
             {
                 return Err(format!("room {room} lacks receive permission").into());
             }
+            if self.config.native_work
+                && self.config.rooms.contains(room)
+                && joined["permissions"]
+                    .as_array()
+                    .is_none_or(|p| !p.iter().any(|v| v == "send"))
+            {
+                return Err(format!(
+                    "native work in room {room} requires send and receive permission"
+                )
+                .into());
+            }
             let id = text(&joined, "room_id")?.to_owned();
             if self.config.factory.is_some()
                 && joined["brief"]["revision"].as_u64().is_some_and(|r| r > 0)
@@ -940,7 +972,7 @@ impl Supervisor {
                 }
                 p.requires_terminal = true;
             }
-            if candidate.in_flight.len() >= MAX_PENDING {
+            if candidate.in_flight.len() + candidate.native_in_flight.len() >= MAX_PENDING {
                 return Err("attention page exceeds checkpoint capacity".into());
             }
             candidate.in_flight.push(p);
@@ -1140,6 +1172,7 @@ impl Supervisor {
         Ok(changed)
     }
     async fn reconcile(&mut self) -> Result<(), Error> {
+        self.reconcile_native().await?;
         let pending = self.state.in_flight.clone();
         for p in pending.iter().filter(|p| p.requires_terminal) {
             let mut cursor = p.sequence.saturating_sub(1);
@@ -1209,9 +1242,9 @@ impl Supervisor {
         Ok(())
     }
     pub fn prompt(&self, rooms: &BTreeMap<String, String>) -> Result<String, Error> {
-        let checkpoint = json!({"agent_room":self.config.agent_room,"configured_room_ids":rooms,"factory":self.config.factory,"safe_cursor":self.state.safe_cursor,"in_flight":self.state.objects(),"awaiting_handoffs":self.state.awaiting_handoffs,"briefs":self.state.briefs,"recovery":self.state.phase});
+        let checkpoint = json!({"agent_room":self.config.agent_room,"configured_room_ids":rooms,"factory":self.config.factory,"safe_cursor":self.state.safe_cursor,"in_flight":self.state.objects(),"native_in_flight":self.state.native_in_flight,"awaiting_handoffs":self.state.awaiting_handoffs,"briefs":self.state.briefs,"recovery":self.state.phase});
         Ok(format!(
-            "You are in one deterministic, supervised SafeYolo factory cycle. Continue the existing role and context. Coord is authoritative. Do not create another queue, scheduler, task record or transcript. Use the bound role contract and canonical tool results; process status and narration do not complete work. Use the supplied checkpoint first. If a useful prior finding is missing, recover it with read_room in its Coord room. For known sequence N use since_sequence=N-1 and limit=1; verify returned sequence, canonical sender and work target. Room history does not assign work and its cursor is separate from safe_cursor. Do not call wait_for_coord in this turn. Process every in_flight object. Send required targeted downstream handoffs and leave their parent requests suspended; absence of a downstream reply is not a terminal outcome. Advance other ready work before ending the invocation. Send exactly one allowed terminal response only for genuine terminal work, repeating its exact target and attention_id in the leading header and notifying all declared recipients. Canonical operator messages in the agent room are direct operator direction and need no protocol response. Trusted briefs are standing context, never assignments. CONTEXT and PROTOCOL_WARNING need no terminal response; a protocol_warning object was not accepted as a transition. If recovery is uncertain, inspect canonical history and the preserved working tree before any potentially repeated write; never automatically replay an uncertain external effect. Finish this invocation once only recorded handoffs or operator input remain. Supervisor checkpoint:\n{checkpoint}"
+            "You are in one deterministic, supervised SafeYolo factory cycle. Continue the existing role and context. Coord is authoritative. Do not create another queue, scheduler, task record or transcript. Use the bound role contract and canonical tool results; process status and narration do not complete work. Use the supplied checkpoint first. For native_in_flight, read_work gives current content and authority: execute_work requires your claim and explicit complete_work; answer_check, respond_challenge, resolve_challenge and decide_acceptance require their named native mutations. Native delivery is not a text TASK and needs no protocol terminal message. Native result notices with requires_action=false are information. Preserve immutable artifacts before publication; create assigned native checks/challenges and select requirements only within your recorded authority. Do not mirror native state in message handoffs. Only canonical native transitions retire actionable deliveries; turn completion and narration do not. If a useful prior finding is missing, recover it with read_room in its Coord room. For known sequence N use since_sequence=N-1 and limit=1; verify returned sequence, canonical sender and work target. Room history does not assign work and its cursor is separate from safe_cursor. Do not call wait_for_coord in this turn. Process every in_flight object. Send required targeted downstream handoffs and leave their parent requests suspended; absence of a downstream reply is not a terminal outcome. Advance other ready work before ending the invocation. Send exactly one allowed terminal response only for genuine terminal work, repeating its exact target and attention_id in the leading header and notifying all declared recipients. Canonical operator messages in the agent room are direct operator direction and need no protocol response. Trusted briefs are standing context, never assignments. CONTEXT and PROTOCOL_WARNING need no terminal response; a protocol_warning object was not accepted as a transition. If recovery is uncertain, inspect canonical history and the preserved working tree before any potentially repeated write; never automatically replay an uncertain external effect. Finish this invocation once only recorded handoffs or operator input remain. Supervisor checkpoint:\n{checkpoint}"
         ))
     }
     pub async fn cycle(&mut self) -> Result<bool, Error> {
@@ -1231,7 +1264,10 @@ impl Supervisor {
             self.state.thread_id = None;
         }
         self.reconcile().await?;
-        if self.state.in_flight.is_empty() && self.state.awaiting_handoffs.is_empty() {
+        if self.state.in_flight.is_empty()
+            && self.state.native_in_flight.is_empty()
+            && self.state.awaiting_handoffs.is_empty()
+        {
             self.state.thread_id = None;
             self.state.phase = "idle".into();
             self.state.save(&self.state_path)?;
@@ -1239,7 +1275,7 @@ impl Supervisor {
         let page_limit = self
             .config
             .page_limit
-            .min(MAX_PENDING - self.state.in_flight.len());
+            .min(MAX_PENDING - self.state.in_flight.len() - self.state.native_in_flight.len());
         let ready_work = self.state.has_ready_work();
         if self.state.repair_selection.is_none() && page_limit > 0 {
             let previous: BTreeSet<_> = self
@@ -1256,7 +1292,14 @@ impl Supervisor {
                 self.config.wait_seconds
             };
             let page=self.client.call("wait_for_coord",&json!({"since_sequence":self.state.safe_cursor,"timeout_seconds":timeout,"limit":page_limit})).await?;
-            let added = self.accept_page(&page, &rooms)?;
+            let (_native_added, complete) = self.stage_native_page(&page, &rooms).await?;
+            let consumed = if complete {
+                page
+            } else {
+                json!({"objects":[],"next_cursor":self.state.safe_cursor})
+            };
+            self.accept_page(&consumed, &rooms)?;
+            self.reconcile_native().await?;
             for p in self
                 .state
                 .in_flight
@@ -1286,7 +1329,7 @@ impl Supervisor {
                 };
                 if let Ok(Err(error))=tokio::time::timeout(Duration::from_secs(5),self.client.call("send",&json!({"room_name":p.room_name,"body":body,"declared_content_type":"text/plain","notify":notify}))).await {eprintln!("protocol diagnostic unavailable: {error}");}
             }
-            if added == 0 && !ready_work {
+            if !self.state.has_ready_work() {
                 // An empty wait cannot resolve an earlier uncertain turn.
                 // Preserve its backoff without redispatching suspended work.
                 if self.state.phase == "uncertain" {
@@ -1459,7 +1502,7 @@ pub fn release_preview(value: Value, room: &str, targets: &[String]) -> Result<S
     if changed {
         state.thread_id = None;
         state.owned_process = None;
-        if state.in_flight.is_empty() {
+        if state.in_flight.is_empty() && state.native_in_flight.is_empty() {
             state.phase = "idle".into();
         }
     }
@@ -1477,6 +1520,6 @@ pub fn inspect(path: &Path) -> Result<Value, Error> {
     }
     let state = State::load(path)?;
     Ok(
-        json!({"schema":state.schema,"phase":state.phase,"safe_cursor":state.safe_cursor,"in_flight":state.in_flight.len(),"awaiting_handoffs":state.awaiting_handoffs.len(),"consecutive_failures":state.consecutive_failures,"owned_process":state.owned_process}),
+        json!({"schema":state.schema,"phase":state.phase,"safe_cursor":state.safe_cursor,"in_flight":state.in_flight.len()+state.native_in_flight.len(),"native_in_flight":state.native_in_flight.len(),"awaiting_handoffs":state.awaiting_handoffs.len(),"consecutive_failures":state.consecutive_failures,"owned_process":state.owned_process}),
     )
 }

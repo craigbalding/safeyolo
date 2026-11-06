@@ -6,6 +6,7 @@ privilege drop. Actual VZ allocation and guest identity need native acceptance.
 
 import os
 import select
+import shlex
 import shutil
 import signal
 import socket
@@ -41,7 +42,11 @@ def test_forwarder_admission_and_slot_reuse(tmp_path, socket_dir, transport):
         f"os.execv({shutil.which('socat')!r}, ['socat', *args])\n"
     )
     adapter.chmod(0o755)
-    script = Path(__file__).parents[1] / "src/safeyolo/guest-proxy-forwarder.sh"
+    source = Path(__file__).parents[1] / "src/safeyolo/guest-proxy-forwarder.sh"
+    script = tmp_path / "guest-proxy-forwarder.sh"
+    script.write_text(source.read_text().replace(
+        "/run/sy-proxy-relay", shlex.quote(str(tmp_path / "sy-proxy-relay")),
+    ))
     environment = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}", SOCAT_TEST_UPSTREAM=str(upstream_path))
     selected_path = upstream_path if transport == "uds" else tmp_path / "absent.sock"
     clients = []
@@ -82,6 +87,7 @@ def test_forwarder_admission_and_slot_reuse(tmp_path, socket_dir, transport):
             assert admitted.recv(6) == b"queued"
             assert process.poll() is None
         finally:
+            print((tmp_path / "forwarder.log").read_text(), end="")
             for peer in clients + peers:
                 peer.close()
             upstream.close()

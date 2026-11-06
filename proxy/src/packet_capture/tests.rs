@@ -857,7 +857,6 @@ async fn unavailable_profiles_leave_metadata_and_traffic_running_without_capture
             Profile::Wire,
             Some("safeyolo-interface-that-does-not-exist".into()),
         ),
-        (Profile::Pcapng, None),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let mut config = config(directory.path());

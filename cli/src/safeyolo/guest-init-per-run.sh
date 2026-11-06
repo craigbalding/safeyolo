@@ -6,7 +6,7 @@
 # immediately (passthrough / restore) or after taking a snapshot (capture).
 # Contains the state that must be re-applied every run, even when resuming
 # a snapshot captured on a previous run:
-#   - hwclock resync (after restore the system clock has jumped)
+#   - guest clock correction before launch and during VZ use
 #   - VirtioFS readdir (host-side per-run files may be invisible to a
 #     resumed guest until the directory is re-read)
 #   - agent.env / proxy.env sourcing (agent_token, argv overrides,
@@ -57,10 +57,35 @@ ensure_pid1_nofile() {
 }
 
 # --------------------------------------------------------------------------
-# 0. Post-restore fixups (no-ops on cold boot)
+# 0. Initial clock check and restore fixups
 # --------------------------------------------------------------------------
-# System clock jumps across restore -- sync from the VZ-provided hwclock.
-hwclock -s 2>/dev/null || true
+# VZ provides a guest-local RTC. The native helper checks that it advances
+# before using it. Linux/gVisor already follows the host clock and must not
+# gain a clock adjustment capability or a competing periodic correction.
+GUEST_HELPER=/run/safeyolo/safeyolo-guest
+if [ ! -x "$GUEST_HELPER" ]; then
+    GUEST_HELPER=/safeyolo/safeyolo-guest
+fi
+CLOCK_SYNC_PID=
+case "$(uname -r)" in
+    *-gvisor) ;;
+    *)
+        "$GUEST_HELPER" clock-sync >/dev/console 2>&1 || true
+        # nohup treats /dev/console as a terminal and redirects its output
+        # to nohup.out. setsid detaches this child while keeping diagnostics
+        # in the console log.
+        setsid "$GUEST_HELPER" clock-sync watch >/dev/console 2>&1 </dev/null &
+        CLOCK_SYNC_PID=$!
+        ;;
+esac
+
+stop_guest_clock() {
+    if [ -n "${CLOCK_SYNC_PID:-}" ]; then
+        kill "$CLOCK_SYNC_PID" 2>/dev/null || true
+        wait "$CLOCK_SYNC_PID" 2>/dev/null || true
+        CLOCK_SYNC_PID=
+    fi
+}
 
 # Invalidate VirtioFS readdir cache so per-run files the host wrote while
 # the guest was paused/snapshotted become visible. Read of the directory
@@ -220,6 +245,7 @@ PID1_IDLE_CHILD=""
 graceful_shutdown() {
     trap - TERM INT
     stop_guest_schedulers
+    stop_guest_clock
     if [ -n "${PID1_IDLE_CHILD:-}" ]; then
         kill "$PID1_IDLE_CHILD" 2>/dev/null || true
         wait "$PID1_IDLE_CHILD" 2>/dev/null || true
@@ -235,11 +261,7 @@ trap graceful_shutdown TERM INT
 COMMAND_SUPERVISOR_PID=
 COMMAND_SUPERVISOR_STATE=/home/agent/.safeyolo-command-supervisor.json
 COMMAND_SUPERVISOR_STOP=/home/agent/.safeyolo-command-supervisor.stop
-COMMAND_SUPERVISOR_SCRIPT=/run/safeyolo/safeyolo-guest
-if [ ! -x "$COMMAND_SUPERVISOR_SCRIPT" ]; then
-    COMMAND_SUPERVISOR_SCRIPT=/safeyolo/safeyolo-guest
-fi
-if [ ! -x "$COMMAND_SUPERVISOR_SCRIPT" ]; then
+if [ ! -x "$GUEST_HELPER" ]; then
     echo 'FATAL: required guest helper is missing: /safeyolo/safeyolo-guest; restage the installed guest assets' >&2
     exit 127
 fi
@@ -290,11 +312,11 @@ start_command_supervisor_if_needed() {
             setsid setpriv --reuid=agent --regid=agent --clear-groups \
                 --inh-caps=+setuid,+setgid --ambient-caps=+setuid,+setgid \
                 /bin/bash -c \
-                "exec '$COMMAND_SUPERVISOR_SCRIPT' supervise" >/dev/null 2>&1 < /dev/null &
+                "exec '$GUEST_HELPER' supervise" >/dev/null 2>&1 < /dev/null &
             ;;
         *)
             setsid su agent -s /bin/bash -c \
-                "exec '$COMMAND_SUPERVISOR_SCRIPT' supervise" >/dev/null 2>&1 < /dev/null &
+                "exec '$GUEST_HELPER' supervise" >/dev/null 2>&1 < /dev/null &
             ;;
     esac
     COMMAND_SUPERVISOR_PID=$!
@@ -356,6 +378,7 @@ fi
 # which is us. Call the reboot() syscall directly via busybox, which relies
 # on PSCI (CONFIG_ARM_PSCI_FW=y) to hand off to VZ.
 stop_guest_schedulers
+stop_guest_clock
 sync
 /usr/bin/busybox poweroff -f 2>/dev/null || true
 # Unreachable if poweroff succeeded. The fallback keeps PID 1 alive. The host

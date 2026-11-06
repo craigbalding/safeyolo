@@ -85,7 +85,9 @@ def test_discovery_and_rpc_errors(adapter):
         "list_approvals", "read_approval", "resolve_approval",
         "create_work", "list_work", "read_work", "claim_work", "release_work", "complete_work",
         "create_signal", "read_signal", "list_signals",
-        "change_work_target", "attest_work", "list_work_attestations",
+        "publish_work_output", "list_work_outputs", "cancel_work", "attest_work", "list_work_attestations",
+        "request_check", "answer_check", "raise_challenge", "respond_challenge", "resolve_challenge", "list_work_reviews",
+        "set_work_requirements", "decide_work_acceptance", "read_work_actions", "receive_work_action",
         "import_github_work", "read_github_work",
     }
     for name, required in {
@@ -113,11 +115,23 @@ def test_discovery_and_rpc_errors(adapter):
 
 def test_native_exact_work_target_requests(adapter):
     call, _, calls, _, _ = adapter
-    target = {"work_id": "work-example", "expected_version": 3, "expected_target_generation": 2,
-              "target_ref": "opaque:branch?candidate=π", "operation_id": "target-change"}
-    call("change_work_target", {"room_name": "backlog", **target})
+    target = {"work_id": "work-example", "expected_version": 3, "expected_generation": 1,
+              "expected_target_generation": 2, "target_ref": "opaque:sha256:candidate-π",
+              "execution_outcome": "succeeded", "summary": "Retained exact candidate",
+              "evidence_refs": ["opaque:sha256:evidence"], "operation_id": "publish-output"}
+    call("publish_work_output", {"room_name": "backlog", **target})
     assert calls[-1][0:2] == ("POST", "http://_safeyolo.proxy.internal/api/coord/rooms/backlog/work")
-    assert calls[-1][2] == {"action": "change_target", **target}
+    assert calls[-1][2] == {"action": "publish_output", **target}
+    call("list_work_outputs", {"room_name": "backlog", "work_id": "work-example", "after_version": 3, "limit": 2})
+    assert calls[-1][0] == "GET"
+    request = urlsplit(calls[-1][1])
+    assert request.path == "/api/coord/rooms/backlog/work"
+    assert parse_qs(request.query) == {"work_id": ["work-example"], "outputs": ["true"], "limit": ["2"], "after": ["3"]}
+    cancel = {"work_id": "work-example", "expected_version": 4, "expected_generation": 1,
+              "reason": "The requested run was cancelled", "operation_id": "cancel-output"}
+    call("cancel_work", {"room_name": "backlog", **cancel})
+    assert calls[-1][0:2] == ("POST", "http://_safeyolo.proxy.internal/api/coord/rooms/backlog/work")
+    assert calls[-1][2] == {"action": "cancel", **cancel}
     evidence = {"work_id": "work-example", "target_generation": 3, "kind": "acceptance",
                 "verdict": "reject", "summary": "Check this exact candidate", "evidence_refs": ["https://untrusted.invalid/ref"],
                 "operation_id": "attestation"}
@@ -128,6 +142,79 @@ def test_native_exact_work_target_requests(adapter):
     request = urlsplit(calls[-1][1])
     assert request.path == "/api/coord/rooms/backlog/work"
     assert parse_qs(request.query) == {"work_id": ["work-example"], "attestations": ["true"], "limit": ["2"], "after": ["att-previous"]}
+
+
+
+def test_native_work_delivery_uses_current_actions_and_canonical_receipt_keys(adapter):
+    call, _, calls, _, _ = adapter
+    assignee = {"kind": "agent", "id": "bob"}
+    call("create_work", {"room_name": "backlog", "title": "Inspect output", "assignee": assignee, "operation_id": "assigned"})
+    assert calls[-1][2] == {"action": "create", "title": "Inspect output", "assignee": assignee, "operation_id": "assigned"}
+    factory = {"name": "reports", "snapshot_id": "a" * 64}
+    call("create_work", {"room_name": "backlog", "title": "Selected report", "factory": factory, "operation_id": "factory"})
+    assert calls[-1][2] == {"action": "create", "title": "Selected report", "factory": factory, "operation_id": "factory"}
+    call("read_work_actions", {"room_name": "backlog", "work_id": "work-output", "include_received": True})
+    assert parse_qs(urlsplit(calls[-1][1]).query) == {"work_id": ["work-output"], "actions": ["true"], "include_received": ["true"]}
+    call("receive_work_action", {"room_name": "backlog", "work_id": "work-output", "action_key": "action-exact"})
+    assert calls[-1][2] == {"action": "receive_action", "work_id": "work-output", "action_key": "action-exact"}
+
+
+def test_native_assigned_review_requests_and_revision_reads(adapter):
+    call, _, calls, _, _ = adapter
+    subject = {"kind": "output", "work_id": "work-output", "target_generation": 3}
+    reviewer = {"kind": "agent", "id": "bob"}
+    check = {"subject": subject, "criterion": "Inspect the retained result", "reviewer": reviewer, "independent": True, "operation_id": "request-check"}
+    call("request_check", {"room_name": "backlog", **check})
+    assert calls[-1][2] == {"action": "request_check", **check}
+    answer = {"work_id": "work-check", "expected_version": 2, "expected_generation": 1, "verdict": "reject", "summary": "Observed omission", "operation_id": "answer-check"}
+    call("answer_check", {"room_name": "backlog", **answer})
+    assert calls[-1][2] == {"action": "answer_check", **answer}
+    challenge = {"subject": {"kind": "check", "work_id": "work-check", "version": 3}, "assertion": "The conclusion omits evidence", "grounds": "Retained result", "responder": {"kind": "agent", "id": "alice"}, "deciders": [reviewer], "independent": True}
+    call("raise_challenge", {"room_name": "backlog", **challenge})
+    assert calls[-1][2] == {"action": "raise_challenge", **challenge}
+    response = {"work_id": "work-objection", "expected_version": 2, "expected_generation": 1, "summary": "Retained correction", "correction": subject}
+    call("respond_challenge", {"room_name": "backlog", **response})
+    assert calls[-1][2] == {"action": "respond_challenge", **response}
+    disposition = {"work_id": "work-objection", "expected_version": 3, "expected_generation": 1, "expected_response_version": 3, "decision": "dismissed", "reason": "Inspected correction"}
+    call("resolve_challenge", {"room_name": "backlog", **disposition})
+    assert calls[-1][2] == {"action": "resolve_challenge", **disposition}
+    call("read_work", {"room_name": "backlog", "work_id": "work-objection", "version": 3})
+    assert parse_qs(urlsplit(calls[-1][1]).query) == {"work_id": ["work-objection"], "version": ["3"]}
+    call("list_work_reviews", {"room_name": "backlog", "work_id": "work-output", "after": "work-previous", "limit": 1})
+    assert parse_qs(urlsplit(calls[-1][1]).query) == {"work_id": ["work-output"], "reviews": ["true"], "after": ["work-previous"], "limit": ["1"]}
+
+
+def test_native_acceptance_requirements_and_decisions_share_the_work_endpoint(adapter):
+    call, _, calls, _, _ = adapter
+    requirements = {"work_id": "work-output", "expected_version": 3, "expected_generation": 1,
+                    "expected_requirements_version": 0, "authorities": [{"kind": "agent", "id": "coordinator"}],
+                    "deciders": [{"kind": "agent", "id": "reviewer"}], "independent": True,
+                    "checks": [{"work_id": "work-check", "version": 2}], "challenges": [], "reason": "Select review"}
+    call("set_work_requirements", {"room_name": "backlog", **requirements})
+    assert calls[-1][2] == {"action": "set_requirements", **requirements}
+    decision = {"work_id": "work-output", "expected_version": 4, "expected_generation": 1,
+                "expected_requirements_version": 1, "expected_target_generation": 2,
+                "verdict": "approve", "summary": "Observed the retained revision"}
+    call("decide_work_acceptance", {"room_name": "backlog", **decision})
+    assert calls[-1][2] == {"action": "decide_acceptance", **decision}
+    call("set_work_requirements", {"room_name": "backlog", **requirements, "checks": [{"work_id": "work-check", "version": 2, "verdict": "approve"}]})
+    assert len(calls) == 2
+    call("decide_work_acceptance", {"room_name": "backlog", **decision, "author": "forged"})
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("change", [
+    {"subject": {"kind": "output", "work_id": "work-output", "target_generation": 1, "producer": "forged"}},
+    {"subject": {"kind": "output", "work_id": "work-output", "version": 1}},
+    {"subject": {"kind": "unknown", "work_id": "work-output", "version": 1}},
+    {"deciders": ["bob"]}, {"deciders": [{"kind": "agent", "id": "bob", "author": "forged"}]},
+    {"independent": "true"}, {"author": "forged"},
+])
+def test_malformed_review_subjects_and_actors_never_send(adapter, change):
+    call, _, calls, _, _ = adapter
+    result = call("raise_challenge", {"room_name": "backlog", "subject": {"kind": "output", "work_id": "work-output", "target_generation": 1}, "assertion": "Omission", "grounds": "Evidence", "responder": {"kind": "agent", "id": "alice"}, "deciders": [{"kind": "agent", "id": "bob"}], **change})
+    assert result["isError"] is True
+    assert calls == []
 
 
 def test_github_import_uses_local_create_replay_without_remote_access(adapter):
@@ -191,7 +278,7 @@ def test_untrusted_field_types_do_not_reach_transport(value):
     assert result.returncode == 0, result.stderr
     response = json.loads(result.stdout)
     assert response["result"]["isError"] is True
-    assert "invalid type for body" in response["result"]["content"][0]["text"]
+    assert "invalid type or value for body" in response["result"]["content"][0]["text"]
 
 
 def test_whole_page_resolution_and_failure_hide_cursor(adapter):

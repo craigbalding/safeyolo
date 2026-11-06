@@ -126,6 +126,7 @@ pub fn parse_record(line: &str) -> Result<Value> {
                         | "gateway_route"
                         | "service"
                         | "contract_binding"
+                        | "coord_room"
                         | "desktop_present"
                 )
             )

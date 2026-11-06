@@ -79,6 +79,9 @@ impl Record {
     }
 
     fn refresh_result(&mut self, policy: &Policy) -> Result<Option<Ready>> {
+        if self.status == "challenged" {
+            return Ok(None);
+        }
         if self.status == "pending" {
             let status = self.current_status(policy)?;
             if matches!(status.as_str(), "approved" | "expired") {

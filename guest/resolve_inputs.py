@@ -36,11 +36,27 @@ def now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def fetch(url: str) -> bytes:
+class HTTPSRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject insecure redirect hops before sending the next request."""
+
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        if not new_url.startswith("https://"):
+            raise ValueError("upstream redirect must retain HTTPS")
+        return super().redirect_request(request, response, code, message, headers, new_url)
+
+
+def fetch(url: str, *, github_api: bool = False) -> bytes:
     if not url.startswith("https://"):
         raise ValueError("upstream downloads require HTTPS")
     request = urllib.request.Request(url, headers={"User-Agent": "safeyolo-guest-builder"})
-    with urllib.request.urlopen(request, timeout=120) as response:
+    if github_api:
+        token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        if token:
+            if "\r" in token or "\n" in token:
+                raise ValueError("GitHub API token must not contain line breaks")
+            # urllib omits unredirected headers from every redirected request.
+            request.add_unredirected_header("Authorization", f"Bearer {token}")
+    with urllib.request.build_opener(HTTPSRedirectHandler()).open(request, timeout=120) as response:
         if not response.url.startswith("https://"):
             raise ValueError("upstream redirect must retain HTTPS")
         return response.read()
@@ -87,7 +103,7 @@ def release(tool: str) -> dict:
     explicit = os.environ.get(tool.upper() + "_VERSION")
     endpoint = f"tags/v{explicit}" if explicit else "latest"
     api = f"https://api.github.com/repos/{PROJECTS[tool]}/releases/{endpoint}"
-    data = json.loads(fetch(api))
+    data = json.loads(fetch(api, github_api=True))
     version = data["tag_name"].removeprefix("v")
     if data["draft"] or data["prerelease"] or not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise ValueError(f"{tool} release is not a stable release")

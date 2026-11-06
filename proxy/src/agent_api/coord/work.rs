@@ -40,19 +40,62 @@ pub(super) async fn respond(
     } else {
         None
     };
-    let fields = ["work_id", "after", "state", "limit", "attestations"]
-        .map(|key| query_parameter(request.path_and_query, key));
+    let fields = [
+        "work_id",
+        "after",
+        "state",
+        "limit",
+        "attestations",
+        "outputs",
+        "reviews",
+        "version",
+        "actions",
+        "include_received",
+    ]
+    .map(|key| query_parameter(request.path_and_query, key));
     let [
         Ok(work_id),
         Ok(after),
         Ok(state),
         Ok(limit),
         Ok(attestations),
+        Ok(outputs),
+        Ok(reviews),
+        Ok(version),
+        Ok(actions),
+        Ok(include_received),
     ] = fields
     else {
         return response(400, json!({"error":"invalid work query"}));
     };
     let after = after.unwrap_or_default();
+    let actions = match actions.as_deref() {
+        None | Some("false") => false,
+        Some("true") if work_id.is_some() => true,
+        _ => return response(400, json!({"error":"actions=true requires work_id"})),
+    };
+    let include_received = match include_received.as_deref() {
+        None | Some("false") => false,
+        Some("true") if actions => true,
+        _ => {
+            return response(
+                400,
+                json!({"error":"include_received=true requires actions=true"}),
+            );
+        }
+    };
+    if actions
+        && [
+            attestations.as_deref(),
+            outputs.as_deref(),
+            reviews.as_deref(),
+            version.as_deref(),
+        ]
+        .iter()
+        .any(|v| v.is_some())
+    {
+        return response(400, json!({"error":"actions excludes other work views"}));
+    }
     let attestations = match attestations.as_deref() {
         None | Some("false") => false,
         Some("true") if work_id.is_some() => true,
@@ -60,6 +103,50 @@ pub(super) async fn respond(
             return response(
                 400,
                 json!({"error":"attestations must be true or false; true requires work_id"}),
+            );
+        }
+    };
+    let outputs = match outputs.as_deref() {
+        None | Some("false") => false,
+        Some("true") if work_id.is_some() && !attestations => true,
+        _ => {
+            return response(
+                400,
+                json!({"error":"outputs must be true or false; true requires work_id and excludes attestations"}),
+            );
+        }
+    };
+    let after_version = if outputs {
+        match after.parse::<i64>() {
+            Ok(v) => v,
+            Err(_) if after.is_empty() => 0,
+            Err(_) => return response(400, json!({"error":"invalid output after version"})),
+        }
+    } else {
+        0
+    };
+    let reviews = match reviews.as_deref() {
+        None | Some("false") => false,
+        Some("true") if work_id.is_some() && !outputs && !attestations => true,
+        _ => {
+            return response(
+                400,
+                json!({"error":"reviews=true requires work_id and excludes outputs/attestations"}),
+            );
+        }
+    };
+    let version = match version {
+        None => None,
+        Some(v) if work_id.is_some() && !outputs && !attestations && !reviews => {
+            match v.parse::<i64>() {
+                Ok(v) if v > 0 => Some(v),
+                _ => return response(400, json!({"error":"version must be positive"})),
+            }
+        }
+        _ => {
+            return response(
+                400,
+                json!({"error":"version requires a single work revision read"}),
             );
         }
     };
@@ -82,10 +169,30 @@ pub(super) async fn respond(
             .as_ref()
             .map_or(Actor::Agent(&principal), Actor::Remote);
         match mutation {
-            Some((mutation, operation)) => {
-                work::mutate(&mut conn, &room, actor, mutation, operation.as_deref())
-            }
+            Some((mutation, operation)) => work::mutate(
+                caller
+                    .instance_root
+                    .as_deref()
+                    .zip(caller.policy_file.as_deref()),
+                &mut conn,
+                &room,
+                actor,
+                mutation,
+                operation.as_deref(),
+            ),
             None => match work_id {
+                Some(id) if actions => {
+                    work::actions::read(&mut conn, &room, actor, &id, include_received)
+                }
+                Some(id) if reviews => {
+                    work::reviews::list(&mut conn, &room, actor, &id, &after, limit)
+                }
+                Some(id) if version.is_some() => {
+                    work::read_at_version(&mut conn, &room, actor, &id, version.unwrap())
+                }
+                Some(id) if outputs => {
+                    work::outputs::list(&mut conn, &room, actor, &id, after_version, limit)
+                }
                 Some(id) if attestations => {
                     work::attestations::list(&mut conn, &room, actor, &id, &after, limit)
                 }

@@ -98,6 +98,15 @@ The [work walkthrough](coord-operations.md#claim-durable-work) covers creation,
 claims, candidates, review and completion. Local work treats `external_ref` as
 opaque. An external assignee or description never decides ownership.
 
+Local `create_work` can explicitly assign generic execution with
+`assignee={"kind":"agent","id":"DURABLE_AGENT_ID"}`. Only that agent may claim
+the assignment; operator reassignment remains available. A native supervisor
+uses `read_work_actions` and `receive_work_action` to retain delivery in its
+existing checkpoint. These operations use the authenticated participant and
+never claim, answer or accept work. See the
+[native delivery contract](codex-coord-supervisor.md#native-work-delivery)
+for action receipt recovery and interactive control.
+
 ### GitHub references
 
 To seed work from a GitHub issue or pull request, use the owning host account
@@ -141,11 +150,51 @@ prevents the metadata return. A member without GitHub access can still claim,
 release or complete work according to room permissions. `coord status ROOM`
 labels a recognized GitHub URL as an external reference without fetching it.
 
-### Claims, candidates and attestations
+### Claims, outputs and attestations
 
-SafeYolo does not fetch candidate targets or discover external candidate changes.
-Claims and completion do not change candidate identity. An explicit target
-change advances `target_generation`, even when the reference is reused.
+The current holder uses `publish_work_output` to select an immutable output
+reference and record its execution outcome in one transaction. The operation
+requires `room_name`, `work_id`, `expected_version`, `expected_generation`
+(the claim generation), `expected_target_generation`, `target_ref`,
+`execution_outcome`, `summary`, and an optional `evidence_refs` array.
+`execution_outcome` is `succeeded`, `failed`, or `uncertain`. It reports the
+producer's execution result; it does not establish acceptance of the output.
+
+Retain the external artifact before publication. Use a reference that identifies
+its actual immutable revision, such as an exact commit or a retained report's
+content digest. SafeYolo does not fetch the reference or detect changed bytes
+behind a mutable URL. A final external action must check the expected revision
+at that system's authority.
+
+Authenticated transport supplies `output.producer`; a caller cannot supply
+another actor or producer. A bridge must use the producing agent's authenticated
+route. Host commands cannot publish on behalf of a holder. Artifact content and
+authorship claims inside it remain external, unverified evidence.
+
+Publication requires a current claim or the retained holder of completed work.
+Another producer needs explicit operator reassignment. Every new publication
+advances `target_generation`, including an explicitly reused reference. Earlier
+attestations become stale. Publication records its `work_version`, claim
+generation, producer, outcome, summary, evidence references and timestamp in
+`work.output`. It does not release the claim, complete work, or change
+`external_ref`. That opaque context reference remains bound to the same work
+through cancellation and reassignment.
+
+The canonical receipt contains `work` and `operation_id`. Retain the chosen
+operation ID and original inputs before sending. After an interrupted request,
+retry those exact inputs. A committed operation returns its original receipt;
+an uncommitted operation can succeed once if the claim and output generations
+are still current. Reassignment, cancellation or a later output can instead
+make the uncommitted request stale. Keep the external artifact in either case.
+An old successful receipt does not imply that its output is still current;
+read current work separately. This protocol does not make external execution
+exactly once and does not authorize repeating an uncertain external action.
+
+Use `list_work_outputs` with `room_name` and `work_id` to read original
+publications ordered by `work_version`. At most 200 items and 65536 bytes of
+item JSON are returned. Continue with `next_after_version` as `after_version`.
+Later attestations and ownership changes do not duplicate publications. Pages
+do not share a snapshot. The host command is `coord work outputs ROOM WORK_ID`.
 
 A member calls `attest_work` with `room_name`, `work_id`, `target_generation`,
 `kind`, `verdict`, `summary`, optional `evidence_refs` and a chosen `operation_id`.
@@ -160,21 +209,23 @@ Evidence references remain untrusted external content and are never fetched.
 Attestations do not transfer ownership or complete work.
 
 `get_room_state` and `coord status ROOM` show the current candidate and exact
-counts of current acceptance dispositions and stale attestations. Conflicting
-dispositions remain attributed to their authors. The status view does not decide
-a majority or apply policy. Each work item shows at most eight attestation
+counts of current acceptance attestations and stale attestations. These counts
+are attributed reports. They do not decide acceptance by majority or replace
+the selected requirements and decisions described below. Each work item shows at most eight attestation
 excerpts in 4096 bytes of item JSON, current first, with explicit truncation.
 Summaries show a UTF-8 prefix of at most 128 bytes. Use `list_work_attestations`
 with `room_name` and `work_id` for full records and evidence references. Pages
 contain at most 200 items and 65536 bytes of item JSON, ordered by
 `attestation_id`; follow `next_after`. Each page labels records current or stale
 against its returned `target_generation`. Pages do not share a snapshot.
-Prior acceptance stays in history after a target change and does not approve
+Prior attestation evidence stays in history after a target change and does not approve
 the new generation.
 
-Use `coord work change-target`, `coord work attest` and `coord work attestations`
-from the owning host account for the same operations. `coord work --help` lists
-their required arguments. `target_ref` is nonempty and at most 1024 UTF-8 bytes.
+Use `coord work attest` and `coord work attestations` from the owning host
+account for attributed evidence. `coord work --help` lists their arguments.
+`target_ref` is nonempty and at most 1024 UTF-8 bytes. Output summaries are
+nonempty and at most 1024 bytes; at most 16 evidence references of 1024 bytes
+each are allowed. A serialized output publication is at most 32768 bytes.
 Attestation kind is nonempty and at most 128 UTF-8 bytes; summary is nonempty
 and at most 1024. At most 16 evidence references of 1024 bytes each are allowed.
 The complete serialized attestation is at most 32768 bytes. Summaries and refs
@@ -187,6 +238,16 @@ and generation. Completion accepts optional `short_result`. Reads require
 current `receive` permission. Mutations require `send` and `receive`. Revocation
 prevents the former member from reading, releasing or completing work.
 
+The holder can cancel unfinished work through `cancel_work`, with the current
+`expected_version`, `expected_generation` and a nonempty `reason` of at most
+1024 UTF-8 bytes. The creator can cancel its own open work. Other members cannot
+cancel that work. The owning host uses `coord work cancel` and can cancel any
+unfinished work. Cancellation selects `state=cancelled`, clears the holder and
+advances the claim generation. It preserves earlier outputs and evidence and
+records the cancelling actor, reason and time. It does not report successful
+completion or stop external execution. `coord status ROOM` separates cancelled
+work from active work and completed work.
+
 Claims survive elapsed time, model exit, and instance restart. They never
 expire or transfer automatically. `claim_expires_at` is reserved and stays
 null. The owning host account can inspect and recover an abandoned claim
@@ -194,6 +255,10 @@ without relying on process liveness. Use `coord work --help` for the recovery
 commands. `release` requires the current expected version and generation;
 `reassign` also requires the new holder's durable `--agent-id`. The new holder
 must have current room send and receive permission.
+Reassignment can also reopen completed or cancelled work in a new claim
+generation. The previous output retains its original producer and generation
+until a new publication replaces it. Membership or process silence never
+grants an agent reassignment authority.
 
 Choose an operation ID before a write. If the response is lost, retry the same
 operation ID and original inputs, including the original expectations. While
@@ -209,6 +274,252 @@ contain metadata; canonical work storage contains titles, references and
 results. Work input is bounded to 262144 UTF-8 bytes. Lists return at most 200
 items ordered by `work_id`; use `next_after` to continue. Concurrent changes
 can affect later pages because pagination does not share a snapshot.
+
+### Assigned checks and peer challenges
+
+An assigned check and a challenge response are ordinary native work records.
+Their `work_id`, version, claim generation, creator and immutable history use
+the same authority and retry rules as other work. `request_check` retains a
+criterion, exact subject, named reviewer and `independent` flag. A participant
+is `{"kind":"agent","id":"DURABLE_AGENT_ID"}` or
+`{"kind":"operator","id":"operator"}`. Named agents must currently have room
+send and receive permission. The creator/requester and every answer author
+come from authenticated transport.
+
+Subject input selects one exact revision:
+
+| `kind` | Required fields | Meaning |
+|---|---|---|
+| `work` | `work_id`, `version` | That immutable work revision. |
+| `output` | `work_id`, `target_generation` | The original work revision that selected that output. |
+| `check` | `work_id`, `version` | An answered check revision, including its attributed conclusion. |
+
+Canonical subjects retain the reference, original work revision, root work ID,
+target reference and known producer. A caller cannot provide the producer.
+Historical subjects remain available. With `independent=true`, the named
+reviewer must differ from the subject's authenticated producer. Unknown
+producer attribution cannot establish independence. Reassigning or integrating
+the work does not change the original output's producer.
+
+Only the named agent can claim and answer a check. `answer_check` requires
+the current check work version and claim generation. It records `approve`,
+`reject` or `abstain` and completes the check in one transaction. A negative or
+uncertain conclusion still completes check execution. The retained reviewer
+can correct the answer using the current expectations and a new operation ID.
+There is one effective answer per check; earlier answers remain in immutable
+work revisions. A late answer about an old output remains historical and
+cannot approve a replacement. An operator assigned as reviewer answers through
+the host CLI without an agent claim. Generic `complete_work` cannot substitute
+for an answer.
+
+`raise_challenge` retains an assertion, grounds, evidence references, exact
+subject, named responder and nonempty `deciders` list. Only the named responder
+can claim its response work. `respond_challenge` records the answer and optional
+exact `correction` subject, then completes that response work. The challenge
+remains unresolved. A corrected response invalidates the previous disposition;
+the earlier response and disposition remain in work history.
+
+`resolve_challenge` requires the current challenge work version, claim
+generation and `expected_response_version` (zero before any response). A named
+decider or the operator records `upheld`, `dismissed` or `withdrawn`, with a
+reason and optional evidence. The disposition identifies its author, response
+revision and any correction. With `independent=true`, a decider must differ
+from the producer and responder, including when the operator decides. A stale
+response or challenge expectation conflicts. If the disposition arrives before
+the response finishes, it explicitly cancels the response assignment rather
+than reporting successful execution. Cancellation alone does not resolve a
+challenge. Replacing an output also leaves its original challenges intact.
+
+The operator uses ordinary `coord work reassign` to recover an unavailable
+reviewer or responder. Reassignment changes the named participant and claim
+generation and clears the effective answer/response. Reassigning challenge
+response work reopens its disposition. Independence still applies. Use
+`coord work recover-challenge-deciders` with current expectations, a reason
+and a new `deciders` JSON array when deciding participants are unavailable.
+Only the operator can change that list. Revocation continues to prevent a
+former participant from reading or mutating work, including retries.
+
+`read_work` adds `review_status` for current review work. It distinguishes
+`pending`/`answered` checks, `unresolved`/`resolved` challenges and current/stale
+subjects. `list_work_reviews` returns related checks and challenges, including
+objections to the work's checks, regardless of response execution state. It
+returns at most 200 items and 65536 bytes of item JSON. Follow `next_after`;
+pages do not share a snapshot. Excerpts and `details_truncated` identify omitted
+details. Read the full record with `read_work`. Supply its positive `version`
+argument to read an exact immutable revision. Current receive permission is
+required for history. The equivalent host commands are `coord work reviews`
+and `coord work show --version`.
+
+Criteria, assertions, grounds, response summaries and disposition reasons are
+nonempty and at most 1024 UTF-8 bytes each. Evidence arrays contain at most 16
+references of 1024 bytes each. A serialized review record is at most 32768 bytes.
+The existing 262144-byte work mutation bound also applies. References remain
+external content. Work `external_ref` preserves opaque run/batch context.
+
+These operations record review work. A review is advisory until an authorized
+caller selects it as an acceptance requirement as described below. A check
+verdict alone does not accept an output or launch a supervised model turn.
+The current supervisor still needs its declared message handoffs.
+See the [working review example](coord-operations.md#run-an-assigned-review-loop).
+
+### Select requirements and decide output acceptance
+
+Use `set_work_requirements` to select acceptance context on existing work.
+Supply `room_name`, `work_id`, its current `expected_version` and
+`expected_generation`, and `expected_requirements_version` (0 initially).
+`authorities` names participants allowed to amend the context. `deciders`
+names participants eligible to decide acceptance. Each participant uses the
+same agent/operator principal format as assigned reviews. At least one decider
+is required. An empty authorities list leaves later amendments to the operator.
+The operator retains recovery authority; the operator must be an explicitly
+selected decider to decide acceptance.
+
+The authenticated work creator or operator selects the initial context.
+Later amendments require an existing selected authority or the operator.
+Ownership or output production alone does not grant policy authority. A worker
+can amend requirements only if a previous authorized selection explicitly names
+it as an authority. Each amendment records its author and reason and invalidates
+earlier acceptance. Changing ownership does not relabel the producer. A worker can still
+publish corrections, report failure, request advisory reviews and respond to
+challenges while acceptance is pending.
+
+`checks` and `challenges` are arrays of `{work_id, version}` references to
+current related review work. Omitted arrays select no obligations of that kind.
+Selection records each review's definition, selected revision and original
+subject. The selection must be current when it commits. Answers and dispositions
+can change without reselecting the obligation. A reassigned reviewer, responder
+or deciding participant changes that definition and needs an authorized
+reselection. Operator recovery of a participant does not silently change the
+acceptance policy. Duplicate references are refused. Reviews in another room
+or about unrelated work cannot satisfy an obligation.
+
+With `independent=true`, acceptance deciders must differ from the current output's
+transport-attributed producer. Selection before publication records that
+requirement; the decision operation enforces it against the eventual producer.
+Each required review retains its own selected independence flag. A producer's
+required deterministic check can therefore be paired with independent output
+acceptance. Without this option, the selected participants decide the policy;
+Coord adds no universal independence rule or quorum.
+
+Every selection or amendment needs a nonempty `reason`, advances the context's
+own `version`, and records its transport-derived author and time in
+`work.acceptance_requirements`. The complete selected context is bounded to
+32768 serialized UTF-8 bytes. Earlier contexts remain in immutable work
+revisions. Removing an obligation needs the same authority and attributed
+amendment; it does not resolve or erase its original challenge.
+
+An eligible decider calls `decide_work_acceptance` with the current work version,
+claim generation, `expected_target_generation`, `expected_requirements_version`,
+`verdict`, `summary`, optional `evidence_refs` and a chosen `operation_id`.
+An approval atomically validates the output, context, required check answers and
+challenge dispositions in the existing SQLite transaction. Direct Agent API,
+MCP and host calls use that same boundary.
+
+A required check must concern the current output generation, have its selected
+assignment and have an effective `approve` answer. A pending, cancelled,
+rejected, uncertain or old-output check cannot satisfy it. Nested checks follow
+their immutable subjects to the original output generation. A selected challenge
+remains an obligation across output replacement. It needs an explicit current
+disposition by its selected deciding participants. That disposition and its
+exact response/correction remain visible. An upheld objection can concern an
+earlier output; Coord does not infer the corrected output's domain verdict
+from that label. The selected acceptance decider judges the current output.
+An unresolved required challenge prevents approval. Advisory reviews add no
+undeclared gate.
+
+`reject` and `abstain` decisions remain possible while review obligations are
+outstanding. All decisions require a published output. Summary/evidence limits
+match assigned review answers. Each author has one effective decision in
+`work.acceptance_decisions`; a correction replaces that author's current entry
+and retains earlier entries in immutable work revisions. The complete effective
+decision array is bounded to 262144 serialized UTF-8 bytes. An authorized amendment
+removes decisions by participants who are no longer selected from that effective
+array; their immutable history remains readable. This lets an authority recover
+an unavailable participant without retaining its data in the bounded current array.
+
+`read_work` derives `acceptance_status` from current native state. It lists each
+selected obligation, its status, eligible decisions and explicit stale reasons.
+Output replacement or a requirements amendment makes earlier decisions stale.
+A changed required answer, response or disposition invalidates an approval's
+review basis. Fixing that review does not resurrect the old approval. A rejection
+of the same output/context persists until an explicit corrected decision or an
+authorized context change. Conflicting eligible approvals and rejections remain
+`conflicting`; extra submissions never outvote another author. A selected
+decider must correct the applicable decision, or a policy authority must amend
+the context explicitly.
+
+An output is `accepted` only with satisfied obligations, a current eligible
+approval and no current eligible rejection. Execution need not be done, and
+generic work completion does not create acceptance. Acceptance of a retained
+artifact after cancellation leaves execution cancelled. It does not revive a
+claim or authorize publication from the cancelled assignment. Work with no selected context
+reports `not_selected`; ordinary execution still completes normally. Attestation
+counts remain attributed evidence and never bypass selected acceptance.
+
+The host commands are `coord work set-requirements` and
+`coord work decide-acceptance`; their options match these fields. Use
+`coord work --help` for argument syntax. Room status includes bounded acceptance
+excerpts and explicit truncation; use `read_work` or `coord work show` for full
+requirements, decisions and reasons. Mutation receipts retain their original
+work revision. Retry the exact operation ID and inputs after uncertainty, then
+read current work before acting on a recovered receipt.
+
+External applications can use these native requirements and decisions instead
+of separately writable acceptance state. They retain domain data, immutable
+artifacts and final effects. Coord does not fetch or interpret those artifacts.
+A final merge, publication or other external action must validate its expected
+revision at that system's own authority. An approved Factory can select native
+policy and delivery through `[work]`; see [Factory policy](factories.md#select-native-work-policy).
+Native assignments use their Work IDs instead of a duplicate message workflow.
+Existing message assignments keep their declared reply protocol.
+
+`create_work` accepts optional `factory={name,snapshot_id}`. The host equivalent
+is `coord work create ROOM TITLE --factory JSON`. The currently approved exact
+snapshot must declare a work policy for that room. Only its selected creator
+roles or the operator can use that selection. Normal room authority still
+applies. Transport identity supplies the creator; role bindings resolve to the
+instance's configured durable agent IDs. The reference, resolved check templates
+and initial requirements are retained with Work. They do not follow later
+Factory approval changes.
+
+For selected Factory work, `publish_work_output` also creates the configured
+exact-output checks and replaces their prior generated requirements in the same
+transaction. `factory.current_checks` in the publication receipt identifies the
+new checks. Publication replay recovers the original IDs and creates no new
+logical assignment. Explicitly selected additional checks and challenges are
+preserved. The requirements version advances, making earlier acceptance stale.
+An authorized requirements amendment can change current obligations or delegate
+authority; ownership alone cannot. The next publication reapplies the retained
+templates. Generic work without `factory` keeps explicit policy selection.
+
+A revoked or ineligible reviewer does not prevent retention of an output.
+Acceptance explains the pending obligation. Independence still prevents the
+actual producer from claiming or answering the check. The operator can use
+ordinary review reassignment and authority recovery; no process timeout grants
+that authority. Advisory challenges do not become required automatically.
+
+### Open retained native state
+
+Before installing a release that changes native work storage, stop the affected
+factory roles and other Coord writers. Preserve the instance root, role homes,
+checkpoints, source trees and retained artifacts. Install matching host and
+guest executables before resuming those roles.
+
+The current store uses native schema 10. Bootstrap transactionally upgrades the
+retained native schema 5 work projection to admit cancellation and fences
+schema 5/6/7/8/9 writers before storing reviews, requirements, decisions,
+execution assignments or selected Factory policy. It preserves
+claim IDs and generations, immutable revision bytes, operation receipts,
+attention, outbox rows and retained messages. A failed upgrade rolls back. An
+older executable refuses schema 10; do not run mixed writers or overwrite the
+store to make an older executable start. Unsupported implementation generations
+remain refused.
+
+A retained target without an output publication has no inferred producer or
+execution outcome. Its holder can publish an attributed output under its current
+claim and target generations. Earlier successful operation retries still return
+their original receipts. Check current state separately before acting on a
+recovered receipt, and inspect uncertain external effects before any repeat.
 
 ## Raise a material signal
 

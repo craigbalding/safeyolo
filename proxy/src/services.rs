@@ -5,7 +5,9 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+pub mod authoring;
 mod catalog;
+pub mod effects;
 pub(crate) use catalog::{CatalogMetadata, ServiceLoadProblem, scan_service_files};
 use std::sync::Arc;
 
@@ -66,6 +68,11 @@ pub struct RiskyRoute {
     pub irreversible: bool,
     pub group: Option<String>,
 }
+impl RiskyRoute {
+    pub fn matches(&self, method: &str, path: &str) -> bool {
+        method_matches(method, &self.methods) && gateway_resource_matches(path, &self.path)
+    }
+}
 #[derive(Clone, Debug)]
 pub struct ServiceDefinition {
     pub name: String,
@@ -73,6 +80,8 @@ pub struct ServiceDefinition {
     pub auth: Option<AuthConfig>,
     pub capabilities: BTreeMap<String, Capability>,
     pub risky_routes: Vec<RiskyRoute>,
+    /// Authored possibilities and evidence, separate from route authorization.
+    pub effect_model: Option<effects::EffectModel>,
     /// Original definition includes descriptive and declared response/state fields.
     pub raw: Value,
 }
@@ -142,14 +151,24 @@ impl ServiceDefinition {
                 risky_routes.push(risky_route(entry, None)?);
             }
         }
-        Ok(Self {
+        let effect_model = object
+            .get("effect_model")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?;
+        let service = Self {
             name,
             default_host,
             auth,
             capabilities,
             risky_routes,
+            effect_model,
             raw,
-        })
+        };
+        if let Some(model) = &service.effect_model {
+            model.validate(&service)?;
+        }
+        Ok(service)
     }
 }
 fn array(value: Option<&Value>) -> Result<&[Value], Error> {
@@ -968,7 +987,8 @@ impl GatewaySnapshot {
         // Independent operator bindings keep their existing selection order.
         // A derived binding is another source of access, checked at each use;
         // it never replaces the operator's values or enables another agent's token.
-        if matches!(decision, GatewayDecision::Deny { .. })
+        if (matches!(decision, GatewayDecision::Deny { .. })
+            || matches!(&decision, GatewayDecision::Selected { credential } if credential.missing_route_allow))
             && let (Some(registry), RouteMode::CompiledPolicy(policy)) =
                 (self.registry.as_deref(), request.route_mode)
         {
@@ -1017,7 +1037,7 @@ impl GatewaySnapshot {
                         ..request
                     },
                 );
-                if matches!(&candidate, GatewayDecision::Selected { credential } if credential.binding_id.as_deref() == Some(binding.binding_id.as_str())
+                if matches!(&candidate, GatewayDecision::Selected { credential } if !credential.missing_route_allow && credential.binding_id.as_deref() == Some(binding.binding_id.as_str())
                     && credential.contract_operation.as_ref().is_some_and(|operation| binding.grantable_operations.contains(operation)))
                 {
                     decision = candidate;
@@ -1523,14 +1543,27 @@ pub fn method_matches(method: &str, methods: &[String]) -> bool {
 /// Normalize request paths and preserve path case on both sides. Host/service
 /// prefixes are case-insensitive; '*' crosses '/'.
 pub fn resource_matches(resource: &str, pattern: &str) -> bool {
+    resource_matches_with_path(resource, pattern, true)
+}
+
+/// Gateway exceptions bind literal paths. A rule written for that literal path
+/// must participate alongside the existing normalized resource comparison.
+pub(crate) fn gateway_resource_matches(resource: &str, pattern: &str) -> bool {
+    resource_matches(resource, pattern) || resource_matches_with_path(resource, pattern, false)
+}
+
+fn resource_matches_with_path(resource: &str, pattern: &str, normalize: bool) -> bool {
+    let path = |value: &str| {
+        if normalize {
+            normalize_path(value)
+        } else {
+            value.to_owned()
+        }
+    };
     let resource = if resource.starts_with('/') {
-        normalize_path(resource)
-    } else if let Some((prefix, path)) = resource.split_once('/') {
-        format!(
-            "{}{}",
-            prefix.to_lowercase(),
-            normalize_path(&format!("/{path}"))
-        )
+        path(resource)
+    } else if let Some((prefix, suffix)) = resource.split_once('/') {
+        format!("{}{}", prefix.to_lowercase(), path(&format!("/{suffix}")))
     } else {
         resource.to_lowercase()
     };
@@ -1663,6 +1696,10 @@ pub struct GatewayRequest<'a> {
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CredentialSelection {
+    /// Selection passed the other binding/contract checks, but admission still
+    /// needs a host-recorded exact-route exception before upstream access.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub missing_route_allow: bool,
     /// Current credential definition approved for a run-bound service grant.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authorization_binding: Option<String>,
@@ -1906,29 +1943,40 @@ fn select_binding(
     let path = request.request.target.split('?').next().unwrap_or_default();
     // Route matching normalizes the path. Do not use that result to inject a
     // credential when the raw path can name a different upstream resource.
-    if crate::contracts::reject_path_tricks(path) || normalize_path(path) != path {
+    let normalized = normalize_path(path);
+    let canonical_path = normalized == path;
+    // A literal exception may approve a trailing slash as part of its scope.
+    // An ordinary normalized route must still never authorize that other path.
+    let literal_trailing_slash = path.strip_suffix('/') == Some(normalized.as_str());
+    if crate::contracts::reject_path_tricks(path) || (!canonical_path && !literal_trailing_slash) {
         return denied(403, "TRANSPORT_PATH_TRICK");
     }
     let permitted = match request.route_mode {
         RouteMode::CompiledPolicy(policy) => {
-            policy
-                .evaluate_gateway_request(crate::policy::GatewayRequest {
-                    service: &service.name,
-                    capability: &capability.name,
-                    agent,
-                    method: request.request.method,
-                    path,
-                })
-                .effect
-                == Effect::Allow
+            let decision = policy.evaluate_gateway_request(crate::policy::GatewayRequest {
+                service: &service.name,
+                capability: &capability.name,
+                agent,
+                method: request.request.method,
+                path,
+            });
+            if decision.effect != Effect::Allow && decision.matched_resource.is_some() {
+                return denied(403, "ROUTE_DENIED");
+            }
+            decision.effect == Effect::Allow
         }
         RouteMode::LocalFallback => capability.routes.iter().any(|route| {
             method_matches(request.request.method, &route.methods)
                 && resource_matches(path, &route.path)
         }),
     };
-    if !permitted {
+    if !permitted
+        && !matches!(request.route_mode, RouteMode::CompiledPolicy(policy) if policy.native_controls().is_some())
+    {
         return denied(403, "ROUTE_DENIED");
+    }
+    if !canonical_path && permitted {
+        return denied(403, "TRANSPORT_PATH_TRICK");
     }
     let mut operation = None;
     if let Some(contract) = &capability.contract
@@ -1987,6 +2035,7 @@ fn select_binding(
     };
     GatewayDecision::Selected {
         credential: Box::new(CredentialSelection {
+            missing_route_allow: !permitted,
             authorization_binding: None,
             binding_id: bindings
                 .iter()
@@ -2014,10 +2063,7 @@ fn select_binding(
             risky_route: service
                 .risky_routes
                 .iter()
-                .find(|route| {
-                    method_matches(request.request.method, &route.methods)
-                        && resource_matches(path, &route.path)
-                })
+                .find(|route| route.matches(request.request.method, path))
                 .cloned(),
             contract_operation: operation,
         }),
