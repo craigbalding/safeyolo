@@ -115,6 +115,91 @@ sandbox escape remain under [issue #616](https://github.com/craigbalding/safeyol
 The [optional VZ setup](REFERENCE.md#optional-vz-workloads) preserves that
 distinction and keeps the grants disabled by default.
 
+## Public VZ export comparison (2026-11-06)
+
+On physical Apple Silicon with macOS 26.6.2 (25G83), the confined `sy-agent`
+account (UID 502) exercised nine direct-startup Virtualization.framework (VZ)
+exports using disposable, nonsecret canaries. The installed profile permitted
+both read and read-write file-extension issuance throughout `/Users/sy-agent`.
+It also permitted the generic Fuse extension and the named VM-service lookup.
+Ordinary host file access covered the home and the account's per-user temporary
+directory. This profile differed from the selected-root examples shipped in
+[agent-dev.sb](agent-dev.sb); those examples remain commented out.
+
+The following identities bind the observation:
+
+| Input | Tested value |
+| --- | --- |
+| Helper | `safeyolo-vm` 0.3.1, production arm64, clean source `e23f055957ec55d80b2b6c03f544b901773f8c8e` |
+| Helper SHA-256 | `2dee6808cd4c9042a8478e51ad1e5d734113b5da351af2aa939d0d159c49e0fa` |
+| Signature | Ad-hoc, hardened runtime, strict verification passed; only `com.apple.security.virtualization`; `get_task_allow=false` |
+| Installed profile SHA-256 | `ec39eca32a8ac8ba2ceea9dcb4f587523bfbe2fdb8f2948b0386527ab9c32d80` |
+| Profile parameters | `AGENT_HOME=/Users/sy-agent`, `TOOLCHAIN_ROOT=/opt/homebrew` |
+| Guest | Linux 6.12.17; SSH user `agent` (UID 1000), data operations as guest root |
+
+The helper's startup and share-construction sources matched assigned SafeYolo
+source `e85bea5eec2182bc6ad1b1b414baa896087a22c2`. The only intervening Swift
+changes were snapshot-restore diagnostics and their tests; snapshots were not
+exercised. The existing read-only base disk and SSH initramfs supplied a fresh
+tmpfs overlay for each VM. The retained `overlay.img` was not used.
+
+Before export, the confined host driver directly read the canary and wrote and
+reread a separate control file in each root and its descendant. These successful
+operations established same-UID host access independently of guest I/O. The
+directories were owned by UID 502 with mode 0777; canary files had mode 0666.
+The outside-home fixture was a newly created directory under the account's
+`/private/var/folders/.../T` directory. No other account's data was used.
+
+Each VM requested one explicit `--share PATH:probe:ro` or `:rw` at startup,
+then mounted `probe` as VirtioFS at `/probe`. The helper also constructed its
+empty extra-share device. No live share update was used. All nine VMs booted
+and mounted the requested export successfully. Each row covers reads of
+`canary` and `descendant/canary`, and creation of `guest-write` at both levels:
+
+| Requested export | Guest reads | Guest writes and independent host observation |
+| --- | --- | --- |
+| Selected root, read-only | Exact canary bytes | Exit 1; both host outputs absent |
+| Selected root, writable | Exact canary bytes | Exit 0; both host outputs matched the written bytes |
+| Unlisted home sibling, read-only | Exact canary bytes | Exit 1; both host outputs absent |
+| Unlisted home sibling, writable | Exact canary bytes | Exit 0; both host outputs matched the written bytes |
+| Symlink alias to selected writable root | Exact canary bytes | Exit 0; both host outputs matched the written bytes |
+| Outside-home root, read-only | Exit 1 | Exit 1; both host outputs absent |
+| Outside-home root, writable | Exit 1 | Exit 1; both host outputs absent |
+| Selected descendant symlink to outside-home root, exported read-only | Exit 1 | Exit 1; both host outputs absent |
+| Same descendant symlink, exported writable | Exit 1 | Exit 1; both host outputs absent |
+
+The refused I/O returned `Operation not permitted` after a successful mount.
+This is an observed public export/guest I/O result; the responsible private
+issuance or service check was not identified. Access to the unlisted home
+sibling is consistent with home-wide issuance and does not prove selected-root
+confinement. Traversing the absolute outside-home symlink *within* the mounted
+selected share returned `No such file or directory`; that guest path-resolution
+failure does not establish service-side canonicalization. No tested outside-home
+canary access succeeded. Cross-workload effects were not assessed.
+
+A separate attempt to apply a nested sandbox before `/usr/bin/true` returned
+71 with `sandbox-exec: sandbox_apply: Operation not permitted`. Both the
+permissive nested profile and the profile denying the two file-issuance classes
+failed before the command ran. Consequently, the selected-root-only profile
+and file-grants-omitted export comparison remain unverified. This refusal is
+not a guest denial, and the current-profile run does not replace those controls.
+
+The driver and all nine recorded helper PIDs were independently absent after
+the run. Runner exit 143 followed requested shutdown. After result transfer,
+only the two new trial/canary directories were removed. The retained images,
+original overlay, installed profile and login keychain were preserved.
+
+The retained result `result.json` has SHA-256
+`d4763242f593da42c258d23cb9128611e520351c3339f9517723676b4e4d39d0`.
+It records the complete installed profile, commands, host controls, helper
+status and guest output. The result, driver, helper/serial logs and independent
+cleanup observations are retained under `/evidence/operator/616` for review.
+[Issue #616](https://github.com/craigbalding/safeyolo/issues/616) remains open.
+The private VZ recipient PID, UID and effective policy, raw-token transfer/reuse,
+private requests, lifetime/revocation, broader cross-VM effects and other OS
+versions remain unverified. These results do not establish complete containment
+or change the optional policy or account-local snapshot-keychain instructions.
+
 ## Original boundary-run source hashes
 
 SHA-256 hashes for the original broader boundary/workload run above. The
