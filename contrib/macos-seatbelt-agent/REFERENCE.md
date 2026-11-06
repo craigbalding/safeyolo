@@ -534,9 +534,12 @@ identifies the tested configuration and its limits.
 ### Optional policy grants
 
 [agent-dev.sb](agent-dev.sb) contains the commented VZ grants and lab share
-paths. VM startup needs the service lookup; VirtioFS also needs the Fuse and
-file-extension grants. The config share is read-only; workspace, status and
-home shares are writable.
+paths. The recorded VM workload used the service lookup; its VirtioFS exports
+also used the Fuse and file-extension grants. The config share is read-only;
+workspace, status and home shares are writable. The
+[public export comparison](VALIDATION.md#public-vz-export-comparison-2026-11-06)
+records access under a different installed profile with home-wide file issuance.
+The comparison without file-issuance grants remains unverified.
 
 The Fuse grant allowed startup to proceed after the observed error
 `Failed to issue Fuse sandbox extension`. The rule selects an extension class;
