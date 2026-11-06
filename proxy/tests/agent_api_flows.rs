@@ -218,12 +218,15 @@ async fn actual_source_dispatch_and_body_projection() {
             | "detail_percent_digits"
             | "detail_bad_suffix"
             | "post_only_get" => {
-                // The retained Python-source receipt predates the supported
-                // shared approval routes. Keep that receipt and all other
-                // error bytes; account only for the current approval routes.
+                // Adjust the captured endpoint inventory for current routes.
+                // Keep every other error byte and the exact response ordering.
                 let expected = row["text"].as_str().unwrap().replace(
                     "\"/explain\", \"/trace\"",
-                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals\", \"/approvals/{approval_id}/resolve (POST)\", \"/api/coord/request-access (POST)\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
+                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals\", \"/approvals/{approval_id}/resolve (POST)\", \"/api/coord/request-access (POST)\", \"/api/coord/request-collaboration (POST)\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
+                );
+                let expected = expected.replace(
+                    "\"/gateway/request-access\",",
+                    "\"/gateway/request-access\", \"/gateway/challenges/{challenge_id}\", \"/gateway/challenges/{challenge_id}/escalate (POST)\",",
                 );
                 let expected = expected.replace("\"/desktop/present\",", "\"/desktop/present\", \"/operator-actions\", \"/operator-actions/{action_request_id}\",");
                 assert_eq!(row["status"], 404, "{name}");

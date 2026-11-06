@@ -1,0 +1,137 @@
+diff --git a/pkg/sentry/vfs/BUILD b/pkg/sentry/vfs/BUILD
+index 495c5b5..01d333c 100644
+--- a/pkg/sentry/vfs/BUILD
++++ b/pkg/sentry/vfs/BUILD
+@@ -217,6 +217,7 @@ go_test(
+         "file_description_impl_util_test.go",
+         "mount_test.go",
+         "posix_acl_test.go",
++        "resolving_path_test.go",
+     ],
+     library = ":vfs",
+     deps = [
+diff --git a/pkg/sentry/vfs/resolving_path.go b/pkg/sentry/vfs/resolving_path.go
+index 57589cf..7f2e748 100644
+--- a/pkg/sentry/vfs/resolving_path.go
++++ b/pkg/sentry/vfs/resolving_path.go
+@@ -93,6 +93,7 @@ const (
+ 	rpflagsNoMagicLinks                   // same as RESOLVE_NO_MAGICLINKS
+ 	rpflagsNoSymlinks                     // same as RESOLVE_NO_SYMLINKS
+ 	rpflagsNoXDev                         // same as RESOLVE_NO_XDEV
++	rpflagsTrailingSlash                 // final component is followed by a trailing slash
+ )
+
+ func init() {
+@@ -189,6 +190,9 @@ func (vfs *VirtualFilesystem) getResolvingPath(creds *auth.Credentials, pop *Pat
+ 		rp.flags |= rpflagsNoXDev
+ 	}
+ 	rp.mustBeDir = pop.Path.Dir
++	if pop.Path.Dir {
++		rp.flags |= rpflagsTrailingSlash
++	}
+ 	rp.symlinks = 0
+ 	rp.curPart = 0
+ 	rp.creds = creds
+@@ -472,7 +476,7 @@ func (rp *ResolvingPath) CheckMount(ctx context.Context, d *Dentry) error {
+ func (rp *ResolvingPath) ShouldFollowSymlink() bool {
+ 	// Non-final symlinks are always followed. Paths terminated with '/' are also
+ 	// always followed.
+-	return rp.flags&rpflagsFollowFinalSymlink != 0 || !rp.Final() || rp.MustBeDir()
++	return rp.flags&(rpflagsFollowFinalSymlink|rpflagsTrailingSlash) != 0 || !rp.Final()
+ }
+
+ // HandleSymlink is called when the current path component is a symbolic link
+@@ -554,6 +558,7 @@ func (rp *ResolvingPath) relpathPrepend(path fspath.Path) {
+ 		// but can't unset it.
+ 		if path.Dir {
+ 			rp.mustBeDir = true
++			rp.flags |= rpflagsTrailingSlash
+ 		}
+ 	}
+ }
+diff --git a/pkg/sentry/vfs/resolving_path_test.go b/pkg/sentry/vfs/resolving_path_test.go
+new file mode 100644
+index 0000000..59e44bd
+--- /dev/null
++++ b/pkg/sentry/vfs/resolving_path_test.go
+@@ -0,0 +1,70 @@
++// Copyright 2026 The SafeYolo Authors.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package vfs
++
++import (
++	"testing"
++
++	"gvisor.dev/gvisor/pkg/context"
++	"gvisor.dev/gvisor/pkg/fspath"
++)
++
++func TestShouldFollowSymlinkDirectoryRequirement(t *testing.T) {
++	for _, tc := range []struct {
++		name, path              string
++		follow, directory, want bool
++	}{
++		{"final_nofollow", "link", false, false, false},
++		{"final_nofollow_directory", "link", false, true, false},
++		{"final_follow_directory", "link", true, true, true},
++		{"trailing_slash", "link/", false, false, true},
++		{"trailing_slash_directory", "link/", false, true, true},
++		{"nonfinal_nofollow", "link/child", false, true, true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			var vfs VirtualFilesystem
++			rp := vfs.getResolvingPath(nil, &PathOperation{
++				Path:               fspath.Parse(tc.path),
++				FollowFinalSymlink: tc.follow,
++			})
++			defer rp.Release(context.Background())
++			if tc.directory {
++				rp.mustBeDir = true // OpenAt's O_DIRECTORY type requirement.
++			}
++			if got := rp.ShouldFollowSymlink(); got != tc.want {
++				t.Errorf("ShouldFollowSymlink() = %t, want %t", got, tc.want)
++			}
++		})
++	}
++}
++
++func TestSymlinkTargetTrailingSlash(t *testing.T) {
++	for _, target := range []string{"target", "target/"} {
++		t.Run(target, func(t *testing.T) {
++			var vfs VirtualFilesystem
++			rp := vfs.getResolvingPath(nil, &PathOperation{Path: fspath.Parse("link")})
++			defer rp.Release(context.Background())
++			rp.Advance()
++			rp.relpathPrepend(fspath.Parse(target))
++			want := target == "target/"
++			if got := rp.ShouldFollowSymlink(); got != want {
++				t.Errorf("ShouldFollowSymlink() = %t, want %t", got, want)
++			}
++			if got := rp.MustBeDir(); got != want {
++				t.Errorf("MustBeDir() = %t, want %t", got, want)
++			}
++		})
++	}
++}
+diff --git a/tools/workspace_status.sh b/tools/workspace_status.sh
+index b4b3614..1e4557e 100755
+--- a/tools/workspace_status.sh
++++ b/tools/workspace_status.sh
+@@ -15,4 +15,4 @@
+ # limitations under the License.
+
+ # The STABLE_ prefix will trigger a re-link if it changes.
+-echo STABLE_VERSION "$(git describe --always --tags --exclude 'release-*-staging' --abbrev=12 --dirty 2>/dev/null || echo 0.0.0)"
++echo STABLE_VERSION release-20261005.0-safeyolo.1

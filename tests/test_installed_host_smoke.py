@@ -545,7 +545,7 @@ def test_substrate_uses_installed_runtime_diagnosis_without_path_fallback(tmp_pa
     cli.parent.mkdir()
     cli.touch()
     selected = {"state": "ready" if ready else "unavailable", "path": "/owned/libexec/runsc",
-                "version": "release-20261005.0", "origin": "bundled", "error": "missing companion"}
+                "version": "release-20261005.0-safeyolo.1", "origin": "bundled", "error": "missing companion"}
     monkeypatch.setattr(smoke_module.platform, "system", lambda: "Linux")
     monkeypatch.setattr(smoke_module, "_run", lambda argv, **kwargs: subprocess.CompletedProcess(
         argv, 0, json.dumps({"linux": selected}), ""))
@@ -560,7 +560,7 @@ def test_substrate_uses_installed_runtime_diagnosis_without_path_fallback(tmp_pa
 @pytest.mark.parametrize("defect", [None, "prefix", "suffix", "nonzero", "shape"])
 def test_substrate_parses_complete_doctor_stdout_strictly(tmp_path, smoke_module, monkeypatch, defect):
     selected = {"state": "ready", "path": "/owned/libexec/runsc",
-                "version": "release-20261005.0", "origin": "bundled"}
+                "version": "release-20261005.0-safeyolo.1", "origin": "bundled"}
     report = {"linux": selected, "pipeline": {"detail": "x" * (smoke_module.OUTPUT_LIMIT * 2)}}
     if defect == "shape":
         report["linux"] = []

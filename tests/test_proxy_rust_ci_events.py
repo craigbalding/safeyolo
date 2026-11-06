@@ -291,6 +291,9 @@ def test_installed_linux_tests_keep_their_failure_after_build_separation(tmp_pat
     build = next(step for step in steps if step.get("id") == "linux_host_inputs")
     tests = next(step for step in steps if step.get("name") == "Test installed native policy commands")
     assert steps.index(build) < steps.index(tests)
+    diagnostics = next(step for step in steps if step.get("name") == "Retain runtime preparation and installed policy diagnostics")
+    native_tests = next(step for step in steps if step.get("name") == "Test native desktop presentation and host entry")
+    assert steps.index(tests) < steps.index(diagnostics) < steps.index(native_tests)
     assert not tests.get("continue-on-error")
     commands = tmp_path / "commands"
     commands.mkdir()
@@ -321,11 +324,11 @@ def test_installed_linux_tests_keep_their_failure_after_build_separation(tmp_pat
     else:
         assert result.returncode == 23, result.stderr
         assert calls.read_text().splitlines() == [
-            "run --frozen pytest -q tests/proxy_contracts/test_native_policy_cli.py "
+            "run --frozen pytest -v tests/proxy_contracts/test_native_policy_cli.py "
             "tests/proxy_contracts/test_first_agent_launch.py "
             "cli/tests/test_host_setup_scripts.py::test_claude_host_state_choice_controls_auth_preferences_and_extensions "
             "cli/tests/test_host_setup_scripts.py::test_claude_setup_does_not_write_through_guest_created_host_links "
-            f"--basetemp {tmp_path}/native-policy"
+            f"--basetemp {tmp_path}/native-policy --junitxml {tmp_path}/native-policy.xml"
         ]
 
 
@@ -443,7 +446,7 @@ def test_linux_input_callers_pin_the_supported_ubuntu_runtime_baseline(workflow_
     steps = {step.get("name"): step for step in build["steps"]}
     package = steps["Retain complete Linux production bundle"]["run"]
     # Acquire tmux on the same baseline as the host build and package assembly.
-    assert "sudo -n apt-get install -y -qq --no-install-recommends tmux" in package
+    assert "sudo -n apt-get install -y -qq --no-install-recommends tmux" in steps["Install patched runtime build dependencies"]["run"]
     assert '--artifacts proxy/target/release --guest-artifacts guest/command/target/release' in package
     assert '--runtime-artifacts "$(dirname "$(command -v tmux)")" --profile production' in package
 
@@ -904,6 +907,7 @@ def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, e
         "Build the native guest command artifact", "Build Linux production inputs",
         "Build the native CLI for recovery and Dispatch checks", "Install uv",
         "Install the native CLI test environment", "Install preview test system dependency",
+        "Install patched runtime build dependencies", "Prepare the complete patched gVisor runtime",
         "Install the pinned Codex execpolicy test consumer", installed["name"],
     ):
         prerequisite = next(step for step in steps if step.get("name") == name)

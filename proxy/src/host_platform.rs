@@ -1202,6 +1202,9 @@ async fn start_linux_sandbox(
             .arg(&overlay)
             .args([
                 "--host-uds=open",
+                // The patched version suffix is outside upstream's release
+                // pattern. Preserve its release-build companion checks.
+                "--sidecar-release-enforcement-policy=ALWAYS",
                 "--ignore-cgroups",
                 "--network=sandbox",
                 &format!("--platform={platform}"),

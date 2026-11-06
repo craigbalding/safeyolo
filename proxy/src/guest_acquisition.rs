@@ -135,9 +135,9 @@ impl PackageGuest {
             .iter()
             .any(|key| fields.contains_key(key))
             && (platform == ConsumerPlatform::DarwinArm64
-                || field("runsc_version")? != "release-20261005.0"
+                || field("runsc_version")? != "release-20261005.0-safeyolo.1"
                 || field("runsc_source")?
-                    != "https://github.com/google/gvisor/releases/tag/release-20261005.0"
+                    != "https://github.com/google/gvisor/commit/97e8e896904cb364319cd9758241d3f0bd27a6f4"
                 || field("runsc_origin")? != "bundled")
         {
             return Err("invalid gVisor package metadata".into());

@@ -132,7 +132,7 @@ def test_retained_systrap_caller_remaps_only_its_private_copy(native_cli, owned_
 
 def payload(path):
     (path / "gvisor-bin").mkdir(parents=True)
-    executable(path / "runsc", "runsc version release-20261005.0")
+    executable(path / "runsc", "runsc version release-20261005.0-safeyolo.1")
     for name in FILES[1:]:
         shutil.copy2(path / "runsc", path / name)
     return path / "runsc"
@@ -508,7 +508,7 @@ def test_doctor_keeps_selected_system_identity_when_runtime_disappears(native_cl
     assert first.returncode == 0, first.stderr
     observed = json.loads(first.stdout)["linux"]
     assert observed["path"] == str(runtime) and observed["origin"] == "system"
-    assert observed["version"] == "release-20261005.0"
+    assert observed["version"] == "release-20261005.0-safeyolo.1"
     tools = parent / "tools"
     tools.mkdir()
     (tools / "getent").symlink_to(shutil.which("getent"))
@@ -519,7 +519,7 @@ def test_doctor_keeps_selected_system_identity_when_runtime_disappears(native_cl
     assert "newuidmap" in observed["error"] and "newgidmap" in observed["error"]
     assert "zstd" not in observed["error"]
     assert observed["path"] == str(runtime) and observed["origin"] == "system"
-    assert observed["version"] == "release-20261005.0"
+    assert observed["version"] == "release-20261005.0-safeyolo.1"
     for name in ("newuidmap", "newgidmap", "setfacl", "getfacl", "unshare",
                  "nsenter", "ip", "ssh", "curl", "tar", "true", "aa-exec"):
         path = shutil.which(name)
