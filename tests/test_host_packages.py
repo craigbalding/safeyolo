@@ -106,6 +106,88 @@ def test_runsc_acquisition_reuses_its_build_and_refuses_corrupt_cached_companion
     assert build_calls.read_text().splitlines() == ["build"]
 
 
+@pytest.mark.parametrize("workflow_name,job,consumer", [
+    ("proxy-rust.yml", "focused-pr", "Test installed native policy commands"),
+    ("guest-test-inputs.yml", "build", "Retain complete Linux production bundle"),
+])
+@pytest.mark.parametrize("missing_companion", [False, True])
+def test_workflow_prepares_runtime_before_installation_and_propagates_failure(
+    tmp_path, monkeypatch, prepared_runsc, workflow_name, job, consumer, missing_companion,
+):
+    import yaml
+
+    workflow = yaml.safe_load((REPO / ".github/workflows" / workflow_name).read_text())
+    steps = workflow["jobs"][job]["steps"]
+    preparation = next(s for s in steps if s.get("name") == "Prepare the complete patched gVisor runtime")
+    assert preparation["shell"] == "bash"
+    assert steps.index(preparation) < next(i for i, s in enumerate(steps) if s.get("name") == consumer)
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    for name in ("acquire_runsc.sh", "build_runsc.sh", "native_package.sh"):
+        shutil.copy2(REPO / "scripts" / name, scripts / name)
+    shutil.copytree(REPO / "scripts/gvisor", scripts / "gvisor")
+    if missing_companion:
+        (prepared_runsc / "gvisor-bin/runsc-fd-parking").unlink()
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    environment_file = tmp_path / "github-env"
+    monkeypatch.setenv("RUNNER_TEMP", str(runner))
+    monkeypatch.setenv("GITHUB_ENV", str(environment_file))
+    monkeypatch.setenv("SAFEYOLO_RUNSC_ARTIFACTS", str(prepared_runsc))
+    # Match Actions' explicit Bash shell, including pipefail through tee.
+    result = run("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", preparation["run"], cwd=tmp_path)
+    assert (result.returncode == 0) == (not missing_companion), (result.stdout, result.stderr)
+    assert (runner / "gvisor-preparation.log").is_file()
+    if missing_companion:
+        assert "runsc-fd-parking" in (runner / "gvisor-preparation.log").read_text()
+        assert not environment_file.exists()
+        assert not (runner / "gvisor-runtime").exists()
+    else:
+        assert environment_file.read_text() == f"SAFEYOLO_RUNSC_ARTIFACTS={runner}/gvisor-runtime\n"
+        result = run("sha256sum", "--check", "--strict", "SHA256SUMS", cwd=runner / "gvisor-runtime")
+        assert result.returncode == 0, result.stderr
+        assert len(result.stdout.splitlines()) == 4
+
+
+@pytest.mark.parametrize("defect", [None, "checksum", "missing", "version", "architecture"])
+def test_overnight_consumer_validates_complete_downloaded_runtime(tmp_path, prepared_runsc, defect):
+    import yaml
+
+    runner = tmp_path / "runner"
+    runtime = runner / "gvisor-runtime"
+    shutil.copytree(prepared_runsc, runtime)
+    if defect == "version":
+        executable(runtime / "runsc", "runsc version release-20261005.0")
+    elif defect == "architecture":
+        companion = runtime / "gvisor-bin/gvisor_sentry"
+        contents = bytearray(companion.read_bytes())
+        contents[18:20] = (62 if os.uname().machine in ("aarch64", "arm64") else 183).to_bytes(2, "little")
+        companion.write_bytes(contents)
+    files = sorted(path for path in runtime.rglob("*") if path.is_file())
+    (runtime / "SHA256SUMS").write_text("".join(
+        f"{builder.sha256(path)}  {path.relative_to(runtime)}\n" for path in files
+    ))
+    if defect == "checksum":
+        with (runtime / "gvisor-bin/gvisor_sentry").open("ab") as stream:
+            stream.write(b"damaged download")
+    elif defect == "missing":
+        (runtime / "gvisor-bin/runsc-fd-parking").unlink()
+    # Actions artifacts lose executable permissions; the consumer restores them.
+    for path in files:
+        if path.exists():
+            path.chmod(0o644)
+    environment_file = tmp_path / "github-env"
+    workflow = yaml.safe_load((REPO / ".github/workflows/proxy-rust.yml").read_text())
+    steps = workflow["jobs"]["contracts"]["steps"]
+    validation = next(s for s in steps if s.get("name") == "Validate the prepared patched gVisor runtime")
+    assert validation["if"] == "runner.os == 'Linux'"
+    assert steps.index(validation) < next(i for i, s in enumerate(steps) if s.get("name") == "Run native proxy component contracts")
+    result = run("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", validation["run"], cwd=REPO,
+                 env={**os.environ, "RUNNER_TEMP": str(runner), "GITHUB_ENV": str(environment_file)})
+    assert (result.returncode == 0) == (defect is None), (result.stdout, result.stderr)
+    assert environment_file.exists() == (defect is None)
+
+
 def run(*arguments, **kwargs):
     return subprocess.run(arguments, capture_output=True, text=True, timeout=30, **kwargs)
 
