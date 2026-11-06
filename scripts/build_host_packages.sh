@@ -94,7 +94,10 @@ if [[ $platform == linux-* ]]; then
     # Remove source-level debug data only from packaging copies. Keep the
     # original upstream cache and debug bundles intact for debugging.
     while IFS= read -r binary; do
-      objcopy --remove-section='.debug*' --remove-section='.zdebug*' "$directory/libexec/$binary"
+      # Bazel outputs can be read-only. Replace our copy after stripping it.
+      objcopy --remove-section='.debug*' --remove-section='.zdebug*' \
+        "$directory/libexec/$binary" "$directory/libexec/$binary.stripped"
+      mv -- "$directory/libexec/$binary.stripped" "$directory/libexec/$binary"
     done < <(runsc_files)
   fi
 fi

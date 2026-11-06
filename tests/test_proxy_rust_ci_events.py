@@ -291,6 +291,9 @@ def test_installed_linux_tests_keep_their_failure_after_build_separation(tmp_pat
     build = next(step for step in steps if step.get("id") == "linux_host_inputs")
     tests = next(step for step in steps if step.get("name") == "Test installed native policy commands")
     assert steps.index(build) < steps.index(tests)
+    diagnostics = next(step for step in steps if step.get("name") == "Retain runtime preparation and installed policy diagnostics")
+    native_tests = next(step for step in steps if step.get("name") == "Test native desktop presentation and host entry")
+    assert steps.index(tests) < steps.index(diagnostics) < steps.index(native_tests)
     assert not tests.get("continue-on-error")
     commands = tmp_path / "commands"
     commands.mkdir()

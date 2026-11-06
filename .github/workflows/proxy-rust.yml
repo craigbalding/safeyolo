@@ -346,6 +346,52 @@ jobs:
           uv run --frozen pytest -q cli/tests/test_agent_command_supervisor.py \
             cli/tests/test_vm_recovery_recipe.py
 
+      - name: Install the pinned Codex execpolicy test consumer
+        if: steps.changes.outputs.rust == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/codex-execpolicy"
+          cp tools/codex-execpolicy/package{,-lock}.json "$RUNNER_TEMP/codex-execpolicy/"
+          npm ci --prefix "$RUNNER_TEMP/codex-execpolicy"
+          # npm can omit a corrupt optional package. Refuse global module fallback.
+          node - "$RUNNER_TEMP/codex-execpolicy" <<'JS'
+          const path = require('node:path');
+          const { createRequire } = require('node:module');
+          const modules = path.resolve(process.argv[2], 'node_modules');
+          const wrapper = path.join(modules, '@openai/codex/package.json');
+          const platform = `@openai/codex-${process.platform}-${process.arch}/package.json`;
+          if (createRequire(wrapper).resolve(platform) !== path.join(modules, platform)) {
+            throw new Error('Codex must use the locked local platform package');
+          }
+          JS
+          test "$("$RUNNER_TEMP/codex-execpolicy/node_modules/.bin/codex" --version)" = 'codex-cli 0.159.1'
+          printf '%s\n' "$RUNNER_TEMP/codex-execpolicy/node_modules/.bin" >> "$GITHUB_PATH"
+
+
+      - name: Test installed native policy commands
+        if: steps.changes.outputs.rust == 'true'
+        run: |
+          scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy
+          uv run --frozen pytest -v tests/proxy_contracts/test_native_policy_cli.py \
+            tests/proxy_contracts/test_first_agent_launch.py \
+            cli/tests/test_host_setup_scripts.py::test_claude_host_state_choice_controls_auth_preferences_and_extensions \
+            cli/tests/test_host_setup_scripts.py::test_claude_setup_does_not_write_through_guest_created_host_links \
+            --basetemp "$RUNNER_TEMP/native-policy" --junitxml "$RUNNER_TEMP/native-policy.xml"
+          uv run --frozen pytest -q tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_requires_confirmation_before_any_role_starts \
+            tests/proxy_contracts/test_native_factory_cli.py::test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants \
+            --basetemp "$RUNNER_TEMP/native-factory"
+          uv run --frozen pytest -q tests/test_guest_acquisition.py tests/test_guest_upgrade.py tests/test_component_upgrade.py tests/test_linux_host.py --basetemp "$RUNNER_TEMP/guest-selection"
+
+      - name: Retain runtime preparation and installed policy diagnostics
+        if: always() && steps.changes.outputs.rust == 'true'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: native-policy-diagnostics
+          path: |
+            ${{ runner.temp }}/gvisor-preparation.log
+            ${{ runner.temp }}/native-policy.xml
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Test native desktop presentation and host entry
         if: steps.changes.outputs.rust == 'true'
         working-directory: proxy
@@ -404,52 +450,6 @@ jobs:
           ../scripts/cargo_with_space.sh test --release --locked --lib guest_acquisition::tests
           ../scripts/cargo_with_space.sh test --release --locked --lib boot_
           ../scripts/cargo_with_space.sh test --release --locked --test command_centre_lifecycle
-
-      - name: Install the pinned Codex execpolicy test consumer
-        if: steps.changes.outputs.rust == 'true'
-        run: |
-          mkdir -p "$RUNNER_TEMP/codex-execpolicy"
-          cp tools/codex-execpolicy/package{,-lock}.json "$RUNNER_TEMP/codex-execpolicy/"
-          npm ci --prefix "$RUNNER_TEMP/codex-execpolicy"
-          # npm can omit a corrupt optional package. Refuse global module fallback.
-          node - "$RUNNER_TEMP/codex-execpolicy" <<'JS'
-          const path = require('node:path');
-          const { createRequire } = require('node:module');
-          const modules = path.resolve(process.argv[2], 'node_modules');
-          const wrapper = path.join(modules, '@openai/codex/package.json');
-          const platform = `@openai/codex-${process.platform}-${process.arch}/package.json`;
-          if (createRequire(wrapper).resolve(platform) !== path.join(modules, platform)) {
-            throw new Error('Codex must use the locked local platform package');
-          }
-          JS
-          test "$("$RUNNER_TEMP/codex-execpolicy/node_modules/.bin/codex" --version)" = 'codex-cli 0.159.1'
-          printf '%s\n' "$RUNNER_TEMP/codex-execpolicy/node_modules/.bin" >> "$GITHUB_PATH"
-
-
-      - name: Test installed native policy commands
-        if: steps.changes.outputs.rust == 'true'
-        run: |
-          scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy
-          uv run --frozen pytest -v tests/proxy_contracts/test_native_policy_cli.py \
-            tests/proxy_contracts/test_first_agent_launch.py \
-            cli/tests/test_host_setup_scripts.py::test_claude_host_state_choice_controls_auth_preferences_and_extensions \
-            cli/tests/test_host_setup_scripts.py::test_claude_setup_does_not_write_through_guest_created_host_links \
-            --basetemp "$RUNNER_TEMP/native-policy" --junitxml "$RUNNER_TEMP/native-policy.xml"
-          uv run --frozen pytest -q tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_requires_confirmation_before_any_role_starts \
-            tests/proxy_contracts/test_native_factory_cli.py::test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants \
-            --basetemp "$RUNNER_TEMP/native-factory"
-          uv run --frozen pytest -q tests/test_guest_acquisition.py tests/test_guest_upgrade.py tests/test_component_upgrade.py tests/test_linux_host.py --basetemp "$RUNNER_TEMP/guest-selection"
-
-      - name: Retain runtime preparation and installed policy diagnostics
-        if: always() && steps.changes.outputs.rust == 'true'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: native-policy-diagnostics
-          path: |
-            ${{ runner.temp }}/gvisor-preparation.log
-            ${{ runner.temp }}/native-policy.xml
-          retention-days: 7
-          if-no-files-found: ignore
 
       - name: Build and save master debug release runtimes
         if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.changes.outputs.rust == 'true'

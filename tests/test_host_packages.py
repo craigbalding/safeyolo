@@ -743,8 +743,13 @@ def test_workflow_consumers_validate_prepared_native_inputs(package_inputs, tmp_
 
 
 @pytest.mark.parametrize("package_inputs", ["debug", "production"], indirect=True)
-def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs, tmp_path):
+@pytest.mark.parametrize("read_only_runtime", [False, True])
+def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs, tmp_path, read_only_runtime):
     runtime = Path(os.environ["PACKAGE_RUNSC_FIXTURE"])
+    if read_only_runtime:
+        for path in runtime.rglob("*"):
+            if path.is_file():
+                path.chmod(0o555)
     upstream = {path.relative_to(runtime): path.read_bytes() for path in runtime.rglob("*") if path.is_file()}
     output = tmp_path / "output"
     result = run(*package_inputs[4], "--output", str(output))
@@ -767,6 +772,8 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
         for relative, original in upstream.items():
             member = archive.name.removesuffix(".tar.gz") + "/libexec/" + str(relative)
             assert (runtime / relative).read_bytes() == original
+            if read_only_runtime:
+                assert stat.S_IMODE((runtime / relative).stat().st_mode) == 0o555
             if relative.name in ("checkpointgofer", "runsc-metric-server"):
                 assert member not in names
                 assert f"./libexec/{relative}" not in checksums
