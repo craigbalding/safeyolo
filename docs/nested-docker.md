@@ -80,7 +80,8 @@ cd /home/agent/nested-notes
 unset DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH
 ```
 
-Before building, retrieve `debian:trixie-slim` into this inner daemon. The
+Before building, retrieve the fixture's pinned Debian image into this inner
+daemon. Read the image reference from the Dockerfile's first `FROM` line. The
 demonstrated pull used the Engine API with one fixed, short-lived registry
 token. The ordinary CLI can acquire a different anonymous token after a refused
 pull, so retrying the CLI does not establish that the replacement is approved.
@@ -95,9 +96,10 @@ supplies the fixed bearer to the registry.
 
 ```sh
 umask 077
+base_image=$(sed -n '1s/^FROM //p' Dockerfile)
 curl --fail --silent --show-error --output registry-token.json 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/debian:pull'
 python3 -c 'import base64,json; token=json.load(open("registry-token.json"))["token"]; auth=base64.urlsafe_b64encode(json.dumps({"registrytoken":token}).encode()).decode(); print("X-Registry-Auth: " + auth)' > registry-header.txt
-sudo -n curl --silent --show-error --unix-socket /run/safeyolo-nested-docker/docker.sock --request POST --header @registry-header.txt 'http://localhost/v1.45/images/create?fromImage=debian&tag=trixie-slim'
+sudo -n curl --silent --show-error --unix-socket /run/safeyolo-nested-docker/docker.sock --request POST --header @registry-header.txt "http://localhost/v1.45/images/create?fromImage=$base_image"
 ```
 
 If the progress stream reports an error, stop before building. For an unknown
@@ -110,12 +112,12 @@ still need their normal policy decision. Keep tokens out of command arguments,
 logs and shared files. If you abandon the pull, remove both private files.
 
 After the pull completes, verify that the image exists, then remove both secret
-files before building. The qualification retrieved manifest digest
-`sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2`;
-the mutable tag can later select another image.
+files before building. The [fixture's image pin](../tests/blackbox/fixtures/nested-docker/Dockerfile)
+selects the same manifest index recorded during qualification. Docker still
+selects the native Linux architecture from that index.
 
 ```sh
-sudo -n docker --host=unix:///run/safeyolo-nested-docker/docker.sock image inspect debian:trixie-slim
+sudo -n docker --host=unix:///run/safeyolo-nested-docker/docker.sock image inspect "$base_image"
 rm registry-token.json registry-header.txt
 sudo -n env DOCKER_BUILDKIT=0 docker --host=unix:///run/safeyolo-nested-docker/docker.sock compose up --build -d
 curl --fail --retry 10 --retry-connrefused --retry-all-errors http://127.0.0.1:8088/api/v1/notes
