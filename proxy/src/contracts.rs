@@ -157,6 +157,17 @@ impl ContractTemplate {
             }
             if let Some(transport) = &operation.request.transport {
                 transport.validate()?;
+                if transport.body_format == BodyFormat::Opaque
+                    && !operation.request.body.allow.is_empty()
+                {
+                    return Err("opaque request bodies cannot have JSON field constraints".into());
+                }
+                if transport.body_format == BodyFormat::Opaque
+                    && !["POST", "PUT", "PATCH"]
+                        .contains(&operation.request.method.to_uppercase().as_str())
+                {
+                    return Err("opaque request bodies require POST, PUT or PATCH".into());
+                }
             }
         }
         Ok(())
@@ -264,6 +275,19 @@ pub struct TransportConstraint {
     pub allow_headers: Option<Value>,
     #[serde(default)]
     pub deny_ambiguous_encoding: bool,
+    /// Opaque bodies have no JSON field view. Only explicit media types can stream.
+    #[serde(default)]
+    pub body_format: BodyFormat,
+    #[serde(default)]
+    pub content_types: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BodyFormat {
+    #[default]
+    JsonObject,
+    Opaque,
 }
 fn present_value<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
@@ -272,6 +296,24 @@ fn present_value<'de, D: serde::Deserializer<'de>>(
 }
 impl TransportConstraint {
     fn validate(&self) -> Result<(), Error> {
+        if self.body_format == BodyFormat::Opaque
+            && (self.require_no_body || self.content_types.is_empty())
+        {
+            return Err(
+                "opaque request bodies need content_types and cannot require_no_body".into(),
+            );
+        }
+        if self.content_types.iter().any(|value| {
+            value.is_empty()
+                || value != &value.to_ascii_lowercase()
+                || !value.contains('/')
+                || value.contains([';', ',', ' ', '\r', '\n'])
+        }) {
+            return Err(
+                "transport.content_types must contain lowercase media types without parameters"
+                    .into(),
+            );
+        }
         if let Some(value) = &self.allow_headers
             && !value
                 .as_array()
@@ -632,7 +674,24 @@ pub(crate) fn enforce_request_with_timestamps(
         .to_lowercase();
     let mut body = None;
     let writes = ["POST", "PUT", "PATCH"].contains(&request.method);
-    if writes && !request.body.is_empty() {
+    let opaque = operation
+        .request
+        .transport
+        .as_ref()
+        .is_some_and(|transport| transport.body_format == BodyFormat::Opaque);
+    if writes
+        && operation
+            .request
+            .transport
+            .as_ref()
+            .is_some_and(|transport| {
+                !transport.content_types.is_empty()
+                    && !transport.content_types.contains(&content_type)
+            })
+    {
+        return Err(deny(TransportContentType, None));
+    }
+    if writes && !opaque && !request.body.is_empty() {
         if content_type != "application/json" {
             return Err(deny(TransportContentType, None));
         }

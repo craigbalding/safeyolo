@@ -399,6 +399,30 @@ fn configured_ttl_and_matching_preserve_current_method_and_path_rules() {
 }
 
 #[test]
+fn admitted_protocol_switch_consumes_a_once_grant() {
+    let (_directory, _path, store) = setup(SOURCE);
+    store
+        .add_grant(request("alice", GrantScope::Once), now(), validate)
+        .unwrap();
+    let lease = store
+        .check_grant(scope("alice"), now(), validate)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store
+            .finish_response(lease, Some(101), now(), validate)
+            .unwrap(),
+        ResponseOutcome::Consumed
+    );
+    assert!(
+        store
+            .check_grant(scope("alice"), now(), validate)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn once_lease_consumes_only_success_and_cancellation_releases_its_own_reservation() {
     let (_directory, path, store) = setup(SOURCE);
     let added = store
