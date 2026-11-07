@@ -127,7 +127,7 @@ def gateway_management(args, root, output, native, guest, background, report):
         native("start")
         native("agent", "start", "dockercaller", "--sandbox-only")
         report["caller"] = running_guest(root, "dockercaller", json.loads(native("agent", "status", "dockercaller")))
-        guest("if ! command -v dockerd >/dev/null || ! command -v socat >/dev/null "
+        guest("set -eu; if ! command -v dockerd >/dev/null || ! command -v socat >/dev/null "
               "|| ! docker compose version >/dev/null 2>&1; then "
               "sudo -n apt-get update && sudo -n apt-get install -y --no-install-recommends "
               "docker.io docker-cli docker-compose socat; fi; "
@@ -186,6 +186,11 @@ printf 'Authorization: Bearer %s\\n' "$agent_token" |
         attached = client_command(f"printf 'attach-half-close\\n' | /workspace/docker-client attach --sig-proxy=false {name}", "gateway-attach")
         assert "internal:attach-half-close" in attached
         client_command(f"/workspace/docker-client rm {name}", "gateway-remove")
+        guest("sudo -n kill -TERM $(cat /run/safeyolo-nested-docker/dockerd.pid)", "gateway-stop-daemon")
+        report["gateway_daemon_exit"] = daemon.wait(timeout=20)
+        failed = client_command("/workspace/docker-client version >/dev/null 2>/home/agent/docker-gateway-client/daemon.log "
+                                "&& exit 1; cat /home/agent/docker-gateway-client/daemon.log", "gateway-daemon-failed")
+        assert "502" in failed or "503" in failed, "daemon failure did not fail clearly"
         guest(f"sudo -n kill -TERM $(cat {state}/relay.pid)", "gateway-close-port")
         report["gateway_port_exit"] = relay.wait(timeout=20)
         closed = client_command("/workspace/docker-client version >/dev/null 2>/home/agent/docker-gateway-client/closed.log "
@@ -195,7 +200,7 @@ printf 'Authorization: Bearer %s\\n' "$agent_token" |
         stopped = client_command("/workspace/docker-client version >/dev/null 2>/home/agent/docker-gateway-client/stopped.log "
                                  "&& exit 1; cat /home/agent/docker-gateway-client/stopped.log", "gateway-stopped")
         assert "502" in stopped or "503" in stopped, "stopped provider did not fail clearly"
-        report["gateway_result"] = "version, create/inspect, exec/attach half-close, removal and unavailable provider passed"
+        report["gateway_result"] = "version, create/inspect, exec/attach half-close, removal, daemon failure and unavailable provider passed"
     finally:
         # Stop before restoring the retained application service and its
         # authorizations. Keep failure diagnostics and uncertain resources.
@@ -534,12 +539,12 @@ def run(args):
             assert policy["agents"]["notes"]["nested_docker"] is True
             workspace = Path(policy["agents"]["notes"]["folder"])
             if args.gateway:
-                # The retained root links its original prepared installation.
-                # Select a task-owned bin overlay for the current proxy, then
-                # restore the link after stop. Never overwrite donor binaries.
-                original_bin = (root / "bin").readlink()
-                (output / "original-bin-link.txt").write_text(str(original_bin) + "\n")
-                (root / "bin").unlink()
+                # Preserve either a directory or a prepared-installation link
+                # on the same filesystem. Never copy through a donor link.
+                saved_bin = root / ("bin-docker-gateway-" + uuid.uuid4().hex)
+                (root / "bin").rename(saved_bin)
+                original_bin = saved_bin
+                (output / "original-bin-path.txt").write_text(str(saved_bin) + "\n")
                 (root / "bin").symlink_to(base / "bin", target_is_directory=True)
         else:
             prepare_native_instance(base, root)
@@ -617,7 +622,7 @@ def run(args):
                 failures.append(f"instance stop: {error}")
         if original_bin is not None:
             (root / "bin").unlink(missing_ok=True)
-            (root / "bin").symlink_to(original_bin, target_is_directory=True)
+            original_bin.rename(root / "bin")
         report["commands"] = []
         for label, child, reader, finished in children:
             try:

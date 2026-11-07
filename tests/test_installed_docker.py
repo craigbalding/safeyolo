@@ -18,9 +18,49 @@ from urllib.response import addinfourl
 
 import pytest
 
-from tests.blackbox.installed_docker_preflight import gateway_management, verify_outbound, verify_provider_origin
+from tests.blackbox.installed_docker_preflight import gateway_management, run, verify_outbound, verify_provider_origin
 
 PROBE = Path(__file__).parent / "blackbox/fixtures/nested-docker/network_probe.py"
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_gateway_binary_selection_restores_the_retained_entry_after_staging_failure(tmp_path, monkeypatch, linked):
+    prepared = tmp_path / "prepared"
+    for part in ("bin", "assets/guest", "share/rootfs-tree"):
+        (prepared / part).mkdir(parents=True, exist_ok=True)
+    for name in ("bin/safeyolo", "bin/safeyolo-proxy", "assets/guest/safeyolo-guest"):
+        (prepared / name).write_text("synthetic source identity\n")
+    root = tmp_path / "instance"
+    root.mkdir()
+    workspace = root / "workspace"
+    workspace.mkdir()
+    retained = root / "retained-binaries" if linked else root / "bin"
+    retained.mkdir()
+    (retained / "sentinel").write_text("original binary bytes\n")
+    if linked:
+        (root / "bin").symlink_to(retained, target_is_directory=True)
+    (root / "config.toml").write_text("")
+    (root / "policy.toml").write_text(f'[agents.notes]\nnested_docker = true\nfolder = "{workspace}"\n')
+
+    def checked(command, **_):
+        if command[-1] == "--version":
+            return "synthetic commit=revision"
+        return '{"runtime_state":"stopped"}' if "status" in command else ""
+
+    def failed_copy(*_):
+        assert (root / "bin").resolve() == prepared / "bin"
+        raise RuntimeError("staging interrupted")
+
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.checked", checked)
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.shutil.copy2", failed_copy)
+    args = SimpleNamespace(prepared_config=prepared, root=root, output=tmp_path / "output", revision="revision",
+                           proxy_revision=None, guest_revision=None, reuse_root=True, gateway=True,
+                           journey=False, nested_docker=True)
+    with pytest.raises(RuntimeError, match="staging interrupted"):
+        run(args)
+    assert (root / "bin").is_symlink() is linked
+    assert (root / "bin/sentinel").read_text() == "original binary bytes\n"
+    assert not list(root.glob("bin-docker-gateway-*"))
 
 
 @pytest.mark.parametrize("interruption", ["gateway-create", "gateway-exec"])
