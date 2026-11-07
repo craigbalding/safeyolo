@@ -567,15 +567,24 @@ mod mount_tests {
         expected_mounts.push(json!({"destination":"/sys/fs/cgroup","type":"cgroup","source":"cgroup","options":["nosuid","noexec","nodev","rw"]}));
         assert_eq!(nested["mounts"], json!(expected_mounts));
         assert_eq!(nested["root"], ordinary["root"]);
-        assert_eq!(nested["linux"]["namespaces"], ordinary["linux"]["namespaces"]);
+        assert_eq!(
+            nested["linux"]["namespaces"],
+            ordinary["linux"]["namespaces"]
+        );
         for key in ["bounding", "effective", "permitted", "ambient"] {
-            let mut expected = ordinary["process"]["capabilities"][key].as_array().unwrap().clone();
+            let mut expected = ordinary["process"]["capabilities"][key]
+                .as_array()
+                .unwrap()
+                .clone();
             assert!(!expected.contains(&json!("CAP_SYS_ADMIN")));
             assert!(!expected.contains(&json!("CAP_NET_RAW")));
             expected.push(json!("CAP_SYS_ADMIN"));
             assert_eq!(nested["process"]["capabilities"][key], json!(expected));
         }
-        assert_eq!(ordinary["linux"]["seccomp"]["syscalls"], json!([{"names":["unshare"],"action":"SCMP_ACT_ERRNO","errnoRet":1}]));
+        assert_eq!(
+            ordinary["linux"]["seccomp"]["syscalls"],
+            json!([{"names":["unshare"],"action":"SCMP_ACT_ERRNO","errnoRet":1}])
+        );
         assert_eq!(nested["linux"]["seccomp"]["syscalls"], json!([]));
     }
 

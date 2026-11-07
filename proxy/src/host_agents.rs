@@ -80,7 +80,10 @@ impl Agent {
             host_script: string("host_script"),
             memory_mb: integer("memory_mb"),
             rootfs_overlay: string("rootfs_overlay"),
-            nested_docker: table.get("nested_docker").and_then(Item::as_bool).unwrap_or(false),
+            nested_docker: table
+                .get("nested_docker")
+                .and_then(Item::as_bool)
+                .unwrap_or(false),
             user_default_args: strings("user_default_args")?,
             mounts: strings("mounts")?,
             dangerously_allow_unowned: table
@@ -498,14 +501,26 @@ mod tests {
 
     #[test]
     fn nested_docker_is_an_explicit_boolean_operator_setting() {
-        for (setting, enabled) in [("", false), ("nested_docker = false", false), ("nested_docker = true", true)] {
-            let document = DocumentMut::from_str(&format!("[agents.alice]\nagent_id = 'ag-alice'\n{setting}\n")).unwrap();
+        for (setting, enabled) in [
+            ("", false),
+            ("nested_docker = false", false),
+            ("nested_docker = true", true),
+        ] {
+            let document = DocumentMut::from_str(&format!(
+                "[agents.alice]\nagent_id = 'ag-alice'\n{setting}\n"
+            ))
+            .unwrap();
             let agent = Agent::from_item("alice".into(), &document["agents"]["alice"]).unwrap();
             assert_eq!(agent.nested_docker, enabled);
         }
         for setting in ["'true'", "1", "[]"] {
-            let document = DocumentMut::from_str(&format!("[agents.alice]\nagent_id = 'ag-alice'\nnested_docker = {setting}\n")).unwrap();
-            let error = Agent::from_item("alice".into(), &document["agents"]["alice"]).err().unwrap();
+            let document = DocumentMut::from_str(&format!(
+                "[agents.alice]\nagent_id = 'ag-alice'\nnested_docker = {setting}\n"
+            ))
+            .unwrap();
+            let error = Agent::from_item("alice".into(), &document["agents"]["alice"])
+                .err()
+                .unwrap();
             assert_eq!(error.to_string(), "nested_docker must be a Boolean");
         }
     }

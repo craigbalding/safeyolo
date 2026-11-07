@@ -256,7 +256,7 @@ nodes:
         - path: proxy/src/host_platform.rs
           sha256: 509ec4782da745bbf409332ad486edb6b3af674f4c6807cb6e92934e4aa9151e
         - path: proxy/src/host_boot.rs
-          sha256: 434a49a72f3042256cc2da85204920eb27da5a962472bcaa53ebca5f82a57297
+          sha256: 52b02d5b4f0819e8b3b49a85fcff07364c5058128f8d8a9cf22c6c9d80d2c80a
         - path: guest/build-rootfs.sh
           sha256: 4a30c9ece1b79e9e53bbb1dd301596ff94552d99be25386ac395f1f9490d05ed
         - path: proxy/src/jobs.rs
