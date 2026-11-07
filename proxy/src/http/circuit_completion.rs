@@ -60,6 +60,7 @@ pub(super) struct Completion {
     traffic: Option<Arc<super::traffic::Traffic>>,
     trace: Option<Arc<crate::request_trace::RequestTrace>>,
     gateway_store: Option<crate::grants::Store>,
+    docker: Option<super::docker::Operation>,
 }
 
 impl Completion {
@@ -78,6 +79,9 @@ impl Completion {
         let recording = request
             .extensions_mut()
             .remove::<Arc<super::flow_recording::Recording>>();
+        let docker = request
+            .extensions_mut()
+            .remove::<super::docker::Operation>();
         let request_failed = context
             .as_ref()
             .is_some_and(RequestContext::evidence_failed);
@@ -135,6 +139,7 @@ impl Completion {
             traffic,
             trace,
             gateway_store,
+            docker,
         })
     }
 
@@ -151,10 +156,16 @@ impl Completion {
         observation.terminal = Some(result);
         observation.applied = Some(true);
         observation.protocol = None;
+        if result.is_err()
+            && let Some(operation) = &self.docker
+            && let Ok(runtime) = self.state.read()
+        {
+            operation.interrupted(&runtime, &self.identity, &self.request_id);
+        }
         if let Some(lease) = observation.gateway_lease.take() {
             let grant_id = lease.grant().grant_id.clone();
             let outcome = if let Some(store) = self.gateway_store.as_ref()
-                && matches!(result, Ok(status) if status.is_success())
+                && matches!(result, Ok(status) if status.is_success() || (status == StatusCode::SWITCHING_PROTOCOLS && self.docker.is_some()))
             {
                 // Consumption is tied to the parser's terminal response
                 // completion, after all response bytes have been accepted.

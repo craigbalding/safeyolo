@@ -51,6 +51,47 @@ fn result_code(result: Result<CanonicalRequest, ContractDenial>) -> Value {
 }
 
 #[test]
+fn opaque_bodies_keep_request_constraints_without_claiming_json_inspection() {
+    let mut document =
+        contract_document(json!({"body_format":"opaque","content_types":["application/x-tar"]}));
+    document["capabilities"]["test"]["contract"]["operations"][0]["request"]["body"] = json!({});
+    let good = case(
+        "POST",
+        "/items?limit=1",
+        json!([["Content-Type", "application/x-tar; charset=binary"]]),
+        "binary tar bytes",
+    );
+    let accepted = enforce(&document, &good, true).unwrap();
+    assert!(accepted.body.is_none());
+    assert_eq!(accepted.operation, "write");
+    let bad_query = case(
+        "POST",
+        "/items?limit=200",
+        json!([["Content-Type", "application/x-tar"]]),
+        "binary tar bytes",
+    );
+    assert_eq!(
+        enforce(&document, &bad_query, true).unwrap_err().code,
+        ContractCode::ContractViolation
+    );
+    let wrong_type = case(
+        "POST",
+        "/items",
+        json!([["Content-Type", "application/json"]]),
+        "{}",
+    );
+    assert_eq!(
+        enforce(&document, &wrong_type, true).unwrap_err().code,
+        ContractCode::TransportContentType
+    );
+    document["capabilities"]["test"]["contract"]["operations"][0]["request"]["body"] =
+        json!({"allow":{"name":{"equals_var":"approved"}}});
+    assert!(ServiceDefinition::from_value(document).is_err());
+    let missing_types = contract_document(json!({"body_format":"opaque"}));
+    assert!(ServiceDefinition::from_value(missing_types).is_err());
+}
+
+#[test]
 fn bound_request_checks_keep_failure_order_and_duplicate_json_detection() {
     use ContractCode::*;
     let document = contract_document(Value::Null);

@@ -7,6 +7,7 @@ use std::path::Path;
 
 pub mod authoring;
 mod catalog;
+pub mod docker;
 pub mod effects;
 pub(crate) use catalog::{CatalogMetadata, ServiceLoadProblem, scan_service_files};
 use std::sync::Arc;
@@ -78,6 +79,8 @@ pub struct ServiceDefinition {
     pub name: String,
     pub default_host: String,
     pub auth: Option<AuthConfig>,
+    /// Fixed Docker Engine endpoint; every request to it requires the gateway.
+    pub docker: Option<docker::DockerEndpoint>,
     pub capabilities: BTreeMap<String, Capability>,
     pub risky_routes: Vec<RiskyRoute>,
     /// Authored possibilities and evidence, separate from route authorization.
@@ -101,6 +104,11 @@ impl ServiceDefinition {
         let default_host = string(object, "default_host", "")?;
         let auth = object
             .get("auth")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?;
+        let docker = object
+            .get("docker")
             .cloned()
             .map(serde_json::from_value)
             .transpose()?;
@@ -160,6 +168,7 @@ impl ServiceDefinition {
             name,
             default_host,
             auth,
+            docker,
             capabilities,
             risky_routes,
             effect_model,
@@ -662,6 +671,23 @@ impl GatewaySnapshot {
         self.registry.clone()
     }
 
+    pub(crate) fn docker_service(&self, name: &str) -> Option<&ServiceDefinition> {
+        self.registry
+            .as_deref()?
+            .services
+            .get(name)
+            .filter(|service| service.docker.is_some())
+    }
+
+    pub(crate) fn docker_for_endpoint(&self, host: &str, port: u16) -> Option<&ServiceDefinition> {
+        self.registry.as_deref()?.services.values().find(|service| {
+            service
+                .docker
+                .as_ref()
+                .is_some_and(|endpoint| endpoint.matches(host, port))
+        })
+    }
+
     pub(crate) fn provider_for_host(&self, host: &str) -> Option<&str> {
         let name = self.hosts.get(&host.to_lowercase())?;
         (self.registry.as_ref()?.services.contains_key(name) && self.agents.contains_key(name))
@@ -1094,7 +1120,14 @@ impl GatewaySnapshot {
                 )
             })
             .is_some_and(|operation| {
-                ["POST", "PUT", "PATCH"].contains(&request.request.method)
+                (["POST", "PUT", "PATCH"].contains(&request.request.method)
+                    && !operation
+                        .request
+                        .transport
+                        .as_ref()
+                        .is_some_and(|transport| {
+                            transport.body_format == crate::contracts::BodyFormat::Opaque
+                        }))
                     || operation
                         .request
                         .transport

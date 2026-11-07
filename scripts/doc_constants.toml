@@ -9,6 +9,13 @@
 # phrases over generic ones ("2048 MiB" beats "MiB").
 
 [[assertion]]
+name = "docker-engine-api-version"
+source = "proxy/src/services/docker.rs"
+pattern = 'API_PREFIX: &str = "/v(?P<version>[0-9.]+)"'
+docs = ["docs/docker.md"]
+must_contain = "(API) {version}"
+
+[[assertion]]
 name = "connect-route-wait-seconds"
 source = "proxy/src/tunnels.rs"
 pattern = 'ROUTE_WAIT: Duration = Duration::from_secs\((?P<seconds>\d+)\)'

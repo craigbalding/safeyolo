@@ -52,6 +52,10 @@ or its routes creates no implicit route permission. Omitting `auth` describes
 a credential-free service. An omitted `default_host` needs an explicit host
 when authorizing access.
 
+The optional `docker.endpoint` selects a fixed Docker Engine origin. Requests
+to that endpoint require gateway authorization, including requests without a
+gateway token. See [Docker client setup and transport limits](docker.md).
+
 ## Permissions and Trust
 
 A capability is a positive list of allowed methods and paths. Narrow
@@ -96,6 +100,8 @@ schema_version: 1          # required — integer 1
 name: string              # required — service identifier
 description: string       # optional — human-readable summary
 default_host: string      # optional — defaults to ""
+docker:                   # optional — fixed Docker Engine transport
+  endpoint: https://docker.example.invalid:2376 # HTTP(S) origin, no credentials or path
 
 auth:                     # optional — omit for credential-free services
   type: string            # required within auth: bearer or api_key for injection
@@ -174,8 +180,10 @@ unavailable; use the implementation limits below when choosing a contract.
 | `operations[].request` | `method` defaults to GET. `path` selects the operation; `{name}` path parameters use `path_params` constraints. |
 | `request.path_params` | `equals_var` resolves a path parameter from an approved binding. |
 | `request.query.allow` | Supplied query values can be checked with `equals_var` or `integer_range`. `deny_unknown` defaults to true. |
-| `request.body.allow` | Supplied body values can be checked with `equals_var`. `deny_unknown` defaults to true. Nonempty POST, PUT and PATCH bodies must be JSON objects. |
+| `request.body.allow` | Supplied body values can be checked with `equals_var`. `deny_unknown` defaults to true. Nonempty POST, PUT and PATCH bodies use JSON objects by default. Opaque bodies cannot have JSON field constraints. |
 | `request.transport` | `require_no_body` defaults to false. Optional `allow_headers` must be a list. With no list, Accept and User-Agent are permitted in addition to implicit transport/auth headers; an empty list does not add them. |
+| `request.transport.body_format` | `json_object` (default) or `opaque`. Opaque POST/PUT/PATCH bodies require `content_types` and cannot use `require_no_body`. Header/query/path checks still run before forwarding. |
+| `request.transport.content_types` | Optional lowercase media types without parameters. A supplied list restricts POST/PUT/PATCH content types. Required for opaque bodies. |
 | `enforcement` | Tier status values are `enforced` or `declared`. A missing tier does not make its operations grantable. |
 | `state` | Retained as an untyped value; it creates no runtime sets or capture. |
 | Operation `response` | Declarations in the definition; the request executor does not run response captures or validators. |
@@ -385,7 +393,9 @@ The operator can inspect `services approvals` and approve the exact agent,
 service, method and path with `services approve`. A matching risk grant is
 checked before risk policy. It does not widen service routes, replace a contract
 binding, or grant network or credential permission. A `once` grant reserves one
-in-flight use; a 2xx response consumes it and other outcomes release it for retry.
+in-flight use. A 2xx response or an admitted Docker 101 protocol switch consumes
+it. Other outcomes release the reservation. Retaining a grant does not establish
+that an upstream mutation failed; inspect upstream state before retrying.
 Response-based consumption does not guarantee exactly-once external side effects
 across a proxy crash. The [grant implementation](../proxy/src/grants.rs) retains
 a reservation in the running proxy after a successful action if saving its

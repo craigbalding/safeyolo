@@ -1,0 +1,18 @@
+schema_version: 1
+name: docker-external
+description: "Standalone Docker Engine transport; delegates the configured daemon"
+default_host: docker.example.invalid
+docker:
+  endpoint: https://docker.example.invalid:2376
+auth:
+  type: bearer
+capabilities:
+  full_environment:
+    description: "Manage the Docker environment. No project or host-resource isolation is implied."
+    routes:
+      - methods: [GET, HEAD]
+        path: /_ping
+      - methods: [GET]
+        path: /version
+      - methods: [GET, HEAD, POST, PUT, DELETE]
+        path: /v1.45/**
