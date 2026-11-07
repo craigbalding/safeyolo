@@ -1,18 +1,627 @@
+# Operator-adopted Docker definition. The requesting agent cannot replace this file.
 schema_version: 1
 name: docker-external
-description: "Standalone Docker Engine transport; delegates the configured daemon"
+description: Standalone Linux Docker Engine API 1.45 with bounded host authority
 default_host: docker.example.invalid
-docker:
-  endpoint: https://docker.example.invalid:2376
-auth:
-  type: bearer
+docker: {endpoint: 'https://docker.example.invalid:2376', execution_boundary: external}
+auth: {type: bearer}
 capabilities:
-  full_environment:
-    description: "Manage the Docker environment. No project or host-resource isolation is implied."
+  workloads:
+    description: Manage existing and new Linux workloads. No project visibility or remote egress isolation.
+    docker_access: {mode: workloads, bind_mounts: []}
     routes:
-      - methods: [GET, HEAD]
-        path: /_ping
-      - methods: [GET]
-        path: /version
-      - methods: [GET, HEAD, POST, PUT, DELETE]
-        path: /v1.45/**
+    - {methods: [GET, HEAD], path: /_ping}
+    - {methods: [GET], path: /version}
+    - {methods: [GET, HEAD, POST, PUT, DELETE], path: /v1.45/**}
+effect_model:
+  sources:
+    engine_145: {location: 'https://github.com/moby/moby/blob/v26.1.5/api/swagger.yaml', version: 'Docker
+        Engine 26.1.5, API 1.45'}
+    linux_defaults: {location: 'https://github.com/moby/moby/blob/v26.1.5/oci/defaults.go', version: Moby
+        v26.1.5}
+    docker_access: {location: proxy/src/services/docker/enforcement.rs, version: API 1.45 workload profile}
+    request_shapes: {location: contrib/docker/request-shapes.yaml, version: Expanded v26.1.5 request types}
+    daemon_defaults: {location: 'https://github.com/moby/moby/blob/v26.1.5/daemon/info.go', version: Moby v26.1.5 SecurityOptions}
+    cgroup_default: {location: 'https://github.com/moby/moby/blob/v26.1.5/daemon/info_unix.go', version: Moby v26.1.5 cgroupNamespacesEnabled}
+  resources:
+    docker_environment: {description: The configured daemon and its workloads. Project association is
+        a separate capability., identity: [daemon]}
+  effects:
+    observe: {description: Read daemon or workload metadata and process output., persists_after_access: false,
+      evidence: [engine_145]}
+    execute: {description: Create or run code in the selected Docker execution environment., persists_after_access: true,
+      evidence: [engine_145]}
+    change: {description: 'Change or remove Docker resources, persistent files or lifecycle state.', persists_after_access: true,
+      evidence: [engine_145]}
+    fetch: {description: Fetch images or build inputs using the daemon network authority., persists_after_access: true,
+      evidence: [engine_145]}
+  operations:
+    get__ping:
+      method: GET
+      path: /_ping
+      coverage: modeled
+      arguments: {}
+      resources: &id001
+        docker_environment:
+          daemon: {kind: fixed, value: operator-configured-daemon}
+      effects: &id002
+      - effect: observe
+        resource: docker_environment
+        when: {kind: always}
+        evidence:
+        - engine_145
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: &id003
+      - engine_145
+      - docker_access
+      gaps: &id004
+      - Container and resource facts are checked immediately before dispatch. Docker provides no atomic
+        inspect-and-mutate transaction.
+    head__ping:
+      method: HEAD
+      path: /_ping
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_version:
+      method: GET
+      path: /version
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45_info:
+      method: GET
+      path: /v1.45/info
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45_version:
+      method: GET
+      path: /v1.45/version
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45__ping:
+      method: GET
+      path: /v1.45/_ping
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45_events:
+      method: GET
+      path: /v1.45/events
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45_containers_json:
+      method: GET
+      path: /v1.45/containers/json
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45_images_json:
+      method: GET
+      path: /v1.45/images/json
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45_networks:
+      method: GET
+      path: /v1.45/networks
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45_volumes:
+      method: GET
+      path: /v1.45/volumes
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    head_v1_45__ping:
+      method: HEAD
+      path: /v1.45/_ping
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_containers_create:
+      method: POST
+      path: /v1.45/containers/create
+      coverage: modeled
+      arguments:
+        image:
+          location: body
+          field: Image
+          required: false
+          omission: {kind: default, value: ''}
+          evidence:
+          - engine_145
+        host_config:
+          location: body
+          field: HostConfig
+          required: false
+          omission:
+            kind: default
+            value: {}
+          evidence:
+          - engine_145
+          - linux_defaults
+      resources: *id001
+      effects: &id005
+      - effect: execute
+        resource: docker_environment
+        when: {kind: always}
+        evidence:
+        - engine_145
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45_containers_id_json:
+      method: GET
+      path: /v1.45/containers/{id}/json
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45_containers_id_logs:
+      method: GET
+      path: /v1.45/containers/{id}/logs
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45_containers_id_top:
+      method: GET
+      path: /v1.45/containers/{id}/top
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45_containers_id_stats:
+      method: GET
+      path: /v1.45/containers/{id}/stats
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45_containers_id_archive:
+      method: GET
+      path: /v1.45/containers/{id}/archive
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    head_v1_45_containers_id_archive:
+      method: HEAD
+      path: /v1.45/containers/{id}/archive
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    put_v1_45_containers_id_archive:
+      method: PUT
+      path: /v1.45/containers/{id}/archive
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: &id006
+      - effect: change
+        resource: docker_environment
+        when: {kind: always}
+        evidence:
+        - engine_145
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_containers_id_start:
+      method: POST
+      path: /v1.45/containers/{id}/start
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id005
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_containers_id_restart:
+      method: POST
+      path: /v1.45/containers/{id}/restart
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id005
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_containers_id_exec:
+      method: POST
+      path: /v1.45/containers/{id}/exec
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id005
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_containers_id_attach:
+      method: POST
+      path: /v1.45/containers/{id}/attach
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id005
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_containers_id_stop:
+      method: POST
+      path: /v1.45/containers/{id}/stop
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id006
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_containers_id_kill:
+      method: POST
+      path: /v1.45/containers/{id}/kill
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id006
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_containers_id_pause:
+      method: POST
+      path: /v1.45/containers/{id}/pause
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id006
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_containers_id_unpause:
+      method: POST
+      path: /v1.45/containers/{id}/unpause
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id006
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_containers_id_wait:
+      method: POST
+      path: /v1.45/containers/{id}/wait
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id006
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_containers_id_resize:
+      method: POST
+      path: /v1.45/containers/{id}/resize
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id006
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_containers_id_update:
+      method: POST
+      path: /v1.45/containers/{id}/update
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id006
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    delete_v1_45_containers_id:
+      method: DELETE
+      path: /v1.45/containers/{id}
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id006
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_exec_id_start:
+      method: POST
+      path: /v1.45/exec/{id}/start
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id005
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_exec_id_resize:
+      method: POST
+      path: /v1.45/exec/{id}/resize
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id006
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45_exec_id_json:
+      method: GET
+      path: /v1.45/exec/{id}/json
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_images_create:
+      method: POST
+      path: /v1.45/images/create
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects:
+      - effect: fetch
+        resource: docker_environment
+        when: {kind: always}
+        evidence:
+        - engine_145
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_build:
+      method: POST
+      path: /v1.45/build
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id005
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45_images_name_json:
+      method: GET
+      path: /v1.45/images/{name}/json
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    delete_v1_45_images_name:
+      method: DELETE
+      path: /v1.45/images/{name}
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id006
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_networks_create:
+      method: POST
+      path: /v1.45/networks/create
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id006
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45_networks_id:
+      method: GET
+      path: /v1.45/networks/{id}
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    delete_v1_45_networks_id:
+      method: DELETE
+      path: /v1.45/networks/{id}
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id006
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_volumes_create:
+      method: POST
+      path: /v1.45/volumes/create
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id006
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    get_v1_45_volumes_id:
+      method: GET
+      path: /v1.45/volumes/{id}
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id002
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    delete_v1_45_volumes_id:
+      method: DELETE
+      path: /v1.45/volumes/{id}
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id006
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_networks_id_connect:
+      method: POST
+      path: /v1.45/networks/{id}/connect
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id006
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+    post_v1_45_networks_id_disconnect:
+      method: POST
+      path: /v1.45/networks/{id}/disconnect
+      coverage: modeled
+      arguments: {}
+      resources: *id001
+      effects: *id006
+      execution_authority: The operator-adopted Docker execution boundary; daemon network authority is
+        delegated for workloads and fetches.
+      evidence: *id003
+      gaps: *id004
+  enforcement: {}
+  rules: {}
+  alternatives: {}
+  regressions: []
+  gaps:
+  - The effect model describes potential route authority. DockerAccess separately enforces the adopted
+    workload/file bounds; no generic state/response enforcement is asserted.
+  - No project visibility filter, remote egress policy, site-specific host-consumer analysis, Windows
+    Engine, Swarm, plugins or BuildKit session support.
+  - Expiry and revocation do not undo previously created containers, volumes, files, images or networks.
+docker_enforcement: {profile: capabilities.<name>.docker_access, supported_api: Standalone Linux Engine
+    API 1.45; unversioned ping/version discovery only., enforced_conditions: ['Creation and update use
+      the expanded request shapes, exact field spelling, nested types, ranges and Docker defaults. Unknown
+      constrained fields or variants are refused.', 'Workload mode refuses privilege, host namespaces,
+      devices, added capabilities, weakened security options, overridden runtime/cgroup selection and
+      unknown drivers.', Both Binds and Mounts enforce exact operator-approved bind sources and write
+      modes. Shared mount propagation and daemon socket/system mount sources are unsupported., 'Every
+      referenced existing container, exec, volume, network and creation image is inspected before the
+      admitted operation. Existing volume driver options and actual effective mounts are checked.', 'Classic
+      build tar contexts use ordinary container execution. Host network mode, remote contexts, BuildKit
+      sessions and entitlements are unsupported.', 'Sandbox administration is available only with the
+      adopted sandbox execution boundary and an explicit sandbox_admin capability. It delegates provider
+      files, credentials, explicit host mounts and other inner workloads.'], source_evidence: [engine_145,
+    linux_defaults, docker_access, request_shapes], known_gaps: [Docker cannot atomically inspect resources
+      and apply a mutation. Trusted administrators can change network or volume references during that
+      interval. Primary container names resolve to immutable IDs., 'Supported default logging drivers
+      are json-file, local and none. External log drivers/options are unsupported because they can select
+      host files or external delivery.', Bindings to arbitrary host consumers require operator onboarding.
+      No external execution egress guarantee or project isolation is provided here.]}

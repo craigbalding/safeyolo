@@ -5,6 +5,9 @@ use serde::Deserialize;
 
 use crate::Error;
 
+pub mod enforcement;
+pub use enforcement::{DockerAccess, ExecutionBoundary};
+
 pub const SERVICE_HEADER: &str = "x-safeyolo-docker-service";
 pub const API_PREFIX: &str = "/v1.45";
 
@@ -14,11 +17,14 @@ pub struct DockerEndpoint {
     pub(crate) uri: Uri,
     pub(crate) host: String,
     pub(crate) port: u16,
+    pub execution_boundary: ExecutionBoundary,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EndpointDocument {
     endpoint: String,
+    execution_boundary: ExecutionBoundary,
 }
 
 impl TryFrom<EndpointDocument> for DockerEndpoint {
@@ -56,7 +62,12 @@ impl TryFrom<EndpointDocument> for DockerEndpoint {
                 80
             },
         )?;
-        Ok(Self { uri, host, port })
+        Ok(Self {
+            uri,
+            host,
+            port,
+            execution_boundary: document.execution_boundary,
+        })
     }
 }
 

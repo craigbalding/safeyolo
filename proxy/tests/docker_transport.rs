@@ -36,8 +36,8 @@ fn docker_endpoint_is_a_fixed_origin_and_template_loads() {
 }
 
 fn service(port: u16) -> Value {
-    json!({"schema_version":1,"name":"docker-test","docker":{"endpoint":format!("http://127.0.0.1:{port}")},
-        "capabilities":{"engine":{"routes":[{"methods":["GET","HEAD","POST","PUT","DELETE"],"path":"/v1.45/**"}]}}})
+    json!({"schema_version":1,"name":"docker-test","docker":{"endpoint":format!("http://127.0.0.1:{port}"),"execution_boundary":"sandbox"},
+        "capabilities":{"engine":{"docker_access":{"mode":"sandbox_admin"},"routes":[{"methods":["GET","HEAD","POST","PUT","DELETE"],"path":"/v1.45/**"}]}}})
 }
 
 async fn start(root: &Path, definition: Value, deny_create: bool, scan_body: bool) -> Proxy {
@@ -129,12 +129,193 @@ async fn call(root: &Path, agent: &str, bytes: &[u8]) -> Vec<u8> {
     .unwrap()
 }
 
+fn workloads(port: u16) -> Value {
+    let mut definition = service(port);
+    definition["docker"]["execution_boundary"] = json!("external");
+    definition["capabilities"]["engine"]["docker_access"] =
+        json!({"mode":"workloads","bind_mounts":[]});
+    definition
+}
+
+#[tokio::test]
+async fn forbidden_docker_arguments_and_forged_boundary_never_contact_the_origin() {
+    let root = tempfile::tempdir().unwrap();
+    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = start(
+        root.path(),
+        workloads(origin.local_addr().unwrap().port()),
+        false,
+        false,
+    )
+    .await;
+    for host in [
+        json!({"Privileged":true}),
+        json!({"Binds":["/var/run/docker.sock:/socket"]}),
+        json!({"Mounts":[{"Type":"volume","Target":"/host","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"device":"/","o":"bind","type":"none"}}}}]}),
+    ] {
+        let response=call(root.path(),"alice",&request("POST","/v1.45/containers/create","X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nContent-Type: application/json\r\nX-SafeYolo-Execution-Boundary: sandbox\r\nConnection: close\r\n",&serde_json::to_vec(&json!({"Image":"busybox","HostConfig":host})).unwrap())).await;
+        assert!(
+            response.starts_with(b"HTTP/1.1 403"),
+            "{}",
+            String::from_utf8_lossy(&response)
+        );
+    }
+    assert!(
+        timeout(Duration::from_millis(100), origin.accept())
+            .await
+            .is_err()
+    );
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn docker_resource_inspection_precedes_mutation_and_pins_existing_container_names() {
+    for safe in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = start(
+            root.path(),
+            workloads(origin.local_addr().unwrap().port()),
+            false,
+            false,
+        )
+        .await;
+        let backend = tokio::spawn(async move {
+            let (mut stream, _) = origin.accept().await.unwrap();
+            let headers = String::from_utf8(head(&mut stream).await).unwrap();
+            assert!(
+                headers.starts_with("GET /v1.45/containers/json/json HTTP/1.1"),
+                "{headers}"
+            );
+            assert!(!headers.contains("sgw_"));
+            let body=serde_json::to_vec(&json!({"Id":"d".repeat(64),"HostConfig":{"Privileged":!safe,"CgroupnsMode":"private","NetworkMode":"bridge"},"NetworkSettings":{"Networks":{}},"Mounts":[]})).unwrap();
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            stream.write_all(&body).await.unwrap();
+            drop(stream);
+            if safe {
+                let (mut stream, _) = origin.accept().await.unwrap();
+                let headers = String::from_utf8(head(&mut stream).await).unwrap();
+                assert!(
+                    headers.starts_with(&format!(
+                        "POST /v1.45/containers/{}/start HTTP/1.1",
+                        "d".repeat(64)
+                    )),
+                    "{headers}"
+                );
+                stream
+                    .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                    .await
+                    .unwrap();
+            } else {
+                assert!(
+                    timeout(Duration::from_millis(100), origin.accept())
+                        .await
+                        .is_err()
+                );
+            }
+        });
+        let response = call(
+            root.path(),
+            "alice",
+            &request(
+                "POST",
+                "/v1.45/containers/json/start",
+                "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nConnection: close\r\n",
+                b"",
+            ),
+        )
+        .await;
+        assert!(
+            response.starts_with(if safe {
+                b"HTTP/1.1 204"
+            } else {
+                b"HTTP/1.1 403"
+            }),
+            "{}",
+            String::from_utf8_lossy(&response)
+        );
+        timeout(LIMIT, backend).await.unwrap().unwrap();
+        proxy.shutdown().await;
+    }
+}
+
 fn events(root: &Path) -> Vec<Value> {
     std::fs::read_to_string(root.join("audit.jsonl"))
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+#[tokio::test]
+async fn docker_network_ids_cannot_override_an_inspected_safe_network_name() {
+    let root = tempfile::tempdir().unwrap();
+    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = start(
+        root.path(),
+        workloads(origin.local_addr().unwrap().port()),
+        false,
+        false,
+    )
+    .await;
+    let backend = tokio::spawn(async move {
+        for (path, body) in [
+            (
+                "/v1.45/info",
+                json!({"OSType":"linux","SecurityOptions":["name=cgroupns"],"DefaultRuntime":"runc","LoggingDriver":"json-file"}),
+            ),
+            (
+                "/v1.45/networks/ordinary-name",
+                json!({"Driver":"bridge","Options":{},"IPAM":{"Driver":"default"}}),
+            ),
+            (
+                "/v1.45/networks/unsafe-id",
+                json!({"Driver":"host","Options":{}}),
+            ),
+        ] {
+            let (mut stream, _) = origin.accept().await.unwrap();
+            let headers = String::from_utf8(head(&mut stream).await).unwrap();
+            assert!(
+                headers.starts_with(&format!("GET {path} HTTP/1.1")),
+                "{headers}"
+            );
+            let body = body.to_string();
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+        assert!(
+            timeout(Duration::from_millis(100), origin.accept())
+                .await
+                .is_err()
+        );
+    });
+    let body = json!({"Image":"busybox","NetworkingConfig":{"EndpointsConfig":{"ordinary-name":{"NetworkID":"unsafe-id"}}}});
+    let response=call(root.path(),"alice",&request("POST","/v1.45/containers/create","X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nContent-Type: application/json\r\nConnection: close\r\n",&serde_json::to_vec(&body).unwrap())).await;
+    assert!(
+        response.starts_with(b"HTTP/1.1 403"),
+        "{}",
+        String::from_utf8_lossy(&response)
+    );
+    assert!(String::from_utf8_lossy(&response).contains("GATEWAY_DOCKER_RESOURCE_CONSTRAINT"));
+    timeout(LIMIT, backend).await.unwrap().unwrap();
+    proxy.shutdown().await;
 }
 
 #[tokio::test]

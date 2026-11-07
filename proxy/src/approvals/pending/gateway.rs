@@ -351,6 +351,19 @@ pub(crate) async fn bind_agent_request(
         option.parameters = json!({"credential":name,"credential_binding":action["credential_binding"],"expires_at":expires_at});
         options.push(option);
     }
+    if let Some(endpoint) = &definition.docker
+        && let Some(access) = definition
+            .capabilities
+            .get(capability)
+            .and_then(|capability| capability.docker_access.as_ref())
+    {
+        let bounds = access.authority(endpoint.execution_boundary);
+        for option in &mut options {
+            option
+                .effect
+                .push_str(&format!(" Docker authority: {bounds}"));
+        }
+    }
     let authority = Authority {
         revision: revision(policy, &action)
             .ok_or_else(|| invalid("gateway revision unavailable"))?,

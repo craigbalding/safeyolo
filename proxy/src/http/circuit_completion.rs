@@ -689,6 +689,7 @@ mod tests {
                 &mut request, capture.clone(),
             ));
             let completion = Arc::new(Completion {
+                docker: None,
                 observation: Mutex::new(Observation {
                     protocol: Some(protocol), applied: None, request: None, request_failed: false,
                     evidence_finished: false,

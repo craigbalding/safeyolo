@@ -9,6 +9,98 @@ use serde_json::json;
 use super::{Body, Destination, HttpTask, full, live_view, strip_hop_headers};
 use crate::{ConnectionIdentity, Error, Runtime, UpgradeTasks};
 
+/// These GETs obtain prerequisite facts for an already admitted operation.
+/// They use the selected credential and the ordinary verified outbound route;
+/// no client-selected URL, redirect, response payload or retry is exposed.
+pub(super) async fn inspect(
+    runtime: &Runtime,
+    allowed: &super::AllowedRequest<'_>,
+    provider: Option<&str>,
+    access: &crate::services::docker::DockerAccess,
+    inspection: &mut crate::services::docker::enforcement::Inspection,
+    headers: &hyper::HeaderMap,
+) -> Result<(), Error> {
+    use http_body_util::BodyExt;
+    while let Some(resource) = inspection.next() {
+        let path = resource.path()?;
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let outbound =
+                super::open_outbound(runtime, allowed, provider, false, None, None, None).await?;
+            let uri = if outbound.h1_request_form == super::H1RequestForm::Absolute {
+                format!(
+                    "{}://{}{}",
+                    allowed.destination.scheme, allowed.destination.uri_authority, path
+                )
+            } else {
+                path.clone()
+            };
+            let (mut sender, connection) = hyper::client::conn::http1::handshake::<
+                _,
+                http_body_util::Full<bytes::Bytes>,
+            >(TokioIo::new(outbound.stream))
+            .await?;
+            let connection = super::HttpTask {
+                task: allowed.tasks.spawn(async move {
+                    let _ = connection.await;
+                }),
+                completion: None,
+                _session: None,
+            };
+            let mut request = hyper::Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header(hyper::header::HOST, &allowed.destination.authority)
+                .header(hyper::header::CONNECTION, "close")
+                .body(http_body_util::Full::new(bytes::Bytes::new()))?;
+            // A custom auth header is permitted. Never forward client entity,
+            // framing, upgrade or method-override fields into the inspection.
+            if let Some(service) = runtime
+                .policy
+                .as_deref()
+                .and_then(|p| p.gateway())
+                .and_then(|g| {
+                    g.docker_for_endpoint(&allowed.destination.host, allowed.destination.port)
+                })
+                && let Some(auth) = &service.auth
+                && let Some(value) = headers.get(&auth.header)
+            {
+                request.headers_mut().insert(
+                    hyper::header::HeaderName::try_from(&auth.header)?,
+                    value.clone(),
+                );
+            }
+            let response = sender.send_request(request).await?;
+            let status = response.status();
+            let bytes = http_body_util::Limited::new(
+                response.into_body(),
+                crate::http_content::BUFFERED_BODY_THRESHOLD,
+            )
+            .collect()
+            .await?
+            .to_bytes();
+            drop(connection);
+            if status == hyper::StatusCode::NOT_FOUND {
+                return Ok::<_, Error>(None);
+            }
+            if status != hyper::StatusCode::OK {
+                return Err("required Docker inspection failed".into());
+            }
+            Ok(Some(crate::contracts::strict_json(&bytes)?))
+        })
+        .await
+        .map_err(|_| "Docker inspection timed out")??;
+        inspection.observe(access, &resource, observed)?;
+        runtime.audit.emit(allowed.identity.request_event(
+            "gateway.docker_inspected",
+            crate::audit::Kind::Gateway,
+            allowed.request_id,
+            "Checked prerequisite Docker resource facts",
+            json!({"path":path,"response_disclosed":false}),
+        ))?;
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub(super) struct RouteError;
 impl fmt::Display for RouteError {

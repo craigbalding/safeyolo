@@ -120,7 +120,16 @@ fn unsupported_binding_selection_does_not_replace_saved_or_live_binding() {
                 })
                 .unwrap_err();
             assert_eq!(error.kind, ErrorKind::Invalid);
-            assert!(error.message.contains("stateful") && error.message.contains("in_state_set"));
+            let reason = if unsupported_first {
+                "in_state_set"
+            } else {
+                "response validators"
+            };
+            assert!(
+                error.message.contains("stateful") && error.message.contains(reason),
+                "{}",
+                error.message
+            );
             assert!(!activated);
             assert_eq!(fs::read(&path).unwrap(), source);
             assert_eq!(

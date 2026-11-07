@@ -179,8 +179,8 @@ unavailable; use the implementation limits below when choosing a contract.
 | `operations` | Named operations. `requires_enforcement` defaults to `request_shape`; the named tier must be marked `enforced` to be grantable. |
 | `operations[].request` | `method` defaults to GET. `path` selects the operation; `{name}` path parameters use `path_params` constraints. |
 | `request.path_params` | `equals_var` resolves a path parameter from an approved binding. |
-| `request.query.allow` | Supplied query values can be checked with `equals_var` or `integer_range`. `deny_unknown` defaults to true. |
-| `request.body.allow` | Supplied body values can be checked with `equals_var`. `deny_unknown` defaults to true. Nonempty POST, PUT and PATCH bodies use JSON objects by default. Opaque bodies cannot have JSON field constraints. |
+| `request.query.allow` | Query values support `equals_var`, `integer_range`, `required`, `default`, `enum` and scalar `type` checks. Boolean encodings are `true`, `false`, `1` and `0`. `deny_unknown` defaults to true. |
+| `request.body.allow` | Body fields support `equals_var`, `required`, `nullable`, `default`, `enum`, `type`, `integer_range`, nested `object` constraints and array `items`. `object` reuses `allow` and `deny_unknown`; `values` checks each value of a dynamic map. Nonempty POST, PUT and PATCH bodies use JSON objects by default. Opaque bodies cannot have JSON field constraints. |
 | `request.transport` | `require_no_body` defaults to false. Optional `allow_headers` must be a list. With no list, Accept and User-Agent are permitted in addition to implicit transport/auth headers; an empty list does not add them. |
 | `request.transport.body_format` | `json_object` (default) or `opaque`. Opaque POST/PUT/PATCH bodies require `content_types` and cannot use `require_no_body`. Header/query/path checks still run before forwarding. |
 | `request.transport.content_types` | Optional lowercase media types without parameters. A supplied list restricts POST/PUT/PATCH content types. Required for opaque bodies. |
@@ -188,24 +188,37 @@ unavailable; use the implementation limits below when choosing a contract.
 | `state` | Retained as an untyped value; it creates no runtime sets or capture. |
 | Operation `response` | Declarations in the definition; the request executor does not run response captures or validators. |
 
+Body types are `string`, `integer`, `number`, `boolean`, `object`, `array` and
+`string_or_array`. The last type accepts a string or an array of strings, as
+used by Docker commands. Fields are optional unless `required: true` is set.
+An authored `default` supplies the upstream value for validation when a field is
+omitted. It does not rewrite the request. `nullable: true` permits explicit JSON
+null. Authors must record the upstream null/default semantics accurately.
+Nested rules check every array item. Unknown constraint keys and type names
+prevent the definition from loading.
+
+An operation that requires `response_validators` remains ungrantable even if its
+definition marks that tier `enforced`. Supported operations in the same contract
+remain available. Response inspection cannot undo an upstream mutation. Docker's
+specific prerequisite resource reads are described in [Docker management](docker.md);
+they do not implement generic contract state or response validators.
+
 | Tier | Current implementation |
 |---|---|
 | `request_shape` | Supported request constraints. |
 | `transport_hygiene` | Supported request transport checks. |
 | `state_capture` | No runtime capture; operations requiring this tier cannot be granted. |
 | `state_enforcement` | No runtime state enforcement; operations requiring this tier or using `in_state_set` cannot be granted. |
-| `response_validators` | A required tier marked `enforced` can leave an operation grantable, but validators still do not run. Approval does not establish response enforcement. |
+| `response_validators` | Validators do not run. Operations requiring this tier cannot be granted. |
 
 ### Grantable operations and binding
 
 An operation's required tier must be marked `enforced`, and the runtime must
-support its requirements. Operations requiring `state_capture` or
-`state_enforcement`, or using `in_state_set` in path, query or body constraints,
+support its requirements. Operations requiring `state_capture`,
+`state_enforcement` or `response_validators`, or using `in_state_set` in path,
+query or nested body constraints,
 cannot be granted even if their tier is marked `enforced`. The definition can
 still load, and supported operations in the same contract remain available.
-These checks do not reject a `response_validators` requirement on the same
-basis; that declaration can therefore accompany a grant without any runtime
-response check.
 
 For a contract capability, the running policy compiles routes from supported,
 selected operations. The broad `capability.routes` list is not a fallback grant
@@ -236,9 +249,9 @@ prefers a literal path over a parameterized path, then a wildcard path. If no
 operation matches, the request is refused. Compiled policy supplies the
 agent, service, capability and selected-operation scope before these checks.
 
-Request constraint `type` labels and body `integer_range` fields are parsed but
-do not enforce value types or body ranges. Allowing a field does not require
-its presence. Binding-definition types are checked separately when binding
+Request constraint `type` and `integer_range` enforce the supported value types
+and bounds. Allowing a field does not require its presence unless `required` is
+set. Binding-definition types are checked separately when binding
 values are approved. Binding `source` and `visible_to_operator` fields are
 retained metadata; they do not authorize a value. `deny_ambiguous_encoding` is a parsed transport field with
 default false; current ambiguity checks run regardless of that flag. Duplicate

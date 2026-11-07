@@ -58,6 +58,7 @@ pub struct Capability {
     pub name: String,
     pub routes: Vec<CapabilityRoute>,
     pub contract: Option<ContractTemplate>,
+    pub docker_access: Option<docker::DockerAccess>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RiskyRoute {
@@ -132,6 +133,11 @@ impl ServiceDefinition {
                     .cloned()
                     .map(serde_json::from_value)
                     .transpose()?;
+                let docker_access = cap
+                    .get("docker_access")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()?;
                 if let Some(contract) = &contract {
                     contract.validate()?;
                 }
@@ -141,6 +147,7 @@ impl ServiceDefinition {
                         name: name.clone(),
                         routes,
                         contract,
+                        docker_access,
                     },
                 );
             }
@@ -174,6 +181,21 @@ impl ServiceDefinition {
             effect_model,
             raw,
         };
+        if let Some(endpoint) = &service.docker {
+            for capability in service.capabilities.values() {
+                capability
+                    .docker_access
+                    .as_ref()
+                    .ok_or("Docker capabilities require explicit docker_access")?
+                    .validate(endpoint.execution_boundary)?;
+            }
+        } else if service
+            .capabilities
+            .values()
+            .any(|capability| capability.docker_access.is_some())
+        {
+            return Err("docker_access requires a Docker endpoint".into());
+        }
         if let Some(model) = &service.effect_model {
             model.validate(&service)?;
         }
@@ -1094,6 +1116,17 @@ impl GatewaySnapshot {
         let Some(token) = extract_token(registry, &hosts, request) else {
             return false;
         };
+        if self
+            .tokens
+            .iter()
+            .find(|binding| binding.token.expose_secret() == token.expose_secret())
+            .and_then(|binding| registry.services.get(binding.service.as_str()?))
+            .is_some_and(|service| service.docker.is_some())
+            && request.request.method == "POST"
+            && request.request.target.split('?').next() != Some("/v1.45/build")
+        {
+            return true;
+        }
         self.tokens
             .iter()
             .enumerate()

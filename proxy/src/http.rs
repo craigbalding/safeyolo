@@ -3543,6 +3543,7 @@ where
     let mut gateway_evidence = None;
     let mut route_challenge_selection = None;
     let mut provider_route = None;
+    let mut docker_inspection = None;
     let gateway_trace = trace
         .as_ref()
         .and_then(|trace| trace.hook("service-gateway", "request"));
@@ -3661,6 +3662,34 @@ where
                 }
                 if let Some(hook) = &gateway_trace {
                     hook.evaluated("selected", None);
+                }
+                if let Some(service) = docker_service {
+                    let access = service
+                        .capabilities
+                        .get(&credential.capability)
+                        .and_then(|capability| capability.docker_access.as_ref())
+                        .ok_or("Docker access configuration unavailable")?;
+                    match access.request(
+                        request.method().as_str(),
+                        &destination.path,
+                        contract_body.as_ref().map_or(&[], |body| body.as_slice()),
+                    ) {
+                        Ok(inspection) => docker_inspection = Some((access, inspection)),
+                        Err(error) => {
+                            runtime.audit.emit(identity.request_event("gateway.docker_denied", crate::audit::Kind::Gateway,
+                                request_id, "Docker request exceeds the adopted capability",
+                                json!({"service":service.name,"reason":error.to_string(),"upstream_mutation_sent":false})))?;
+                            return Ok((
+                                prior_block(gateway_response(
+                                    403,
+                                    "GATEWAY_DOCKER_CONSTRAINT",
+                                    request_id,
+                                    gateway_trace.as_ref(),
+                                )?),
+                                "deny".into(),
+                            ));
+                        }
+                    }
                 }
                 if let Some(provider) = provider_name {
                     let caller = identity.request_agent().expect("selected gateway identity");
@@ -4584,6 +4613,50 @@ where
         request_id,
     };
     let provider = provider_route.as_ref().map(|(name, _, _)| name.as_str());
+    let mut docker_forward_path = None;
+    if let Some((access, mut inspection)) = docker_inspection {
+        let result = docker::inspect(
+            &runtime,
+            &allowed,
+            provider,
+            access,
+            &mut inspection,
+            request.headers(),
+        )
+        .await;
+        if let Err(error) = result {
+            runtime.audit.emit(identity.request_event(
+                "gateway.docker_denied",
+                crate::audit::Kind::Gateway,
+                request_id,
+                "Docker resource inspection refused the operation",
+                json!({"reason":error.to_string(),"upstream_mutation_sent":false}),
+            ))?;
+            return Ok((
+                prior_block(gateway_response(
+                    403,
+                    "GATEWAY_DOCKER_RESOURCE_CONSTRAINT",
+                    request_id,
+                    gateway_trace.as_ref(),
+                )?),
+                "deny".into(),
+            ));
+        }
+        if let Some(id) = inspection.container_id {
+            // Resolve the user's existing name, then address that immutable
+            // container. A concurrent rename/recreation cannot swap the target.
+            let path = request.uri().path();
+            let prefix = "/v1.45/containers/";
+            if let Some(rest) = path.strip_prefix(prefix) {
+                let suffix = rest.find('/').map_or("", |index| &rest[index..]);
+                let query = request
+                    .uri()
+                    .query()
+                    .map_or(String::new(), |q| format!("?{q}"));
+                docker_forward_path = Some(format!("{prefix}{id}{suffix}{query}"));
+            }
+        }
+    }
     let outbound = if client_version == hyper::Version::HTTP_2
         && let Some(tunnel) = tunnel
     {
@@ -4619,11 +4692,15 @@ where
         "associated",
         json!({"upstream": outbound.observation().snapshot()}),
     );
+    let mut forwarding_destination = destination.clone();
+    if let Some(path) = docker_forward_path {
+        forwarding_destination.path = path;
+    }
     *request.uri_mut() = request_uri(
-        destination,
+        &forwarding_destination,
         &format!(
             "{}://{}{}",
-            destination.scheme, destination.uri_authority, destination.path
+            destination.scheme, destination.uri_authority, forwarding_destination.path
         ),
         outbound_http2,
         outbound.h1_request_form(),

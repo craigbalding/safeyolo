@@ -1,15 +1,15 @@
-# Docker client transport
+# Docker management
 
 Configure a Docker Engine endpoint as a service, then use ordinary Docker and
 Compose commands inside the agent. SafeYolo checks the current gateway capability
 before forwarding each management request. Exec and attach switch only the
 admitted operation to a raw input/output stream.
 
-This transport does not provide project isolation or enforce Docker host-resource
-constraints. A whole-environment grant delegates the daemon's execution authority,
-including its networking, mounts and other workloads. Review that authority with
-the [service-authoring workflow](service-authoring.md) before authorization.
-External workloads, builds and daemon image fetches use the external network.
+The adopted Docker capability bounds workload arguments and relevant existing
+resources before forwarding. Project visibility and external network policy are
+separate concerns. External workloads, builds and daemon image fetches use the
+external network. Review the execution authority with the
+[service-authoring workflow](service-authoring.md) before authorization.
 
 ## Operator setup
 
@@ -25,7 +25,7 @@ that identifies the endpoint. One supported arrangement is an operator-managed
 TLS reverse proxy with bearer authentication in front of the daemon's private
 socket. Store its bearer credential through
 [credentials and service access](credentials.md), then authorize the agent for
-`full_environment`. Keep upstream administrative credentials and daemon client keys
+`workloads`. Keep upstream administrative credentials and daemon client keys
 on the operator side. Configure the proxy's
 [upstream CA trust](TLS_CERTIFICATE.md#additional-upstream-trust) for a private CA;
 do not disable certificate verification. Close unauthenticated alternative access
@@ -38,6 +38,92 @@ in `docker.endpoint`. Use HTTP for that local provider route and omit `auth`
 when the provider needs no upstream credential. Workloads use the hosting
 sandbox's authority. Installed nested-Docker runtime qualification is a separate
 prerequisite.
+
+Set `docker.execution_boundary` in the operator-adopted definition to `external`
+or `sandbox`. Request bodies and headers cannot change that boundary. Do not
+describe an external daemon as a sandbox to obtain inner privilege treatment.
+The definition, adoption and service directory remain operator controlled.
+
+The `workloads` capability uses `docker_access.mode: workloads`. Its default
+`bind_mounts: []` permits no host-file bind mounts. To delegate a useful file
+exception, the operator adds exact absolute sources and their write bounds to
+the adopted capability. Service authorization shows those enforced bounds and
+states that all supported creation arguments within the bounds remain available.
+The authorization is broader than approval of one attempted payload. Routine
+resource identifiers need no separate approval.
+
+```yaml
+docker_access:
+  mode: workloads
+  bind_mounts:
+    - source: /srv/project-data
+      read_only: true
+```
+
+The example permits that source with read-only access in both Docker mount
+encodings. It does not permit another source or write access. Known daemon
+socket and system paths, shared mount propagation and host security relabeling
+are unsupported. The operator must inspect site-specific host consumers and
+symlinks before authorizing a file source. An approved directory may contain
+files used by other host processes; SafeYolo does not inspect those consumers.
+
+For broad administration of an entire qualified inner Docker environment, the
+operator may create a separate capability with `docker_access.mode: sandbox_admin`
+and `docker.execution_boundary: sandbox`. This authority includes privileged
+inner workloads, the provider workspace, credentials, explicit host mounts and
+other inner workloads. The authorization displays that authority. Use a dedicated
+project sandbox when its entire authority should match the delegation. A narrow
+project route list does not narrow host-file authority in this administration
+mode. Use the workload mode for narrower host authority. The loader refuses
+`sandbox_admin` for an external execution boundary.
+
+## Request and resource checks
+
+The [adoptable definition](../contrib/docker/service.yaml) records API operations,
+effects, enforcement conditions, sources and gaps. Its
+[request shapes](../contrib/docker/request-shapes.yaml) expand the referenced
+Moby 26.1.5 request definitions and preserve defaults, required fields and integer
+bounds. Docker-specific conditions run in the
+[Docker checks](../proxy/src/services/docker/enforcement.rs). The reduced shapes
+also retain accepted empty-string defaults from the Go client and the supported
+`local` logging driver, which the published enum list omits. The captured
+[Docker CLI payload](../proxy/tests/fixtures/docker/create-defaults.json) covers
+those defaults.
+The reduced shapes
+are not a general OpenAPI interpreter. Moby's Apache 2.0 license is retained in
+[MOBY-LICENSE](../contrib/docker/MOBY-LICENSE).
+
+Workload creation rejects privileged mode, host namespaces, host devices,
+capability additions, weakened security options, custom runtimes, cgroup parent
+selection, unsupported network/volume/log drivers and local-volume driver options.
+Both `Binds` and nested `Mounts` use the adopted file bounds. Namespace sharing,
+volume sharing, named volumes and network references require inspection of their
+effective authority. Unknown constrained fields, noncanonical field aliases and
+duplicate JSON/query keys fail before a mutation. Supported omitted defaults,
+null values and both supported mount encodings remain usable.
+
+Before defaulted creation or a classic build, SafeYolo checks the daemon's Linux
+platform, default runtime, logging driver and actual default cgroup namespace.
+Docker must report `name=cgroupns` in its `SecurityOptions` for an omitted
+cgroup namespace or classic build. This reports a private default on the
+qualified Moby implementation. When that default is unavailable, explicit
+`CgroupnsMode: private` remains supported for container creation. The default runtime must be `runc`;
+supported logging drivers are `json-file`, `local` and `none`.
+
+Operations on existing containers and exec sessions inspect their effective
+configuration before forwarding. Actual bind sources, write modes, local-volume
+options and referenced workloads are checked. Missing inspection fails closed.
+Existing names and resources created by other administrators remain supported;
+no ownership label or naming convention is required. A primary container name
+is resolved to its immutable ID before dispatch.
+
+Docker provides no atomic inspect-and-mutate API. Trusted administrators can
+change linked container names, volume references or network connections between
+inspection and dispatch. SafeYolo
+does not lock out those administrators or claim protection from a malicious
+daemon administrator. Operators must account for this upstream concurrency limit.
+These prerequisite reads do not authorize extra mutation routes or implement
+generic contract response validation.
 
 Network permission, credential permission, route permissions, contract checks and
 risky-route approval still apply. Narrow the example capability when necessary.
