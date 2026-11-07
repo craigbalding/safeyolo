@@ -28,7 +28,7 @@ pub enum DockerAccess {
     },
     Project {
         #[serde(flatten)]
-        project: super::project::Project,
+        project: Box<super::project::Project>,
         #[serde(default)]
         bind_mounts: Vec<BindMount>,
     },

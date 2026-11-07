@@ -733,21 +733,19 @@ fn rewrite_references(value: &mut Value, references: &BTreeMap<Resource, String>
         }
     }
     if let Some(object) = value.as_object_mut() {
-        if let Some(image) = object.get_mut("Image") {
-            if let Some(id) = image
+        if let Some(image) = object.get_mut("Image")
+            && let Some(id) = image
                 .as_str()
                 .and_then(|name| pin(references, Resource::Image(name.into())))
-            {
-                *image = json!(id);
-            }
+        {
+            *image = json!(id);
         }
-        if let Some(container) = object.get_mut("Container") {
-            if let Some(id) = container
+        if let Some(container) = object.get_mut("Container")
+            && let Some(id) = container
                 .as_str()
                 .and_then(|name| pin(references, Resource::Container(name.into())))
-            {
-                *container = json!(id);
-            }
+        {
+            *container = json!(id);
         }
         if let Some(host) = object.get_mut("HostConfig").and_then(Value::as_object_mut) {
             for key in [
@@ -757,17 +755,17 @@ fn rewrite_references(value: &mut Value, references: &BTreeMap<Resource, String>
                 "UTSMode",
                 "CgroupnsMode",
             ] {
-                if let Some(value) = host.get_mut(key) {
-                    if let Some(name) = value.as_str() {
-                        if let Some(name) = name.strip_prefix("container:") {
-                            if let Some(id) = pin(references, Resource::Container(name.into())) {
-                                *value = json!(format!("container:{id}"));
-                            }
-                        } else if key == "NetworkMode" {
-                            if let Some(id) = pin(references, Resource::Network(name.into())) {
-                                *value = json!(id);
-                            }
+                if let Some(value) = host.get_mut(key)
+                    && let Some(name) = value.as_str()
+                {
+                    if let Some(name) = name.strip_prefix("container:") {
+                        if let Some(id) = pin(references, Resource::Container(name.into())) {
+                            *value = json!(format!("container:{id}"));
                         }
+                    } else if key == "NetworkMode"
+                        && let Some(id) = pin(references, Resource::Network(name.into()))
+                    {
+                        *value = json!(id);
                     }
                 }
             }
@@ -812,10 +810,10 @@ fn prepare_volumes(
         .cloned()
         .unwrap_or_default();
     for (resource, value) in &inspection.observed {
-        if let (Resource::Image(_), Some(image)) = (resource, value) {
-            if let Some(volumes) = image.pointer("/Config/Volumes").and_then(Value::as_object) {
-                targets.extend(volumes.clone());
-            }
+        if let (Resource::Image(_), Some(image)) = (resource, value)
+            && let Some(volumes) = image.pointer("/Config/Volumes").and_then(Value::as_object)
+        {
+            targets.extend(volumes.clone());
         }
     }
     if !object["HostConfig"].is_object() {
@@ -891,8 +889,8 @@ fn sanitize_headers(headers: &mut HeaderMap, archive: bool) {
     let names: Vec<_> = headers
         .keys()
         .filter(|key| {
-            !allowed.contains(&key.as_str())
-                && !(archive && key.as_str() == "x-docker-container-path-stat")
+            !(allowed.contains(&key.as_str())
+                || archive && key.as_str() == "x-docker-container-path-stat")
         })
         .cloned()
         .collect();
