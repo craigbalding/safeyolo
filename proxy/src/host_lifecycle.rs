@@ -166,6 +166,16 @@ pub(crate) fn recover_guest_probe(
     name: &str,
     timeout: std::time::Duration,
 ) -> Result<Value, Error> {
+    recover_guest_probe_authorized(root, name, timeout, None, &|| Ok(()))
+}
+
+pub(crate) fn recover_guest_probe_authorized(
+    root: &std::path::Path,
+    name: &str,
+    timeout: std::time::Duration,
+    setup_lock: Option<SetupLock>,
+    check: &dyn Fn() -> Result<(), Error>,
+) -> Result<Value, Error> {
     if !crate::host_platform::valid_agent_name(name) || timeout.is_zero() {
         return Err("recovery needs a valid agent name and positive deadline".into());
     }
@@ -176,7 +186,10 @@ pub(crate) fn recover_guest_probe(
     if !home.is_dir() || !share.join("safeyolo-guest").is_file() {
         return Err("required guest helper/home is missing; stage the installed guest assets and boot this agent first".into());
     }
-    let _setup = SetupLock::acquire_in(&directory, Some(deadline))?;
+    let _setup = match setup_lock {
+        Some(lock) => lock,
+        None => SetupLock::acquire_in(&directory, Some(deadline))?,
+    };
     let _launch = LaunchLock::acquire_in(&directory, Some(deadline))?;
     if let Some(launch) = crate::guest_commands::read_state(&directory.join("current-launch.json"))?
         && matches!(
@@ -194,6 +207,7 @@ pub(crate) fn recover_guest_probe(
         .ok_or("current-run generation is missing")?;
     let id = uuid::Uuid::new_v4().simple().to_string();
     let command = format!("exec {} probe {}", crate::guest_commands::HELPER, id);
+    check()?;
     crate::guest_commands::publish(&home, &share, name, &command, &id, generation)?;
     let state_path = home.join(".safeyolo-command-supervisor.json");
     let result = (|| {
@@ -1448,6 +1462,25 @@ pub(crate) async fn start(
     arguments: Option<&[String]>,
     allow_unowned: bool,
 ) -> Result<Value, Error> {
+    start_authorized(
+        agent,
+        operation,
+        setup_lock,
+        arguments,
+        allow_unowned,
+        &|| Ok(()),
+    )
+    .await
+}
+
+pub(crate) async fn start_authorized(
+    agent: &Agent,
+    operation: &str,
+    setup_lock: Option<SetupLock>,
+    arguments: Option<&[String]>,
+    allow_unowned: bool,
+    check: &(dyn Fn() -> Result<(), Error> + Send + Sync),
+) -> Result<Value, Error> {
     let interactive = operation == "start-interactive";
     let foreground = operation == "start-foreground";
     crate::host_agents::refresh(agent)?;
@@ -1467,6 +1500,7 @@ pub(crate) async fn start(
     current.dangerously_allow_unowned |= allow_unowned;
     let agent = &current;
     let observed = runtime(agent).await?;
+    check()?;
     let state = observed
         .get("agent_state")
         .and_then(Value::as_str)
@@ -1563,8 +1597,12 @@ pub(crate) async fn start(
     }
     stop_supervisor(&agent.name).await?;
     let debug_command = interactive && agent.launcher.as_deref() == Some("supervisor");
-    let command = configured_guest_command(agent, debug_command)?;
     let launch_id = format!("launch-{}", uuid::Uuid::new_v4().simple());
+    let command = format!(
+        "export SAFEYOLO_GUEST_LAUNCH_ID={}; {}",
+        shell_quote(&launch_id),
+        configured_guest_command(agent, debug_command)?
+    );
     let timestamp =
         time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339)?;
     let session = tmux_session()?;
@@ -1577,6 +1615,7 @@ pub(crate) async fn start(
     });
     {
         let _launch_lock = LaunchLock::acquire(&agent.name)?;
+        check()?;
         write_json(&launch_path(&agent.name), &record)?;
     }
     if foreground {
@@ -2116,6 +2155,14 @@ async fn launch_script(agent: &Agent, record: &Value) -> Result<(), Error> {
 }
 
 pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result<Value, Error> {
+    stop_authorized(agent, setup_lock, &|| Ok(())).await
+}
+
+pub(crate) async fn stop_authorized(
+    agent: &Agent,
+    setup_lock: Option<SetupLock>,
+    check: &(dyn Fn() -> Result<(), Error> + Send + Sync),
+) -> Result<Value, Error> {
     crate::host_agents::refresh(agent)?;
     let directory = agent_dir(&agent.name);
     let _lock = match setup_lock {
@@ -2130,6 +2177,7 @@ pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result
     if observed["runtime_state"] != "stopped" || observed["backend"].is_object() {
         crate::host_platform::check_stop_sandbox(&agent.name).await?;
     }
+    check()?;
     if let Some(mut run) = crate::host_runs::read(&agent.name)?
         && run["agent_id"] == agent.id
         && matches!(run["state"].as_str(), Some("starting" | "running"))
@@ -2166,6 +2214,70 @@ pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result
         result["command_stop_warning"] = warning.into();
     }
     Ok(result)
+}
+
+/// Restart the saved coding harness while preserving its sandbox generation.
+/// A launch that cannot be proved stopped is never replaced speculatively.
+pub(crate) async fn restart_harness(
+    agent: &Agent,
+    setup_lock: SetupLock,
+    check: impl Fn() -> Result<(), Error> + Send + Sync,
+) -> Result<Value, Error> {
+    let current = crate::host_agents::refresh(agent)?;
+    let record = read_json(&launch_path(&agent.name))?.ok_or("no recorded harness to restart")?;
+    let sandbox = crate::host_runs::observe(&agent.name).await;
+    if record["agent_id"] != current.id || sandbox["exec"] != true {
+        return Err("harness or guest ownership is unverified".into());
+    }
+    check()?;
+    if record["launcher"]["kind"] == "supervisor" {
+        stop_supervisor(&agent.name).await?;
+    } else {
+        let generation = sandbox["run_id"]
+            .as_str()
+            .ok_or("sandbox generation unavailable")?;
+        let launch = record["launch_id"]
+            .as_str()
+            .ok_or("launch identity unavailable")?;
+        let command = format!(
+            "/safeyolo/safeyolo-guest observe stop {} {}",
+            shell_quote(generation),
+            shell_quote(launch)
+        );
+        let output = crate::host_platform::guest_command_output_authorized(
+            &agent.name,
+            &command,
+            std::time::Duration::from_secs(15),
+            &mut || check(),
+        )
+        .await?;
+        if !output.status.success() || output.stdout != b"stopped\n" {
+            return Err(
+                "guest harness termination is unverified; sandbox and launch were preserved".into(),
+            );
+        }
+    }
+    check()?;
+    // A terminal wrapper may need time to reap the guest command and run its
+    // saved exit hooks. Do not replace a live or changed launch record.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let observed = runtime(&current).await?;
+        if observed["run_id"] != sandbox["run_id"] || observed["launch_id"] != record["launch_id"] {
+            return Err("harness or sandbox changed during restart".into());
+        }
+        if matches!(
+            observed["agent_state"].as_str(),
+            Some("stopped" | "exited" | "failed")
+        ) {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("harness exit is unverified; no replacement was started".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    start_authorized(&current, "start", Some(setup_lock), None, false, &check).await
 }
 
 fn clear_stopped_command_state(name: &str) -> Result<(), Error> {

@@ -254,7 +254,7 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: ce39f4eb427f5553c95913e8ce95c328ae4f75732a20a4eab662a2f7b8027ab7
         - path: proxy/src/host_platform.rs
-          sha256: 509ec4782da745bbf409332ad486edb6b3af674f4c6807cb6e92934e4aa9151e
+          sha256: 9faa125b0fff14357240487b53da99d72fe6c6b58a41e3b78574e9094a13db31
         - path: proxy/src/host_boot.rs
           sha256: 52b02d5b4f0819e8b3b49a85fcff07364c5058128f8d8a9cf22c6c9d80d2c80a
         - path: guest/build-rootfs.sh
@@ -272,7 +272,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: ecc0de72cd8d295a673a7a533d36518730e347b5b4c9f2ccee5472626f3a348d
         - path: proxy/src/lib.rs
-          sha256: 4b22bef22cd38ed08658b51964af1b01760f347732f6b476a723c692bb30fd2b
+          sha256: b0eb8c13003b2bb2ae85f555fe2a2b92357231aa10b59ea85475ab1933d24aac
         - path: proxy/src/bin/safeyolo.rs
           sha256: 2f6c5168ea821f0c7415e3cd4459ca2ad9357accb5ac84ef14b775876761146f
         - path: scripts/run_claude_blackbox.py
@@ -321,7 +321,7 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: proxy/src/host_platform.rs
-          sha256: 509ec4782da745bbf409332ad486edb6b3af674f4c6807cb6e92934e4aa9151e
+          sha256: 9faa125b0fff14357240487b53da99d72fe6c6b58a41e3b78574e9094a13db31
         - path: proxy/src/jobs.rs
           sha256: bf49088efe6c8f53ee6a07fdddcb5c01335e5ea5894734538ad67ada1c971502
         - path: proxy/src/jobs/input.rs
@@ -337,7 +337,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: ecc0de72cd8d295a673a7a533d36518730e347b5b4c9f2ccee5472626f3a348d
         - path: proxy/src/lib.rs
-          sha256: 4b22bef22cd38ed08658b51964af1b01760f347732f6b476a723c692bb30fd2b
+          sha256: b0eb8c13003b2bb2ae85f555fe2a2b92357231aa10b59ea85475ab1933d24aac
         - path: proxy/src/bin/safeyolo.rs
           sha256: 2f6c5168ea821f0c7415e3cd4459ca2ad9357accb5ac84ef14b775876761146f
         - path: proxy/src/jobs/vz-guest-init.sh
@@ -615,7 +615,7 @@ nodes:
         - path: proxy/src/coord_operator/signals.rs
           sha256: c9a05a60581829ccfcc26c4d6fae3ad25e1a9674bbe07337498a036dab317778
         - path: proxy/src/coord_tools.rs
-          sha256: fbed6290addb5ad20db945bb01d748cf57a4fca8ffa5afebc06dc77113803053
+          sha256: 517d3c21ec210e30c7b5748ae83887ad8850a86b5d3cdd3911046c60f7cef1fb
         - path: proxy/src/coord_rooms/room_status.rs
           sha256: 3d97186a953758a5f2dcc8b62eb900507841fac06e884c22ada18323428082ff
         - path: proxy/src/coord_rooms/room_status/tests.rs

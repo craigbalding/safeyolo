@@ -36,6 +36,7 @@ pub mod native;
 mod sensor_config;
 mod source;
 mod stats;
+pub(crate) mod support;
 mod test_context_targets;
 mod watch;
 

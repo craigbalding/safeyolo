@@ -35,6 +35,7 @@ mod audit_events;
 mod coord_signals;
 mod gateway;
 mod services;
+mod support;
 mod traffic;
 
 /// These errors terminate the connection without a fabricated HTTP response.
@@ -1249,6 +1250,9 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 }
             }),
         ));
+    }
+    if path == "/admin/support-grants" || path.starts_with("/admin/support-grants/") {
+        return support::respond(request, &path, task_state, service_audit).await;
     }
     if path == "/admin/approval-delegations" || path.starts_with("/admin/approval-delegations/") {
         return approvals::delegations(request, &path, policy_snapshot, task_state, service_audit)

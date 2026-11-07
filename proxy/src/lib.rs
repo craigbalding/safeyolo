@@ -103,6 +103,7 @@ mod operator_actions;
 pub mod operator_commands;
 mod operator_events;
 mod operator_stats;
+mod peer_support;
 pub mod policy;
 mod policy_runtime;
 mod prompt_injection;

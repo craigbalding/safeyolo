@@ -154,6 +154,35 @@ impl Client {
     }
 
     async fn call_scoped(&self, name: &str, args: &Value) -> Result<Value, Error> {
+        if matches!(
+            name,
+            "support_grants" | "support_operation" | "read_support_operation"
+        ) {
+            if self.home.is_some() {
+                return Err(
+                    "local support uses the owning instance; remote support is unavailable".into(),
+                );
+            }
+            return match name {
+                "support_grants" => self.get("/support/grants").await,
+                "read_support_operation" => {
+                    self.get(&format!(
+                        "/support/operations/{}",
+                        segment(text(args, "operation_id")?)
+                    ))
+                    .await
+                }
+                _ => {
+                    self.request(
+                        Method::POST,
+                        "/support/operations",
+                        args.clone(),
+                        Duration::from_secs(60),
+                    )
+                    .await
+                }
+            };
+        }
         if matches!(name, "request_room_access" | "request_collaboration") {
             if self.home.is_some() {
                 return Err("room approval requests belong to the local SafeYolo".into());
@@ -522,6 +551,7 @@ fn valid_property(value: &Value, property: &Value) -> bool {
         Some("integer") => value.as_u64().is_some(),
         Some("number") => value.is_number(),
         Some("boolean") => value.is_boolean(),
+        Some("null") => value.is_null(),
         Some("object") => validate_arguments(value, property).is_ok(),
         Some("array") => value
             .as_array()
@@ -807,6 +837,36 @@ pub fn tools() -> Vec<Value> {
         &[],
     );
     add(
+        "support_grants",
+        "Inspect your operator-owned local support grants, explicit durable targets and owning instance. No room membership or target participation is needed. This tool grants no authority.",
+        json!({}),
+        &[],
+    );
+    add(
+        "support_operation",
+        "Inspect or operate on one explicitly delegated local target. Choose operation_id before submitting; never repeat an uncertain effect with a new ID. expected_run must match the inspected run for commands and lifecycle actions; use null to start a target with no run. Inspection-only permits no caller command. Guest administration includes guest sudo, mounts, credentials, services and the target's delegations. Output is private untrusted evidence, limited to 8192 bytes per stream. After timeout or a lost reply use read_support_operation. Transport cancellation does not prove guest descendant termination. The current host grant is rechecked at execution; no Coord notification is required.",
+        json!({"operation_id":string,"grant":string,"instance_id":{"oneOf":[string,{"type":"null"}]},"target_id":string,"expected_run":{"oneOf":[string,{"type":"null"}]},"operation":{"oneOf":[
+            {"type":"object","properties":{"action":{"type":"string","enum":["inspect"]}},"required":["action"],"additionalProperties":false},
+            {"type":"object","properties":{"action":{"type":"string","enum":["guest_command"]},"command":string,"timeout_seconds":integer},"required":["action","command","timeout_seconds"],"additionalProperties":false},
+            {"type":"object","properties":{"action":{"type":"string","enum":["guest_log"]},"path":string},"required":["action","path"],"additionalProperties":false},
+            {"type":"object","properties":{"action":{"type":"string","enum":["guest_probe"]},"timeout_seconds":integer},"required":["action","timeout_seconds"],"additionalProperties":false},
+            {"type":"object","properties":{"action":{"type":"string","enum":["lifecycle"]},"operation":{"type":"string","enum":["start_sandbox","start_harness","restart_harness","stop_sandbox","restart_sandbox"]}},"required":["action","operation"],"additionalProperties":false}
+        ]}}),
+        &[
+            "operation_id",
+            "grant",
+            "target_id",
+            "expected_run",
+            "operation",
+        ],
+    );
+    add(
+        "read_support_operation",
+        "Read the private result or observable uncertain state of your original local support operation without replaying it. Current support authority is required, including permission for any retained guest output. A standing grant can permit recovery after an ordinary support-agent restart; initiator and target-run attribution remain the original execution's.",
+        json!({"operation_id":string}),
+        &["operation_id"],
+    );
+    add(
         "read_approval",
         "Read trusted request facts and host-generated choices. Raw peer traffic and secrets are not returned. Authorization is checked on every read.",
         json!({"approval_id":string}),
@@ -889,6 +949,9 @@ pub fn tools() -> Vec<Value> {
             tool["name"].as_str(),
             Some(
                 "list_approvals"
+                    | "support_grants"
+                    | "support_operation"
+                    | "read_support_operation"
                     | "read_approval"
                     | "resolve_approval"
                     | "request_room_access"

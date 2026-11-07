@@ -47,6 +47,7 @@ user_facing_docs = [
     "docs/service-authoring.md",
     "docs/service-gateway-v2-yaml-spec.md",
     "docs/delegated-approvals.md",
+    "docs/peer-support.md",
     "docs/settings.md",
     "docs/operator-guide.md",
     "docs/DEVELOPERS.md",
