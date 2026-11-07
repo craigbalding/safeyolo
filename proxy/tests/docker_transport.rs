@@ -160,6 +160,26 @@ async fn forbidden_docker_arguments_and_forged_boundary_never_contact_the_origin
             String::from_utf8_lossy(&response)
         );
     }
+    for body in [
+        json!({"Cmd":["true"],"Detach":false,"ConsoleSize":[24,80],"Privileged":true}),
+        json!({"Cmd":["true"],"Detach":"false"}),
+        json!({"Cmd":["true"],"ConsoleSize":[24,-1]}),
+        json!({"Cmd":["true"],"ConsoleSize":[24,"80"]}),
+        json!({"Cmd":["true"],"Detach":false,"FutureOption":true}),
+    ] {
+        let response = call(
+            root.path(),
+            "alice",
+            &request(
+                "POST",
+                "/v1.45/containers/existing/exec",
+                "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nContent-Type: application/json\r\nConnection: close\r\n",
+                &serde_json::to_vec(&body).unwrap(),
+            ),
+        )
+        .await;
+        assert!(response.starts_with(b"HTTP/1.1 403"));
+    }
     assert!(
         timeout(Duration::from_millis(100), origin.accept())
             .await
@@ -170,11 +190,27 @@ async fn forbidden_docker_arguments_and_forged_boundary_never_contact_the_origin
 
 #[tokio::test]
 async fn docker_resource_inspection_precedes_mutation_and_pins_existing_container_names() {
-    for (safe, operation) in [
-        (false, "start"),
-        (true, "start"),
-        (true, "rename?name=syproof21cd528538cf-web-1"),
-        (false, "rename?name=syproof21cd528538cf-web-1"),
+    let fixtures: Value =
+        serde_json::from_str(include_str!("fixtures/docker/compose-exec-defaults.json")).unwrap();
+    let attached = serde_json::to_vec(&fixtures[0]["create"]).unwrap();
+    let terminal = serde_json::to_vec(&fixtures[2]["create"]).unwrap();
+    for (safe, operation, body) in [
+        (false, "start", b"".as_slice()),
+        (true, "start", b"".as_slice()),
+        (
+            true,
+            "rename?name=syproof21cd528538cf-web-1",
+            b"".as_slice(),
+        ),
+        (
+            false,
+            "rename?name=syproof21cd528538cf-web-1",
+            b"".as_slice(),
+        ),
+        (true, "exec", attached.as_slice()),
+        (false, "exec", attached.as_slice()),
+        (true, "exec", terminal.as_slice()),
+        (false, "exec", terminal.as_slice()),
     ] {
         let root = tempfile::tempdir().unwrap();
         let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -185,6 +221,7 @@ async fn docker_resource_inspection_precedes_mutation_and_pins_existing_containe
             false,
         )
         .await;
+        let expected_body = body.to_vec();
         let backend = tokio::spawn(async move {
             let (mut stream, _) = origin.accept().await.unwrap();
             let headers = String::from_utf8(head(&mut stream).await).unwrap();
@@ -216,10 +253,15 @@ async fn docker_resource_inspection_precedes_mutation_and_pins_existing_containe
                     )),
                     "{headers}"
                 );
-                stream
-                    .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
-                    .await
-                    .unwrap();
+                let mut received_body = vec![0; expected_body.len()];
+                stream.read_exact(&mut received_body).await.unwrap();
+                assert_eq!(received_body, expected_body);
+                let response = if operation == "exec" {
+                    &b"HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 15\r\nConnection: close\r\n\r\n{\"Id\":\"exec-1\"}"[..]
+                } else {
+                    &b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"[..]
+                };
+                stream.write_all(response).await.unwrap();
             } else {
                 assert!(
                     timeout(Duration::from_millis(100), origin.accept())
@@ -234,16 +276,18 @@ async fn docker_resource_inspection_precedes_mutation_and_pins_existing_containe
             &request(
                 "POST",
                 &format!("/v1.45/containers/json/{operation}"),
-                "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nConnection: close\r\n",
-                b"",
+                "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nContent-Type: application/json\r\nConnection: close\r\n",
+                body,
             ),
         )
         .await;
         assert!(
-            response.starts_with(if safe {
-                b"HTTP/1.1 204"
-            } else {
+            response.starts_with(if !safe {
                 b"HTTP/1.1 403"
+            } else if operation == "exec" {
+                b"HTTP/1.1 201"
+            } else {
+                b"HTTP/1.1 204"
             }),
             "{}",
             String::from_utf8_lossy(&response)

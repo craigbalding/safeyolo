@@ -721,6 +721,7 @@ volume_create:
                 Availability: {type: string, nullable: true, enum: [active, pause, drain], default: active}
 exec_create:
   allow:
+    Detach: {type: boolean, nullable: true}
     AttachStdin: {type: boolean, nullable: true}
     AttachStdout: {type: boolean, nullable: true}
     AttachStderr: {type: boolean, nullable: true}

@@ -189,6 +189,8 @@ impl DockerAccess {
                                 "AttachStdin",
                                 "AttachStdout",
                                 "AttachStderr",
+                                "ConsoleSize",
+                                "Detach",
                                 "DetachKeys",
                                 "Tty",
                                 "Env",
@@ -1120,6 +1122,80 @@ mod tests {
             json!({"Image":"busybox","hostconfig":{"privileged":true}}),
         ] {
             assert!(create(config.clone()).is_err(), "{config}");
+        }
+    }
+    #[test]
+    fn compose_exec_defaults_require_existing_resource_inspection() {
+        // Compose v2.40.3 at API 1.45, captured against a local synthetic Engine.
+        // Attached, detached and 24x80 terminal sessions all send Detach on create.
+        let fixtures: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/docker/compose-exec-defaults.json"
+        ))
+        .unwrap();
+        for fixture in fixtures.as_array().unwrap() {
+            for (field, path, resource) in [
+                (
+                    "create",
+                    "/v1.45/containers/existing-name/exec",
+                    Resource::Container("existing-name".into()),
+                ),
+                (
+                    "start",
+                    "/v1.45/exec/exec-id/start",
+                    Resource::Exec("exec-id".into()),
+                ),
+            ] {
+                let mut plan = access()
+                    .request("POST", path, &serde_json::to_vec(&fixture[field]).unwrap())
+                    .unwrap();
+                assert_eq!(plan.next(), Some(resource.clone()));
+                assert!(plan.observe(&access(), &resource, None).is_err());
+            }
+        }
+    }
+    #[test]
+    fn exec_create_and_start_keep_typed_fields_and_privilege_bounds() {
+        for (body, allowed) in [
+            (json!({}), true),
+            (json!({"Detach":false,"Tty":false}), true),
+            (
+                json!({"Detach":true,"Tty":true,"ConsoleSize":[24,80]}),
+                true,
+            ),
+            (json!({"Detach":null,"Tty":null,"ConsoleSize":null}), true),
+            (json!({"ConsoleSize":[0,0]}), true),
+            (json!({"Detach":"false"}), false),
+            (json!({"Detach":0}), false),
+            (json!({"Detach":[]}), false),
+            (json!({"Tty":"true"}), false),
+            (json!({"ConsoleSize":[-1,80]}), false),
+            (json!({"ConsoleSize":[24,80.0]}), false),
+            (json!({"ConsoleSize":[24,"80"]}), false),
+            (json!({"ConsoleSize":[24,true]}), false),
+            (json!({"ConsoleSize":24}), false),
+            (json!({"ConsoleSize":{}}), false),
+            (json!({"Detach":false,"detach":true}), false),
+            (
+                json!({"Detach":false,"ConsoleSize":[24,80],"FutureOption":false}),
+                false,
+            ),
+            (
+                json!({"Detach":false,"ConsoleSize":[24,80],"Privileged":true}),
+                false,
+            ),
+        ] {
+            for path in [
+                "/v1.45/containers/existing-name/exec",
+                "/v1.45/exec/exec-id/start",
+            ] {
+                assert_eq!(
+                    access()
+                        .request("POST", path, &serde_json::to_vec(&body).unwrap())
+                        .is_ok(),
+                    allowed,
+                    "{path}: {body}"
+                );
+            }
         }
     }
     #[test]

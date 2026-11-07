@@ -20,7 +20,7 @@ effect_model:
     linux_defaults: {location: 'https://github.com/moby/moby/blob/v26.1.5/oci/defaults.go', version: Moby
         v26.1.5}
     docker_access: {location: proxy/src/services/docker/enforcement.rs, version: API 1.45 workload profile}
-    request_shapes: {location: contrib/docker/request-shapes.yaml, version: Expanded v26.1.5 request types with current client endpoint defaults}
+    request_shapes: {location: contrib/docker/request-shapes.yaml, version: Expanded v26.1.5 request types with current client defaults}
     daemon_defaults: {location: 'https://github.com/moby/moby/blob/v26.1.5/daemon/info.go', version: Moby v26.1.5 SecurityOptions}
     cgroup_default: {location: 'https://github.com/moby/moby/blob/v26.1.5/daemon/info_unix.go', version: Moby v26.1.5 cgroupNamespacesEnabled}
     client_resource_defaults: {location: 'https://github.com/docker/cli/blob/v26.1.5/cli/command/container/opts.go', version: Docker CLI v26.1.5}
@@ -31,6 +31,8 @@ effect_model:
     endpoint_connect: {location: 'https://github.com/moby/moby/blob/docker-v29.1.3/daemon/server/router/network/network_routes.go', version: Moby docker-v29.1.3 connect passes EndpointConfig through}
     compose_endpoints: {location: 'https://github.com/docker/compose/blob/v2.40.3/pkg/compose/create.go', version: Compose v2.40.3 createEndpointSettings}
     compose_recreate: {location: 'https://github.com/docker/compose/blob/v2.40.3/pkg/compose/convergence.go#L572-L628', version: Compose v2.40.3 recreates a container under a temporary name then renames it}
+    exec_config: {location: 'https://github.com/moby/moby/blob/v26.1.5/api/types/configs.go', version: Moby v26.1.5 ExecConfig includes Detach and ConsoleSize}
+    compose_exec: {location: 'https://github.com/docker/compose/blob/v2.40.3/pkg/compose/exec.go', version: Compose v2.40.3 delegates exec to Docker CLI with attached or detached streams and terminal options}
     default_endpoint_network: {location: 'https://github.com/moby/moby/blob/v26.1.5/api/server/router/container/container_routes.go#L474-L488', version: Moby v26.1.5 defaulted NetworkMode resolves endpoint key default to the Linux bridge}
   resources:
     docker_environment: {description: The configured daemon and its workloads. Project association is
@@ -646,7 +648,7 @@ docker_enforcement: {profile: capabilities.<name>.docker_access, supported_api: 
       files, credentials, explicit host mounts and other inner workloads.'], source_evidence: [engine_145,
     linux_defaults, docker_access, request_shapes, client_resource_defaults, resource_sentinels,
     resource_bounds, endpoint_priority, endpoint_create, endpoint_connect,
-    compose_endpoints, compose_recreate, default_endpoint_network], known_gaps: [Docker cannot atomically inspect resources
+    compose_endpoints, compose_recreate, default_endpoint_network, exec_config, compose_exec], known_gaps: [Docker cannot atomically inspect resources
       and apply a mutation. Trusted administrators can change network or volume references during that
       interval. Primary container names resolve to immutable IDs., 'Supported default logging drivers
       are json-file, local and none. External log drivers/options are unsupported because they can select
