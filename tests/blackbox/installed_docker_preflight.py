@@ -258,12 +258,7 @@ def provider_controls(root, output, native, guest, background, docker, report):
         phase("recovered", {"recovered": {200}})
         assert report["provider_clients"]["allowed"]["body_sha256"] == report["provider_clients"]["recovered"]["body_sha256"]
         logs = docker(f"{COMPOSE} logs --no-color --no-log-prefix api", "provider-origin")
-        requests = report["provider_origin"] = [json.loads(line) for line in logs.splitlines() if line.startswith('{"role":')]
-        forwarded = [row for row in requests if row["caller_ids"]]
-        assert len(forwarded) == 2, "refused requests reached the application"
-        assert all(row["caller_ids"] == [caller_runtime["agent_id"]] and
-                   row["caller_names"] == ["dockercaller"] and row["authorization_count"] == 0 and
-                   row["legacy_identity_count"] == 0 for row in forwarded), "forged headers changed authority"
+        report["provider_origin"] = verify_provider_origin(logs, caller_runtime["agent_id"])
         docker(f"{COMPOSE} stop api", "close-application-port")
         phase("closed", {"closed": {502, 503}})
         native("agent", "stop", "notes")
@@ -286,28 +281,70 @@ def provider_controls(root, output, native, guest, background, docker, report):
         parent_thread.join(timeout=5)
 
 
+def verify_provider_origin(logs, caller_id):
+    """Read application JSON, including Compose's observed erase-line prefix."""
+    lines = (line.removeprefix("\x1b[2K") for line in logs.splitlines())
+    requests = [json.loads(line) for line in lines if line.startswith('{"role":')]
+    forwarded = [row for row in requests if row["caller_ids"]]
+    # The recreated API has one local readiness read, then the two approved
+    # gateway reads. Also catch an extra refused request stripped of identity.
+    assert len(requests) == 3 and len(forwarded) == 2, "refused requests reached the application"
+    assert all(row["role"] == "api" and row["method"] == "GET" and row["path"] == "/api/v1/notes" and
+               row["caller_ids"] == [caller_id] and row["caller_names"] == ["dockercaller"] and
+               row["authorization_count"] == 0 and row["legacy_identity_count"] == 0
+               for row in forwarded), "forged headers changed authority"
+    return requests
+
+
 def verify_outbound(events, report, *, reused_image):
-    """Require request IDs from this journey's hosting sandbox generations."""
-    agent_id = report["runtime"]["agent_id"]
-    run_ids = {report["runtime"]["run_id"], report["recovery"]["after"]["run_id"]}
-    outbound = []
+    """Join guard run authority to terminal/response records by request ID."""
+    runtime = report["runtime"]
+    # These probes and the image pull run before sandbox recovery. Only the
+    # evaluated guard producer binds sandbox_run; traffic records do not.
+    guards = {event["request_id"]: event for event in events
+              if event.get("event") == "security.network_guard.evaluated" and
+              event.get("details", {}).get("sandbox_run", {}).get("agent_id") == runtime["agent_id"] and
+              event["details"]["sandbox_run"].get("run_id") == runtime["run_id"] and
+              event["details"]["sandbox_run"].get("agent") == "notes"}
+    outbound = report["outbound"] = []
     for event in events:
-        run = event.get("details", {}).get("sandbox_run", {})
-        if (event.get("event") not in {"security.network_guard", "traffic.response"} or
-                event.get("agent") not in {"notes", agent_id} or run.get("agent_id") != agent_id or
-                run.get("run_id") not in run_ids):
+        guard = guards.get(event.get("request_id"))
+        details = event.get("details", {})
+        attribution = details.get("attribution", {})
+        provenance = attribution.get("attribution_provenance", {})
+        if (guard is None or (event.get("event") == "security.network_guard.evaluated" and
+                details.get("sandbox_run") != guard["details"]["sandbox_run"]) or event.get("event") not in {
+                "security.network_guard.evaluated", "security.network_guard",
+                "traffic.response", "traffic.request_outcome"} or
+                event.get("agent") != "notes" or event.get("host") != guard.get("host") or
+                attribution.get("attribution_status") != "resolved" or
+                attribution.get("trusted_transport_identity") != "notes" or
+                provenance.get("transport_source") != "uds" or provenance.get("uds_agent") != "notes"):
             continue
         outbound.append({**{key: event.get(key) for key in ("event", "request_id", "agent", "host", "decision")},
-                         "sandbox_run": run})
-    report["outbound"] = outbound
+                         "details": {key: details[key] for key in (
+                             "sandbox_run", "outcome", "status", "decision", "attribution") if key in details}})
+
+    def complete_request(request_id, host, status):
+        rows = [row for row in outbound if row["request_id"] == request_id and row["host"] == host]
+        decision, outcome = ("allow", "allowed") if status == 200 else ("deny", "blocked")
+        return (bool(request_id) and status in {200, 403} and
+                any(row["event"] == "security.network_guard.evaluated" and
+                    row["details"].get("outcome") == outcome for row in rows) and
+                any(row["event"] == "traffic.request_outcome" and row["decision"] == decision and
+                    row["details"].get("decision") == decision and row["details"].get("status") == status
+                    for row in rows) and
+                any(row["event"] == "traffic.response" and row["details"].get("status") == status for row in rows) and
+                (status == 200 or any(row["event"] == "security.network_guard" and row["decision"] == "deny"
+                                      for row in rows)))
+
     for probe in report["network_probes"]:
-        assert probe["request_id"] and any(row["request_id"] == probe["request_id"] and
-            row["host"] == probe["destination"] and
-            (row["event"] == "traffic.response" if probe["status"] == 200 else row["decision"] == "deny")
-            for row in outbound), "probe lacks hosting-principal policy evidence"
+        assert complete_request(probe["request_id"], probe["destination"], probe["status"]), \
+            "probe lacks hosting-principal policy evidence"
     if not reused_image:
-        assert any(row["host"] == "registry-1.docker.io" and row["decision"] == "allow" for row in outbound)
-    assert any(row["host"] == "denied.invalid" and row["decision"] == "deny" for row in outbound)
+        assert any(row["host"] == "registry-1.docker.io" and
+                   complete_request(row["request_id"], row["host"], 200) for row in outbound), \
+            "image pull lacks hosting-principal policy evidence"
 
 
 def run(args):
