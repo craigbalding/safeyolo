@@ -701,6 +701,11 @@ impl Membership {
         Ok(())
     }
     fn image(&self, value: &mut Value) {
+        let actual_tags = value
+            .get("RepoTags")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         retain(
             value,
             &[
@@ -727,10 +732,15 @@ impl Membership {
                 .iter()
                 .chain(&self.project.shared.image_names)
                 .chain(&self.state.image_names)
-                .filter_map(|(name, image)| (*image == id).then_some(name))
+                .filter_map(|(name, image)| (*image == id
+                    && actual_tags.iter().any(|tag| tag.as_str() == Some(name)))
+                .then_some(name))
                 .collect::<BTreeSet<_>>()
         );
         value["RepoDigests"] = json!([]);
+        if let Some(config) = value.get_mut("Config").and_then(Value::as_object_mut) {
+            config.insert("Image".into(), json!(id));
+        }
         hide_marker(value);
     }
     pub(crate) fn event(&self, value: &Value) -> Option<Value> {
