@@ -10,6 +10,7 @@ import runpy
 from copy import deepcopy
 from email.message import Message
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import create_autospec
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
@@ -17,9 +18,54 @@ from urllib.response import addinfourl
 
 import pytest
 
-from tests.blackbox.installed_docker_preflight import verify_outbound, verify_provider_origin
+from tests.blackbox.installed_docker_preflight import gateway_management, verify_outbound, verify_provider_origin
 
 PROBE = Path(__file__).parent / "blackbox/fixtures/nested-docker/network_probe.py"
+
+
+@pytest.mark.parametrize("interruption", ["gateway-create", "gateway-exec"])
+def test_gateway_observer_preserves_uncertain_mutations_and_restores_the_fixture(tmp_path, monkeypatch, interruption):
+    caller = tmp_path / "docker-caller"
+    caller.mkdir()
+    service = tmp_path / "services/notes.yaml"
+    service.parent.mkdir()
+    service.write_text("retained application service\n")
+    policy = tmp_path / "policy.toml"
+    provider = tmp_path / "provider"
+    provider.mkdir()
+    (provider / "docker-gateway-client").write_text("synthetic client, never executed\n")
+    policy.write_text('[hosts."notes.safeyolo.internal"]\nservice = "notes"\n'
+                      + f'[agents.notes]\nfolder = "{provider}"\n')
+    originals = {path: path.read_bytes() for path in (service, policy)}
+    output = tmp_path / "output"
+    output.mkdir(mode=0o700)
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.running_guest", lambda *_: {"agent_id": "ag-caller"})
+    steps = []
+
+    def native(*arguments):
+        return '{"runtime_state":"stopped"}' if arguments[:2] == ("agent", "status") else ""
+
+    def guest(command, label, **_):
+        steps.append(label)
+        if label == interruption:
+            raise RuntimeError("response interrupted after dispatch")
+        return {"gateway-unapproved": "\x1b[2K403", "gateway-inspect": "\x1b[2Ktrue"}.get(label, "")
+
+    def background(*_):
+        return (SimpleNamespace(poll=lambda: None),)
+
+    report = {}
+    with pytest.raises(RuntimeError, match="response interrupted"):
+        gateway_management(SimpleNamespace(docker_data="/home/agent/retained/data"), tmp_path, output,
+                           native, guest, background, report)
+    assert steps.count("gateway-create") == 1
+    assert "gateway-remove" not in steps
+    assert report["gateway_container"].startswith("sygateway")
+    for path, original in originals.items():
+        assert path.read_bytes() == original
+        backup = output / f"original-{path.name}"
+        assert backup.read_bytes() == original
+        assert backup.stat().st_mode & 0o777 == 0o600
 
 
 @pytest.mark.parametrize("refusal", ["policy", "missing-attribution", "approval", "reachable", "transport"])

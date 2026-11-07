@@ -2,12 +2,16 @@
 """Probe nested Docker in one disposable installed Linux/systrap sandbox.
 
 On an owned Linux host, supply a prepared installation, this source checkout,
-Python 3.11+ with tomlkit, and a free Admin port. Root/output must be new,
+and Python 3.11+ with tomlkit. Use a new output directory and a new root unless
+--reuse-root is selected. A new instance also needs a free Admin port. Use
 disk-backed paths with traversable parents. --nested-docker selects the
 candidate's guest configuration; without it the driver records the default.
 The guest installs Debian Docker packages through its normal proxy, attempts
 one local daemon/pull/container and stops. --journey additionally runs the
 Compose lifecycle, sandbox recovery and application-bound provider controls.
+--gateway reuses the stopped qualified fixture for Docker management through
+its provider route. It restores ephemeral guest tools, but does not repeat image
+pulls or the application lifecycle.
 --reuse-root continues this probe's stopped disposable instance without
 replacing its policy, registry approvals or prepared inputs. Run only after
 any retained registry refusal has been resolved; the driver does not approve
@@ -80,6 +84,126 @@ capabilities:
       - methods: [GET]
         path: /api/v1/notes
 '''
+
+DOCKER_SERVICE = '''schema_version: 1
+name: notes
+default_host: notes.safeyolo.internal
+docker:
+  endpoint: http://notes.safeyolo.internal:2375
+  execution_boundary: sandbox
+capabilities:
+  engine:
+    docker_access: {mode: sandbox_admin}
+    routes:
+      - methods: [GET, HEAD, POST, PUT, DELETE]
+        path: /v1.45/**
+'''
+
+
+def gateway_management(args, root, output, native, guest, background, report):
+    """Exercise the real inner Engine over the existing sandbox-provider route."""
+    caller = root / "docker-caller"
+    assert caller.is_dir(), "reuse the qualified #1436 caller and workspace"
+    assert json.loads(native("agent", "status", "dockercaller"))["runtime_state"] == "stopped"
+    service = root / "services/notes.yaml"
+    policy = root / "policy.toml"
+    originals = {path: path.read_bytes() for path in (service, policy)}
+    # The ordinary private output also supplies rollback inputs if the driver
+    # itself is interrupted before its finally block can restore the fixture.
+    for path, original in originals.items():
+        backup = output / f"original-{path.name}"
+        backup.write_bytes(original)
+        backup.chmod(0o600)
+    name = "sygateway" + uuid.uuid4().hex[:12]
+    report["gateway_container"] = name
+    report["reused_image_data"] = args.docker_data
+    state = "/home/agent/docker-gateway"
+    try:
+        native("stop")
+        service.write_text(DOCKER_SERVICE)
+        settings = tomlkit.parse(originals[policy].decode())
+        settings["hosts"]["notes.safeyolo.internal:2375"] = {"egress": "allow"}
+        policy.write_text(tomlkit.dumps(settings))
+        native("start")
+        native("agent", "start", "dockercaller", "--sandbox-only")
+        report["caller"] = running_guest(root, "dockercaller", json.loads(native("agent", "status", "dockercaller")))
+        guest("if ! command -v dockerd >/dev/null || ! command -v socat >/dev/null "
+              "|| ! docker compose version >/dev/null 2>&1; then "
+              "sudo -n apt-get update && sudo -n apt-get install -y --no-install-recommends "
+              "docker.io docker-cli docker-compose socat; fi; "
+              f"mkdir -p {state}; cp -- \"$(command -v docker)\" /workspace/docker-gateway-client", "gateway-tools", timeout=300)
+        # Use the guest's matching Debian client, without assuming that a host
+        # binary can run against the guest's libc. It carries no credentials.
+        shutil.copy2(Path(settings["agents"]["notes"]["folder"]) / "docker-gateway-client", caller / "docker-client")
+        daemon = background("notes", f"exec sudo -n env SAFEYOLO_DOCKER_DATA_ROOT={shlex.quote(args.docker_data)} "
+                            f"bash /workspace/docker-preflight.sh {state} --daemon", "gateway-daemon")[0]
+        guest(f"for ((i=0;i<150;i++)); do version=$(sudo -n {DOCKER} info --format '{{{{.ServerVersion}}}}' "
+              "2>/dev/null) || version=; [[ -n $version ]] && exit 0; sleep 0.1; done; exit 1", "gateway-daemon-ready")
+        assert daemon.poll() is None, "inner daemon exited after readiness"
+        # Guest root can open the root-owned daemon socket. The listener stays
+        # on guest loopback and adds no host listener or outer privilege.
+        relay_command = f"echo $$ >{state}/relay.pid; exec socat " \
+                        "TCP4-LISTEN:2375,bind=127.0.0.1,reuseaddr,fork " \
+                        "UNIX-CONNECT:/run/safeyolo-nested-docker/docker.sock"
+        relay = background("notes", "exec sudo -n bash -c " + shlex.quote(relay_command), "gateway-port")[0]
+        guest("for ((i=0;i<100;i++)); do curl --silent --fail --max-time 1 "
+              "http://127.0.0.1:2375/_ping && exit 0; sleep 0.1; done; exit 1", "gateway-port-ready")
+        assert relay.poll() is None, "inner endpoint exited after readiness"
+        url = "http://notes.safeyolo.internal:2375/v1.45/version"
+        refused = guest("curl --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code}' "
+                        + url, "gateway-unapproved", agent="dockercaller")
+        assert refused.strip().removeprefix("\x1b[2K") == "403", "unapproved Docker caller reached the provider"
+        native("services", "authorize", "dockercaller", "notes", "--capability", "engine")
+        # Only the scoped gateway token enters the caller. The internal
+        # endpoint has no upstream administrative credential to distribute.
+        prepare = '''set -eu
+umask 077
+mkdir -p /home/agent/docker-gateway-client
+agent_token=$(cat /app/agent_token)
+printf 'Authorization: Bearer %s\\n' "$agent_token" |
+  curl --silent --show-error --fail --header @- http://_safeyolo.proxy.internal/gateway/services |
+  python3 -c 'import json,sys; from pathlib import Path; token=json.load(sys.stdin)["authorized"]["notes"]["token"]; Path("/home/agent/docker-gateway-client/config.json").write_text(json.dumps({"HttpHeaders":{"X-SafeYolo-Docker-Service":"notes","Authorization":"Bearer "+token}}))'
+'''
+        guest(prepare, "gateway-client-config", agent="dockercaller")
+
+        def client_command(arguments, label):
+            return guest("set -eu; unset DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH; "
+                         "proxy_address=${HTTP_PROXY#http://}; "
+                         "export DOCKER_HOST=tcp://${proxy_address%/} DOCKER_API_VERSION=1.45 "
+                         "DOCKER_CONFIG=/home/agent/docker-gateway-client; "
+                         + arguments, label, agent="dockercaller")
+
+        report["gateway_versions"] = client_command("/workspace/docker-client version", "gateway-version")
+        # Use the qualified retained image; no pull, build or full application
+        # journey is repeated. Inner host networking is the accepted setup.
+        client_command(f"/workspace/docker-client create -i --network=host --name {name} "
+                       "debian:trixie-slim sh -c 'read line; echo internal:$line'", "gateway-create")
+        client_command(f"/workspace/docker-client start {name}", "gateway-container-start")
+        inspected = client_command(f"/workspace/docker-client inspect --format '{{{{.State.Running}}}}' {name}", "gateway-inspect")
+        assert inspected.strip().removeprefix("\x1b[2K") == "true"
+        echoed = client_command(f"printf 'exec-half-close\\n' | /workspace/docker-client exec -i {name} cat", "gateway-exec")
+        assert "exec-half-close" in echoed
+        attached = client_command(f"printf 'attach-half-close\\n' | /workspace/docker-client attach --sig-proxy=false {name}", "gateway-attach")
+        assert "internal:attach-half-close" in attached
+        client_command(f"/workspace/docker-client rm {name}", "gateway-remove")
+        guest(f"sudo -n kill -TERM $(cat {state}/relay.pid)", "gateway-close-port")
+        report["gateway_port_exit"] = relay.wait(timeout=20)
+        closed = client_command("/workspace/docker-client version >/dev/null 2>/home/agent/docker-gateway-client/closed.log "
+                                "&& exit 1; cat /home/agent/docker-gateway-client/closed.log", "gateway-closed")
+        assert "502" in closed or "503" in closed, "closed provider port did not fail clearly"
+        native("agent", "stop", "notes")
+        stopped = client_command("/workspace/docker-client version >/dev/null 2>/home/agent/docker-gateway-client/stopped.log "
+                                 "&& exit 1; cat /home/agent/docker-gateway-client/stopped.log", "gateway-stopped")
+        assert "502" in stopped or "503" in stopped, "stopped provider did not fail clearly"
+        report["gateway_result"] = "version, create/inspect, exec/attach half-close, removal and unavailable provider passed"
+    finally:
+        # Stop before restoring the retained application service and its
+        # authorizations. Keep failure diagnostics and uncertain resources.
+        try:
+            native("stop")
+        finally:
+            for path, original in originals.items():
+                path.write_bytes(original)
 
 
 def compose_journey(args, root, output, workspace, native, guest, background, report):
@@ -361,6 +485,7 @@ def run(args):
     processes = []
     children = []
     capture_failures = []
+    original_bin = None
 
     def native(*arguments, timeout=90, instance=root):
         return checked([cli, "--root", str(instance), *arguments], env=env, timeout=timeout,
@@ -408,6 +533,14 @@ def run(args):
             policy = tomlkit.parse((root / "policy.toml").read_text())
             assert policy["agents"]["notes"]["nested_docker"] is True
             workspace = Path(policy["agents"]["notes"]["folder"])
+            if args.gateway:
+                # The retained root links its original prepared installation.
+                # Select a task-owned bin overlay for the current proxy, then
+                # restore the link after stop. Never overwrite donor binaries.
+                original_bin = (root / "bin").readlink()
+                (output / "original-bin-link.txt").write_text(str(original_bin) + "\n")
+                (root / "bin").unlink()
+                (root / "bin").symlink_to(base / "bin", target_is_directory=True)
         else:
             prepare_native_instance(base, root)
             root.chmod(0o755)
@@ -453,7 +586,10 @@ def run(args):
         report["proxy"] = _runtime_observation(root, _native_config(root / "config.toml", root),
             base / "bin/safeyolo-proxy", config_path=root / "config.toml", working_directory=root,
             require_running=True, require_authenticated_identity=True)
-        if args.journey:
+        if args.gateway:
+            gateway_management(args, root, output, native, guest, background, report)
+            report["status"] = "gateway-passed"
+        elif args.journey:
             compose_journey(args, root, output, workspace, native, guest, background, report)
             report["status"] = "journey-ran"
         else:
@@ -479,6 +615,9 @@ def run(args):
                 native("stop")
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                 failures.append(f"instance stop: {error}")
+        if original_bin is not None:
+            (root / "bin").unlink(missing_ok=True)
+            (root / "bin").symlink_to(original_bin, target_is_directory=True)
         report["commands"] = []
         for label, child, reader, finished in children:
             try:
@@ -494,7 +633,7 @@ def run(args):
                 failures.append(f"guest output capture remained live: {label}")
             report["commands"].append({"step": label, "exit": child.returncode})
         failures.extend(capture_failures)
-        observations = root / "agents/notes/home" / ("docker-journey" if args.journey else "docker-preflight")
+        observations = root / "agents/notes/home" / ("docker-gateway" if args.gateway else "docker-journey" if args.journey else "docker-preflight")
         if observations.is_dir():
             for path in observations.iterdir():
                 if path.is_file():
@@ -528,14 +667,18 @@ def main():
     parser.add_argument("--proxy-revision", help="source-equivalent prepared proxy revision when only the CLI changed")
     parser.add_argument("--admin-port", type=int)
     parser.add_argument("--nested-docker", action="store_true")
-    parser.add_argument("--journey", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--journey", action="store_true")
+    mode.add_argument("--gateway", action="store_true", help="only management through the retained nested provider")
     parser.add_argument("--reuse-root", action="store_true")
     parser.add_argument("--docker-data", help="existing guest Docker data root; reuse its qualified image instead of pulling again")
     parser.add_argument("--host-address", help="unapproved real venue host address for the inner network negative control")
     parser.add_argument("--host-port", type=int, help="unapproved real host TCP port for the negative control")
     args = parser.parse_args()
-    if args.reuse_root and not args.journey:
-        parser.error("--reuse-root requires --journey")
+    if args.reuse_root and not (args.journey or args.gateway):
+        parser.error("--reuse-root requires --journey or --gateway")
+    if args.gateway and (not args.reuse_root or not args.nested_docker):
+        parser.error("--gateway requires --reuse-root and --nested-docker")
     if not args.reuse_root and args.admin_port is None:
         parser.error("a fresh instance requires --admin-port")
     if args.reuse_root and not args.docker_data:
@@ -544,7 +687,7 @@ def main():
         parser.error("--journey requires --nested-docker, --host-address and --host-port")
     report = run(args)
     print(json.dumps({key: report.get(key) for key in ("status", "cleanup", "outcome")}))
-    return int(report["status"] not in {"container-ran", "journey-passed"} or report["cleanup"] != "stopped")
+    return int(report["status"] not in {"container-ran", "journey-passed", "gateway-passed"} or report["cleanup"] != "stopped")
 
 
 if __name__ == "__main__":
