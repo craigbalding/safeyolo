@@ -318,6 +318,99 @@ async fn fresh_resource_discovery_preserves_not_found_without_forwarding_uncheck
 }
 
 #[tokio::test]
+async fn network_changes_require_management_of_the_referenced_container() {
+    for operation in ["connect", "disconnect"] {
+        for owned in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let container = "a".repeat(64);
+            let network = "b".repeat(64);
+            let image = format!("sha256:{}", "c".repeat(64));
+            let mut definition = workloads(origin.local_addr().unwrap().port());
+            let mut access = json!({"mode":"project","name":"alpha","adoption":"selection-1","shared":{"images":[image],"networks":[network]}});
+            access[if owned { "selected" } else { "shared" }]["containers"] = json!([container]);
+            definition["capabilities"]["engine"]["docker_access"] = access;
+            let proxy = start(root.path(), definition, false, false).await;
+            let target = format!("/v1.45/networks/{network}/{operation}");
+            let forwarded = target.clone();
+            let backend = tokio::spawn(async move {
+                for (path, body) in [
+                    (
+                        "/v1.45/containers/ordinary/json".to_owned(),
+                        json!({"Id":container,"Image":image,"HostConfig":{"Privileged":false,"CgroupnsMode":"private","NetworkMode":network},"NetworkSettings":{"Networks":{}},"Mounts":[]}),
+                    ),
+                    (
+                        format!("/v1.45/networks/{network}"),
+                        json!({"Id":network,"Driver":"bridge","Options":{},"IPAM":{"Driver":"default"}}),
+                    ),
+                    (
+                        format!("/v1.45/images/{image}/json"),
+                        json!({"Id":image,"Os":"linux","Config":{}}),
+                    ),
+                ] {
+                    let (mut stream, _) = origin.accept().await.unwrap();
+                    let headers = String::from_utf8(head(&mut stream).await).unwrap();
+                    assert!(
+                        headers.starts_with(&format!("GET {path} HTTP/1.1")),
+                        "{headers}"
+                    );
+                    let body = body.to_string();
+                    stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+                }
+                if owned {
+                    let (mut stream, _) = origin.accept().await.unwrap();
+                    let headers = String::from_utf8(head(&mut stream).await).unwrap();
+                    assert!(
+                        headers.starts_with(&format!("POST {forwarded} HTTP/1.1")),
+                        "{headers}"
+                    );
+                    let mut body = vec![0; json!({"Container":container}).to_string().len()];
+                    stream.read_exact(&mut body).await.unwrap();
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(&body).unwrap(),
+                        json!({"Container":container})
+                    );
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                        )
+                        .await
+                        .unwrap();
+                } else {
+                    assert!(
+                        timeout(Duration::from_millis(100), origin.accept())
+                            .await
+                            .is_err()
+                    );
+                }
+            });
+            let response = call(
+                root.path(),
+                "alice",
+                &request(
+                    "POST",
+                    &target,
+                    "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nContent-Type: application/json\r\nConnection: close\r\n",
+                    &serde_json::to_vec(&json!({"Container":"ordinary"})).unwrap(),
+                ),
+            )
+            .await;
+            assert!(
+                response.starts_with(if owned {
+                    b"HTTP/1.1 200"
+                } else {
+                    b"HTTP/1.1 404"
+                }),
+                "{}",
+                String::from_utf8_lossy(&response)
+            );
+            timeout(LIMIT, backend).await.unwrap().unwrap();
+            proxy.shutdown().await;
+        }
+    }
+}
+
+#[tokio::test]
 async fn docker_network_ids_cannot_override_an_inspected_safe_network_name() {
     let root = tempfile::tempdir().unwrap();
     let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -128,6 +128,7 @@ endpoints remain refused. Shared container references permit namespace or volume
 use after their dependencies are checked. They do not permit direct container
 management. Shared networks and volumes can be inspected for client compatibility; unrelated attachments and labels are removed. Shared
 images can be used without granting image deletion or replacement of their tags.
+Only project containers may be connected to or disconnected from a network.
 
 After authorization, use `docker compose up -d` with the project's Compose file.
 Inspect the project and read its logs. An unrelated container inspect receives

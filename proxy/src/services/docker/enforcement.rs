@@ -280,6 +280,7 @@ impl DockerAccess {
                     !text(&object, "Container")?.is_empty(),
                     "Container is required",
                 )?;
+                inspection.primary_container = Some(text(&object, "Container")?.into());
                 inspection.add(Resource::Container(text(&object, "Container")?.into()));
                 inspection.add(Resource::Network((*id).into()));
                 network_endpoint(
