@@ -22,6 +22,7 @@ import datetime
 import json
 import shlex
 import subprocess
+import time
 import uuid
 from pathlib import Path
 
@@ -89,9 +90,9 @@ def run(args):
                 "target_id": target_id or target["agent_id"], "expected_run": expected,
                 "operation": action}
 
-    def execute(body, *, state="completed"):
+    def execute(body, *, states=("completed",)):
         code, receipt = request("POST", "/support/operations", body)
-        assert code == 200 and receipt["state"] == state, (code, receipt)
+        assert code == 200 and receipt["state"] in states, (code, receipt)
         assert receipt["initiator"]["agent_id"] == support["agent_id"], receipt
         assert receipt["target_id"] == target["agent_id"], receipt
         return receipt
@@ -100,7 +101,25 @@ def run(args):
         return execute(operation({"action": "inspect"}))["result"]
 
     def lifecycle(name, expected):
-        return execute(operation({"action": "lifecycle", "operation": name}, expected=expected))["result"]
+        original = execute(operation({"action": "lifecycle", "operation": name}, expected=expected),
+                           states=("completed", "outcome_unknown"))["result"]
+        deadline = time.monotonic() + 15
+        while True:
+            # Publication and guest observation can complete at different times.
+            # Observe the exact resulting run/launch without another mutation.
+            observed = status(args.target)
+            assert observed["run_id"] == original["run_id"], (original, observed)
+            assert observed["launch_id"] == original["launch_id"], (original, observed)
+            if name == "stop_sandbox":
+                ready = observed["runtime_state"] == "stopped"
+            elif name == "start_sandbox":
+                ready = observed["runtime_state"] == "running" and observed["exec"] is True
+            else:
+                ready = observed["runtime_state"] == "running" and observed["agent_state"] == "running"
+            if ready:
+                return observed
+            assert time.monotonic() < deadline, observed
+            time.sleep(.05)
 
     def guest(command, expected, timeout=10):
         return execute(operation({"action": "guest_command", "command": command,
@@ -136,7 +155,7 @@ def run(args):
         bounded = guest("head -c 16384 /dev/zero | tr '\\000' x", generation)
         assert len(bounded["stdout"]) == 8192 and bounded["stdout_truncated"] is True, bounded
         timed = execute(operation({"action": "guest_command", "command": "exec sleep 3",
-                                   "timeout_seconds": 1}, expected=generation), state="timed_out")
+                                   "timeout_seconds": 1}, expected=generation), states=("timed_out",))
         assert timed["result"]["exit_code"] is None and timed["result"]["guest_descendants_terminated"] is None
         print("PASS stopped-target start, guest sudo, nonzero status, bounded output and honest timeout", flush=True)
 
@@ -158,7 +177,7 @@ def run(args):
         assert again["run_id"] == generation and again["launch_id"] == restarted["launch_id"], again
         replacement = lifecycle("restart_sandbox", generation)
         assert replacement["runtime_state"] == "running" and replacement["run_id"] != generation, replacement
-        execute(operation({"action": "guest_command", "command": "true", "timeout_seconds": 5}, expected=generation), state="refused")
+        execute(operation({"action": "guest_command", "command": "true", "timeout_seconds": 5}, expected=generation), states=("refused",))
         lifecycle("stop_sandbox", replacement["run_id"])
         assert inspect()["runtime_state"] == "stopped"
         print("PASS original receipts, changed-input refusal, separate harness/sandbox recovery and stale-run refusal", flush=True)

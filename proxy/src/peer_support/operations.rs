@@ -497,7 +497,28 @@ async fn execute_locked(
             {
                 return Err("selected lifecycle action was refused by the runtime owner".into());
             }
-            Ok(inspection(&value))
+            let verified = match operation {
+                Lifecycle::StartSandbox => {
+                    value["runtime_state"] == "running" && value["exec"] == true
+                }
+                Lifecycle::StopSandbox => value["runtime_state"] == "stopped",
+                Lifecycle::StartHarness | Lifecycle::RestartHarness | Lifecycle::RestartSandbox => {
+                    value["runtime_state"] == "running"
+                        && matches!(
+                            value["agent_state"].as_str(),
+                            Some("running" | "observed" | "manual")
+                        )
+                }
+            };
+            let mut result = inspection(&value);
+            // The existing owner can publish a launch before PID 1 observes
+            // it. Preserve that uncertainty; never replay the lifecycle call.
+            result["state"] = json!(if verified {
+                "completed"
+            } else {
+                "outcome_unknown"
+            });
+            Ok(result)
         }
     }
 }
@@ -597,14 +618,16 @@ fn inspection(observed: &Value) -> Value {
     if observed["shell"]["state"] == "unavailable" {
         value["exec"] = json!(false);
     }
-    value["runtime_diagnostic"] = if observed["runtime_error"].is_null() {
+    value["runtime_diagnostic"] = if observed["runtime_error"].is_null()
+        || observed["runtime_error"] == ""
+    {
         Value::Null
     } else {
         json!(
             "Runtime ownership or control is degraded. Preserve this run; ask the operator to inspect host diagnostics if guest control is unavailable."
         )
     };
-    value["launch_diagnostic"] = if observed["error"].is_null() {
+    value["launch_diagnostic"] = if observed["error"].is_null() || observed["error"] == "" {
         Value::Null
     } else {
         json!(

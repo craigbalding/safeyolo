@@ -144,6 +144,13 @@ its replacement. Sandbox restart stops and starts the saved worker. Starting
 only a sandbox does not launch its coding harness. Lifecycle controls refuse
 unverified ownership and changed runs.
 
+A lifecycle owner can publish a launch before the guest observes it. If the
+returned observation does not verify the requested running or stopped state,
+the receipt reports `outcome_unknown` and `completion_verified: false`. Inspect
+the resulting run and launch until their actual state is known. Do not repeat
+the mutation to obtain a newer observation. The original receipt retains the
+result observed when that operation finished.
+
 When guest execution is unavailable, a guest administrator can select
 `{"action":"guest_probe","timeout_seconds":15}`. This uses the existing
 shared-home/PID-1 health probe without SSH. It requires a verified live target
