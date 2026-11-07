@@ -733,7 +733,9 @@ impl Membership {
                 .chain(&self.project.shared.image_names)
                 .chain(&self.state.image_names)
                 .filter_map(|(name, image)| (*image == id
-                    && actual_tags.iter().any(|tag| tag.as_str() == Some(name)))
+                    && actual_tags
+                        .iter()
+                        .any(|tag| tag.as_str() == Some(name.as_str())))
                 .then_some(name))
                 .collect::<BTreeSet<_>>()
         );
@@ -970,7 +972,7 @@ mod tests {
     #[test]
     fn management_projection_keeps_client_facts_and_excludes_foreign_metadata() {
         let root = tempfile::tempdir().unwrap();
-        let membership = Membership::open(root.path(), "https://engine", &project()).unwrap();
+        let mut membership = Membership::open(root.path(), "https://engine", &project()).unwrap();
         let list=membership.response("/v1.45/containers/json",json!([
             {"Id":"a".repeat(64),"Names":["/ordinary-name"],"ImageID":format!("sha256:{}","c".repeat(64)),"Labels":{MARKER:"private-marker"}},
             {"Id":"e".repeat(64),"Names":["/beta-secret"]}
@@ -981,6 +983,19 @@ mod tests {
         assert!(network.contains("ordinary-name") && !network.contains("beta-secret"));
         let info=membership.response("/v1.45/info",json!({"OSType":"linux","ServerVersion":"29.1.3","Name":"beta-host","Containers":22,"Images":44})).unwrap();
         assert_eq!(info, json!({"OSType":"linux","ServerVersion":"29.1.3"}));
+        let image_id = format!("sha256:{}", "c".repeat(64));
+        membership
+            .project
+            .shared
+            .image_names
+            .insert("selected:tag".into(), image_id.clone());
+        membership
+            .state
+            .image_names
+            .insert("stale:tag".into(), image_id.clone());
+        let image=membership.response("/v1.45/images/selected:tag/json",json!({"Id":image_id,"RepoTags":["selected:tag","unrelated:tag"],"Config":{"Image":"unrelated-parent-id"}})).unwrap();
+        assert_eq!(image["RepoTags"], json!(["selected:tag"]));
+        assert_eq!(image["Config"]["Image"], image_id);
         assert!(
             membership
                 .stats(json!({"id":"e".repeat(64),"name":"beta-secret"}))
