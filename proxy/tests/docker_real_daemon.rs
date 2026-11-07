@@ -5,6 +5,7 @@
 use safeyolo_proxy::{
     Config, Proxy,
     credentials::{Credential, Secret},
+    grants::{Grant, GrantScope},
 };
 use serde_json::{Value, json};
 use std::{
@@ -56,14 +57,14 @@ impl Inputs {
     }
 }
 
-async fn start(root: &Path, inputs: &Inputs, expired: bool) -> Proxy {
-    start_with_access(root, inputs, expired, None).await
+async fn start(root: &Path, inputs: &Inputs) -> Proxy {
+    start_with_access(root, inputs, None, None).await
 }
 async fn start_with_access(
     root: &Path,
     inputs: &Inputs,
-    expired: bool,
     access: Option<Value>,
+    rename_grant: Option<&Grant>,
 ) -> Proxy {
     std::fs::create_dir_all(root.join("builtin")).unwrap();
     std::fs::create_dir_all(root.join("services")).unwrap();
@@ -76,6 +77,11 @@ async fn start_with_access(
     if let Some(access) = access {
         definition["capabilities"]["workloads"]["docker_access"] = access;
     }
+    // Require the existing native grant mechanism for this witness's rename.
+    // Static workload authorization still selects the bounded capability.
+    if let Some(grant) = rename_grant {
+        definition["risky_routes"] = json!([{"path":grant.path,"methods":[grant.method]}]);
+    }
     definition["name"] = json!("docker-proof");
     definition["docker"]["endpoint"] = json!(inputs.endpoint);
     let endpoint: hyper::Uri = inputs.endpoint.parse().unwrap();
@@ -83,7 +89,7 @@ async fn start_with_access(
     std::fs::write(root.join("services/docker.yaml"), definition.to_string()).unwrap();
     // TOML service authorizations mint the scoped token and let runtime open
     // the native grant store used by the adopted effect-model admission.
-    let policy = json!({
+    let mut policy = json!({
         "hosts": {
             endpoint.host().unwrap(): {"service":"docker-proof", "credentials":["unknown:*"]},
             format!("{}:{}", endpoint.host().unwrap(), endpoint.port_u16().unwrap_or(443)): {"egress":"allow"}
@@ -92,16 +98,16 @@ async fn start_with_access(
             "capability":"workloads", "token":"docker-origin", "account":"proof"
         }}}}
     });
+    if let Some(grant) = rename_grant {
+        policy["agents"]["witness"]["grants"] = json!([grant]);
+    }
     std::fs::write(root.join("policy.toml"), toml::to_string(&policy).unwrap()).unwrap();
     let vault = safeyolo_proxy::credentials::open(&root.join("data")).unwrap();
-    let mut credential = Credential::new(
+    let credential = Credential::new(
         "docker-origin",
         "bearer",
         Secret::new(inputs.credential.clone()),
     );
-    if expired {
-        credential.expires_at = Some("2000-01-01T00:00:00Z".into());
-    }
     vault.store(credential).unwrap();
     std::fs::write(root.join("data/agent_token"), AGENT_API_TOKEN).unwrap();
     let key = rcgen::KeyPair::generate().unwrap();
@@ -273,7 +279,7 @@ async fn real_docker_compose_enforcement_and_persistent_effects() {
         "Docker/Compose real-boundary proof: owned resource prefix {prefix}; private scratch {}",
         root.display()
     );
-    let mut proxy = start(&client, &inputs, false).await;
+    let mut proxy = start(&client, &inputs).await;
     println!("{}", run(&client, &["version"]).await);
     println!("{}", run(&client, &["compose", "version"]).await);
     run(&client, &["pull", &inputs.image]).await;
@@ -587,32 +593,69 @@ async fn real_docker_compose_enforcement_and_persistent_effects() {
         204
     );
 
-    let expired_root = root.as_path().join("expired-instance");
-    let expired = start(&expired_root, &inputs, true).await;
+    let temporary_root = root.join("temporary-instance");
+    let rename_path = format!("/v1.45/containers/{worker}/rename");
+    let now = time::OffsetDateTime::now_utc();
+    let expires = now + time::Duration::seconds(15);
+    let grant = Grant {
+        grant_id: "real-docker-rename".into(),
+        agent: "witness".into(),
+        service: "docker-proof".into(),
+        method: "POST".into(),
+        path: rename_path.clone(),
+        literal_path: true,
+        scope: GrantScope::Remembered,
+        created: now
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+        expires: expires
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+        delegated: None,
+    };
+    let temporary = start_with_access(&temporary_root, &inputs, None, Some(&grant)).await;
+    let granted_name = format!("{prefix}-granted-worker");
+    let (status, response) = api(
+        &temporary_root,
+        "POST",
+        &format!("{rename_path}?name={granted_name}"),
+        &Value::Null,
+    )
+    .await;
+    assert_eq!(status, 204, "active native grant: {response}");
+    // Observe the same live authority expire, without changing the bearer or
+    // static service authorization, then attempt a directly visible mutation.
+    let remaining = expires - time::OffsetDateTime::now_utc();
+    if remaining.is_positive() {
+        tokio::time::sleep(remaining.unsigned_abs()).await;
+    }
+    let (status, response) = api(
+        &temporary_root,
+        "POST",
+        &format!("{rename_path}?name={prefix}-after-expiry"),
+        &Value::Null,
+    )
+    .await;
+    assert_eq!(status, 428, "expired native grant: {response}");
+    assert!(response.contains("GATEWAY_RISKY_ROUTE"));
+    let (status, container) = operator(
+        &inputs,
+        &root,
+        "GET",
+        &format!("/v1.45/containers/{worker}/json"),
+        &Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(container["Name"], format!("/{granted_name}"));
+    temporary.shutdown().await;
     assert!(
-        api(
-            &expired_root,
-            "POST",
-            &format!("/v1.45/containers/{worker}/exec"),
-            &json!({"Cmd":["touch","/data/after-expiry"]})
-        )
-        .await
-        .0 >= 400
+        run(&client, &["exec", &worker, "cat", "/data/value"])
+            .await
+            .contains("retained")
     );
-    expired.shutdown().await;
-    assert!(
-        run(
-            &client,
-            &[
-                "exec",
-                &worker,
-                "sh",
-                "-c",
-                "test ! -e /data/after-expiry && cat /data/value"
-            ]
-        )
-        .await
-        .contains("retained")
+    println!(
+        "Active native rename grant, expiry refusal, unchanged name and retained volume value passed."
     );
     let path = client.join("policy.toml");
     let mut policy: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -622,31 +665,23 @@ async fn real_docker_compose_enforcement_and_persistent_effects() {
         .remove("docker-proof");
     std::fs::write(&path, toml::to_string(&policy).unwrap()).unwrap();
     assert!(proxy.reload_policy_if_changed().await.unwrap());
-    assert!(
-        api(
-            &client,
-            "POST",
-            &format!("/v1.45/containers/{worker}/exec"),
-            &json!({"Cmd":["touch","/data/after-revocation"]})
-        )
-        .await
-        .0 >= 400
-    );
+    let (status, response) = api(
+        &client,
+        "POST",
+        &format!("{rename_path}?name={prefix}-after-revocation"),
+        &Value::Null,
+    )
+    .await;
+    assert_eq!(status, 403, "revoked service authorization: {response}");
     let observer_root = root.as_path().join("observer-instance");
-    let observer = start(&observer_root, &inputs, false).await;
+    let observer = start(&observer_root, &inputs).await;
+    let container: Value =
+        serde_json::from_str(&run(&observer_root, &["inspect", &worker]).await).unwrap();
+    assert_eq!(container[0]["Name"], format!("/{granted_name}"));
     assert!(
-        run(
-            &observer_root,
-            &[
-                "exec",
-                &worker,
-                "sh",
-                "-c",
-                "test ! -e /data/after-revocation && cat /data/value"
-            ]
-        )
-        .await
-        .contains("retained")
+        run(&observer_root, &["exec", &worker, "cat", "/data/value"])
+            .await
+            .contains("retained")
     );
     run(
         &observer_root,
@@ -774,7 +809,7 @@ async fn real_docker_project_lifecycle_and_identity() {
         200
     );
     let access = json!({"mode":"project","name":prefix,"adoption":"operator-selection-1","selected":{"containers":[containers[0]],"networks":[networks[0]],"volumes":{volume_name.clone():volume["CreatedAt"]}},"shared":{"images":[image_id],"networks":[networks[1]]}});
-    let mut proxy = start_with_access(&client, &inputs, false, Some(access.clone())).await;
+    let mut proxy = start_with_access(&client, &inputs, Some(access.clone()), None).await;
     println!("{}", run(&client, &["version"]).await);
     println!("{}", run(&client, &["compose", "version"]).await);
     run(&client, &["start", &ordinary]).await;
@@ -1004,7 +1039,7 @@ async fn real_docker_project_lifecycle_and_identity() {
     );
     run(&client, &["update", "--cpus", "0.5", &renamed]).await;
     proxy.shutdown().await;
-    proxy = start_with_access(&client, &inputs, false, Some(access.clone())).await;
+    proxy = start_with_access(&client, &inputs, Some(access.clone()), None).await;
     assert!(
         run(&client, &["exec", &renamed, "cat", "/data/proof"])
             .await
@@ -1056,7 +1091,7 @@ async fn real_docker_project_lifecycle_and_identity() {
     let mut readopt = access;
     readopt["adoption"] = json!("explicit-operator-readoption-2");
     readopt["selected"]["volumes"][&volume_name] = new_volume["CreatedAt"].clone();
-    proxy = start_with_access(&client, &inputs, false, Some(readopt)).await;
+    proxy = start_with_access(&client, &inputs, Some(readopt), None).await;
     assert_eq!(
         api(
             &client,

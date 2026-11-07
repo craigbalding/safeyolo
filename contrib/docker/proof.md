@@ -43,7 +43,10 @@ Do not disable TLS verification, log bearer values or publish private files.
 ## Run
 
 In the candidate checkout's `proxy` directory, use the wrapper-bound warm Cargo
-target, unchanged release profile/features/flags, one job and incremental off.
+target and its existing profile, features and flags. The commands below use an
+unoptimized test profile, debug information off, one job and incremental on.
+Reuse the matching target for this profile. Set `SAFEYOLO_BUILD_REVISION` to the
+exact candidate commit when the wrapper binds the source revision.
 Inspect free space and forecast compilation/link growth first. Keep the factory's
 10 GiB build-filesystem reserve and the operator's 20 GiB backing reserve.
 Run these checks in order. If a check fails, retain its output and diagnose the
@@ -51,24 +54,24 @@ failure before proceeding. Start with the request checks, including the captured
 ordinary-client defaults and create/update resource sentinels:
 
 ```sh
-CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 SAFEYOLO_CARGO_RESERVE_GIB=10 \
-  ../scripts/cargo_with_space.sh test --release --locked \
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
+  ../scripts/cargo_with_space.sh test --locked --config profile.dev.debug=0 \
   --lib services::docker::enforcement
 ```
 
 Run the controlled request/transport regressions from the same source:
 
 ```sh
-CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 SAFEYOLO_CARGO_RESERVE_GIB=10 \
-  ../scripts/cargo_with_space.sh test --release --locked \
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
+  ../scripts/cargo_with_space.sh test --locked --config profile.dev.debug=0 \
   --test docker_transport --test contracts --test gateway_snapshot --test grants
 ```
 
 The approval-interface check uses the existing native operator CLI fixture:
 
 ```sh
-CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 SAFEYOLO_CARGO_RESERVE_GIB=10 \
-  ../scripts/cargo_with_space.sh test --release --locked \
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
+  ../scripts/cargo_with_space.sh test --locked --config profile.dev.debug=0 \
   --test native_operator_cli \
   docker_file_access_approval_shows_the_enforced_source_and_write_bounds
 ```
@@ -76,8 +79,8 @@ CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 SAFEYOLO_CARGO_RESERVE_GIB=10 \
 After the private inputs are bound, run the single real boundary witness:
 
 ```sh
-CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 SAFEYOLO_CARGO_RESERVE_GIB=10 \
-  ../scripts/cargo_with_space.sh test --release --locked \
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
+  ../scripts/cargo_with_space.sh test --locked --config profile.dev.debug=0 \
   --test docker_real_daemon real_docker_compose_enforcement_and_persistent_effects -- --ignored --nocapture
 ```
 
@@ -97,10 +100,15 @@ daemon. Fixture-only operator calls create stopped unsafe containers, a local
 volume with host-bind options and an unstarted privileged exec. Gateway calls
 must refuse direct and indirect use before those forbidden effects occur.
 
-The witness also tries expired credentials and revokes a live gateway token.
-Future mutations must fail. A separately authorized observer checks that existing
-workloads and volume data remain. Expiry and revocation do not undo persistent
-effects. The witness never retries an uncertain mutation automatically.
+The witness adds a native grant requirement for one container's rename route.
+The live grant first permits a rename. The same grant then expires, and another
+rename must return 428. An independent Engine inspection verifies that the
+allowed name remains. The bearer credential and static workload authorization
+stay unchanged during this expiry check. The witness then removes the original
+client's service authorization and requires a rename to return 403. A separately
+authorized observer verifies that the earlier name and volume data remain after
+revocation. Expiry and revocation do not undo persistent effects. The witness
+never retries an uncertain mutation automatically.
 
 ## Diagnostics and owned cleanup
 
@@ -143,11 +151,11 @@ compile and run the focused project checks and controlled interrupted-creation
 regression. Stop on the first failure:
 
 ```sh
-CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 SAFEYOLO_CARGO_RESERVE_GIB=10 \
-  ../scripts/cargo_with_space.sh test --release --locked \
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
+  ../scripts/cargo_with_space.sh test --locked --config profile.dev.debug=0 \
   --lib docker
-CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 SAFEYOLO_CARGO_RESERVE_GIB=10 \
-  ../scripts/cargo_with_space.sh test --release --locked \
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
+  ../scripts/cargo_with_space.sh test --locked --config profile.dev.debug=0 \
   --test docker_transport project_reconciles_an_interrupted_creation
 ```
 
@@ -155,8 +163,8 @@ With those checks passing and the operator-bound Engine inputs available, run
 only the project Engine witness:
 
 ```sh
-CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 SAFEYOLO_CARGO_RESERVE_GIB=10 \
-  ../scripts/cargo_with_space.sh test --release --locked \
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
+  ../scripts/cargo_with_space.sh test --locked --config profile.dev.debug=0 \
   --test docker_real_daemon real_docker_project_lifecycle_and_identity -- --ignored --nocapture
 ```
 
