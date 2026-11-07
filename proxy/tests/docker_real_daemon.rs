@@ -19,7 +19,7 @@ use tokio::{
     time::timeout,
 };
 
-const TOKEN: &str = "sgw_synthetic_docker_witness";
+const AGENT_API_TOKEN: &str = "synthetic-docker-witness-agent-api";
 const LIMIT: Duration = Duration::from_secs(180);
 
 struct Inputs {
@@ -70,9 +70,18 @@ async fn start(root: &Path, inputs: &Inputs, expired: bool) -> Proxy {
     let endpoint: hyper::Uri = inputs.endpoint.parse().unwrap();
     definition["default_host"] = json!(endpoint.host().unwrap());
     std::fs::write(root.join("services/docker.yaml"), definition.to_string()).unwrap();
-    let policy = json!({"permissions":[{"action":"network:request","resource":"*","effect":"allow"},{"action":"credential:use","resource":"*","effect":"allow"},{"action":"gateway:request","resource":"docker-proof:*","effect":"allow"}],
-        "gateway":{"host_map":{endpoint.host().unwrap():"docker-proof"},"token_map":{(TOKEN):{"agent":"witness","service":"docker-proof","capability":"workloads","token":"docker-origin","account":"proof"}}}});
-    std::fs::write(root.join("policy.json"), policy.to_string()).unwrap();
+    // TOML service authorizations mint the scoped token and let runtime open
+    // the native grant store used by the adopted effect-model admission.
+    let policy = json!({
+        "hosts": {
+            endpoint.host().unwrap(): {"service":"docker-proof", "credentials":["unknown:*"]},
+            format!("{}:{}", endpoint.host().unwrap(), endpoint.port_u16().unwrap_or(443)): {"egress":"allow"}
+        },
+        "agents": {"witness": {"services": {"docker-proof": {
+            "capability":"workloads", "token":"docker-origin", "account":"proof"
+        }}}}
+    });
+    std::fs::write(root.join("policy.toml"), toml::to_string(&policy).unwrap()).unwrap();
     let vault = safeyolo_proxy::credentials::open(&root.join("data")).unwrap();
     let mut credential = Credential::new(
         "docker-origin",
@@ -83,6 +92,7 @@ async fn start(root: &Path, inputs: &Inputs, expired: bool) -> Proxy {
         credential.expires_at = Some("2000-01-01T00:00:00Z".into());
     }
     vault.store(credential).unwrap();
+    std::fs::write(root.join("data/agent_token"), AGENT_API_TOKEN).unwrap();
     let key = rcgen::KeyPair::generate().unwrap();
     let mut params = rcgen::CertificateParams::default();
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -93,12 +103,20 @@ async fn start(root: &Path, inputs: &Inputs, expired: bool) -> Proxy {
         format!("{}{}", key.serialize_pem(), ca.pem()),
     )
     .unwrap();
-    let config:Config=serde_json::from_value(json!({"listeners":[{"agent_id":"witness","socket_path":root.join("docker.sock")}],"policy_file":root.join("policy.json"),
+    let config:Config=serde_json::from_value(json!({"listeners":[{"agent_id":"witness","socket_path":root.join("docker.sock")}],"policy_file":root.join("policy.toml"),
         "gateway_builtin_services_dir":root.join("builtin"),"gateway_services_dir":root.join("services"),"data_dir":root.join("data"),"readiness_file":root.join("ready"),
         "audit_log_path":root.join("audit.jsonl"),"flow_store_enabled":false,"flow_store_db_path":root.join("flows.sqlite3"),"circuit_breaker_enabled":false,"circuit_state_file":"",
         "tls_ca_file":root.join("interception.pem"),"upstream_ca_file":inputs.ca})).unwrap();
-    std::fs::write(root.join("client/config.json"),json!({"HttpHeaders":{"X-SafeYolo-Docker-Service":"docker-proof","Authorization":format!("Bearer {TOKEN}")}}).to_string()).unwrap();
-    Proxy::start(config).await.unwrap()
+    let proxy = Proxy::start(config).await.unwrap();
+    let (status, response) = wire(root, format!("GET http://_safeyolo.proxy.internal/gateway/services HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer {AGENT_API_TOKEN}\r\nConnection: close\r\n\r\n").as_bytes()).await;
+    assert_eq!(status, 200, "witness service discovery failed");
+    let view: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(view["agent"], "witness");
+    let service = &view["authorized"]["docker-proof"];
+    assert_eq!(service["capability"], "workloads");
+    let token = service["token"].as_str().expect("native workload token");
+    std::fs::write(root.join("client/config.json"),json!({"HttpHeaders":{"X-SafeYolo-Docker-Service":"docker-proof","Authorization":format!("Bearer {token}")}}).to_string()).unwrap();
+    proxy
 }
 
 fn docker(root: &Path, args: &[&str]) -> Command {
@@ -137,9 +155,17 @@ async fn api(root: &Path, method: &str, path: &str, body: &Value) -> (u16, Strin
     } else {
         serde_json::to_vec(body).unwrap()
     };
+    let client: Value =
+        serde_json::from_slice(&std::fs::read(root.join("client/config.json")).unwrap()).unwrap();
+    let authorization = client["HttpHeaders"]["Authorization"].as_str().unwrap();
+    let mut request = format!("{method} {path} HTTP/1.1\r\nHost: gateway.invalid\r\nX-SafeYolo-Docker-Service: docker-proof\r\nAuthorization: {authorization}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).into_bytes();
+    request.extend_from_slice(&body);
+    wire(root, &request).await
+}
+
+async fn wire(root: &Path, request: &[u8]) -> (u16, String) {
     let mut stream = UnixStream::connect(root.join("docker.sock")).await.unwrap();
-    stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: gateway.invalid\r\nX-SafeYolo-Docker-Service: docker-proof\r\nAuthorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).as_bytes()).await.unwrap();
-    stream.write_all(&body).await.unwrap();
+    stream.write_all(request).await.unwrap();
     let mut response = Vec::new();
     timeout(LIMIT, stream.read_to_end(&mut response))
         .await
@@ -565,10 +591,13 @@ async fn real_docker_compose_enforcement_and_persistent_effects() {
         .await
         .contains("retained")
     );
-    let path = client.join("policy.json");
-    let mut policy: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    policy["gateway"]["token_map"] = json!({});
-    std::fs::write(&path, policy.to_string()).unwrap();
+    let path = client.join("policy.toml");
+    let mut policy: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    policy["agents"]["witness"]["services"]
+        .as_table_mut()
+        .unwrap()
+        .remove("docker-proof");
+    std::fs::write(&path, toml::to_string(&policy).unwrap()).unwrap();
     assert!(proxy.reload_policy_if_changed().await.unwrap());
     assert!(
         api(
