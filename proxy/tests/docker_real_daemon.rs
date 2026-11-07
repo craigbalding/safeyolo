@@ -57,6 +57,14 @@ impl Inputs {
 }
 
 async fn start(root: &Path, inputs: &Inputs, expired: bool) -> Proxy {
+    start_with_access(root, inputs, expired, None).await
+}
+async fn start_with_access(
+    root: &Path,
+    inputs: &Inputs,
+    expired: bool,
+    access: Option<Value>,
+) -> Proxy {
     std::fs::create_dir_all(root.join("builtin")).unwrap();
     std::fs::create_dir_all(root.join("services")).unwrap();
     std::fs::create_dir_all(root.join("client")).unwrap();
@@ -65,6 +73,9 @@ async fn start(root: &Path, inputs: &Inputs, expired: bool) -> Proxy {
     ))
     .unwrap()
     .raw;
+    if let Some(access) = access {
+        definition["capabilities"]["workloads"]["docker_access"] = access;
+    }
     definition["name"] = json!("docker-proof");
     definition["docker"]["endpoint"] = json!(inputs.endpoint);
     let endpoint: hyper::Uri = inputs.endpoint.parse().unwrap();
@@ -657,5 +668,438 @@ async fn real_docker_compose_enforcement_and_persistent_effects() {
     std::fs::remove_dir_all(&root).unwrap();
     println!(
         "Allowed lifecycle, pre-effect refusals, expiry/revocation and retained persistent data passed for {prefix}."
+    );
+}
+
+/// Reuses the protected daemon, clients and TLS inputs from the transport and
+/// workload witness. Run only this test for the project candidate.
+#[tokio::test]
+#[ignore = "requires the existing operator-owned Docker/Compose acceptance venue"]
+async fn real_docker_project_lifecycle_and_identity() {
+    let inputs = Inputs::read();
+    let parent = PathBuf::from(
+        std::env::var_os("SAFEYOLO_DOCKER_PROOF_ROOT")
+            .expect("disk-backed owned scratch parent required"),
+    );
+    let root = tempfile::Builder::new()
+        .prefix("docker-project-proof-")
+        .tempdir_in(parent)
+        .unwrap()
+        .keep();
+    let client = root.join("project-client");
+    let prefix = format!(
+        "syproject{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    );
+    println!(
+        "Project proof owned prefix {prefix}; private scratch {}",
+        root.display()
+    );
+    let (_, image) = operator(
+        &inputs,
+        &root,
+        "GET",
+        &format!("/v1.45/images/{}/json", inputs.image),
+        &Value::Null,
+    )
+    .await;
+    let image_id = image["Id"]
+        .as_str()
+        .expect("reuse the already prepared qualified Linux image")
+        .to_owned();
+    let volume_name = format!("{prefix}-ordinary-data");
+    let (status, volume) = operator(
+        &inputs,
+        &root,
+        "POST",
+        "/v1.45/volumes/create",
+        &json!({"Name":volume_name}),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let mut networks = Vec::new();
+    for suffix in ["ordinary-net", "shared-net", "beta-net"] {
+        let (status, value) = operator(
+            &inputs,
+            &root,
+            "POST",
+            "/v1.45/networks/create",
+            &json!({"Name":format!("{prefix}-{suffix}"),"Driver":"bridge"}),
+        )
+        .await;
+        assert_eq!(status, 201);
+        networks.push(value["Id"].as_str().unwrap().to_owned());
+    }
+    let ordinary = format!("{prefix}-ordinary");
+    let beta = format!("{prefix}-unrelated");
+    let mut containers = Vec::new();
+    for (name, network) in [(&ordinary, &networks[0]), (&beta, &networks[2])] {
+        let mut config = json!({"Image":image_id,"Cmd":["sh","-c","while :; do sleep 1; done"],"HostConfig":{"CgroupnsMode":"private","NetworkMode":network}});
+        if name == &ordinary {
+            config["HostConfig"]["Binds"] = json!([format!("{volume_name}:/data")]);
+        }
+        let (status, value) = operator(
+            &inputs,
+            &root,
+            "POST",
+            &format!("/v1.45/containers/create?name={name}"),
+            &config,
+        )
+        .await;
+        assert_eq!(status, 201);
+        containers.push(value["Id"].as_str().unwrap().to_owned());
+    }
+    assert_eq!(
+        operator(
+            &inputs,
+            &root,
+            "POST",
+            &format!("/v1.45/networks/{}/connect", networks[1]),
+            &json!({"Container":containers[1]})
+        )
+        .await
+        .0,
+        200
+    );
+    let access = json!({"mode":"project","name":prefix,"adoption":"operator-selection-1","selected":{"containers":[containers[0]],"networks":[networks[0]],"volumes":{volume_name.clone():volume["CreatedAt"]}},"shared":{"images":[image_id],"networks":[networks[1]]}});
+    let mut proxy = start_with_access(&client, &inputs, false, Some(access.clone())).await;
+    println!("{}", run(&client, &["version"]).await);
+    println!("{}", run(&client, &["compose", "version"]).await);
+    run(&client, &["start", &ordinary]).await;
+    run(
+        &client,
+        &[
+            "exec",
+            &ordinary,
+            "sh",
+            "-c",
+            "echo project-data >/data/proof",
+        ],
+    )
+    .await;
+    for path in [
+        "/v1.45/containers/json?all=true",
+        "/v1.45/networks",
+        "/v1.45/volumes",
+        "/v1.45/images/json",
+        "/v1.45/info",
+    ] {
+        let (status, body) = api(&client, "GET", path, &Value::Null).await;
+        assert_eq!(status, 200, "{path}");
+        assert!(
+            !body.contains(&beta) && !body.contains(&containers[1]) && !body.contains(&networks[2]),
+            "foreign metadata at {path}"
+        );
+    }
+    let (_, body) = api(
+        &client,
+        "GET",
+        &format!("/v1.45/networks/{}", networks[1]),
+        &Value::Null,
+    )
+    .await;
+    assert!(!body.contains(&beta) && !body.contains(&containers[1]));
+    for id in [&containers[1], &beta, &"f".repeat(64)] {
+        assert_eq!(
+            api(
+                &client,
+                "GET",
+                &format!("/v1.45/containers/{id}/json"),
+                &Value::Null
+            )
+            .await
+            .0,
+            404
+        );
+        assert_eq!(
+            api(
+                &client,
+                "POST",
+                &format!("/v1.45/containers/{id}/start"),
+                &Value::Null
+            )
+            .await
+            .0,
+            404
+        );
+    }
+    let until = time::OffsetDateTime::now_utc().unix_timestamp() + 1;
+    let (status, body) = api(
+        &client,
+        "GET",
+        &format!("/v1.45/events?since=0&until={until}"),
+        &Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(
+        !body.contains(&beta) && !body.contains(&containers[1]) && !body.contains(&networks[2])
+    );
+    assert_eq!(
+        api(
+            &client,
+            "GET",
+            &format!("/v1.45/containers/{}/stats?stream=false", containers[1]),
+            &Value::Null
+        )
+        .await
+        .0,
+        404
+    );
+    assert_eq!(
+        api(
+            &client,
+            "POST",
+            &format!("/v1.45/networks/{}/connect", networks[1]),
+            &json!({"Container":containers[1]})
+        )
+        .await
+        .0,
+        404
+    );
+    for host in [
+        json!({"NetworkMode":format!("container:{}",containers[1])}),
+        json!({"VolumesFrom":[containers[1]]}),
+        json!({"NetworkMode":networks[2]}),
+    ] {
+        let (status, _) = api(
+            &client,
+            "POST",
+            "/v1.45/containers/create",
+            &json!({"Image":image_id,"HostConfig":host}),
+        )
+        .await;
+        assert_eq!(status, 404, "indirect project escape");
+    }
+    assert_eq!(
+        api(
+            &client,
+            "DELETE",
+            &format!("/v1.45/networks/{}", networks[1]),
+            &Value::Null
+        )
+        .await
+        .0,
+        404
+    );
+    assert_eq!(
+        api(
+            &client,
+            "DELETE",
+            &format!("/v1.45/images/{image_id}"),
+            &Value::Null
+        )
+        .await
+        .0,
+        404
+    );
+    let compose = root.join("project-compose.yaml");
+    std::fs::write(&compose,format!("services:\n  app:\n    image: {image_id}\n    command: ['sh', '-c', 'echo project-started; while :; do sleep 1; done']\n    volumes: ['state:/data']\nvolumes:\n  state: {{}}\n")).unwrap();
+    let cf = compose.to_str().unwrap();
+    run(&client, &["compose", "-p", &prefix, "-f", cf, "up", "-d"]).await;
+    assert!(
+        run(&client, &["compose", "-p", &prefix, "-f", cf, "logs"])
+            .await
+            .contains("project-started")
+    );
+    run(
+        &client,
+        &[
+            "compose",
+            "-p",
+            &prefix,
+            "-f",
+            cf,
+            "exec",
+            "-T",
+            "app",
+            "sh",
+            "-c",
+            "echo persistent >/data/value",
+        ],
+    )
+    .await;
+    run(
+        &client,
+        &[
+            "compose",
+            "-p",
+            &prefix,
+            "-f",
+            cf,
+            "up",
+            "-d",
+            "--force-recreate",
+        ],
+    )
+    .await;
+    assert!(
+        run(
+            &client,
+            &[
+                "compose",
+                "-p",
+                &prefix,
+                "-f",
+                cf,
+                "exec",
+                "-T",
+                "app",
+                "cat",
+                "/data/value"
+            ]
+        )
+        .await
+        .contains("persistent")
+    );
+    let renamed = format!("{prefix}-renamed");
+    assert_eq!(
+        operator(
+            &inputs,
+            &root,
+            "POST",
+            &format!("/v1.45/containers/{}/rename?name={renamed}", containers[0]),
+            &Value::Null
+        )
+        .await
+        .0,
+        204
+    );
+    let (status,replacement)=operator(&inputs,&root,"POST",&format!("/v1.45/containers/create?name={ordinary}"),&json!({"Image":image_id,"Labels":{"com.docker.compose.project":prefix},"HostConfig":{"CgroupnsMode":"private","NetworkMode":networks[2]}})).await;
+    assert_eq!(status, 201);
+    containers.push(replacement["Id"].as_str().unwrap().into());
+    assert_eq!(
+        api(
+            &client,
+            "GET",
+            &format!("/v1.45/containers/{ordinary}/json"),
+            &Value::Null
+        )
+        .await
+        .0,
+        404
+    );
+    assert_eq!(
+        api(
+            &client,
+            "GET",
+            &format!("/v1.45/containers/{renamed}/json"),
+            &Value::Null
+        )
+        .await
+        .0,
+        200
+    );
+    run(&client, &["update", "--cpus", "0.5", &renamed]).await;
+    proxy.shutdown().await;
+    proxy = start_with_access(&client, &inputs, false, Some(access.clone())).await;
+    assert!(
+        run(&client, &["exec", &renamed, "cat", "/data/proof"])
+            .await
+            .contains("project-data")
+    );
+    run(&client, &["compose", "-p", &prefix, "-f", cf, "stop"]).await;
+    run(&client, &["compose", "-p", &prefix, "-f", cf, "start"]).await;
+    run(
+        &client,
+        &["compose", "-p", &prefix, "-f", cf, "down", "--volumes"],
+    )
+    .await;
+    // Removing the selected container permits the second administrator to
+    // replace its ordinary volume name, even with the same client labels.
+    run(&client, &["rm", "-f", &renamed]).await;
+    assert_eq!(
+        operator(
+            &inputs,
+            &root,
+            "DELETE",
+            &format!("/v1.45/volumes/{volume_name}"),
+            &Value::Null
+        )
+        .await
+        .0,
+        204
+    );
+    let (status, new_volume) = operator(
+        &inputs,
+        &root,
+        "POST",
+        "/v1.45/volumes/create",
+        &json!({"Name":volume_name,"Labels":{"com.docker.compose.project":prefix}}),
+    )
+    .await;
+    assert_eq!(status, 201);
+    assert_eq!(
+        api(
+            &client,
+            "GET",
+            &format!("/v1.45/volumes/{volume_name}"),
+            &Value::Null
+        )
+        .await
+        .0,
+        404
+    );
+    proxy.shutdown().await;
+    let mut readopt = access;
+    readopt["adoption"] = json!("explicit-operator-readoption-2");
+    readopt["selected"]["volumes"][&volume_name] = new_volume["CreatedAt"].clone();
+    proxy = start_with_access(&client, &inputs, false, Some(readopt)).await;
+    assert_eq!(
+        api(
+            &client,
+            "GET",
+            &format!("/v1.45/volumes/{volume_name}"),
+            &Value::Null
+        )
+        .await
+        .0,
+        200
+    );
+    // Cleanup uses only this run's exact returned IDs and the verified volume.
+    proxy.shutdown().await;
+    for id in &containers[1..] {
+        assert_eq!(
+            operator(
+                &inputs,
+                &root,
+                "DELETE",
+                &format!("/v1.45/containers/{id}?force=true"),
+                &Value::Null
+            )
+            .await
+            .0,
+            204
+        );
+    }
+    for id in &networks {
+        assert_eq!(
+            operator(
+                &inputs,
+                &root,
+                "DELETE",
+                &format!("/v1.45/networks/{id}"),
+                &Value::Null
+            )
+            .await
+            .0,
+            204
+        );
+    }
+    assert_eq!(
+        operator(
+            &inputs,
+            &root,
+            "DELETE",
+            &format!("/v1.45/volumes/{volume_name}"),
+            &Value::Null
+        )
+        .await
+        .0,
+        204
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+    println!(
+        "Project lifecycle, visibility, indirect references, co-administrator changes, restart and readoption passed for {prefix}. The controlled proxy-wire test supplies interrupted-creation reconciliation."
     );
 }

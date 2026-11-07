@@ -182,7 +182,7 @@ impl HttpBody for ForwardedRequestBody {
 impl<B> HttpBody for UpstreamBody<B>
 where
     B: HttpBody<Data = Bytes> + Unpin,
-    B::Error: std::error::Error + Send + Sync + 'static,
+    B::Error: Into<Error>,
 {
     type Data = Bytes;
     type Error = Error;
@@ -211,7 +211,7 @@ where
                 "upstream response ended before protocol completion",
             )))));
         }
-        frame.map(|frame| frame.map(|result| result.map_err(|error| -> Error { Box::new(error) })))
+        frame.map(|frame| frame.map(|result| result.map_err(Into::into)))
     }
     fn is_end_stream(&self) -> bool {
         // H2 Incoming maps RST_STREAM(NO_ERROR) to clean EOF. Keep the
@@ -4614,7 +4614,21 @@ where
     };
     let provider = provider_route.as_ref().map(|(name, _, _)| name.as_str());
     let mut docker_forward_path = None;
+    let mut docker_project = None;
     if let Some((access, mut inspection)) = docker_inspection {
+        let endpoint = docker_service
+            .expect("Docker service")
+            .docker
+            .as_ref()
+            .expect("Docker endpoint");
+        let mut project = docker::ProjectRequest::open(
+            &runtime,
+            access,
+            &endpoint.uri.to_string(),
+            request.method().as_str(),
+            &destination.path,
+        )
+        .await?;
         let result = docker::inspect(
             &runtime,
             &allowed,
@@ -4624,6 +4638,37 @@ where
             request.headers(),
         )
         .await;
+        let result = match result {
+            Ok(()) => {
+                if let Some(project) = project.as_mut() {
+                    project
+                        .prepare(
+                            &runtime,
+                            &allowed,
+                            provider,
+                            request.headers(),
+                            &inspection,
+                            contract_body.as_ref().map_or(&[], |body| body.as_slice()),
+                        )
+                        .await
+                        .map(|(path, body)| {
+                            docker_forward_path = Some(path);
+                            if let Some(body) = body {
+                                request.headers_mut().insert(
+                                    header::CONTENT_LENGTH,
+                                    body.len().to_string().parse().expect("body length"),
+                                );
+                                request.headers_mut().remove(header::TRANSFER_ENCODING);
+                                request.headers_mut().remove(header::TRAILER);
+                                *request.body_mut() = full(Bytes::from(body));
+                            }
+                        })
+                } else {
+                    Ok(())
+                }
+            }
+            Err(error) => Err(error),
+        };
         if let Err(error) = result {
             runtime.audit.emit(identity.request_event(
                 "gateway.docker_denied",
@@ -4634,15 +4679,35 @@ where
             ))?;
             return Ok((
                 prior_block(gateway_response(
-                    403,
-                    "GATEWAY_DOCKER_RESOURCE_CONSTRAINT",
+                    if project
+                        .as_ref()
+                        .is_some_and(|p| p.membership.state.pending.is_some())
+                    {
+                        503
+                    } else if project.is_some() {
+                        404
+                    } else {
+                        403
+                    },
+                    if project
+                        .as_ref()
+                        .is_some_and(|p| p.membership.state.pending.is_some())
+                    {
+                        "GATEWAY_DOCKER_RECONCILIATION_REQUIRED"
+                    } else if project.is_some() {
+                        "GATEWAY_DOCKER_PROJECT_RESOURCE"
+                    } else {
+                        "GATEWAY_DOCKER_RESOURCE_CONSTRAINT"
+                    },
                     request_id,
                     gateway_trace.as_ref(),
                 )?),
                 "deny".into(),
             ));
         }
-        if let Some(id) = inspection.container_id {
+        if docker_forward_path.is_none()
+            && let Some(id) = inspection.container_id
+        {
             // Resolve the user's existing name, then address that immutable
             // container. A concurrent rename/recreation cannot swap the target.
             let path = request.uri().path();
@@ -4656,6 +4721,7 @@ where
                 docker_forward_path = Some(format!("{prefix}{id}{suffix}{query}"));
             }
         }
+        docker_project = project;
     }
     let outbound = if client_version == hyper::Version::HTTP_2
         && let Some(tunnel) = tunnel
@@ -4760,6 +4826,7 @@ where
             path: destination.path.split('?').next().unwrap_or("/").into(),
         });
     }
+    let forward_headers = docker_project.as_ref().map(|_| request.headers().clone());
     let completion = circuit_completion::Completion::register(
         &mut request,
         outbound_http2,
@@ -4880,6 +4947,9 @@ where
     }
     if upstream.status() == StatusCode::SWITCHING_PROTOCOLS {
         if let Some(client_upgrade) = docker_upgrade {
+            if let Some(project) = docker_project.take() {
+                project.switched(&mut upstream)?;
+            }
             return docker::upgrade(
                 runtime.clone(),
                 upgrades,
@@ -4977,6 +5047,33 @@ where
             decision.decision,
         ));
     }
+    let upstream = if let Some(project) = docker_project {
+        match project
+            .response(
+                &runtime,
+                &allowed,
+                provider,
+                forward_headers.as_ref().expect("project headers"),
+                upstream,
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(_) => {
+                return Ok((
+                    gateway_response(
+                        503,
+                        "GATEWAY_DOCKER_OUTCOME_UNKNOWN",
+                        request_id,
+                        gateway_trace.as_ref(),
+                    )?,
+                    "unknown".into(),
+                ));
+            }
+        }
+    } else {
+        upstream.map(|body| body.map_err(|error| Box::new(error) as Error).boxed())
+    };
     let response_scan = match inspection_options(&runtime, identity, &destination.policy_host) {
         Ok(options)
             if runtime

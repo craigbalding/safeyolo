@@ -78,7 +78,7 @@ After the private inputs are bound, run the single real boundary witness:
 ```sh
 CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 SAFEYOLO_CARGO_RESERVE_GIB=10 \
   ../scripts/cargo_with_space.sh test --release --locked \
-  --test docker_real_daemon -- --ignored --nocapture
+  --test docker_real_daemon real_docker_compose_enforcement_and_persistent_effects -- --ignored --nocapture
 ```
 
 Successful output names the actual client/server versions, one unique owned
@@ -126,3 +126,44 @@ architecture and runtime dependencies match the venue. A source-only or
 controlled-origin test result does not complete real Engine acceptance. Lens
 independently judges the exact candidate and any inherited behavior before
 integration.
+
+## Project scope witness
+
+For #1439, reuse the same protected venue and private inputs after the active
+workload witness returns. Reuse a prepared qualified BusyBox image instead of
+repeating its build/pull suite. The project test creates two unrelated projects,
+ordinary selected existing resources and a shared network through its explicit
+operator connection. It then exercises the project gateway. It retains its
+printed prefix and scratch on failure. Inspect that run's actual IDs and effects
+before cleanup or retry.
+
+In the matching candidate's `proxy` directory, keep the warm target's existing
+profile, features and flags. Preserve the same build/backing reserves. First
+compile and run the focused project checks and controlled interrupted-creation
+regression. Stop on the first failure:
+
+```sh
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 SAFEYOLO_CARGO_RESERVE_GIB=10 \
+  ../scripts/cargo_with_space.sh test --release --locked \
+  --lib docker
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 SAFEYOLO_CARGO_RESERVE_GIB=10 \
+  ../scripts/cargo_with_space.sh test --release --locked \
+  --test docker_transport project_reconciles_an_interrupted_creation
+```
+
+With those checks passing and the operator-bound Engine inputs available, run
+only the project Engine witness:
+
+```sh
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 SAFEYOLO_CARGO_RESERVE_GIB=10 \
+  ../scripts/cargo_with_space.sh test --release --locked \
+  --test docker_real_daemon real_docker_project_lifecycle_and_identity -- --ignored --nocapture
+```
+
+Record actual Engine/CLI/Compose versions and the exact candidate. This witness
+covers selected resources, shared dependencies, Compose creation/recreation,
+persistent data, direct/indirect refusals, management metadata, restart,
+co-administrator rename/replacement and explicit volume re-adoption. The
+controlled HTTP regression exercises an origin that applies creation and then
+interrupts its response. It must observe reconciliation and exactly one mutation.
+Neither source checks nor a controlled origin establish real Engine acceptance.

@@ -6,8 +6,8 @@ before forwarding each management request. Exec and attach switch only the
 admitted operation to a raw input/output stream.
 
 The adopted Docker capability bounds workload arguments and relevant existing
-resources before forwarding. Project visibility and external network policy are
-separate concerns. External workloads, builds and daemon image fetches use the
+resources before forwarding. The `project` mode also checks project membership
+and filters management responses. External network policy remains a separate concern. External workloads, builds and daemon image fetches use the
 external network. Review the execution authority with the
 [service-authoring workflow](service-authoring.md) before authorization.
 
@@ -76,6 +76,91 @@ project sandbox when its entire authority should match the delegation. A narrow
 project route list does not narrow host-file authority in this administration
 mode. Use the workload mode for narrower host authority. The loader refuses
 `sandbox_admin` for an external execution boundary.
+
+## Select one project
+
+On the operator host, use the existing authenticated Docker connection to inspect
+resources before adopting the project capability. Select containers and networks
+by their full `Id`, images by their full `sha256:` ID, and volumes by their
+ordinary name and inspected `CreatedAt`. No rename or ownership label is required.
+Include the selected containers' image, network and volume dependencies. Put a
+dependency under `shared` when the agent may use it but may not remove it.
+
+In the adopted service definition, replace the workload capability's
+`docker_access` block with the following example. Replace every uppercase ID
+placeholder and the example volume timestamp with the inspected values. The
+project `name` identifies this delegation; it does not select Compose labels.
+Use the same project name and selections for agents that share this delegation.
+Keep the existing endpoint, routes, service adoption and authorization workflow.
+
+```yaml
+docker_access:
+  mode: project
+  name: nextcloud
+  adoption: operator-selection-1
+  bind_mounts: []
+  selected:
+    containers: [FULL_CONTAINER_ID]
+    networks: [FULL_PROJECT_NETWORK_ID]
+    volumes:
+      existing-data: '2026-11-07T01:02:03Z'
+    image_names:
+      'nextcloud:production': 'sha256:FULL_IMAGE_ID'
+  shared:
+    networks: [FULL_SHARED_NETWORK_ID]
+    images: ['sha256:FULL_SHARED_IMAGE_ID']
+```
+
+For a new project, omit `selected`. Approve any existing dependencies under
+`shared`, then use the agent setup below. Compose may create project containers,
+networks and volumes without separate identifier approvals. The gateway records
+those creations before reporting success. Client names and Compose labels do not
+establish membership. Mutable image references resolve to inspected content IDs
+before container creation. To permit updates to an existing image tag, select
+that reference and its current image ID under `selected.image_names`.
+
+Project mode permits the supported container lifecycle, exec, file transfer,
+explicit image pulls and Compose deployment with prepared images. It refuses
+classic builds because a build context can refer to arbitrary daemon images.
+Workload mode retains classic builds. Use an explicitly delegated entire
+Docker environment when builds need that authority. Prune and unsupported
+endpoints remain refused. Shared container references permit namespace or volume
+use after their dependencies are checked. They do not permit direct container
+management. Shared networks and volumes can be inspected for client compatibility; unrelated attachments and labels are removed. Shared
+images can be used without granting image deletion or replacement of their tags.
+
+After authorization, use `docker compose up -d` with the project's Compose file.
+Inspect the project and read its logs. An unrelated container inspect receives
+the same generic refusal as an unknown identifier. Lists and Docker-generated
+management records contain project resources and selected compatibility facts.
+Volume events are omitted because they identify volumes by reusable names.
+Workload logs, copied files and exec output retain their ordinary content; they
+are not sanitised for arbitrary external facts.
+
+Container, network, image and returned exec identity checks survive gateway
+restart. Created volumes have gateway-generated markers bound to recorded
+creation effects. For selected existing volumes, the gateway checks `CreatedAt`
+and continuity in retained daemon events. A missing event anchor or observed
+replacement requires explicit re-adoption. This includes event-history eviction
+or reset. To re-adopt, inspect the actual resources and any interrupted effects,
+update the selected identities, choose a new `adoption` value, and adopt the
+definition again. Superseded adoption values cannot re-adopt uncertain state.
+Do not increment that value merely to retry an uncertain mutation.
+
+An interrupted creation leaves a durable intent. The next dependent request
+reconciles marked resources or the exec parent's current state without replaying
+the operation. An uncertain image pull needs explicit operator re-adoption.
+`GATEWAY_DOCKER_OUTCOME_UNKNOWN` and
+`GATEWAY_DOCKER_RECONCILIATION_REQUIRED` do not mean rollback. Other lifecycle
+operations inspect current resource state before each dependent request.
+
+Docker cannot atomically inspect and mutate resource references. Another trusted
+administrator can change a volume name or image tag during that interval.
+This interface does not protect against a malicious trusted daemon administrator.
+External execution and networking retain the boundary described above; nested
+workloads retain the hosting sandbox's authority. The project implementation's
+real Engine/Compose qualification remains pending in
+[#1439](https://github.com/craigbalding/safeyolo/issues/1439).
 
 ## Request and resource checks
 

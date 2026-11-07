@@ -26,6 +26,12 @@ pub enum DockerAccess {
         #[serde(default)]
         bind_mounts: Vec<BindMount>,
     },
+    Project {
+        #[serde(flatten)]
+        project: super::project::Project,
+        #[serde(default)]
+        bind_mounts: Vec<BindMount>,
+    },
     SandboxAdmin,
 }
 
@@ -42,7 +48,10 @@ impl DockerAccess {
             Self::SandboxAdmin if boundary != ExecutionBoundary::Sandbox => {
                 Err("sandbox_admin requires an operator-adopted sandbox execution boundary".into())
             }
-            Self::Workloads { bind_mounts } => {
+            Self::Workloads { bind_mounts } | Self::Project { bind_mounts, .. } => {
+                if let Self::Project { project, .. } = self {
+                    project.validate()?;
+                }
                 for mount in bind_mounts {
                     require(
                         clean_absolute(&mount.source),
@@ -66,12 +75,14 @@ impl DockerAccess {
             "authority": match self {
                 Self::SandboxAdmin => "Administer the entire hosting sandbox Docker environment. Privileged inner workloads, the provider filesystem, workspace, credentials, mounted host files and other inner workloads may be accessible. This does not confer outer-host privilege or project isolation.",
                 Self::Workloads { .. } => "Manage supported Linux Docker workloads. Host privileges, devices, daemon sockets and unsupported drivers are refused. Only the exact listed host-file sources and write modes may be mounted. These files may have site-specific consumers; the operator must inspect them during external onboarding. This does not enforce project visibility or external network policy.",
+                Self::Project { .. } => "Manage the selected Docker project and create its resources autonomously. Shared dependencies permit use, not destructive management. Management responses exclude unrelated workloads. Host-file and workload constraints still apply. External workloads use the daemon's network authority; nested workloads retain the hosting sandbox's authority. Name-only volume identity can require explicit operator re-adoption after an observation gap. Docker offers no atomic inspect-and-mutate transaction against another trusted administrator.",
             }, "approval_bounds":"All supported creation arguments within these enforced bounds remain available. Approval is not tied to the attempted payload. Expiry or revocation stops future requests; existing containers, files, volumes and other effects remain."})
     }
 
     fn bind(&self, source: &str, read_only: bool) -> Result<(), Error> {
-        let Self::Workloads { bind_mounts } = self else {
-            return Ok(());
+        let bind_mounts = match self {
+            Self::Workloads { bind_mounts } | Self::Project { bind_mounts, .. } => bind_mounts,
+            Self::SandboxAdmin => return Ok(()),
         };
         require(
             clean_absolute(source) && !daemon_socket(source),
@@ -341,7 +352,21 @@ impl DockerAccess {
                 )?;
                 require(body.is_empty(), "image pull cannot upload a body")?;
             }
-            ("DELETE", ["images", ..]) => rules = &["force", "noprune"],
+            ("GET" | "DELETE", ["images", name @ ..]) if name != ["json"] => {
+                let mut name = name.join("/");
+                if method == "GET" {
+                    name = name
+                        .strip_suffix("/json")
+                        .ok_or("unsupported image operation")?
+                        .into();
+                }
+                if matches!(self, Self::Project { .. }) {
+                    inspection.add(Resource::Image(name));
+                }
+                if method == "DELETE" {
+                    rules = &["force", "noprune"];
+                }
+            }
             _ => {} // Read-only discovery/list/image routes have no execution arguments.
         }
         if method == "POST"
@@ -381,6 +406,14 @@ impl DockerAccess {
     }
 
     fn namespace(&self, value: &str, kind: &str, inspection: &mut Inspection) -> Result<(), Error> {
+        if matches!(self, Self::Project { .. })
+            && kind == "network"
+            && ["", "default", "bridge", "none"].contains(&value)
+        {
+            inspection.add(Resource::Network(
+                if value == "none" { "none" } else { "bridge" }.into(),
+            ));
+        }
         if let Some(id) = value.strip_prefix("container:") {
             require(!id.is_empty(), "empty namespace reference")?;
             inspection.add(Resource::Container(id.into()));
@@ -684,6 +717,7 @@ pub(crate) struct Inspection {
     checked: BTreeSet<Resource>,
     primary_container: Option<String>,
     pub(crate) container_id: Option<String>,
+    pub(crate) observed: BTreeMap<Resource, Option<Value>>,
 }
 impl Inspection {
     fn add(&mut self, resource: Resource) {
@@ -702,6 +736,9 @@ impl Inspection {
         resource: &Resource,
         value: Option<Value>,
     ) -> Result<(), Error> {
+        if matches!(access, DockerAccess::Project { .. }) {
+            self.observed.insert(resource.clone(), value.clone());
+        }
         if matches!(resource, Resource::Volume(_, true)) && value.is_none() {
             return Ok(());
         }
@@ -742,6 +779,9 @@ impl Inspection {
                 )?;
                 if self.primary_container.as_ref() == Some(name) {
                     self.container_id = Some(id.into());
+                }
+                if matches!(access, DockerAccess::Project { .. }) {
+                    self.add(Resource::Image(text(object, "Image")?.into()));
                 }
                 let host = object
                     .get("HostConfig")

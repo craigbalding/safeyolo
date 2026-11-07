@@ -6,6 +6,7 @@ use serde::Deserialize;
 use crate::Error;
 
 pub mod enforcement;
+pub mod project;
 pub use enforcement::{DockerAccess, ExecutionBoundary};
 
 pub const SERVICE_HEADER: &str = "x-safeyolo-docker-service";

@@ -758,3 +758,104 @@ async fn interrupted_mutation_response_is_canonical_and_never_replayed() {
     assert_eq!(row["details"]["mutation_outcome"], "unknown");
     assert_eq!(row["details"]["replayed"], false);
 }
+
+#[tokio::test]
+async fn project_reconciles_an_interrupted_creation_before_returning_the_resource() {
+    let root = tempfile::tempdir().unwrap();
+    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut definition = workloads(origin.local_addr().unwrap().port());
+    definition["capabilities"]["engine"]["docker_access"] = json!({"mode":"project","name":"alpha","adoption":"operator-selection-1","shared":{"images":[format!("sha256:{}","c".repeat(64))],"networks":["d".repeat(64)]}});
+    let proxy = start(root.path(), definition, false, false).await;
+    let backend = tokio::spawn(async move {
+        let mut marker = String::new();
+        let mut created = 0;
+        loop {
+            let (mut stream, _) = origin.accept().await.unwrap();
+            let headers = String::from_utf8(head(&mut stream).await).unwrap();
+            let target = headers
+                .lines()
+                .next()
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap();
+            let length: usize = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':')
+                        .filter(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+                        .map(|(_, v)| v.trim().parse().unwrap())
+                })
+                .unwrap_or(0);
+            let mut body = vec![0; length];
+            stream.read_exact(&mut body).await.unwrap();
+            let mut finished = false;
+            let response = if headers.starts_with("POST ") {
+                assert_eq!(target, "/v1.45/containers/create?name=ordinary-new");
+                created += 1;
+                assert_eq!(created, 1, "uncertain mutation was replayed");
+                let value: Value = serde_json::from_slice(&body).unwrap();
+                marker = value["Labels"]["io.safeyolo.creation"]
+                    .as_str()
+                    .unwrap()
+                    .into();
+                assert_ne!(marker, "client-forgery");
+                assert_eq!(value["Image"], format!("sha256:{}", "c".repeat(64)));
+                // The origin accepted the mutation and produced an ID, then
+                // closed before the declared response body was complete.
+                stream.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n{\"Id\":\"").await.unwrap();
+                drop(stream);
+                continue;
+            } else if target == "/v1.45/info" {
+                json!({"OSType":"linux","DefaultRuntime":"runc","LoggingDriver":"json-file","SecurityOptions":["name=cgroupns"]})
+            } else if target.starts_with("/v1.45/images/") {
+                json!({"Id":format!("sha256:{}","c".repeat(64)),"Os":"linux","Config":{"Volumes":{}}})
+            } else if target == "/v1.45/networks/bridge" {
+                json!({"Id":"d".repeat(64),"Name":"bridge","Driver":"bridge","Options":{},"IPAM":{"Driver":"default"}})
+            } else if target.starts_with("/v1.45/containers/") {
+                if marker.is_empty() {
+                    stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
+                    continue;
+                }
+                finished = target == format!("/v1.45/containers/{}/json", "e".repeat(64));
+                json!({"Id":"e".repeat(64),"Name":"/ordinary-new","Image":format!("sha256:{}","c".repeat(64)),"Config":{"Labels":{"io.safeyolo.creation":marker}},"HostConfig":{"Privileged":false,"CgroupnsMode":"private","NetworkMode":"bridge"},"NetworkSettings":{"Networks":{}},"Mounts":[]})
+            } else {
+                panic!("unexpected prerequisite {target}");
+            };
+            let body = serde_json::to_vec(&response).unwrap();
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).as_bytes()).await.unwrap();
+            stream.write_all(&body).await.unwrap();
+            drop(stream);
+            if finished {
+                return created;
+            }
+        }
+    });
+    let headers = "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nContent-Type: application/json\r\nConnection: close\r\n";
+    let response=call(root.path(),"alice",&request("POST","/v1.45/containers/create?name=ordinary-new",headers,&serde_json::to_vec(&json!({"Image":"busybox","Labels":{"io.safeyolo.creation":"client-forgery"},"HostConfig":{"CgroupnsMode":"private"}})).unwrap())).await;
+    assert!(
+        response.starts_with(b"HTTP/1.1 503"),
+        "{}",
+        String::from_utf8_lossy(&response)
+    );
+    let response = call(
+        root.path(),
+        "alice",
+        &request("GET", "/v1.45/containers/ordinary-new/json", headers, b""),
+    )
+    .await;
+    assert!(
+        response.starts_with(b"HTTP/1.1 200"),
+        "{}",
+        String::from_utf8_lossy(&response)
+    );
+    let response = String::from_utf8(response).unwrap();
+    assert!(response.contains("ordinary-new") && !response.contains("io.safeyolo.creation"));
+    assert_eq!(timeout(LIMIT, backend).await.unwrap().unwrap(), 1);
+    assert!(
+        events(root.path())
+            .iter()
+            .any(|event| event["event"] == "gateway.docker_reconciled")
+    );
+    proxy.shutdown().await;
+}
