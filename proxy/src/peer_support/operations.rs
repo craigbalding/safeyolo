@@ -267,14 +267,13 @@ pub(crate) async fn submit(
     // Existing process-owned mutation tasks survive a canceled HTTP response
     // and drain before the audit writer closes. There is no replay worker.
     owner
-        .spawn_blocking(move || {
-            Ok(
-                tokio::runtime::Handle::current().block_on(crate::host_platform::in_config(
-                    config,
-                    execute(&state, &writer, &run, input),
-                )),
+        .spawn(Box::pin(async move {
+            Ok(crate::host_platform::in_config(
+                config,
+                Box::pin(execute(&state, &writer, &run, input)),
             )
-        })
+            .await)
+        }))
         .await?
         .await??
 }
@@ -324,9 +323,7 @@ async fn execute(
     let path = receipt_path(run, &input.operation_id)?;
     let digest = crate::approvals::pending::digest(&json!(input));
     let lock_path = path.with_extension("lock");
-    let _operation_lock =
-        tokio::task::spawn_blocking(move || crate::host_platform::lock_host_state(&lock_path))
-            .await??;
+    let _operation_lock = crate::host_platform::lock_host_state_async(&lock_path).await?;
     authorize(&super::current_policy(state)?, run, &input)?;
     if let Some(previous) = crate::guest_commands::read_state_bounded(&path, 1024 * 1024)? {
         if previous["request_digest"] != digest {
@@ -391,10 +388,7 @@ async fn execute_locked(
     let directory = crate::host_platform::config_dir()
         .join("agents")
         .join(&target.name);
-    let lock = tokio::task::spawn_blocking(move || {
-        crate::host_lifecycle::SetupLock::acquire_in(&directory, None)
-    })
-    .await??;
+    let lock = crate::host_lifecycle::SetupLock::acquire_in_async(&directory).await?;
     let (grant, target) = authorize(&super::current_policy(state)?, run, input)?;
     let observed = crate::host_runs::observe(&target.name).await;
     let actual_run = observed["run_id"].as_str().map(str::to_owned);
@@ -426,7 +420,9 @@ async fn execute_locked(
     ));
     crate::guest_commands::write_json(path, receipt)?;
     match &input.operation {
-        Action::Inspect => Ok(inspection(&crate::host_lifecycle::runtime(&target).await?)),
+        Action::Inspect => Ok(inspection(
+            &crate::host_commands::diagnostics(&target).await?,
+        )),
         Action::GuestCommand { .. } | Action::GuestLog { .. } => {
             require_live_owned(&target, &observed)?;
             let (command, timeout) = match &input.operation {
@@ -470,19 +466,24 @@ async fn execute_locked(
                     "guest runtime changed before the independent probe",
                 ));
             }
-            let value = crate::host_lifecycle::recover_guest_probe_authorized(
-                &root,
-                &target.name,
-                Duration::from_secs(*timeout_seconds),
-                Some(lock),
-                &|| authorize(&super::current_policy(state)?, run, input).map(|_| ()),
-            )?;
-            Ok(
-                json!({"state":"completed","guest_probe":value["result"],"supervision_id":value["supervision_id"]}),
-            )
+            let (state, run, input) = (state.clone(), run.clone(), input.clone());
+            let config = crate::host_platform::config_path();
+            let timeout = Duration::from_secs(*timeout_seconds);
+            tokio::task::spawn_blocking(move || {
+                tokio::runtime::Handle::current().block_on(crate::host_platform::in_config(config, async {
+                    let value = crate::host_lifecycle::recover_guest_probe_authorized(
+                        &root, &target.name, timeout, Some(lock),
+                        &|| authorize(&super::current_policy(&state)?, &run, &input).map(|_| ()),
+                    )?;
+                    Ok(json!({"state":"completed","guest_probe":value["result"],"supervision_id":value["supervision_id"]}))
+                }))
+            }).await?
         }
         Action::Lifecycle { operation } => {
-            let value = lifecycle(state, run, input, &target, *operation, &observed, lock).await?;
+            let value = Box::pin(lifecycle(
+                state, run, input, &target, *operation, &observed, lock,
+            ))
+            .await?;
             if value["status_code"]
                 .as_u64()
                 .is_some_and(|status| status >= 400)
@@ -549,10 +550,7 @@ async fn lifecycle(
             let directory = crate::host_platform::config_dir()
                 .join("agents")
                 .join(&target.name);
-            let lock = tokio::task::spawn_blocking(move || {
-                host_lifecycle::SetupLock::acquire_in(&directory, None)
-            })
-            .await??;
+            let lock = host_lifecycle::SetupLock::acquire_in_async(&directory).await?;
             authorize(&super::current_policy(state)?, run, input)?;
             let current = crate::host_runs::observe(&target.name).await;
             if current["runtime_state"] != "stopped" || current["run_id"] != observed["run_id"] {
@@ -586,6 +584,12 @@ fn inspection(observed: &Value) -> Value {
     }
     value["proxy_attachment"] = observed["proxy_attachment"]["state"].clone();
     value["launcher_kind"] = observed["launcher"]["kind"].clone();
+    value["guest_exec_state"] = observed["shell"]["state"]
+        .as_str()
+        .map_or(json!("not_probed"), |state| json!(state));
+    if observed["shell"]["state"] == "unavailable" {
+        value["exec"] = json!(false);
+    }
     value["runtime_diagnostic"] = if observed["runtime_error"].is_null() {
         Value::Null
     } else {
@@ -602,7 +606,7 @@ fn inspection(observed: &Value) -> Value {
     };
     value["next_action"] = json!(if observed["runtime_state"] == "stopped" {
         "The sandbox is stopped. An authorized sandbox start can use its saved configuration."
-    } else if observed["exec"] != true {
+    } else if value["exec"] != true {
         "The sandbox is not proven stopped. Guest execution is unavailable; preserve runtime evidence and inspect control health."
     } else if observed["agent_state"] != "running" {
         "Guest execution is available independently of the harness. Inspect authorized guest evidence or select an authorized harness action."

@@ -67,6 +67,24 @@ struct ServiceMutationState {
 }
 
 impl ServiceMutationOwner {
+    /// Keep asynchronous mutations alive after their HTTP caller disconnects,
+    /// without occupying the blocking pool while waiting for I/O or a lock.
+    pub(crate) async fn spawn<T: Send + 'static>(
+        &self,
+        work: impl std::future::Future<Output = Result<T, Error>> + Send + 'static,
+    ) -> Result<oneshot::Receiver<Result<T, Error>>, Error> {
+        let (sender, receiver) = oneshot::channel();
+        let mut state = self.state.lock().await;
+        while state.tasks.try_join_next().is_some() {}
+        if state.closing {
+            return Err(Error::ServiceMutation);
+        }
+        state.tasks.spawn(async move {
+            let _ = sender.send(work.await);
+        });
+        Ok(receiver)
+    }
+
     /// Admit one blocking service mutation into the process owner. A caller
     /// may drop the receiver, but the owner retains and joins the work.
     pub(crate) async fn spawn_blocking<T: Send + 'static>(

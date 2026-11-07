@@ -254,7 +254,7 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: ce39f4eb427f5553c95913e8ce95c328ae4f75732a20a4eab662a2f7b8027ab7
         - path: proxy/src/host_platform.rs
-          sha256: 9faa125b0fff14357240487b53da99d72fe6c6b58a41e3b78574e9094a13db31
+          sha256: 4dd691235f820fdb008e2b5d5295b3675858935af4b6447a65922e73a791ca23
         - path: proxy/src/host_boot.rs
           sha256: 52b02d5b4f0819e8b3b49a85fcff07364c5058128f8d8a9cf22c6c9d80d2c80a
         - path: guest/build-rootfs.sh
@@ -321,7 +321,7 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: proxy/src/host_platform.rs
-          sha256: 9faa125b0fff14357240487b53da99d72fe6c6b58a41e3b78574e9094a13db31
+          sha256: 4dd691235f820fdb008e2b5d5295b3675858935af4b6447a65922e73a791ca23
         - path: proxy/src/jobs.rs
           sha256: bf49088efe6c8f53ee6a07fdddcb5c01335e5ea5894734538ad67ada1c971502
         - path: proxy/src/jobs/input.rs

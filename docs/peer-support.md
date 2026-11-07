@@ -113,8 +113,11 @@ target even when no live run is available:
 }
 ```
 
-The result separates `runtime_state`, `control_state`, `exec`, `agent_state`,
-`terminal_state` and `proxy_attachment`. A missing proxy attachment alone does
+The result separates `runtime_state`, `control_state`, `exec`, `guest_exec_state`,
+`agent_state`, `terminal_state` and `proxy_attachment`. On macOS, inspection
+checks the existing SSH-banner diagnostic independently of VM/control liveness.
+Lifecycle responses can show `guest_exec_state: "not_probed"`; inspect again
+to obtain that diagnostic after a change. A missing proxy attachment alone does
 not justify starting a worker. An unavailable guest execution path does not
 prove that its sandbox stopped. Preserve degraded runtime evidence.
 

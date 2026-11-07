@@ -366,8 +366,8 @@ pub(crate) async fn shell_banner(path: &Path) -> Result<(), Error> {
     })?
 }
 
-async fn diagnostics(agent: &host_agents::Agent) -> Result<Value, Error> {
-    let mut observed = host_lifecycle::operate("status", Some(&agent.id)).await?;
+pub(crate) async fn diagnostics(agent: &host_agents::Agent) -> Result<Value, Error> {
+    let mut observed = Box::pin(host_lifecycle::operate("status", Some(&agent.id))).await?;
     observed["proxy_state"] = if proxy_live() {
         "running"
     } else {

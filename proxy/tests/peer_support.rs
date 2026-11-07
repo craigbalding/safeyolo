@@ -144,6 +144,7 @@ async fn standing_inspection_is_target_scoped_and_receipts_never_replay() {
     let receipt = first.json();
     assert_eq!(receipt["state"], "completed");
     assert_eq!(receipt["result"]["runtime_state"], "stopped");
+    assert_eq!(receipt["result"]["guest_exec_state"], "unavailable");
     assert!(receipt.get("owner_token").is_none());
     assert!(receipt.get("permission").is_none());
     assert_eq!(
@@ -374,6 +375,42 @@ async fn standing_inspection_is_target_scoped_and_receipts_never_replay() {
         403
     );
     restarted.stop().await;
+}
+
+#[test]
+fn support_inspection_keeps_the_blocking_pool_available() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        // The existing connection-disconnect monitor occupies one worker.
+        .max_blocking_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let response = runtime.block_on(async {
+        let f = fixture().await;
+        let _backend = support_run(&f, RUN);
+        grant(&f, proposal()).await;
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            f.agent(
+                "helper",
+                "POST",
+                "/support/operations",
+                Some(inspect("one-blocking-owner")),
+            ),
+        )
+        .await;
+        if result.is_ok() {
+            f.stop().await;
+        }
+        result
+    });
+    // Bound shutdown even when a regression strands a blocking admission.
+    runtime.shutdown_timeout(Duration::from_secs(1));
+    let response =
+        response.expect("support nested a second blocking job inside its blocking owner");
+    assert_eq!(response.status, 200, "{}", response.json());
+    assert_eq!(response.json()["state"], "completed");
 }
 
 #[tokio::test]

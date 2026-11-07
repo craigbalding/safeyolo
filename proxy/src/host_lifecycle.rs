@@ -42,6 +42,20 @@ pub(crate) struct SetupLock {
 }
 
 impl SetupLock {
+    pub(crate) async fn acquire_in_async(directory: &std::path::Path) -> Result<Self, Error> {
+        let file = Self::open_in(directory)?;
+        loop {
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(Self { _file: file });
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::WouldBlock {
+                return Err(error.into());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     pub(crate) fn acquire_in(
         directory: &std::path::Path,
         deadline: Option<std::time::Instant>,

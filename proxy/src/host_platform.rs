@@ -548,6 +548,17 @@ pub(crate) fn try_lock_host_state(path: &std::path::Path) -> io::Result<std::fs:
     host_state_lock(path, true)
 }
 
+pub(crate) async fn lock_host_state_async(path: &std::path::Path) -> io::Result<std::fs::File> {
+    loop {
+        match try_lock_host_state(path) {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            result => return result,
+        }
+    }
+}
+
 fn host_state_lock(path: &std::path::Path, nonblocking: bool) -> io::Result<std::fs::File> {
     use std::os::{
         fd::AsRawFd,
