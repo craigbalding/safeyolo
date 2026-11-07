@@ -42,6 +42,7 @@ user_facing_docs = [
     "docs/installation.md",
     "docs/guest-oci.md",
     "docs/credentials.md",
+    "docs/docker.md",
     "docs/coding-client-gateway.md",
     "docs/service-authoring.md",
     "docs/service-gateway-v2-yaml-spec.md",

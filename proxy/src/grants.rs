@@ -992,7 +992,7 @@ impl Store {
         activate: impl FnMut(&str) -> std::result::Result<(), String>,
     ) -> Result<ResponseOutcome> {
         let consume = lease.grant.scope == GrantScope::Once
-            && status.is_some_and(|status| (200..300).contains(&status));
+            && status.is_some_and(|status| status == 101 || (200..300).contains(&status));
         // A successful origin action must never regain its once grant because
         // persistence or activation failed. Keep that reservation fail-closed.
         // This quarantine is process-local: a failed durable write plus restart

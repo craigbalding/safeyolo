@@ -1,0 +1,743 @@
+# Adapted from Moby v26.1.5 api/swagger.yaml (Apache-2.0).
+# References and allOf are expanded only for these request types. Required fields,
+# defaults and integer bounds are retained. Docker-specific conditions run in enforcement.rs.
+# Empty Go string defaults are accepted for logging, propagation, cgroup namespaces
+# and isolation. The implemented local log driver extends the specification enum.
+# MemorySwappiness also accepts the CLI's -1 sentinel, which Engine normalizes to
+# unset before validation. Memory bytes remain nonnegative; -1 is not their sentinel.
+create:
+  allow:
+    Hostname: {type: string, nullable: true}
+    Domainname: {type: string, nullable: true}
+    User: {type: string, nullable: true}
+    AttachStdin: {type: boolean, nullable: true, default: false}
+    AttachStdout: {type: boolean, nullable: true, default: true}
+    AttachStderr: {type: boolean, nullable: true, default: true}
+    ExposedPorts:
+      type: object
+      nullable: true
+      object:
+        deny_unknown: false
+        values:
+          type: object
+          nullable: true
+          default: {}
+          object: {}
+    Tty: {type: boolean, nullable: true, default: false}
+    OpenStdin: {type: boolean, nullable: true, default: false}
+    StdinOnce: {type: boolean, nullable: true, default: false}
+    Env:
+      type: array
+      nullable: true
+      items: {type: string, nullable: true}
+    Cmd: {type: string_or_array, nullable: true}
+    Healthcheck:
+      type: object
+      nullable: true
+      object:
+        allow:
+          Test:
+            type: array
+            nullable: true
+            items: {type: string, nullable: true}
+          Interval: {type: integer, nullable: true}
+          Timeout: {type: integer, nullable: true}
+          Retries: {type: integer, nullable: true}
+          StartPeriod: {type: integer, nullable: true}
+          StartInterval: {type: integer, nullable: true}
+    ArgsEscaped: {type: boolean, nullable: true, default: false}
+    Image: {type: string, nullable: true}
+    Volumes:
+      type: object
+      nullable: true
+      object:
+        deny_unknown: false
+        values:
+          type: object
+          nullable: true
+          default: {}
+          object: {}
+    WorkingDir: {type: string, nullable: true}
+    Entrypoint: {type: string_or_array, nullable: true}
+    NetworkDisabled: {type: boolean, nullable: true}
+    MacAddress: {type: string, nullable: true}
+    OnBuild:
+      type: array
+      nullable: true
+      items: {type: string, nullable: true}
+    Labels:
+      type: object
+      nullable: true
+      object:
+        deny_unknown: false
+        values: {type: string, nullable: true}
+    StopSignal: {type: string, nullable: true}
+    StopTimeout: {type: integer, nullable: true, default: 10}
+    Shell:
+      type: array
+      nullable: true
+      items: {type: string, nullable: true}
+    HostConfig:
+      type: object
+      nullable: true
+      object:
+        allow:
+          CpuShares: {type: integer, nullable: true}
+          Memory: {type: integer, nullable: true, default: 0, integer_range: [0, 9223372036854775807]}
+          CgroupParent: {type: string, nullable: true}
+          BlkioWeight: {type: integer, nullable: true, integer_range: [0, 1000]}
+          BlkioWeightDevice:
+            type: array
+            nullable: true
+            items:
+              type: object
+              nullable: true
+              object:
+                allow:
+                  Path: {type: string, nullable: true}
+                  Weight: {type: integer, nullable: true, integer_range: [0, 9223372036854775807]}
+          BlkioDeviceReadBps:
+            type: array
+            nullable: true
+            items:
+              type: object
+              nullable: true
+              object:
+                allow:
+                  Path: {type: string, nullable: true}
+                  Rate: {type: integer, nullable: true, integer_range: [0, 9223372036854775807]}
+          BlkioDeviceWriteBps:
+            type: array
+            nullable: true
+            items:
+              type: object
+              nullable: true
+              object:
+                allow:
+                  Path: {type: string, nullable: true}
+                  Rate: {type: integer, nullable: true, integer_range: [0, 9223372036854775807]}
+          BlkioDeviceReadIOps:
+            type: array
+            nullable: true
+            items:
+              type: object
+              nullable: true
+              object:
+                allow:
+                  Path: {type: string, nullable: true}
+                  Rate: {type: integer, nullable: true, integer_range: [0, 9223372036854775807]}
+          BlkioDeviceWriteIOps:
+            type: array
+            nullable: true
+            items:
+              type: object
+              nullable: true
+              object:
+                allow:
+                  Path: {type: string, nullable: true}
+                  Rate: {type: integer, nullable: true, integer_range: [0, 9223372036854775807]}
+          CpuPeriod: {type: integer, nullable: true}
+          CpuQuota: {type: integer, nullable: true}
+          CpuRealtimePeriod: {type: integer, nullable: true}
+          CpuRealtimeRuntime: {type: integer, nullable: true}
+          CpusetCpus: {type: string, nullable: true}
+          CpusetMems: {type: string, nullable: true}
+          Devices:
+            type: array
+            nullable: true
+            items:
+              type: object
+              nullable: true
+              object:
+                allow:
+                  PathOnHost: {type: string, nullable: true}
+                  PathInContainer: {type: string, nullable: true}
+                  CgroupPermissions: {type: string, nullable: true}
+          DeviceCgroupRules:
+            type: array
+            nullable: true
+            items: {type: string, nullable: true}
+          DeviceRequests:
+            type: array
+            nullable: true
+            items:
+              type: object
+              nullable: true
+              object:
+                allow:
+                  Driver: {type: string, nullable: true}
+                  Count: {type: integer, nullable: true}
+                  DeviceIDs:
+                    type: array
+                    nullable: true
+                    items: {type: string, nullable: true}
+                  Capabilities:
+                    type: array
+                    nullable: true
+                    items:
+                      type: array
+                      nullable: true
+                      items: {type: string, nullable: true}
+                  Options:
+                    type: object
+                    nullable: true
+                    object:
+                      deny_unknown: false
+                      values: {type: string, nullable: true}
+          KernelMemoryTCP: {type: integer, nullable: true}
+          MemoryReservation: {type: integer, nullable: true}
+          MemorySwap: {type: integer, nullable: true}
+          MemorySwappiness: {type: integer, nullable: true, integer_range: [-1, 100]}
+          NanoCpus: {type: integer, nullable: true}
+          OomKillDisable: {type: boolean, nullable: true}
+          Init: {type: boolean, nullable: true}
+          PidsLimit: {type: integer, nullable: true}
+          Ulimits:
+            type: array
+            nullable: true
+            items:
+              type: object
+              nullable: true
+              object:
+                allow:
+                  Name: {type: string, nullable: true}
+                  Soft: {type: integer, nullable: true}
+                  Hard: {type: integer, nullable: true}
+          CpuCount: {type: integer, nullable: true}
+          CpuPercent: {type: integer, nullable: true}
+          IOMaximumIOps: {type: integer, nullable: true}
+          IOMaximumBandwidth: {type: integer, nullable: true}
+          Binds:
+            type: array
+            nullable: true
+            items: {type: string, nullable: true}
+          ContainerIDFile: {type: string, nullable: true}
+          LogConfig:
+            type: object
+            nullable: true
+            object:
+              allow:
+                Type: {type: string, nullable: true, enum: ['', local, json-file, syslog, journald, gelf, fluentd,
+                    awslogs, splunk, etwlogs, none]}
+                Config:
+                  type: object
+                  nullable: true
+                  object:
+                    deny_unknown: false
+                    values: {type: string, nullable: true}
+          NetworkMode: {type: string, nullable: true}
+          PortBindings:
+            type: object
+            nullable: true
+            object:
+              deny_unknown: false
+              values:
+                type: array
+                nullable: true
+                items:
+                  type: object
+                  nullable: true
+                  object:
+                    allow:
+                      HostIp: {type: string, nullable: true}
+                      HostPort: {type: string, nullable: true}
+          RestartPolicy:
+            type: object
+            nullable: true
+            object:
+              allow:
+                Name: {type: string, nullable: true, enum: &id001 ['', 'no', always, unless-stopped, on-failure]}
+                MaximumRetryCount: {type: integer, nullable: true}
+          AutoRemove: {type: boolean, nullable: true}
+          VolumeDriver: {type: string, nullable: true}
+          VolumesFrom:
+            type: array
+            nullable: true
+            items: {type: string, nullable: true}
+          Mounts:
+            type: array
+            nullable: true
+            items:
+              type: object
+              nullable: true
+              object:
+                allow:
+                  Target: {type: string, nullable: true}
+                  Source: {type: string, nullable: true}
+                  Type: {type: string, nullable: true, enum: [bind, volume, tmpfs, npipe, cluster]}
+                  ReadOnly: {type: boolean, nullable: true}
+                  Consistency: {type: string, nullable: true}
+                  BindOptions:
+                    type: object
+                    nullable: true
+                    object:
+                      allow:
+                        Propagation: {type: string, nullable: true, enum: ['', private, rprivate, shared,
+                            rshared, slave, rslave]}
+                        NonRecursive: {type: boolean, nullable: true, default: false}
+                        CreateMountpoint: {type: boolean, nullable: true, default: false}
+                        ReadOnlyNonRecursive: {type: boolean, nullable: true, default: false}
+                        ReadOnlyForceRecursive: {type: boolean, nullable: true, default: false}
+                  VolumeOptions:
+                    type: object
+                    nullable: true
+                    object:
+                      allow:
+                        NoCopy: {type: boolean, nullable: true, default: false}
+                        Labels:
+                          type: object
+                          nullable: true
+                          object:
+                            deny_unknown: false
+                            values: {type: string, nullable: true}
+                        DriverConfig:
+                          type: object
+                          nullable: true
+                          object:
+                            allow:
+                              Name: {type: string, nullable: true}
+                              Options:
+                                type: object
+                                nullable: true
+                                object:
+                                  deny_unknown: false
+                                  values: {type: string, nullable: true}
+                        Subpath: {type: string, nullable: true}
+                  TmpfsOptions:
+                    type: object
+                    nullable: true
+                    object:
+                      allow:
+                        SizeBytes: {type: integer, nullable: true}
+                        Mode: {type: integer, nullable: true}
+          ConsoleSize:
+            type: array
+            nullable: true
+            items: {type: integer, nullable: true, integer_range: [0, 9223372036854775807]}
+          Annotations:
+            type: object
+            nullable: true
+            object:
+              deny_unknown: false
+              values: {type: string, nullable: true}
+          CapAdd:
+            type: array
+            nullable: true
+            items: {type: string, nullable: true}
+          CapDrop:
+            type: array
+            nullable: true
+            items: {type: string, nullable: true}
+          CgroupnsMode: {type: string, nullable: true, enum: ['', private, host]}
+          Dns:
+            type: array
+            nullable: true
+            items: {type: string, nullable: true}
+          DnsOptions:
+            type: array
+            nullable: true
+            items: {type: string, nullable: true}
+          DnsSearch:
+            type: array
+            nullable: true
+            items: {type: string, nullable: true}
+          ExtraHosts:
+            type: array
+            nullable: true
+            items: {type: string, nullable: true}
+          GroupAdd:
+            type: array
+            nullable: true
+            items: {type: string, nullable: true}
+          IpcMode: {type: string, nullable: true}
+          Cgroup: {type: string, nullable: true}
+          Links:
+            type: array
+            nullable: true
+            items: {type: string, nullable: true}
+          OomScoreAdj: {type: integer, nullable: true}
+          PidMode: {type: string, nullable: true}
+          Privileged: {type: boolean, nullable: true}
+          PublishAllPorts: {type: boolean, nullable: true}
+          ReadonlyRootfs: {type: boolean, nullable: true}
+          SecurityOpt:
+            type: array
+            nullable: true
+            items: {type: string, nullable: true}
+          StorageOpt:
+            type: object
+            nullable: true
+            object:
+              deny_unknown: false
+              values: {type: string, nullable: true}
+          Tmpfs:
+            type: object
+            nullable: true
+            object:
+              deny_unknown: false
+              values: {type: string, nullable: true}
+          UTSMode: {type: string, nullable: true}
+          UsernsMode: {type: string, nullable: true}
+          ShmSize: {type: integer, nullable: true, integer_range: [0, 9223372036854775807]}
+          Sysctls:
+            type: object
+            nullable: true
+            object:
+              deny_unknown: false
+              values: {type: string, nullable: true}
+          Runtime: {type: string, nullable: true}
+          Isolation: {type: string, nullable: true, enum: ['', default, process, hyperv]}
+          MaskedPaths:
+            type: array
+            nullable: true
+            items: {type: string, nullable: true}
+          ReadonlyPaths:
+            type: array
+            nullable: true
+            items: {type: string, nullable: true}
+    NetworkingConfig:
+      type: object
+      nullable: true
+      object:
+        allow:
+          EndpointsConfig:
+            type: object
+            nullable: true
+            object:
+              deny_unknown: false
+              values:
+                type: object
+                nullable: true
+                object:
+                  allow:
+                    IPAMConfig:
+                      type: object
+                      nullable: true
+                      object:
+                        allow:
+                          IPv4Address: {type: string, nullable: true}
+                          IPv6Address: {type: string, nullable: true}
+                          LinkLocalIPs:
+                            type: array
+                            nullable: true
+                            items: {type: string, nullable: true}
+                    Links:
+                      type: array
+                      nullable: true
+                      items: {type: string, nullable: true}
+                    MacAddress: {type: string, nullable: true}
+                    Aliases:
+                      type: array
+                      nullable: true
+                      items: {type: string, nullable: true}
+                    NetworkID: {type: string, nullable: true}
+                    EndpointID: {type: string, nullable: true}
+                    Gateway: {type: string, nullable: true}
+                    IPAddress: {type: string, nullable: true}
+                    IPPrefixLen: {type: integer, nullable: true}
+                    IPv6Gateway: {type: string, nullable: true}
+                    GlobalIPv6Address: {type: string, nullable: true}
+                    GlobalIPv6PrefixLen: {type: integer, nullable: true}
+                    DriverOpts:
+                      type: object
+                      nullable: true
+                      object:
+                        deny_unknown: false
+                        values: {type: string, nullable: true}
+                    DNSNames:
+                      type: array
+                      nullable: true
+                      items: {type: string, nullable: true}
+update:
+  allow:
+    CpuShares: {type: integer, nullable: true}
+    Memory: {type: integer, nullable: true, default: 0, integer_range: [0, 9223372036854775807]}
+    CgroupParent: {type: string, nullable: true}
+    BlkioWeight: {type: integer, nullable: true, integer_range: [0, 1000]}
+    BlkioWeightDevice:
+      type: array
+      nullable: true
+      items:
+        type: object
+        nullable: true
+        object:
+          allow:
+            Path: {type: string, nullable: true}
+            Weight: {type: integer, nullable: true, integer_range: [0, 9223372036854775807]}
+    BlkioDeviceReadBps:
+      type: array
+      nullable: true
+      items:
+        type: object
+        nullable: true
+        object:
+          allow:
+            Path: {type: string, nullable: true}
+            Rate: {type: integer, nullable: true, integer_range: [0, 9223372036854775807]}
+    BlkioDeviceWriteBps:
+      type: array
+      nullable: true
+      items:
+        type: object
+        nullable: true
+        object:
+          allow:
+            Path: {type: string, nullable: true}
+            Rate: {type: integer, nullable: true, integer_range: [0, 9223372036854775807]}
+    BlkioDeviceReadIOps:
+      type: array
+      nullable: true
+      items:
+        type: object
+        nullable: true
+        object:
+          allow:
+            Path: {type: string, nullable: true}
+            Rate: {type: integer, nullable: true, integer_range: [0, 9223372036854775807]}
+    BlkioDeviceWriteIOps:
+      type: array
+      nullable: true
+      items:
+        type: object
+        nullable: true
+        object:
+          allow:
+            Path: {type: string, nullable: true}
+            Rate: {type: integer, nullable: true, integer_range: [0, 9223372036854775807]}
+    CpuPeriod: {type: integer, nullable: true}
+    CpuQuota: {type: integer, nullable: true}
+    CpuRealtimePeriod: {type: integer, nullable: true}
+    CpuRealtimeRuntime: {type: integer, nullable: true}
+    CpusetCpus: {type: string, nullable: true}
+    CpusetMems: {type: string, nullable: true}
+    Devices:
+      type: array
+      nullable: true
+      items:
+        type: object
+        nullable: true
+        object:
+          allow:
+            PathOnHost: {type: string, nullable: true}
+            PathInContainer: {type: string, nullable: true}
+            CgroupPermissions: {type: string, nullable: true}
+    DeviceCgroupRules:
+      type: array
+      nullable: true
+      items: {type: string, nullable: true}
+    DeviceRequests:
+      type: array
+      nullable: true
+      items:
+        type: object
+        nullable: true
+        object:
+          allow:
+            Driver: {type: string, nullable: true}
+            Count: {type: integer, nullable: true}
+            DeviceIDs:
+              type: array
+              nullable: true
+              items: {type: string, nullable: true}
+            Capabilities:
+              type: array
+              nullable: true
+              items:
+                type: array
+                nullable: true
+                items: {type: string, nullable: true}
+            Options:
+              type: object
+              nullable: true
+              object:
+                deny_unknown: false
+                values: {type: string, nullable: true}
+    KernelMemoryTCP: {type: integer, nullable: true}
+    MemoryReservation: {type: integer, nullable: true}
+    MemorySwap: {type: integer, nullable: true}
+    MemorySwappiness: {type: integer, nullable: true, integer_range: [-1, 100]}
+    NanoCpus: {type: integer, nullable: true}
+    OomKillDisable: {type: boolean, nullable: true}
+    Init: {type: boolean, nullable: true}
+    PidsLimit: {type: integer, nullable: true}
+    Ulimits:
+      type: array
+      nullable: true
+      items:
+        type: object
+        nullable: true
+        object:
+          allow:
+            Name: {type: string, nullable: true}
+            Soft: {type: integer, nullable: true}
+            Hard: {type: integer, nullable: true}
+    CpuCount: {type: integer, nullable: true}
+    CpuPercent: {type: integer, nullable: true}
+    IOMaximumIOps: {type: integer, nullable: true}
+    IOMaximumBandwidth: {type: integer, nullable: true}
+    RestartPolicy:
+      type: object
+      nullable: true
+      object:
+        allow:
+          Name: {type: string, nullable: true, enum: *id001}
+          MaximumRetryCount: {type: integer, nullable: true}
+network_create:
+  allow:
+    Name: {type: string, nullable: false, required: true}
+    CheckDuplicate: {type: boolean, nullable: true}
+    Driver: {type: string, nullable: true, default: bridge}
+    Scope: {type: string, nullable: true}
+    Internal: {type: boolean, nullable: true}
+    Attachable: {type: boolean, nullable: true}
+    Ingress: {type: boolean, nullable: true}
+    ConfigOnly: {type: boolean, nullable: true, default: false}
+    ConfigFrom:
+      type: object
+      nullable: true
+      object:
+        allow:
+          Network: {type: string, nullable: true}
+    IPAM:
+      type: object
+      nullable: true
+      object:
+        allow:
+          Driver: {type: string, nullable: true, default: default}
+          Config:
+            type: array
+            nullable: true
+            items:
+              type: object
+              nullable: true
+              object:
+                allow:
+                  Subnet: {type: string, nullable: true}
+                  IPRange: {type: string, nullable: true}
+                  Gateway: {type: string, nullable: true}
+                  AuxiliaryAddresses:
+                    type: object
+                    nullable: true
+                    object:
+                      deny_unknown: false
+                      values: {type: string, nullable: true}
+          Options:
+            type: object
+            nullable: true
+            object:
+              deny_unknown: false
+              values: {type: string, nullable: true}
+    EnableIPv6: {type: boolean, nullable: true}
+    Options:
+      type: object
+      nullable: true
+      object:
+        deny_unknown: false
+        values: {type: string, nullable: true}
+    Labels:
+      type: object
+      nullable: true
+      object:
+        deny_unknown: false
+        values: {type: string, nullable: true}
+volume_create:
+  allow:
+    Name: {type: string, nullable: true}
+    Driver: {type: string, nullable: true, default: local}
+    DriverOpts:
+      type: object
+      nullable: true
+      object:
+        deny_unknown: false
+        values: {type: string, nullable: true}
+    Labels:
+      type: object
+      nullable: true
+      object:
+        deny_unknown: false
+        values: {type: string, nullable: true}
+    ClusterVolumeSpec:
+      type: object
+      nullable: true
+      object:
+        allow:
+          Group: {type: string, nullable: true}
+          AccessMode:
+            type: object
+            nullable: true
+            object:
+              allow:
+                Scope: {type: string, nullable: true, enum: [single, multi], default: single}
+                Sharing: {type: string, nullable: true, enum: [none, readonly, onewriter, all], default: none}
+                MountVolume:
+                  type: object
+                  nullable: true
+                  object: {}
+                Secrets:
+                  type: array
+                  nullable: true
+                  items:
+                    type: object
+                    nullable: true
+                    object:
+                      allow:
+                        Key: {type: string, nullable: true}
+                        Secret: {type: string, nullable: true}
+                AccessibilityRequirements:
+                  type: object
+                  nullable: true
+                  object:
+                    allow:
+                      Requisite:
+                        type: array
+                        nullable: true
+                        items:
+                          type: object
+                          nullable: true
+                          object:
+                            deny_unknown: false
+                            values: {type: string, nullable: true}
+                      Preferred:
+                        type: array
+                        nullable: true
+                        items:
+                          type: object
+                          nullable: true
+                          object:
+                            deny_unknown: false
+                            values: {type: string, nullable: true}
+                CapacityRange:
+                  type: object
+                  nullable: true
+                  object:
+                    allow:
+                      RequiredBytes: {type: integer, nullable: true}
+                      LimitBytes: {type: integer, nullable: true}
+                Availability: {type: string, nullable: true, enum: [active, pause, drain], default: active}
+exec_create:
+  allow:
+    AttachStdin: {type: boolean, nullable: true}
+    AttachStdout: {type: boolean, nullable: true}
+    AttachStderr: {type: boolean, nullable: true}
+    ConsoleSize:
+      type: array
+      nullable: true
+      items: {type: integer, nullable: true, integer_range: [0, 9223372036854775807]}
+    DetachKeys: {type: string, nullable: true}
+    Tty: {type: boolean, nullable: true}
+    Env:
+      type: array
+      nullable: true
+      items: {type: string, nullable: true}
+    Cmd: {type: string_or_array, nullable: true}
+    Privileged: {type: boolean, nullable: true, default: false}
+    User: {type: string, nullable: true}
+    WorkingDir: {type: string, nullable: true}
+exec_start:
+  allow:
+    Detach: {type: boolean, nullable: true}
+    Tty: {type: boolean, nullable: true}
+    ConsoleSize:
+      type: array
+      nullable: true
+      items: {type: integer, nullable: true, integer_range: [0, 9223372036854775807]}

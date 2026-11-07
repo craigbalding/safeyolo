@@ -445,6 +445,9 @@ pub(crate) struct Runtime {
     /// One process-owned store for contract bindings and risky grants. Clones
     /// share reservations; reloads reconcile its durable view before publish.
     gateway_grants: Option<grants::Store>,
+    /// Serialize project admission through durable effect recording. This is
+    /// process-local; Docker's other administrators retain their own access.
+    docker_projects: Arc<tokio::sync::Mutex<()>>,
     credential_guard: Option<credential_guard::CredentialGuard>,
     credential_key_empty: bool,
     tasks: tasks::Registry,
@@ -845,6 +848,9 @@ impl Runtime {
                 credential_activation,
                 operator_modes,
                 gateway_grants,
+                docker_projects: previous
+                    .map(|runtime| runtime.docker_projects.clone())
+                    .unwrap_or_default(),
                 credential_guard,
                 credential_key_empty,
                 tasks,

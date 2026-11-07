@@ -704,6 +704,69 @@ risky_routes:
 "#;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn docker_file_access_approval_shows_the_enforced_source_and_write_bounds() {
+    // The origin is a controlled approval fixture. No Engine is contacted.
+    let mut fixture = Fixture::new().await;
+    configure(&fixture);
+    let definition = json!({"schema_version":1,"name":"docker_files","default_host":fixture.address.ip().to_string(),
+        "docker":{"endpoint":format!("http://{}",fixture.address),"execution_boundary":"external"},
+        "capabilities":{"workloads":{"docker_access":{"mode":"workloads","bind_mounts":[{"source":"/srv/project-data","read_only":true}]},
+            "routes":[{"methods":["GET","POST"],"path":"/v1.45/**"}]}}});
+    fs::write(
+        fixture.root.path().join("services/docker.yaml"),
+        definition.to_string(),
+    )
+    .unwrap();
+    assert!(fixture.proxy.reload_services_if_changed().await.unwrap());
+    fixture
+        .apply(&format!(
+            "{}\n[hosts.'{}']\nservice='docker_files'\n",
+            fixture
+                .source()
+                .replace("egress='prompt'", "egress='allow'"),
+            fixture.address.ip()
+        ))
+        .await;
+    let request=fixture.agent("worker","POST","/gateway/request-access",Some(json!({"service":"docker_files","capability":"workloads","reason":"operate project files"}))).await;
+    assert_eq!(request.status, 202, "{}", request.json());
+    let view = success(
+        fixture.root.path(),
+        &["approvals", "show", &request.id(), "--json"],
+    )
+    .await;
+    for option in view["options"].as_array().unwrap() {
+        let (_, bounds) = option["effect"]
+            .as_str()
+            .unwrap()
+            .split_once("Docker authority: ")
+            .expect("operator sees Docker authority");
+        let bounds: Value = serde_json::from_str(bounds).unwrap();
+        assert_eq!(bounds["execution_boundary"], "external");
+        assert_eq!(
+            bounds["enforced_access"]["bind_mounts"],
+            json!([{"source":"/srv/project-data","read_only":true}])
+        );
+        assert!(
+            bounds["approval_bounds"]
+                .as_str()
+                .unwrap()
+                .contains("not tied to the attempted payload")
+        );
+    }
+    let id = view["approval_id"].as_str().unwrap();
+    assert_eq!(
+        success(fixture.root.path(), &["approvals", "approve", id, "--json"]).await["status"],
+        "approved"
+    );
+    let authorized = success(fixture.root.path(), &["services", "authorized", "worker"]).await;
+    assert_eq!(
+        authorized["services"]["docker_files"]["capability"],
+        "workloads"
+    );
+    fixture.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pending_gateway_approval_uses_existing_grants_and_survives_restart_without_replay() {
     let mut fixture = Fixture::new().await;
     configure(&fixture);

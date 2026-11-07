@@ -52,6 +52,10 @@ or its routes creates no implicit route permission. Omitting `auth` describes
 a credential-free service. An omitted `default_host` needs an explicit host
 when authorizing access.
 
+The optional `docker.endpoint` selects a fixed Docker Engine origin. Requests
+to that endpoint require gateway authorization, including requests without a
+gateway token. See [Docker client setup and transport limits](docker.md).
+
 ## Permissions and Trust
 
 A capability is a positive list of allowed methods and paths. Narrow
@@ -96,6 +100,8 @@ schema_version: 1          # required — integer 1
 name: string              # required — service identifier
 description: string       # optional — human-readable summary
 default_host: string      # optional — defaults to ""
+docker:                   # optional — fixed Docker Engine transport
+  endpoint: https://docker.example.invalid:2376 # HTTP(S) origin, no credentials or path
 
 auth:                     # optional — omit for credential-free services
   type: string            # required within auth: bearer or api_key for injection
@@ -173,12 +179,29 @@ unavailable; use the implementation limits below when choosing a contract.
 | `operations` | Named operations. `requires_enforcement` defaults to `request_shape`; the named tier must be marked `enforced` to be grantable. |
 | `operations[].request` | `method` defaults to GET. `path` selects the operation; `{name}` path parameters use `path_params` constraints. |
 | `request.path_params` | `equals_var` resolves a path parameter from an approved binding. |
-| `request.query.allow` | Supplied query values can be checked with `equals_var` or `integer_range`. `deny_unknown` defaults to true. |
-| `request.body.allow` | Supplied body values can be checked with `equals_var`. `deny_unknown` defaults to true. Nonempty POST, PUT and PATCH bodies must be JSON objects. |
+| `request.query.allow` | Query values support `equals_var`, `integer_range`, `required`, `default`, `enum` and scalar `type` checks. Boolean encodings are `true`, `false`, `1` and `0`. `deny_unknown` defaults to true. |
+| `request.body.allow` | Body fields support `equals_var`, `required`, `nullable`, `default`, `enum`, `type`, `integer_range`, nested `object` constraints and array `items`. `object` reuses `allow` and `deny_unknown`; `values` checks each value of a dynamic map. Nonempty POST, PUT and PATCH bodies use JSON objects by default. Opaque bodies cannot have JSON field constraints. |
 | `request.transport` | `require_no_body` defaults to false. Optional `allow_headers` must be a list. With no list, Accept and User-Agent are permitted in addition to implicit transport/auth headers; an empty list does not add them. |
+| `request.transport.body_format` | `json_object` (default) or `opaque`. Opaque POST/PUT/PATCH bodies require `content_types` and cannot use `require_no_body`. Header/query/path checks still run before forwarding. |
+| `request.transport.content_types` | Optional lowercase media types without parameters. A supplied list restricts POST/PUT/PATCH content types. Required for opaque bodies. |
 | `enforcement` | Tier status values are `enforced` or `declared`. A missing tier does not make its operations grantable. |
 | `state` | Retained as an untyped value; it creates no runtime sets or capture. |
 | Operation `response` | Declarations in the definition; the request executor does not run response captures or validators. |
+
+Body types are `string`, `integer`, `number`, `boolean`, `object`, `array` and
+`string_or_array`. The last type accepts a string or an array of strings, as
+used by Docker commands. Fields are optional unless `required: true` is set.
+An authored `default` supplies the upstream value for validation when a field is
+omitted. It does not rewrite the request. `nullable: true` permits explicit JSON
+null. Authors must record the upstream null/default semantics accurately.
+Nested rules check every array item. Unknown constraint keys and type names
+prevent the definition from loading.
+
+An operation that requires `response_validators` remains ungrantable even if its
+definition marks that tier `enforced`. Supported operations in the same contract
+remain available. Response inspection cannot undo an upstream mutation. Docker's
+specific prerequisite resource reads are described in [Docker management](docker.md);
+they do not implement generic contract state or response validators.
 
 | Tier | Current implementation |
 |---|---|
@@ -186,18 +209,16 @@ unavailable; use the implementation limits below when choosing a contract.
 | `transport_hygiene` | Supported request transport checks. |
 | `state_capture` | No runtime capture; operations requiring this tier cannot be granted. |
 | `state_enforcement` | No runtime state enforcement; operations requiring this tier or using `in_state_set` cannot be granted. |
-| `response_validators` | A required tier marked `enforced` can leave an operation grantable, but validators still do not run. Approval does not establish response enforcement. |
+| `response_validators` | Validators do not run. Operations requiring this tier cannot be granted. |
 
 ### Grantable operations and binding
 
 An operation's required tier must be marked `enforced`, and the runtime must
-support its requirements. Operations requiring `state_capture` or
-`state_enforcement`, or using `in_state_set` in path, query or body constraints,
+support its requirements. Operations requiring `state_capture`,
+`state_enforcement` or `response_validators`, or using `in_state_set` in path,
+query or nested body constraints,
 cannot be granted even if their tier is marked `enforced`. The definition can
 still load, and supported operations in the same contract remain available.
-These checks do not reject a `response_validators` requirement on the same
-basis; that declaration can therefore accompany a grant without any runtime
-response check.
 
 For a contract capability, the running policy compiles routes from supported,
 selected operations. The broad `capability.routes` list is not a fallback grant
@@ -228,9 +249,9 @@ prefers a literal path over a parameterized path, then a wildcard path. If no
 operation matches, the request is refused. Compiled policy supplies the
 agent, service, capability and selected-operation scope before these checks.
 
-Request constraint `type` labels and body `integer_range` fields are parsed but
-do not enforce value types or body ranges. Allowing a field does not require
-its presence. Binding-definition types are checked separately when binding
+Request constraint `type` and `integer_range` enforce the supported value types
+and bounds. Allowing a field does not require its presence unless `required` is
+set. Binding-definition types are checked separately when binding
 values are approved. Binding `source` and `visible_to_operator` fields are
 retained metadata; they do not authorize a value. `deny_ambiguous_encoding` is a parsed transport field with
 default false; current ambiguity checks run regardless of that flag. Duplicate
@@ -385,7 +406,9 @@ The operator can inspect `services approvals` and approve the exact agent,
 service, method and path with `services approve`. A matching risk grant is
 checked before risk policy. It does not widen service routes, replace a contract
 binding, or grant network or credential permission. A `once` grant reserves one
-in-flight use; a 2xx response consumes it and other outcomes release it for retry.
+in-flight use. A 2xx response or an admitted Docker 101 protocol switch consumes
+it. Other outcomes release the reservation. Retaining a grant does not establish
+that an upstream mutation failed; inspect upstream state before retrying.
 Response-based consumption does not guarantee exactly-once external side effects
 across a proxy crash. The [grant implementation](../proxy/src/grants.rs) retains
 a reservation in the running proxy after a successful action if saving its

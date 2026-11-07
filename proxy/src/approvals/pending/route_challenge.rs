@@ -210,7 +210,7 @@ pub(crate) async fn observe(
             id: "run".into(),
             session_id: None,
             effect: format!(
-                "Allow only this agent run, destination, capability, account and credential binding to use {} at literal path {path:?}. Reusable access expires {ttl} seconds after approval or earlier when the credential expires. Query/body values are unrestricted except where the existing contract enforces them. Approval never replays the request; expiry does not undo effects or cancel admitted operations.",
+                "Allow only this agent run, destination, capability, account and credential binding to use {} at literal path {path:?}. Reusable access expires {ttl} seconds after approval or earlier when the credential expires. Query/body values remain subject to adopted contract and Docker resource checks; this approval does not bind the exact attempted payload. Approval never replays the request; expiry does not undo effects or cancel admitted operations.",
                 request.method
             ),
             parameters: json!({"ttl_seconds":ttl,"path_match":"literal"}),
