@@ -176,7 +176,13 @@ impl ProjectRequest {
         rewrite_references(&mut object, &self.references);
         if self.method == "DELETE"
             && parts.first() == Some(&"containers")
-            && params.get("v").is_some_and(|v| v == "1" || v == "true")
+            // Match Engine API 1.45's httputils.BoolValue, including false aliases.
+            && params.get("v").and_then(Value::as_str).is_some_and(|v| {
+                !matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "" | "0" | "no" | "false" | "none"
+                )
+            })
         {
             for (resource, value) in &inspection.observed {
                 if let (Resource::Volume(name, _), Some(_)) = (resource, value) {

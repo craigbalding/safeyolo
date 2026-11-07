@@ -3,7 +3,7 @@
 use safeyolo_proxy::credentials::{Credential, Secret};
 use safeyolo_proxy::{Config, Proxy, http_content::BUFFERED_BODY_THRESHOLD};
 use serde_json::{Value, json};
-use std::{path::Path, time::Duration};
+use std::{collections::BTreeMap, path::Path, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, UnixStream},
@@ -637,6 +637,126 @@ async fn project_resource_updates_inspect_existing_state_without_create_defaults
 }
 
 #[tokio::test]
+async fn container_removal_preserves_shared_volumes_for_engine_boolean_encodings() {
+    // API 1.45 uses httputils.BoolValue: trim/lowercase, then empty/0/no/false/none
+    // are false. Every other value enables anonymous-volume deletion.
+    // https://github.com/moby/moby/blob/v26.1.5/api/server/httputils/form.go
+    for owned in [false, true] {
+        for (query, removes_volumes) in [
+            ("", false),
+            ("?v", false),
+            ("?v=", false),
+            ("?v=0", false),
+            ("?v=no", false),
+            ("?v=false", false),
+            ("?v=none", false),
+            ("?v=+FaLsE+", false),
+            ("?v=%09No%20", false),
+            ("?v=%E2%80%83NoNe%C2%A0", false),
+            ("?v=true", true),
+            ("?v=truE", true),
+            ("?v=+TrUe%09", true),
+            ("?v=1", true),
+            ("?v=yes", true),
+            ("?v=off", true),
+            ("?v=2", true),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let container = "a".repeat(64);
+            let network = "b".repeat(64);
+            let image = format!("sha256:{}", "c".repeat(64));
+            let volume = "d".repeat(64);
+            let created = "2026-11-07T00:00:00Z";
+            let mut definition = workloads(origin.local_addr().unwrap().port());
+            let mut access = json!({"mode":"project","name":"alpha","adoption":"selection-1","selected":{"containers":[container]},"shared":{"images":[image],"networks":[network]}});
+            access[if owned { "selected" } else { "shared" }]["volumes"] =
+                json!({volume.clone():created});
+            definition["capabilities"]["engine"]["docker_access"] = access;
+            let proxy = start(root.path(), definition, false, false).await;
+            let allowed = owned || !removes_volumes;
+            let backend = tokio::spawn(async move {
+                let mut prerequisites = BTreeMap::from([
+                    (
+                        "/v1.45/containers/ordinary-name/json".to_owned(),
+                        json!({"Id":container,"Image":image,"State":{"Status":"exited","Running":false},"HostConfig":{"Privileged":false,"CgroupnsMode":"private","NetworkMode":network},"NetworkSettings":{"Networks":{}},"Mounts":[{"Type":"volume","Name":volume,"Driver":"local","Destination":"/data","RW":true}]}),
+                    ),
+                    (
+                        format!("/v1.45/networks/{network}"),
+                        json!({"Id":network,"Driver":"bridge","Options":{},"IPAM":{"Driver":"default"}}),
+                    ),
+                    (
+                        format!("/v1.45/images/{image}/json"),
+                        json!({"Id":image,"Os":"linux","Config":{}}),
+                    ),
+                    (
+                        format!("/v1.45/volumes/{volume}"),
+                        json!({"Name":volume,"Driver":"local","Options":{},"CreatedAt":created}),
+                    ),
+                ]);
+                let mut saw_events = false;
+                for _ in 0..5 {
+                    let (mut stream, _) = origin.accept().await.unwrap();
+                    let headers = String::from_utf8(head(&mut stream).await).unwrap();
+                    assert!(headers.starts_with("GET "), "{headers}");
+                    let target = headers.split_whitespace().nth(1).unwrap();
+                    let body = if target.starts_with("/v1.45/events?since=0&until=") {
+                        assert!(!saw_events);
+                        saw_events = true;
+                        String::new()
+                    } else {
+                        prerequisites.remove(target).expect(target).to_string()
+                    };
+                    stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+                }
+                assert!(prerequisites.is_empty() && saw_events);
+                if allowed {
+                    let (mut stream, _) = origin.accept().await.unwrap();
+                    let headers = String::from_utf8(head(&mut stream).await).unwrap();
+                    assert!(
+                        headers.starts_with(&format!(
+                            "DELETE /v1.45/containers/{container}{query} HTTP/1.1"
+                        )),
+                        "{headers}"
+                    );
+                    stream
+                        .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                        .await
+                        .unwrap();
+                    let (mut stream, _) = origin.accept().await.unwrap();
+                    let headers = String::from_utf8(head(&mut stream).await).unwrap();
+                    assert!(headers.starts_with("GET /v1.45/events?since=0&until="));
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                }
+                assert!(
+                    timeout(Duration::from_millis(50), origin.accept())
+                        .await
+                        .is_err(),
+                    "owned={owned} {query}: unexpected mutation"
+                );
+            });
+            let response = call(root.path(), "alice", &request("DELETE", &format!("/v1.45/containers/ordinary-name{query}"), "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nConnection: close\r\n", b"")).await;
+            assert!(
+                response.starts_with(if allowed {
+                    b"HTTP/1.1 204"
+                } else {
+                    b"HTTP/1.1 404"
+                }),
+                "owned={owned} {query}: {}",
+                String::from_utf8_lossy(&response)
+            );
+            timeout(LIMIT, backend).await.unwrap().unwrap();
+            proxy.shutdown().await;
+        }
+    }
+}
+
+#[tokio::test]
 async fn docker_default_endpoint_inspects_bridge_before_forwarding_the_cli_payload() {
     for (network_status, driver) in [(200, "bridge"), (404, "bridge"), (200, "host")] {
         let root = tempfile::tempdir().unwrap();
@@ -1169,6 +1289,60 @@ async fn existing_resource_names_do_not_become_reserved_words() {
         );
     }
     timeout(LIMIT, backend).await.unwrap().unwrap();
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn body_value_constraints_require_json_inspection_before_mutation() {
+    let root = tempfile::tempdir().unwrap();
+    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut definition = service(origin.local_addr().unwrap().port());
+    definition["capabilities"]["engine"]["contract"] = json!({"template":"image.v1","operations":[{"name":"create","request":{
+        "method":"POST","path":"/v1.45/containers/create",
+        "body":{"deny_unknown":false,"values":{"type":"string","enum":["busybox"]}},
+        "transport":{"body_format":"opaque","content_types":["application/json"]}
+    }}],"enforcement":{"request_shape":"enforced","transport_hygiene":"enforced"}});
+    assert!(safeyolo_proxy::services::ServiceDefinition::from_value(definition.clone()).is_err());
+    definition["capabilities"]["engine"]["contract"]["operations"][0]["request"]["transport"]["body_format"] =
+        json!("json_object");
+    let proxy = start(root.path(), definition, false, false).await;
+    let backend = tokio::spawn(async move {
+        let (mut stream, _) = origin.accept().await.unwrap();
+        let headers = String::from_utf8(head(&mut stream).await).unwrap();
+        assert!(headers.starts_with("POST /v1.45/containers/create HTTP/1.1"));
+        let expected = br#"{"Image":"busybox"}"#;
+        let mut body = vec![0; expected.len()];
+        stream.read_exact(&mut body).await.unwrap();
+        assert_eq!(body, expected);
+        stream
+            .write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+            .await
+            .unwrap();
+        origin
+    });
+    let response = call(root.path(), "alice", &request("POST", "/v1.45/containers/create", "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nContent-Type: application/json\r\nConnection: close\r\n", br#"{"Image":"busybox"}"#)).await;
+    assert!(
+        response.starts_with(b"HTTP/1.1 201"),
+        "{}",
+        String::from_utf8_lossy(&response)
+    );
+    let origin = timeout(LIMIT, backend).await.unwrap().unwrap();
+    for body in [
+        br#"{"Image":"unapproved-image"}"#.as_slice(),
+        br#"{"Image":"busybox","Another":"unapproved-image"}"#.as_slice(),
+    ] {
+        let response = call(root.path(), "alice", &request("POST", "/v1.45/containers/create", "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nContent-Type: application/json\r\nConnection: close\r\n", body)).await;
+        assert!(
+            response.starts_with(b"HTTP/1.1 403"),
+            "{}",
+            String::from_utf8_lossy(&response)
+        );
+        assert!(
+            timeout(Duration::from_millis(50), origin.accept())
+                .await
+                .is_err()
+        );
+    }
     proxy.shutdown().await;
 }
 
