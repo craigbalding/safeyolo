@@ -451,6 +451,15 @@ pub(crate) struct RelayResult {
     pub uploaded: u64,
     pub downloaded: u64,
     pub outcome: &'static str,
+    pub error: Option<RelayError>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct RelayError {
+    direction: &'static str,
+    operation: &'static str,
+    kind: String,
+    os_error: Option<i32>,
 }
 
 pub(crate) async fn relay(
@@ -465,8 +474,14 @@ pub(crate) async fn relay(
     let (server_read, server_write) = tokio::io::split(&mut server);
     let transfers = async {
         tokio::try_join!(
-            copy_half(client_read, server_write, &uploaded, &activity),
-            copy_half(server_read, client_write, &downloaded, &activity),
+            copy_half(client_read, server_write, &uploaded, &activity, "upload"),
+            copy_half(
+                server_read,
+                client_write,
+                &downloaded,
+                &activity,
+                "download"
+            ),
         )
     };
     let idle = async {
@@ -478,19 +493,23 @@ pub(crate) async fn relay(
             }
         }
     };
-    let outcome = if *stop.borrow() {
-        "shutdown"
+    let (outcome, error) = if *stop.borrow() {
+        ("shutdown", None)
     } else {
         tokio::select! {
-            result = transfers => if result.is_ok() { "completed" } else { "error" },
-            _ = stop.changed() => "shutdown",
-            _ = idle => "idle_timeout",
+            result = transfers => match result {
+                Ok(_) => ("completed", None),
+                Err(error) => ("error", Some(error)),
+            },
+            _ = stop.changed() => ("shutdown", None),
+            _ = idle => ("idle_timeout", None),
         }
     };
     RelayResult {
         uploaded: uploaded.load(Ordering::Relaxed),
         downloaded: downloaded.load(Ordering::Relaxed),
         outcome,
+        error,
     }
 }
 
@@ -499,19 +518,34 @@ async fn copy_half(
     mut writer: impl AsyncWrite + Unpin,
     count: &AtomicU64,
     activity: &std::sync::Mutex<Instant>,
-) -> io::Result<()> {
+    direction: &'static str,
+) -> Result<(), RelayError> {
+    // Keep the failing side and phase without copying arbitrary I/O error
+    // messages (which can contain peer-controlled text) into audit records.
+    let failure = |operation, error: io::Error| RelayError {
+        direction,
+        operation,
+        kind: format!("{:?}", error.kind()),
+        os_error: error.raw_os_error(),
+    };
     let mut bytes = [0; 8192];
     loop {
-        let read = reader.read(&mut bytes).await?;
+        let read = reader
+            .read(&mut bytes)
+            .await
+            .map_err(|e| failure("read", e))?;
         if read == 0 {
-            return writer.shutdown().await;
+            return writer.shutdown().await.map_err(|e| failure("shutdown", e));
         }
         *activity.lock().unwrap() = Instant::now();
         let mut offset = 0;
         while offset < read {
-            let written = writer.write(&bytes[offset..read]).await?;
+            let written = writer
+                .write(&bytes[offset..read])
+                .await
+                .map_err(|e| failure("write", e))?;
             if written == 0 {
-                return Err(io::ErrorKind::WriteZero.into());
+                return Err(failure("write", io::ErrorKind::WriteZero.into()));
             }
             offset += written;
             count.fetch_add(written as u64, Ordering::Relaxed);

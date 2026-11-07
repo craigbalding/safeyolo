@@ -37,6 +37,14 @@ pub(crate) fn prepared(policy: &Policy, action: &Value, grants: &[Grant]) -> Res
             "policy":policy.approval_revision(action["agent"].as_str().unwrap_or(""),"gateway_route",Some(&service.name)),
             "temporary_grants":active})),
         "limitations":["An absent annotation or matching rule is not proof of safety. This assessment does not verify upstream state or undo persistent effects."]});
+    if let Some(endpoint) = &service.docker
+        && let Some(access) = service
+            .capabilities
+            .get(action["capability"].as_str().unwrap_or(""))
+            .and_then(|capability| capability.docker_access.as_ref())
+    {
+        result["docker_authority"] = access.authority(endpoint.execution_boundary);
+    }
     let Some(model) = &service.effect_model else {
         result["unresolved_conditions"] = json!([
             "This adopted service has no effect model; operation effects are uncharacterised."

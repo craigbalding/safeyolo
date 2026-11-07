@@ -7,6 +7,7 @@ use std::path::Path;
 
 pub mod authoring;
 mod catalog;
+pub mod docker;
 pub mod effects;
 pub(crate) use catalog::{CatalogMetadata, ServiceLoadProblem, scan_service_files};
 use std::sync::Arc;
@@ -57,6 +58,7 @@ pub struct Capability {
     pub name: String,
     pub routes: Vec<CapabilityRoute>,
     pub contract: Option<ContractTemplate>,
+    pub docker_access: Option<docker::DockerAccess>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RiskyRoute {
@@ -78,6 +80,8 @@ pub struct ServiceDefinition {
     pub name: String,
     pub default_host: String,
     pub auth: Option<AuthConfig>,
+    /// Fixed Docker Engine endpoint; every request to it requires the gateway.
+    pub docker: Option<docker::DockerEndpoint>,
     pub capabilities: BTreeMap<String, Capability>,
     pub risky_routes: Vec<RiskyRoute>,
     /// Authored possibilities and evidence, separate from route authorization.
@@ -104,6 +108,11 @@ impl ServiceDefinition {
             .cloned()
             .map(serde_json::from_value)
             .transpose()?;
+        let docker = object
+            .get("docker")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?;
         let mut capabilities = BTreeMap::new();
         if let Some(raw_caps) = object.get("capabilities") {
             for (name, raw_cap) in raw_caps
@@ -124,6 +133,11 @@ impl ServiceDefinition {
                     .cloned()
                     .map(serde_json::from_value)
                     .transpose()?;
+                let docker_access = cap
+                    .get("docker_access")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()?;
                 if let Some(contract) = &contract {
                     contract.validate()?;
                 }
@@ -133,6 +147,7 @@ impl ServiceDefinition {
                         name: name.clone(),
                         routes,
                         contract,
+                        docker_access,
                     },
                 );
             }
@@ -160,11 +175,27 @@ impl ServiceDefinition {
             name,
             default_host,
             auth,
+            docker,
             capabilities,
             risky_routes,
             effect_model,
             raw,
         };
+        if let Some(endpoint) = &service.docker {
+            for capability in service.capabilities.values() {
+                capability
+                    .docker_access
+                    .as_ref()
+                    .ok_or("Docker capabilities require explicit docker_access")?
+                    .validate(endpoint.execution_boundary)?;
+            }
+        } else if service
+            .capabilities
+            .values()
+            .any(|capability| capability.docker_access.is_some())
+        {
+            return Err("docker_access requires a Docker endpoint".into());
+        }
         if let Some(model) = &service.effect_model {
             model.validate(&service)?;
         }
@@ -662,6 +693,23 @@ impl GatewaySnapshot {
         self.registry.clone()
     }
 
+    pub(crate) fn docker_service(&self, name: &str) -> Option<&ServiceDefinition> {
+        self.registry
+            .as_deref()?
+            .services
+            .get(name)
+            .filter(|service| service.docker.is_some())
+    }
+
+    pub(crate) fn docker_for_endpoint(&self, host: &str, port: u16) -> Option<&ServiceDefinition> {
+        self.registry.as_deref()?.services.values().find(|service| {
+            service
+                .docker
+                .as_ref()
+                .is_some_and(|endpoint| endpoint.matches(host, port))
+        })
+    }
+
     pub(crate) fn provider_for_host(&self, host: &str) -> Option<&str> {
         let name = self.hosts.get(&host.to_lowercase())?;
         (self.registry.as_ref()?.services.contains_key(name) && self.agents.contains_key(name))
@@ -1068,6 +1116,17 @@ impl GatewaySnapshot {
         let Some(token) = extract_token(registry, &hosts, request) else {
             return false;
         };
+        if self
+            .tokens
+            .iter()
+            .find(|binding| binding.token.expose_secret() == token.expose_secret())
+            .and_then(|binding| registry.services.get(binding.service.as_str()?))
+            .is_some_and(|service| service.docker.is_some())
+            && request.request.method == "POST"
+            && request.request.target.split('?').next() != Some("/v1.45/build")
+        {
+            return true;
+        }
         self.tokens
             .iter()
             .enumerate()
@@ -1094,7 +1153,14 @@ impl GatewaySnapshot {
                 )
             })
             .is_some_and(|operation| {
-                ["POST", "PUT", "PATCH"].contains(&request.request.method)
+                (["POST", "PUT", "PATCH"].contains(&request.request.method)
+                    && !operation
+                        .request
+                        .transport
+                        .as_ref()
+                        .is_some_and(|transport| {
+                            transport.body_format == crate::contracts::BodyFormat::Opaque
+                        }))
                     || operation
                         .request
                         .transport
