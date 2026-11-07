@@ -497,7 +497,7 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
             print(&report)?;
         }
         [agent, help] if agent == "agent" && help == "--help" => println!(
-            "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude|codex] [--launcher LAUNCHER]\nsafeyolo [--root ROOT] agent create|configure NAME --workspace PATH [--memory MB] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] agent start NAME [--foreground|--sandbox-only] [--dangerously-allow-unowned] [-- ARGUMENTS...]\nsafeyolo [--root ROOT] agent status|stop|cleanup|attach|present|diagnostics|recover NAME\nsafeyolo [--root ROOT] agent watch NAME [--history COUNT] [--once] [--plain]\nsafeyolo [--root ROOT] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--root ROOT] agent mount NAME HOST:GUEST[:ro]\nsafeyolo [--root ROOT] agent unmount NAME GUEST\nsafeyolo [--root ROOT] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nLaunch defaults to the current directory and Claude. Setup and optional Claude host-state copying require host consent. Codex uses agent-local authentication and settings. Detach from the agent terminal to review requests here. Configure changes apply at the next sandbox start. Mount and unmount change only the current sandbox; saved mounts are unchanged and apply again on restart. Busy removal is refused. Copied or already resident data is not erased. Start arguments affect only that launch. Attach never launches an absent coding agent. Shell is independent."
+            "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude|codex] [--launcher LAUNCHER]\nsafeyolo [--root ROOT] agent create|configure NAME --workspace PATH [--memory MB] [--nested-docker true|false] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] agent start NAME [--foreground|--sandbox-only] [--dangerously-allow-unowned] [-- ARGUMENTS...]\nsafeyolo [--root ROOT] agent status|stop|cleanup|attach|present|diagnostics|recover NAME\nsafeyolo [--root ROOT] agent watch NAME [--history COUNT] [--once] [--plain]\nsafeyolo [--root ROOT] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--root ROOT] agent mount NAME HOST:GUEST[:ro]\nsafeyolo [--root ROOT] agent unmount NAME GUEST\nsafeyolo [--root ROOT] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nLaunch defaults to the current directory and Claude. Setup and optional Claude host-state copying require host consent. Codex uses agent-local authentication and settings. Detach from the agent terminal to review requests here. Configure changes apply at the next sandbox start. Linux nested-docker enables guest mount and namespace administration for an inner Docker daemon; it adds no host mounts or network interface. Mount and unmount change only the current sandbox; saved mounts are unchanged and apply again on restart. Busy removal is refused. Copied or already resident data is not erased. Start arguments affect only that launch. Attach never launches an absent coding agent. Shell is independent."
         ),
         [kind, operation, rest @ ..] if kind == "agent" && operation == "launch" => {
             return crate::host_launch::run(rest).await;
@@ -537,6 +537,7 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
                 let key = match option.as_str() {
                     "--workspace" => "folder",
                     "--memory" => "memory_mb",
+                    "--nested-docker" => "nested_docker",
                     "--mount" => "mounts",
                     "--launcher" => "launcher",
                     "--host-script" => "host_script",
@@ -789,6 +790,7 @@ mod tests {
             host_script: None,
             memory_mb: None,
             rootfs_overlay: None,
+            nested_docker: false,
             user_default_args: Vec::new(),
             mounts: Vec::new(),
             dangerously_allow_unowned: false,

@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# In a disposable Linux/gVisor guest, run with guest sudo after installing
+# docker.io, docker-cli and docker-compose. STATE must be a new absolute path
+# under persistent guest home. This probe owns one local daemon and its data.
+# It preserves diagnostics and stops its daemon on exit; it adds no host mount.
+set -euo pipefail
+
+if [[ $# != 1 || $1 != /home/agent/* || -e $1 ]]; then
+    echo 'usage: docker-preflight.sh /home/agent/NEW-STATE' >&2
+    exit 64
+fi
+state=$1
+mkdir -p "$state/run" "$state/data"
+export DOCKER_HOST="unix://$state/run/docker.sock"
+export DOCKER_CONFIG="$state/client"
+# Use the existing proxy and CA environment. Never inherit a Docker context
+# that could silently substitute a daemon outside the selected sandbox.
+unset DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+
+docker --version > "$state/docker-version.txt"
+dockerd --version > "$state/dockerd-version.txt"
+runc --version > "$state/runc-version.txt"
+docker compose version > "$state/compose-version.txt"
+cat /proc/self/status > "$state/process-status.txt"
+cat /proc/self/mountinfo > "$state/mountinfo.txt"
+ip -j link show > "$state/interfaces.json"
+ip -j route show > "$state/routes.json"
+
+flags=(
+    --host="$DOCKER_HOST"
+    --data-root="$state/data"
+    --exec-root="$state/run/exec"
+    --pidfile="$state/run/dockerd.pid"
+    --storage-driver=vfs
+    --iptables=false --ip6tables=false
+    --bridge=none --ip-forward=false --ip-masq=false
+    --exec-opt native.cgroupdriver=cgroupfs
+)
+printf '%s\n' "${flags[@]}" > "$state/dockerd-flags.txt"
+dockerd "${flags[@]}" > "$state/dockerd.log" 2>&1 &
+daemon=$!
+cleanup() {
+    if kill -0 "$daemon" 2>/dev/null; then
+        kill -TERM "$daemon"
+    fi
+    # Preserve a nonzero daemon exit in its own file, separately from the
+    # operation that failed. wait also reaps the owned child.
+    if wait "$daemon"; then
+        echo 0 > "$state/daemon-exit.txt"
+    else
+        echo "$?" > "$state/daemon-exit.txt"
+    fi
+}
+trap cleanup EXIT
+
+ready=false
+for ((attempt=0; attempt<150; attempt++)); do
+    # A formatted `docker info` can exit zero with only ClientInfo and a
+    # ServerErrors array. Require a real server version before proceeding.
+    server_version=$(docker info --format '{{.ServerVersion}}' 2> "$state/readiness-error.txt") || server_version=
+    if [[ -n $server_version ]]; then
+        docker info --format '{{json .}}' > "$state/docker-info.json"
+        ready=true
+        break
+    fi
+    if ! kill -0 "$daemon" 2>/dev/null; then
+        break
+    fi
+    sleep 0.1
+done
+if [[ $ready != true ]]; then
+    echo 'daemon-unavailable' > "$state/outcome.txt"
+    echo "Docker did not become ready; inspect $state/dockerd.log" >&2
+    exit 1
+fi
+
+# Debian is also the guest's package source. Pull and run are deliberately
+# separate so a registry refusal cannot be reported as a runtime failure.
+if ! docker pull debian:trixie-slim > "$state/pull.log" 2>&1; then
+    echo 'pull-failed' > "$state/outcome.txt"
+    exit 1
+fi
+docker image inspect debian:trixie-slim > "$state/image.json"
+if ! docker run --name docker-preflight --network=host --rm debian:trixie-slim \
+        /bin/echo nested-container-ran > "$state/run.log" 2>&1; then
+    echo 'container-failed' > "$state/outcome.txt"
+    exit 1
+fi
+echo 'container-ran' > "$state/outcome.txt"
