@@ -235,6 +235,13 @@ must_contain = "{subdir}"
 forbidden = ["rootfs-base.erofs"]
 
 [[assertion]]
+name = "nested-docker-default"
+source = "proxy/src/host_agents.rs"
+pattern = 'nested_docker:\s*table\s*\.get\("nested_docker"\)\s*\.and_then\(Item::as_bool\)\s*\.unwrap_or\((?P<disabled>false)\)'
+docs = ["docs/nested-docker.md"]
+must_contain = 'The default setting is `{disabled}`'
+
+[[assertion]]
 name = "guest-archive-uid-base"
 source = "proxy/src/linux_host.rs"
 pattern = 'pub const ARCHIVE_BASE: u32 = 100000;'

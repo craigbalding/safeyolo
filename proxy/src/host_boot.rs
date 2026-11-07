@@ -122,6 +122,9 @@ pub(crate) fn validate(agent: &Agent) -> Result<(), Error> {
 }
 
 pub(crate) fn validate_sandbox(agent: &Agent) -> Result<(), Error> {
+    if agent.nested_docker && !cfg!(target_os = "linux") {
+        return Err("nested Docker is supported only by the Linux/gVisor sandbox".into());
+    }
     workspace(
         Path::new(
             agent
@@ -383,6 +386,7 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
             &workspace,
             &shares,
             agent.rootfs_overlay.as_deref() == Some("memory"),
+            agent.nested_docker,
         )?;
         crate::guest_commands::write_json(&directory.join("config.json"), &spec)?;
     }
@@ -426,6 +430,9 @@ async fn stage_skills(source: &Path, share: &Path) -> Result<(), Error> {
 }
 
 #[cfg(target_os = "linux")]
+// Keep the staged filesystem paths and the two guest modes explicit at this
+// boundary rather than introducing another configuration record for OCI output.
+#[allow(clippy::too_many_arguments)]
 fn oci(
     root: &Path,
     directory: &Path,
@@ -434,6 +441,7 @@ fn oci(
     workspace: &Path,
     shares: &[(PathBuf, String, bool)],
     ephemeral: bool,
+    nested_docker: bool,
 ) -> Result<Value, Error> {
     let name = directory
         .file_name()
@@ -456,6 +464,11 @@ fn oci(
         ),
         bind(&directory.join("proxy"), "/safeyolo/proxy", true),
     ];
+    if nested_docker {
+        // This is gVisor's virtual cgroup filesystem, not a bind of host
+        // cgroups. The outer sandbox keeps its existing host resource limits.
+        mounts.push(json!({"destination":"/sys/fs/cgroup","type":"cgroup","source":"cgroup","options":["nosuid","noexec","nodev","rw"]}));
+    }
     // runsc's file-backed tmpfs upper disappears with the sandbox. Keep the
     // native queues in this agent's existing overlay directory instead. A
     // reset of that directory removes them; memory mode uses the fresh rootfs.
@@ -498,7 +511,7 @@ fn oci(
             mounts.push(bind(&host, guest, false));
         }
     }
-    let caps = [
+    let mut caps = vec![
         "CAP_CHOWN",
         "CAP_DAC_OVERRIDE",
         "CAP_FOWNER",
@@ -515,13 +528,24 @@ fn oci(
         "CAP_SETFCAP",
         "CAP_SYS_PTRACE",
     ];
+    if nested_docker {
+        // runc needs mounts and namespaces inside the sentry. Guest
+        // capabilities are never granted to the host kernel. Host networking
+        // and bridge=none avoid a need for raw or packet-socket writes.
+        caps.push("CAP_SYS_ADMIN");
+    }
+    let syscalls = if nested_docker {
+        json!([])
+    } else {
+        json!([{"names":["unshare"],"action":"SCMP_ACT_ERRNO","errnoRet":1}])
+    };
     Ok(
         json!({"ociVersion":"1.0.0","root":{"path":rootfs,"readonly":false},"hostname":format!("safeyolo-{name}"),
         "process":{"terminal":false,"user":{"uid":0,"gid":0},"cwd":"/",
             "args":["/bin/bash","-c","while [ ! -f /safeyolo/per-run-go ]; do /bin/sleep 0.1; done; export BASH_ENV=/etc/mise-activate.sh; mkdir -p /var/log /safeyolo-status && : > /safeyolo-status/boot.log && ln -sf /safeyolo-status/boot.log /var/log/safeyolo-boot.log && exec /safeyolo/guest-init >> /safeyolo-status/boot.log 2>&1"],
             "env":["PATH=/home/agent/.mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","HOME=/home/agent","USER=agent","TERM=xterm-256color","BASH_ENV=","MISE_DATA_DIR=/home/agent/.mise","MISE_CONFIG_DIR=/home/agent/.mise","MISE_CACHE_DIR=/home/agent/.mise/cache","MISE_OVERRIDE_CONFIG_FILENAMES=/etc/safeyolo/mise-project-config-disabled.toml","MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=none"],
             "capabilities":{"bounding":caps,"effective":caps,"permitted":caps,"ambient":caps},"rlimits":[{"type":"RLIMIT_NOFILE","hard":65536,"soft":65536}],"noNewPrivileges":false},
-        "mounts":mounts,"linux":{"namespaces":[{"type":"pid"},{"type":"ipc"},{"type":"uts"},{"type":"mount"}],"seccomp":{"defaultAction":"SCMP_ACT_ALLOW","architectures":["SCMP_ARCH_X86_64","SCMP_ARCH_AARCH64"],"syscalls":[{"names":["unshare"],"action":"SCMP_ACT_ERRNO","errnoRet":1}]}}}),
+        "mounts":mounts,"linux":{"namespaces":[{"type":"pid"},{"type":"ipc"},{"type":"uts"},{"type":"mount"}],"seccomp":{"defaultAction":"SCMP_ACT_ALLOW","architectures":["SCMP_ARCH_X86_64","SCMP_ARCH_AARCH64"],"syscalls":syscalls}}}),
     )
 }
 
@@ -529,6 +553,40 @@ fn oci(
 mod mount_tests {
     use super::*;
     use std::{ffi::CString, os::unix::fs::symlink, os::unix::net::UnixListener};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn nested_docker_adds_only_virtual_cgroups_and_guest_namespace_authority() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let directory = root.join("agents/alice");
+        fs::create_dir_all(&directory).unwrap();
+        let ordinary = oci(root, &directory, root, root, root, &[], false, false).unwrap();
+        let nested = oci(root, &directory, root, root, root, &[], false, true).unwrap();
+        let mut expected_mounts = ordinary["mounts"].as_array().unwrap().clone();
+        expected_mounts.push(json!({"destination":"/sys/fs/cgroup","type":"cgroup","source":"cgroup","options":["nosuid","noexec","nodev","rw"]}));
+        assert_eq!(nested["mounts"], json!(expected_mounts));
+        assert_eq!(nested["root"], ordinary["root"]);
+        assert_eq!(
+            nested["linux"]["namespaces"],
+            ordinary["linux"]["namespaces"]
+        );
+        for key in ["bounding", "effective", "permitted", "ambient"] {
+            let mut expected = ordinary["process"]["capabilities"][key]
+                .as_array()
+                .unwrap()
+                .clone();
+            assert!(!expected.contains(&json!("CAP_SYS_ADMIN")));
+            assert!(!expected.contains(&json!("CAP_NET_RAW")));
+            expected.push(json!("CAP_SYS_ADMIN"));
+            assert_eq!(nested["process"]["capabilities"][key], json!(expected));
+        }
+        assert_eq!(
+            ordinary["linux"]["seccomp"]["syscalls"],
+            json!([{"names":["unshare"],"action":"SCMP_ACT_ERRNO","errnoRet":1}])
+        );
+        assert_eq!(nested["linux"]["seccomp"]["syscalls"], json!([]));
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -554,6 +612,7 @@ mod mount_tests {
             root,
             &root.join("workspace"),
             &shares,
+            false,
             false,
         )
         .unwrap();
@@ -596,7 +655,7 @@ mod mount_tests {
         let root = fixture.path();
         let directory = root.join("agents/alice");
         fs::create_dir_all(&directory).unwrap();
-        let spec = oci(root, &directory, root, root, root, &[], false).unwrap();
+        let spec = oci(root, &directory, root, root, root, &[], false, false).unwrap();
         assert!(
             spec["process"]["env"]
                 .as_array()
@@ -644,7 +703,7 @@ mod mount_tests {
         let spool = alice.join("overlay/var/spool/cron");
         fs::create_dir_all(&rootfs).unwrap();
         let spec = |directory: &Path, ephemeral| {
-            oci(root, directory, &rootfs, root, root, &[], ephemeral).unwrap()
+            oci(root, directory, &rootfs, root, root, &[], ephemeral, false).unwrap()
         };
         let mounted_spool = |spec: Value| {
             spec["mounts"]
@@ -695,7 +754,7 @@ mod mount_tests {
         assert_eq!(fs::read_dir(&spool).unwrap().count(), 0);
         fs::remove_dir_all(bob.join("overlay")).unwrap();
         fs::write(bob.join("overlay"), "not a directory").unwrap();
-        assert!(oci(root, &bob, &rootfs, root, root, &[], false).is_err());
+        assert!(oci(root, &bob, &rootfs, root, root, &[], false, false).is_err());
     }
 
     #[test]
@@ -895,6 +954,7 @@ mod package_tests {
             host_script: None,
             memory_mb: None,
             rootfs_overlay: None,
+            nested_docker: false,
             user_default_args: vec![],
             mounts: vec![],
             dangerously_allow_unowned: false,

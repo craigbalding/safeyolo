@@ -3,7 +3,7 @@
 use std::{
     ffi::OsString,
     io::Write,
-    os::unix::fs::OpenOptionsExt,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -80,6 +80,12 @@ fn initialize(root: &Path, config: &Path) -> Result<(), Error> {
     let (private, public) = safeyolo_proxy::tls::CertificateAuthority::create()?;
     write_new("certs/mitmproxy-ca.pem", &private)?;
     write_new("certs/mitmproxy-ca-cert.pem", &public)?;
+    // The public certificate is mounted into guest trust and read by users
+    // such as _apt. Set its mode explicitly even under a restrictive umask.
+    std::fs::set_permissions(
+        root.join("certs/mitmproxy-ca-cert.pem"),
+        std::fs::Permissions::from_mode(0o644),
+    )?;
     write_new(
         config
             .file_name()

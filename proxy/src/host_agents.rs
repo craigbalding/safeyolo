@@ -20,6 +20,7 @@ pub(crate) struct Agent {
     pub(crate) host_script: Option<String>,
     pub(crate) memory_mb: Option<i64>,
     pub(crate) rootfs_overlay: Option<String>,
+    pub(crate) nested_docker: bool,
     pub(crate) user_default_args: Vec<String>,
     pub(crate) mounts: Vec<String>,
     pub(crate) dangerously_allow_unowned: bool,
@@ -47,11 +48,10 @@ impl Agent {
         {
             return Err("agent memory_mb must be a positive integer".into());
         }
-        if table
-            .get("dangerously_allow_unowned")
-            .is_some_and(|item| item.as_bool().is_none())
-        {
-            return Err("dangerously_allow_unowned must be a Boolean".into());
+        for key in ["dangerously_allow_unowned", "nested_docker"] {
+            if table.get(key).is_some_and(|item| item.as_bool().is_none()) {
+                return Err(format!("{key} must be a Boolean").into());
+            }
         }
         let string = |key| table.get(key).and_then(Item::as_str).map(str::to_owned);
         let integer = |key| table.get(key).and_then(Item::as_integer);
@@ -80,6 +80,10 @@ impl Agent {
             host_script: string("host_script"),
             memory_mb: integer("memory_mb"),
             rootfs_overlay: string("rootfs_overlay"),
+            nested_docker: table
+                .get("nested_docker")
+                .and_then(Item::as_bool)
+                .unwrap_or(false),
             user_default_args: strings("user_default_args")?,
             mounts: strings("mounts")?,
             dangerously_allow_unowned: table
@@ -193,7 +197,7 @@ pub(crate) async fn configure_with_host_state(
                 }
                 value(memory)
             }
-            "dangerously_allow_unowned" => value(text.parse::<bool>()?),
+            "dangerously_allow_unowned" | "nested_docker" => value(text.parse::<bool>()?),
             "mounts" => {
                 crate::host_boot::mount(text)?;
                 let mut array = document["agents"][name]
@@ -252,6 +256,7 @@ pub(crate) fn list() -> Result<Vec<Agent>, Error> {
                 "host_script",
                 "memory_mb",
                 "rootfs_overlay",
+                "nested_docker",
                 "user_default_args",
                 "mounts",
                 "dangerously_allow_unowned",
@@ -493,6 +498,32 @@ pub(crate) fn restore_tailnet_port(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_docker_is_an_explicit_boolean_operator_setting() {
+        for (setting, enabled) in [
+            ("", false),
+            ("nested_docker = false", false),
+            ("nested_docker = true", true),
+        ] {
+            let document = DocumentMut::from_str(&format!(
+                "[agents.alice]\nagent_id = 'ag-alice'\n{setting}\n"
+            ))
+            .unwrap();
+            let agent = Agent::from_item("alice".into(), &document["agents"]["alice"]).unwrap();
+            assert_eq!(agent.nested_docker, enabled);
+        }
+        for setting in ["'true'", "1", "[]"] {
+            let document = DocumentMut::from_str(&format!(
+                "[agents.alice]\nagent_id = 'ag-alice'\nnested_docker = {setting}\n"
+            ))
+            .unwrap();
+            let error = Agent::from_item("alice".into(), &document["agents"]["alice"])
+                .err()
+                .unwrap();
+            assert_eq!(error.to_string(), "nested_docker must be a Boolean");
+        }
+    }
 
     #[test]
     fn policy_overrides_are_read_only_and_separate_from_host_agents() {
