@@ -472,48 +472,51 @@ async fn docker_network_ids_cannot_override_an_inspected_safe_network_name() {
     proxy.shutdown().await;
 }
 
+fn origin_tls(root: &Path, valid_name: bool) -> tokio_rustls::TlsAcceptor {
+    let rcgen::CertifiedKey { cert, signing_key } = rcgen::generate_simple_self_signed(vec![
+        if valid_name {
+            "127.0.0.1"
+        } else {
+            "wrong-endpoint.invalid"
+        }
+        .into(),
+    ])
+    .unwrap();
+    std::fs::write(root.join("origin-ca.pem"), cert.pem()).unwrap();
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::default();
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+    let interception = params.self_signed(&key).unwrap();
+    std::fs::write(
+        root.join("interception-ca.pem"),
+        format!("{}{}", key.serialize_pem(), interception.pem()),
+    )
+    .unwrap();
+    let config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert.der().clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config))
+}
+
 #[tokio::test]
 async fn external_tls_verifies_endpoint_and_injects_only_the_operator_credential() {
     for valid_name in [true, false] {
         let root = tempfile::tempdir().unwrap();
         let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = origin.local_addr().unwrap().port();
-        let rcgen::CertifiedKey { cert, signing_key } = rcgen::generate_simple_self_signed(vec![
-            if valid_name {
-                "127.0.0.1"
-            } else {
-                "wrong-endpoint.invalid"
-            }
-            .into(),
-        ])
-        .unwrap();
-        std::fs::write(root.path().join("origin-ca.pem"), cert.pem()).unwrap();
-        let key = rcgen::KeyPair::generate().unwrap();
-        let mut params = rcgen::CertificateParams::default();
-        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
-        let interception = params.self_signed(&key).unwrap();
-        std::fs::write(
-            root.path().join("interception-ca.pem"),
-            format!("{}{}", key.serialize_pem(), interception.pem()),
-        )
-        .unwrap();
-        let config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![cert.der().clone()],
-            rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
-        )
-        .unwrap();
+        let acceptor = origin_tls(root.path(), valid_name);
         let backend = tokio::spawn(async move {
             let (stream, _) = origin.accept().await.unwrap();
-            let tls = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config))
-                .accept(stream)
-                .await;
+            let tls = acceptor.accept(stream).await;
             if !valid_name {
                 assert!(tls.is_err());
                 return;
@@ -559,6 +562,80 @@ async fn external_tls_verifies_endpoint_and_injects_only_the_operator_credential
                 .unwrap()
                 .contains(ORIGIN_CREDENTIAL)
         );
+    }
+}
+
+#[tokio::test]
+async fn docker_tls_exec_preserves_half_close_and_reports_truncation() {
+    for (send_output, clean_eof) in [(true, true), (true, false), (false, false)] {
+        let root = tempfile::tempdir().unwrap();
+        let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = origin.local_addr().unwrap().port();
+        let acceptor = origin_tls(root.path(), true);
+        let mut definition = service(port);
+        definition["docker"]["endpoint"] = json!(format!("https://127.0.0.1:{port}"));
+        let proxy = start(root.path(), definition, false, false).await;
+        let backend = tokio::spawn(async move {
+            let (stream, _) = origin.accept().await.unwrap();
+            let mut stream = acceptor.accept(stream).await.unwrap();
+            head(&mut stream).await;
+            let mut body = [0; 2];
+            stream.read_exact(&mut body).await.unwrap();
+            assert_eq!(&body, b"{}");
+            stream
+                .write_all(b"HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+                .await
+                .unwrap();
+            let mut stdin = Vec::new();
+            stream.read_to_end(&mut stdin).await.unwrap();
+            assert!(stdin.is_empty());
+            if send_output {
+                stream.write_all(b"stdout-after-stdin-eof").await.unwrap();
+            }
+            if clean_eof {
+                stream.shutdown().await.unwrap();
+            }
+        });
+        let mut client = UnixStream::connect(root.path().join("alice.sock"))
+            .await
+            .unwrap();
+        client.write_all(&request("POST", "/v1.45/exec/owned/start", "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nContent-Type: application/json\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n", b"{}")).await.unwrap();
+        assert!(head(&mut client).await.starts_with(b"HTTP/1.1 101"));
+        client.shutdown().await.unwrap();
+        let mut output = Vec::new();
+        timeout(LIMIT, client.read_to_end(&mut output))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            output,
+            if send_output {
+                b"stdout-after-stdin-eof".as_slice()
+            } else {
+                b""
+            }
+        );
+        timeout(LIMIT, backend).await.unwrap().unwrap();
+        proxy.shutdown().await;
+        let rows = events(root.path());
+        let end = rows
+            .iter()
+            .find(|row| row["event"] == "gateway.docker_stream.end")
+            .unwrap();
+        assert_eq!(
+            end["details"]["stream_outcome"],
+            if clean_eof { "completed" } else { "error" }
+        );
+        assert_eq!(end["details"]["uploaded_bytes"], 0);
+        assert_eq!(end["details"]["downloaded_bytes"], output.len());
+        if clean_eof {
+            assert!(end["details"]["error"].is_null());
+        } else {
+            assert_eq!(
+                end["details"]["error"],
+                json!({"direction":"download", "operation":"read", "kind":"UnexpectedEof", "os_error":null})
+            );
+        }
     }
 }
 

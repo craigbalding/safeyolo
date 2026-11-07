@@ -149,6 +149,9 @@ fn docker(root: &Path, args: &[&str]) -> Command {
     command
 }
 async fn run(root: &Path, args: &[&str]) -> String {
+    String::from_utf8(run_output(root, args).await.stdout).unwrap()
+}
+async fn run_output(root: &Path, args: &[&str]) -> std::process::Output {
     let out = timeout(LIMIT, docker(root, args).output())
         .await
         .expect("Docker client deadline")
@@ -158,7 +161,7 @@ async fn run(root: &Path, args: &[&str]) -> String {
         "docker {args:?}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    String::from_utf8(out.stdout).unwrap()
+    out
 }
 async fn api(root: &Path, method: &str, path: &str, body: &Value) -> (u16, String) {
     let body = if body.is_null() {
@@ -317,19 +320,22 @@ async fn real_docker_compose_enforcement_and_persistent_effects() {
     .await
     .trim()
     .to_owned();
+    let exec_output = run_output(
+        &client,
+        &[
+            "exec",
+            &worker,
+            "sh",
+            "-c",
+            "wget -qO- http://web:8080; echo retained > /data/value",
+        ],
+    )
+    .await;
     assert!(
-        run(
-            &client,
-            &[
-                "exec",
-                &worker,
-                "sh",
-                "-c",
-                "wget -qO- http://web:8080; echo retained > /data/value"
-            ]
-        )
-        .await
-        .contains("built-through-gateway")
+        String::from_utf8_lossy(&exec_output.stdout).contains("built-through-gateway"),
+        "exec stdout marker missing; stdout={:?}; stderr={:?}",
+        String::from_utf8_lossy(&exec_output.stdout),
+        String::from_utf8_lossy(&exec_output.stderr),
     );
     run(
         &client,

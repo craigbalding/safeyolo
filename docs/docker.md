@@ -31,6 +31,10 @@ on the operator side. Configure the proxy's
 do not disable certificate verification. Close unauthenticated alternative access
 to that daemon at the endpoint.
 
+The endpoint must preserve both directions of Docker's upgraded TCP streams.
+Closing stdin must still permit remaining stdout and stderr. An HTTP 101
+response alone does not establish this behavior for a TLS reverse proxy.
+
 For Docker inside a sandbox, use the existing
 [sandbox-provider service route](credentials.md#authorization-binding-and-risk-approval).
 The service name must select the hosting agent. Use its configured provider port
@@ -307,8 +311,12 @@ requests or WebSocket messages.
 
 Use `X-SafeYolo-Request-Id` with the existing Agent API `/explain` and retained flow
 lookup. Canonical audit records `gateway.docker_stream.start` and `.end` for
-exec/attach. End records distinguish completion, interruption, upgrade failure,
-shutdown and idle timeout. Stream closure does not prove command success;
+exec/attach. End records distinguish completion, I/O error, interruption, upgrade
+failure, shutdown and idle timeout. For an I/O error, `details.error` identifies
+the upload or download direction, read/write/shutdown operation, error kind and
+optional operating system error code. Error records omit arbitrary peer error
+messages.
+Stream closure does not prove command success;
 inspect the exec or container state.
 
 An interrupted mutation response records `gateway.docker_request` with
