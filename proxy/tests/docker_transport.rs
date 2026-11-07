@@ -180,6 +180,43 @@ async fn forbidden_docker_arguments_and_forged_boundary_never_contact_the_origin
         .await;
         assert!(response.starts_with(b"HTTP/1.1 403"));
     }
+    let updates: Value =
+        serde_json::from_str(include_str!("fixtures/docker/update-defaults.json")).unwrap();
+    for change in [
+        json!({"Privileged":true}),
+        json!({"NetworkMode":"bridge"}),
+        json!({"Binds":["/var/run/docker.sock:/socket"]}),
+        json!({"CapAdd":["SYS_ADMIN"]}),
+        json!({"CgroupParent":"/another-workload"}),
+        json!({"Devices":[{"PathOnHost":"/dev/sda","PathInContainer":"/dev/sda","CgroupPermissions":"rwm"}]}),
+        json!({"DeviceCgroupRules":["a *:* rwm"]}),
+        json!({"DeviceRequests":[{"Driver":"nvidia","Count":-1,"Capabilities":[["gpu"]]}]}),
+        json!({"MemorySwappiness":-2}),
+        json!({"MemorySwappiness":101}),
+        json!({"MemorySwappiness":"-1"}),
+        json!({"Memory":-1}),
+        json!({"RestartPolicy":{"Name":"unknown"}}),
+        json!({"RestartPolicy":{"Name":"on-failure","MaximumRetryCount":"3"}}),
+        json!({"NanoCpus":500000000.5}),
+        json!({"FutureOption":true}),
+    ] {
+        let mut body = updates[0]["body"].clone();
+        body.as_object_mut()
+            .unwrap()
+            .extend(change.as_object().unwrap().clone());
+        let response = call(
+            root.path(),
+            "alice",
+            &request(
+                "POST",
+                "/v1.45/containers/existing/update",
+                "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nContent-Type: application/json\r\nConnection: close\r\n",
+                &serde_json::to_vec(&body).unwrap(),
+            ),
+        )
+        .await;
+        assert!(response.starts_with(b"HTTP/1.1 403"), "{change}");
+    }
     assert!(
         timeout(Duration::from_millis(100), origin.accept())
             .await
@@ -456,6 +493,146 @@ async fn network_changes_require_management_of_the_referenced_container() {
             timeout(LIMIT, backend).await.unwrap().unwrap();
             proxy.shutdown().await;
         }
+    }
+}
+
+#[tokio::test]
+async fn project_resource_updates_inspect_existing_state_without_create_defaults() {
+    // Docker CLI 26.1.5, API 1.45, captured at a local synthetic endpoint.
+    // These are fresh client captures, not the historical protected request.
+    let fixtures: Value =
+        serde_json::from_str(include_str!("fixtures/docker/update-defaults.json")).unwrap();
+    let mut cases: Vec<_> = fixtures
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|fixture| (fixture["body"].clone(), "safe"))
+        .collect();
+    cases.extend([
+        (json!({}), "safe"),
+        (json!({"NanoCpus":500000000}), "safe"),
+        (json!({"RestartPolicy":null,"MemorySwappiness":-1}), "safe"),
+    ]);
+    for state in [
+        "privileged",
+        "socket-mount",
+        "foreign-container",
+        "shared-container",
+        "foreign-network",
+        "unsafe-network",
+        "missing-network",
+    ] {
+        cases.push((fixtures[0]["body"].clone(), state));
+    }
+    for (body, state) in cases {
+        let root = tempfile::tempdir().unwrap();
+        let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let container = "a".repeat(64);
+        let network = "b".repeat(64);
+        let image = format!("sha256:{}", "c".repeat(64));
+        let observed_container = if state == "foreign-container" {
+            "e".repeat(64)
+        } else {
+            container.clone()
+        };
+        let observed_network = if state == "foreign-network" {
+            "d".repeat(64)
+        } else {
+            network.clone()
+        };
+        let mut definition = workloads(origin.local_addr().unwrap().port());
+        let mut access = json!({"mode":"project","name":"alpha","adoption":"selection-1","selected":{"networks":[network]},"shared":{"images":[image]}});
+        access[if state == "shared-container" {
+            "shared"
+        } else {
+            "selected"
+        }]["containers"] = json!([container]);
+        definition["capabilities"]["engine"]["docker_access"] = access;
+        let proxy = start(root.path(), definition, false, false).await;
+        let payload = serde_json::to_vec(&body).unwrap();
+        let forwarded_body = payload.clone();
+        let allowed = state == "safe";
+        let backend = tokio::spawn(async move {
+            let mounts = if state == "socket-mount" {
+                json!([{"Type":"bind","Source":"/var/run/docker.sock","RW":false}])
+            } else {
+                json!([])
+            };
+            let mut inspections = vec![(
+                "/v1.45/containers/ordinary-name/json".to_owned(),
+                200,
+                json!({"Id":observed_container,"Image":image,"HostConfig":{"Privileged":state == "privileged","CgroupnsMode":"private","NetworkMode":"ordinary-net"},"NetworkSettings":{"Networks":{"ordinary-net":{"NetworkID":observed_network}}},"Mounts":mounts}),
+            )];
+            if !["privileged", "socket-mount"].contains(&state) {
+                let network_facts = json!({"Id":observed_network,"Name":"ordinary-net","Driver":if state == "unsafe-network" {"host"} else {"bridge"},"Options":{},"IPAM":{"Driver":"default"}});
+                inspections.push((
+                    format!("/v1.45/networks/{observed_network}"),
+                    if state == "missing-network" { 404 } else { 200 },
+                    network_facts.clone(),
+                ));
+                if !["unsafe-network", "missing-network"].contains(&state) {
+                    inspections.push(("/v1.45/networks/ordinary-net".into(), 200, network_facts));
+                    inspections.push((
+                        format!("/v1.45/images/{image}/json"),
+                        200,
+                        json!({"Id":image,"Os":"linux","Config":{}}),
+                    ));
+                }
+            }
+            for (path, status, facts) in inspections {
+                let (mut stream, _) = origin.accept().await.unwrap();
+                let headers = String::from_utf8(head(&mut stream).await).unwrap();
+                assert!(
+                    headers.starts_with(&format!("GET {path} HTTP/1.1")),
+                    "{state}: {headers}"
+                );
+                let facts = facts.to_string();
+                stream.write_all(format!("HTTP/1.1 {status} Origin status\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{facts}",facts.len()).as_bytes()).await.unwrap();
+            }
+            if allowed {
+                let (mut stream, _) = origin.accept().await.unwrap();
+                let headers = String::from_utf8(head(&mut stream).await).unwrap();
+                assert!(
+                    headers.starts_with(&format!(
+                        "POST /v1.45/containers/{container}/update HTTP/1.1"
+                    )),
+                    "{headers}"
+                );
+                let mut received = vec![0; forwarded_body.len()];
+                stream.read_exact(&mut received).await.unwrap();
+                assert_eq!(received, forwarded_body);
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\nConnection: close\r\n\r\n{\"Warnings\":[]}").await.unwrap();
+            } else {
+                assert!(
+                    timeout(Duration::from_millis(100), origin.accept())
+                        .await
+                        .is_err(),
+                    "{state}: mutation after refusal"
+                );
+            }
+        });
+        let response = call(
+            root.path(),
+            "alice",
+            &request(
+                "POST",
+                "/v1.45/containers/ordinary-name/update",
+                "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nContent-Type: application/json\r\nConnection: close\r\n",
+                &payload,
+            ),
+        )
+        .await;
+        assert!(
+            response.starts_with(if allowed {
+                b"HTTP/1.1 200"
+            } else {
+                b"HTTP/1.1 404"
+            }),
+            "{state}: {}",
+            String::from_utf8_lossy(&response)
+        );
+        timeout(LIMIT, backend).await.unwrap().unwrap();
+        proxy.shutdown().await;
     }
 }
 

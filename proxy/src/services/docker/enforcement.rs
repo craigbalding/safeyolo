@@ -208,7 +208,9 @@ impl DockerAccess {
                     }
                     ("POST", ["update"]) => {
                         shape("update", &object)?;
-                        self.host_config(&object, &mut inspection)?;
+                        // UpdateConfig changes resources and restart policy, not
+                        // namespaces or mounts. Inspect those on the container.
+                        resource_settings(&object)?;
                     }
                     ("PUT", ["archive"]) => (),
                     _ => require(
@@ -467,15 +469,8 @@ impl DockerAccess {
             !boolean(host, "Privileged")?,
             "privileged containers are outside workload authority",
         )?;
-        for field in [
-            "Devices",
-            "DeviceRequests",
-            "DeviceCgroupRules",
-            "CapAdd",
-            "StorageOpt",
-            "Sysctls",
-            "Annotations",
-        ] {
+        resource_settings(host)?;
+        for field in ["CapAdd", "StorageOpt", "Sysctls", "Annotations"] {
             require(
                 empty(host.get(field)),
                 format!("{field} is outside workload authority"),
@@ -503,9 +498,7 @@ impl DockerAccess {
             "only Linux workload isolation is supported",
         )?;
         require(
-            text(host, "ContainerIDFile")?.is_empty()
-                && text(host, "CgroupParent")?.is_empty()
-                && text(host, "Cgroup")?.is_empty(),
+            text(host, "ContainerIDFile")?.is_empty() && text(host, "Cgroup")?.is_empty(),
             "host file or cgroup selection is unsupported",
         )?;
         for value in strings(host, "SecurityOpt")? {
@@ -916,6 +909,19 @@ static SHAPES: LazyLock<BTreeMap<String, Constraints>> = LazyLock::new(|| {
     )
     .expect("authored Docker constraints")
 });
+fn resource_settings(object: &Map<String, Value>) -> Result<(), Error> {
+    for field in ["Devices", "DeviceRequests", "DeviceCgroupRules"] {
+        require(
+            empty(object.get(field)),
+            format!("{field} is outside workload authority"),
+        )?;
+    }
+    require(
+        text(object, "CgroupParent")?.is_empty(),
+        "host file or cgroup selection is unsupported",
+    )
+}
+
 fn shape(name: &str, object: &Map<String, Value>) -> Result<(), Error> {
     check_json_shape(&SHAPES[name], object)
         .map_err(|e| format!("Docker field {:?}: {:?}", e.field, e.code).into())
