@@ -170,7 +170,12 @@ async fn forbidden_docker_arguments_and_forged_boundary_never_contact_the_origin
 
 #[tokio::test]
 async fn docker_resource_inspection_precedes_mutation_and_pins_existing_container_names() {
-    for safe in [false, true] {
+    for (safe, operation) in [
+        (false, "start"),
+        (true, "start"),
+        (true, "rename?name=syproof21cd528538cf-web-1"),
+        (false, "rename?name=syproof21cd528538cf-web-1"),
+    ] {
         let root = tempfile::tempdir().unwrap();
         let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy = start(
@@ -206,7 +211,7 @@ async fn docker_resource_inspection_precedes_mutation_and_pins_existing_containe
                 let headers = String::from_utf8(head(&mut stream).await).unwrap();
                 assert!(
                     headers.starts_with(&format!(
-                        "POST /v1.45/containers/{}/start HTTP/1.1",
+                        "POST /v1.45/containers/{}/{operation} HTTP/1.1",
                         "d".repeat(64)
                     )),
                     "{headers}"
@@ -228,7 +233,7 @@ async fn docker_resource_inspection_precedes_mutation_and_pins_existing_containe
             "alice",
             &request(
                 "POST",
-                "/v1.45/containers/json/start",
+                &format!("/v1.45/containers/json/{operation}"),
                 "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nConnection: close\r\n",
                 b"",
             ),

@@ -30,6 +30,7 @@ effect_model:
     endpoint_create: {location: 'https://github.com/moby/moby/blob/docker-v29.1.3/daemon/server/router/container/container_routes.go', version: Moby docker-v29.1.3 create normalizes GwPriority below API 1.48}
     endpoint_connect: {location: 'https://github.com/moby/moby/blob/docker-v29.1.3/daemon/server/router/network/network_routes.go', version: Moby docker-v29.1.3 connect passes EndpointConfig through}
     compose_endpoints: {location: 'https://github.com/docker/compose/blob/v2.40.3/pkg/compose/create.go', version: Compose v2.40.3 createEndpointSettings}
+    compose_recreate: {location: 'https://github.com/docker/compose/blob/v2.40.3/pkg/compose/convergence.go#L572-L628', version: Compose v2.40.3 recreates a container under a temporary name then renames it}
     default_endpoint_network: {location: 'https://github.com/moby/moby/blob/v26.1.5/api/server/router/container/container_routes.go#L474-L488', version: Moby v26.1.5 defaulted NetworkMode resolves endpoint key default to the Linux bridge}
   resources:
     docker_environment: {description: The configured daemon and its workloads. Project association is
@@ -357,6 +358,22 @@ effect_model:
         delegated for workloads and fetches.
       evidence: *id003
       gaps: *id004
+    post_v1_45_containers_id_rename:
+      method: POST
+      path: /v1.45/containers/{id}/rename
+      coverage: modeled
+      arguments:
+        name:
+          location: query
+          field: name
+          required: true
+          omission: {kind: invalid}
+          evidence: [engine_145]
+      resources: *id001
+      effects: *id006
+      execution_authority: Rename the inspected container within the adopted workload or project authority.
+      evidence: [engine_145, docker_access, compose_recreate]
+      gaps: *id004
     post_v1_45_containers_id_kill:
       method: POST
       path: /v1.45/containers/{id}/kill
@@ -629,7 +646,7 @@ docker_enforcement: {profile: capabilities.<name>.docker_access, supported_api: 
       files, credentials, explicit host mounts and other inner workloads.'], source_evidence: [engine_145,
     linux_defaults, docker_access, request_shapes, client_resource_defaults, resource_sentinels,
     resource_bounds, endpoint_priority, endpoint_create, endpoint_connect,
-    compose_endpoints, default_endpoint_network], known_gaps: [Docker cannot atomically inspect resources
+    compose_endpoints, compose_recreate, default_endpoint_network], known_gaps: [Docker cannot atomically inspect resources
       and apply a mutation. Trusted administrators can change network or volume references during that
       interval. Primary container names resolve to immutable IDs., 'Supported default logging drivers
       are json-file, local and none. External log drivers/options are unsupported because they can select

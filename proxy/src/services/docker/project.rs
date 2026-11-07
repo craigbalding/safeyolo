@@ -871,6 +871,32 @@ mod tests {
         );
     }
     #[test]
+    fn rename_requires_the_inspected_container_to_be_owned() {
+        let root = tempfile::tempdir().unwrap();
+        let mut selected = project();
+        selected.shared.containers.insert("e".repeat(64));
+        let membership = Membership::open(root.path(), "https://engine", &selected).unwrap();
+        for (id, allowed) in [('a', true), ('e', false), ('f', false)] {
+            let mut inspection = Inspection::default();
+            inspection.container_id = Some(id.to_string().repeat(64));
+            inspection.observed.insert(
+                Resource::Container("temporary-name".into()),
+                Some(json!({"Id":id.to_string().repeat(64)})),
+            );
+            assert_eq!(
+                membership
+                    .authorize(
+                        &inspection,
+                        "POST",
+                        "/v1.45/containers/temporary-name/rename?name=alpha-web-1",
+                    )
+                    .is_ok(),
+                allowed,
+                "container {id}",
+            );
+        }
+    }
+    #[test]
     fn default_network_alias_requires_the_observed_bridge_to_belong_to_the_project() {
         let root = tempfile::tempdir().unwrap();
         let selected = project();

@@ -166,6 +166,13 @@ impl DockerAccess {
                         &["detachKeys", "logs", "stream", "stdin", "stdout", "stderr"]
                     }
                     ["stop" | "restart"] => &["t", "signal"],
+                    ["rename"] => {
+                        require(
+                            params.get("name").is_some_and(|name| !name.is_empty()),
+                            "container rename requires a name",
+                        )?;
+                        &["name"]
+                    }
                     ["kill"] => &["signal"],
                     ["wait"] => &["condition"],
                     ["resize"] => &["h", "w"],
@@ -1456,6 +1463,39 @@ mod tests {
         assert!(plan.observe(&access(), &resource, None).is_err());
         plan.observe(&access(),&resource,Some(json!({"Id":"b".repeat(64),"HostConfig":{"Privileged":false,"CgroupnsMode":"private","NetworkMode":"bridge"},"NetworkSettings":{"Networks":{}},"Mounts":[]}))).unwrap();
         assert_eq!(plan.container_id, Some("b".repeat(64)));
+    }
+    #[test]
+    fn rename_requires_one_name_and_inspects_the_existing_container() {
+        for (query, allowed) in [
+            ("?name=syproof21cd528538cf-web-1", true),
+            ("?name=%2Fweb-1", true),
+            ("", false),
+            ("?name=", false),
+            ("?name=web-1&name=other", false),
+            ("?name=web-1&force=true", false),
+        ] {
+            let result = access().request(
+                "POST",
+                &format!("/v1.45/containers/temporary-name/rename{query}"),
+                b"",
+            );
+            assert_eq!(result.is_ok(), allowed, "{query}");
+            if let Ok(mut inspection) = result {
+                assert_eq!(
+                    inspection.next(),
+                    Some(Resource::Container("temporary-name".into()))
+                );
+                assert!(
+                    inspection
+                        .observe(
+                            &access(),
+                            &Resource::Container("temporary-name".into()),
+                            None
+                        )
+                        .is_err()
+                );
+            }
+        }
     }
     #[test]
     fn confirmed_absence_is_not_found_only_for_the_direct_inspect_target() {

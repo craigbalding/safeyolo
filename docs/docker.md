@@ -220,7 +220,10 @@ inspect endpoint returns HTTP 404 so Docker and Compose can discover resources
 before creation. Missing dependencies and failed inspection refuse dispatch.
 Existing names and resources created by other administrators remain supported;
 no ownership label or naming convention is required. A primary container name
-is resolved to its immutable ID before dispatch.
+is resolved to its immutable ID before dispatch. Rename uses the same inspection
+and, for project access, requires management authority over that container.
+The new name does not grant access to another container. Docker rejects a name
+already in use.
 
 Docker provides no atomic inspect-and-mutate API. Trusted administrators can
 change linked container names, volume references or network connections between
@@ -296,7 +299,7 @@ and unversioned management requests fail with `GATEWAY_DOCKER_OPERATION_UNSUPPOR
 | Inspect, list, events, logs/follow, top and stats | HTTP response streams |
 | Exec and interactive attach | HTTP 101 `Upgrade: tcp` on exec-start or container-attach |
 | File copy | Container archive GET/HEAD/PUT with tar payloads |
-| Start, stop, restart, pause, unpause, kill, wait, resize and remove | Engine HTTP requests |
+| Start, stop, restart, pause, unpause, kill, wait, resize, rename and remove | Engine HTTP requests |
 | Named-volume persistence | The selected daemon's volume storage and lifecycle |
 
 Swarm, plugins, SSH transport, direct daemon mutual TLS from the agent, BuildKit

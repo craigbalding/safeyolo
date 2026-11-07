@@ -470,6 +470,7 @@ async fn real_docker_compose_enforcement_and_persistent_effects() {
     for path in [
         format!("/v1.45/containers/{unsafe_name}/start"),
         format!("/v1.45/containers/{unsafe_name}/exec"),
+        format!("/v1.45/containers/{unsafe_name}/rename?name={unsafe_name}-renamed"),
     ] {
         let (status, response) = api(
             &client,
@@ -496,6 +497,11 @@ async fn real_docker_compose_enforcement_and_persistent_effects() {
     assert_eq!(
         state["State"]["Running"], false,
         "unsafe existing workload was started"
+    );
+    assert_eq!(
+        state["Name"],
+        format!("/{unsafe_name}"),
+        "unsafe existing workload was renamed"
     );
     let unsafe_id = unsafe_container["Id"].as_str().unwrap();
     for host in [
