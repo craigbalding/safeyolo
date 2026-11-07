@@ -414,8 +414,8 @@ fn support_inspection_keeps_the_blocking_pool_available() {
 }
 
 #[tokio::test]
-async fn narrowing_revocation_and_expiry_are_checked_after_the_lifecycle_lock() {
-    for change in ["narrow", "revoke", "expire"] {
+async fn current_authority_and_target_are_checked_after_the_lifecycle_lock() {
+    for change in ["narrow", "revoke", "expire", "rebind"] {
         let f = fixture().await;
         let _backend = support_run(&f, RUN);
         let mut input = proposal();
@@ -475,6 +475,18 @@ async fn narrowing_revocation_and_expiry_are_checked_after_the_lifecycle_lock() 
                         200
                     );
                 }
+                "rebind" => {
+                    // A human can move a durable ID and amend its grant while
+                    // this call waits. The old directory's lock must not
+                    // authorize operating on the replacement directory.
+                    f.apply(&f.source().replace("[agents.worker]", "[agents.rebound]"))
+                        .await;
+                    let mut next =
+                        json!({"expected_revision":applied["revision"],"grant":applied["after"]});
+                    next["grant"]["targets"][0]["name"] = json!("rebound");
+                    next["grant"]["acknowledgment"] = Value::Null;
+                    grant(&f, next).await;
+                }
                 _ => tokio::time::sleep(Duration::from_secs(2)).await,
             }
             drop(lock);
@@ -492,6 +504,7 @@ async fn narrowing_revocation_and_expiry_are_checked_after_the_lifecycle_lock() 
             !target.join("runtime.json").exists(),
             "{change} caused a runtime mutation"
         );
+        assert!(!f.root.path().join("agents/rebound/runtime.json").exists());
         f.stop().await;
     }
 }

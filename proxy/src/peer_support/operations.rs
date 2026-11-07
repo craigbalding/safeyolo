@@ -389,7 +389,14 @@ async fn execute_locked(
         .join("agents")
         .join(&target.name);
     let lock = crate::host_lifecycle::SetupLock::acquire_in_async(&directory).await?;
-    let (grant, target) = authorize(&super::current_policy(state)?, run, input)?;
+    let (grant, current_target) = authorize(&super::current_policy(state)?, run, input)?;
+    if current_target.name != target.name || current_target.id != target.id {
+        return Err(super::refuse(
+            409,
+            "target configuration changed while waiting; inspect before a new operation",
+        ));
+    }
+    let target = current_target;
     let observed = crate::host_runs::observe(&target.name).await;
     let actual_run = observed["run_id"].as_str().map(str::to_owned);
     receipt["target_run"] = json!(actual_run);
