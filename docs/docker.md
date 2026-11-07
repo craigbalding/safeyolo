@@ -198,6 +198,13 @@ effective authority. Unknown constrained fields, noncanonical field aliases and
 duplicate JSON/query keys fail before a mutation. Supported omitted defaults,
 null values and both supported mount encodings remain usable.
 
+For container creation with an omitted, empty or `default` network mode,
+[Moby resolves endpoint key `default` to Linux network `bridge`](https://github.com/moby/moby/blob/v26.1.5/api/server/router/container/container_routes.go#L474-L488).
+SafeYolo inspects `bridge` for that endpoint. Explicit network names, endpoint
+`NetworkID` values and network API paths retain their own identity. Project
+access still requires the inspected bridge ID in the adopted project or shared
+network selection.
+
 Before defaulted creation or a classic build, SafeYolo checks the daemon's Linux
 platform, default runtime, logging driver and actual default cgroup namespace.
 Docker must report `name=cgroupns` in its `SecurityOptions` for an omitted

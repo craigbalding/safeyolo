@@ -390,10 +390,19 @@ impl DockerAccess {
         config: &Map<String, Value>,
         inspection: &mut Inspection,
     ) -> Result<(), Error> {
-        self.host_config(&optional_object(config, "HostConfig")?, inspection)?;
+        let host = optional_object(config, "HostConfig")?;
+        self.host_config(&host, inspection)?;
+        let default_network = ["", "default"].contains(&text(&host, "NetworkMode")?);
         let networking = optional_object(config, "NetworkingConfig")?;
         fields(&networking, &["EndpointsConfig"])?;
         for (name, settings) in optional_object(&networking, "EndpointsConfig")? {
+            // Moby's create route resolves this alias only for defaulted mode.
+            // Explicit network names and endpoint NetworkID keep their identity.
+            let name = if default_network && name == "default" {
+                "bridge".into()
+            } else {
+                name
+            };
             inspection.add(Resource::Network(name));
             network_endpoint(
                 settings
@@ -1231,6 +1240,71 @@ mod tests {
             assert!(seen.contains(&Resource::Network("ordinary-net".into())));
             assert!(seen.contains(&Resource::Network("unsafe-network".into())));
             assert!(seen.contains(&Resource::Container("unsafe-container".into())));
+        }
+    }
+    #[test]
+    fn endpoint_default_network_alias_depends_on_create_network_mode() {
+        for (host, expected_network) in [
+            (Value::Null, "bridge"),
+            (json!({}), "bridge"),
+            (json!({"NetworkMode":null}), "bridge"),
+            (json!({"NetworkMode":""}), "bridge"),
+            (json!({"NetworkMode":"default"}), "bridge"),
+            (json!({"NetworkMode":"bridge"}), "default"),
+            (json!({"NetworkMode":"none"}), "default"),
+            (json!({"NetworkMode":"ordinary-net"}), "default"),
+        ] {
+            let mut plan = create(json!({"Image":"busybox","HostConfig":host,
+                "NetworkingConfig":{"EndpointsConfig":{"default":{"NetworkID":"referenced-net","Links":["linked-container:alias"]}}}})).unwrap();
+            let mut networks = BTreeSet::new();
+            let mut containers = BTreeSet::new();
+            while let Some(resource) = plan.next() {
+                match resource {
+                    Resource::Network(name) => {
+                        networks.insert(name);
+                    }
+                    Resource::Container(name) => {
+                        containers.insert(name);
+                    }
+                    _ => (),
+                }
+            }
+            assert!(networks.contains(expected_network), "{host}");
+            assert_eq!(
+                networks.contains("default"),
+                expected_network == "default",
+                "{host}"
+            );
+            assert!(networks.contains("referenced-net"));
+            assert!(containers.contains("linked-container"));
+        }
+
+        // The alias belongs to create configuration, not every network ID.
+        for (method, target, body, expected_networks) in [
+            ("GET", "/v1.45/networks/default", json!({}), vec!["default"]),
+            (
+                "POST",
+                "/v1.45/networks/default/connect",
+                json!({"Container":"ordinary"}),
+                vec!["default"],
+            ),
+            (
+                "POST",
+                "/v1.45/containers/create",
+                json!({"Image":"busybox","HostConfig":{"NetworkMode":"default"},"NetworkingConfig":{"EndpointsConfig":{"default":{"NetworkID":"default"}}}}),
+                vec!["bridge", "default"],
+            ),
+        ] {
+            let mut plan = access()
+                .request(method, target, &serde_json::to_vec(&body).unwrap())
+                .unwrap();
+            let mut networks = Vec::new();
+            while let Some(resource) = plan.next() {
+                if let Resource::Network(name) = resource {
+                    networks.push(name);
+                }
+            }
+            assert_eq!(networks, expected_networks, "{target}");
         }
     }
     #[test]

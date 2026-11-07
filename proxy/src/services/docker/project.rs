@@ -871,6 +871,52 @@ mod tests {
         );
     }
     #[test]
+    fn default_network_alias_requires_the_observed_bridge_to_belong_to_the_project() {
+        let root = tempfile::tempdir().unwrap();
+        let selected = project();
+        let membership = Membership::open(root.path(), "https://engine", &selected).unwrap();
+        let access = DockerAccess::Project {
+            project: Box::new(selected),
+            bind_mounts: Vec::new(),
+        };
+        for (bridge, allowed) in [('b', true), ('d', true), ('e', false)] {
+            let mut inspection = access
+                .request(
+                    "POST",
+                    "/v1.45/containers/create",
+                    include_bytes!("../../../tests/fixtures/docker/create-defaults.json"),
+                )
+                .unwrap();
+            while let Some(resource) = inspection.next() {
+                let value = match &resource {
+                    Resource::Daemon { .. } => {
+                        json!({"OSType":"linux","SecurityOptions":["name=cgroupns"],"DefaultRuntime":"runc","LoggingDriver":"json-file"})
+                    }
+                    Resource::Network(name) => {
+                        assert_eq!(name, "bridge");
+                        json!({"Id":bridge.to_string().repeat(64),"Name":"bridge","Driver":"bridge","IPAM":{"Driver":"default"}})
+                    }
+                    Resource::Image(_) => {
+                        json!({"Id":format!("sha256:{}", "c".repeat(64)),"Os":"linux"})
+                    }
+                    _ => panic!("unexpected resource {resource:?}"),
+                };
+                inspection.observe(&access, &resource, Some(value)).unwrap();
+            }
+            assert!(
+                inspection
+                    .observed
+                    .contains_key(&Resource::Network("bridge".into()))
+            );
+            assert_eq!(
+                membership
+                    .authorize(&inspection, "POST", "/v1.45/containers/create")
+                    .is_ok(),
+                allowed
+            );
+        }
+    }
+    #[test]
     fn shared_container_references_and_reserved_resource_names_keep_their_bounds() {
         let root = tempfile::tempdir().unwrap();
         let mut selected = project();

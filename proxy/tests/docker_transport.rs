@@ -411,6 +411,87 @@ async fn network_changes_require_management_of_the_referenced_container() {
 }
 
 #[tokio::test]
+async fn docker_default_endpoint_inspects_bridge_before_forwarding_the_cli_payload() {
+    for (network_status, driver) in [(200, "bridge"), (404, "bridge"), (200, "host")] {
+        let root = tempfile::tempdir().unwrap();
+        let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = start(
+            root.path(),
+            workloads(origin.local_addr().unwrap().port()),
+            false,
+            false,
+        )
+        .await;
+        let payload = include_bytes!("fixtures/docker/create-defaults.json");
+        let allowed = network_status == 200 && driver == "bridge";
+        let backend = tokio::spawn(async move {
+            let mut inspections = vec![
+                (
+                    "/v1.45/info",
+                    200,
+                    json!({"OSType":"linux","SecurityOptions":["name=cgroupns"],"DefaultRuntime":"runc","LoggingDriver":"json-file"}),
+                ),
+                (
+                    "/v1.45/networks/bridge",
+                    network_status,
+                    json!({"Id":"b".repeat(64),"Name":"bridge","Driver":driver,"Options":{"com.docker.network.bridge.default_bridge":"true","com.docker.network.bridge.name":"docker0"},"IPAM":{"Driver":"default"}}),
+                ),
+            ];
+            if allowed {
+                inspections.push((
+                    "/v1.45/images/busybox:1.36/json",
+                    200,
+                    json!({"Os":"linux"}),
+                ));
+            }
+            for (path, status, body) in inspections {
+                let (mut stream, _) = origin.accept().await.unwrap();
+                let headers = String::from_utf8(head(&mut stream).await).unwrap();
+                assert!(
+                    headers.starts_with(&format!("GET {path} HTTP/1.1")),
+                    "{headers}"
+                );
+                assert!(!headers.contains("sgw_"));
+                let body = body.to_string();
+                stream.write_all(format!("HTTP/1.1 {status} Origin status\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+            }
+            if allowed {
+                let (mut stream, _) = origin.accept().await.unwrap();
+                let headers = String::from_utf8(head(&mut stream).await).unwrap();
+                assert!(
+                    headers.starts_with("POST /v1.45/containers/create HTTP/1.1"),
+                    "{headers}"
+                );
+                let mut forwarded = vec![0; payload.len()];
+                stream.read_exact(&mut forwarded).await.unwrap();
+                assert_eq!(forwarded, payload);
+                let body = json!({"Id":"a".repeat(64),"Warnings":[]}).to_string();
+                stream.write_all(format!("HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+            } else {
+                assert!(
+                    timeout(Duration::from_millis(100), origin.accept())
+                        .await
+                        .is_err()
+                );
+            }
+        });
+        let response = call(root.path(), "alice", &request("POST", "/v1.45/containers/create",
+            "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nContent-Type: application/json\r\nConnection: close\r\n", payload)).await;
+        assert!(
+            response.starts_with(if allowed {
+                b"HTTP/1.1 201"
+            } else {
+                b"HTTP/1.1 403"
+            }),
+            "{}",
+            String::from_utf8_lossy(&response)
+        );
+        timeout(LIMIT, backend).await.unwrap().unwrap();
+        proxy.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn docker_network_ids_cannot_override_an_inspected_safe_network_name() {
     let root = tempfile::tempdir().unwrap();
     let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
