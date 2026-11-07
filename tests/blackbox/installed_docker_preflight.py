@@ -97,7 +97,12 @@ def compose_journey(args, root, output, workspace, native, guest, background, re
         "certs/mitmproxy-ca-cert.pem": 0o644, "certs/mitmproxy-ca.pem": 0o600,
         "data/admin_token": 0o600, "data/agent_token": 0o600}
     shutil.copy2(certificate, fixture / "fresh-ca.crt")
-    reader = guest("sudo -n -u _apt sha256sum /workspace/nested-docker/fresh-ca.crt", "fresh-ca-reader")
+    # The hosting workspace can be private; let _apt read only a temporary
+    # public certificate copy without changing any workspace permissions.
+    reader = guest("set -eu; public_ca=$(mktemp /tmp/safeyolo-docker-ca.XXXXXX); "
+                   "trap 'rm -f -- \"$public_ca\"' EXIT; "
+                   "install -m 0644 -- /workspace/nested-docker/fresh-ca.crt \"$public_ca\"; "
+                   "sudo -n -u _apt sha256sum \"$public_ca\"", "fresh-ca-reader")
     assert reader.split()[0] == _sha256(certificate), "_apt could not read the fresh public CA"
     guest("sudo -n -u _apt cat /usr/local/share/ca-certificates/safeyolo.crt >/dev/null", "installed-ca-reader")
 
