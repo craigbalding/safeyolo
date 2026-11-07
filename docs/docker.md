@@ -203,7 +203,9 @@ supported logging drivers are `json-file`, `local` and `none`.
 
 Operations on existing containers and exec sessions inspect their effective
 configuration before forwarding. Actual bind sources, write modes, local-volume
-options and referenced workloads are checked. Missing inspection fails closed.
+options and referenced workloads are checked. Confirmed absence at the requested
+inspect endpoint returns HTTP 404 so Docker and Compose can discover resources
+before creation. Missing dependencies and failed inspection refuse dispatch.
 Existing names and resources created by other administrators remain supported;
 no ownership label or naming convention is required. A primary container name
 is resolved to its immutable ID before dispatch.

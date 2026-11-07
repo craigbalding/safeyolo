@@ -715,11 +715,21 @@ impl Resource {
 pub(crate) struct Inspection {
     pending: BTreeSet<Resource>,
     checked: BTreeSet<Resource>,
+    missing: Option<Resource>,
     primary_container: Option<String>,
     pub(crate) container_id: Option<String>,
     pub(crate) observed: BTreeMap<Resource, Option<Value>>,
 }
 impl Inspection {
+    /// A confirmed absence at the client's inspect target is normal Docker
+    /// discovery. Absence of a dependency still refuses the requested operation.
+    pub(crate) fn missing_target(&self, method: &str, target: &str) -> bool {
+        method == "GET"
+            && self.missing.as_ref().is_some_and(|resource| {
+                resource.path().ok().as_deref() == Some(target.split('?').next().unwrap_or(target))
+            })
+    }
+
     fn add(&mut self, resource: Resource) {
         if !self.checked.contains(&resource) {
             self.pending.insert(resource);
@@ -742,7 +752,10 @@ impl Inspection {
         if matches!(resource, Resource::Volume(_, true)) && value.is_none() {
             return Ok(());
         }
-        let value = value.ok_or("required Docker resource inspection unavailable")?;
+        let Some(value) = value else {
+            self.missing = Some(resource.clone());
+            return Err("required Docker resource inspection unavailable".into());
+        };
         let object = value
             .as_object()
             .ok_or("invalid Docker inspection response")?;
@@ -1300,6 +1313,31 @@ mod tests {
         assert!(plan.observe(&access(), &resource, None).is_err());
         plan.observe(&access(),&resource,Some(json!({"Id":"b".repeat(64),"HostConfig":{"Privileged":false,"CgroupnsMode":"private","NetworkMode":"bridge"},"NetworkSettings":{"Networks":{}},"Mounts":[]}))).unwrap();
         assert_eq!(plan.container_id, Some("b".repeat(64)));
+    }
+    #[test]
+    fn confirmed_absence_is_not_found_only_for_the_direct_inspect_target() {
+        for resource in [
+            Resource::Container("ordinary".into()),
+            Resource::Exec("exec-id".into()),
+            Resource::Network("ordinary-net".into()),
+            Resource::Volume("ordinary-data".into(), false),
+            Resource::Image("registry.example/project:current".into()),
+        ] {
+            let mut plan = Inspection::default();
+            let target = resource.path().unwrap();
+            assert!(plan.observe(&access(), &resource, None).is_err());
+            assert!(plan.missing_target("GET", &target));
+            assert!(plan.missing_target("GET", &format!("{target}?size=false")));
+            assert!(!plan.missing_target("POST", &target));
+            assert!(!plan.missing_target("DELETE", &target));
+            assert!(!plan.missing_target("GET", "/v1.45/containers/another/json"));
+        }
+        let mut plan = Inspection::default();
+        assert!(
+            plan.observe(&access(), &Resource::Volume("new-data".into(), true), None)
+                .is_ok()
+        );
+        assert!(!plan.missing_target("GET", "/v1.45/volumes/new-data"));
     }
     #[test]
     fn effective_daemon_defaults_are_checked_before_defaulted_creation() {

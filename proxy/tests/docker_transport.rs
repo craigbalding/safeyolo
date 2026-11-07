@@ -257,6 +257,67 @@ fn events(root: &Path) -> Vec<Value> {
 }
 
 #[tokio::test]
+async fn fresh_resource_discovery_preserves_not_found_without_forwarding_unchecked_requests() {
+    for project in [false, true] {
+        for kind in ["networks", "volumes"] {
+            for status in [404, 500, 200] {
+                let root = tempfile::tempdir().unwrap();
+                let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let mut definition = workloads(origin.local_addr().unwrap().port());
+                if project {
+                    definition["capabilities"]["engine"]["docker_access"] =
+                        json!({"mode":"project","name":"alpha","adoption":"selection-1"});
+                }
+                let proxy = start(root.path(), definition, false, false).await;
+                let path = format!("/v1.45/{kind}/ordinary");
+                let expected = path.clone();
+                let backend = tokio::spawn(async move {
+                    let (mut stream, _) = origin.accept().await.unwrap();
+                    let headers = String::from_utf8(head(&mut stream).await).unwrap();
+                    assert!(headers.starts_with(&format!("GET {expected} HTTP/1.1")));
+                    // An existing unsafe resource must still fail its checks.
+                    // Its daemon error and configuration must not reach a project.
+                    let body = json!({"Id":"b".repeat(64),"Name":"unrelated-workload","Driver":"host","Options":{"device":"/"},"message":"unrelated-workload exists"}).to_string();
+                    stream.write_all(format!("HTTP/1.1 {status} Origin status\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+                    drop(stream);
+                    assert!(
+                        timeout(Duration::from_millis(100), origin.accept())
+                            .await
+                            .is_err()
+                    );
+                });
+                let response = call(
+                    root.path(),
+                    "alice",
+                    &request(
+                        "GET",
+                        &path,
+                        "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nConnection: close\r\n",
+                        b"",
+                    ),
+                )
+                .await;
+                let expected = if project || status == 404 {
+                    "HTTP/1.1 404"
+                } else {
+                    "HTTP/1.1 403"
+                };
+                let response = String::from_utf8(response).unwrap();
+                assert!(response.starts_with(expected), "{response}");
+                assert!(!response.contains("unrelated-workload"));
+                if project {
+                    assert!(response.contains("GATEWAY_DOCKER_PROJECT_RESOURCE"));
+                } else if status == 404 {
+                    assert!(response.contains("GATEWAY_DOCKER_RESOURCE_NOT_FOUND"));
+                }
+                timeout(LIMIT, backend).await.unwrap().unwrap();
+                proxy.shutdown().await;
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn docker_network_ids_cannot_override_an_inspected_safe_network_name() {
     let root = tempfile::tempdir().unwrap();
     let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();

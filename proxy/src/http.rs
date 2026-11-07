@@ -4684,7 +4684,9 @@ where
                         .is_some_and(|p| p.membership.state.pending.is_some())
                     {
                         503
-                    } else if project.is_some() {
+                    } else if project.is_some()
+                        || inspection.missing_target(request.method().as_str(), &destination.path)
+                    {
                         404
                     } else {
                         403
@@ -4696,6 +4698,10 @@ where
                         "GATEWAY_DOCKER_RECONCILIATION_REQUIRED"
                     } else if project.is_some() {
                         "GATEWAY_DOCKER_PROJECT_RESOURCE"
+                    } else if inspection
+                        .missing_target(request.method().as_str(), &destination.path)
+                    {
+                        "GATEWAY_DOCKER_RESOURCE_NOT_FOUND"
                     } else {
                         "GATEWAY_DOCKER_RESOURCE_CONSTRAINT"
                     },
