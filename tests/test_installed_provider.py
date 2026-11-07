@@ -79,7 +79,8 @@ def test_producer_records_accept_before_parsing_and_never_records_authorization(
     assert len(origin_observation(tmp_path)["requests"]) == 1
 
 
-def test_caller_runs_all_phases_with_token_only_on_stdin(tmp_path):
+@pytest.mark.parametrize(("service", "route"), [("proofspot", "/api/v1/value"), ("notes", "/api/v1/notes")])
+def test_caller_runs_all_phases_with_token_only_on_stdin(tmp_path, service, route):
     tools = tmp_path / "bin"
     tools.mkdir()
     cat = tools / "cat"
@@ -87,8 +88,9 @@ def test_caller_runs_all_phases_with_token_only_on_stdin(tmp_path):
     cat.chmod(0o755)
     curl = tools / "curl"
     curl.write_text(f"#!{sys.executable}\n" + r'''
-import pathlib, sys
+import os, pathlib, sys
 args = sys.argv[1:]
+service, route = os.environ['PROVIDER_TEST_SERVICE'], os.environ['PROVIDER_TEST_ROUTE']
 header = sys.stdin.read()
 if args[-1].endswith('/gateway/services'):
     assert header == 'Authorization: Bearer fixture-agent-token\n'
@@ -103,14 +105,13 @@ else:
     generation = 1 if index < 6 else 2 if index < 8 else 3
     assert header == f'Authorization: Bearer sgw_fixture-proof{generation}\n'
     statuses = [403, 403, 403, 403, 200, 403, 200, 503, 503]
-    expected = [('DELETE', '/api/v1/value'), ('GET', '/outside'), ('GET', '/api/v1/value'),
-                ('GET', '/api/v1/value'),
-                ('GET', '/api/v1/value'), ('GET', '/api/v1/value'), ('GET', '/api/v1/value'),
-                ('GET', '/api/v1/value'), ('GET', '/api/v1/value')]
+    expected = [('DELETE', route), ('GET', '/outside')] + [('GET', route)] * 7
     assert args[args.index('--request') + 1] == expected[index][0]
     assert args[-1].endswith(expected[index][1])
     if index == 2:
         assert 'unrelated.safeyolo.internal' in args[-1]
+    else:
+        assert f'{service}.safeyolo.internal' in args[-1]
     if index == 3:
         assert ':8089/' in args[-1]
     counter.write_text(str(index + 1))
@@ -123,8 +124,10 @@ else:
     curl.chmod(0o755)
     for phase in ("allowed", "revoked", "recovered", "closed", "stopped"):
         (tmp_path / f"{phase}.go").touch()
-    result = subprocess.run(["bash", str(SCRIPTS / "provider-caller.sh"), str(tmp_path)],
-        env=os.environ | {"PATH": str(tools) + os.pathsep + os.environ["PATH"]},
+    arguments = [] if service == "proofspot" else [service, route]
+    result = subprocess.run(["bash", str(SCRIPTS / "provider-caller.sh"), str(tmp_path), *arguments],
+        env=os.environ | {"PATH": str(tools) + os.pathsep + os.environ["PATH"],
+                          "PROVIDER_TEST_SERVICE": service, "PROVIDER_TEST_ROUTE": route},
         capture_output=True, text=True, timeout=15, check=True)
     observations = client_observation(tmp_path)
     assert {label: row["status"] for label, row in observations.items()} == {

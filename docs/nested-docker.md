@@ -1,7 +1,9 @@
 # Docker inside a Linux sandbox
 
 This configuration is being qualified for Linux/gVisor under [#1436](https://github.com/craigbalding/safeyolo/issues/1436).
-The installed Compose, restart and application-sharing results are still pending.
+An installed systrap preflight started Docker and ran a container with guest
+host networking. Compose, build, restart, egress and application-sharing
+results are still pending.
 Do not infer support on macOS or for other Docker configurations from this recipe.
 
 Nested Docker executes inside the hosting sandbox. Its daemon, builds and
@@ -32,9 +34,12 @@ safeyolo agent shell notes
 ```
 
 Inside that sandbox, the following Debian recipe installs Docker Engine and
-Compose through the existing proxy. The initial probe used Docker 26.1.5 and
+Compose through the existing proxy. The preflight used Docker 26.1.5 and
 Compose 2.26.1. The default sandbox failed daemon startup because the devices
-cgroup was absent. Qualification of the opt-in configuration remains pending.
+cgroup was absent. With the opt-in configuration, the daemon answered Engine
+requests and a container ran. The public CA must be readable by package users
+such as `_apt`. Initialization creates that certificate with mode `0644`;
+the CA private key and instance tokens remain `0600`.
 
 ```sh
 sudo -n apt-get update
@@ -59,8 +64,18 @@ SafeYolo checkout at `/workspace`. Copy its fixture to a new working directory.
 The copied CA is public trust material. It does not contain a private key.
 The hosting policy must allow the selected registry's actual authentication,
 manifest and blob destinations, plus `example.com` for the build/application
-probe. It must deny `denied.invalid`. An unexpected proxy refusal needs its
+probe and the Debian repositories used to install Python during the build.
+The preflight observed `production.cloudfront.docker.com` as a blob destination.
+The hosting policy must deny `denied.invalid`. An unexpected proxy refusal needs its
 normal policy decision; changing the Docker flags does not grant network access.
+
+The successful preflight image pull used an explicit short-lived registry token
+through the Engine API, with approval scoped to its fingerprint and destination.
+It did not establish automatic-token CLI pulls. The ordinary CLI can acquire a
+different anonymous token after a refused pull. Repeating that request does not
+establish that the new token is approved. Resolve a refusal through the existing
+credential controls before continuing. This qualification keeps credential
+approvals scoped to the fingerprint and destination.
 
 ```sh
 mkdir /home/agent/nested-notes
@@ -100,6 +115,10 @@ the daemon with the same data root and flags. Return to the application director
 and run `compose up -d` against its local socket. Named volumes must remain in
 that data root. A Docker socket or saved container entry alone does not show
 that the daemon or application has resumed.
+Use a fresh execution directory when restarting the daemon. A retained
+containerd PID file can refer to a different process after a sandbox restart.
+The qualification driver keeps its socket, PID file and execution directory
+under `/run`, separately from the persistent Docker data root.
 
 ## Share only the application
 
@@ -143,3 +162,12 @@ Revoke the reader capability through the existing service controls. A stopped
 hosting sandbox or closed port must fail through the provider route without
 ordinary-network fallback. Existing provider controls remain applicable;
 their binding to this nested application still needs installed proof.
+
+The [installed qualification driver](../tests/blackbox/installed_docker_preflight.py)
+keeps the small preflight and adds `--journey` for the complete Compose,
+sandbox recovery and application-provider controls. On the owned test host,
+`--reuse-root` continues a stopped fixture with its current policy and approved
+registry inputs. Supply its actual guest Docker data root with `--docker-data`
+to reuse the inspected image. The driver preserves each operation's output and
+stops the fixture on failure. Its local observer controls do not establish
+installed support or independent acceptance.

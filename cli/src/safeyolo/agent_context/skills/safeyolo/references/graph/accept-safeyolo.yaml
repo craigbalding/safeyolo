@@ -274,7 +274,7 @@ nodes:
         - path: proxy/src/lib.rs
           sha256: cf921d9650c0ea8fd449c719a1e1d2aa6139e4dee616eb0a182f47cb08330008
         - path: proxy/src/bin/safeyolo.rs
-          sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
+          sha256: 2f6c5168ea821f0c7415e3cd4459ca2ad9357accb5ac84ef14b775876761146f
         - path: scripts/run_claude_blackbox.py
           sha256: 218890e4ddaef26d7d86a67784a447d3c40640eda4abe1c16a2243880c7e803b
         - path: tests/blackbox/claude_smoke.py
@@ -339,7 +339,7 @@ nodes:
         - path: proxy/src/lib.rs
           sha256: cf921d9650c0ea8fd449c719a1e1d2aa6139e4dee616eb0a182f47cb08330008
         - path: proxy/src/bin/safeyolo.rs
-          sha256: bd4221489bf96b5209b7f79787fcc7a5867426bb94505fe821be498988ddc518
+          sha256: 2f6c5168ea821f0c7415e3cd4459ca2ad9357accb5ac84ef14b775876761146f
         - path: proxy/src/jobs/vz-guest-init.sh
           sha256: 7fc4a7442ccf50eea20dad24b7bb5659f69875f7853f11da2bb96665fc25dc4b
         - path: proxy/src/jobs/vz-exec.sh
@@ -767,7 +767,7 @@ nodes:
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: proxy/tests/native_host_cli.rs
-          sha256: 7f18d2f4975ecb935aee9a59beff7ed346afac99fc96549e8a838d49695771b8
+          sha256: 2997f1266c63feb1b74334aa714f75846302f8f5c60a7a2d68074ad925f53383
       setup: "Use the prepared native proxy/platform lane for system evidence. For an ownership probe, select the affected native_host_cli test with the trusted Cargo toolchain and warm target."
       verify: "sha256sum tests/blackbox/run-tests.sh tests/blackbox/host/uds_transport.py proxy/tests/native_host_cli.rs"
       run:

@@ -87,6 +87,48 @@ fn initialize(root: &Path) {
 }
 
 #[test]
+fn initialization_makes_only_the_public_ca_world_readable() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("instance");
+    let initialized = Command::new("sh")
+        .args(["-c", "umask 077; exec \"$@\"", "init-test"])
+        .arg(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--root")
+        .arg(&root)
+        .arg("init")
+        .output()
+        .unwrap();
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let certificate = root.join("certs/mitmproxy-ca-cert.pem");
+    assert_eq!(
+        fs::metadata(&certificate).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+    let public = fs::read_to_string(certificate).unwrap();
+    assert!(public.contains("BEGIN CERTIFICATE"));
+    assert!(!public.contains("PRIVATE KEY"));
+    for secret in [
+        "certs/mitmproxy-ca.pem",
+        "data/admin_token",
+        "data/agent_token",
+    ] {
+        assert_eq!(
+            fs::metadata(root.join(secret))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+            "{secret} must remain private"
+        );
+    }
+}
+
+#[test]
 fn host_subscription_import_keeps_provider_files_outside_agent_state() {
     let directory = tempfile::tempdir().unwrap();
     let passphrase_file = directory.path().join("storage-passphrase");

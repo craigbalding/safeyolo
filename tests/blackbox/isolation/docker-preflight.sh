@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # In a disposable Linux/gVisor guest, run with guest sudo after installing
 # docker.io, docker-cli and docker-compose. STATE must be a new absolute path
-# under persistent guest home. This probe owns one local daemon and its data.
+# under persistent guest home. --daemon reuses that data and runs only the
+# foreground daemon for the installed lifecycle observer.
 # It preserves diagnostics and stops its daemon on exit; it adds no host mount.
 set -euo pipefail
 
-if [[ $# != 1 || $1 != /home/agent/* || -e $1 ]]; then
-    echo 'usage: docker-preflight.sh /home/agent/NEW-STATE' >&2
+if [[ $# -lt 1 || $# -gt 2 || $1 != /home/agent/* || ${2:-} != '' && ${2:-} != --daemon || ${2:-} != --daemon && -e $1 ]]; then
+    echo 'usage: docker-preflight.sh /home/agent/STATE [--daemon]' >&2
     exit 64
 fi
 state=$1
-mkdir -p "$state/run" "$state/data"
-export DOCKER_HOST="unix://$state/run/docker.sock"
+data_root=${SAFEYOLO_DOCKER_DATA_ROOT:-$state/data}
+mkdir -p "$data_root" /run/safeyolo-nested-docker
+export DOCKER_HOST=unix:///run/safeyolo-nested-docker/docker.sock
 export DOCKER_CONFIG="$state/client"
 # Use the existing proxy and CA environment. Never inherit a Docker context
 # that could silently substitute a daemon outside the selected sandbox.
@@ -28,15 +30,18 @@ ip -j route show > "$state/routes.json"
 
 flags=(
     --host="$DOCKER_HOST"
-    --data-root="$state/data"
-    --exec-root="$state/run/exec"
-    --pidfile="$state/run/dockerd.pid"
+    --data-root="$data_root"
+    --exec-root=/run/safeyolo-nested-docker/exec
+    --pidfile=/run/safeyolo-nested-docker/dockerd.pid
     --storage-driver=vfs
     --iptables=false --ip6tables=false
     --bridge=none --ip-forward=false --ip-masq=false
     --exec-opt native.cgroupdriver=cgroupfs
 )
 printf '%s\n' "${flags[@]}" > "$state/dockerd-flags.txt"
+if [[ ${2:-} == --daemon ]]; then
+    exec dockerd "${flags[@]}"
+fi
 dockerd "${flags[@]}" > "$state/dockerd.log" 2>&1 &
 daemon=$!
 cleanup() {
