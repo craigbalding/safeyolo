@@ -65,6 +65,7 @@ user_facing_docs = [
     "docs/coord-mattermost.md",
     "docs/coord-wake-test.md",
     "docs/nested-linux-lab.md",
+    "docs/nested-docker.md",
     "docs/dispatch-generation.md",
     "docs/dispatch-publication.md",
     "docs/factory-proposals.md",

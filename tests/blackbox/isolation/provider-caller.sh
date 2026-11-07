@@ -15,7 +15,9 @@ refresh_token() {
     unset BASH_REMATCH
 }
 refresh_token
-url=http://proofspot.safeyolo.internal:8088/api/v1/value
+service=${2:-proofspot}
+route=${3:-/api/v1/value}
+url=http://$service.safeyolo.internal:8088$route
 
 request() {
     local label=$1 method=$2 target=$3 status digest
@@ -40,9 +42,9 @@ await_phase() {
 }
 
 request method DELETE "$url"
-request path GET http://proofspot.safeyolo.internal:8088/outside
-request destination GET http://unrelated.safeyolo.internal:8088/api/v1/value
-request port GET http://proofspot.safeyolo.internal:8089/api/v1/value
+request path GET "http://$service.safeyolo.internal:8088/outside"
+request destination GET "http://unrelated.safeyolo.internal:8088$route"
+request port GET "http://$service.safeyolo.internal:8089$route"
 touch refusals.ready
 await_phase allowed
 request allowed GET "$url"
