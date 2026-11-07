@@ -898,10 +898,11 @@ print(json.dumps({'test_context':'removed_after_flow'}))
                             f"http://{args.origin_host}:{origin.server_port}/v1/write?ticket=T-1",
                             token=gateway_token, body=b'{"project":"alpha"}',
                             response_headers=refusal_headers)
+        # Native policy lets an implicit route miss reach contract binding.
         check(status == 403 and refusal_headers.get("x-blocked-by") == "service-gateway"
-              and json.loads(refusal)["error"] == "ROUTE_DENIED"
+              and json.loads(refusal)["error"] == "CONTRACT_NOT_BOUND"
               and len(origin.seen) == before,
-              f"unbound route did not reach the gateway: {status} {refusal}")
+              f"unbound contract did not refuse before origin contact: {status} {refusal}")
         status, binding = admin(root, "POST", "/admin/gateway/contract-binding", {
             "agent": "alice", "service": "contract", "capability": "writer",
             "template": "contract.write.v1", "bindings": {"project": "alpha", "ticket": "T-1"},
