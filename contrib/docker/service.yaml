@@ -20,12 +20,16 @@ effect_model:
     linux_defaults: {location: 'https://github.com/moby/moby/blob/v26.1.5/oci/defaults.go', version: Moby
         v26.1.5}
     docker_access: {location: proxy/src/services/docker/enforcement.rs, version: API 1.45 workload profile}
-    request_shapes: {location: contrib/docker/request-shapes.yaml, version: Expanded v26.1.5 request types}
+    request_shapes: {location: contrib/docker/request-shapes.yaml, version: Expanded v26.1.5 request types with current client endpoint defaults}
     daemon_defaults: {location: 'https://github.com/moby/moby/blob/v26.1.5/daemon/info.go', version: Moby v26.1.5 SecurityOptions}
     cgroup_default: {location: 'https://github.com/moby/moby/blob/v26.1.5/daemon/info_unix.go', version: Moby v26.1.5 cgroupNamespacesEnabled}
     client_resource_defaults: {location: 'https://github.com/docker/cli/blob/v26.1.5/cli/command/container/opts.go', version: Docker CLI v26.1.5}
     resource_sentinels: {location: 'https://github.com/moby/moby/blob/v26.1.5/daemon/daemon.go', version: Moby v26.1.5 fixMemorySwappiness}
     resource_bounds: {location: 'https://github.com/moby/moby/blob/v26.1.5/daemon/daemon_unix.go', version: Moby v26.1.5 verifyPlatformContainerResources}
+    endpoint_priority: {location: 'https://github.com/moby/moby/blob/docker-v29.1.3/api/docs/v1.52.yaml', version: Moby docker-v29.1.3 EndpointSettings.GwPriority int64}
+    endpoint_create: {location: 'https://github.com/moby/moby/blob/docker-v29.1.3/daemon/server/router/container/container_routes.go', version: Moby docker-v29.1.3 create normalizes GwPriority below API 1.48}
+    endpoint_connect: {location: 'https://github.com/moby/moby/blob/docker-v29.1.3/daemon/server/router/network/network_routes.go', version: Moby docker-v29.1.3 connect passes EndpointConfig through}
+    compose_endpoints: {location: 'https://github.com/docker/compose/blob/v2.40.3/pkg/compose/create.go', version: Compose v2.40.3 createEndpointSettings}
   resources:
     docker_environment: {description: The configured daemon and its workloads. Project association is
         a separate capability., identity: [daemon]}
@@ -623,7 +627,8 @@ docker_enforcement: {profile: capabilities.<name>.docker_access, supported_api: 
       adopted sandbox execution boundary and an explicit sandbox_admin capability. It delegates provider
       files, credentials, explicit host mounts and other inner workloads.'], source_evidence: [engine_145,
     linux_defaults, docker_access, request_shapes, client_resource_defaults, resource_sentinels,
-    resource_bounds], known_gaps: [Docker cannot atomically inspect resources
+    resource_bounds, endpoint_priority, endpoint_create, endpoint_connect,
+    compose_endpoints], known_gaps: [Docker cannot atomically inspect resources
       and apply a mutation. Trusted administrators can change network or volume references during that
       interval. Primary container names resolve to immutable IDs., 'Supported default logging drivers
       are json-file, local and none. External log drivers/options are unsupported because they can select

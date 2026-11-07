@@ -1016,25 +1016,7 @@ fn network_endpoint(
     request: bool,
 ) -> Result<(), Error> {
     if request {
-        fields(
-            object,
-            &[
-                "IPAMConfig",
-                "Links",
-                "Aliases",
-                "MacAddress",
-                "DriverOpts",
-                "NetworkID",
-                "EndpointID",
-                "Gateway",
-                "IPAddress",
-                "IPPrefixLen",
-                "IPv6Gateway",
-                "GlobalIPv6Address",
-                "GlobalIPv6PrefixLen",
-                "DNSNames",
-            ],
-        )?;
+        shape("network_endpoint", object)?;
     }
     let id = text(object, "NetworkID")?;
     if !id.is_empty() {
@@ -1163,6 +1145,92 @@ mod tests {
                 allowed,
                 "update {resources}"
             );
+        }
+    }
+    #[test]
+    fn endpoint_defaults_types_and_bounds_apply_to_create_and_connect() {
+        // Compose v2.40.3 createEndpointSettings sets GwPriority even when unset.
+        // Moby docker-v29.1.3 defines it as int64; create at API 1.45 resets it
+        // to zero, while network connect passes the decoded value through.
+        for (endpoint, allowed) in [
+            (json!({}), true),
+            (
+                json!({"IPAMConfig":null,"Links":null,"Aliases":["ordinary-worker-1","worker"],"MacAddress":"","DriverOpts":null,"GwPriority":0,"NetworkID":"","EndpointID":"","Gateway":"","IPAddress":"","IPPrefixLen":0,"IPv6Gateway":"","GlobalIPv6Address":"","GlobalIPv6PrefixLen":0,"DNSNames":null}),
+                true,
+            ),
+            (json!({"GwPriority":null}), true),
+            (json!({"GwPriority":0}), true),
+            (json!({"GwPriority":-1}), true),
+            (json!({"GwPriority":1}), true),
+            (json!({"GwPriority":i64::MIN}), true),
+            (json!({"GwPriority":i64::MAX}), true),
+            (json!({"GwPriority":9223372036854775808_u64}), false),
+            (
+                serde_json::from_str(r#"{"GwPriority":-9223372036854775809}"#).unwrap(),
+                false,
+            ),
+            (json!({"GwPriority":"0"}), false),
+            (json!({"GwPriority":0.0}), false),
+            (json!({"GwPriority":0.5}), false),
+            (json!({"GwPriority":true}), false),
+            (json!({"GwPriority":[]}), false),
+            (json!({"GwPriority":{}}), false),
+            (json!({"GwPriority":0,"gwpriority":1}), false),
+            (json!({"GwPriority":0,"FutureOption":false}), false),
+            (json!({"GwPriority":0,"Aliases":[true]}), false),
+            (
+                json!({"GwPriority":0,"IPAMConfig":{"IPv4Address":7}}),
+                false,
+            ),
+            (
+                json!({"GwPriority":0,"IPAMConfig":{"Driver":"host"}}),
+                false,
+            ),
+            (
+                json!({"GwPriority":0,"DriverOpts":{"com.docker.network.endpoint.sysctls":"net.ipv4.conf.IFNAME.forwarding=1"}}),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                create(json!({"Image":"busybox","NetworkingConfig":{"EndpointsConfig":{"ordinary-net":endpoint}}})).is_ok(),
+                allowed,
+                "create {endpoint}"
+            );
+            assert_eq!(
+                access()
+                    .request(
+                        "POST",
+                        "/v1.45/networks/ordinary-net/connect",
+                        &serde_json::to_vec(
+                            &json!({"Container":"existing-name","EndpointConfig":endpoint})
+                        )
+                        .unwrap(),
+                    )
+                    .is_ok(),
+                allowed,
+                "connect {endpoint}"
+            );
+        }
+    }
+    #[test]
+    fn endpoint_priority_preserves_indirect_inspection() {
+        let endpoint =
+            json!({"GwPriority":1,"NetworkID":"unsafe-network","Links":["unsafe-container:alias"]});
+        for mut plan in [
+            create(json!({"Image":"busybox","NetworkingConfig":{"EndpointsConfig":{"ordinary-net":endpoint}}})).unwrap(),
+            access().request(
+                "POST",
+                "/v1.45/networks/ordinary-net/connect",
+                &serde_json::to_vec(&json!({"Container":"existing-name","EndpointConfig":endpoint})).unwrap(),
+            ).unwrap(),
+        ] {
+            let mut seen = Vec::new();
+            while let Some(resource) = plan.next() {
+                seen.push(resource);
+            }
+            assert!(seen.contains(&Resource::Network("ordinary-net".into())));
+            assert!(seen.contains(&Resource::Network("unsafe-network".into())));
+            assert!(seen.contains(&Resource::Container("unsafe-container".into())));
         }
     }
     #[test]

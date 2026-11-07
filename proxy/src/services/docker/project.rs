@@ -956,7 +956,7 @@ mod tests {
         let anchor =
             json!({"Type":"container","Action":"start","Actor":{"ID":"a".repeat(64)},"timeNano":1});
         let volume = json!({"CreatedAt":"2026-11-07T01:02:03Z"});
-        membership.events(&[anchor.clone()]).unwrap();
+        membership.events(std::slice::from_ref(&anchor)).unwrap();
         assert!(membership.volume("ordinary-data", &volume));
         let destroy =
             json!({"Type":"volume","Action":"destroy","Actor":{"ID":"ordinary-data"},"timeNano":2});

@@ -460,7 +460,7 @@ async fn docker_network_ids_cannot_override_an_inspected_safe_network_name() {
                 .is_err()
         );
     });
-    let body = json!({"Image":"busybox","NetworkingConfig":{"EndpointsConfig":{"ordinary-name":{"NetworkID":"unsafe-id"}}}});
+    let body = json!({"Image":"busybox","NetworkingConfig":{"EndpointsConfig":{"ordinary-name":{"GwPriority":1,"NetworkID":"unsafe-id"}}}});
     let response=call(root.path(),"alice",&request("POST","/v1.45/containers/create","X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nContent-Type: application/json\r\nConnection: close\r\n",&serde_json::to_vec(&body).unwrap())).await;
     assert!(
         response.starts_with(b"HTTP/1.1 403"),
