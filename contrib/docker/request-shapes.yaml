@@ -3,6 +3,8 @@
 # defaults and integer bounds are retained. Docker-specific conditions run in enforcement.rs.
 # Empty Go string defaults are accepted for logging, propagation, cgroup namespaces
 # and isolation. The implemented local log driver extends the specification enum.
+# MemorySwappiness also accepts the CLI's -1 sentinel, which Engine normalizes to
+# unset before validation. Memory bytes remain nonnegative; -1 is not their sentinel.
 create:
   allow:
     Hostname: {type: string, nullable: true}
@@ -81,7 +83,7 @@ create:
       object:
         allow:
           CpuShares: {type: integer, nullable: true}
-          Memory: {type: integer, nullable: true, default: 0}
+          Memory: {type: integer, nullable: true, default: 0, integer_range: [0, 9223372036854775807]}
           CgroupParent: {type: string, nullable: true}
           BlkioWeight: {type: integer, nullable: true, integer_range: [0, 1000]}
           BlkioWeightDevice:
@@ -185,7 +187,7 @@ create:
           KernelMemoryTCP: {type: integer, nullable: true}
           MemoryReservation: {type: integer, nullable: true}
           MemorySwap: {type: integer, nullable: true}
-          MemorySwappiness: {type: integer, nullable: true, integer_range: [0, 100]}
+          MemorySwappiness: {type: integer, nullable: true, integer_range: [-1, 100]}
           NanoCpus: {type: integer, nullable: true}
           OomKillDisable: {type: boolean, nullable: true}
           Init: {type: boolean, nullable: true}
@@ -449,7 +451,7 @@ create:
 update:
   allow:
     CpuShares: {type: integer, nullable: true}
-    Memory: {type: integer, nullable: true, default: 0}
+    Memory: {type: integer, nullable: true, default: 0, integer_range: [0, 9223372036854775807]}
     CgroupParent: {type: string, nullable: true}
     BlkioWeight: {type: integer, nullable: true, integer_range: [0, 1000]}
     BlkioWeightDevice:
@@ -553,7 +555,7 @@ update:
     KernelMemoryTCP: {type: integer, nullable: true}
     MemoryReservation: {type: integer, nullable: true}
     MemorySwap: {type: integer, nullable: true}
-    MemorySwappiness: {type: integer, nullable: true, integer_range: [0, 100]}
+    MemorySwappiness: {type: integer, nullable: true, integer_range: [-1, 100]}
     NanoCpus: {type: integer, nullable: true}
     OomKillDisable: {type: boolean, nullable: true}
     Init: {type: boolean, nullable: true}

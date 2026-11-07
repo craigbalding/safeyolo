@@ -45,12 +45,15 @@ Do not disable TLS verification, log bearer values or publish private files.
 In the candidate checkout's `proxy` directory, use the wrapper-bound warm Cargo
 target, unchanged release profile/features/flags, one job and incremental off.
 Inspect free space and forecast compilation/link growth first. Keep the factory's
-10 GiB reserve and existing serialization. To compile only the required tests:
+10 GiB build-filesystem reserve and the operator's 20 GiB backing reserve.
+Run these checks in order. If a check fails, retain its output and diagnose the
+failure before proceeding. Start with the request checks, including the captured
+ordinary-client defaults and create/update resource sentinels:
 
 ```sh
 CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 SAFEYOLO_CARGO_RESERVE_GIB=10 \
   ../scripts/cargo_with_space.sh test --release --locked \
-  --test docker_real_daemon --test docker_transport --test contracts --no-run
+  --lib services::docker::enforcement
 ```
 
 Run the controlled request/transport regressions from the same source:
@@ -58,7 +61,7 @@ Run the controlled request/transport regressions from the same source:
 ```sh
 CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 SAFEYOLO_CARGO_RESERVE_GIB=10 \
   ../scripts/cargo_with_space.sh test --release --locked \
-  --test docker_transport --test contracts
+  --test docker_transport --test contracts --test gateway_snapshot --test grants
 ```
 
 The approval-interface check uses the existing native operator CLI fixture:

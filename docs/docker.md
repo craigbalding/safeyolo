@@ -88,7 +88,13 @@ bounds. Docker-specific conditions run in the
 also retain accepted empty-string defaults from the Go client and the supported
 `local` logging driver, which the published enum list omits. The captured
 [Docker CLI payload](../proxy/tests/fixtures/docker/create-defaults.json) covers
-those defaults.
+those defaults. `MemorySwappiness` accepts `-1` as well as `0` through `100`.
+The [CLI sends `-1` by default](https://github.com/docker/cli/blob/v26.1.5/cli/command/container/opts.go),
+and [Engine normalizes `-1` to unset before validation](https://github.com/moby/moby/blob/v26.1.5/daemon/daemon.go).
+This applies to create and update requests. Existing-container inspection may
+report the normalized value as null. `Memory` remains nonnegative; its zero
+default is distinct from the unlimited `MemorySwap`, `CpuQuota` and `PidsLimit`
+sentinels. Engine still validates platform-specific resource limits.
 The reduced shapes
 are not a general OpenAPI interpreter. Moby's Apache 2.0 license is retained in
 [MOBY-LICENSE](../contrib/docker/MOBY-LICENSE).

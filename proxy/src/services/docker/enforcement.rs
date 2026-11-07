@@ -1055,7 +1055,8 @@ mod tests {
             .unwrap(),
             json!({"Image":"busybox"}),
             json!({"Image":"busybox","HostConfig":null}),
-            json!({"Image":"busybox","Cmd":"sh","HostConfig":{"Privileged":null,"Memory":1048576,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges"],"Mounts":[{"Type":"volume","Target":"/data","Source":"existing-name"}]}}),
+            json!({"Image":"busybox","Cmd":"sh","HostConfig":{"Privileged":null,"Memory":6291456,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges"],"Mounts":[{"Type":"volume","Target":"/data","Source":"existing-name"}]}}),
+            json!({"Image":"busybox","StopTimeout":-1,"HostConfig":{"BlkioWeight":0,"ShmSize":0}}),
         ] {
             assert!(create(config.clone()).is_ok(), "{config}");
         }
@@ -1070,8 +1071,84 @@ mod tests {
         }
     }
     #[test]
+    fn resource_defaults_and_sentinels_apply_to_create_and_update() {
+        for (resources, allowed) in [
+            (json!({}), true),
+            (json!({"MemorySwappiness":null}), true),
+            (json!({"MemorySwappiness":-1}), true),
+            (json!({"MemorySwappiness":0}), true),
+            (json!({"MemorySwappiness":100}), true),
+            (json!({"MemorySwappiness":-2}), false),
+            (json!({"MemorySwappiness":101}), false),
+            (json!({"MemorySwappiness":"-1"}), false),
+            (json!({"MemorySwappiness":-1.0}), false),
+            (json!({"MemorySwappiness":true}), false),
+            (json!({"Memory":null}), true),
+            (json!({"Memory":0}), true),
+            (json!({"Memory":6291456}), true),
+            (json!({"Memory":-1}), false),
+            // These distinct resource fields retain their own unlimited sentinels.
+            (
+                json!({"Memory":6291456,"MemorySwap":-1,"CpuQuota":-1,"PidsLimit":-1,"Ulimits":[{"Name":"nofile","Soft":-1,"Hard":-1}]}),
+                true,
+            ),
+        ] {
+            assert_eq!(
+                create(json!({"Image":"busybox","HostConfig":resources})).is_ok(),
+                allowed,
+                "create {resources}"
+            );
+            assert_eq!(
+                access()
+                    .request(
+                        "POST",
+                        "/v1.45/containers/existing-name/update",
+                        &serde_json::to_vec(&resources).unwrap(),
+                    )
+                    .is_ok(),
+                allowed,
+                "update {resources}"
+            );
+        }
+    }
+    #[test]
+    fn normalized_resource_defaults_preserve_existing_workload_checks() {
+        // Engine normalizes the request's -1 swappiness sentinel to null.
+        // Inspection is a response, so it does not use the request-only shape.
+        for resources in [
+            json!({}),
+            json!({"MemorySwappiness":null,"MemorySwap":-1,"PidsLimit":null}),
+            json!({"MemorySwappiness":0,"PidsLimit":-1}),
+            json!({"MemorySwappiness":100,"PidsLimit":0}),
+        ] {
+            for privileged in [false, true] {
+                let mut host = resources.as_object().unwrap().clone();
+                host.extend(
+                    json!({"Privileged":privileged,"CgroupnsMode":"private","NetworkMode":"bridge"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                );
+                let mut plan = access()
+                    .request("POST", "/v1.45/containers/existing-name/start", b"")
+                    .unwrap();
+                let resource = plan.next().unwrap();
+                assert_eq!(
+                    plan.observe(
+                        &access(),
+                        &resource,
+                        Some(json!({"Id":"b".repeat(64),"HostConfig":host,"NetworkSettings":{"Networks":{}},"Mounts":[]})),
+                    )
+                    .is_ok(),
+                    !privileged,
+                    "existing workload {resources}, privileged={privileged}"
+                );
+            }
+        }
+    }
+    #[test]
     fn known_host_routes_and_alternate_mount_encodings_are_refused() {
-        for host in [
+        for mut host in [
             json!({"Privileged":true}),
             json!({"NetworkMode":"host"}),
             json!({"PidMode":"host"}),
@@ -1094,6 +1171,9 @@ mod tests {
             json!({"Mounts":[{"Type":"volume","Target":"/data","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"none","device":"/","o":"bind"}}}}]}),
             json!({"NetworkMode":"host","CapDrop":["ALL"],"ReadonlyRootfs":true}),
         ] {
+            host.as_object_mut()
+                .unwrap()
+                .insert("MemorySwappiness".into(), json!(-1));
             assert!(
                 create(json!({"Image":"busybox","HostConfig":host})).is_err(),
                 "{host}"

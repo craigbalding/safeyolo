@@ -23,6 +23,9 @@ effect_model:
     request_shapes: {location: contrib/docker/request-shapes.yaml, version: Expanded v26.1.5 request types}
     daemon_defaults: {location: 'https://github.com/moby/moby/blob/v26.1.5/daemon/info.go', version: Moby v26.1.5 SecurityOptions}
     cgroup_default: {location: 'https://github.com/moby/moby/blob/v26.1.5/daemon/info_unix.go', version: Moby v26.1.5 cgroupNamespacesEnabled}
+    client_resource_defaults: {location: 'https://github.com/docker/cli/blob/v26.1.5/cli/command/container/opts.go', version: Docker CLI v26.1.5}
+    resource_sentinels: {location: 'https://github.com/moby/moby/blob/v26.1.5/daemon/daemon.go', version: Moby v26.1.5 fixMemorySwappiness}
+    resource_bounds: {location: 'https://github.com/moby/moby/blob/v26.1.5/daemon/daemon_unix.go', version: Moby v26.1.5 verifyPlatformContainerResources}
   resources:
     docker_environment: {description: The configured daemon and its workloads. Project association is
         a separate capability., identity: [daemon]}
@@ -619,7 +622,8 @@ docker_enforcement: {profile: capabilities.<name>.docker_access, supported_api: 
       sessions and entitlements are unsupported.', 'Sandbox administration is available only with the
       adopted sandbox execution boundary and an explicit sandbox_admin capability. It delegates provider
       files, credentials, explicit host mounts and other inner workloads.'], source_evidence: [engine_145,
-    linux_defaults, docker_access, request_shapes], known_gaps: [Docker cannot atomically inspect resources
+    linux_defaults, docker_access, request_shapes, client_resource_defaults, resource_sentinels,
+    resource_bounds], known_gaps: [Docker cannot atomically inspect resources
       and apply a mutation. Trusted administrators can change network or volume references during that
       interval. Primary container names resolve to immutable IDs., 'Supported default logging drivers
       are json-file, local and none. External log drivers/options are unsupported because they can select
