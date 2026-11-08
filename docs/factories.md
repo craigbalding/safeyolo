@@ -451,6 +451,94 @@ decider outside the manager's administration. Exchange files through authorized
 guest-file operations, a selected artifact mechanism or an explicitly shared
 project directory. Do not share host administration state or an operator home.
 
+Use the existing owners throughout the task:
+
+1. Inspect inbound work, the current assignment and the factory state. Claim
+   and progress work through the existing native Work operations. Preserve
+   current ownership and configured actor checks.
+2. Send a selected direction under the operator agent's own identity. Read and
+   decide eligible approvals through B's separate deciding delegation. Keep
+   exceptions available to B's human operator without making unrelated human
+   exceptions a prerequisite of authorized work.
+3. Receive selected operational events through the private attention path.
+   Inspect an interruption through common support operations, repair its cause
+   and verify the worker's current run and progress. Reconcile the original
+   assignment before another action.
+4. After restart or reconnect, retain the original task, operation IDs and
+   verified per-instance cursors. Read uncertain operation receipts and current
+   effects before any further mutation. An observation timeout leaves coverage
+   unverified; it does not establish a product failure or justify repeating an
+   effect.
+5. Exchange the selected files, publish the result once and preserve required
+   checks, challenges and acceptance decisions. Give the human a concise update
+   from canonical state and attributable operation results. Keep sensitive
+   worker output out of shared status messages.
+
+### Tested operator journey
+
+The 8 November 2026 installed journey used an actual native Codex 0.163.0
+operator on A and factory `operator1449` with producer and reviewer agents
+owned by B:
+
+| Instance | Linux VM | Durable instance ID | Roles |
+| --- | --- | --- | --- |
+| A | `sy-1050-connected-8029-amd64` | `sy-1e6e5f245167414590a022a1e48bdd01` | `support1452` operator |
+| B | `sy-239-clean-6728` | `sy-c0e0c53812754bb4b6a75b9bae0c6c9f` | `producer1449`, `reviewer1449` |
+
+These were two distinct AMD64 Linux OS VMs on one Devstack physical hypervisor.
+The instances used native TLS NATS request/reply and events, and gVisor systrap
+guests. The journey reuses the accepted multi-instance transport and backend
+proof for [#1452](https://github.com/craigbalding/safeyolo/issues/1452).
+This observation does not establish two physical hosts, full factory nesting
+or an additional macOS backend run.
+
+The actual installed inputs were mixed source/debug fragments:
+
+| Consumer | Source commit | Profile |
+| --- | --- | --- |
+| A and B host CLI/proxy; A MCP client | `e340a9340b3203219eccf4b01ccbaa6c751998c1` | debug |
+| B producer and reviewer supervisor/MCP consumers | `a8f6c2dfe2d29c35e6185b915206a24b4ff76b93` | debug |
+| Guest helper | `4ca3cafa995e47598d7bf39a2d64d786b81aceba` | debug |
+
+The B consumer repair delivers private roomless approval references through
+the existing supervisor checkpoint. The approval, support and native Work
+owners are unchanged between the first two source revisions. These results
+establish the exercised source behavior, not a complete shipping package.
+
+A sent an attributed selected direction, decided B's artifact-access approval
+and progressed the original Work. B's surviving operational observer delivered
+the controlled supervisor failure to A through attention. A diagnosed and
+restored the truncated configuration, then resumed the same producer sandbox
+run. Independent B observation verified the restored configuration, live
+consumer and subsequent output. The first 45-second collection expired before
+the real five-retry terminal at 130.815 seconds; retained results supplied that
+observation without another fault injection. Uncertain restart receipts stayed
+`outcome_unknown` despite the separately observed recovery.
+
+The fixture owner then restarted A's operator sandbox. A resumed the same
+native model session with its original Work, claim and per-instance positions.
+Input `[17,25,-6]` produced the 11-byte answer `{"sum":36}` followed by a newline.
+The original
+Work completed at version 5, claim generation 1 and output generation 1, with
+one publication. The B reviewer read and hashed the actual input and output
+through its read-only `/task` mount, computed the sum and supplied the current
+required check and acceptance decision. A's grants excluded that reviewer
+from direct and indirect administration; independence here is from A, not
+from the human fixture owner.
+
+Focused controls refused an ungranted agent, an unrelated factory, an
+unselected direction type, a changed snapshot and out-of-scope approval
+access. Post-revocation reads and operations were also refused. An out-of-scope
+approval read returned HTTP 404; its valid decision request returned the
+deliberate generic HTTP 409 without an effect. See the
+[remote approval refusal behavior](delegated-approvals.md#remote-reviewers).
+
+A published an attributable human update. Both test human exceptions remained
+pending during the journey; B's owner rejected them during cleanup. Cleanup
+revoked the two test scopes, removed the two added A memberships, stopped the
+four owned test roles, and removed imported per-run credentials and three
+copied role login files. Original logins, services, other grants, task bytes
+and retained proof were preserved.
 
 ## Direct diagnosis and recovery
 

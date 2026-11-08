@@ -131,8 +131,20 @@ authority even after the corresponding broker reference is gone.
 If a request is outside every current deciding delegation, the remote read or
 decision is refused. The request remains available to B's human operator.
 Ask that operator to inspect the canonical request and choose an exception or
-change the delegation after preview. After a lost decision reply, read the
-canonical request before another decision. Revoking peer trust ends its remote
+change the delegation after preview. An unrelated human exception does not
+block independently authorized work. Keep required approvals for that work
+intact.
+
+For an otherwise authorized remote identity, an out-of-scope approval read
+returns HTTP 404. A valid decision request that fails the deciding-authority
+check returns the generic HTTP 409 response, `decision unavailable or authority
+changed`. This refusal does not change the approval or issue permission.
+An identity without the required peer authorization is refused earlier with
+HTTP 403. Preserve the actual response; a decision refusal need not use the
+same status as a read refusal.
+
+After a lost decision reply, read the canonical request before another
+decision. Revoking peer trust ends its remote
 deciding authority and derived permissions. Re-trusting A does not reactivate
 the old delegation; preview a new trust epoch.
 
