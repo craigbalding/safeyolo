@@ -364,7 +364,14 @@ nodes:
       process ownership. Reuse the affected fixture or native operation for
       publish, receive, retention or restart behavior. Startup alone does not
       establish durability. Historical Python upgrade fixtures are test
-      references; the fresh product has no old-state conversion requirement.
+      references. For the supported previous generated NATS account upgrade,
+      set SAFEYOLO_COORD_BASE_BINARY to the CLI built from
+      e138ebefba90919311e9e60cc272b140e78b5d61 and select
+      upgrade::previous_generated_store_upgrades_with_and_without_federation
+      with --ignored. Use a disk-backed TMPDIR. It checks actual previous CLI
+      state, messages/work/attention and consumer cursors, both federation modes,
+      failed activation and recovery. It does not prove peer fault isolation or
+      resource fairness for the other follow-up outcomes.
       For the Stage 0 current-master boundary, set SAFEYOLO_COORD_BASE_BINARY
       to the retained current-master CLI and select the native_stage0 test
       with --ignored. It uses three authenticated clients and real process
@@ -512,9 +519,9 @@ nodes:
         - path: proxy/tests/delegated_approvals/collaboration.rs
           sha256: cc249a3fcdf97f033e57cc1a82f64ac7ef97f2c83f9c59c115eca21a7861ef17
         - path: proxy/tests/native_coord.rs
-          sha256: 811df0f3255b17853b8cd1589a91faad09a76c20676703573e0615043a607ce0
+          sha256: 15c0fa3fc0aa563d43da783ac6c93c747b8e3f879817e61100e843eb4c56fa0c
         - path: proxy/src/coord_rooms/federation/nats.rs
-          sha256: d457c237ee35ea80e38f5b7f1ebe6aef894ff4ef0854debb373c9f97a370065b
+          sha256: 7713ddfd3ff1f10c93f42b1182aeab245958d3e2049f23f4bd1e7abd02a8e890
         - path: proxy/src/coord_tools/sources.rs
           sha256: 233f6bea4146f20ded5231938012e0282007bb9852d2d7bd8a746ab6ebedaca8
         - path: proxy/tests/native_coord/federation/support.rs
@@ -565,10 +572,12 @@ nodes:
           sha256: ae3f1f295305381994b2c730a1288bd3cd42dd9174a58dab52ce97f1e7e54dc5
         - path: cli/src/safeyolo/services/github.yaml
           sha256: 38880c71fbe0a2f995a790c64d21d001baa7a5911d10f44d8e50973914f543d3
+        - path: proxy/tests/native_coord/upgrade.rs
+          sha256: ead31ae0e2e33003970a4456492c417957c111a3a04247852bddf132867235bb
         - path: proxy/tests/native_coord/stage0.rs
-          sha256: 455157e783d090a40e30c679c0dc48cc20843c408b65fef8503e4794feb63eb2
+          sha256: a288d8dd6bbdb84c38aa72ca1c27f6bbc860f5faf9b208e2f5d7d876c7d7ad62
         - path: proxy/src/coord_rooms.rs
-          sha256: 32e62ca7b0b296e7cdf1acdc3666f0c1c7a60605f865e11a04e2dcad32c6c916
+          sha256: 761f40c0789f00ee0e2d06c1873302e761e8f3bb4be44818059087dfdc52c472
         - path: proxy/tests/native_coord/inventory.rs
           sha256: 1de6227ecdc2bbf2062f0e912c0c4ae7d6e149e2ea61837d75705393891b7276
         - path: proxy/src/agent_api/coord/inventory.rs

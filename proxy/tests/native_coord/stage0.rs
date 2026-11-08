@@ -3,7 +3,7 @@ use super::*;
 use futures_util::StreamExt;
 use rusqlite::Connection;
 
-async fn base(root: &Path, args: &[&str]) -> Value {
+pub(super) async fn base(root: &Path, args: &[&str]) -> Value {
     let output = tokio::time::timeout(
         Duration::from_secs(15),
         tokio::process::Command::new(

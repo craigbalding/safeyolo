@@ -486,6 +486,7 @@ pub async fn start(
             Ok(())
         });
     }
+    federation::nats::upgrade_local_store(&jetstream)?;
     let mut child = command.spawn()?;
     let pid = child.id().ok_or("NATS has no PID")?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
