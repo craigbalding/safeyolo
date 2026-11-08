@@ -391,8 +391,24 @@ EOF and cancels both copies on a real error or shutdown. Its focused upstream
 tests include response after EOF in either direction, buffered final bytes,
 write/read/shutdown errors, and the three connection adapters.
 
-Before a build, obtain the factory's serialized build slot. On the owned Linux
-venue, inspect the retained upstream checkout and compatible Bazel outputs.
+For a hosted native build, use the existing `installed-arm64.yml` workflow with
+`mode=runsc-build`. Select `runsc_architecture=amd64` for the AMD64 provider
+fixture; the default remains `arm64`. This input affects only the runtime build
+job. Relay admits one selected run at the candidate branch and verifies its
+actual head against the candidate commit. The hosted build is independent of
+the protected provider fixture's execution slot.
+
+The workflow runs the focused tests, builds the four runtime files and qualifies
+the selected native payload on both guest filesystems. Its artifact is named
+`runsc-ARCHITECTURE-SOURCE-RUN-ATTEMPT`. With `runsc_build_run`, reuse selects
+that architecture's artifact and compares the builder, both patches, packaging
+helper and qualification inputs before checking the output hashes. Reached
+logs, downloaded operands and test results are retained on failure. Preserve
+those results before deciding whether another acquisition or build is needed.
+Hosted qualification does not replace the provider and Docker controls below.
+
+For a build on the owned Linux venue, obtain the factory's serialized build
+slot and inspect the retained upstream checkout and compatible Bazel outputs.
 Preserve active source, prepared runtime and the existing disk reserves. If the
 checkout is clean at the pinned revision, invoke the candidate's
 `scripts/build_runsc.sh UPSTREAM_SOURCE NEW_RUNTIME_DIRECTORY`. For a retained

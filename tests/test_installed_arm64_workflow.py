@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = yaml.safe_load((ROOT / ".github/workflows/installed-arm64.yml").read_text())
 JOB = WORKFLOW["jobs"]["installed-arm64"]
 HOST_JOB = WORKFLOW["jobs"]["acquire-host"]
+RUNSC_JOB = WORKFLOW["jobs"]["runsc-build"]
 HOST = WORKFLOW["env"]
 
 
@@ -59,7 +60,7 @@ def test_manual_route_separates_acquisition_and_pins_read_only_qualification():
     assert set(WORKFLOW.get("on", WORKFLOW.get(True))) == {"workflow_dispatch"}
     assert WORKFLOW["permissions"] == {"contents": "read"}
     assert set(WORKFLOW["jobs"]) == {
-        "clean-public-install", "installed-update", "retained", "acquire-host", "installed-arm64", "public-install",
+        "clean-public-install", "installed-update", "retained", "acquire-host", "installed-arm64", "public-install", "runsc-build",
     }
     assert WORKFLOW.get("on", WORKFLOW.get(True))["workflow_dispatch"]["inputs"]["mode"]["default"] == "retained"
     retained = WORKFLOW["jobs"]["retained"]
@@ -128,13 +129,157 @@ def test_manual_route_separates_acquisition_and_pins_read_only_qualification():
     assert upload["if"] == "always()" and upload["with"]["path"] == "${{ env.SAFEYOLO_BLACKBOX_ARTIFACTS_DIR }}"
     nightly = yaml.safe_load((ROOT / ".github/workflows/blackbox.yml").read_text())
     assert set(nightly.get("on", nightly.get(True))["workflow_dispatch"]["inputs"]) == {"host_run", "guest_index"}
-    assert set(nightly["jobs"]) == {"systrap", "macos-package"}
-    assert all("if" not in job for job in nightly["jobs"].values())
+    assert set(nightly["jobs"]) == {"systrap", "macos-package", "claude-event"}
+    assert all(nightly["jobs"][name]["if"] == "github.event_name != 'workflow_run'"
+               for name in ("systrap", "macos-package"))
     preparation = step("Prepare the supported systrap host")["run"]
     assert preparation == "tests/blackbox/prepare-systrap-host.sh"
     source_preparation = next(item for item in nightly["jobs"]["systrap"]["steps"]
                               if item.get("name") == "Prepare the supported systrap host")
     assert source_preparation["run"] == "tests/blackbox/prepare-systrap-host.sh"
+
+
+@pytest.fixture
+def runsc_inputs(tmp_path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    for source in ("build_runsc.sh", "native_package.sh", "gvisor/nofollow.patch", "gvisor/portforward.patch",
+                   "probe_runsc_nofollow.py", "qualify_runsc_nofollow.sh"):
+        target = scripts / source
+        target.parent.mkdir(exist_ok=True)
+        shutil.copy2(ROOT / "scripts" / source, target)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name, command in {
+        "uname": 'printf "%s\\n" "$TEST_RUNNER_MACHINE"',
+        "git": 'printf "%s\\n" "$GITHUB_SHA"',
+        "df": 'printf "Filesystem 1024-blocks Used Available Capacity Mounted\\nfixture 40000000 1 30000000 1%% /\\n"',
+    }.items():
+        tool = tools / name
+        tool.write_text("#!/bin/sh\n" + command + "\n")
+        tool.chmod(0o755)
+    return {
+        "PATH": f"{tools}:{os.environ['PATH']}", "RUNNER_TEMP": str(tmp_path),
+        "RUNSC_WORK": str(tmp_path / "runsc-build"), "GITHUB_ENV": str(tmp_path / "github-env"),
+        "GITHUB_SHA": "a" * 40, "TEST_RUNNER_MACHINE": "x86_64", "RUNSC_ARCHITECTURE": "amd64",
+    }
+
+
+@pytest.mark.parametrize("architecture,machine,bazel_architecture,bazel_sha256", [
+    ("arm64", "aarch64", "arm64", "52bb74f0880ee87b17e3a1aa41257d0dba9e9cb92df4e83f8f6c656a46df152d"),
+    ("amd64", "x86_64", "x86_64", "17247e8a84245f59d3bc633d0cfe0a840992a7760a11af1a30012d03da31604c"),
+    ("arm64", "x86_64", None, None), ("amd64", "aarch64", None, None),
+    ("unknown", "x86_64", None, None),
+])
+def test_runsc_selection_binds_native_runner_and_compiler(
+    tmp_path, runsc_inputs, architecture, machine, bazel_architecture, bazel_sha256,
+):
+    inputs = WORKFLOW.get("on", WORKFLOW.get(True))["workflow_dispatch"]["inputs"]
+    assert inputs["runsc_architecture"]["default"] == "arm64"
+    assert inputs["runsc_architecture"]["options"] == ["arm64", "amd64"]
+    assert RUNSC_JOB["runs-on"] == "${{ inputs.runsc_architecture == 'amd64' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}"
+    assert RUNSC_JOB["concurrency"] == {
+        "group": "runsc-build-${{ inputs.runsc_architecture || 'arm64' }}", "cancel-in-progress": False,
+    }
+    env = {**runsc_inputs, "RUNSC_ARCHITECTURE": architecture, "TEST_RUNNER_MACHINE": machine}
+    result = execute("Verify the native runner and pinned build inputs", tmp_path, env, RUNSC_JOB)
+    assert (result.returncode == 0) == (bazel_architecture is not None), result.stdout + result.stderr
+    selected = dict(line.split("=", 1) for line in Path(env["GITHUB_ENV"]).read_text().splitlines())
+    if bazel_architecture is None:
+        assert "BAZEL_ARCHITECTURE" not in selected
+    else:
+        assert selected["BAZEL_ARCHITECTURE"] == bazel_architecture
+        assert selected["BAZEL_SHA256"] == bazel_sha256
+        reports = Path(env["RUNSC_WORK"]) / "reports"
+        assert (reports / "portforward.patch").read_bytes() == (ROOT / "scripts/gvisor/portforward.patch").read_bytes()
+        assert f"Runtime architecture: {architecture}" in (reports / "inputs.log").read_text()
+
+
+@pytest.mark.parametrize("architecture", ["arm64", "amd64"])
+@pytest.mark.parametrize("damage", [
+    None, "build_runsc.sh", "native_package.sh", "nofollow.patch", "portforward.patch",
+    "probe_runsc_nofollow.py", "qualify_runsc_nofollow.sh", "architecture", "checksum",
+])
+def test_runsc_reuse_requires_architecture_complete_inputs_and_output_hashes(tmp_path, runsc_inputs, architecture, damage):
+    env = {**runsc_inputs, "RUNSC_ARCHITECTURE": architecture,
+           "TEST_RUNNER_MACHINE": "aarch64" if architecture == "arm64" else "x86_64"}
+    result = execute("Verify the native runner and pinned build inputs", tmp_path, env, RUNSC_JOB)
+    assert result.returncode == 0, result.stdout + result.stderr
+    work = Path(env["RUNSC_WORK"])
+    artifact = tmp_path / "artifact"
+    shutil.copytree(work / "reports", artifact / "reports")
+    runtime = artifact / "runtime"
+    (runtime / "gvisor-bin").mkdir(parents=True)
+    names = ["runsc", "gvisor-bin/gvisor_sentry", "gvisor-bin/gvisor-sentry-prewarmer", "gvisor-bin/runsc-fd-parking"]
+    for name in names:
+        (runtime / name).write_text(f"controlled {architecture} runtime {name}\n")
+    (artifact / "reports/SHA256SUMS").write_text("".join(
+        f"{hashlib.sha256((runtime / name).read_bytes()).hexdigest()}  {name}\n" for name in names
+    ))
+    (artifact / "reports/build.log").write_text("Build exit: 0;\n")
+    artifact_architecture = architecture
+    if damage == "architecture":
+        artifact_architecture = "arm64" if architecture == "amd64" else "amd64"
+    elif damage == "checksum":
+        (runtime / "gvisor-bin/runsc-fd-parking").write_text("damaged companion\n")
+    elif damage:
+        (artifact / "reports" / damage).write_text("different build input\n")
+    gh = tmp_path / "tools/gh"
+    gh.write_text(f"#!{sys.executable}\n" + '''import json, os, shutil, sys
+from pathlib import Path
+args = sys.argv[1:]
+if args[0] == 'api':
+    print(json.dumps({'head_sha': 'b' * 40, 'run_attempt': 2}))
+else:
+    Path('download-args.json').write_text(json.dumps(args))
+    if args[args.index('--name') + 1] != os.environ['TEST_ARTIFACT_NAME']:
+        print('No matching architecture artifact', file=sys.stderr)
+        sys.exit(1)
+    shutil.copytree('artifact', args[args.index('--dir') + 1])
+''')
+    gh.chmod(0o755)
+    env.update(BUILD_RUN="42", GITHUB_REPOSITORY="craigbalding/safeyolo",
+               TEST_ARTIFACT_NAME=f"runsc-{artifact_architecture}-{'b' * 40}-42-2")
+    result = execute("Reuse the matching complete runtime without rebuilding", tmp_path, env, RUNSC_JOB)
+    assert (result.returncode == 0) == (damage is None), result.stdout + result.stderr
+    assert (work / "reports/reused-run.json").is_file()
+    log = (work / "reports/reuse.log").read_text()
+    if damage is None:
+        assert (work / "runtime/gvisor-bin/runsc-fd-parking").read_bytes() == (runtime / "gvisor-bin/runsc-fd-parking").read_bytes()
+    elif damage == "architecture":
+        assert "No matching architecture artifact" in log and not (work / "runtime").exists()
+    else:
+        assert ("FAILED" if damage == "checksum" else "differ") in log
+        assert (work / "reused/reports/build.log").is_file()
+    upload = RUNSC_JOB["steps"][-1]
+    assert upload["if"] == "always()" and upload["with"]["retention-days"] == 30
+    assert "${{ env.RUNSC_WORK }}/reused/" in upload["with"]["path"]
+
+
+def test_runsc_acquisition_failure_retains_download_diagnostic_and_acquired_inputs(tmp_path, runsc_inputs):
+    env = runsc_inputs
+    result = execute("Verify the native runner and pinned build inputs", tmp_path, env, RUNSC_JOB)
+    assert result.returncode == 0, result.stdout + result.stderr
+    env.update(line.split("=", 1) for line in Path(env["GITHUB_ENV"]).read_text().splitlines())
+    work = Path(env["RUNSC_WORK"])
+    source = work / "source"
+    source.mkdir()
+    for name, content in {".bazelversion": "8.3.1\n", "go.mod": "go 1.26.3\n",
+                          ".bazelrc": "controlled config\n", "MODULE.bazel": "controlled module\n", "go.sum": "controlled sum\n"}.items():
+        (source / name).write_text(content)
+    (tmp_path / "tools/git").write_text('#!/bin/sh\n[ "$3" != rev-parse ] || echo 97e8e896904cb364319cd9758241d3f0bd27a6f4\nexit 0\n')
+    curl = tmp_path / "tools/curl"
+    curl.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > download-args\nprintf partial > "$RUNSC_WORK/tools/bazel"\necho "controlled acquisition failure" >&2\nexit 22\n')
+    curl.chmod(0o755)
+    result = execute("Acquire the pinned upstream source and compiler", tmp_path, env, RUNSC_JOB)
+    assert result.returncode == 22, result.stdout + result.stderr
+    assert "bazel-8.3.1-linux-x86_64" in (tmp_path / "download-args").read_text()
+    assert "controlled acquisition failure" in (work / "reports/inputs.log").read_text()
+    for name in (".bazelversion", ".bazelrc", "MODULE.bazel", "go.mod", "go.sum"):
+        assert (work / "reports" / name).read_bytes() == (source / name).read_bytes()
+    assert (work / "tools/bazel").read_text() == "partial"
+    assert not (work / "runtime").exists() and not (work / "reports/build.log").exists()
+    assert "${{ env.RUNSC_WORK }}/tools/bazel" in RUNSC_JOB["steps"][-1]["with"]["path"]
 
 
 @pytest.mark.parametrize("selection", ["original-g1", "reduced-33224", "unknown"])
