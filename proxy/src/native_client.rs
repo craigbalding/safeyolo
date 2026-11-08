@@ -331,7 +331,6 @@ pub(crate) async fn gateway_json(
             proxy_socket: socket,
             require_proxy: true,
             max_response_bytes: 1024 * 1024,
-            ..HttpsRoute::default()
         },
     )
     .await
