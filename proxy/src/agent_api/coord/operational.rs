@@ -368,25 +368,14 @@ pub(super) async fn reconcile(
         let end = (*after + 8).min(agents.len());
         let mut failed = false;
         for agent in &agents[*after..end] {
-            let observed = tokio::time::timeout(
-                Duration::from_secs(2),
-                events::observe(&root, &instance, agent),
-            )
-            .await;
+            let observed = events::observe(&root, &instance, agent).await;
             let (mut refs, mut observations) = match observed {
-                Ok(Ok(result)) => result,
-                Ok(Err(_)) => (
+                Ok(result) => result,
+                Err(_) => (
                     Vec::new(),
                     vec![events::Observation {
                         source: "operational_records".into(),
                         unavailable: Some("invalid_source"),
-                    }],
-                ),
-                Err(_) => (
-                    Vec::new(),
-                    vec![events::Observation {
-                        source: "host_runtime".into(),
-                        unavailable: Some("probe_timeout"),
                     }],
                 ),
             };

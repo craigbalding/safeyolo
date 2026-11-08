@@ -140,7 +140,9 @@ authenticated `GET /admin/coord/diagnostics` endpoint. These diagnostic times us
 Unix milliseconds. A source that is no longer selected is no longer probed;
 its diagnostic timestamp remains the last observation.
 
-Probes have a two-second deadline per subject. Observation runs separately
+The runtime probe and its observation-record lock share a two-second deadline
+per subject. When that deadline expires, the other record sources still report
+their own results. Observation runs separately
 from local hints, federation hints, audit delivery and projection repair. A
 slow probe cannot consume their delivery pass. Within an observation batch,
 at most eight subjects run in sequence; additional subjects continue in the

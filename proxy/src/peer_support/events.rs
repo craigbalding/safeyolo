@@ -290,55 +290,52 @@ pub(crate) async fn observe(
         };
     observations.push(Observation::new("host_start", source_unavailable));
     source_unavailable = false;
-    let mut health = crate::host_runs::observe(&agent.name).await;
-    // A generation changed during the probe. Leave both owners intact and
-    // retry the new generation on the next bounded pass.
-    if crate::host_runs::read(&agent.name)
-        .ok()
-        .flatten()
-        .unwrap_or(Value::Null)
-        != run
-    {
-        observations.push(Observation {
-            source: "host_runtime".into(),
-            unavailable: Some("generation_changed"),
-        });
-        return Ok((Vec::new(), observations));
-    }
-    observations.push(Observation {
-        source: "host_runtime".into(),
-        unavailable: (!run.is_null()
+    // Only runtime observation and its record lock share this deadline.
+    // Earlier and later record sources retain their independent results.
+    let runtime = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let mut health = crate::host_runs::observe(&agent.name).await;
+        if crate::host_runs::read(&agent.name)
+            .ok()
+            .flatten()
+            .unwrap_or(Value::Null)
+            != run
+        {
+            return Ok((Vec::new(), Some("generation_changed")));
+        }
+        let unavailable = (!run.is_null()
             && (matches!(health["runtime_state"].as_str(), Some("unknown"))
                 || matches!(
                     health["control_state"].as_str(),
                     Some("unknown" | "unavailable")
                 )))
-        .then_some("probe_unavailable"),
-    });
-    health = json!({"runtime_state":health["runtime_state"],"control_state":health["control_state"],
+        .then_some("probe_unavailable");
+        health = json!({"runtime_state":health["runtime_state"],"control_state":health["control_state"],
         "run_id":health["run_id"],"launch_id":launch["launch_id"],
         "recovery_id":start_failure.as_ref().filter(|failure|!failure["recovery"].is_null()).map(|failure|&failure["event_id"])});
-    let Some(saved) = record_observation(root, agent, &run, health).await? else {
-        observations.push(Observation {
-            source: "host_runtime".into(),
-            unavailable: Some("generation_changed"),
-        });
-        return Ok((Vec::new(), observations));
+        let Some(saved) = record_observation(root, agent, &run, health).await? else {
+            return Ok((Vec::new(), Some("generation_changed")));
+        };
+        let mut refs = Vec::new();
+        for event in saved["events"].as_array().into_iter().flatten() {
+            refs.push(reference(
+                instance,
+                agent,
+                "host_runtime",
+                saved["source_id"]
+                    .as_str()
+                    .ok_or("host observation identity missing")?,
+                event["state"]["run_id"].clone(),
+                event["state"]["launch_id"].clone(),
+                event,
+            )?);
+        }
+        Ok::<_, Error>((refs, unavailable))
+    }).await;
+    let (mut refs, mut runtime_unavailable) = match runtime {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => (Vec::new(), Some("source_unreadable")),
+        Err(_) => (Vec::new(), Some("probe_timeout")),
     };
-    let mut refs = Vec::new();
-    for event in saved["events"].as_array().into_iter().flatten() {
-        refs.push(reference(
-            instance,
-            agent,
-            "host_runtime",
-            saved["source_id"]
-                .as_str()
-                .ok_or("host observation identity missing")?,
-            event["state"]["run_id"].clone(),
-            event["state"]["launch_id"].clone(),
-            event,
-        )?);
-    }
     if let Some(failure) = &start_failure {
         let event = json!({"sequence":0,"kind":"launch_failed","at":failure["at"],"state":"failed","expected_stop":false});
         refs.push(reference(
@@ -379,8 +376,8 @@ pub(crate) async fn observe(
     ) {
         Ok(command) => command,
         Err(_) => {
-            observations.push(Observation::new("guest_command_supervisor", true));
-            return Ok((refs, observations));
+            source_unavailable = true;
+            None
         }
     };
     if let Some(command) = command.filter(|command| {
@@ -436,6 +433,28 @@ pub(crate) async fn observe(
         "guest_command_supervisor",
         source_unavailable,
     ));
+    // A timed-out runtime probe still permits independent source health, but
+    // no detailed references from a generation that changed during that probe.
+    let current_launch = crate::guest_commands::read_state(&directory.join("current-launch.json"))
+        .ok()
+        .flatten()
+        .filter(|launch| launch["agent_id"] == agent.id)
+        .unwrap_or(Value::Null);
+    if crate::host_runs::read(&agent.name)
+        .ok()
+        .flatten()
+        .unwrap_or(Value::Null)
+        != run
+        || current_launch["launch_id"] != launch["launch_id"]
+        || runtime_unavailable == Some("generation_changed")
+    {
+        refs.clear();
+        runtime_unavailable = Some("generation_changed");
+    }
+    observations.push(Observation {
+        source: "host_runtime".into(),
+        unavailable: runtime_unavailable,
+    });
     observations.push(Observation::new("operational_records", false));
     Ok((refs, observations))
 }

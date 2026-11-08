@@ -541,7 +541,7 @@ nodes:
         - path: proxy/src/agent_api/support.rs
           sha256: e1e1f799c08671bdfa740d87ec512fcfdeca334c73f5e1e86b9476588841fd47
         - path: proxy/src/agent_api/coord/operational.rs
-          sha256: af6eb2d3d267b42d3f6f56930ed8594811ae3da6ee92b3348e7d4b385aa93208
+          sha256: 5d2320572ad95603f2e71b10b6074c688ae5c1caf560197ce9bcd0c37d96bfba
         - path: proxy/src/agent_api/coord/outbox.rs
           sha256: e2f4748cbb7db768fa9cc763efa0349e42685a58fe54d338b9c270f8590f745a
         - path: proxy/src/peer_support.rs
@@ -551,11 +551,11 @@ nodes:
         - path: proxy/src/peer_support/grants.rs
           sha256: feff6129b31693bcda19fd1d18faa7c74d784fc6fda25c173da9038624ff7ab9
         - path: proxy/src/peer_support/events.rs
-          sha256: 69ff7835761e71b7149cd532c2ff34c057a4bca80edf63e43a58a657956f1268
+          sha256: ce708ef9d44900fcb2ab9dc49a9236bec8d07adac1610b441f3259dcc4684ad0
         - path: proxy/src/policy/support.rs
           sha256: d0317762ef1aacaa97f3cee42e107c385d3c0ad8af97c7ed745e6d223435c5bb
         - path: proxy/tests/native_coord/federation/reliability.rs
-          sha256: f75e3035a344ad6738cdbdf4b9d440e017ed6392564b8669ec436000d0b852d6
+          sha256: 8338ae6fad7d2c24b1450e2fefc10a9e3b53e91ff2d16bdb726daee7e4acff44
         - path: proxy/tests/native_coord/federation.rs
           sha256: 628636276ada1a195f8b5dff353d32a5c4d127d72b76f560ae24d4df0d51a877
         - path: proxy/src/agent_api/coord.rs

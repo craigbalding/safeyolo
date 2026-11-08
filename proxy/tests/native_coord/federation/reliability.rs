@@ -699,7 +699,7 @@ async fn selected_sources_keep_independent_health_and_stop_disclosing_after_revo
     proposal["grant"]["notifications"] =
         json!(["launch_failed", "command_exit", "control_availability"]);
     let applied = support::apply(&f.roots[1], "health", proposal).await;
-    stage0::until(|| count(&f.roots[1],"SELECT count(*) FROM coord_observation_health WHERE source='host_start' AND last_success_at IS NOT NULL")>0).await;
+    stage0::until(|| count(&f.roots[1],"SELECT count(*) FROM coord_observation_health WHERE source IN ('host_start','guest_command_supervisor') AND last_success_at IS NOT NULL")==2).await;
     // Hold the actual observer record lock through its next probe. The
     // asynchronous lock must honor the probe deadline and leave delivery live.
     use std::os::fd::AsRawFd;
@@ -746,13 +746,18 @@ async fn selected_sources_keep_independent_health_and_stop_disclosing_after_revo
         "a timed-out observer lock left local and other-peer delivery live in {:.3}s",
         began.elapsed().as_secs_f64()
     );
-    drop(blocked);
+    // Keep runtime observation blocked while two independent record sources
+    // fail. Both health records and their canonical notices must progress.
+    let before:i64=rusqlite::Connection::open(f.roots[1].join("data/coord/v0.db")).unwrap().query_row("SELECT last_observed_at FROM coord_observation_health WHERE agent_id=?1 AND source='host_runtime'",[ALICE],|row|row.get(0)).unwrap();
     let path = f.roots[1].join("agents/alice/last-start-failure.json");
     fs::create_dir(&path).unwrap();
-    stage0::until(|| count(&f.roots[1],"SELECT count(*) FROM coord_observation_health WHERE source='host_start' AND unavailable_reason='source_unreadable'")>0).await;
     let second = f.roots[1].join("agents/alice/home/.safeyolo-command-supervisor.json");
     fs::create_dir_all(&second).unwrap();
     stage0::until(|| count(&f.roots[1],"SELECT count(*) FROM coord_observation_health WHERE source IN ('host_start','guest_command_supervisor') AND unavailable_reason='source_unreadable'")==2).await;
+    stage0::until(||count(&f.roots[1],"SELECT count(*) FROM coord_operational_references WHERE json_extract(reference_json,'$.kind')='observation_health' AND json_extract(reference_json,'$.source_id') IN ('host_start','guest_command_supervisor') AND json_extract(reference_json,'$.state.reason')='source_unreadable'")==2).await;
+    let runtime: (i64,String)=rusqlite::Connection::open(f.roots[1].join("data/coord/v0.db")).unwrap().query_row("SELECT last_observed_at,unavailable_reason FROM coord_observation_health WHERE agent_id=?1 AND source='host_runtime'",[ALICE],|row|Ok((row.get(0)?,row.get(1)?))).unwrap();
+    assert!(runtime.0 > before);
+    assert_eq!(runtime.1, "probe_timeout");
     let bob = client(&f.roots[1], "bob", false);
     let edges = bob
         .call(
@@ -782,6 +787,10 @@ async fn selected_sources_keep_independent_health_and_stop_disclosing_after_revo
         2,
         "a second failed source was hidden by the first"
     );
+    println!(
+        "both independent source failures reached canonical attention while the runtime lock remained held"
+    );
+    drop(blocked);
     fs::remove_dir(&path).unwrap();
     stage0::until(|| count(&f.roots[1],"SELECT count(*) FROM coord_observation_health WHERE source='host_start' AND unavailable_reason IS NULL")>0).await;
     stage0::until(||count(&f.roots[1],"SELECT count(*) FROM coord_operational_references WHERE json_extract(reference_json,'$.kind')='observation_health' AND json_extract(reference_json,'$.source_id')='host_start' AND json_extract(reference_json,'$.state.availability')='available'")==1).await;
