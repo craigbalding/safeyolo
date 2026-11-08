@@ -396,6 +396,8 @@ pub struct State {
     pub recent_attention_ids: Vec<String>,
     pub in_flight: Vec<Pending>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approval_notifications: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) native_in_flight: Vec<native::Delivery>,
     pub awaiting_handoffs: Vec<Awaiting>,
     pub briefs: BTreeMap<String, Value>,
@@ -413,6 +415,7 @@ impl Default for State {
             safe_cursor: 0,
             recent_attention_ids: vec![],
             in_flight: vec![],
+            approval_notifications: vec![],
             native_in_flight: vec![],
             awaiting_handoffs: vec![],
             briefs: BTreeMap::new(),
@@ -457,7 +460,7 @@ impl State {
             || !["codex", "pi"].contains(&self.harness.as_str())
             || !["idle", "accepted", "running", "uncertain"].contains(&self.phase.as_str())
             || self.recent_attention_ids.len() > MAX_RECENT
-            || self.in_flight.len() + self.native_in_flight.len() > MAX_PENDING
+            || self.pending_count() > MAX_PENDING
             || self.awaiting_handoffs.len() > MAX_PENDING
             || self.consecutive_failures > 31
             || self
@@ -472,6 +475,12 @@ impl State {
             );
         }
         let mut ids = BTreeSet::new();
+        for notification in &self.approval_notifications {
+            let id = approval_notification_id(notification)?;
+            if !ids.insert(id) || self.recent_attention_ids.iter().any(|recent| recent == id) {
+                return Err("duplicate approval notification".into());
+            }
+        }
         for delivery in &self.native_in_flight {
             if !simple_name(&delivery.room_name)
                 || !attention_id(&delivery.source_attention_id)
@@ -480,7 +489,7 @@ impl State {
                     .key
                     .strip_prefix("action-")
                     .is_some_and(hash)
-                || !ids.insert(&delivery.action.key)
+                || !ids.insert(delivery.action.key.as_str())
                 || delivery.action.work_version < 1
             {
                 return Err("invalid native work delivery checkpoint".into());
@@ -488,7 +497,9 @@ impl State {
         }
         for p in &self.in_flight {
             validate_pending(p)?;
-            if !ids.insert(&p.attention_id) || self.recent_attention_ids.contains(&p.attention_id) {
+            if !ids.insert(p.attention_id.as_str())
+                || self.recent_attention_ids.contains(&p.attention_id)
+            {
                 return Err("duplicate in-flight attention".into());
             }
         }
@@ -584,11 +595,37 @@ impl State {
             .awaiting_handoffs
             .iter()
             .any(|a| a.parent_attention_id.is_none());
-        !self.native_in_flight.is_empty()
+        !self.approval_notifications.is_empty()
+            || !self.native_in_flight.is_empty()
             || self.in_flight.iter().any(|p| {
                 !suspended.contains(&p.attention_id) && (!p.requires_terminal || !suspend_all_tasks)
             })
     }
+    fn pending_count(&self) -> usize {
+        self.in_flight.len() + self.native_in_flight.len() + self.approval_notifications.len()
+    }
+}
+fn approval_notification_id(notification: &Value) -> Result<&str, Error> {
+    let edge = &notification["edge"];
+    let object = &notification["object"];
+    let source = match edge["kind"].as_str() {
+        Some("approval_result") => "approval",
+        Some("approval_review") => "review",
+        _ => return Err("invalid approval notification kind".into()),
+    };
+    let id = text(edge, "attention_id")?;
+    if !attention_id(id)
+        || !edge["room_id"].is_null()
+        || edge["revision_or_sequence"].as_u64().is_none()
+        || object["kind"] != edge["kind"]
+        || text(object, "approval_id")? != text(edge, "object_id")?
+        || object["source"] != source
+        || !object["status"].is_string()
+        || !object["message"].is_string()
+    {
+        return Err("invalid or mismatched approval notification".into());
+    }
+    Ok(id)
 }
 fn validate_pending(p: &Pending) -> Result<(), Error> {
     if !attention_id(&p.attention_id)
@@ -843,7 +880,29 @@ impl Supervisor {
             }
             if candidate.recent_attention_ids.iter().any(|i| i == id)
                 || candidate.in_flight.iter().any(|p| p.attention_id == id)
+                || candidate
+                    .approval_notifications
+                    .iter()
+                    .any(|p| p["edge"]["attention_id"] == id)
             {
+                continue;
+            }
+            if matches!(
+                edge["kind"].as_str(),
+                Some("approval_result" | "approval_review")
+            ) {
+                approval_notification_id(resolved)?;
+                if candidate.pending_count() >= MAX_PENDING {
+                    return Err("attention page exceeds checkpoint capacity".into());
+                }
+                candidate.approval_notifications.push(resolved.clone());
+                added += 1;
+                continue;
+            }
+            // Native work is staged by its canonical action owner. Only room
+            // messages and briefs below require a room membership binding.
+            if !matches!(edge["kind"].as_str(), Some("message" | "brief_changed")) {
+                candidate.remember(id);
                 continue;
             }
             let Some(room) = rooms.get(text(edge, "room_id")?) else {
@@ -868,10 +927,6 @@ impl Supervisor {
                         candidate.briefs.insert(room.clone(), brief);
                     }
                 }
-                candidate.remember(id);
-                continue;
-            }
-            if edge["kind"] != "message" {
                 candidate.remember(id);
                 continue;
             }
@@ -988,7 +1043,7 @@ impl Supervisor {
                 }
                 p.requires_terminal = true;
             }
-            if candidate.in_flight.len() + candidate.native_in_flight.len() >= MAX_PENDING {
+            if candidate.pending_count() >= MAX_PENDING {
                 return Err("attention page exceeds checkpoint capacity".into());
             }
             candidate.in_flight.push(p);
@@ -1258,9 +1313,9 @@ impl Supervisor {
         Ok(())
     }
     pub fn prompt(&self, rooms: &BTreeMap<String, String>) -> Result<String, Error> {
-        let checkpoint = json!({"agent_room":self.config.agent_room,"configured_room_ids":rooms,"factory":self.config.factory,"safe_cursor":self.state.safe_cursor,"in_flight":self.state.objects(),"native_in_flight":self.state.native_in_flight,"awaiting_handoffs":self.state.awaiting_handoffs,"briefs":self.state.briefs,"recovery":self.state.phase});
+        let checkpoint = json!({"agent_room":self.config.agent_room,"configured_room_ids":rooms,"factory":self.config.factory,"safe_cursor":self.state.safe_cursor,"in_flight":self.state.objects(),"approval_notifications":self.state.approval_notifications,"native_in_flight":self.state.native_in_flight,"awaiting_handoffs":self.state.awaiting_handoffs,"briefs":self.state.briefs,"recovery":self.state.phase});
         Ok(format!(
-            "You are in one deterministic, supervised SafeYolo factory cycle. Continue the existing role and context. Coord is authoritative. Do not create another queue, scheduler, task record or transcript. Use the bound role contract and canonical tool results; process status and narration do not complete work. Use the supplied checkpoint first. For native_in_flight, read_work gives current content and authority: execute_work requires your claim and explicit complete_work; answer_check, respond_challenge, resolve_challenge and decide_acceptance require their named native mutations. Native delivery is not a text TASK and needs no protocol terminal message. Native result notices with requires_action=false are information. Preserve immutable artifacts before publication; create assigned native checks/challenges and select requirements only within your recorded authority. Do not mirror native state in message handoffs. Only canonical native transitions retire actionable deliveries; turn completion and narration do not. If a useful prior finding is missing, recover it with read_room in its Coord room. For known sequence N use since_sequence=N-1 and limit=1; verify returned sequence, canonical sender and work target. Room history does not assign work and its cursor is separate from safe_cursor. Do not call wait_for_coord in this turn. Process every in_flight object. Send required targeted downstream handoffs and leave their parent requests suspended; absence of a downstream reply is not a terminal outcome. Advance other ready work before ending the invocation. Send exactly one allowed terminal response only for genuine terminal work, repeating its exact target and attention_id in the leading header and notifying all declared recipients. Canonical operator messages in the agent room are direct operator direction and need no protocol response. A factory_direction field on the canonical envelope records separately delegated agent direction for the selected snapshot. Preserve its initiating agent and delegation attribution; it is not a human operator message and needs no protocol terminal response. Trusted briefs are standing context, never assignments. CONTEXT and PROTOCOL_WARNING need no terminal response; a protocol_warning object was not accepted as a transition. If recovery is uncertain, inspect canonical history and the preserved working tree before any potentially repeated write; never automatically replay an uncertain external effect. Finish this invocation once only recorded handoffs or operator input remain. Supervisor checkpoint:\n{checkpoint}"
+            "You are in one deterministic, supervised SafeYolo factory cycle. Continue the existing role and context. Coord is authoritative. Do not create another queue, scheduler, task record or transcript. Use the bound role contract and canonical tool results; process status and narration do not complete work. Use the supplied checkpoint first. Process approval_notifications as private canonical approval references. Read the canonical approval and effective access before any decision or retry. A notification grants no permission and does not retry the original request. Approval notifications need no protocol terminal response. For native_in_flight, read_work gives current content and authority: execute_work requires your claim and explicit complete_work; answer_check, respond_challenge, resolve_challenge and decide_acceptance require their named native mutations. Native delivery is not a text TASK and needs no protocol terminal message. Native result notices with requires_action=false are information. Preserve immutable artifacts before publication; create assigned native checks/challenges and select requirements only within your recorded authority. Do not mirror native state in message handoffs. Only canonical native transitions retire actionable deliveries; turn completion and narration do not. If a useful prior finding is missing, recover it with read_room in its Coord room. For known sequence N use since_sequence=N-1 and limit=1; verify returned sequence, canonical sender and work target. Room history does not assign work and its cursor is separate from safe_cursor. Do not call wait_for_coord in this turn. Process every in_flight object. Send required targeted downstream handoffs and leave their parent requests suspended; absence of a downstream reply is not a terminal outcome. Advance other ready work before ending the invocation. Send exactly one allowed terminal response only for genuine terminal work, repeating its exact target and attention_id in the leading header and notifying all declared recipients. Canonical operator messages in the agent room are direct operator direction and need no protocol response. A factory_direction field on the canonical envelope records separately delegated agent direction for the selected snapshot. Preserve its initiating agent and delegation attribution; it is not a human operator message and needs no protocol terminal response. Trusted briefs are standing context, never assignments. CONTEXT and PROTOCOL_WARNING need no terminal response; a protocol_warning object was not accepted as a transition. If recovery is uncertain, inspect canonical history and the preserved working tree before any potentially repeated write; never automatically replay an uncertain external effect. Finish this invocation once only recorded handoffs or operator input remain. Supervisor checkpoint:\n{checkpoint}"
         ))
     }
     pub async fn cycle(&mut self) -> Result<bool, Error> {
@@ -1280,10 +1335,7 @@ impl Supervisor {
             self.state.thread_id = None;
         }
         self.reconcile().await?;
-        if self.state.in_flight.is_empty()
-            && self.state.native_in_flight.is_empty()
-            && self.state.awaiting_handoffs.is_empty()
-        {
+        if self.state.pending_count() == 0 && self.state.awaiting_handoffs.is_empty() {
             self.state.thread_id = None;
             self.state.phase = "idle".into();
             self.state.save(&self.state_path)?;
@@ -1291,7 +1343,7 @@ impl Supervisor {
         let page_limit = self
             .config
             .page_limit
-            .min(MAX_PENDING - self.state.in_flight.len() - self.state.native_in_flight.len());
+            .min(MAX_PENDING - self.state.pending_count());
         let ready_work = self.state.has_ready_work();
         if self.state.repair_selection.is_none() && page_limit > 0 {
             let previous: BTreeSet<_> = self

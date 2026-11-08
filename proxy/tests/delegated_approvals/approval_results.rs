@@ -143,6 +143,39 @@ async fn private_results_survive_offline_decisions_and_broker_proxy_requester_re
     let f = f.restart().await;
     let rejection = result(&f, &rejected, "rejected").await;
     result(&f, &approved, "approved").await;
+    // Exercise the supervisor against the real producer's roomless references,
+    // after broker/proxy/requester restart, without granting room authority.
+    let page = client(&f, "worker")
+        .call(
+            "wait_for_coord",
+            &json!({"since_sequence":0,"limit":16,"timeout_seconds":0}),
+        )
+        .await
+        .unwrap();
+    let mut supervisor = safeyolo_proxy::coord_supervisor::Supervisor {
+        config: safeyolo_proxy::coord_supervisor::Config::default(),
+        state: safeyolo_proxy::coord_supervisor::State::default(),
+        state_path: f.root.path().join("supervisor-state.json"),
+        client: client(&f, "worker"),
+        harness_args: vec![],
+        initial_preflight_complete: false,
+    };
+    let rooms = std::collections::BTreeMap::new();
+    assert_eq!(supervisor.accept_page(&page, &rooms).unwrap(), 2);
+    supervisor.state =
+        safeyolo_proxy::coord_supervisor::State::load(&supervisor.state_path).unwrap();
+    assert_eq!(
+        supervisor.state.safe_cursor,
+        page["next_cursor"].as_u64().unwrap()
+    );
+    assert_eq!(
+        &supervisor.state.approval_notifications,
+        page["objects"].as_array().unwrap()
+    );
+    assert_eq!(supervisor.accept_page(&page, &rooms).unwrap(), 0);
+    assert_eq!(supervisor.state.approval_notifications.len(), 2);
+    assert!(supervisor.state.in_flight.is_empty());
+    assert!(supervisor.state.recent_attention_ids.is_empty());
     // Repeating an outcome is harmless and cannot execute the original traffic.
     let repeated = client(&f, "worker")
         .call(
