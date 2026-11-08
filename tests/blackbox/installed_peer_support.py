@@ -13,6 +13,13 @@ and retains proposals in scratch and canonical receipts in the instance.
 It does not launch a model or establish the separate unexplained-fault journey.
 Guest requests use Bash/curl and never copy the Agent API token to the host.
 On macOS retain the operator-approved VZ wrapper and authorized port settings.
+
+--probe-recovery selects only the failed-harness/probe/config-repair journey on
+the retained worker.sh fixture. Its saved command must run /workspace/worker.sh,
+which reads /home/agent/.config/worker.conf and writes /tmp/worker-ready. The
+driver changes only that owned config, preserves the script, observes the
+managed process through the guest helper, and prints receipts and status polls
+before assertions. It does not repeat the model diagnosis.
 """
 
 from __future__ import annotations
@@ -41,7 +48,10 @@ def run(args):
         return json.loads(result.stdout)
 
     def status(name):
-        return host("agent", "status", name)
+        observed = host("agent", "status", name)
+        if args.probe_recovery:
+            print(json.dumps({"host_status": observed}), flush=True)
+        return observed
 
     support, target = status(args.support), status(args.target)
     assert support["runtime_state"] == target["runtime_state"] == "stopped", (support, target)
@@ -92,6 +102,8 @@ def run(args):
 
     def execute(body, *, states=("completed",)):
         code, receipt = request("POST", "/support/operations", body)
+        if args.probe_recovery:
+            print(json.dumps({"http_status": code, "receipt": receipt}), flush=True)
         assert code == 200 and receipt["state"] in states, (code, receipt)
         assert receipt["initiator"]["agent_id"] == support["agent_id"], receipt
         assert receipt["target_id"] == target["agent_id"], receipt
@@ -126,6 +138,59 @@ def run(args):
                                   "timeout_seconds": timeout}, expected=expected))["result"]
 
     try:
+        if args.probe_recovery:
+            expiry = datetime.datetime.now().astimezone() + datetime.timedelta(minutes=20)
+            grant.update(guest_admin=True, expires_at=expiry.isoformat(),
+                         lifecycle=["start_harness", "restart_harness"])
+            apply()
+            host("agent", "start", args.support, "--sandbox-only")
+            booted = host("agent", "start", args.target, "--sandbox-only")
+            generation = booted["run_id"]
+            script_hash = guest("sha256sum /workspace/worker.sh", generation)["stdout"]
+            guest("printf 'WORKER_MODE=disabled\\n' > /home/agent/.config/worker.conf; "
+                  "rm -f /tmp/worker-ready", generation)
+            first = execute(operation({"action": "lifecycle", "operation": "start_harness"},
+                                      expected=generation), states=("completed", "outcome_unknown"))
+            assert first["result"] is not None, first
+            launch_id = first["result"]["launch_id"]
+            deadline = time.monotonic() + 30
+            while True:
+                failed = status(args.target)
+                assert failed["run_id"] == generation and failed["launch_id"] == launch_id, failed
+                if failed["agent_state"] == "failed":
+                    break
+                assert time.monotonic() < deadline, failed
+                time.sleep(.1)
+            assert inspect()["agent_state"] == "failed"
+            execute(operation({"action": "guest_probe", "timeout_seconds": 15}, expected=generation))
+            after_probe = inspect()
+            assert after_probe["run_id"] == generation and after_probe["launch_id"] == launch_id, after_probe
+            assert after_probe["agent_state"] == "failed", after_probe
+            repair = guest("printf 'WORKER_MODE=ready\\n' > /home/agent/.config/worker.conf; "
+                           "stat -c '%a %u %g' /home/agent/.config/worker.conf", generation)
+            assert repair["stdout"].strip() == "644 1000 1000", repair
+            recovered = lifecycle("restart_harness", generation)
+            assert recovered["launch_id"] != launch_id, recovered
+            # Independent host observer verifies guest process births and the
+            # exact saved managed command, rather than a manually launched worker.
+            checked = host("agent", "shell", args.target, "-c",
+                           "/safeyolo/safeyolo-guest supervise check")
+            launch = json.loads((args.root / "agents" / args.target / "current-launch.json").read_text())
+            print(json.dumps({"independent_supervisor": checked,
+                              "managed_launch": {key: launch[key] for key in
+                                                 ("agent_id", "launch_id", "command")}}), flush=True)
+            assert launch["agent_id"] == target["agent_id"]
+            assert checked["generation"] == generation and checked["state"] == "running", checked
+            assert checked["supervision_id"] == launch["launch_id"] == recovered["launch_id"]
+            assert checked["command"] == launch["command"] and checked["command_pid"] > 0, checked
+            verified = guest("cat /tmp/worker-ready; sha256sum /workspace/worker.sh", generation)
+            assert verified["stdout"].endswith(script_hash), verified
+            assert verified["stdout"].startswith("ready:"), verified
+            print("PASS failed harness -> authorized probe -> owned config repair -> managed restart; "
+                  "independent supervisor identity/process verified, sandbox generation and worker script unchanged", flush=True)
+            proposal_file.write_text(json.dumps({"expected_revision": revision}))
+            host("support", "revoke", grant_name, "--file", str(proposal_file), "--json")
+            return
         assert apply()["lifetime"] == "standing"
         host("agent", "start", args.support, "--sandbox-only")
         stopped = inspect()
@@ -209,6 +274,7 @@ def main():
     parser.add_argument("--scratch", type=Path, required=True)
     parser.add_argument("--support", default="support")
     parser.add_argument("--target", default="target")
+    parser.add_argument("--probe-recovery", action="store_true")
     run(parser.parse_args())
 
 

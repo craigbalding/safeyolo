@@ -480,7 +480,13 @@ async fn execute_locked(
                 tokio::runtime::Handle::current().block_on(crate::host_platform::in_config(config, async {
                     let value = crate::host_lifecycle::recover_guest_probe_authorized(
                         &root, &target.name, timeout, Some(lock),
-                        &|| authorize(&super::current_policy(&state)?, &run, &input).map(|_| ()),
+                        &|| {
+                            authorize(&super::current_policy(&state)?, &run, &input)?;
+                            if crate::host_runs::authority(&root, &target.name, &target.id).as_ref() != Some(&authority) {
+                                return Err("target run changed during the independent probe; its state was preserved".into());
+                            }
+                            Ok(())
+                        },
                     )?;
                     Ok(json!({"state":"completed","guest_probe":value["result"],"supervision_id":value["supervision_id"]}))
                 }))

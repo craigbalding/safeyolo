@@ -205,7 +205,9 @@ pub(crate) fn recover_guest_probe_authorized(
         None => SetupLock::acquire_in(&directory, Some(deadline))?,
     };
     let _launch = LaunchLock::acquire_in(&directory, Some(deadline))?;
-    if let Some(launch) = crate::guest_commands::read_state(&directory.join("current-launch.json"))?
+    let launch_path = directory.join("current-launch.json");
+    let launch = crate::guest_commands::read_state(&launch_path)?;
+    if let Some(launch) = &launch
         && matches!(
             launch["state"].as_str(),
             Some("starting" | "launching" | "stopping" | "finishing")
@@ -219,11 +221,38 @@ pub(crate) fn recover_guest_probe_authorized(
         .as_str()
         .filter(|generation| !generation.is_empty())
         .ok_or("current-run generation is missing")?;
+    let state_path = home.join(".safeyolo-command-supervisor.json");
+    let previous = crate::guest_commands::read_state(&state_path)?;
+    if previous
+        .as_ref()
+        .is_some_and(|state| state["generation"] != generation)
+    {
+        return Err("command supervisor belongs to another run; its state was left intact".into());
+    }
+    if let Some(launch) = &launch {
+        let agent_id = context["agent_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or("host launch agent identity is missing")?;
+        if launch["name"] != name || launch["agent_id"] != agent_id {
+            return Err("host launch belongs to another agent; its state was left intact".into());
+        }
+        if launch["launcher"]["kind"] == "supervisor" {
+            validate_supervisor_observation(
+                name,
+                agent_id,
+                launch,
+                &context["generation"],
+                previous
+                    .as_ref()
+                    .ok_or("recorded harness supervision is missing")?,
+            )?;
+        }
+    }
     let id = uuid::Uuid::new_v4().simple().to_string();
     let command = format!("exec {} probe {}", crate::guest_commands::HELPER, id);
     check()?;
     crate::guest_commands::publish(&home, &share, name, &command, &id, generation)?;
-    let state_path = home.join(".safeyolo-command-supervisor.json");
     let result = (|| {
         loop {
             let state = crate::guest_commands::read_state(&state_path)?
@@ -269,10 +298,30 @@ pub(crate) fn recover_guest_probe_authorized(
     // replacement command or signal a host PID copied from guest-writable state.
     if let Some(current) = crate::guest_commands::read_state(&state_path)?
         && current["supervision_id"] == id
+        && current["generation"] == generation
+        && current["command"] == command
     {
         crate::guest_commands::request_stop(&home, &share, &id)?;
     }
-    result
+    let result = result?;
+    // The probe borrowed an idle supervisor slot. Return the prior terminal
+    // observation, not its command: publishing that command would replay it.
+    // Keep a failed/uncertain probe visible instead of fabricating harness exit.
+    check()?;
+    if crate::guest_commands::read_state(&share.join("host-launch-context.json"))? != Some(context)
+        || crate::guest_commands::read_state(&launch_path)? != launch
+    {
+        return Err("agent run or launch changed during the probe; its state was preserved".into());
+    }
+    let current = crate::guest_commands::read_state(&state_path)?
+        .ok_or("probe supervision disappeared; completion is unverified")?;
+    if current != result["state"] {
+        return Err("probe supervision changed; replacement state was left intact".into());
+    }
+    if let Some(previous) = previous {
+        crate::guest_commands::write_json(&state_path, &previous)?;
+    }
+    Ok(result)
 }
 
 impl Drop for LaunchLock {
@@ -1066,20 +1115,21 @@ fn supervisor_state(name: &str) -> Result<Option<Value>, Error> {
 }
 
 fn validate_supervisor_observation(
-    agent: &Agent,
+    name: &str,
+    agent_id: &str,
     record: &Value,
     run_id: &Value,
     supervisor: &Value,
 ) -> Result<(), Error> {
     if run_id.as_str().is_none_or(str::is_empty)
-        || record["agent_id"] != agent.id
-        || record["name"] != agent.name
+        || record["agent_id"] != agent_id
+        || record["name"] != name
         || record["launch_id"].as_str().is_none_or(str::is_empty)
         || record["command"]
             .as_str()
             .is_none_or(|command| command.trim().is_empty())
         || supervisor["schema_version"] != 1
-        || supervisor["name"] != agent.name
+        || supervisor["name"] != name
         || supervisor["generation"] != *run_id
         || supervisor["supervision_id"] != record["launch_id"]
         || supervisor["command"] != record["command"]
@@ -1111,7 +1161,7 @@ async fn checked_supervisor_state(
         );
     }
     let supervisor: Value = serde_json::from_slice(&output.stdout)?;
-    validate_supervisor_observation(agent, record, run_id, &supervisor)?;
+    validate_supervisor_observation(&agent.name, &agent.id, record, run_id, &supervisor)?;
     let current = read_json(&launch_path(&agent.name))?
         .ok_or("host launch disappeared during the guest check; command state is unknown")?;
     for key in [
@@ -2688,7 +2738,14 @@ mod tests {
             for heartbeat in [100.0, 10_000_000_000.0] {
                 checked["heartbeat_at"] = json!(heartbeat);
                 assert!(
-                    validate_supervisor_observation(&agent, &record, &run_id, &checked).is_ok()
+                    validate_supervisor_observation(
+                        &agent.name,
+                        &agent.id,
+                        &record,
+                        &run_id,
+                        &checked
+                    )
+                    .is_ok()
                 );
                 assert!(reuses_current_launch(
                     &json!({"agent_state":checked["state"]})
@@ -2706,7 +2763,14 @@ mod tests {
                 let mut wrong = checked.clone();
                 wrong[key] = value;
                 assert!(
-                    validate_supervisor_observation(&agent, &record, &run_id, &wrong).is_err(),
+                    validate_supervisor_observation(
+                        &agent.name,
+                        &agent.id,
+                        &record,
+                        &run_id,
+                        &wrong
+                    )
+                    .is_err(),
                     "{wrong}"
                 );
             }
@@ -2723,7 +2787,14 @@ mod tests {
                     let mut wrong = checked.clone();
                     wrong[key] = value;
                     assert!(
-                        validate_supervisor_observation(&agent, &record, &run_id, &wrong).is_err(),
+                        validate_supervisor_observation(
+                            &agent.name,
+                            &agent.id,
+                            &record,
+                            &run_id,
+                            &wrong
+                        )
+                        .is_err(),
                         "{wrong}"
                     );
                 }
@@ -2732,7 +2803,14 @@ mod tests {
                 let mut wrong = record.clone();
                 wrong[key] = Value::Null;
                 assert!(
-                    validate_supervisor_observation(&agent, &wrong, &run_id, &checked).is_err()
+                    validate_supervisor_observation(
+                        &agent.name,
+                        &agent.id,
+                        &wrong,
+                        &run_id,
+                        &checked
+                    )
+                    .is_err()
                 );
             }
             // The actual common transport must refuse an unavailable sandbox;
@@ -2754,7 +2832,14 @@ mod tests {
                 let mut terminal = read_json(&supervisor_path(&agent.name)).unwrap().unwrap();
                 terminal["state"] = json!(label);
                 assert!(
-                    validate_supervisor_observation(&agent, &record, &run_id, &terminal).is_ok()
+                    validate_supervisor_observation(
+                        &agent.name,
+                        &agent.id,
+                        &record,
+                        &run_id,
+                        &terminal
+                    )
+                    .is_ok()
                 );
             }
         })

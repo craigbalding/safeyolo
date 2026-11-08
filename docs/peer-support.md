@@ -157,6 +157,12 @@ shared-home/PID-1 health probe without SSH. It requires a verified live target
 and idle command supervision. It does not replace an active command or grant
 privileged host access. Its process and SSH-banner observations are guest
 evidence; a successful probe is not a completed repair.
+After a successful probe, SafeYolo restores the previous terminal harness
+observation without rerunning its command. The run, launch and current support
+authority must still match. Repair the diagnosed guest fault, then deliberately
+select an authorized `start_harness` or `restart_harness` action. Verify the
+configured harness identity and process independently. A timed-out probe keeps
+its uncertain state; it does not establish that the harness can safely restart.
 
 Each output stream retains at most 8192 bytes and reports truncation. Invalid
 UTF-8 bytes are replaced in the returned text. `transport_exit_code` and
