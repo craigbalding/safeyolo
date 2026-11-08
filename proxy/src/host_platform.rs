@@ -4,6 +4,9 @@
 //! per-agent VZ shell bridge. Neither path opens a host TCP listener.
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+mod command_output;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
@@ -538,6 +541,25 @@ pub(crate) fn is_managed_agent_listener(listener: &crate::AgentListener) -> bool
 }
 
 pub(crate) fn lock_host_state(path: &std::path::Path) -> io::Result<std::fs::File> {
+    host_state_lock(path, false)
+}
+
+pub(crate) fn try_lock_host_state(path: &std::path::Path) -> io::Result<std::fs::File> {
+    host_state_lock(path, true)
+}
+
+pub(crate) async fn lock_host_state_async(path: &std::path::Path) -> io::Result<std::fs::File> {
+    loop {
+        match try_lock_host_state(path) {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            result => return result,
+        }
+    }
+}
+
+fn host_state_lock(path: &std::path::Path, nonblocking: bool) -> io::Result<std::fs::File> {
     use std::os::{
         fd::AsRawFd,
         unix::fs::{MetadataExt, PermissionsExt},
@@ -562,7 +584,13 @@ pub(crate) fn lock_host_state(path: &std::path::Path) -> io::Result<std::fs::Fil
     {
         return Err(io::Error::other("unsafe host state lock"));
     }
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+    if unsafe {
+        libc::flock(
+            file.as_raw_fd(),
+            libc::LOCK_EX | if nonblocking { libc::LOCK_NB } else { 0 },
+        )
+    } != 0
+    {
         return Err(io::Error::last_os_error());
     }
     Ok(file)
@@ -1450,8 +1478,10 @@ pub(crate) async fn spawn_desktop_probe(name: &str) -> io::Result<tokio::process
         "exec /safeyolo/safeyolo-guest desktop-probe",
         true,
         false,
+        &mut || Ok(()),
     )
     .await
+    .map_err(guest_command_io_error)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -1460,20 +1490,22 @@ pub(crate) async fn spawn_desktop_probe(_name: &str) -> io::Result<tokio::proces
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) async fn spawn_guest_command_with_output(
+async fn spawn_guest_command_with_output_authorized(
     name: &str,
     command: &str,
     capture: bool,
     inherit_stdin: bool,
-) -> io::Result<tokio::process::Child> {
+    check: &mut (dyn FnMut() -> Result<(), crate::Error> + Send),
+) -> Result<tokio::process::Child, crate::Error> {
     if !valid_agent_name(name) || !guest_exec_available(name).await {
-        return Err(unavailable());
+        return Err(unavailable().into());
     }
     let wrapped = format!(
         ". /etc/environment 2>/dev/null; if [ -f /etc/mise-activate.sh ]; then . /etc/mise-activate.sh; fi; {command}"
     );
+    let mut transport = runsc_command(name)?;
     guest_command_stdio(
-        runsc_command(name)?.args([
+        transport.args([
             "exec",
             "--user",
             "1000:1000",
@@ -1486,8 +1518,11 @@ pub(crate) async fn spawn_guest_command_with_output(
         ]),
         capture,
         inherit_stdin,
-    )
-    .spawn()
+    );
+    // Availability probes can wait for control. Use current host authority
+    // after that wait, immediately before starting the guest transport.
+    check()?;
+    Ok(transport.spawn()?)
 }
 
 pub(crate) async fn check_stop_sandbox(name: &str) -> io::Result<()> {
@@ -1772,13 +1807,21 @@ pub(crate) async fn exec_guest_command(name: &str, command: &str) -> io::Result<
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) async fn spawn_guest_command_with_output(
+async fn spawn_guest_command_with_output_authorized(
     name: &str,
     command: &str,
     capture: bool,
     inherit_stdin: bool,
-) -> io::Result<tokio::process::Child> {
-    spawn_macos_guest_command(name, &macos_guest_command(command), capture, inherit_stdin).await
+    check: &mut (dyn FnMut() -> Result<(), crate::Error> + Send),
+) -> Result<tokio::process::Child, crate::Error> {
+    spawn_macos_guest_command(
+        name,
+        &macos_guest_command(command),
+        capture,
+        inherit_stdin,
+        check,
+    )
+    .await
 }
 
 #[cfg(target_os = "macos")]
@@ -1787,20 +1830,22 @@ async fn spawn_macos_guest_command(
     command: &str,
     capture: bool,
     inherit_stdin: bool,
-) -> io::Result<tokio::process::Child> {
+    check: &mut (dyn FnMut() -> Result<(), crate::Error> + Send),
+) -> Result<tokio::process::Child, crate::Error> {
     if !valid_agent_name(name) || !guest_exec_available(name).await {
-        return Err(unavailable());
+        return Err(unavailable().into());
     }
     let shell = config_dir()
         .join("data/shell-sockets")
         .join(format!("{name}.sock"));
     if !shell.exists() {
-        return Err(unavailable());
+        return Err(unavailable().into());
     }
     let key = config_dir().join("data/vm_ssh_key");
     let socket = shell.display().to_string().replace('\'', "'\\''");
+    let mut transport = Command::new("ssh");
     guest_command_stdio(
-        Command::new("ssh").args([
+        transport.args([
             "-i",
             key.to_str().unwrap_or_default(),
             "-o",
@@ -1825,8 +1870,9 @@ async fn spawn_macos_guest_command(
         ]),
         capture,
         inherit_stdin,
-    )
-    .spawn()
+    );
+    check()?;
+    Ok(transport.spawn()?)
 }
 
 #[cfg(target_os = "macos")]
@@ -2409,6 +2455,32 @@ pub(crate) async fn spawn_guest_command(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+fn guest_command_io_error(error: crate::Error) -> io::Error {
+    match error.downcast::<io::Error>() {
+        Ok(error) => *error,
+        Err(error) => io::Error::other(error),
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) async fn spawn_guest_command_with_output(
+    name: &str,
+    command: &str,
+    capture: bool,
+    inherit_stdin: bool,
+) -> io::Result<tokio::process::Child> {
+    spawn_guest_command_with_output_authorized(
+        name,
+        command,
+        capture,
+        inherit_stdin,
+        &mut || Ok(()),
+    )
+    .await
+    .map_err(guest_command_io_error)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) async fn guest_command_output(
     name: &str,
     command: &str,
@@ -2416,6 +2488,33 @@ pub(crate) async fn guest_command_output(
 ) -> io::Result<std::process::Output> {
     let child = spawn_guest_command_with_output(name, command, true, false).await?;
     wait_guest_command_output(child, timeout).await
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) async fn guest_command_output_authorized(
+    name: &str,
+    command: &str,
+    timeout: std::time::Duration,
+    check: &mut (dyn FnMut() -> Result<(), crate::Error> + Send),
+) -> Result<std::process::Output, crate::Error> {
+    let child =
+        spawn_guest_command_with_output_authorized(name, command, true, false, check).await?;
+    Ok(wait_guest_command_output(child, timeout).await?)
+}
+
+/// Capture a bounded prefix while draining both pipes. A deadline concerns the
+/// host transport; it is not evidence that guest descendants have terminated.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) async fn guest_command_output_bounded(
+    name: &str,
+    command: &str,
+    timeout: std::time::Duration,
+    limit: usize,
+    check: &mut (dyn FnMut() -> Result<(), crate::Error> + Send),
+) -> Result<serde_json::Value, crate::Error> {
+    let child =
+        spawn_guest_command_with_output_authorized(name, command, true, false, check).await?;
+    Ok(command_output::wait_guest_command_output_bounded(child, timeout, limit).await?)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

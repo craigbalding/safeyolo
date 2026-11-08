@@ -1142,6 +1142,49 @@ fn failed_observation_and_another_run_do_not_claim_running() {
 }
 
 #[test]
+fn harness_stop_uses_the_selected_launch_and_refuses_a_stale_generation() {
+    let guest = Guest::new();
+    let mut child = guest
+        .command()
+        .env("SAFEYOLO_GUEST_LAUNCH_ID", "selected-launch")
+        .args(["observe", "exec", "--", "/bin/sleep", "30"])
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !guest.records.join(format!("{}.json", child.id())).is_file() {
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(10));
+    }
+    for (run, launch) in [
+        ("stale-run", "selected-launch"),
+        ("command-fixture-run", "other-launch"),
+    ] {
+        let refused = guest
+            .command()
+            .args(["observe", "stop", run, launch])
+            .output()
+            .unwrap();
+        assert!(!refused.status.success());
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "an unrelated or stale request signalled the command"
+        );
+    }
+    let stopped = guest
+        .command()
+        .args(["observe", "stop", "command-fixture-run", "selected-launch"])
+        .output()
+        .unwrap();
+    assert!(
+        stopped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+    assert_eq!(stopped.stdout, b"stopped\n");
+    assert!(!child.wait().unwrap().success());
+}
+
+#[test]
 fn observed_exec_keeps_argv_and_cleans_a_failed_exec_record() {
     let guest = Guest::new();
     let output = guest

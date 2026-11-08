@@ -8,6 +8,7 @@
 - [Delegated decisions](#delegated-decisions)
 - [Approval context](#approval-context)
 - [Operator actions](#operator-actions)
+- [Delegated local peer support](#delegated-local-peer-support)
 - [Flow inspection](#flow-inspection)
 - [Service gateway](#service-gateway)
 - [Approved collaboration rooms](#approved-collaboration-rooms)
@@ -791,3 +792,48 @@ metadata consume that space. The effective running broker ceiling can be lower;
 the refusal reports the actual bound. Ordinary rooms retain their 256 KiB body
 and existing stream bounds. Coord history, retention, attention loss and
 ambiguous-publication semantics remain in force. No automatic resend occurs.
+
+## Delegated local peer support
+
+Use `support_grants()` in the native Model Context Protocol (MCP) client to
+inspect your current operator-owned support authority. A shared room, factory
+role or target's message grants no permission. Temporary grants expire at their
+selected time. Standing grants survive ordinary agent restarts until changed
+or revoked; recreated names do not inherit authority.
+
+`support_operation` accepts an `operation_id`, grant name, explicit durable
+`target_id`, optional owning `instance_id`, `expected_run` and typed `operation`.
+Start with `{"action":"inspect"}` and `expected_run:null`. Use the returned
+`result.run_id` for later commands and lifecycle actions. Inspection-only
+refuses caller commands. Authorized guest administration uses
+`{"action":"guest_command","command":"df -h","timeout_seconds":30}`.
+It includes existing guest sudo, credentials, services, writable mounts and
+the target's delegations. It can therefore exercise a target's peer authority
+or approval decisions. Keep independent review separate from a reviewer you
+can administer. Authorized guest logs use `{"action":"guest_log","path":"/exact/guest/path"}`.
+Authorized lifecycle actions use `{"action":"lifecycle","operation":"restart_harness"}`;
+the other actions are `start_harness`, `start_sandbox`, `stop_sandbox` and
+`restart_sandbox`. They use saved configuration and accept no host arguments.
+When guest execution fails, guest administrators can use
+`{"action":"guest_probe","timeout_seconds":15}` for the existing independent
+shared-home health probe. It requires verified runtime ownership and idle
+command supervision. The probe does not repair the fault or replace active
+work.
+
+After a lost reply, call `read_support_operation` with the original
+`operation_id`. Never silently repeat an uncertain effect with a new ID.
+Output is private, untrusted and bounded to 8192 bytes per stream. A timeout
+or canceled host transport does not prove guest descendants terminated.
+Current grants are rechecked after lock waits and before execution. Already
+started commands and disclosed data are not undone by revocation.
+An admitted operation's pending response can still deliver output after
+narrowing, expiry or revocation. Subsequent result reads require current
+authority.
+
+The Agent API equivalents are `GET /support/grants`, `POST /support/operations`
+and `GET /support/operations/OPERATION_ID`. Use the ordinary Agent API token
+through the configured proxy. Local calls require no shared room, target
+model/terminal participation or working Coord/NATS notifications. They still
+need the owning API, policy and required runtime controls. Remote support is
+outside this local interface. Ask the operator to preview or change the
+support grant when an action lacks authority. Do not substitute host access.

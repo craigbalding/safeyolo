@@ -178,7 +178,7 @@ fn run() -> Result<i32, Error> {
         }
         [help] if help == "--help" => {
             println!(
-                "safeyolo-guest [--context FILE] [--records DIR] [--state FILE] [--stop FILE] [--workspace DIR] observe check | observe exec -- PROGRAM [ARGS] | supervise [check] | clock-sync [watch] | probe ID [--ssh-port PORT] | desktop-probe | desktop-bridge --web DIRECTORY LOOPBACK:PORT VNC_LOOPBACK:PORT | lab-evidence capture --output DIR [--socket PATH] [--pane ID] [--file PATH] | lab-evidence redact [--check-text FILE | INPUT OUTPUT]\nGuest-only Linux executable. PID 1 launches supervise as the agent user. The host publishes command state in the shared home."
+                "safeyolo-guest [--context FILE] [--records DIR] [--state FILE] [--stop FILE] [--workspace DIR] observe check | observe exec -- PROGRAM [ARGS] | observe stop GENERATION LAUNCH_ID | supervise [check] | clock-sync [watch] | probe ID [--ssh-port PORT] | desktop-probe | desktop-bridge --web DIRECTORY LOOPBACK:PORT VNC_LOOPBACK:PORT | lab-evidence capture --output DIR [--socket PATH] [--pane ID] [--file PATH] | lab-evidence redact [--check-text FILE | INPUT OUTPUT]\nGuest-only Linux executable. PID 1 launches supervise as the agent user. The host publishes command state in the shared home."
             );
             Ok(0)
         }
@@ -187,6 +187,13 @@ fn run() -> Result<i32, Error> {
         [lab, rest @ ..] if lab == "lab-evidence" => lab_evidence::run(rest),
         [mount, rest @ ..] if mount == "extra-mount" => extra_mount::run(&paths, rest),
         [observe, check] if observe == "observe" && check == "check" => observation::check(&paths),
+        [observe, stop, generation, launch] if observe == "observe" && stop == "stop" => {
+            observation::stop(
+                &paths,
+                generation.to_str().ok_or("generation must be text")?,
+                launch.to_str().ok_or("launch identity must be text")?,
+            )
+        }
         [observe, exec, separator, command @ ..]
             if observe == "observe"
                 && exec == "exec"
