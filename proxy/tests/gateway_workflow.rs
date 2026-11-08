@@ -96,12 +96,6 @@ condition = {{ credential = "{credential_type}:*" }}
 [[hosts."127.0.0.1".rules]]
 action = "credential:use"
 resource = "127.0.0.1/*"
-effect = "allow"
-condition = {{ credential = "fixture-gateway:*" }}
-
-[[hosts."127.0.0.1".rules]]
-action = "credential:use"
-resource = "127.0.0.1/*"
 effect = "budget"
 budget = 1
 condition = {{ credential = "unrelated:*" }}
@@ -109,11 +103,6 @@ condition = {{ credential = "unrelated:*" }}
 [credential.unrelated]
 match = ["unrelated-[a-z]+"]
 headers = ["x-api-key"]
-allowed_hosts = ["127.0.0.1"]
-
-[credential.fixture-gateway]
-match = ['\Asgw_[0-9a-f]{{64}}\Z']
-headers = ["authorization"]
 allowed_hosts = ["127.0.0.1"]
 "#
     ));
@@ -750,6 +739,12 @@ enum HeldParentPhase {
     OriginTls,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LiveVaultFailure {
+    Save,
+    Unavailable,
+}
+
 /// Run one refresh response through the complete native UDS gateway path. The
 /// endpoint and origin are local TCP listeners, and the binding is loaded from
 /// the real policy/vault files rather than a hand-built injection result.
@@ -757,10 +752,13 @@ async fn run_live_refresh_response_case(
     response_status: u16,
     response_body: &'static [u8],
     expected_reason: &'static str,
-    save_failure: bool,
+    vault_failure: Option<LiveVaultFailure>,
     activation_failure: bool,
     held_phase: Option<HeldRefreshPhase>,
 ) {
+    let case = format!(
+        "provider HTTP {response_status}, {expected_reason}, vault={vault_failure:?}, activation={activation_failure}, phase={held_phase:?}"
+    );
     let root = tempfile::tempdir().unwrap();
     let root_path = root.path();
     for directory in ["data", "builtin", "services"] {
@@ -786,7 +784,8 @@ async fn run_live_refresh_response_case(
     let token_seen = Arc::new(Mutex::new(Vec::new()));
     let token_ready = Arc::new(Notify::new());
     let token_release = Arc::new(Notify::new());
-    let token_task = tokio::spawn({
+    let mut token_task = tokio::spawn({
+        let data_path = root_path.join("data");
         let token_seen = token_seen.clone();
         let token_ready = token_ready.clone();
         let token_release = token_release.clone();
@@ -827,6 +826,20 @@ async fn run_live_refresh_response_case(
                 }
             }
             token_seen.lock().unwrap().push(request);
+            if vault_failure == Some(LiveVaultFailure::Save) {
+                use std::os::unix::fs::PermissionsExt;
+                // The request has already loaded a real credential snapshot.
+                // Keep its vault and lock readable/writable, but deny creation
+                // of the atomic-save temporary file after the provider replies.
+                assert!(data_path.join("credentials.enc").is_file());
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(data_path.join("credentials.lock"))
+                    .unwrap();
+                std::fs::set_permissions(&data_path, std::fs::Permissions::from_mode(0o500))
+                    .unwrap();
+            }
             if activation_failure || held_phase == Some(HeldRefreshPhase::Send) {
                 token_ready.notify_one();
                 token_release.notified().await;
@@ -873,7 +886,11 @@ async fn run_live_refresh_response_case(
         .as_str()
         .unwrap()
         .to_owned();
-    if save_failure {
+    let original_vault = std::fs::read(&vault_path).unwrap();
+    let data_permissions = std::fs::metadata(root_path.join("data"))
+        .unwrap()
+        .permissions();
+    if vault_failure == Some(LiveVaultFailure::Unavailable) {
         std::fs::remove_file(&vault_path).unwrap();
         std::fs::create_dir(&vault_path).unwrap();
     }
@@ -952,20 +969,59 @@ async fn run_live_refresh_response_case(
         return;
     }
     let response = send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await;
-    status(&response, "503");
-    assert!(String::from_utf8_lossy(&response).contains(expected_reason));
-    assert!(origin_seen.lock().unwrap().is_empty());
-    assert_eq!(token_seen.lock().unwrap().len(), 1);
-    wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.refresh_failed").await;
-    let events = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
+    std::fs::set_permissions(root_path.join("data"), data_permissions).unwrap();
+    let actual: Value = serde_json::from_slice(body(&response)).unwrap();
+    assert!(
+        response.starts_with(b"HTTP/1.1 503"),
+        "{case}: expected HTTP 503"
+    );
+    assert_eq!(actual["reason_codes"], json!([expected_reason]), "{case}");
+    assert!(
+        origin_seen.lock().unwrap().is_empty(),
+        "{case}: reached origin"
+    );
+    assert_eq!(
+        token_seen.lock().unwrap().len(),
+        usize::from(vault_failure != Some(LiveVaultFailure::Unavailable)),
+        "{case}: provider request count"
+    );
+    if vault_failure == Some(LiveVaultFailure::Unavailable) {
+        assert!(vault_path.is_dir());
+        proxy.shutdown().await;
+    } else {
+        (&mut token_task).await.unwrap();
+        wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.refresh_failed").await;
+        assert_eq!(
+            std::fs::read(&vault_path).unwrap(),
+            original_vault,
+            "{case}: failed refresh changed vault bytes"
+        );
+        proxy.shutdown().await;
+    }
     let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
-    assert!(audit.contains("gateway.refresh_failed"));
-    assert!(audit.contains(expected_reason));
-    assert!(!events.contains("synthetic-expired-access"));
-    assert!(!events.contains("synthetic-refresh"));
-    assert!(!audit.contains("synthetic-expired-access"));
-    assert!(!audit.contains("synthetic-refresh"));
-    proxy.shutdown().await;
+    let event = if vault_failure == Some(LiveVaultFailure::Unavailable) {
+        "gateway.deny"
+    } else {
+        "gateway.refresh_failed"
+    };
+    assert!(audit.contains(event), "{case}");
+    assert!(audit.contains(expected_reason), "{case}");
+    for secret in [
+        &gateway_token,
+        "synthetic-expired-access",
+        "synthetic-refresh",
+        "synthetic-new",
+        "synthetic-leaked",
+    ] {
+        assert!(
+            !audit.contains(secret),
+            "{case}: audit disclosed credential"
+        );
+        assert!(
+            !String::from_utf8_lossy(&response).contains(secret),
+            "{case}: response disclosed credential"
+        );
+    }
     origin_task.abort();
     token_task.abort();
 }
@@ -1345,9 +1401,9 @@ async fn run_live_superseded_case(mutation: LiveVaultMutation, response_timeout:
             }
         }
     }
+    wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.refresh_failed").await;
     let events = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
     assert!(events.contains("REFRESH_SUPERSEDED"));
-    wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.refresh_failed").await;
     let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
     assert!(!audit.contains("synthetic-refresh-result"));
     proxy.shutdown().await;
@@ -1898,7 +1954,7 @@ async fn oauth_refresh_live_invalid_expiry_and_http_failures_are_categorical() {
         200,
         br#"{"access_token":42}"#,
         "REFRESH_INVALID_RESPONSE",
-        false,
+        None,
         false,
         None,
     )
@@ -1907,7 +1963,7 @@ async fn oauth_refresh_live_invalid_expiry_and_http_failures_are_categorical() {
         200,
         br#"{"access_token":"synthetic-new","expires_in":"never"}"#,
         "REFRESH_EXPIRY",
-        false,
+        None,
         false,
         None,
     )
@@ -1916,7 +1972,7 @@ async fn oauth_refresh_live_invalid_expiry_and_http_failures_are_categorical() {
         401,
         br#"{"error":"invalid_grant","access_token":"synthetic-leaked"}"#,
         "REFRESH_INVALID_RESPONSE",
-        false,
+        None,
         false,
         None,
     )
@@ -1925,7 +1981,16 @@ async fn oauth_refresh_live_invalid_expiry_and_http_failures_are_categorical() {
         200,
         br#"{"access_token":"synthetic-new","expires_in":3600}"#,
         "REFRESH_SAVE",
-        true,
+        Some(LiveVaultFailure::Save),
+        false,
+        None,
+    )
+    .await;
+    run_live_refresh_response_case(
+        200,
+        br#"{"access_token":"synthetic-new","expires_in":3600}"#,
+        "VAULT_UNAVAILABLE",
+        Some(LiveVaultFailure::Unavailable),
         false,
         None,
     )
@@ -1938,7 +2003,7 @@ async fn oauth_refresh_live_activation_failure_blocks_before_injection() {
         200,
         br#"{"access_token":"synthetic-activation-failed","expires_in":3600}"#,
         "REFRESH_ACTIVATION",
-        false,
+        None,
         true,
         None,
     )
@@ -2220,7 +2285,7 @@ async fn oauth_refresh_live_held_send_and_body_phases_timeout() {
         200,
         br#"{"access_token":"synthetic-handshake-timeout","expires_in":3600}"#,
         "REFRESH_TRANSPORT",
-        false,
+        None,
         false,
         Some(HeldRefreshPhase::BeforeRequest),
     )
@@ -2229,7 +2294,7 @@ async fn oauth_refresh_live_held_send_and_body_phases_timeout() {
         200,
         br#"{"access_token":"synthetic-send-timeout","expires_in":3600}"#,
         "REFRESH_TRANSPORT",
-        false,
+        None,
         false,
         Some(HeldRefreshPhase::Send),
     )
@@ -2241,7 +2306,7 @@ async fn oauth_refresh_live_held_send_and_body_phases_timeout() {
         200,
         br#"{"access_token":"synthetic-body-timeout","expires_in":3600}"#,
         "REFRESH_TRANSPORT",
-        false,
+        None,
         false,
         Some(HeldRefreshPhase::Body),
     )
@@ -2379,6 +2444,13 @@ async fn simple_service_access_watcher_discovery_retry_and_isolation() {
             "simple-secret",
             "bearer",
             Secret::new("exact-synthetic-origin-credential"),
+        ))
+        .unwrap();
+    vault
+        .store(Credential::new(
+            "replacement-secret",
+            "bearer",
+            Secret::new("exact-synthetic-replacement-credential"),
         ))
         .unwrap();
     vault
@@ -2554,10 +2626,20 @@ token = "other-secret"
             .any(|window| window == b"/v1/value?sig=%252F&body=%252F")
     );
 
-    // A deliberate operator edit replaces the durable binding and its token.
+    // Reauthorizing the same binding retains its token. The native admin
+    // response publishes the policy before we inspect the resulting view.
+    let unchanged = admin_http(admin_port, &replace_service_request("simple-secret")).await;
+    status(&unchanged, "200");
+    let unchanged_view = wait_for_alice(&root_path.join("alice.sock")).await;
+    assert_eq!(
+        unchanged_view["authorized"]["simple"]["token"],
+        gateway_token
+    );
+
+    // A distinct credential binding rotates the token and rejects the old one.
     // A resolved canonical approval cannot be replayed to perform that edit.
     let replacement_response =
-        admin_http(admin_port, &replace_service_request("simple-secret")).await;
+        admin_http(admin_port, &replace_service_request("replacement-secret")).await;
     status(&replacement_response, "200");
     let replacement_view =
         wait_for_alice_token_change(&root_path.join("alice.sock"), &gateway_token).await;
@@ -2589,6 +2671,15 @@ token = "other-secret"
     })
     .await
     .unwrap();
+    let replacement_request = seen.lock().unwrap()[2].clone();
+    assert!(replacement_request
+        .windows(b"Authorization: Bearer exact-synthetic-replacement-credential".len())
+        .any(|window| window == b"Authorization: Bearer exact-synthetic-replacement-credential"));
+    assert!(
+        !replacement_request
+            .windows(replacement_token.len())
+            .any(|window| window == replacement_token.as_bytes())
+    );
     let wrong_method = send_agent_request(
         &root_path.join("alice.sock"),
         origin_port,
@@ -3666,15 +3757,19 @@ async fn check_refreshed_credential_deny(replacement: &str, credential_type: &st
     assert_eq!(
         guard_rows.len(),
         2,
-        "each final credential gets one guard evaluation"
+        "initial unrelated header and refreshed replacement each get one guard row"
     );
     assert_eq!(
         guard_rows[0]["details"]["evaluations"]
             .as_array()
             .unwrap()
             .len(),
-        2
+        1
     );
+    let initial = &guard_rows[0]["details"]["evaluations"][0];
+    assert_eq!(initial["finding"]["credential_type"], "unrelated");
+    assert_eq!(initial["finding"]["header"], "X-Api-Key");
+    assert_eq!(initial["effect"], "allow");
     assert_eq!(
         guard_rows[1]["details"]["evaluations"]
             .as_array()
@@ -3691,7 +3786,7 @@ async fn check_refreshed_credential_deny(replacement: &str, credential_type: &st
         &root_path.join("audit.jsonl"),
         "security.credential_guard",
         &request_id,
-        3,
+        2,
     )
     .await;
     let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
@@ -3702,10 +3797,29 @@ async fn check_refreshed_credential_deny(replacement: &str, credential_type: &st
             .filter(|row| row["event"] == "security.credential_guard"
                 && row["request_id"] == request_id)
             .count(),
-        3,
+        2,
         "unrelated credentials are audited once despite final gateway checking"
     );
-    assert!(!audit.contains(replacement));
+    assert_eq!(
+        audit
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|row| row["event"] == "security.credential_guard"
+                && row["request_id"] == request_id
+                && row["details"]["rule"] == "unrelated")
+            .count(),
+        1,
+        "the unrelated budgeted credential is evaluated and charged once"
+    );
+    for secret in [
+        replacement,
+        &gateway_token,
+        "unrelated-synthetic",
+        "synthetic-refresh",
+    ] {
+        assert!(!audit.contains(secret));
+        assert!(!String::from_utf8_lossy(&denied).contains(secret));
+    }
     let finding = &guard_rows[1]["details"]["evaluations"][0]["finding"];
     assert_eq!(finding["credential_type"], credential_type);
     let _ = stop_tx.send(());
