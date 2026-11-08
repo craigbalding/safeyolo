@@ -86,7 +86,12 @@ impl CoordCleanup {
         let task = handle.spawn(async move {
             let _ = stream.delete_consumer(&name).await;
         });
+        self.track(task);
+    }
+
+    fn track(&self, task: tokio::task::JoinHandle<()>) {
         if let Ok(mut pending) = self.pending.lock() {
+            pending.retain(|task| !task.is_finished());
             pending.push(task);
         } else {
             task.abort();
@@ -114,6 +119,7 @@ pub(crate) struct CoordOwner {
     explicit_directory: bool,
     nats: tokio::sync::Mutex<Option<async_nats::Client>>,
     federation_nats: tokio::sync::Mutex<Option<async_nats::Client>>,
+    federation: federation::Connections,
     cleanup: Arc<CoordCleanup>,
     snapshot_reads: Arc<inventory::SnapshotReads>,
     collaboration_scanner: Option<crate::inspection::Scanner>,
@@ -141,6 +147,7 @@ impl CoordOwner {
             explicit_directory,
             nats: tokio::sync::Mutex::new(None),
             federation_nats: tokio::sync::Mutex::new(None),
+            federation: federation::Connections::default(),
             cleanup: Arc::new(CoordCleanup::new()),
             snapshot_reads: Arc::new(inventory::SnapshotReads::default()),
             collaboration_scanner,
@@ -357,19 +364,40 @@ impl CoordClient {
         )
     }
 
+    pub(crate) async fn diagnostics(&self) -> Result<Value, crate::Error> {
+        let mut diagnostics = outbox::diagnostics(&self.owner.data_dir.join("v0.db"))?;
+        diagnostics["federation"] = self.owner.federation.diagnostics().await;
+        diagnostics["local_connection"] = json!(
+            self.owner
+                .nats
+                .lock()
+                .await
+                .as_ref()
+                .map(|client| format!("{:?}", client.connection_state()))
+        );
+        diagnostics["owner_federation_connection"] = json!(
+            self.owner
+                .federation_nats
+                .lock()
+                .await
+                .as_ref()
+                .map(|client| format!("{:?}", client.connection_state()))
+        );
+        Ok(diagnostics)
+    }
+
     pub(crate) async fn shutdown(&self) {
         self.owner.cleanup.drain().await;
     }
 
     async fn client(&self) -> Result<async_nats::Client, CoordError> {
         let mut current = self.owner.nats.lock().await;
-        if let Some(client) = current.as_ref()
-            && matches!(
-                client.connection_state(),
-                async_nats::connection::State::Connected
-            )
-        {
-            return Ok(client.clone());
+        if let Some(client) = current.as_ref() {
+            return if client.connection_state() == async_nats::connection::State::Connected {
+                Ok(client.clone())
+            } else {
+                Err(CoordError::Unavailable)
+            };
         }
         let client = self
             .connect_nats(async_nats::ConnectOptions::new())
@@ -886,6 +914,54 @@ impl CoordClient {
                 }
             }
         }
+    }
+
+    // The owner repairs each room independently. Remote waiters need no
+    // periodic network reads to discover an accepted, unprojected manifest.
+    async fn repair_projections(&self, after: &mut String) -> Result<(), CoordError> {
+        let db = self.owner.data_dir.join("v0.db");
+        let rooms = {
+            let conn = open_db(&db, false)?;
+            conn.prepare("SELECT room_id FROM rooms WHERE room_id>?1 ORDER BY room_id LIMIT 8")
+                .map_err(|_| CoordError::Data)?
+                .query_map([after.as_str()], |row| row.get::<_, String>(0))
+                .map_err(|_| CoordError::Data)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| CoordError::Data)?
+        };
+        if rooms.is_empty() {
+            after.clear();
+            return Ok(());
+        }
+        *after = rooms.last().expect("nonempty rooms").clone();
+        let connection = self.client().await?;
+        let jetstream = jetstream::new(connection);
+        use futures_util::stream;
+        stream::iter(rooms)
+            .map(|room| {
+                let jetstream = jetstream.clone();
+                async move {
+                    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+                        let mut stream = jetstream
+                            .get_stream(room_stream(&room))
+                            .await
+                            .map_err(|_| CoordError::Unavailable)?;
+                        self.ensure_room_projection(&room, &mut stream).await?;
+                        let through = stream
+                            .info()
+                            .await
+                            .map_err(|_| CoordError::Unavailable)?
+                            .state
+                            .last_sequence;
+                        self.project_room_through(&room, &mut stream, through).await
+                    })
+                    .await;
+                }
+            })
+            .buffer_unordered(4)
+            .collect::<Vec<_>>()
+            .await;
+        Ok(())
     }
 
     async fn recover_attention(&self, principal: &str) -> Result<(), CoordError> {

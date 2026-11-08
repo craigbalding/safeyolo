@@ -13,7 +13,7 @@ use std::{
 };
 
 const NATS_VERSION: &str = "2.14.5";
-pub(crate) const SCHEMA_VERSION: u32 = 10;
+pub(crate) const SCHEMA_VERSION: u32 = 11;
 pub(crate) const COLLABORATION_MAX_ENVELOPE_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) mod brief;
 mod inventory;
@@ -69,7 +69,7 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
         }
         transaction.execute_batch(include_str!("coord_schema.sql"))?;
         transaction.execute("INSERT INTO instance(id) VALUES (?1)", [id.trim()])?;
-    } else if ![5, 6, 7, 8, 9, SCHEMA_VERSION].contains(&version) {
+    } else if ![5, 6, 7, 8, 9, 10, SCHEMA_VERSION].contains(&version) {
         return Err(format!(
             "Coord schema {version} is not operational; expected version {SCHEMA_VERSION}"
         )
@@ -81,6 +81,11 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
     }
     transaction.execute_batch(include_str!("coord_signal_schema.sql"))?;
     transaction.execute_batch(include_str!("coord_operational_schema.sql"))?;
+    if (5..=10).contains(&version) {
+        transaction.execute_batch(
+            "ALTER TABLE coord_outbox ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
     transaction.execute_batch(include_str!("coord_federation_schema.sql"))?;
     transaction.execute_batch(include_str!("coord_membership_grants.sql"))?;
     // Earlier writers drop assignment and selected authority on rewrite.
@@ -288,6 +293,10 @@ fn stop_owned(pid: i32, token: &str) -> Result<(), Error> {
 }
 
 async fn monitor(port: u16) -> Result<Value, Error> {
+    monitor_path(port, "/varz").await
+}
+
+async fn monitor_path(port: u16, path: &str) -> Result<Value, Error> {
     let stream = tokio::time::timeout(
         Duration::from_secs(1),
         tokio::net::TcpStream::connect(("127.0.0.1", port)),
@@ -296,7 +305,7 @@ async fn monitor(port: u16) -> Result<Value, Error> {
     crate::native_client::send_json(
         stream,
         &format!("127.0.0.1:{port}"),
-        "/varz",
+        path,
         "",
         hyper::Method::GET,
         Value::Null,
@@ -566,9 +575,32 @@ pub async fn status(root: &Path) -> Result<Value, Error> {
                 Ok(true) if verified(root, &saved).await.unwrap_or(false) => "running",
                 _ => "unknown",
             };
-            Ok(
-                json!({"state":state,"process":saved,"next_action":if state=="unknown"{json!("inspect the owned NATS log and monitor; do not replace an unverified live process")}else{Value::Null}}),
+            let mut status = json!({"state":state,"process":saved,"next_action":if state=="unknown"{json!("inspect the owned NATS log and monitor; do not replace an unverified live process")}else{Value::Null}});
+            if state == "running"
+                && let Some(port) = saved["monitor_port"]
+                    .as_u64()
+                    .and_then(|port| u16::try_from(port).ok())
+            {
+                let varz = monitor(port).await.unwrap_or(Value::Null);
+                let js = monitor_path(port, "/jsz").await.unwrap_or(Value::Null);
+                status["broker"] = json!({"connections":varz["connections"],"total_connections":varz["total_connections"],"subscriptions":varz["subscriptions"],"slow_consumers":varz["slow_consumers"],
+                        "jetstream":{"memory":js["memory"],"storage":js["storage"],"reserved_storage":js["reserved_storage"],"streams":js["streams"],"consumers":js["consumers"],"limits":varz["jetstream"]["config"]}});
+            }
+            status["delivery"] =
+                crate::agent_api::coord::outbox::diagnostics(&directory(root)?.join("v0.db"))
+                    .unwrap_or(json!({"availability":"unavailable"}));
+            if let Ok(runtime) = crate::native_client::admin(
+                &root.join("config.toml"),
+                "/admin/coord/diagnostics",
+                hyper::Method::GET,
+                Value::Null,
+                Duration::from_millis(500),
             )
+            .await
+            {
+                status["runtime"] = runtime;
+            }
+            Ok(status)
         }
     }
 }
@@ -656,6 +688,7 @@ pub(crate) async fn create_named_room(
             "INSERT INTO rooms(room_id,name,created_at) VALUES (?1,?2,?3)",
             params![id, name, now()],
         )?;
+        transaction.execute("INSERT INTO coord_message_attention_projection(room_id,last_sequence,updated_at) VALUES(?1,0,?2)", params![id,now()])?;
         membership::change(
             &transaction,
             &id,

@@ -510,13 +510,14 @@ factory roles and other Coord writers. Preserve the instance root, role homes,
 checkpoints, source trees and retained artifacts. Install matching host and
 guest executables before resuming those roles.
 
-The current store uses native schema 10. Bootstrap transactionally upgrades the
+The current store uses native schema 11. Bootstrap transactionally upgrades the
 retained native schema 5 work projection to admit cancellation and fences
-schema 5/6/7/8/9 writers before storing reviews, requirements, decisions,
-execution assignments or selected Factory policy. It preserves
+schema 5/6/7/8/9/10 writers before storing reviews, requirements, decisions,
+execution assignments or selected Factory policy. Schema 11 also records outbox
+retry deadlines and per-source observation health. It preserves
 claim IDs and generations, immutable revision bytes, operation receipts,
 attention, outbox rows and retained messages. A failed upgrade rolls back. An
-older executable refuses schema 10; do not run mixed writers or overwrite the
+older executable refuses schema 11; do not run mixed writers or overwrite the
 store to make an older executable start. Unsupported implementation generations
 remain refused.
 
@@ -896,6 +897,83 @@ Notification or JetStream failure alone does not block permitted Core NATS
 support requests while B's policy, canonical and runtime owners work. If Core
 NATS is unavailable, remote control is unavailable. Use B's existing local
 owner-side API or CLI to recover the transport where those controls work.
+
+### Delivery, recovery and resource limits
+
+Local wake hints and retained federation hints have separate obligations in
+the existing outbox. A failed peer stream does not hold a later local or
+other-peer hint. Each destination attempts up to 64 eligible rows per pass,
+with at most eight publications in flight and a two-second attempt deadline.
+Failed rows retry after 1, 2, 4, 8, 16 and then 30 seconds. The pass pauses for
+250 milliseconds. Canonical attention remains readable throughout. An eligible
+row with an earlier retry deadline goes first; new hints start with
+a zero deadline. A full batch of failed rows cannot repeatedly bypass later
+unattempted hints or older eligible retries. An
+ambiguous publication can repeat a hint; recipients deduplicate by their own
+canonical source cursor. A disconnected recipient does not prevent the owner
+from retaining its hint.
+
+The owning proxy repairs retained room-message projections in batches of eight
+rooms, with four rooms in flight and a two-second deadline per room. Batches
+pause for 250 milliseconds. A publisher can exit after JetStream acceptance
+and before SQLite projection; the owner recovers the accepted manifest and
+stages its ordinary attention hint. Remote waiters need no frequent network
+poll to trigger that repair. Each scan includes an empty pass to wrap its
+cursor. With one batch of rooms, the pauses add 500 milliseconds per cycle;
+room processing adds at most two seconds per group of four. Larger room sets
+rotate through subsequent batches.
+No repair reissues the original mutation or changes a caller's source cursor.
+
+Repeated calls reuse a TLS NATS connection for their destination and security
+context. Changing a route revision, destination, credential bytes or CA bytes
+invalidates reuse. Each proxy caches up to 32 connections. It admits 32 outgoing
+long waits and 32 outgoing commands or waits of at most one second. Cancellation
+keeps its slot until bounded cleanup finishes. A cached client reconnects its
+subscriptions; SafeYolo does not resubmit a possibly executed request.
+
+The owner admits up to 64 ordinary requests, including at most 16 long waits.
+Each configured peer has 16 command/short-wait slots and eight long-wait slots.
+Consumer cleanup has eight separate owner slots, at most four per peer.
+These budgets reserve command and cleanup progress during long waits. Admission
+refusal returns HTTP 429 with `mutation_outcome: not_attempted`; inspect a lost
+reply before retrying any request whose admission is uncertain.
+
+Each peer's retained notification stream admits at most 64 wait consumers.
+The cap also applies when a retained stream predates the limit. Existing
+consumers finish or expire; reaching the cap refuses new waits without
+preventing hint publication.
+Wait completion and cancellation request explicit owner-side deletion using the
+authenticated source and principal. A source proxy permits four cleanup RPCs
+at once. The 330-second inactivity threshold recovers consumers left by a
+process exit or unavailable cleanup path. It is not normal completion cleanup.
+Cancellation also retires an active owner-side room-message wait and its local
+consumer, using the authenticated source, agent and wait identity.
+When a consumer is replaced or a connection is lost, keep that source's cursor
+and resume under current authority.
+
+On the owning host, `safeyolo --root ROOT coord status` reports broker connection,
+subscription and consumer counts, JetStream usage and configured capacity,
+pending outbox count and age, failed delivery and SQLite size. When the proxy
+is available, it also reports active requests/waits, admission rejection,
+connection state/events and per-source observer health. The same proxy view is
+available through authenticated `GET /admin/coord/diagnostics`. Error classes
+exclude wire bodies and credentials. Broker counters include connections made
+by operator tools as well as the proxy. Cached-connection counts exclude old
+security contexts still held by in-flight callers.
+
+Room streams retain at most 100,000 messages for seven days. The managed broker
+has a 1 GiB file-store limit. Federation streams retain the latest hint per
+qualified recipient. Canonical references, operation receipts, attention and
+delivered outbox rows have no automatic age-based pruning or maintenance
+command. Monitor store growth and preserve the owning root and broker state;
+this change adds neither silent pruning nor a second audit archive. Source
+evidence can have shorter retention, as described in
+[operational events](operational-events.md#loss-and-recovery).
+
+`SY_LOCAL` and `SY_FED` are account roles inside each independently owned broker.
+Using those names in a shared broker or bridging accounts is not a supported
+deployment recipe. Such a deployment needs explicit identity, subject-permission
+and JetStream namespace design.
 
 On B, revoke one membership or all peer trust:
 

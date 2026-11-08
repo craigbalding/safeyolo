@@ -91,7 +91,7 @@ fn inspect(owner: &str, id: &str) -> Value {
     json!({"operation_id":id,"grant":"incident","instance_id":owner,"target_id":ALICE,"expected_run":null,"operation":{"action":"inspect"}})
 }
 
-fn hash(value: &str) -> String {
+pub(super) fn hash(value: &str) -> String {
     ring::digest::digest(&ring::digest::SHA256, value.as_bytes())
         .as_ref()
         .iter()
@@ -293,7 +293,7 @@ async fn core_support_survives_notification_outage_and_local_owner_can_restore_c
         .await
         .unwrap();
     // Create the actual retained-notification consumer before the outage.
-    let mut subscribe = wire(&b_id, Value::Null);
+    let mut subscribe = wire(&b_id, json!({"wait_id":"a".repeat(32)}));
     subscribe["path"] = json!("/api/coord/attention/subscribe");
     assert_eq!(raw(&conn, &b_id, &a_id, subscribe).await["status"], 200);
     let config = b.join("data/coord/nats/server.conf");
@@ -403,6 +403,7 @@ async fn core_support_survives_notification_outage_and_local_owner_can_restore_c
     )
     .await;
     let _ready = connection(&b, &a, &a_id).await;
+    await_remote_connection(&a, &b_id).await;
     assert_eq!(
         remote
             .call("support_operation", &inspect(&b_id, "core-restored"))
@@ -658,7 +659,7 @@ async fn remote_support_uses_owner_grants_receipts_and_independent_attention_sou
     assert_eq!(rebound["sources"][0]["next_cursor"], cursors[0]);
     // A disconnected source keeps its position. A still supplies useful
     // work, and B's independently retained references resume after reconnect.
-    link.partitioned.store(true, Ordering::SeqCst);
+    link.partition(true);
     let before_a = count(&a, "SELECT count(*) FROM coord_operational_references");
     let before_b = count(&b, "SELECT count(*) FROM coord_operational_references");
     drop(target_a);
@@ -683,7 +684,8 @@ async fn remote_support_uses_owner_grants_receipts_and_independent_attention_sou
         local.call("support_operation", &healthy).await.unwrap()["instance_id"],
         a_id
     );
-    link.partitioned.store(false, Ordering::SeqCst);
+    link.partition(false);
+    await_remote_connection(&a, &b_id).await;
     let resumed=local.call("wait_for_coord",&json!({"sources":[{"home":"primary","instance_id":b_id,"since_sequence":cursors[1]}],"timeout_seconds":3,"limit":50})).await.unwrap();
     assert_eq!(
         resumed["sources"][0]["availability"], "available",
