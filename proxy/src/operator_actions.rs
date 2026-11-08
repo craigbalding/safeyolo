@@ -249,6 +249,10 @@ pub(crate) fn resolve(
                 .ok_or_else(|| invalid("policy unavailable"))?;
             let delegated = reviewer.map(|(run, name)| pending::delegation::authorize(&policy, record, run, name, option.unwrap_or("once"))).transpose()?;
             if record.status != "pending" { return Ok(()); }
+            if let Some((run, name)) = reviewer {
+                let saved = pending::saved_policy(state, &policy)?;
+                pending::delegation::authorize(&saved, record, run, name, option.unwrap_or("once"))?;
+            }
             let current = pending::current_view(writer, &policy, record, Some(state))?;
             if current["status"] != "pending" {
                 record.status = current["status"].as_str().unwrap_or("superseded").into();

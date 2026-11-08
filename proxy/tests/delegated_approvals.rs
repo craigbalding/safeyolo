@@ -15,6 +15,8 @@ mod collaboration;
 mod contract_binding;
 #[path = "delegated_approvals/coord_room.rs"]
 mod coord_room;
+#[path = "delegated_approvals/current_authority.rs"]
+mod current_authority;
 #[path = "support/operator_nats.rs"]
 mod operator_nats;
 #[path = "delegated_approvals/service_authorization.rs"]
