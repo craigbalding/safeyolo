@@ -5427,6 +5427,9 @@ pub(crate) fn serve_request(
     Box::pin(async move {
         let runtime = state.read().expect("runtime read lock").clone();
         let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
+        let docker_selected = request
+            .headers()
+            .contains_key(crate::services::docker::SERVICE_HEADER);
         if identity.request_agent().is_none() {
             let mut event = identity.request_event(
                 "security.agent_identity_unavailable",
@@ -5439,7 +5442,11 @@ pub(crate) fn serve_request(
             event.severity = crate::audit::Severity::Medium;
             event.decision = Some(crate::audit::Decision::Log);
             if runtime.audit.emit(event).is_err() {
-                return Ok(response(StatusCode::BAD_GATEWAY, "Proxy request failed"));
+                let mut reply = response(StatusCode::BAD_GATEWAY, "Proxy request failed");
+                if docker_selected {
+                    docker::client_error(&mut reply).await;
+                }
+                return Ok(reply);
             }
         }
         if let Some(connection) = upgrades.ingress.get() {
@@ -5580,6 +5587,17 @@ pub(crate) fn serve_request(
                     destination.port,
                 ))
             });
+        let docker_request = docker_selected
+            || destination.as_ref().is_ok_and(|destination| {
+                runtime
+                    .policy
+                    .as_deref()
+                    .and_then(crate::policy::Policy::gateway)
+                    .and_then(|gateway| {
+                        gateway.docker_for_endpoint(&destination.host, destination.port)
+                    })
+                    .is_some()
+            });
         let result = match &destination {
             Ok(destination) => {
                 forward(
@@ -5638,6 +5656,9 @@ pub(crate) fn serve_request(
                 "error".into(),
             )
         });
+        if docker_request {
+            docker::client_error(&mut reply).await;
+        }
         // Hyper's HTTP/2 server can send DATA for a HEAD response. Local
         // refusals must end after the headers, while keeping their decision
         // and response metadata. Upstream HEAD completion keeps its own owner.

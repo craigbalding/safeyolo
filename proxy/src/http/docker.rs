@@ -9,6 +9,51 @@ use serde_json::json;
 use super::{Body, Destination, HttpTask, full, live_view, strip_hop_headers};
 use crate::{ConnectionIdentity, Error, Runtime, UpgradeTasks};
 
+/// Docker's API client decodes JSON failures from `message`, not `error`.
+/// Only local, buffered refusals are adapted; daemon responses stay untouched.
+pub(super) async fn client_error(reply: &mut Response<Body>) {
+    use http_body_util::BodyExt;
+    if !(reply.status().is_client_error() || reply.status().is_server_error())
+        || reply.extensions().get::<live_view::Upstream>().is_some()
+    {
+        return;
+    }
+    let bytes = reply
+        .body_mut()
+        .collect()
+        .await
+        .expect("local replies have infallible buffered bodies")
+        .to_bytes();
+    let mut body = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| json!({"error": String::from_utf8_lossy(&bytes)}));
+    let message = body
+        .get("message")
+        .or_else(|| body.get("error"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|message| !message.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("SafeYolo refused the Docker request: {}", reply.status()));
+    body["message"] = json!(message);
+    let bytes = bytes::Bytes::from(body.to_string());
+    reply
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+    if reply.headers().contains_key(header::CONTENT_LENGTH) {
+        reply
+            .headers_mut()
+            .insert(header::CONTENT_LENGTH, bytes.len().into());
+    }
+    if let Some(local) = reply
+        .extensions_mut()
+        .get_mut::<super::traffic::LocalResponse>()
+    {
+        local.size = bytes.len() as u64;
+    }
+    *reply.body_mut() = full(bytes);
+}
+
 /// These GETs obtain prerequisite facts for an already admitted operation.
 /// They use the selected credential and the ordinary verified outbound route;
 /// no client-selected URL, redirect, response payload or retry is exposed.

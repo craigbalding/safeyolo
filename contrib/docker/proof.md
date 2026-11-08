@@ -367,12 +367,32 @@ integration.
 
 ## Internal Docker management connection
 
-The retained check at `232ab6aed74d32ab9c65b40321baaf6c91bd7b50`
-(execution 15490) reached Docker 26.1.5/API 1.45, refused an unapproved caller,
-and created, started and inspected its container. Exec then exited 0 with no
-output. Attach, removal and daemon/provider failure controls were not reached.
-Preserve that container and exec state. Inspect actual state before cleanup or
-another operation; do not repeat the external lifecycle.
+Execution 16006 reused the repaired four-file runtime from producer 42482622552
+and the existing driver at `232ab6aed74d32ab9c65b40321baaf6c91bd7b50`.
+The debug proxy at `e340a934` has the same Docker, host and provider source as
+`ae76f656`; their proxy source differences are confined to Coord supervisor
+modules. This is mixed-input debug proof, not shipping-package acceptance.
+Docker CLI/Engine 26.1.5 with API 1.45 passed internal create/start/inspect,
+16-byte exec output, 27-byte attach output and removal. The exact container from
+the interrupted execution 15490 was absent before these writes.
+
+The stopped-daemon phase returned only `Error response from daemon: \n\n` on
+stderr. The fixture then failed its literal `502`/`503` CLI assertion. Raw HTTP
+status and body were not collected; no HTTP status is established by that
+client output. Closed-port and stopped-provider phases did not run. All owned
+processes stopped and the original four runtime files, modes, checksum file,
+policy, service, configuration and binary selection were restored. Retain the
+positive results and run only the missing negative controls below.
+
+Docker 26.1.5's [API error decoder](https://github.com/moby/moby/blob/v26.1.5/client/request.go#L188-L221)
+reads JSON failures from `message`. SafeYolo adds that field to its local Docker
+failure replies while retaining their existing fields, status and attribution
+headers. It uses the existing sanitized diagnostic, or a local refusal message
+when the error is structured. Daemon responses pass through unchanged. The
+client check requires nonzero exit and diagnostic text beyond Docker's generic
+prefix; it does not require HTTP numbers in stderr. Each negative phase retains
+the actual exit, stderr and a separate read-only HTTP status/body capture before
+checking the diagnostic.
 
 The [provider diagnosis](https://github.com/craigbalding/safeyolo/issues/1437#issuecomment-6713267349)
 bound the failure to deployed runsc source
@@ -423,7 +443,10 @@ inputs and all four output hashes; that version string alone does not distinguis
 the repaired runtime from the defective donor. Acquisition now includes the new
 patch in its cache key. Do not relabel or reuse an unmodified runtime as repaired.
 
-Use the existing operator wrapper to select the complete repaired runtime in
+The response-after-EOF control passed in execution 16003: the origin and both
+clients received the expected 16 bytes and exited successfully. Reuse that
+result and its actual four-file hashes for the unchanged payload. When a changed
+runtime needs qualification, use the existing operator wrapper to select it in
 an isolated installation. Preserve the donor bytes and original runtime
 selection. Reuse the retained response-after-EOF control from execution 15499
 through its actual `nsenter`/`runsc port-forward --stream` route. Run no Docker
@@ -434,9 +457,9 @@ exit 0. Record the selected runtime path, version and hash with that result.
 Restore the selection and stop the fixture on failure. Direct TCP or source
 tests alone do not establish that this runtime defect is repaired.
 
-After that control passes, use the same selected repaired runtime for the finite
-Docker management check below. Reuse a compatible source-equivalent proxy;
-the provider repair does not require rebuilding the proxy.
+After qualifying a changed runtime, use that selected runtime for the finite
+Docker management check below. For the current correction, reuse the qualified
+payload and select the corrected debug proxy. No gVisor rebuild is needed.
 
 Reuse the stopped, qualified Linux/gVisor fixture from #1436. This check adds
 only the missing Docker management connection through its existing provider
@@ -465,18 +488,21 @@ python3 -m tests.blackbox.installed_docker_preflight \
   --prepared-config PREPARED_OVERLAY --root RETAINED_INSTANCE \
   --output NEW_PRIVATE_OUTPUT --revision CLI_REVISION \
   --guest-revision GUEST_REVISION --proxy-revision CANDIDATE \
-  --nested-docker --reuse-root --docker-data RETAINED_GUEST_DATA --gateway
+  --nested-docker --reuse-root --docker-data RETAINED_GUEST_DATA \
+  --gateway --gateway-failures-only
 ```
 
 The check temporarily selects the overlay's binaries and a Docker service for
 the existing provider. It restores lost guest packages through the existing
 proxy and policy, then uses guest root to expose the inner daemon's Unix socket
 on guest loopback port 2375. The caller uses its scoped gateway token and ordinary Docker TCP
-configuration. The check records client/server versions, refuses an unapproved
-caller, creates and inspects one uniquely named container, exercises exec and
-attach with stdin closure, then removes the container. Requests with a stopped
-daemon, closed port or stopped provider must fail clearly. The normal result must report
-`gateway-passed` and cleanup `stopped`.
+configuration. The check records client/server versions and refuses an
+unapproved caller. With `--gateway-failures-only`, it skips container operations
+and checks requests with a stopped daemon, closed port and stopped provider.
+Without that option, it also creates and inspects one uniquely named container,
+exercises exec/attach with stdin closure and removes it. The normal result must
+report `gateway-passed`, `gateway_failures_only` for the selected mode and cleanup
+`stopped`. A failure-only result supplements the retained positive witness.
 
 After stopping the proxy, the check restores the original service, policy and
 binary directory or link. The original prepared binary bytes remain unchanged.
@@ -496,11 +522,11 @@ Reuse each result only at its actual source and runtime boundary.
 | Criterion | Retained evidence and remaining work |
 |---|---|
 | 1. Multi-service lifecycle | Execution 15475 at `67cdb272` passed pull/build, two communicating Compose services, inspect/logs/follow, exec, interactive attach, archive copy, recreation, persistent data and teardown. CLI/Engine 29.1.3, API 1.45, Compose 2.40.3. The later project phase failed; the workload itself passed. |
-| 2. Streams and payloads | That workload and the controlled transport tests cover admitted exec/attach, builds and archives. Repaired internal-provider exec/attach remains unproved. |
+| 2. Streams and payloads | That workload and the controlled transport tests cover admitted exec/attach, builds and archives. Execution 16006 passed internal-provider exec/attach with the repaired payload at the debug source boundary described above. |
 | 3. Before-effect checks | Accepted #1438 enforcement and controlled negative/body-bound tests refuse forbidden dispatch and unavailable inspection. No new enforcement policy is added here. |
 | 4. Mandatory mediation | Retained token, path/version, opaque-tunnel and TLS/credential controls cover the configured endpoint. The external workload uses scoped tokens and operator-held credentials. |
-| 5. Connections | The authenticated HTTPS workload and execution 15505 walkthrough are retained. #1436 supplies internal runtime/application-provider proof. Docker management through the repaired provider remains to run. |
-| 6. Failure diagnostics | Controlled truncation and uncertain-mutation tests remain applicable. The original exec has uploaded 16/downloaded 0/completed/error null. Provider-bound repair, remaining daemon/closed-port/stopped-provider controls and their full audit details remain required. No real interrupted mutation is claimed. |
+| 5. Connections | The authenticated HTTPS workload and execution 15505 walkthrough are retained. #1436 supplies internal runtime/application-provider proof. Execution 16006 passed Docker management through the repaired provider at its recorded source/runtime boundary. |
+| 6. Failure diagnostics | Controlled truncation and uncertain-mutation tests remain applicable. Execution 16006 exposed a blank stopped-daemon diagnostic. Corrected daemon/closed-port/stopped-provider client controls and their raw responses/audit details remain required. Provider EOF proof from execution 16003 is retained. No real interrupted mutation is claimed. |
 | 7. Setup and matrix | [Docker guidance](../../docs/docker.md) defines the client setup, API 1.45 matrix, unsupported operations and limits. Transport does not establish project isolation or host-risk enforcement. |
 | 8. Independent acceptance | Lens review of the corrected immutable candidate and the real client/daemon results is pending. The shared project result at `a72c6477` (execution 15482) stays separate from #1437 acceptance. |
 

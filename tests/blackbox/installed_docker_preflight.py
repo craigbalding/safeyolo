@@ -12,6 +12,8 @@ Compose lifecycle, sandbox recovery and application-bound provider controls.
 --gateway reuses the stopped qualified fixture for Docker management through
 its provider route. It restores ephemeral guest tools, but does not repeat image
 pulls or the application lifecycle.
+--gateway-failures-only retains the earlier management proof and runs only the
+daemon, closed-port and stopped-provider failure controls with --gateway.
 --reuse-root continues this probe's stopped disposable instance without
 replacing its policy, registry approvals or prepared inputs. Run only after
 any retained registry refusal has been resolved; the driver does not approve
@@ -100,6 +102,43 @@ capabilities:
 '''
 
 
+def verify_gateway_client_failure(observation):
+    """Require a failed client and diagnostic text beyond Docker's prefix."""
+    assert observation["exit"] != 0, "Docker client unexpectedly succeeded"
+    diagnostic = observation["stderr"].strip()
+    for prefix in ("docker:", "Error response from daemon:", "Error:"):
+        if diagnostic.lower().startswith(prefix.lower()):
+            diagnostic = diagnostic[len(prefix):].strip()
+    assert diagnostic and not diagnostic.isdigit(), "Docker client returned no useful failure diagnostic"
+
+
+def gateway_client_failure(client_command, label):
+    """Retain the actual CLI exit, stderr and a read-only raw HTTP response."""
+    directory = "/home/agent/docker-gateway-client"
+    capture = f'''
+import http.client, json, os
+from pathlib import Path
+from urllib.parse import urlsplit
+directory = Path({directory!r})
+label = {label!r}
+endpoint = urlsplit(os.environ["HTTP_PROXY"])
+connection = http.client.HTTPConnection(endpoint.hostname, endpoint.port, timeout=20)
+headers = json.loads((directory / "config.json").read_text())["HttpHeaders"]
+connection.request("GET", "/v1.45/version", headers=headers)
+response = connection.getresponse()
+raw = {{"status": response.status, "headers": response.getheaders(), "body": response.read().decode("utf-8", "replace")}}
+connection.close()
+(directory / (label + ".http.json")).write_text(json.dumps(raw))
+print(json.dumps({{"exit": int((directory / (label + ".exit")).read_text()),
+                  "stderr": (directory / (label + ".log")).read_text(), "http": raw}}))
+'''
+    command = (f"client_exit=0; /workspace/docker-client version >{directory}/{label}.stdout "
+               f"2>{directory}/{label}.log || client_exit=$?; "
+               f"printf '%s\\n' \"$client_exit\" >{directory}/{label}.exit; "
+               "python3 -c " + shlex.quote(capture))
+    return json.loads(client_command(command, label).strip().removeprefix("\x1b[2K"))
+
+
 def gateway_management(args, root, output, native, guest, background, report):
     """Exercise the real inner Engine over the existing sandbox-provider route."""
     caller = root / "docker-caller"
@@ -117,6 +156,8 @@ def gateway_management(args, root, output, native, guest, background, report):
     name = "sygateway" + uuid.uuid4().hex[:12]
     report["gateway_container"] = name
     report["reused_image_data"] = args.docker_data
+    failures_only = getattr(args, "gateway_failures_only", False)
+    report["gateway_failures_only"] = failures_only
     state = "/home/agent/docker-gateway"
     try:
         native("stop")
@@ -176,31 +217,34 @@ printf 'Authorization: Bearer %s\\n' "$agent_token" |
         report["gateway_versions"] = client_command("/workspace/docker-client version", "gateway-version")
         # Use the qualified retained image; no pull, build or full application
         # journey is repeated. Inner host networking is the accepted setup.
-        client_command(f"/workspace/docker-client create -i --network=host --name {name} "
-                       "debian:trixie-slim sh -c 'read line; echo internal:$line'", "gateway-create")
-        client_command(f"/workspace/docker-client start {name}", "gateway-container-start")
-        inspected = client_command(f"/workspace/docker-client inspect --format '{{{{.State.Running}}}}' {name}", "gateway-inspect")
-        assert inspected.strip().removeprefix("\x1b[2K") == "true"
-        echoed = client_command(f"printf 'exec-half-close\\n' | /workspace/docker-client exec -i {name} cat", "gateway-exec")
-        assert "exec-half-close" in echoed
-        attached = client_command(f"printf 'attach-half-close\\n' | /workspace/docker-client attach --sig-proxy=false {name}", "gateway-attach")
-        assert "internal:attach-half-close" in attached
-        client_command(f"/workspace/docker-client rm {name}", "gateway-remove")
+        if not failures_only:
+            client_command(f"/workspace/docker-client create -i --network=host --name {name} "
+                           "debian:trixie-slim sh -c 'read line; echo internal:$line'", "gateway-create")
+            client_command(f"/workspace/docker-client start {name}", "gateway-container-start")
+            inspected = client_command(f"/workspace/docker-client inspect --format '{{{{.State.Running}}}}' {name}", "gateway-inspect")
+            assert inspected.strip().removeprefix("\x1b[2K") == "true"
+            echoed = client_command(f"printf 'exec-half-close\\n' | /workspace/docker-client exec -i {name} cat", "gateway-exec")
+            assert "exec-half-close" in echoed
+            attached = client_command(f"printf 'attach-half-close\\n' | /workspace/docker-client attach --sig-proxy=false {name}", "gateway-attach")
+            assert "internal:attach-half-close" in attached
+            client_command(f"/workspace/docker-client rm {name}", "gateway-remove")
+
+        def failure(label):
+            observation = gateway_client_failure(client_command, label)
+            report.setdefault("gateway_failures", {})[label] = observation
+            (output / f"{label}.json").write_text(json.dumps(observation, indent=2) + "\n")
+            verify_gateway_client_failure(observation)
+
         guest("sudo -n kill -TERM $(cat /run/safeyolo-nested-docker/dockerd.pid)", "gateway-stop-daemon")
         report["gateway_daemon_exit"] = daemon.wait(timeout=20)
-        failed = client_command("/workspace/docker-client version >/dev/null 2>/home/agent/docker-gateway-client/daemon.log "
-                                "&& exit 1; cat /home/agent/docker-gateway-client/daemon.log", "gateway-daemon-failed")
-        assert "502" in failed or "503" in failed, "daemon failure did not fail clearly"
+        failure("gateway-daemon-failed")
         guest(f"sudo -n kill -TERM $(cat {state}/relay.pid)", "gateway-close-port")
         report["gateway_port_exit"] = relay.wait(timeout=20)
-        closed = client_command("/workspace/docker-client version >/dev/null 2>/home/agent/docker-gateway-client/closed.log "
-                                "&& exit 1; cat /home/agent/docker-gateway-client/closed.log", "gateway-closed")
-        assert "502" in closed or "503" in closed, "closed provider port did not fail clearly"
+        failure("gateway-closed")
         native("agent", "stop", "notes")
-        stopped = client_command("/workspace/docker-client version >/dev/null 2>/home/agent/docker-gateway-client/stopped.log "
-                                 "&& exit 1; cat /home/agent/docker-gateway-client/stopped.log", "gateway-stopped")
-        assert "502" in stopped or "503" in stopped, "stopped provider did not fail clearly"
-        report["gateway_result"] = "version, create/inspect, exec/attach half-close, removal, daemon failure and unavailable provider passed"
+        failure("gateway-stopped")
+        report["gateway_result"] = ("daemon failure and unavailable provider passed" if failures_only else
+                                    "version, create/inspect, exec/attach half-close, removal, daemon failure and unavailable provider passed")
     finally:
         # Stop before restoring the retained application service and its
         # authorizations. Keep failure diagnostics and uncertain resources.
@@ -675,11 +719,15 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--journey", action="store_true")
     mode.add_argument("--gateway", action="store_true", help="only management through the retained nested provider")
+    parser.add_argument("--gateway-failures-only", action="store_true",
+                        help="with --gateway, retain positive proof and run only the three failure controls")
     parser.add_argument("--reuse-root", action="store_true")
     parser.add_argument("--docker-data", help="existing guest Docker data root; reuse its qualified image instead of pulling again")
     parser.add_argument("--host-address", help="unapproved real venue host address for the inner network negative control")
     parser.add_argument("--host-port", type=int, help="unapproved real host TCP port for the negative control")
     args = parser.parse_args()
+    if args.gateway_failures_only and not args.gateway:
+        parser.error("--gateway-failures-only requires --gateway")
     if args.reuse_root and not (args.journey or args.gateway):
         parser.error("--reuse-root requires --journey or --gateway")
     if args.gateway and (not args.reuse_root or not args.nested_docker):
