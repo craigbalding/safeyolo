@@ -961,6 +961,19 @@ copy into a command line, attach or log their contents. The runtime keeps
 retained JetStream data separately in `nats/jetstream` and canonical room state
 in `v0.db`. Preserve those stores during diagnosis.
 
+Federation adds host-held `coord-federation.json`, the private responder
+credential `nats/federation-creds`, and generated local TLS settings. The
+generated server configuration also contains the selected peer passwords.
+Protect these files with the same ownership and mount boundaries. The recorded
+peer credential digests bind the running broker configuration to current trust;
+changing a credential file alone does not rotate an existing broker connection.
+Restart the owned broker and proxy after changing this setup.
+
+Status, doctor and lifecycle diagnostics provide health information without
+printing the credential. File modes protect against other host accounts;
+they do not protect a compromised owning account from its own files. Recover
+that account and host after suspected compromise.
+
 ### Coord upgrade recovery
 
 Before upgrading an existing instance, stop its owned proxy and Coord. Use the
@@ -997,19 +1010,6 @@ operations, stop the owned proxy and Coord, then rename `SY_LOCAL` back to `$G`
 only when `$G` is absent, and restore the previous CLI and generated
 configuration. Keep the same SQLite database and credentials. Never overwrite
 an existing account during rollback.
-
-Federation adds host-held `coord-federation.json`, the private responder
-credential `nats/federation-creds`, and generated local TLS settings. The
-generated server configuration also contains the selected peer passwords.
-Protect these files with the same ownership and mount boundaries. The recorded
-peer credential digests bind the running broker configuration to current trust;
-changing a credential file alone does not rotate an existing broker connection.
-Restart the owned broker and proxy after changing this setup.
-
-Status, doctor and lifecycle diagnostics provide health information without
-printing the credential. File modes protect against other host accounts;
-they do not protect a compromised owning account from its own files. Recover
-that account and host after suspected compromise.
 
 ## Focused proof and remaining work
 
