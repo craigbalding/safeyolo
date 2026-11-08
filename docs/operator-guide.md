@@ -836,6 +836,18 @@ or shell failures, follow [agent diagnosis and recovery](installation.md#configu
 Keep the selected root and executable when retrying. Direct human decisions
 remain usable when an optional assistant's model is unavailable.
 
+For Rust panic backtraces, set `RUST_BACKTRACE=1` in the environment of the host
+process that starts the proxy. The setting takes effect at the next proxy start;
+changing a shell environment does not change an already running proxy.
+Production builds retain source-line information for the proxy package while
+keeping release optimization. Dependency frames can lack source lines.
+The native launcher appends proxy stdout and stderr to `logs/proxy.log` under
+the selected instance root. Keep raw backtraces and core dumps private because
+diagnostic data can contain sensitive information. Retain the executable and
+its `--version` source/profile identity with any diagnostic capture.
+`RUST_BACKTRACE=1` does not enable core dumps or produce a backtrace after
+`SIGKILL`. Core capture needs separately configured private storage and limits.
+
 ## Optional: inspect a factory
 
 A factory runs agents with approved roles and declared handoffs. It is not
