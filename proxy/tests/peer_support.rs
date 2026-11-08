@@ -21,6 +21,9 @@ mod test_owned_endpoint;
 use controlled_runs::Backend;
 use shared_approval_fixture::*;
 
+#[path = "peer_support/audit.rs"]
+mod audit_delivery;
+
 const INSTANCE: &str = "sy-11111111111111111111111111111111";
 const RUN: &str = "0123456789abcdef0123456789abcdef";
 
@@ -64,7 +67,7 @@ fn guest_command_rechecks_the_target_after_waiting_for_control() {
 async fn check_guest_command_after_control() {
     use std::os::unix::fs::PermissionsExt;
     let original_path = std::env::var_os("PATH").unwrap();
-    for change in ["rebind", "narrow", "source-run"] {
+    for change in ["rebind", "narrow", "source-run", "audit-final"] {
         let f = fixture().await;
         let _support = support_run(&f, RUN);
         fs::create_dir(f.root.path().join("bin")).unwrap();
@@ -99,7 +102,7 @@ for arg in "$@"; do
         exit 0
     fi
 done
-touch '{root}/command-effect'
+printf 'effect\n' >> '{root}/command-effect'
 printf 'controlled command completed\n'
 "#
             ),
@@ -127,7 +130,7 @@ printf 'controlled command completed\n'
         input["operation"] =
             json!({"action":"guest_command","command":"printf authorized","timeout_seconds":3});
         let response = {
-            let pending = f.agent("helper", "POST", "/support/operations", Some(input));
+            let pending = f.agent("helper", "POST", "/support/operations", Some(input.clone()));
             tokio::pin!(pending);
             let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
             while !f.root.path().join("waiting-for-control").exists() {
@@ -140,7 +143,10 @@ printf 'controlled command completed\n'
                     "command did not reach control wait"
                 );
             }
-            let _replacement = if change == "source-run" {
+            let _replacement = if change == "audit-final" {
+                f.make_audit_unavailable();
+                None
+            } else if change == "source-run" {
                 Some(support_run(&f, "fedcba9876543210fedcba9876543210"))
             } else {
                 if change == "rebind" {
@@ -162,6 +168,51 @@ printf 'controlled command completed\n'
             pending.await
         };
         assert_eq!(response.status, 200, "{}", response.json());
+        if change == "audit-final" {
+            let saved = response.json();
+            assert_eq!(saved["state"], "completed", "{saved}");
+            assert!(saved["audit_status"].is_string(), "{saved}");
+            let original = fs::read(f.root.path().join("agents/worker/runtime.json")).unwrap();
+            let retry = f
+                .agent("helper", "POST", "/support/operations", Some(input.clone()))
+                .await
+                .json();
+            assert_eq!(
+                retry, saved,
+                "an identical-ID retry must retain the missing final audit obligation"
+            );
+            assert_eq!(
+                fs::read_to_string(f.root.path().join("command-effect")).unwrap(),
+                "effect\n"
+            );
+            fs::remove_file(f.root.path().join("audit.jsonl")).unwrap();
+            let recovered = f
+                .agent("helper", "POST", "/support/operations", Some(input))
+                .await
+                .json();
+            assert_eq!(recovered["state"], "completed");
+            assert_eq!(recovered["audit_event_id"], saved["audit_event_id"]);
+            assert!(recovered["audit_status"].is_null());
+            assert_eq!(
+                fs::read_to_string(f.root.path().join("command-effect")).unwrap(),
+                "effect\n"
+            );
+            assert_eq!(
+                fs::read(f.root.path().join("agents/worker/runtime.json")).unwrap(),
+                original
+            );
+            let audit = fs::read_to_string(f.root.path().join("audit.jsonl")).unwrap();
+            assert!(!audit.contains("printf authorized"));
+            let events = audit
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .filter(|event| event["event_id"] == saved["audit_event_id"])
+                .collect::<Vec<_>>();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0]["details"]["state"], "completed");
+            f.stop().await;
+            continue;
+        }
         assert_eq!(
             response.json()["state"],
             "refused",

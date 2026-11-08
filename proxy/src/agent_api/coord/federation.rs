@@ -821,6 +821,74 @@ fn reply(instance: &str, status: u16, body: Value) -> Value {
     json!({"home_instance_id":instance,"status":status,"body":body})
 }
 
+async fn refuse_peer(
+    runtime: &crate::RuntimeState,
+    owner_source: (&str, &str),
+    peer: &PeerRequest,
+    remote: Option<&trust::RemoteAgent>,
+    correlation: &str,
+    decision: (u16, &str, &str, &str),
+) -> Value {
+    let (instance, source) = owner_source;
+    let (status, phase, reason, message) = decision;
+    let request = Request {
+        method: &peer.method,
+        path_and_query: &peer.path,
+        authorization: None,
+        identity: crate::network_guard::Identity::Unavailable,
+        client_ip: None,
+        request_id: correlation,
+    };
+    // Classify routes without copying authored paths, queries or bodies.
+    let operation = if support_route(request) {
+        "support"
+    } else if approval_route(request) {
+        "approval"
+    } else if let Some((_, operation)) = route_parts(request) {
+        operation
+    } else if attention_wait_route(request) || attention_object_route(request).is_some() {
+        "attention"
+    } else {
+        "unavailable"
+    };
+    let operation_id = peer
+        .body
+        .as_ref()
+        .and_then(|body| body["operation_id"].as_str())
+        .filter(|id| crate::peer_support::operations::valid_operation_id(id));
+    let mut event = crate::audit::Event::new(
+        "coord.federation_refused",
+        crate::audit::Kind::Coord,
+        crate::audit::Severity::High,
+        "Owning instance refused a federated request",
+    );
+    event.request_id = Some(correlation.into());
+    event.agent = remote.map(|remote| remote.display_name.clone());
+    event.details = json!({"instance_id":instance,"source_instance_id":source,
+        "identity_basis":"authenticated_nats_peer","qualified_principal":remote,
+        "phase":phase,"reason":reason,"state":"refused","operation":operation,
+        "mutation_outcome":if phase == "post_dispatch" {"response_withheld"} else {"not_attempted"},
+        "untrusted_claims":{"destination_instance_id":Some(&peer.destination_instance_id).filter(|id|id.strip_prefix("sy-").is_some_and(valid_wait_id)),
+            "agent_id":Some(&peer.source_run.agent_id).filter(|id| valid_agent_id(id)),
+            "agent_name":Some(&peer.source_run.agent).filter(|name| public_name_part(name)),
+            "run_id":Some(&peer.source_run.run_id).filter(|id| valid_wait_id(id)),"operation_id":operation_id}}).into();
+    // Refusals use the existing bounded writer admission and never allocate a
+    // persistent obligation per input. Sink failure remains explicit to callers.
+    let writer = runtime.read().ok().map(|runtime| runtime.audit.clone());
+    let recorded = if let Some(writer) = writer {
+        writer.emit_confirmed(event).await.is_ok()
+    } else {
+        false
+    };
+    let mut body = json!({"error":message,"request_id":correlation});
+    if !recorded {
+        body["audit_status"] = json!(
+            "unavailable; the owner refused the request but could not confirm its canonical decision record"
+        );
+    }
+    reply(instance, status, body)
+}
+
 async fn receive(
     client: &CoordClient,
     runtime: &crate::RuntimeState,
@@ -835,25 +903,50 @@ async fn receive(
     let Ok(peer) = serde_json::from_slice::<PeerRequest>(bytes) else {
         return reply(instance, 400, json!({"error":"invalid federation request"}));
     };
+    let correlation = format!("req-{}", uuid::Uuid::new_v4().simple());
+    let authentication = open_db(&client.owner.data_dir.join("v0.db"), false)
+        .map_err(|_| "identity_store_unavailable")
+        .and_then(|conn| {
+            let trusted: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM coord_federation_peers WHERE instance_id=?1 AND token_hash=?2 AND enabled=1)",
+                rusqlite::params![source,credential_hash], |row| row.get(0)).map_err(|_| "identity_store_unavailable")?;
+            if !trusted { return Err("peer_trust_unavailable"); }
+            trust::authenticate_transport(&conn, source, credential_hash, &peer.source_run.agent_id)
+                .map_err(|_| "qualified_principal_unavailable")
+        });
     // DOC: docs/coord-reference.md, docs/coord-trust-boundary.md
     if peer.destination_instance_id != instance {
-        return reply(
-            instance,
-            403,
-            json!({"error":"destination instance mismatch; no operation attempted"}),
-        );
-    }
-    let remote = match open_db(&client.owner.data_dir.join("v0.db"), false).and_then(|conn| {
-        trust::authenticate_transport(&conn, source, credential_hash, &peer.source_run.agent_id)
-            .map_err(|_| CoordError::Forbidden)
-    }) {
-        Ok(remote) => remote,
-        Err(_) => {
-            return reply(
-                instance,
+        return refuse_peer(
+            runtime,
+            (instance, source),
+            &peer,
+            authentication.as_ref().ok(),
+            &correlation,
+            (
                 403,
-                json!({"error":"peer or qualified agent is not authorized"}),
-            );
+                "pre_dispatch",
+                "destination_mismatch",
+                "destination instance mismatch; no operation attempted",
+            ),
+        )
+        .await;
+    }
+    let remote = match authentication {
+        Ok(remote) => remote,
+        Err(reason) => {
+            return refuse_peer(
+                runtime,
+                (instance, source),
+                &peer,
+                None,
+                &correlation,
+                (
+                    403,
+                    "pre_dispatch",
+                    reason,
+                    "peer or qualified agent is not authorized",
+                ),
+            )
+            .await;
         }
     };
     let request = Request {
@@ -862,14 +955,23 @@ async fn receive(
         authorization: None,
         identity: crate::network_guard::Identity::Resolved(&remote.display_name),
         client_ip: None,
-        request_id: "federation",
+        request_id: &correlation,
     };
     if !allowed(request) {
-        return reply(
-            instance,
-            404,
-            json!({"error":"remote operation is not available"}),
-        );
+        return refuse_peer(
+            runtime,
+            (instance, source),
+            &peer,
+            Some(&remote),
+            &correlation,
+            (
+                404,
+                "pre_dispatch",
+                "operation_unavailable",
+                "remote operation is not available",
+            ),
+        )
+        .await;
     }
     let mut scoped = client.clone();
     scoped.remote = Some(remote.clone());
@@ -877,15 +979,25 @@ async fn receive(
         run: peer.source_run.clone(),
     }));
     if scoped.bound_current().is_err() {
-        return reply(
-            instance,
-            403,
-            json!({"error":"source binding or peer trust changed"}),
-        );
+        return refuse_peer(
+            runtime,
+            (instance, source),
+            &peer,
+            Some(&remote),
+            &correlation,
+            (
+                403,
+                "pre_dispatch",
+                "source_binding_or_trust_changed",
+                "source binding or peer trust changed",
+            ),
+        )
+        .await;
     }
     let payload = peer
         .body
-        .map(|body| serde_json::to_vec(&body).expect("JSON value serialization"));
+        .as_ref()
+        .map(|body| serde_json::to_vec(body).expect("JSON value serialization"));
     let max = if support_route(request) {
         MAX_WIRE_REQUEST
     } else {
@@ -936,7 +1048,7 @@ async fn receive(
             request,
             runtime,
             crate::peer_support::Caller {
-                run: peer.source_run,
+                run: peer.source_run.clone(),
                 remote: Some(remote.clone()),
             },
             payload.as_deref(),
@@ -947,7 +1059,7 @@ async fn receive(
             request,
             runtime,
             remote.clone(),
-            peer.source_run,
+            peer.source_run.clone(),
             payload.as_deref(),
         )
         .await
@@ -967,7 +1079,20 @@ async fn receive(
         .await
     };
     if scoped.check_remote().await.is_err() {
-        return reply(instance, 403, json!({"error":"federation access changed"}));
+        return refuse_peer(
+            runtime,
+            (instance, source),
+            &peer,
+            Some(&remote),
+            &correlation,
+            (
+                403,
+                "post_dispatch",
+                "peer_trust_changed",
+                "federation access changed",
+            ),
+        )
+        .await;
     }
     let super::super::ResponseBody::Json(body) = &outcome.response.body else {
         return reply(instance, 503, json!({"error":"response unavailable"}));

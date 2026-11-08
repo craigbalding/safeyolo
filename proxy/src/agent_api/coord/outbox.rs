@@ -34,6 +34,21 @@ impl Delivery {
                     }
                 });
             }
+            if let Ok(config) = crate::operator_actions::config_path(&runtime) {
+                let audit = audit.clone();
+                workers.spawn(crate::host_platform::in_config(config, async move {
+                    let mut recovery = crate::peer_support::audit_delivery::Recovery::default();
+                    let mut unavailable = false;
+                    loop {
+                        let failed = recovery.reconcile(&audit).await.is_err();
+                        if failed != unavailable {
+                            eprintln!("Support canonical audit delivery {}. Saved policy and operation receipts remain authoritative; recovery never replays an operation.", if failed {"unavailable"} else {"recovered"});
+                        }
+                        unavailable = failed;
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                }));
+            }
             let (approval_client, approval_runtime) = (client.clone(), runtime.clone());
             workers.spawn(async move {
                 let mut position = 0;

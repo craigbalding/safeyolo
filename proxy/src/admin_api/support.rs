@@ -89,12 +89,10 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
             };
             match result {
                 Ok(mut value) => {
-                    if operation != "preview" {
-                        let mut event = crate::audit::Event::new("admin.support_grant_changed", crate::audit::Kind::Admin, crate::audit::Severity::High, "Operator changed delegated support authority");
-                        event.details = json!({"instance_id":crate::peer_support::instance_id().ok(),"grant":name,"operation":operation,"revision":value["revision"],"previous_revision":value["previous_revision"],"authority":value["after"]}).into();
-                        if writer.emit_confirmed(event).await.is_err() {
-                            value["audit_status"] = json!("unavailable; policy is saved. Inspect current state before retrying.");
-                        }
+                    if operation != "preview"
+                        && let Some(id) = value["audit_event_id"].as_str()
+                        && crate::peer_support::audit_delivery::deliver_grant(&writer, id).await.is_err() {
+                        value["audit_status"] = json!(crate::peer_support::audit_delivery::PENDING);
                     }
                     response(StatusCode::OK, value)
                 }

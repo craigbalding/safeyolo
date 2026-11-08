@@ -12,6 +12,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(target_os = "linux")]
 #[path = "support/controlled_runs.rs"]
 mod controlled_runs;
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+#[path = "support/owned_run.rs"]
+mod owned_run;
 
 #[path = "native_coord/attestations.rs"]
 mod attestations;
