@@ -1282,7 +1282,8 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
         "schema_version: 1\nname: subscription\ndefault_host: {host}\nauth:\n  type: bearer\n  allow_http: true\n  refresh_on_401: true\ncapabilities:\n  inference:\n    routes:\n      - methods: [GET]\n        path: /marker\n")).unwrap();
     assert!(f.proxy.reload_services_if_changed().await.unwrap());
     // Keep ordinary bearer detection enabled. The synthetic provider has a
-    // detection rule; neither its value nor the minted sgw token is preapproved.
+    // detection rule. The internal sgw token is consumed by gateway selection;
+    // the refreshed provider value must still obtain credential approval.
     let source = format!(
         "{}\n[credential.fixture-provider]\nmatch=['synthetic-subscription-[a-z]+']\nheaders=['authorization']\nallowed_hosts=['{host}']\n",
         f.source()
@@ -1343,59 +1344,12 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
         .unwrap();
     assert!(token.starts_with("sgw_"));
     let header = format!("Authorization: Bearer {token}\r\nChatGPT-Account-ID: guest-account\r\n");
-    let blocked = f
-        .request("worker", f.address, "GET", "/marker", &header)
-        .await;
-    assert_eq!(blocked.status, 428, "{}", blocked.json());
-    let pending = f
-        .admin("GET", &format!("/admin/approvals/{}", blocked.id()), None)
-        .await
-        .json();
-    assert_eq!(pending["action"]["kind"], "credential_allow");
-    assert!(
-        pending["action"]["credentials"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|value| value.as_str().unwrap().starts_with("hmac:"))
-    );
-    no_origin(&f).await;
-    assert!(
-        timeout(Duration::from_millis(30), refresh.accept())
-            .await
-            .is_err()
-    );
-    let approved = native(
-        &f,
-        &[
-            "approvals",
-            "approve",
-            &blocked.id(),
-            "--option",
-            "run",
-            "--json",
-        ],
-    )
-    .await;
-    assert!(
-        approved.status.success(),
-        "{}",
-        String::from_utf8_lossy(&approved.stderr)
-    );
-    let approved: Value = serde_json::from_slice(&approved.stdout).unwrap();
-    assert_eq!(approved["status"], "approved");
-    assert_eq!(approved["grant_active"], true);
-    assert_eq!(approved["result"]["permission_changed"], true);
-    let current = f
-        .agent("worker", "GET", "/gateway/services", None)
-        .await
-        .json();
-    assert!(
-        current["authorized"]["subscription"]["token"].as_str() == Some(token),
-        "credential approval replaced its own gateway fingerprint"
-    );
+    // Start serving before the first request can reach the refresh listener.
     let refresh_task = tokio::spawn(async move {
-        let (mut stream, _) = timeout(LIMIT, refresh.accept()).await.unwrap().unwrap();
+        let (mut stream, _) = timeout(LIMIT, refresh.accept())
+            .await
+            .expect("subscription refresh: provider accept timed out")
+            .unwrap();
         let mut head = Vec::new();
         while !head.ends_with(b"\r\n\r\n") {
             head.push(stream.read_u8().await.unwrap());
@@ -1421,6 +1375,7 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
         );
         let payload = r#"{"access_token":"synthetic-subscription-renewed","refresh_token":"synthetic-subscription-rotated","expires_in":3600}"#;
         stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}", payload.len()).as_bytes()).await.unwrap();
+        refresh
     });
     let provider_pending = f
         .request("worker", f.address, "GET", "/marker", &header)
@@ -1435,13 +1390,38 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
         .await
         .json();
     assert_eq!(provider["action"]["kind"], "credential_allow");
-    assert_ne!(
-        provider["action"]["credentials"],
-        pending["action"]["credentials"],
-        "retry repeated the scoped-token approval: {}",
-        provider_pending.json()
+    assert_eq!(provider["action"]["agent"], "worker");
+    assert_eq!(provider["action"]["agent_id"], WORKER_ID);
+    assert_eq!(
+        provider["action"]["run"],
+        json!({"agent":"worker", "agent_id":WORKER_ID, "run_id":"0123456789abcdef0123456789abcdef"})
     );
-    refresh_task.await.unwrap();
+    assert_eq!(provider["action"]["host"], host);
+    let key = std::env::var("CREDGUARD_HMAC_SECRET")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            fs::read_to_string(f.root.path().join("data/hmac_secret"))
+                .unwrap()
+                .trim()
+                .to_owned()
+        });
+    let guard = safeyolo_proxy::credential_guard::CredentialGuard::new(key.as_bytes());
+    guard.load_sensor_config(&json!({})).unwrap();
+    let findings = guard
+        .classify_headers(&[safeyolo_proxy::credential_guard::Header {
+            name: "Authorization",
+            value: &Secret::new("Bearer synthetic-subscription-renewed"),
+        }])
+        .unwrap();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(
+        provider["action"]["credentials"],
+        json!([format!("hmac:{}", findings[0].fingerprint)])
+    );
+    let refresh = refresh_task
+        .await
+        .expect("subscription refresh: provider task failed");
     no_origin(&f).await;
     let approved = native(
         &f,
@@ -1461,7 +1441,9 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
         String::from_utf8_lossy(&approved.stderr)
     );
     let approved: Value = serde_json::from_slice(&approved.stdout).unwrap();
+    assert_eq!(approved["status"], "approved");
     assert_eq!(approved["grant_active"], true);
+    assert_eq!(approved["result"]["permission_changed"], true);
     let current = f
         .agent("worker", "GET", "/gateway/services", None)
         .await
@@ -1509,12 +1491,11 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
             .expose_secret()
             == "synthetic-subscription-rotated"
     );
-    assert_eq!(
-        f.request("peer", f.address, "GET", "/marker", &header)
-            .await
-            .status,
-        428
-    );
+    let peer = f
+        .request("peer", f.address, "GET", "/marker", &header)
+        .await;
+    assert_eq!(peer.status, 403);
+    assert_eq!(peer.json()["error"], "AGENT_MISMATCH");
     assert_eq!(
         f.request("worker", f.address, "DELETE", "/marker", &header)
             .await
@@ -1532,7 +1513,7 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
     // A rule publication must still enforce a deny against the retained token.
     let source = f.source();
     let mut denied: toml_edit::DocumentMut = source.parse().unwrap();
-    let rule: toml_edit::DocumentMut = format!("rules=[{{action='credential:use',resource='{host}/*',effect='deny',condition={{credential='unknown:*'}}}}]").parse().unwrap();
+    let rule: toml_edit::DocumentMut = format!("rules=[{{action='credential:use',resource='{host}/*',effect='deny',condition={{credential='fixture-provider:*'}}}}]").parse().unwrap();
     denied["hosts"][&host]["rules"] = rule["rules"].clone();
     f.apply(&denied.to_string()).await;
     let denied = f
@@ -1540,14 +1521,18 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
         .await
         .json();
     assert!(denied["authorized"]["subscription"]["token"].as_str() == Some(token));
-    assert_eq!(
-        f.request("worker", f.address, "GET", "/marker", &header)
-            .await
-            .status,
-        403
+    let denied = f
+        .request("worker", f.address, "GET", "/marker", &header)
+        .await;
+    assert_eq!(denied.status, 403);
+    assert!(
+        denied
+            .head
+            .to_ascii_lowercase()
+            .contains("x-blocked-by: credential-guard")
     );
     f.apply(&source).await;
-    // Retaining the service token does not extend either run-scoped approval.
+    // Retaining the service token does not extend its run-scoped approval.
     let path = f.root.path().join("agents/worker/runtime.json");
     let mut run: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     run["state"] = json!("stopped");
@@ -1580,6 +1565,12 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
         403
     );
     no_origin(&f).await;
+    assert!(
+        timeout(Duration::from_millis(30), refresh.accept())
+            .await
+            .is_err(),
+        "subscription refresh: unexpected second provider request"
+    );
     assert!(!f.source().contains(token));
     f.proxy.shutdown().await;
     let audit = fs::read_to_string(f.root.path().join("audit.jsonl")).unwrap();
