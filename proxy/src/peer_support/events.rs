@@ -50,7 +50,11 @@ pub(crate) fn permits(
         if grant.active()
             && grant.instance_id == instance
             && grant.targets.contains(&reference.target)
-            && (!selected || grant.notifications.contains(&reference.kind))
+            && (if reference.kind == Notification::ObservationHealth {
+                observation_selected(grant, &reference.source_id)
+            } else {
+                !selected || grant.notifications.contains(&reference.kind)
+            })
             && (reference.kind != Notification::NeedsOperator
                 || grant.signal_rooms.contains(&reference.source_id))
             && super::checked_support_principal(policy, grant)?.as_deref() == Some(principal)
@@ -59,6 +63,47 @@ pub(crate) fn permits(
         }
     }
     Ok(false)
+}
+
+/// Health discloses only a selected source's availability, never target facts.
+pub(crate) fn observation_selected(grant: &crate::policy::support::Grant, source: &str) -> bool {
+    if let Some(room) = source.strip_prefix("signals:") {
+        return grant.notifications.contains(&Notification::NeedsOperator)
+            && grant.signal_rooms.iter().any(|selected| selected == room);
+    }
+    let kinds: &[Notification] = match source {
+        "host_runtime" => &[
+            Notification::SandboxAvailability,
+            Notification::ControlAvailability,
+            Notification::SandboxRecovered,
+        ],
+        "host_start" => &[Notification::LaunchFailed],
+        "guest_command_supervisor" => &[
+            Notification::CommandExit,
+            Notification::CommandRestart,
+            Notification::CommandFailed,
+            Notification::SupervisorExit,
+            Notification::SupervisorRestart,
+        ],
+        _ => &[],
+    };
+    if matches!(source, "host_run" | "host_launch" | "operational_records") {
+        return !grant.notifications.is_empty();
+    }
+    kinds.iter().any(|kind| grant.notifications.contains(kind))
+}
+
+pub(crate) struct Observation {
+    pub source: String,
+    pub unavailable: Option<&'static str>,
+}
+impl Observation {
+    fn new(source: &str, unavailable: bool) -> Self {
+        Self {
+            source: source.into(),
+            unavailable: unavailable.then_some("source_unreadable"),
+        }
+    }
 }
 
 pub(crate) fn instance(root: &Path) -> Result<String, Error> {
@@ -97,15 +142,32 @@ fn healthy(value: &Value) -> bool {
 
 /// A local backend observation is the authority for availability. This does
 /// not inspect room traffic, checkpoints, attachment or model responsiveness.
-pub(crate) fn record_observation(
+pub(crate) async fn record_observation(
     root: &Path,
     agent: &Agent,
     run: &Value,
     health: Value,
-) -> Result<Value, Error> {
+) -> Result<Option<Value>, Error> {
     let path = observation_path(root, &agent.name);
     std::fs::create_dir_all(path.parent().ok_or("observation directory missing")?)?;
-    let _lock = crate::host_platform::lock_host_state(&path.with_extension("lock"))?;
+    let _lock = crate::host_platform::lock_host_state_async(&path.with_extension("lock")).await?;
+    let current_run = crate::host_runs::read(&agent.name)
+        .ok()
+        .flatten()
+        .unwrap_or(Value::Null);
+    let current_launch = crate::guest_commands::read_state(
+        &root
+            .join("agents")
+            .join(&agent.name)
+            .join("current-launch.json"),
+    )
+    .ok()
+    .flatten()
+    .filter(|launch| launch["agent_id"] == agent.id)
+    .unwrap_or(Value::Null);
+    if current_run != *run || current_launch["launch_id"] != health["launch_id"] {
+        return Ok(None);
+    }
     let mut saved = crate::guest_commands::read_state(&path)?
         .filter(|saved| saved["agent_id"] == agent.id)
         .unwrap_or_else(|| json!({"agent_id":agent.id,"source_id":uuid::Uuid::new_v4().simple().to_string(),"sequence":0,"events":[]}));
@@ -154,7 +216,7 @@ pub(crate) fn record_observation(
     saved["health"] = health;
     saved["expected_stop"] = json!(expected_stop);
     crate::guest_commands::write_json(&path, &saved)?;
-    Ok(saved)
+    Ok(Some(saved))
 }
 
 fn reference(
@@ -199,12 +261,14 @@ pub(crate) async fn observe(
     root: &Path,
     instance: &str,
     agent: &Agent,
-) -> Result<(Vec<Reference>, bool), Error> {
+) -> Result<(Vec<Reference>, Vec<Observation>), Error> {
     let directory = root.join("agents").join(&agent.name);
-    let (run, mut source_unavailable) = match crate::host_runs::read(&agent.name) {
+    let (run, run_unavailable) = match crate::host_runs::read(&agent.name) {
         Ok(run) => (run.unwrap_or(Value::Null), false),
         Err(_) => (Value::Null, true),
     };
+    let mut observations = vec![Observation::new("host_run", run_unavailable)];
+    let mut source_unavailable = false;
     let launch = match crate::guest_commands::read_state(&directory.join("current-launch.json")) {
         Ok(launch) => launch
             .filter(|launch| launch["agent_id"] == agent.id)
@@ -214,6 +278,8 @@ pub(crate) async fn observe(
             Value::Null
         }
     };
+    observations.push(Observation::new("host_launch", source_unavailable));
+    source_unavailable = false;
     let start_failure =
         match crate::guest_commands::read_state(&directory.join("last-start-failure.json")) {
             Ok(failure) => failure.filter(|failure| failure["agent_id"] == agent.id),
@@ -222,6 +288,8 @@ pub(crate) async fn observe(
                 None
             }
         };
+    observations.push(Observation::new("host_start", source_unavailable));
+    source_unavailable = false;
     let mut health = crate::host_runs::observe(&agent.name).await;
     // A generation changed during the probe. Leave both owners intact and
     // retry the new generation on the next bounded pass.
@@ -231,12 +299,32 @@ pub(crate) async fn observe(
         .unwrap_or(Value::Null)
         != run
     {
-        return Ok((Vec::new(), source_unavailable));
+        observations.push(Observation {
+            source: "host_runtime".into(),
+            unavailable: Some("generation_changed"),
+        });
+        return Ok((Vec::new(), observations));
     }
+    observations.push(Observation {
+        source: "host_runtime".into(),
+        unavailable: (!run.is_null()
+            && (matches!(health["runtime_state"].as_str(), Some("unknown"))
+                || matches!(
+                    health["control_state"].as_str(),
+                    Some("unknown" | "unavailable")
+                )))
+        .then_some("probe_unavailable"),
+    });
     health = json!({"runtime_state":health["runtime_state"],"control_state":health["control_state"],
         "run_id":health["run_id"],"launch_id":launch["launch_id"],
         "recovery_id":start_failure.as_ref().filter(|failure|!failure["recovery"].is_null()).map(|failure|&failure["event_id"])});
-    let saved = record_observation(root, agent, &run, health)?;
+    let Some(saved) = record_observation(root, agent, &run, health).await? else {
+        observations.push(Observation {
+            source: "host_runtime".into(),
+            unavailable: Some("generation_changed"),
+        });
+        return Ok((Vec::new(), observations));
+    };
     let mut refs = Vec::new();
     for event in saved["events"].as_array().into_iter().flatten() {
         refs.push(reference(
@@ -291,7 +379,8 @@ pub(crate) async fn observe(
     ) {
         Ok(command) => command,
         Err(_) => {
-            return Ok((refs, true));
+            observations.push(Observation::new("guest_command_supervisor", true));
+            return Ok((refs, observations));
         }
     };
     if let Some(command) = command.filter(|command| {
@@ -343,7 +432,12 @@ pub(crate) async fn observe(
             }
         }
     }
-    Ok((refs, source_unavailable))
+    observations.push(Observation::new(
+        "guest_command_supervisor",
+        source_unavailable,
+    ));
+    observations.push(Observation::new("operational_records", false));
+    Ok((refs, observations))
 }
 
 pub(crate) fn evidence(root: &Path, reference: &Reference) -> Result<Value, Error> {

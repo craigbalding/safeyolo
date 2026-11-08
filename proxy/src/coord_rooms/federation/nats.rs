@@ -158,6 +158,8 @@ pub(crate) fn notice_stream(source: &str) -> String {
     format!("SY_FED_{}", subject_token(source))
 }
 
+pub(crate) const MAX_WAIT_CONSUMERS: i32 = 64;
+
 pub(crate) async fn retained_notices(
     connection: &async_nats::Client,
     destination: &str,
@@ -168,6 +170,7 @@ pub(crate) async fn retained_notices(
             name: notice_stream(source),
             subjects: vec![notice_subject(destination, source, "*")],
             max_messages_per_subject: 1,
+            max_consumers: MAX_WAIT_CONSUMERS,
             ..Default::default()
         })
         .await?)
@@ -205,9 +208,13 @@ pub(crate) fn local_options(
     ))
 }
 
-pub(crate) async fn connect(home: &Home, source: &str) -> Result<async_nats::Client, Error> {
+pub(crate) async fn connect_with_options(
+    home: &Home,
+    source: &str,
+    options: async_nats::ConnectOptions,
+) -> Result<async_nats::Client, Error> {
     let credential = token(&home.token_file)?;
-    Ok(async_nats::ConnectOptions::new()
+    Ok(options
         .require_tls(true)
         .add_root_certificates(home.ca_file.clone())
         .user_and_password(subject_token(source), credential.trim().to_owned())

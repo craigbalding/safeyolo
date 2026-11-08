@@ -98,7 +98,11 @@ pub(super) async fn read(
     {
         return Err(CoordError::ObservationRequired);
     }
-    let evidence = if reference.kind == Notification::NeedsOperator {
+    let evidence = if reference.kind == Notification::ObservationHealth {
+        let conn = open_db(&db, false)?;
+        let current=conn.query_row("SELECT last_success_at,unavailable_reason,last_observed_at FROM coord_observation_health WHERE agent_id=?1 AND source=?2",params![reference.target.agent_id,reference.source_id],|row|Ok(json!({"last_success_at":row.get::<_,Option<i64>>(0)?,"unavailable_reason":row.get::<_,Option<String>>(1)?,"last_observed_at":row.get::<_,i64>(2)?}))).optional().map_err(|_|CoordError::Data)?;
+        json!({"source_status":"observer_health","current":current,"message":"Unavailable observation is missing evidence, not target failure. Check current authority and inspect the target separately."})
+    } else if reference.kind == Notification::NeedsOperator {
         signal_evidence(&db, &reference)?
     } else {
         events::evidence(&root, &reference).map_err(|_| CoordError::Unavailable)?
@@ -143,6 +147,9 @@ fn message(kind: Notification) -> &'static str {
         }
         Notification::SupervisorRestart => {
             "Guest command supervision resumed its preserved launch after a PID-1-observed owner exit."
+        }
+        Notification::ObservationHealth => {
+            "A selected observation source became unavailable or recovered. This does not establish target failure or model health."
         }
         Notification::NeedsOperator => {
             "A selected subject's material signal needs operator attention. Read its canonical current state and attributed claim."
@@ -266,6 +273,45 @@ fn signal_references(
     Ok(refs)
 }
 
+fn observation_health(
+    db: &Path,
+    instance: &str,
+    agent: &crate::host_agents::Agent,
+    observation: events::Observation,
+) -> Result<Option<Reference>, CoordError> {
+    let mut conn = open_db(db, true)?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|_| CoordError::Data)?;
+    let previous=tx.query_row(
+        "SELECT last_success_at,unavailable_reason,sequence,reference_json FROM coord_observation_health WHERE agent_id=?1 AND source=?2",params![agent.id,observation.source],|row|Ok((row.get::<_,Option<i64>>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,i64>(2)?,row.get::<_,Option<String>>(3)?))).optional().map_err(|_|CoordError::Data)?;
+    let now = now_ms();
+    let (last_success, before, mut sequence, mut retained) =
+        previous.clone().unwrap_or((None, None, 0, None));
+    let last_success = if observation.unavailable.is_none() {
+        Some(now)
+    } else {
+        last_success
+    };
+    let changed = before.as_deref() != observation.unavailable;
+    if changed {
+        sequence += 1;
+        retained=Some(serde_json::to_string(&Reference {
+            event_id:format!("evt-{}",&crate::approvals::pending::digest(&json!([instance,agent.id,"observer",observation.source,sequence]))[..32]),
+            instance_id:instance.into(),target:crate::policy::delegation::Agent {name:agent.name.clone(),agent_id:agent.id.clone()},
+            kind:Notification::ObservationHealth,source:"coord_observer".into(),source_id:observation.source.clone(),
+            run_id:Value::Null,launch_id:Value::Null,signal_id:None,sequence:sequence as u64,source_time:json!(now as f64/1000.0),observed_at:now/1000,expected_stop:false,
+            state:json!({"availability":if observation.unavailable.is_some(){"unavailable"}else{"available"},"reason":observation.unavailable,"last_success_at":last_success}),
+        }).map_err(|_|CoordError::Data)?);
+    }
+    tx.execute("INSERT INTO coord_observation_health(agent_id,source,last_success_at,unavailable_reason,changed_at,sequence,last_observed_at,reference_json) VALUES(?1,?2,?3,?4,?5,?6,?5,?7) ON CONFLICT(agent_id,source) DO UPDATE SET last_success_at=excluded.last_success_at,unavailable_reason=excluded.unavailable_reason,changed_at=CASE WHEN ?8 THEN excluded.changed_at ELSE changed_at END,sequence=excluded.sequence,last_observed_at=excluded.last_observed_at,reference_json=excluded.reference_json",
+        params![agent.id,observation.source,last_success,observation.unavailable,now,sequence,retained,changed]).map_err(|_|CoordError::Data)?;
+    tx.commit().map_err(|_| CoordError::Data)?;
+    retained
+        .map(|json| serde_json::from_str(&json).map_err(|_| CoordError::Data))
+        .transpose()
+}
+
 pub(super) async fn reconcile(
     client: &CoordClient,
     runtime: &crate::RuntimeState,
@@ -322,16 +368,27 @@ pub(super) async fn reconcile(
         let end = (*after + 8).min(agents.len());
         let mut failed = false;
         for agent in &agents[*after..end] {
-            let observed = events::observe(&root, &instance, agent).await;
-            let mut refs = match observed {
-                Ok((refs, unavailable)) => {
-                    failed |= unavailable;
-                    refs
-                }
-                Err(_) => {
-                    failed = true;
-                    Vec::new()
-                }
+            let observed = tokio::time::timeout(
+                Duration::from_secs(2),
+                events::observe(&root, &instance, agent),
+            )
+            .await;
+            let (mut refs, mut observations) = match observed {
+                Ok(Ok(result)) => result,
+                Ok(Err(_)) => (
+                    Vec::new(),
+                    vec![events::Observation {
+                        source: "operational_records".into(),
+                        unavailable: Some("invalid_source"),
+                    }],
+                ),
+                Err(_) => (
+                    Vec::new(),
+                    vec![events::Observation {
+                        source: "host_runtime".into(),
+                        unavailable: Some("probe_timeout"),
+                    }],
+                ),
             };
             let rooms: std::collections::BTreeSet<_> = grants
                 .values()
@@ -346,15 +403,30 @@ pub(super) async fn reconcile(
                 })
                 .flat_map(|grant| grant.signal_rooms.iter().cloned())
                 .collect();
-            match signal_references(
-                &db,
-                &instance,
-                agent,
-                &rooms.into_iter().collect::<Vec<_>>(),
-                signal_positions,
-            ) {
-                Ok(signals) => refs.extend(signals),
-                Err(_) => failed = true,
+            for room in rooms {
+                let signals = signal_references(
+                    &db,
+                    &instance,
+                    agent,
+                    std::slice::from_ref(&room),
+                    signal_positions,
+                );
+                observations.push(events::Observation {
+                    source: format!("signals:{room}"),
+                    unavailable: signals.is_err().then_some("source_unreadable"),
+                });
+                match signals {
+                    Ok(signals) => refs.extend(signals),
+                    Err(_) => failed = true,
+                }
+            }
+            for observation in observations.drain(..) {
+                failed |= observation.unavailable.is_some();
+                match observation_health(&db, &instance, agent, observation) {
+                    Ok(Some(reference)) => refs.push(reference),
+                    Ok(None) => {}
+                    Err(_) => failed = true,
+                }
             }
             for reference in refs {
                 // Reload the saved policy after observation. A revoke while a

@@ -3,6 +3,8 @@
 use super::*;
 #[path = "federation/operator.rs"]
 mod operator;
+#[path = "federation/reliability.rs"]
+mod reliability;
 #[path = "federation/support.rs"]
 mod support;
 use hyper::Method;
@@ -61,6 +63,7 @@ struct Link {
     endpoint: String,
     partitioned: Arc<AtomicBool>,
     accepted: Arc<Notify>,
+    changed: Arc<Notify>,
     task: tokio::task::JoinHandle<()>,
 }
 impl Drop for Link {
@@ -69,12 +72,19 @@ impl Drop for Link {
     }
 }
 impl Link {
+    fn partition(&self, value: bool) {
+        self.partitioned.store(value, Ordering::SeqCst);
+        if value {
+            self.changed.notify_waiters();
+        }
+    }
     async fn new(home: String) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = listener.local_addr().unwrap().to_string();
         let partitioned = Arc::new(AtomicBool::new(false));
         let accepted = Arc::new(Notify::new());
-        let (cut, seen) = (partitioned.clone(), accepted.clone());
+        let changed = Arc::new(Notify::new());
+        let (cut, seen, changes) = (partitioned.clone(), accepted.clone(), changed.clone());
         let task = tokio::spawn(async move {
             let mut connections = tokio::task::JoinSet::new();
             loop {
@@ -88,10 +98,17 @@ impl Link {
                             drop(source);
                             continue;
                         }
-                        let home=home.clone();
+                        let (home,changes,cut)=(home.clone(),changes.clone(),cut.clone());
                         connections.spawn(async move {
+                            let changed=changes.notified();
+                            tokio::pin!(changed);
+                            changed.as_mut().enable();
+                            if cut.load(Ordering::SeqCst){return;}
                             let Ok(mut destination)=TcpStream::connect(home).await else { return; };
-                            let _=tokio::io::copy_bidirectional(&mut source,&mut destination).await;
+                            tokio::select! {
+                                _=tokio::io::copy_bidirectional(&mut source,&mut destination)=>{},
+                                _=changed=>{},
+                            }
                         });
                     }
                     _=connections.join_next(),if !connections.is_empty()=>{}
@@ -102,9 +119,39 @@ impl Link {
             endpoint,
             partitioned,
             accepted,
+            changed,
             task,
         }
     }
+}
+
+async fn await_remote_connection(root: &Path, instance: &str) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let state = safeyolo_proxy::native_client::admin(
+                &root.join("config.toml"),
+                "/admin/coord/diagnostics",
+                Method::GET,
+                Value::Null,
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+            if state["federation"]["connections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|connection| {
+                    connection["instance_id"] == instance && connection["state"] == "Connected"
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the cached peer connection did not recover");
 }
 
 async fn configure_home(home: &Path, peer: &Path, home_id: &str, endpoint: &str) {
@@ -410,7 +457,7 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
         .await
         .unwrap()["work"]
         .clone();
-    link.partitioned.store(true, Ordering::SeqCst);
+    link.partition(true);
     let partition_claim = json!({"room_name":"shared","work_id":open["work_id"],"expected_version":1,"expected_generation":0,"operation_id":"partition-claim"});
     let failed = bob.call("claim_work", &partition_claim);
     let (failure, _) = tokio::join!(failed, async {
@@ -421,7 +468,8 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
     assert!(failure.unwrap_err().to_string().contains("503"));
     let claimed=alice.call("claim_work",&json!({"room_name":"shared","work_id":open["work_id"],"expected_version":1,"expected_generation":0,"operation_id":"home-during-partition"})).await.unwrap()["work"].clone();
     assert_eq!(count(&peer, "SELECT count(*) FROM coord_work"), 0);
-    link.partitioned.store(false, Ordering::SeqCst);
+    link.partition(false);
+    await_remote_connection(&peer, &home_id).await;
     assert_eq!(
         mutable_work(
             bob.call(

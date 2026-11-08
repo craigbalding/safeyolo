@@ -30,6 +30,7 @@ pub(crate) enum Notification {
     SupervisorExit,
     SupervisorRestart,
     NeedsOperator,
+    ObservationHealth,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

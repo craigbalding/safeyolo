@@ -2,9 +2,232 @@
 use super::*;
 use crate::{Error, coord_rooms::federation as trust};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 
 // DOC: docs/peer-support.md
 const MAX_WIRE_REQUEST: usize = crate::coord_rooms::COLLABORATION_MAX_ENVELOPE_BYTES;
+
+// These are resource budgets, not grants. Waits cannot occupy command slots.
+const MAX_CONNECTIONS: usize = 32;
+const MAX_REQUESTS: usize = 32;
+const MAX_WAITS: usize = 32;
+const MAX_INCOMING: usize = 64;
+const MAX_PEER_REQUESTS: usize = 16;
+const MAX_PEER_WAITS: usize = 8;
+
+struct Cached {
+    destination: String,
+    used: tokio::time::Instant,
+    connection: Arc<OnceCell<async_nats::Client>>,
+}
+
+pub(super) struct Connections {
+    cache: tokio::sync::Mutex<HashMap<String, Cached>>,
+    requests: Arc<Semaphore>,
+    waits: Arc<Semaphore>,
+    incoming: Arc<Semaphore>,
+    incoming_waits: Arc<Semaphore>,
+    incoming_cleanup: Arc<Semaphore>,
+    cleanup: Arc<Semaphore>,
+    read_waits: StdMutex<HashMap<ReadWaitId, futures_util::future::AbortHandle>>,
+    rejected: AtomicU64,
+    delivery_failures: Arc<AtomicU64>,
+    events: Arc<StdMutex<HashMap<String, (String, u64)>>>,
+}
+
+impl Default for Connections {
+    fn default() -> Self {
+        Self {
+            cache: Default::default(),
+            requests: Arc::new(Semaphore::new(MAX_REQUESTS)),
+            waits: Arc::new(Semaphore::new(MAX_WAITS)),
+            incoming: Arc::new(Semaphore::new(MAX_INCOMING)),
+            incoming_waits: Arc::new(Semaphore::new(16)),
+            incoming_cleanup: Arc::new(Semaphore::new(8)),
+            cleanup: Arc::new(Semaphore::new(4)),
+            read_waits: Default::default(),
+            rejected: AtomicU64::new(0),
+            delivery_failures: Arc::new(AtomicU64::new(0)),
+            events: Default::default(),
+        }
+    }
+}
+
+fn security(home: &trust::Home, source: &str) -> Result<String, Error> {
+    let credential = trust::token(&home.token_file)?;
+    let ca = std::fs::read(&home.ca_file)?;
+    Ok(crate::approvals::pending::digest(&json!([
+        source,
+        home.instance_id,
+        home.url,
+        home.revision,
+        trust::nats::subject_token(credential.trim()),
+        hash_hex(&ca)
+    ])))
+}
+
+fn hash_hex(bytes: &[u8]) -> String {
+    ring::digest::digest(&ring::digest::SHA256, bytes)
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+impl Connections {
+    fn options(&self, destination: String) -> async_nats::ConnectOptions {
+        let events = self.events.clone();
+        async_nats::ConnectOptions::new().event_callback(move |event| {
+            let (events, destination) = (events.clone(), destination.clone());
+            async move {
+                // Error text may contain authored subjects or credentials.
+                let class = match event {
+                    async_nats::Event::Connected => "connected",
+                    async_nats::Event::Disconnected => "disconnected",
+                    async_nats::Event::Closed => "closed",
+                    async_nats::Event::SlowConsumer(_) => "slow_consumer",
+                    async_nats::Event::ServerError(_) => "server_error",
+                    async_nats::Event::ClientError(_) => "client_error",
+                    async_nats::Event::LameDuckMode => "lame_duck",
+                    async_nats::Event::Draining => "draining",
+                };
+                if let Ok(mut events) = events.lock() {
+                    if !events.contains_key(&destination) && events.len() > MAX_CONNECTIONS {
+                        events.clear();
+                    }
+                    let entry = events.entry(destination).or_default();
+                    entry.0 = class.into();
+                    entry.1 += 1;
+                }
+            }
+        })
+    }
+
+    async fn connect(&self, home: &trust::Home, source: &str) -> Result<async_nats::Client, Error> {
+        let key = security(home, source)?;
+        let cell = {
+            let mut cache = self.cache.lock().await;
+            // A changed credential, CA, route or configuration revision cannot
+            // reuse the previous connection. In-flight callers recheck below.
+            cache.retain(|security, entry| {
+                entry.destination != home.instance_id || security == &key
+            });
+            if !cache.contains_key(&key) && cache.len() >= MAX_CONNECTIONS {
+                if let Some(oldest) = cache
+                    .iter()
+                    .filter(|(_, entry)| Arc::strong_count(&entry.connection) == 1)
+                    .min_by_key(|(_, entry)| entry.used)
+                    .map(|(key, _)| key.clone())
+                {
+                    cache.remove(&oldest);
+                } else {
+                    self.rejected.fetch_add(1, Ordering::Relaxed);
+                    return Err(AdmissionFull.into());
+                }
+            }
+            cache
+                .entry(key.clone())
+                .or_insert_with(|| Cached {
+                    destination: home.instance_id.clone(),
+                    used: tokio::time::Instant::now(),
+                    connection: Arc::new(OnceCell::new()),
+                })
+                .used = tokio::time::Instant::now();
+            cache
+                .get(&key)
+                .expect("inserted connection")
+                .connection
+                .clone()
+        };
+        let connection = cell
+            .get_or_try_init(|| async {
+                let result = trust::nats::connect_with_options(
+                    home,
+                    source,
+                    self.options(home.instance_id.clone()),
+                )
+                .await;
+                if result.is_err() {
+                    self.delivery_failures.fetch_add(1, Ordering::Relaxed);
+                    if let Ok(mut events) = self.events.lock() {
+                        let class = if result
+                            .as_ref()
+                            .err()
+                            .and_then(|error| error.downcast_ref::<async_nats::ConnectError>())
+                            .is_some_and(|error| {
+                                matches!(
+                                    error.kind(),
+                                    async_nats::ConnectErrorKind::Authentication
+                                        | async_nats::ConnectErrorKind::AuthorizationViolation
+                                )
+                            }) {
+                            "authentication_denied"
+                        } else {
+                            "connect_failed"
+                        };
+                        if events.len() > MAX_CONNECTIONS {
+                            events.clear();
+                        }
+                        events.insert(home.instance_id.clone(), (class.into(), 1));
+                    }
+                }
+                result
+            })
+            .await?;
+        if connection.connection_state() != async_nats::connection::State::Connected {
+            return Err("peer reconnecting; no request submitted".into());
+        }
+        Ok(connection.clone())
+    }
+
+    fn register_wait(
+        &self,
+        key: ReadWaitId,
+    ) -> Result<futures_util::future::AbortRegistration, Error> {
+        let mut waits = self
+            .read_waits
+            .lock()
+            .map_err(|_| "read wait state unavailable")?;
+        if waits.contains_key(&key) {
+            return Err(AdmissionFull.into());
+        }
+        let (abort, registration) = futures_util::future::AbortHandle::new_pair();
+        waits.insert(key, abort);
+        Ok(registration)
+    }
+
+    pub(super) async fn diagnostics(&self) -> Value {
+        let cache = self.cache.lock().await;
+        let connections: Vec<_> = cache.values().map(|entry| json!({"instance_id":entry.destination,
+            "state":entry.connection.get().map(|client|format!("{:?}", client.connection_state())).unwrap_or_else(||"connecting".into())})).collect();
+        json!({"connections":connections,"connection_count":cache.len(),
+            "active_read_waits":self.read_waits.lock().map(|waits|waits.len()).unwrap_or(0),
+            "active_requests":MAX_REQUESTS-self.requests.available_permits(),
+            "active_waits":MAX_WAITS-self.waits.available_permits(),
+            "active_incoming":MAX_INCOMING-self.incoming.available_permits(),"active_cleanup":8-self.incoming_cleanup.available_permits(),
+            "rejected_admission":self.rejected.load(Ordering::Relaxed),
+            "delivery_failures":self.delivery_failures.load(Ordering::Relaxed),
+            "connection_events":self.events.lock().map(|events|json!(*events)).unwrap_or(Value::Null),
+            "budget":{"connections":MAX_CONNECTIONS,"requests":MAX_REQUESTS,"waits":MAX_WAITS,"incoming":MAX_INCOMING,"per_peer_requests":MAX_PEER_REQUESTS,"per_peer_waits":MAX_PEER_WAITS}})
+    }
+}
+
+#[derive(Debug)]
+struct AdmissionFull;
+impl std::fmt::Display for AdmissionFull {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Coord connection admission full; no request submitted")
+    }
+}
+impl std::error::Error for AdmissionFull {}
+
+fn admission_full() -> Outcome<'static> {
+    response(
+        429,
+        json!({"error":"Coord request admission full; no operation attempted","mutation_outcome":"not_attempted","availability":"busy"}),
+    )
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,7 +312,10 @@ fn allowed(request: Request<'_>) -> bool {
             || support_route(request)
             || approval_route(request)
             || (request.method == "POST"
-                && super::super::route(request) == "/api/coord/attention/subscribe"))
+                && matches!(
+                    super::super::route(request),
+                    "/api/coord/attention/subscribe" | "/api/coord/attention/unsubscribe"
+                )))
 }
 
 fn unavailable(request: Request<'_>) -> Outcome<'static> {
@@ -99,6 +325,49 @@ fn unavailable(request: Request<'_>) -> Outcome<'static> {
         "mutation_outcome":if request.method == "POST" {"unknown"} else {"not_requested"},
         "availability":"unreachable"}),
     )
+}
+
+fn long_wait(peer: &PeerRequest) -> bool {
+    let request = Request {
+        method: &peer.method,
+        path_and_query: &peer.path,
+        authorization: None,
+        identity: crate::network_guard::Identity::Unavailable,
+        client_ip: None,
+        request_id: "wait-admission",
+    };
+    peer.method == "GET"
+        && (attention_wait_route(request)
+            || route_parts(request).is_some_and(|(_, operation)| operation == "wait"))
+        && query_parameter(&peer.path, "timeout")
+            .ok()
+            .flatten()
+            .and_then(|seconds| seconds.parse::<f64>().ok())
+            .unwrap_or(60.0)
+            > 1.0
+}
+
+fn valid_wait_id(value: &str) -> bool {
+    value.len() == 32 && value.bytes().all(|c| c.is_ascii_hexdigit())
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ReadWaitId {
+    source: String,
+    agent: String,
+    id: String,
+}
+
+struct ActiveReadWait {
+    owner: Arc<CoordOwner>,
+    key: ReadWaitId,
+}
+impl Drop for ActiveReadWait {
+    fn drop(&mut self) {
+        if let Ok(mut waits) = self.owner.federation.read_waits.lock() {
+            waits.remove(&self.key);
+        }
+    }
 }
 
 fn local_run_current(context: &CoordContext<'_>, run: &crate::host_runs::AgentRun) -> bool {
@@ -167,27 +436,90 @@ pub(super) async fn forward(
         Ok(body) => body,
         Err(_) => return response(400, json!({"error":"invalid JSON body"})),
     };
-    let peer = PeerRequest {
+    let mut peer = PeerRequest {
         destination_instance_id: home.instance_id.clone(),
         source_run: run.clone(),
         method: request.method.into(),
         path,
         body,
     };
+    let waiting = long_wait(&peer);
+    if waiting
+        && !attention_wait_route(Request {
+            path_and_query: &peer.path,
+            ..request
+        })
+    {
+        peer.body = Some(json!({"wait_id":uuid::Uuid::new_v4().simple().to_string()}));
+    }
     if serde_json::to_vec(&peer).is_ok_and(|wire| wire.len() > MAX_WIRE_REQUEST) {
         return response(
             413,
             json!({"error":"request exceeds the managed NATS payload limit; no remote operation attempted"}),
         );
     }
+    let budget = if waiting {
+        &context.client.owner.federation.waits
+    } else {
+        &context.client.owner.federation.requests
+    };
+    let Ok(permit) = budget.clone().try_acquire_owned() else {
+        context
+            .client
+            .owner
+            .federation
+            .rejected
+            .fetch_add(1, Ordering::Relaxed);
+        return admission_full();
+    };
+    let before_security = security(&home, &source).ok();
     let result = async {
-        let connection = trust::nats::connect(&home, &source).await?;
+        let connection = context
+            .client
+            .owner
+            .federation
+            .connect(&home, &source)
+            .await?;
         if attention_wait_route(Request {
             path_and_query: &peer.path,
             ..request
         }) {
-            wait_remote(&connection, &home, &source, &peer).await
+            wait_remote(
+                &connection,
+                &home,
+                &source,
+                &peer,
+                context.client.owner.cleanup.clone(),
+                &context.client.owner.federation,
+                permit,
+            )
+            .await
+        } else if let Some(id) = peer
+            .body
+            .as_ref()
+            .and_then(|body| body["wait_id"].as_str())
+            .filter(|_| waiting)
+        {
+            let cleanup = WaitCleanup {
+                connection: connection.clone(),
+                home: home.clone(),
+                source: source.clone(),
+                request: PeerRequest {
+                    method: "POST".into(),
+                    path: "/api/coord/attention/unsubscribe".into(),
+                    body: Some(json!({"wait_id":id})),
+                    ..peer.clone()
+                },
+                owner: context.client.owner.cleanup.clone(),
+                cleanup: context.client.owner.federation.cleanup.clone(),
+                failures: context.client.owner.federation.delivery_failures.clone(),
+                permit: Some(permit),
+            };
+            let result = exchange(&connection, &home, &source, &peer).await;
+            cleanup.finish().await;
+            result
         } else {
+            let _permit = permit;
             exchange(&connection, &home, &source, &peer).await
         }
     };
@@ -197,6 +529,8 @@ pub(super) async fn forward(
         _=wait_cancelled(&mut cancellation)=>return unavailable(request),
     };
     if !local_run_current(context, run)
+        || before_security.is_none()
+        || security(&home, &source).ok() != before_security
         || open_db(&db, false)
             .ok()
             .and_then(|conn| trust::home(&conn, home_name).ok())
@@ -223,6 +557,7 @@ pub(super) async fn forward(
             503,
             json!({"error":"response identity differs from selected owning instance","availability":"unknown"}),
         ),
+        Err(error) if error.downcast_ref::<AdmissionFull>().is_some() => admission_full(),
         Err(error)
             if error
                 .downcast_ref::<async_nats::ConnectError>()
@@ -254,14 +589,26 @@ async fn exchange(
     } else {
         Duration::from_secs(330)
     };
-    let message = connection
-        .send_request(
-            trust::nats::request_subject(&home.instance_id, source),
-            async_nats::Request::new()
-                .payload(serde_json::to_vec(peer)?.into())
-                .timeout(Some(timeout)),
-        )
-        .await?;
+    let request = connection.send_request(
+        trust::nats::request_subject(&home.instance_id, source),
+        async_nats::Request::new()
+            .payload(serde_json::to_vec(peer)?.into())
+            .timeout(Some(timeout)),
+    );
+    // Inspect only the library's local connection state. A disconnect closes
+    // this uncertain request promptly; it never submits a replacement RPC.
+    let disconnected = async {
+        loop {
+            if connection.connection_state() != async_nats::connection::State::Connected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    let message = tokio::select! {
+        value=request=>value?,
+        _=disconnected=>return Err("peer disconnected; inspect the original operation before retrying".into()),
+    };
     if message.payload.len() > 8 * 1024 * 1024 {
         return Err("federation response exceeds limit".into());
     }
@@ -275,6 +622,9 @@ async fn wait_remote(
     home: &trust::Home,
     source: &str,
     peer: &PeerRequest,
+    owner: Arc<CoordCleanup>,
+    connections: &Connections,
+    permit: OwnedSemaphorePermit,
 ) -> Result<Value, Error> {
     let seconds = query_parameter(&peer.path, "timeout")
         .map_err(|_| "invalid wait timeout")?
@@ -286,6 +636,22 @@ async fn wait_remote(
     if seconds == 0.0 {
         return exchange(connection, home, source, peer).await;
     }
+    let wait_id = uuid::Uuid::new_v4().simple().to_string();
+    let cleanup = WaitCleanup {
+        connection: connection.clone(),
+        home: home.clone(),
+        source: source.into(),
+        request: PeerRequest {
+            method: "POST".into(),
+            path: "/api/coord/attention/unsubscribe".into(),
+            body: Some(json!({"wait_id":wait_id})),
+            ..peer.clone()
+        },
+        owner,
+        cleanup: connections.cleanup.clone(),
+        failures: connections.delivery_failures.clone(),
+        permit: Some(permit),
+    };
     let subscription = exchange(
         connection,
         home,
@@ -293,7 +659,7 @@ async fn wait_remote(
         &PeerRequest {
             method: "POST".into(),
             path: "/api/coord/attention/subscribe".into(),
-            body: None,
+            body: Some(json!({"wait_id":wait_id})),
             ..peer.clone()
         },
     )
@@ -301,6 +667,81 @@ async fn wait_remote(
     if subscription["status"] != 200 {
         return Ok(subscription);
     }
+    let result = wait_subscribed(connection, home, source, peer, seconds, subscription).await;
+    cleanup.finish().await;
+    result
+}
+
+struct WaitCleanup {
+    connection: async_nats::Client,
+    home: trust::Home,
+    source: String,
+    request: PeerRequest,
+    owner: Arc<CoordCleanup>,
+    cleanup: Arc<Semaphore>,
+    failures: Arc<AtomicU64>,
+    permit: Option<OwnedSemaphorePermit>,
+}
+impl WaitCleanup {
+    async fn finish(mut self) {
+        cleanup_wait(
+            &self.cleanup,
+            &self.failures,
+            &self.connection,
+            &self.home,
+            &self.source,
+            &self.request,
+        )
+        .await;
+        self.permit = None;
+    }
+}
+async fn cleanup_wait(
+    budget: &Semaphore,
+    failures: &AtomicU64,
+    connection: &async_nats::Client,
+    home: &trust::Home,
+    source: &str,
+    request: &PeerRequest,
+) {
+    let Ok(_permit) = budget.acquire().await else {
+        return;
+    };
+    if !matches!(tokio::time::timeout(Duration::from_secs(2),exchange(connection,home,source,request)).await,Ok(Ok(value)) if value["status"]==200)
+    {
+        failures.fetch_add(1, Ordering::Relaxed);
+    }
+}
+impl Drop for WaitCleanup {
+    fn drop(&mut self) {
+        let Some(permit) = self.permit.take() else {
+            return;
+        };
+        let (connection, home, source, request, budget, failures) = (
+            self.connection.clone(),
+            self.home.clone(),
+            self.source.clone(),
+            self.request.clone(),
+            self.cleanup.clone(),
+            self.failures.clone(),
+        );
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            self.owner.track(handle.spawn(async move {
+                let _permit = permit;
+                cleanup_wait(&budget, &failures, &connection, &home, &source, &request).await;
+            }));
+        }
+    }
+}
+
+async fn wait_subscribed(
+    connection: &async_nats::Client,
+    home: &trust::Home,
+    source: &str,
+    peer: &PeerRequest,
+    seconds: f64,
+    subscription: Value,
+) -> Result<Value, Error> {
     let stream = async_nats::jetstream::new(connection.clone())
         .get_stream(trust::nats::notice_stream(source))
         .await?;
@@ -342,7 +783,7 @@ async fn wait_remote(
         }
         tokio::select! {
             _=tokio::time::sleep_until(deadline)=>return exchange(connection,home,source,&read).await,
-            hint=hints.next()=>if hint.is_none(){return Err("remote notification subscription unavailable".into());},
+            hint=hints.next()=>match hint { Some(Ok(_))=>{}, _=>return Err("remote notification subscription unavailable".into()) },
         }
     }
 }
@@ -458,9 +899,36 @@ async fn receive(
     if payload.as_ref().is_some_and(|payload| payload.len() > max) {
         return reply(instance, 413, json!({"error":"request body too large"}));
     }
-    let outcome = if peer.method == "POST" && peer.path == "/api/coord/attention/subscribe" {
-        match subscribe(client, instance, &remote).await {
+    let outcome = if peer.method == "POST"
+        && matches!(
+            peer.path.as_str(),
+            "/api/coord/attention/subscribe" | "/api/coord/attention/unsubscribe"
+        ) {
+        if !payload
+            .as_deref()
+            .and_then(|payload| serde_json::from_slice::<Value>(payload).ok())
+            .is_some_and(|payload| payload["wait_id"].as_str().is_some_and(valid_wait_id))
+        {
+            return reply(instance, 400, json!({"error":"invalid wait identity"}));
+        }
+        match subscribe(
+            client,
+            instance,
+            &remote,
+            payload.as_deref(),
+            peer.path.ends_with("/unsubscribe"),
+        )
+        .await
+        {
             Ok(value) => response(200, value),
+            Err(error) if error.downcast_ref::<AdmissionFull>().is_some() => {
+                client
+                    .owner
+                    .federation
+                    .rejected
+                    .fetch_add(1, Ordering::Relaxed);
+                admission_full()
+            }
             Err(_) => response(503, json!({"error":"retained notifications unavailable"})),
         }
     } else if approval_route(request) {
@@ -511,6 +979,8 @@ async fn subscribe(
     client: &CoordClient,
     instance: &str,
     remote: &trust::RemoteAgent,
+    payload: Option<&[u8]>,
+    remove: bool,
 ) -> Result<Value, Error> {
     let connection = client
         .owner
@@ -519,22 +989,86 @@ async fn subscribe(
         .await
         .clone()
         .ok_or("federation notifications unavailable")?;
-    let stream = trust::nats::retained_notices(&connection, instance, &remote.instance_id).await?;
-    let name = format!("sfw-{}", uuid::Uuid::new_v4().simple());
+    let payload: Value = serde_json::from_slice(payload.ok_or("missing wait identity")?)?;
+    let id = payload["wait_id"]
+        .as_str()
+        .filter(|id| valid_wait_id(id))
+        .ok_or("invalid wait identity")?;
+    let name = format!(
+        "sfw-{}",
+        crate::approvals::pending::digest(&json!([remote.instance_id, remote.principal_id, id]))
+    );
+    if remove {
+        if let Some(wait) = client
+            .owner
+            .federation
+            .read_waits
+            .lock()
+            .map_err(|_| "read wait state unavailable")?
+            .get(&ReadWaitId {
+                source: remote.instance_id.clone(),
+                agent: remote.agent_id.clone(),
+                id: id.to_owned(),
+            })
+        {
+            wait.abort();
+        }
+        let stream = async_nats::jetstream::new(connection)
+            .get_stream(trust::nats::notice_stream(&remote.instance_id))
+            .await;
+        match stream {
+            Ok(stream) => match stream.delete_consumer(&name).await {
+                Ok(_) => {}
+                Err(error) if consumer_delete_not_found(&error) => {}
+                Err(error) => return Err(error.into()),
+            },
+            Err(error) if matches!(error.kind(),async_nats::jetstream::context::GetStreamErrorKind::JetStream(error) if error.code()==404) =>
+                {}
+            Err(error) => return Err(error.into()),
+        }
+        return Ok(json!({"removed":true,"instance_id":instance}));
+    }
+    let mut stream =
+        trust::nats::retained_notices(&connection, instance, &remote.instance_id).await?;
+    let info = stream.info().await?;
+    if info.state.consumer_count >= trust::nats::MAX_WAIT_CONSUMERS as usize {
+        return Err(AdmissionFull.into());
+    }
+    if info.config.max_consumers != trust::nats::MAX_WAIT_CONSUMERS {
+        // Bound retained streams as well as newly created ones. Existing waits
+        // are never deleted to make room; normal cleanup/inactivity retires them.
+        let mut config = info.config.clone();
+        config.max_consumers = trust::nats::MAX_WAIT_CONSUMERS;
+        async_nats::jetstream::new(connection.clone())
+            .update_stream(config)
+            .await?;
+    }
     stream
-        .create_consumer(pull::Config {
-            name: Some(name.clone()),
-            ack_policy: AckPolicy::None,
-            deliver_policy: DeliverPolicy::LastPerSubject,
-            filter_subject: trust::nats::notice_subject(
-                instance,
-                &remote.instance_id,
-                &remote.principal_id,
-            ),
-            inactive_threshold: Duration::from_secs(330),
-            ..Default::default()
-        })
-        .await?;
+        .get_or_create_consumer(
+            &name,
+            pull::Config {
+                name: Some(name.clone()),
+                ack_policy: AckPolicy::None,
+                deliver_policy: DeliverPolicy::LastPerSubject,
+                filter_subject: trust::nats::notice_subject(
+                    instance,
+                    &remote.instance_id,
+                    &remote.principal_id,
+                ),
+                inactive_threshold: Duration::from_secs(330),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|error| -> Error {
+            if matches!(error.kind(), async_nats::jetstream::stream::ConsumerErrorKind::JetStream(error)
+                if error.error_code() == async_nats::jetstream::ErrorCode::MAXIMUM_CONSUMERS_LIMIT)
+            {
+                AdmissionFull.into()
+            } else {
+                error.into()
+            }
+        })?;
     Ok(json!({"consumer":name,"instance_id":instance}))
 }
 
@@ -556,8 +1090,10 @@ impl Running {
         Some(Self {
             task: tokio::spawn(async move {
                 loop {
-                    if let Err(error) = serve(&root, &runtime).await {
-                        eprintln!("NATS federation unavailable: {error}");
+                    if serve(&root, &runtime).await.is_err() {
+                        eprintln!(
+                            "NATS federation unavailable; inspect Coord diagnostics and the owned broker log."
+                        );
                     }
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
@@ -584,7 +1120,7 @@ async fn serve(root: &Path, runtime: &crate::RuntimeState) -> Result<(), Error> 
     let (url, options) = trust::nats::local_options(
         &client.owner.data_dir,
         client.nats_url(),
-        async_nats::ConnectOptions::new(),
+        client.owner.federation.options("owner".into()),
     )?;
     let connection = options
         .user_and_password("safeyolo-federation".into(), password.trim().into())
@@ -600,6 +1136,19 @@ async fn serve(root: &Path, runtime: &crate::RuntimeState) -> Result<(), Error> 
     connection.flush().await?;
     *client.owner.federation_nats.lock().await = Some(connection.clone());
     let mut tasks = tokio::task::JoinSet::new();
+    let budgets: HashMap<_, _> = peers
+        .iter()
+        .map(|peer| {
+            (
+                peer.instance_id.clone(),
+                (
+                    Arc::new(Semaphore::new(MAX_PEER_REQUESTS)),
+                    Arc::new(Semaphore::new(MAX_PEER_WAITS)),
+                    Arc::new(Semaphore::new(4)),
+                ),
+            )
+        })
+        .collect();
     loop {
         tokio::select! {
             message=requests.next()=>{
@@ -608,15 +1157,46 @@ async fn serve(root: &Path, runtime: &crate::RuntimeState) -> Result<(), Error> 
                 let Some(source)=peers.iter().find(|peer|trust::nats::subject_token(&peer.instance_id)==source_token) else{continue;};
                 let Some(reply_to)=message.reply else{continue;};
                 if !reply_to.starts_with(&format!("{}.",trust::nats::reply_prefix(&source.instance_id))) {continue;}
+                let parsed=serde_json::from_slice::<PeerRequest>(&message.payload).ok();
+                let waiting=parsed.as_ref().is_some_and(long_wait);
+                let removing=parsed.as_ref().is_some_and(|peer|peer.method=="POST" && peer.path=="/api/coord/attention/unsubscribe");
+                let budgets=budgets.get(&source.instance_id).expect("configured peer budget");
+                let peer_permit=if removing {&budgets.2} else if waiting { &budgets.1 } else { &budgets.0 }.clone().try_acquire_owned();
+                let wait_permit=if waiting {Some(client.owner.federation.incoming_waits.clone().try_acquire_owned())} else {None};
+                let total_permit=if removing {&client.owner.federation.incoming_cleanup} else {&client.owner.federation.incoming}.clone().try_acquire_owned();
+                let wait_permit=wait_permit.transpose();
+                let (Ok(peer_permit),Ok(total_permit),Ok(wait_permit))=(peer_permit,total_permit,wait_permit) else {
+                    client.owner.federation.rejected.fetch_add(1,Ordering::Relaxed);
+                    let value=reply(&instance,429,json!({"error":"Coord request admission full; no operation attempted","mutation_outcome":"not_attempted","availability":"busy"}));
+                    if !matches!(tokio::time::timeout(Duration::from_secs(2),async {connection.publish(reply_to,value.to_string().into()).await.map_err(|_|())?;connection.flush().await.map_err(|_|())}).await,Ok(Ok(()))) {client.owner.federation.delivery_failures.fetch_add(1,Ordering::Relaxed);}
+                    continue;
+                };
+                let cancellation=if waiting {
+                    if let Some((agent,id))=parsed.as_ref().and_then(|peer|Some((peer.source_run.agent_id.clone(),peer.body.as_ref()?["wait_id"].as_str()?.to_owned()))).filter(|(_,id)|valid_wait_id(id)) {
+                        let key=ReadWaitId {source:source.instance_id.clone(),agent,id};
+                        match client.owner.federation.register_wait(key.clone()) {
+                            Ok(registration)=>Some((ActiveReadWait {owner:client.owner.clone(),key},registration)),
+                            Err(_)=>{client.owner.federation.rejected.fetch_add(1,Ordering::Relaxed); let value=reply(&instance,429,json!({"error":"read wait already active; no operation attempted","mutation_outcome":"not_attempted"})); if connection.publish(reply_to,value.to_string().into()).await.is_err(){client.owner.federation.delivery_failures.fetch_add(1,Ordering::Relaxed);} continue;},
+                        }
+                    } else {None}
+                } else {None};
                 let credential_hash=source.credential_hash.clone();
                 let (client,runtime,connection,instance,source)=(client.clone(),runtime.clone(),connection.clone(),instance.clone(),source.instance_id.clone());
                 let config=root.join("config.toml");
                 tasks.spawn(async move {crate::host_platform::in_config(config,async {
-                    let value=receive(&client,&runtime,&instance,&source,&credential_hash,&message.payload).await;
-                    let _=connection.publish(reply_to,value.to_string().into()).await;
+                    let (_peer_permit,_total_permit,_wait_permit)=(peer_permit,total_permit,wait_permit);
+                    let request=receive(&client,&runtime,&instance,&source,&credential_hash,&message.payload);
+                    let value=if let Some((active,registration))=cancellation {
+                        let _active=active;
+                        match futures_util::future::Abortable::new(request,registration).await {
+                            Ok(value)=>value,
+                            Err(_)=>reply(&instance,503,json!({"error":"read wait cancelled","mutation_outcome":"not_requested"})),
+                        }
+                    } else {request.await};
+                    if !matches!(tokio::time::timeout(Duration::from_secs(2),async {connection.publish(reply_to,value.to_string().into()).await.map_err(|_|())?;connection.flush().await.map_err(|_|())}).await,Ok(Ok(()))) {client.owner.federation.delivery_failures.fetch_add(1,Ordering::Relaxed);}
                 }).await;});
             },
-            _=tasks.join_next(),if !tasks.is_empty()=>{},
+            result=tasks.join_next(),if !tasks.is_empty()=>{ if matches!(result,Some(Err(_))) {client.owner.federation.delivery_failures.fetch_add(1,Ordering::Relaxed);} },
         }
     }
 }

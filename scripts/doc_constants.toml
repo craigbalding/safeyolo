@@ -339,3 +339,17 @@ source = "proxy/src/coord_rooms/room_status.rs"
 pattern = 'const WORK_TEXT_BYTES: usize = (?P<bytes>\d+);'
 docs = ["docs/coord-operations.md"]
 must_contain = "at most {bytes} UTF-8 bytes each"
+
+[[assertion]]
+name = "coord-federation-cached-connections"
+source = "proxy/src/agent_api/coord/federation.rs"
+pattern = 'const MAX_CONNECTIONS: usize = (?P<count>\d+);'
+docs = ["docs/coord-reference.md"]
+must_contain = "caches up to {count} connections"
+
+[[assertion]]
+name = "coord-federation-wait-consumers"
+source = "proxy/src/coord_rooms/federation/nats.rs"
+pattern = 'const MAX_WAIT_CONSUMERS: i32 = (?P<count>\d+);'
+docs = ["docs/coord-reference.md"]
+must_contain = "at most {count} wait consumers"

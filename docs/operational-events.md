@@ -73,7 +73,9 @@ the observation during a controlled run.
 One host observer performs bounded local reconciliation. Recipients use the
 existing long wait; they do not poll every worker. Retained attention is
 authoritative and wake messages are hints. A lost final hint needs no later
-business event: the long wait rechecks the retained feed. Observer restart
+business event: the outbox retries retained hints, and a resumed wait reads the
+canonical feed before waiting again. The owner also repairs accepted room
+messages whose publisher exited before attention projection. Observer restart
 resumes saved transition positions and scans current actionable conditions.
 An unavailable broker leaves hints pending while local references and audit
 delivery remain independent.
@@ -116,3 +118,30 @@ audit write succeeded. Pending audit writes and their failures remain visible
 through the existing outbox and stderr diagnostics. Event time and observation
 time are distinct. This feature does not detect arbitrary live but wedged
 models or monitor a whole host from outside it.
+
+## Observe source health
+
+`observation_health` is an additional notice for a source selected by an active
+support grant. It reports an unhealthy or recovered observer source, separately
+from the target's availability. Host-run, launch, failed-start, runtime-probe,
+guest-supervisor and selected signal-room sources retain separate last-success
+times and unavailable reason classes. A quiet readable source is available.
+An unreadable record, invalid source, changed generation or timed-out probe is
+missing evidence; it does not establish target failure.
+
+A second source can become unhealthy while another remains unavailable. Each
+transition uses ordinary operational attention and the existing audit outbox.
+Current source selection, target identity, peer epoch and grant lifetime are
+checked before staging, before remote hints and before returning evidence.
+Revocation or expiry stops disclosure, including reads of retained health
+references. The trusted operator can inspect per-source `last_success_at`,
+`last_observed_at` and `unavailable_reason` through `coord status` or the
+authenticated `GET /admin/coord/diagnostics` endpoint. These diagnostic times use
+Unix milliseconds. A source that is no longer selected is no longer probed;
+its diagnostic timestamp remains the last observation.
+
+Probes have a two-second deadline per subject. Observation runs separately
+from local hints, federation hints, audit delivery and projection repair. A
+slow probe cannot consume their delivery pass. Within an observation batch,
+at most eight subjects run in sequence; additional subjects continue in the
+next batch. The five-second pause begins after that batch completes.

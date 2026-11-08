@@ -1066,6 +1066,23 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             json!({"schema_version":1,"state":"active","instance_id":instance_id}),
         ));
     }
+    if method == Method::GET && path == "/admin/coord/diagnostics" {
+        let client =
+            task_state.and_then(|state| state.read().ok().map(|runtime| runtime.coord.clone()));
+        return Ok(match client {
+            Some(client) => match client.diagnostics().await {
+                Ok(value) => response(StatusCode::OK, value),
+                Err(_) => response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"availability":"unavailable"}),
+                ),
+            },
+            None => response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"availability":"unavailable"}),
+            ),
+        });
+    }
     if path == "/admin/coord/signals" || path.starts_with("/admin/coord/signals/") {
         return coord_signals::respond(request, &path, task_state).await;
     }
