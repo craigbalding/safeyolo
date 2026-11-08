@@ -137,8 +137,10 @@ Revocation or expiry stops disclosure, including reads of retained health
 references. The trusted operator can inspect per-source `last_success_at`,
 `last_observed_at` and `unavailable_reason` through `coord status` or the
 authenticated `GET /admin/coord/diagnostics` endpoint. These diagnostic times use
-Unix milliseconds. A source that is no longer selected is no longer probed;
-its diagnostic timestamp remains the last observation.
+Unix milliseconds. When no active notification selection remains for a target,
+the observer stops scanning that target. Its diagnostic timestamps then retain
+the last observations. For targets that remain selected, record sources are
+observed together; current source selections govern disclosure.
 
 The runtime probe and its observation-record lock share a two-second deadline
 per subject. When that deadline expires, the other record sources still report
