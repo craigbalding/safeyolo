@@ -253,7 +253,7 @@ pub(crate) fn recover_guest_probe_authorized(
     let command = format!("exec {} probe {}", crate::guest_commands::HELPER, id);
     check()?;
     crate::guest_commands::publish(&home, &share, name, &command, &id, generation)?;
-    let result = (|| {
+    let result: Result<Value, Error> = (|| {
         loop {
             let state = crate::guest_commands::read_state(&state_path)?
                 .ok_or("supervisor ownership disappeared; completion is unverified")?;
