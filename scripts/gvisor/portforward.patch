@@ -1,0 +1,699 @@
+diff --git a/runsc/boot/portforward/BUILD b/runsc/boot/portforward/BUILD
+index 1c82e09..84ad08e 100644
+--- a/runsc/boot/portforward/BUILD
++++ b/runsc/boot/portforward/BUILD
+@@ -37,6 +37,7 @@ go_library(
+ go_test(
+     name = "portforward_test",
+     srcs = [
++        "portforward_eof_test.go",
+         "portforward_fd_rw_test.go",
+         "portforward_hostinet_test.go",
+         "portforward_netstack_test.go",
+@@ -58,5 +59,6 @@ go_test(
+         "//pkg/usermem",
+         "//pkg/waiter",
+         "@org_golang_x_sync//errgroup:go_default_library",
++        "@org_golang_x_sys//unix:go_default_library",
+     ],
+ )
+diff --git a/runsc/boot/portforward/portforward.go b/runsc/boot/portforward/portforward.go
+index 0170ddd..98276a6 100644
+--- a/runsc/boot/portforward/portforward.go
++++ b/runsc/boot/portforward/portforward.go
+@@ -16,13 +16,17 @@
+ package portforward
+
+ import (
++	"errors"
+ 	"fmt"
++	"io"
+ 	"sync"
+
+ 	"gvisor.dev/gvisor/pkg/cleanup"
+ 	"gvisor.dev/gvisor/pkg/context"
+ )
+
++var errProxyClosed = errors.New("port forwarding canceled")
++
+ // proxyConn is a port forwarding connection. It is used to manage the
+ // lifecycle of the connection and clean it up if necessary.
+ type proxyConn interface {
+@@ -34,6 +38,8 @@ type proxyConn interface {
+ 	// Read performs a read on this connection. Read should block on ErrWouldBlock by the underlying
+ 	// connection, but it must listen to `cancel` to interrupt blocked calls.
+ 	Read(ctx context.Context, buf []byte, cancel <-chan struct{}) (int, error)
++	// CloseWrite sends EOF without closing the connection's read side.
++	CloseWrite(ctx context.Context) error
+ 	// Close cleans up all resources owned by this proxyConn.
+ 	Close(ctx context.Context)
+ }
+@@ -76,6 +82,9 @@ func (pf *Proxy) readFrom(ctx context.Context) error {
+ 	buf := make([]byte, 16384 /* 16kb buffer size */)
+ 	for ctx.Err() == nil {
+ 		if err := doCopy(ctx, pf.to, pf.from, buf, pf.cancelFrom); err != nil {
++			if err == io.EOF {
++				return pf.to.CloseWrite(ctx)
++			}
+ 			return fmt.Errorf("readFrom failed on container %q: %v", pf.cid, err)
+ 		}
+ 	}
+@@ -87,6 +96,9 @@ func (pf *Proxy) readTo(ctx context.Context) error {
+ 	buf := make([]byte, 16384 /* 16kb buffer size */)
+ 	for ctx.Err() == nil {
+ 		if err := doCopy(ctx, pf.from, pf.to, buf, pf.cancelTo); err != nil {
++			if err == io.EOF {
++				return pf.from.CloseWrite(ctx)
++			}
+ 			return fmt.Errorf("readTo failed on container %q: %v", pf.cid, err)
+ 		}
+ 	}
+@@ -95,14 +107,23 @@ func (pf *Proxy) readTo(ctx context.Context) error {
+
+ // doCopy is the shared copy code for each of 'readFrom' and 'readTo'.
+ func doCopy(ctx context.Context, dst, src proxyConn, buf []byte, cancel chan struct{}) error {
+-	n, err := src.Read(ctx, buf, cancel)
+-	if err != nil {
+-		return fmt.Errorf("failed to read from %q: err %v", src.Name(), err)
++	n, readErr := src.Read(ctx, buf, cancel)
++	// A read may return final bytes together with EOF. Forward them first.
++	for written := 0; written < n; {
++		count, err := dst.Write(ctx, buf[written:n], cancel)
++		if err != nil {
++			return fmt.Errorf("failed to write to %q: %w", dst.Name(), err)
++		}
++		if count == 0 {
++			return io.ErrShortWrite
++		}
++		written += count
+ 	}
+-
+-	_, err = dst.Write(ctx, buf[0:n], cancel)
+-	if err != nil {
+-		return fmt.Errorf("failed to write to %q: err %v", src.Name(), err)
++	if readErr != nil {
++		if errors.Is(readErr, io.EOF) {
++			return io.EOF
++		}
++		return fmt.Errorf("failed to read from %q: %w", src.Name(), readErr)
+ 	}
+ 	return nil
+ }
+@@ -115,20 +136,31 @@ func (pf *Proxy) Start(ctx context.Context) {
+ 		pf.from.Close(ctx)
+ 	})
+
+-	pf.wg.Add(1)
++	pf.wg.Add(2)
+ 	go func() {
+-		if err := pf.readFrom(ctx); err != nil {
++		err := pf.readFrom(ctx)
++		if err != nil {
+ 			ctx.Warningf("Shutting down copy from %q to %q on container %s: %v", pf.from.Name(), pf.to.Name(), pf.cid, err)
+ 		}
+ 		pf.wg.Done()
+-		pf.Close()
++		if err != nil {
++			pf.Close()
++		}
+ 	}()
+-	pf.wg.Add(1)
+ 	go func() {
+-		if err := pf.readTo(ctx); err != nil {
++		err := pf.readTo(ctx)
++		if err != nil {
+ 			ctx.Warningf("Shutting down copy from %q to %q on container %s: %v", pf.to.Name(), pf.from.Name(), pf.cid, err)
+ 		}
+ 		pf.wg.Done()
++		if err != nil {
++			pf.Close()
++		}
++	}()
++	// Orderly EOF finishes only one direction. Release the connections after
++	// both copies finish; errors and explicit Close still cancel both copies.
++	go func() {
++		pf.wg.Wait()
+ 		pf.Close()
+ 	}()
+ }
+diff --git a/runsc/boot/portforward/portforward_eof_test.go b/runsc/boot/portforward/portforward_eof_test.go
+new file mode 100644
+index 0000000..aa05d6c
+--- /dev/null
++++ b/runsc/boot/portforward/portforward_eof_test.go
+@@ -0,0 +1,185 @@
++// Copyright 2026 The SafeYolo Authors.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package portforward
++
++import (
++	"bytes"
++	"errors"
++	"io"
++	"testing"
++	"testing/synctest"
++
++	"gvisor.dev/gvisor/pkg/context"
++)
++
++type eofTestConn struct {
++	read       func([]byte, <-chan struct{}) (int, error)
++	write      func([]byte) (int, error)
++	closeWrite func() error
++	close      func()
++}
++
++func (*eofTestConn) Name() string { return "EOF test connection" }
++
++func (c *eofTestConn) Read(_ context.Context, buf []byte, cancel <-chan struct{}) (int, error) {
++	return c.read(buf, cancel)
++}
++
++func (c *eofTestConn) Write(_ context.Context, buf []byte, cancel <-chan struct{}) (int, error) {
++	select {
++	case <-cancel:
++		return 0, errProxyClosed
++	default:
++		return c.write(buf)
++	}
++}
++
++func (c *eofTestConn) CloseWrite(context.Context) error { return c.closeWrite() }
++func (c *eofTestConn) Close(context.Context)            { c.close() }
++
++func TestProxyResponseAfterEOF(t *testing.T) {
++	for _, reverse := range []bool{false, true} {
++		name := "from"
++		if reverse {
++			name = "to"
++		}
++		t.Run(name, func(t *testing.T) {
++			synctest.Test(t, func(t *testing.T) {
++				request := []byte("exec-half-close\n")
++				response := bytes.Repeat([]byte("reply-after-EOF\n"), 2048)
++				requestReader := bytes.NewReader(request)
++				responseReader := bytes.NewReader(response)
++				var receivedRequest, receivedResponse bytes.Buffer
++				inputEOF := make(chan struct{})
++				closed, outputEOF := 0, false
++				caller := &eofTestConn{
++					read: func(buf []byte, cancel <-chan struct{}) (int, error) {
++						select {
++						case <-cancel:
++							return 0, errProxyClosed
++						default:
++							return requestReader.Read(buf)
++						}
++					},
++					write: receivedResponse.Write,
++					closeWrite: func() error {
++						outputEOF = true
++						return nil
++					},
++					close: func() { closed++ },
++				}
++				origin := &eofTestConn{
++					read: func(buf []byte, cancel <-chan struct{}) (int, error) {
++						// The origin must receive EOF before producing any output.
++						select {
++						case <-cancel:
++							return 0, errProxyClosed
++						case <-inputEOF:
++							return responseReader.Read(buf)
++						}
++					},
++					write: receivedRequest.Write,
++					closeWrite: func() error {
++						close(inputEOF)
++						return nil
++					},
++					close: func() { closed++ },
++				}
++				pair := ProxyPair{To: origin, From: caller}
++				if reverse {
++					pair = ProxyPair{To: caller, From: origin}
++				}
++				proxy := NewProxy(pair, "EOF-control")
++				proxy.Start(context.Background())
++				defer proxy.Close()
++				synctest.Wait()
++				if !bytes.Equal(receivedRequest.Bytes(), request) || !bytes.Equal(receivedResponse.Bytes(), response) {
++					t.Fatalf("copied request/response = %d/%d bytes, want %d/%d", receivedRequest.Len(), receivedResponse.Len(), len(request), len(response))
++				}
++				if !outputEOF || closed != 2 {
++					t.Fatalf("output EOF = %t, closed connections = %d", outputEOF, closed)
++				}
++			})
++		})
++	}
++}
++
++func TestProxyErrorsCancelReverseCopy(t *testing.T) {
++	for _, operation := range []string{"read", "write", "write-EOF", "close-write"} {
++		t.Run(operation, func(t *testing.T) {
++			synctest.Test(t, func(t *testing.T) {
++				injected := errors.New("injected copy failure")
++				canceled, closed := false, 0
++				from := &eofTestConn{
++					read: func(buf []byte, _ <-chan struct{}) (int, error) {
++						switch operation {
++						case "read":
++							return 0, injected
++						case "close-write":
++							return 0, io.EOF
++						default:
++							buf[0] = 'x'
++							return 1, nil
++						}
++					},
++					close: func() { closed++ },
++				}
++				to := &eofTestConn{
++					read: func(_ []byte, cancel <-chan struct{}) (int, error) {
++						<-cancel
++						canceled = true
++						return 0, errProxyClosed
++					},
++					write: func([]byte) (int, error) {
++						if operation == "write-EOF" {
++							return 0, io.EOF
++						}
++						return 0, injected
++					},
++					closeWrite: func() error {
++						if operation != "close-write" {
++							t.Errorf("copy error %q was treated as orderly EOF", operation)
++							return nil
++						}
++						return injected
++					},
++					close: func() { closed++ },
++				}
++				proxy := NewProxy(ProxyPair{To: to, From: from}, "error-control")
++				proxy.Start(context.Background())
++				defer proxy.Close()
++				synctest.Wait()
++				if !canceled || closed != 2 {
++					t.Fatalf("reverse copy canceled = %t, closed connections = %d", canceled, closed)
++				}
++			})
++		})
++	}
++}
++
++func TestDoCopyPreservesBytesReturnedWithEOF(t *testing.T) {
++	ctx := context.Background()
++	var received bytes.Buffer
++	src := &eofTestConn{read: func(buf []byte, _ <-chan struct{}) (int, error) {
++		return copy(buf, "last bytes"), io.EOF
++	}}
++	dst := &eofTestConn{write: func(buf []byte) (int, error) {
++		return received.Write(buf[:1]) // Exercise short writes of the final data.
++	}}
++	err := doCopy(ctx, dst, src, make([]byte, 32), nil)
++	if err != io.EOF || received.String() != "last bytes" {
++		t.Fatalf("doCopy = %v, data = %q", err, received.String())
++	}
++}
+diff --git a/runsc/boot/portforward/portforward_fd_rw.go b/runsc/boot/portforward/portforward_fd_rw.go
+index 5ab9caf..d7acae7 100644
+--- a/runsc/boot/portforward/portforward_fd_rw.go
++++ b/runsc/boot/portforward/portforward_fd_rw.go
+@@ -15,9 +15,11 @@
+ package portforward
+
+ import (
++	"fmt"
+ 	"io"
+ 	"sync"
+
++	"golang.org/x/sys/unix"
+ 	"gvisor.dev/gvisor/pkg/context"
+ 	"gvisor.dev/gvisor/pkg/errors/linuxerr"
+ 	"gvisor.dev/gvisor/pkg/sentry/vfs"
+@@ -60,7 +62,9 @@ func (r *fileDescriptionConn) Read(ctx context.Context, buf []byte, cancel <-cha
+ 		select {
+ 		case <-notifyCh:
+ 		case <-cancel:
+-			return 0, io.EOF
++			return 0, errProxyClosed
++		case <-ctx.Done():
++			return 0, ctx.Err()
+ 		}
+ 		n, err = r.file.Read(ctx, usermem.BytesIOSequence(buf), vfs.ReadOptions{})
+ 	}
+@@ -88,13 +92,24 @@ func (r *fileDescriptionConn) Write(ctx context.Context, buf []byte, cancel <-ch
+ 		select {
+ 		case <-notifyCh:
+ 		case <-cancel:
+-			return 0, io.EOF
++			return 0, errProxyClosed
++		case <-ctx.Done():
++			return 0, ctx.Err()
+ 		}
+ 		n, err = r.file.Write(ctx, usermem.BytesIOSequence(buf), vfs.WriteOptions{})
+ 	}
+ 	return int(n), err
+ }
+
++// CloseWrite implements proxyConn.CloseWrite for the donated host socket.
++func (r *fileDescriptionConn) CloseWrite(context.Context) error {
++	file, ok := r.file.Impl().(vfs.HostFDProvider)
++	if !ok {
++		return fmt.Errorf("port forward stream is not backed by a host socket")
++	}
++	return unix.Shutdown(file.HostFD(), unix.SHUT_WR)
++}
++
+ // Close implements proxyConn.Close.
+ func (r *fileDescriptionConn) Close(ctx context.Context) {
+ 	r.once.Do(func() {
+diff --git a/runsc/boot/portforward/portforward_fd_rw_test.go b/runsc/boot/portforward/portforward_fd_rw_test.go
+index 8095b47..3dbb814 100644
+--- a/runsc/boot/portforward/portforward_fd_rw_test.go
++++ b/runsc/boot/portforward/portforward_fd_rw_test.go
+@@ -24,6 +24,7 @@ import (
+ 	"testing/synctest"
+ 	"time"
+
++	"golang.org/x/sys/unix"
+ 	"gvisor.dev/gvisor/pkg/abi/linux"
+ 	"gvisor.dev/gvisor/pkg/context"
+ 	"gvisor.dev/gvisor/pkg/errors/linuxerr"
+@@ -67,6 +68,46 @@ type readerWriter struct {
+
+ var _ vfs.FileDescriptionImpl = (*readerWriter)(nil)
+
++type hostSocketFD struct {
++	readerWriter
++	hostFD int
++}
++
++func (s *hostSocketFD) HostFD() int { return s.hostFD }
++
++func TestFileDescriptionConnCloseWritePreservesRead(t *testing.T) {
++	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_NONBLOCK|unix.SOCK_CLOEXEC, 0)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer unix.Close(pair[0])
++	defer unix.Close(pair[1])
++	ctx := context.Background()
++	conn := newMockFileDescriptionConn(t, ctx, &hostSocketFD{hostFD: pair[0]})
++	if err := conn.CloseWrite(ctx); err != nil {
++		t.Fatal(err)
++	}
++	buf := make([]byte, 64)
++	if n, err := unix.Read(pair[1], buf); n != 0 || err != nil {
++		t.Fatalf("peer read = %d, %v, want orderly EOF", n, err)
++	}
++	const response = "reply after EOF"
++	if _, err := unix.Write(pair[1], []byte(response)); err != nil {
++		t.Fatal(err)
++	}
++	if n, err := unix.Read(pair[0], buf); err != nil || string(buf[:n]) != response {
++		t.Fatalf("reverse read = %q, %v", buf[:n], err)
++	}
++}
++
++func TestFileDescriptionConnCloseWriteRequiresHostSocket(t *testing.T) {
++	ctx := context.Background()
++	conn := newMockFileDescriptionConn(t, ctx, &readerWriter{})
++	if err := conn.CloseWrite(ctx); err == nil {
++		t.Fatal("CloseWrite unexpectedly succeeded without a host socket")
++	}
++}
++
+ // Read implements vfs.FileDescriptionImpl.Read.
+ func (rw *readerWriter) Read(ctx context.Context, dst usermem.IOSequence, opts vfs.ReadOptions) (int64, error) {
+ 	if rw.released {
+@@ -324,6 +365,8 @@ func (b *blockingConn) Write(ctx context.Context, buf []byte, cancel <-chan stru
+ 	return 0, io.EOF
+ }
+
++func (*blockingConn) CloseWrite(context.Context) error { return nil }
++
+ // +checklocksexclude:b.mu
+ func (b *blockingConn) Close(ctx context.Context) {
+ 	b.mu.Lock()
+diff --git a/runsc/boot/portforward/portforward_hostinet.go b/runsc/boot/portforward/portforward_hostinet.go
+index 7271b98..3e8d619 100644
+--- a/runsc/boot/portforward/portforward_hostinet.go
++++ b/runsc/boot/portforward/portforward_hostinet.go
+@@ -119,12 +119,15 @@ func (s *hostInetConn) Read(ctx context.Context, buf []byte, cancel <-chan struc
+ 		select {
+ 		case <-ch:
+ 		case <-cancel:
+-			return 0, io.EOF
++			return 0, errProxyClosed
+ 		case <-ctx.Done():
+ 			return 0, ctx.Err()
+ 		}
+ 		n, err = s.fd.Read(buf)
+ 	}
++	if n == 0 && err == nil {
++		return 0, io.EOF
++	}
+ 	return n, err
+ }
+
+@@ -144,7 +147,7 @@ func (s *hostInetConn) Write(ctx context.Context, buf []byte, cancel <-chan stru
+ 		select {
+ 		case <-ch:
+ 		case <-cancel:
+-			return 0, io.EOF
++			return 0, errProxyClosed
+ 		case <-ctx.Done():
+ 			return 0, ctx.Err()
+ 		}
+@@ -163,6 +166,11 @@ func (s *hostInetConn) eventUnregister(e *waiter.Entry) {
+ 	fdnotifier.UpdateFD(int32(s.fd.FD()))
+ }
+
++// CloseWrite implements proxyConn.CloseWrite.
++func (s *hostInetConn) CloseWrite(context.Context) error {
++	return unix.Shutdown(s.fd.FD(), unix.SHUT_WR)
++}
++
+ // Close closes the host socket and removes it from notifications.
+ func (s *hostInetConn) Close(_ context.Context) {
+ 	s.once.Do(func() {
+diff --git a/runsc/boot/portforward/portforward_hostinet_test.go b/runsc/boot/portforward/portforward_hostinet_test.go
+index 5cb80c6..d7948ec 100644
+--- a/runsc/boot/portforward/portforward_hostinet_test.go
++++ b/runsc/boot/portforward/portforward_hostinet_test.go
+@@ -16,6 +16,7 @@ package portforward
+
+ import (
+ 	"fmt"
++	"io"
+ 	"net"
+ 	"slices"
+ 	"strings"
+@@ -28,6 +29,47 @@ import (
+ 	"gvisor.dev/gvisor/pkg/errors/linuxerr"
+ )
+
++func TestHostInetConnCloseWritePreservesRead(t *testing.T) {
++	l, err := net.Listen("tcp4", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer l.Close()
++	sock, err := NewHostInetConn(uint16(l.Addr().(*net.TCPAddr).Port))
++	if err != nil {
++		t.Fatal(err)
++	}
++	ctx := context.Background()
++	defer sock.Close(ctx)
++	peer, err := l.Accept()
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer peer.Close()
++	peer.SetDeadline(time.Now().Add(5 * time.Second))
++	if err := sock.CloseWrite(ctx); err != nil {
++		t.Fatal(err)
++	}
++	if data, err := io.ReadAll(peer); err != nil || len(data) != 0 {
++		t.Fatalf("peer read = %q, %v, want orderly EOF", data, err)
++	}
++	const response = "reply after EOF"
++	if _, err := peer.Write([]byte(response)); err != nil {
++		t.Fatal(err)
++	}
++	buf := make([]byte, len(response))
++	for received := 0; received < len(buf); {
++		n, err := sock.Read(ctx, buf[received:], nil)
++		if err != nil {
++			t.Fatal(err)
++		}
++		received += n
++	}
++	if string(buf) != response {
++		t.Fatalf("reverse read = %q, want %q", buf, response)
++	}
++}
++
+ func TestLocalHostSocket(t *testing.T) {
+ 	ctx := context.Background()
+ 	clientData := append(
+diff --git a/runsc/boot/portforward/portforward_netstack.go b/runsc/boot/portforward/portforward_netstack.go
+index 50c77f5..a8603f6 100644
+--- a/runsc/boot/portforward/portforward_netstack.go
++++ b/runsc/boot/portforward/portforward_netstack.go
+@@ -112,13 +112,22 @@ func (n *netstackConn) Read(ctx context.Context, buf []byte, cancel <-chan struc
+ 		select {
+ 		case <-ch:
+ 		case <-cancel:
+-			return 0, io.EOF
++			return 0, errProxyClosed
+ 		case <-ctx.Done():
+ 			return 0, ctx.Err()
+ 		}
+ 		res, tcpErr = n.ep.Read(b, tcpip.ReadOptions{})
+ 	}
+-	if tcpErr != nil || res.Total == 0 {
++	if ctx.Err() != nil {
++		return 0, ctx.Err()
++	}
++	if _, closed := tcpErr.(*tcpip.ErrClosedForReceive); closed {
++		return res.Total, io.EOF
++	}
++	if tcpErr != nil {
++		return res.Total, fmt.Errorf("reading netstack connection: %s", tcpErr)
++	}
++	if res.Total == 0 {
+ 		return 0, io.EOF
+ 	}
+ 	return res.Total, nil
+@@ -142,18 +151,29 @@ func (n *netstackConn) Write(ctx context.Context, buf []byte, cancel <-chan stru
+ 		select {
+ 		case <-ch:
+ 		case <-cancel:
+-			return 0, io.EOF
++			return 0, errProxyClosed
+ 		case <-ctx.Done():
+ 			return 0, ctx.Err()
+ 		}
+ 		res, tcpErr = n.ep.Write(&b, tcpip.WriteOptions{Atomic: true})
+ 	}
++	if ctx.Err() != nil {
++		return 0, ctx.Err()
++	}
+ 	if tcpErr != nil {
+-		return 0, io.EOF
++		return int(res), fmt.Errorf("writing netstack connection: %s", tcpErr)
+ 	}
+ 	return int(res), nil
+ }
+
++// CloseWrite implements proxyConn.CloseWrite.
++func (n *netstackConn) CloseWrite(context.Context) error {
++	if err := n.ep.Shutdown(tcpip.ShutdownWrite); err != nil {
++		return fmt.Errorf("shutting down netstack writer: %s", err)
++	}
++	return nil
++}
++
+ // Close implements proxyConn.Close.
+ func (n *netstackConn) Close(_ context.Context) {
+ 	n.once.Do(func() { n.ep.Close() })
+diff --git a/runsc/boot/portforward/portforward_netstack_test.go b/runsc/boot/portforward/portforward_netstack_test.go
+index c85c6ff..e360a8d 100644
+--- a/runsc/boot/portforward/portforward_netstack_test.go
++++ b/runsc/boot/portforward/portforward_netstack_test.go
+@@ -16,6 +16,7 @@ package portforward
+
+ import (
+ 	"bytes"
++	"errors"
+ 	"io"
+ 	"sync"
+ 	"testing"
+@@ -264,13 +265,13 @@ func TestNestackReadsWrites(t *testing.T) {
+ 	defer conn.Close(ctx)
+
+ 	_, err := conn.Read(ctx, []byte("something"), cancel)
+-	if err != io.EOF {
+-		t.Fatalf("mismatch read err: want: %v got: %v", io.EOF, err)
++	if err == nil || errors.Is(err, io.EOF) {
++		t.Fatalf("read error = %v, want an error distinct from EOF", err)
+ 	}
+
+ 	_, err = conn.Write(ctx, []byte("something"), cancel)
+-	if err != io.EOF {
+-		t.Fatalf("mismatch write err: want: %v got: %v", io.EOF, err)
++	if err == nil || errors.Is(err, io.EOF) {
++		t.Fatalf("write error = %v, want an error distinct from EOF", err)
+ 	}
+ }
+
+@@ -304,6 +305,35 @@ func (p *packetReadImpl) Shutdown(tcpip.ShutdownFlags) tcpip.Error {
+ 	return nil
+ }
+
++type shutdownWriteEndpoint struct {
++	packetReadImpl
++	flags tcpip.ShutdownFlags
++	err   tcpip.Error
++}
++
++func (s *shutdownWriteEndpoint) Shutdown(flags tcpip.ShutdownFlags) tcpip.Error {
++	s.flags = flags
++	return s.err
++}
++
++func TestNetstackConnCloseWritePreservesRead(t *testing.T) {
++	for _, shutdownErr := range []tcpip.Error{nil, &tcpip.ErrConnectionReset{}} {
++		ctx := context.Background()
++		impl := &shutdownWriteEndpoint{packetReadImpl: packetReadImpl{payloadSize: 16}, err: shutdownErr}
++		wq := &waiter.Queue{}
++		ep := newMockTCPEndpoint(impl, wq)
++		conn := &netstackConn{ep: ep, wq: wq}
++		err := conn.CloseWrite(ctx)
++		if (err != nil) != (shutdownErr != nil) || impl.flags != tcpip.ShutdownWrite {
++			t.Errorf("CloseWrite = %v, flags = %v, want error %v and ShutdownWrite", err, impl.flags, shutdownErr)
++		}
++		if n, err := conn.Read(ctx, make([]byte, 32), nil); err != nil || n != 16 {
++			t.Errorf("reverse read = %d, %v, want 16 bytes", n, err)
++		}
++		conn.Close(ctx)
++	}
++}
++
+ func TestNetstackConnReadHandlesShortWrite(t *testing.T) {
+ 	const bufLen = 1024
+ 	const payloadLen = bufLen + 512
+@@ -389,6 +419,8 @@ func (b *bufferConn) Read(_ context.Context, _ []byte, _ <-chan struct{}) (int,
+
+ func (b *bufferConn) Close(context.Context) {}
+
++func (*bufferConn) CloseWrite(context.Context) error { return nil }
++
+ func TestDoCopyDrainsLargeRead(t *testing.T) {
+ 	const bufLen = 16 * 1024
+ 	payloadLen := bufLen*3 + 123
+@@ -453,8 +485,8 @@ func TestNetstackConnReadinessBeforeRegistration(t *testing.T) {
+ 				defer close(cancel)
+ 				done := false
+ 				go func() {
+-					if _, err := call(context.Background(), nil, cancel); err != io.EOF {
+-						t.Errorf("%s error = %v, want EOF", operation, err)
++					if _, err := call(context.Background(), nil, cancel); err == nil || errors.Is(err, io.EOF) {
++						t.Errorf("%s error = %v, want an error distinct from EOF", operation, err)
+ 					}
+ 					done = true
+ 				}()

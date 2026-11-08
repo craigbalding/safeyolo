@@ -87,8 +87,8 @@ jobs:
           git rev-parse HEAD
           df -Pk "$RUNSC_WORK"
           test "$(df -Pk "$RUNSC_WORK" | awk 'NR == 2 {print $4}')" -ge 10485760
-          sha256sum scripts/build_runsc.sh scripts/native_package.sh scripts/gvisor/nofollow.patch scripts/probe_runsc_nofollow.py
-          cp scripts/build_runsc.sh scripts/native_package.sh scripts/gvisor/nofollow.patch scripts/probe_runsc_nofollow.py scripts/qualify_runsc_nofollow.sh "$RUNSC_WORK/reports/"
+          sha256sum scripts/build_runsc.sh scripts/native_package.sh scripts/gvisor/nofollow.patch scripts/gvisor/portforward.patch scripts/probe_runsc_nofollow.py
+          cp scripts/build_runsc.sh scripts/native_package.sh scripts/gvisor/nofollow.patch scripts/gvisor/portforward.patch scripts/probe_runsc_nofollow.py scripts/qualify_runsc_nofollow.sh "$RUNSC_WORK/reports/"
       - name: Acquire the pinned upstream source and compiler
         if: inputs.runsc_build_run == ''
         shell: bash

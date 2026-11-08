@@ -367,9 +367,60 @@ integration.
 
 ## Internal Docker management connection
 
-This separate check is maintained by #1437 in [its current candidate](https://github.com/craigbalding/safeyolo/pull/1453/commits/232ab6aed74d32ab9c65b40321baaf6c91bd7b50).
-Use that checkout's observer; the onboarding change does not duplicate it.
+The retained check at `232ab6aed74d32ab9c65b40321baaf6c91bd7b50`
+(execution 15490) reached Docker 26.1.5/API 1.45, refused an unapproved caller,
+and created, started and inspected its container. Exec then exited 0 with no
+output. Attach, removal and daemon/provider failure controls were not reached.
+Preserve that container and exec state. Inspect actual state before cleanup or
+another operation; do not repeat the external lifecycle.
 
+The [provider diagnosis](https://github.com/craigbalding/safeyolo/issues/1437#issuecomment-6713267349)
+bound the failure to deployed runsc source
+`97e8e896904cb364319cd9758241d3f0bd27a6f4`. In execution 15499, a controlled
+origin received 16 bytes, observed input EOF and sent 16 bytes in both controls.
+The direct client received all 16; the donated runsc stream received none.
+This establishes the provider defect without excluding further Docker defects.
+
+### Qualify the repaired provider first
+
+The existing runtime builder applies both
+[`nofollow.patch`](../../scripts/gvisor/nofollow.patch) and
+[`portforward.patch`](../../scripts/gvisor/portforward.patch) to that pinned
+upstream source. The second patch keeps the reverse copy alive after orderly
+EOF and cancels both copies on a real error or shutdown. Its focused upstream
+tests include response after EOF in either direction, buffered final bytes,
+write/read/shutdown errors, and the three connection adapters.
+
+Before a build, obtain the factory's serialized build slot. On the owned Linux
+venue, inspect the retained upstream checkout and compatible Bazel outputs.
+Preserve active source, prepared runtime and the existing disk reserves. If the
+checkout is clean at the pinned revision, invoke the candidate's
+`scripts/build_runsc.sh UPSTREAM_SOURCE NEW_RUNTIME_DIRECTORY`. For a retained
+checkout that already has the unchanged nofollow patch, verify that delta and
+apply only the new portforward patch. Do not reset the warm checkout. Resume the
+builder's focused tests and four-target build with its existing Bazel output
+root, architecture configuration, opt profile and one job.
+
+The compatible runtime version marker remains
+`release-20261005.0-safeyolo.1`. Record the actual SafeYolo source, both patch
+inputs and all four output hashes; that version string alone does not distinguish
+the repaired runtime from the defective donor. Acquisition now includes the new
+patch in its cache key. Do not relabel or reuse an unmodified runtime as repaired.
+
+Use the existing operator wrapper to select the complete repaired runtime in
+an isolated installation. Preserve the donor bytes and original runtime
+selection. Reuse the retained response-after-EOF control from execution 15499
+through its actual `nsenter`/`runsc port-forward --stream` route. Run no Docker
+operation during this control. Require the origin to receive the 16-byte marker,
+observe EOF and then send its 16-byte response. Require both the direct client
+and provider client to receive that exact response, and both origin and runsc to
+exit 0. Record the selected runtime path, version and hash with that result.
+Restore the selection and stop the fixture on failure. Direct TCP or source
+tests alone do not establish that this runtime defect is repaired.
+
+After that control passes, use the same selected repaired runtime for the finite
+Docker management check below. Reuse a compatible source-equivalent proxy;
+the provider repair does not require rebuilding the proxy.
 
 Reuse the stopped, qualified Linux/gVisor fixture from #1436. This check adds
 only the missing Docker management connection through its existing provider
@@ -379,8 +430,8 @@ caller, their workspaces, and qualified Docker image data. Both agents must be
 stopped before starting this check.
 
 On that owned Linux venue, prepare a task-owned installation directory. Reuse
-the qualified CLI, guest, runsc, assets and runtime configuration. Put the current
-candidate proxy in that directory's `bin`; copy binaries into the overlay rather
+the qualified CLI, guest and assets. Select the complete repaired runtime as
+described above. Put the current candidate proxy in that directory's `bin`; copy binaries into the overlay rather
 than overwriting a donor or writing through a symlink. Verify source identities
 and current capacity first. Reuse the compatible warm Cargo target when a current
 proxy must be built. Preserve the original installation and useful warm outputs.
@@ -413,9 +464,29 @@ daemon, closed port or stopped provider must fail clearly. The normal result mus
 
 After stopping the proxy, the check restores the original service, policy and
 binary directory or link. The original prepared binary bytes remain unchanged.
-On failure, keep the normal output, audit log, printed container name and guest
+The operator wrapper must also restore its original runtime selection. Retain
+the complete `gateway.docker_stream.end` details, including request ID,
+uploaded/downloaded bytes, outcome and error, plus daemon/closed-port/stopped-
+provider diagnostics from the existing audit log. On failure, keep the original
+result, private rollback inputs, audit log, printed container name and guest
 state. Inspect the actual daemon before removing or retrying an uncertain
 operation. No automatic mutation replay or broad cleanup is performed.
+
+### #1437 evidence and remaining acceptance
+
+All eight issue criteria remain subject to independent exact-candidate review.
+Reuse each result only at its actual source and runtime boundary.
+
+| Criterion | Retained evidence and remaining work |
+|---|---|
+| 1. Multi-service lifecycle | Execution 15475 at `67cdb272` passed pull/build, two communicating Compose services, inspect/logs/follow, exec, interactive attach, archive copy, recreation, persistent data and teardown. CLI/Engine 29.1.3, API 1.45, Compose 2.40.3. The later project phase failed; the workload itself passed. |
+| 2. Streams and payloads | That workload and the controlled transport tests cover admitted exec/attach, builds and archives. Repaired internal-provider exec/attach remains unproved. |
+| 3. Before-effect checks | Accepted #1438 enforcement and controlled negative/body-bound tests refuse forbidden dispatch and unavailable inspection. No new enforcement policy is added here. |
+| 4. Mandatory mediation | Retained token, path/version, opaque-tunnel and TLS/credential controls cover the configured endpoint. The external workload uses scoped tokens and operator-held credentials. |
+| 5. Connections | The authenticated HTTPS workload and execution 15505 walkthrough are retained. #1436 supplies internal runtime/application-provider proof. Docker management through the repaired provider remains to run. |
+| 6. Failure diagnostics | Controlled truncation and uncertain-mutation tests remain applicable. The original exec has uploaded 16/downloaded 0/completed/error null. Provider-bound repair, remaining daemon/closed-port/stopped-provider controls and their full audit details remain required. No real interrupted mutation is claimed. |
+| 7. Setup and matrix | [Docker guidance](../../docs/docker.md) defines the client setup, API 1.45 matrix, unsupported operations and limits. Transport does not establish project isolation or host-risk enforcement. |
+| 8. Independent acceptance | Lens review of the corrected immutable candidate and the real client/daemon results is pending. The shared project result at `a72c6477` (execution 15482) stays separate from #1437 acceptance. |
 
 ## Project scope witness
 

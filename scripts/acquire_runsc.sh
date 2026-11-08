@@ -14,7 +14,8 @@ esac
 [[ ! -e $destination && ! -L $destination ]] || { package_error "runtime destination already exists: $destination"; exit 1; }
 build_input=$(file_sha256 "$script_dir/build_runsc.sh")
 patch_input=$(file_sha256 "$script_dir/gvisor/nofollow.patch")
-cache=${XDG_CACHE_HOME:-$HOME/.cache}/safeyolo/gvisor/release-20261005.0-safeyolo.1/$patch_input-$build_input/$platform
+portforward_input=$(file_sha256 "$script_dir/gvisor/portforward.patch")
+cache=${XDG_CACHE_HOME:-$HOME/.cache}/safeyolo/gvisor/release-20261005.0-safeyolo.1/$patch_input-$portforward_input-$build_input/$platform
 selected=${SAFEYOLO_RUNSC_ARTIFACTS:-}
 stage=
 cleanup_runsc() { [[ -z $stage ]] || rm -rf -- "$stage"; }
