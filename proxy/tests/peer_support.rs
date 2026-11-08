@@ -103,51 +103,53 @@ async fn guest_probe_rechecks_grant_and_run_after_waiting_for_the_launch_lock() 
         let mut input = inspect("probe-after-lock");
         input["expected_run"] = json!(RUN);
         input["operation"] = json!({"action":"guest_probe","timeout_seconds":3});
-        let pending = f.agent("helper", "POST", "/support/operations", Some(input));
-        tokio::pin!(pending);
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            tokio::select! {
-                response = &mut pending => panic!("probe escaped held launch lock: {}", response.json()),
-                () = tokio::time::sleep(Duration::from_millis(10)) => {}
+        let response = {
+            let pending = f.agent("helper", "POST", "/support/operations", Some(input));
+            tokio::pin!(pending);
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                tokio::select! {
+                    response = &mut pending => panic!("probe escaped held launch lock: {}", response.json()),
+                    () = tokio::time::sleep(Duration::from_millis(10)) => {}
+                }
+                let receipt = f
+                    .agent(
+                        "helper",
+                        "GET",
+                        "/support/operations/probe-after-lock",
+                        None,
+                    )
+                    .await;
+                if receipt.status == 200 && receipt.json()["execution_started"] == true {
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "probe did not reach the launch lock"
+                );
             }
-            let receipt = f
-                .agent(
-                    "helper",
-                    "GET",
-                    "/support/operations/probe-after-lock",
-                    None,
-                )
-                .await;
-            if receipt.status == 200 && receipt.json()["execution_started"] == true {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "probe did not reach the launch lock"
-            );
-        }
-        let _replacement = if change == "revoke" {
-            assert_eq!(
-                f.admin(
-                    "POST",
-                    "/admin/support-grants/incident/revoke",
-                    Some(json!({"expected_revision":applied["revision"]}))
-                )
-                .await
-                .status,
-                200
-            );
-            None
-        } else {
-            let next = "fedcba9876543210fedcba9876543210";
-            let replacement = agent_run(&f, "worker", WORKER_ID, next);
-            original["generation"] = json!(next);
-            fs::write(&path, original.to_string()).unwrap();
-            Some(replacement)
+            let _replacement = if change == "revoke" {
+                assert_eq!(
+                    f.admin(
+                        "POST",
+                        "/admin/support-grants/incident/revoke",
+                        Some(json!({"expected_revision":applied["revision"]}))
+                    )
+                    .await
+                    .status,
+                    200
+                );
+                None
+            } else {
+                let next = "fedcba9876543210fedcba9876543210";
+                let replacement = agent_run(&f, "worker", WORKER_ID, next);
+                original["generation"] = json!(next);
+                fs::write(&path, original.to_string()).unwrap();
+                Some(replacement)
+            };
+            drop(lock);
+            pending.await
         };
-        drop(lock);
-        let response = pending.await;
         assert_eq!(response.status, 200, "{}", response.json());
         // The operation was admitted, but cannot publish after authority changed.
         assert_ne!(
