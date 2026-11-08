@@ -595,8 +595,10 @@ permissions and runtime version. It uses that private runtime;
 it does not replace a system `runsc` or add a package repository.
 
 The host-package producer builds the patched runtime from pinned upstream source.
-The patch repairs final-directory symlink refusal with `O_DIRECTORY | O_NOFOLLOW`
-while retaining trailing-slash traversal. The build uses Bazel 8.3.1, Go 1.26.3
+The patches repair final-directory symlink refusal with `O_DIRECTORY | O_NOFOLLOW`
+while retaining trailing-slash traversal, and preserve reverse port-forward
+output after orderly input closure. Copy errors and shutdown still cancel both
+directions. The build uses Bazel 8.3.1, Go 1.26.3
 and the upstream opt profile. Source builders need the upstream C/C++ cross
 compilers, Clang with BPF target support, and `libbpf` development headers.
 The producer caches the complete four-file runtime. To reuse a prepared runtime,

@@ -129,6 +129,161 @@ async fn call(root: &Path, agent: &str, bytes: &[u8]) -> Vec<u8> {
     .unwrap()
 }
 
+fn json_body(response: &[u8]) -> Value {
+    let offset = response
+        .windows(4)
+        .position(|bytes| bytes == b"\r\n\r\n")
+        .unwrap();
+    serde_json::from_slice(&response[offset + 4..]).unwrap()
+}
+
+#[tokio::test]
+async fn local_docker_errors_use_the_client_message_contract() {
+    let root = tempfile::tempdir().unwrap();
+    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = origin.local_addr().unwrap().port();
+    let proxy = start(root.path(), service(port), false, false).await;
+    // Closing this selected endpoint exercises transport failure without a
+    // daemon mutation. The other rows must be refused before reaching it.
+    drop(origin);
+    for (path, headers, status, message) in [
+        (
+            "/v1.45/version".to_owned(),
+            "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\n",
+            502,
+            "Proxy request failed",
+        ),
+        (
+            "/v1.45/version".to_owned(),
+            "X-SafeYolo-Docker-Service: docker-test\r\n",
+            403,
+            "GATEWAY_AUTH_REQUIRED",
+        ),
+        (
+            format!("http://127.0.0.1:{port}/v1.45/version"),
+            "",
+            403,
+            "GATEWAY_AUTH_REQUIRED",
+        ),
+        (
+            "/v1.45/version".to_owned(),
+            "X-SafeYolo-Docker-Service: unknown\r\n",
+            403,
+            "GATEWAY_DOCKER_SERVICE_INVALID",
+        ),
+        (
+            "/v1.45/swarm".to_owned(),
+            "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\n",
+            403,
+            "GATEWAY_DOCKER_OPERATION_UNSUPPORTED",
+        ),
+    ] {
+        let response = call(
+            root.path(),
+            "alice",
+            &request(
+                "GET",
+                &path,
+                &format!("{headers}Connection: close\r\n"),
+                b"",
+            ),
+        )
+        .await;
+        assert!(
+            response.starts_with(format!("HTTP/1.1 {status}").as_bytes()),
+            "{}",
+            String::from_utf8_lossy(&response)
+        );
+        let body = json_body(&response);
+        assert_eq!(body["message"], message);
+        assert_eq!(body["error"], message);
+        assert!(!String::from_utf8_lossy(&response).contains(ORIGIN_CREDENTIAL));
+        assert!(String::from_utf8_lossy(&response).contains("x-safeyolo-request-id:"));
+    }
+    // An ordinary HTTP failure retains the non-Docker JSON contract.
+    let response = call(
+        root.path(),
+        "alice",
+        &request("GET", "http://127.0.0.1:1/", "Connection: close\r\n", b""),
+    )
+    .await;
+    assert_eq!(
+        json_body(&response),
+        json!({"error":"Proxy request failed"})
+    );
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn docker_daemon_errors_pass_through_without_rewriting() {
+    let root = tempfile::tempdir().unwrap();
+    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = origin.local_addr().unwrap().port();
+    let backend = tokio::spawn(async move {
+        let (mut stream, _) = origin.accept().await.unwrap();
+        head(&mut stream).await;
+        let body = r#"{"message":"No such container: own-container","detail":"daemon response"}"#;
+        stream.write_all(format!("HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        body
+    });
+    let proxy = start(root.path(), service(port), false, false).await;
+    let response = call(root.path(), "alice", &request("GET", "/v1.45/containers/own-container/json", "X-SafeYolo-Docker-Service: docker-test\r\nAuthorization: Bearer sgw_alice\r\nConnection: close\r\n", b"")).await;
+    let original = timeout(LIMIT, backend).await.unwrap().unwrap();
+    let offset = response
+        .windows(4)
+        .position(|bytes| bytes == b"\r\n\r\n")
+        .unwrap();
+    assert_eq!(&response[offset + 4..], original.as_bytes());
+    assert!(response.starts_with(b"HTTP/1.1 404"));
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "requires an installed Docker CLI; no daemon is used"]
+async fn installed_docker_cli_displays_gateway_failures() {
+    let root = tempfile::tempdir().unwrap();
+    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = origin.local_addr().unwrap().port();
+    let proxy = start(root.path(), service(port), false, false).await;
+    drop(origin);
+    let config = root.path().join("client");
+    std::fs::create_dir(&config).unwrap();
+    std::fs::write(
+        config.join("config.json"),
+        json!({"HttpHeaders":{
+            "X-SafeYolo-Docker-Service":"docker-test","Authorization":"Bearer sgw_alice"
+        }})
+        .to_string(),
+    )
+    .unwrap();
+    let output = timeout(
+        LIMIT,
+        tokio::process::Command::new("docker")
+            .env(
+                "DOCKER_HOST",
+                format!("unix://{}", root.path().join("alice.sock").display()),
+            )
+            .env("DOCKER_CONFIG", config)
+            .env("DOCKER_API_VERSION", "1.45")
+            .env_remove("DOCKER_CONTEXT")
+            .env_remove("DOCKER_TLS_VERIFY")
+            .env_remove("DOCKER_CERT_PATH")
+            .arg("version")
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!output.status.success());
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostic.contains("Error response from daemon: Proxy request failed"),
+        "{diagnostic}"
+    );
+    assert!(!diagnostic.contains(ORIGIN_CREDENTIAL));
+    proxy.shutdown().await;
+}
+
 fn workloads(port: u16) -> Value {
     let mut definition = service(port);
     definition["docker"]["execution_boundary"] = json!("external");
@@ -982,6 +1137,9 @@ async fn external_tls_verifies_endpoint_and_injects_only_the_operator_credential
             "{}",
             String::from_utf8_lossy(&response)
         );
+        if !valid_name {
+            assert_eq!(json_body(&response)["message"], "Proxy request failed");
+        }
         timeout(LIMIT, backend).await.unwrap().unwrap();
         proxy.shutdown().await;
         assert!(
@@ -1429,6 +1587,11 @@ async fn unavailable_required_body_inspection_refuses_before_mutation() {
         } else {
             "GATEWAY_BODY_UNAVAILABLE"
         }));
+        assert!(
+            json_body(&reply)["message"]
+                .as_str()
+                .is_some_and(|message| !message.trim().is_empty())
+        );
         assert!(
             timeout(Duration::from_millis(20), origin.accept())
                 .await

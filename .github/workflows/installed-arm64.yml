@@ -17,6 +17,13 @@ on:
           - clean-public-install
           - installed-update
           - runsc-build
+      runsc_architecture:
+        description: Native runner and runtime architecture for runsc-build only
+        type: choice
+        default: arm64
+        options:
+          - arm64
+          - amd64
       runsc_build_run:
         description: Optional runsc-build run whose complete runtime files should be reused for qualification
         type: string
@@ -60,14 +67,16 @@ env:
 jobs:
   runsc-build:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'runsc-build'
-    runs-on: ubuntu-24.04-arm
+    runs-on: ${{ inputs.runsc_architecture == 'amd64' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
     timeout-minutes: 90
     concurrency:
-      group: runsc-build-arm64
+      group: runsc-build-${{ inputs.runsc_architecture || 'arm64' }}
       cancel-in-progress: false
     permissions:
       contents: read
       actions: read
+    env:
+      RUNSC_ARCHITECTURE: ${{ inputs.runsc_architecture || 'arm64' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -82,13 +91,27 @@ jobs:
           exec > >(tee "$RUNSC_WORK/reports/inputs.log") 2>&1
           date -u --iso-8601=seconds
           uname -a
-          test "$(uname -m)" = aarch64
+          case "$RUNSC_ARCHITECTURE" in
+            arm64)
+              test "$(uname -m)" = aarch64
+              bazel_architecture=arm64
+              bazel_sha256=52bb74f0880ee87b17e3a1aa41257d0dba9e9cb92df4e83f8f6c656a46df152d
+              ;;
+            amd64)
+              test "$(uname -m)" = x86_64
+              bazel_architecture=x86_64
+              bazel_sha256=17247e8a84245f59d3bc633d0cfe0a840992a7760a11af1a30012d03da31604c
+              ;;
+            *) echo "Unsupported runsc architecture: $RUNSC_ARCHITECTURE" >&2; exit 2;;
+          esac
+          printf 'Runtime architecture: %s\n' "$RUNSC_ARCHITECTURE"
+          printf 'BAZEL_ARCHITECTURE=%s\nBAZEL_SHA256=%s\n' "$bazel_architecture" "$bazel_sha256" >> "$GITHUB_ENV"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           git rev-parse HEAD
           df -Pk "$RUNSC_WORK"
           test "$(df -Pk "$RUNSC_WORK" | awk 'NR == 2 {print $4}')" -ge 10485760
-          sha256sum scripts/build_runsc.sh scripts/native_package.sh scripts/gvisor/nofollow.patch scripts/probe_runsc_nofollow.py
-          cp scripts/build_runsc.sh scripts/native_package.sh scripts/gvisor/nofollow.patch scripts/probe_runsc_nofollow.py scripts/qualify_runsc_nofollow.sh "$RUNSC_WORK/reports/"
+          sha256sum scripts/build_runsc.sh scripts/native_package.sh scripts/gvisor/nofollow.patch scripts/gvisor/portforward.patch scripts/probe_runsc_nofollow.py scripts/qualify_runsc_nofollow.sh
+          cp scripts/build_runsc.sh scripts/native_package.sh scripts/gvisor/nofollow.patch scripts/gvisor/portforward.patch scripts/probe_runsc_nofollow.py scripts/qualify_runsc_nofollow.sh "$RUNSC_WORK/reports/"
       - name: Acquire the pinned upstream source and compiler
         if: inputs.runsc_build_run == ''
         shell: bash
@@ -104,22 +127,28 @@ jobs:
           grep -Fx 'go 1.26.3' "$RUNSC_WORK/source/go.mod"
           cp "$RUNSC_WORK/source/"{.bazelversion,.bazelrc,MODULE.bazel,go.mod,go.sum} "$RUNSC_WORK/reports/"
           curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-            https://github.com/bazelbuild/bazel/releases/download/8.3.1/bazel-8.3.1-linux-arm64 \
+            "https://github.com/bazelbuild/bazel/releases/download/8.3.1/bazel-8.3.1-linux-$BAZEL_ARCHITECTURE" \
             --output "$RUNSC_WORK/tools/bazel"
-          printf '52bb74f0880ee87b17e3a1aa41257d0dba9e9cb92df4e83f8f6c656a46df152d  %s/tools/bazel\n' "$RUNSC_WORK" | sha256sum --check --strict -
+          printf '%s  %s/tools/bazel\n' "$BAZEL_SHA256" "$RUNSC_WORK" | sha256sum --check --strict -
           chmod +x "$RUNSC_WORK/tools/bazel"
           "$RUNSC_WORK/tools/bazel" --version
           echo "$RUNSC_WORK/tools" >> "$GITHUB_PATH"
-          # Upstream generates the AMD64 VDSO while building native ARM64 tools.
+          compiler_packages=(build-essential)
+          # Upstream embeds both VDSOs, including the other architecture.
+          if [[ $RUNSC_ARCHITECTURE == arm64 ]]; then
+            compiler_packages+=(crossbuild-essential-amd64)
+          else
+            compiler_packages+=(crossbuild-essential-arm64)
+          fi
           sudo -n apt-get update -qq
-          sudo -n apt-get install -y --no-install-recommends crossbuild-essential-amd64 clang libbpf-dev
+          sudo -n apt-get install -y --no-install-recommends "${compiler_packages[@]}" clang libbpf-dev
           ln -s /usr/bin/clang "$RUNSC_WORK/tools/clang"
           /usr/bin/x86_64-linux-gnu-gcc --version
           /usr/bin/aarch64-linux-gnu-gcc --version
           /usr/bin/clang --version
           /usr/bin/clang -print-targets | grep -w bpf
           test -r /usr/include/bpf/bpf_helpers.h
-          dpkg-query -W crossbuild-essential-amd64 gcc-x86-64-linux-gnu g++-x86-64-linux-gnu clang libbpf-dev
+          dpkg-query -W "${compiler_packages[@]}" clang libbpf-dev
       - name: Run the focused upstream tests and build all four runtime files
         if: inputs.runsc_build_run == ''
         shell: bash
@@ -170,13 +199,14 @@ jobs:
           BUILD_RUN: ${{ inputs.runsc_build_run }}
         run: |
           set -euo pipefail
+          exec > >(tee "$RUNSC_WORK/reports/reuse.log") 2>&1
           [[ $BUILD_RUN =~ ^[0-9]+$ ]]
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN" > "$RUNSC_WORK/reports/reused-run.json"
           build_head=$(jq -r .head_sha "$RUNSC_WORK/reports/reused-run.json")
           build_attempt=$(jq -r .run_attempt "$RUNSC_WORK/reports/reused-run.json")
           gh run download "$BUILD_RUN" --repo "$GITHUB_REPOSITORY" \
-            --name "runsc-arm64-$build_head-$BUILD_RUN-$build_attempt" --dir "$RUNSC_WORK/reused"
-          for source in build_runsc.sh nofollow.patch probe_runsc_nofollow.py; do
+            --name "runsc-$RUNSC_ARCHITECTURE-$build_head-$BUILD_RUN-$build_attempt" --dir "$RUNSC_WORK/reused"
+          for source in build_runsc.sh native_package.sh nofollow.patch portforward.patch probe_runsc_nofollow.py qualify_runsc_nofollow.sh; do
             cmp "$RUNSC_WORK/reports/$source" "$RUNSC_WORK/reused/reports/$source"
           done
           grep -F 'Build exit: 0;' "$RUNSC_WORK/reused/reports/build.log"
@@ -194,13 +224,17 @@ jobs:
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: runsc-arm64-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: runsc-${{ env.RUNSC_ARCHITECTURE }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ env.RUNSC_WORK }}/runtime/
             ${{ env.RUNSC_WORK }}/reports/
+            ${{ env.RUNSC_WORK }}/reused/
+            ${{ env.RUNSC_WORK }}/tools/bazel
             ${{ env.RUNSC_WORK }}/qualification/reports/
             ${{ env.RUNSC_WORK }}/source/bazel-testlogs/pkg/sentry/vfs/vfs_test/test.log
             ${{ env.RUNSC_WORK }}/source/bazel-testlogs/pkg/sentry/vfs/vfs_test/test.xml
+            ${{ env.RUNSC_WORK }}/source/bazel-testlogs/runsc/boot/portforward/portforward_test/test.log
+            ${{ env.RUNSC_WORK }}/source/bazel-testlogs/runsc/boot/portforward/portforward_test/test.xml
           include-hidden-files: true
           retention-days: 30
           if-no-files-found: error

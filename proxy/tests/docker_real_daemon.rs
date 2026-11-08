@@ -125,10 +125,14 @@ async fn start_with_access(
         format!("{}{}", key.serialize_pem(), ca.pem()),
     )
     .unwrap();
+    start_saved_proxy(root, &inputs.ca).await
+}
+
+async fn start_saved_proxy(root: &Path, upstream_ca: &Path) -> Proxy {
     let config:Config=serde_json::from_value(json!({"listeners":[{"agent_id":"witness","socket_path":root.join("docker.sock")}],"policy_file":root.join("policy.toml"),
         "gateway_builtin_services_dir":root.join("builtin"),"gateway_services_dir":root.join("services"),"data_dir":root.join("data"),"readiness_file":root.join("ready"),
         "audit_log_path":root.join("audit.jsonl"),"flow_store_enabled":false,"flow_store_db_path":root.join("flows.sqlite3"),"circuit_breaker_enabled":false,"circuit_state_file":"",
-        "tls_ca_file":root.join("interception.pem"),"upstream_ca_file":inputs.ca})).unwrap();
+        "tls_ca_file":root.join("interception.pem"),"upstream_ca_file":upstream_ca})).unwrap();
     let proxy = Proxy::start(config).await.unwrap();
     let (status, response) = wire(root, format!("GET http://_safeyolo.proxy.internal/gateway/services HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer {AGENT_API_TOKEN}\r\nConnection: close\r\n\r\n").as_bytes()).await;
     assert_eq!(status, 200, "witness service discovery failed");
@@ -338,8 +342,8 @@ async fn interrupted_creation_origin(
     inputs: &Inputs,
     create_path: String,
     creations: Arc<AtomicUsize>,
+    origin: TcpListener,
 ) -> (Inputs, tokio::task::JoinHandle<()>) {
-    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
     let ca = root.join("interrupted-origin.pem");
@@ -476,6 +480,7 @@ async fn interrupted_origin_preserves_docker_http() {
         &inputs,
         "/v1.45/containers/create?name=unused".into(),
         creations.clone(),
+        TcpListener::bind("127.0.0.1:0").await.unwrap(),
     )
     .await;
     let mut roots = rustls::RootCertStore::empty();
@@ -1468,8 +1473,14 @@ async fn real_docker_project_interrupted_creation() {
     let name = format!("{prefix}-created");
     let create_path = format!("/v1.45/containers/create?name={name}");
     let creations = Arc::new(AtomicUsize::new(0));
-    let (local, backend) =
-        interrupted_creation_origin(&root, &inputs, create_path.clone(), creations.clone()).await;
+    let (local, backend) = interrupted_creation_origin(
+        &root,
+        &inputs,
+        create_path.clone(),
+        creations.clone(),
+        TcpListener::bind("127.0.0.1:0").await.unwrap(),
+    )
+    .await;
     // Exercise the actual ordinary client through this forwarding path before
     // the first fixture creation. A prerequisite failure leaves no new resources.
     let protocol_client = root.join("protocol-client");
@@ -1547,6 +1558,11 @@ async fn real_docker_project_interrupted_creation() {
         .unwrap()
         .path();
     let before: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+    std::fs::write(
+        root.join("state-before-reconciliation.json"),
+        before.to_string(),
+    )
+    .unwrap();
     assert_eq!(
         create_status, 503,
         "interruption must report uncertainty: {response}"
@@ -1575,6 +1591,11 @@ async fn real_docker_project_interrupted_creation() {
     );
     assert!(body.contains(id) && !body.contains("io.safeyolo.creation"));
     let after: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+    std::fs::write(
+        root.join("state-after-reconciliation.json"),
+        after.to_string(),
+    )
+    .unwrap();
     assert!(after["pending"].is_null());
     assert!(
         after["containers"]
@@ -1589,128 +1610,13 @@ async fn real_docker_project_interrupted_creation() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    let interrupted = audit
-        .iter()
-        .position(|e| {
-            e["event"] == "gateway.docker_request"
-                && e["details"]["path"] == create_path
-                && e["details"]["mutation_outcome"] == "unknown"
-                && e["details"]["replayed"] == false
-        })
-        .expect("reported interrupted mutation");
-    let reconciled = audit
-        .iter()
-        .position(|e| {
-            e["event"] == "gateway.docker_reconciled"
-                && e["details"]["prior_path"] == create_path
-                && e["details"]["replayed"] == false
-        })
-        .expect("dependent read reconciled the creation");
-    assert!(interrupted < reconciled);
+    assert_interrupted_audit(&audit, &create_path);
     assert_eq!(creations.load(Ordering::SeqCst), 1, "creation was replayed");
     println!(
         "Real Engine creation {id} and anonymous volume {owned_volume} reconciled after response loss; exactly one creation request."
     );
 
-    // Criteria 4/5: shared use cannot authorize anonymous-volume deletion.
-    let (status, body) = api(
-        &client,
-        "DELETE",
-        &format!("/v1.45/containers/{shared_id}?v=true"),
-        &Value::Null,
-    )
-    .await;
-    let shared_after = operator(
-        &inputs,
-        &root,
-        "GET",
-        &format!("/v1.45/containers/{shared_id}/json"),
-        &Value::Null,
-    )
-    .await;
-    let volume_after = operator(
-        &inputs,
-        &root,
-        "GET",
-        &format!("/v1.45/volumes/{shared_volume}"),
-        &Value::Null,
-    )
-    .await;
-    println!(
-        "Shared anonymous-volume removal: gateway {status}; actual container {}, volume {}",
-        shared_after.0, volume_after.0
-    );
-    assert_eq!(status, 404, "shared volume deletion: {body}");
-    assert_eq!(shared_after.0, 200);
-    assert_eq!(volume_after.0, 200);
-    assert_eq!(shared_after.1["Id"], shared_id);
-    assert_eq!(volume_after.1["CreatedAt"], volume["CreatedAt"]);
-    assert_eq!(
-        api(
-            &client,
-            "DELETE",
-            &format!("/v1.45/volumes/{shared_volume}"),
-            &Value::Null
-        )
-        .await
-        .0,
-        404
-    );
-    // Ordinary container removal remains permitted and preserves the shared volume.
-    assert_eq!(
-        api(
-            &client,
-            "DELETE",
-            &format!("/v1.45/containers/{shared_id}"),
-            &Value::Null
-        )
-        .await
-        .0,
-        204
-    );
-    assert_eq!(
-        operator(
-            &inputs,
-            &root,
-            "GET",
-            &format!("/v1.45/volumes/{shared_volume}"),
-            &Value::Null
-        )
-        .await
-        .0,
-        200
-    );
-    // The interrupted creation's recorded volume is owned, so rm -v must work.
-    let (status, body) = api(
-        &client,
-        "DELETE",
-        &format!("/v1.45/containers/{id}?v=true"),
-        &Value::Null,
-    )
-    .await;
-    let container_after = operator(
-        &inputs,
-        &root,
-        "GET",
-        &format!("/v1.45/containers/{id}/json"),
-        &Value::Null,
-    )
-    .await;
-    let owned_after = operator(
-        &inputs,
-        &root,
-        "GET",
-        &format!("/v1.45/volumes/{owned_volume}"),
-        &Value::Null,
-    )
-    .await;
-    println!(
-        "Owned anonymous-volume removal: gateway {status}; actual container {}, volume {}",
-        container_after.0, owned_after.0
-    );
-    assert_eq!(status, 204, "owned volume deletion: {body}");
-    assert_eq!(container_after.0, 404);
-    assert_eq!(owned_after.0, 404);
+    project_volume_removal(&inputs, &root, &shared_container, &created, &volume, &after).await;
     assert_eq!(creations.load(Ordering::SeqCst), 1, "creation was replayed");
     proxy.shutdown().await;
     backend.abort();
@@ -1732,4 +1638,336 @@ async fn real_docker_project_interrupted_creation() {
     println!(
         "Real Engine interrupted creation, reconciliation, no replay and shared/owned anonymous-volume deletion passed for {prefix}."
     );
+}
+
+fn assert_interrupted_audit(audit: &[Value], create_path: &str) {
+    let interrupted = audit
+        .iter()
+        .position(|e| {
+            e["event"] == "gateway.docker_request"
+                && e["details"]["method"] == "POST"
+                && e["details"]["path"] == "/v1.45/containers/create"
+                && e["details"]["mutation_outcome"] == "unknown"
+                && e["details"]["replayed"] == false
+        })
+        .expect("reported interrupted mutation");
+    let reconciled = audit
+        .iter()
+        .position(|e| {
+            e["event"] == "gateway.docker_reconciled"
+                && e["details"]["prior_path"] == create_path
+                && e["details"]["replayed"] == false
+        })
+        .expect("dependent read reconciled the creation");
+    assert!(interrupted < reconciled);
+}
+
+#[test]
+fn interrupted_audit_keeps_request_and_reconciliation_paths_distinct() {
+    let path = "/v1.45/containers/create?name=ordinary-name";
+    let events = vec![
+        json!({"event":"gateway.docker_request","details":{"method":"POST","path":"/v1.45/containers/create","mutation_outcome":"unknown","replayed":false}}),
+        json!({"event":"gateway.docker_reconciled","details":{"prior_path":path,"replayed":false}}),
+    ];
+    assert_interrupted_audit(&events, path);
+    for (index, field, value) in [
+        (0, "path", json!(path)),
+        (0, "method", json!("GET")),
+        (0, "mutation_outcome", json!("complete")),
+        (0, "replayed", json!(true)),
+        (1, "prior_path", json!("/v1.45/containers/create")),
+        (1, "replayed", json!(true)),
+    ] {
+        let mut invalid = events.clone();
+        invalid[index]["details"][field] = value;
+        assert!(std::panic::catch_unwind(|| assert_interrupted_audit(&invalid, path)).is_err());
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires the preserved real Engine interruption root and its existing private Engine inputs"]
+async fn real_docker_project_volume_continuation() {
+    let inputs = Inputs::read();
+    let root = PathBuf::from(
+        std::env::var_os("SAFEYOLO_DOCKER_CONTINUATION_ROOT")
+            .expect("existing interrupted-creation root required; never rerun creation"),
+    );
+    let client = root.join("project-client");
+    let shared: Value =
+        serde_json::from_slice(&std::fs::read(root.join("shared-container.json")).unwrap())
+            .unwrap();
+    let created: Value =
+        serde_json::from_slice(&std::fs::read(root.join("created-container.json")).unwrap())
+            .unwrap();
+    let definition: Value =
+        serde_json::from_slice(&std::fs::read(client.join("services/docker.yaml")).unwrap())
+            .unwrap();
+    let access = &definition["capabilities"]["workloads"]["docker_access"];
+    assert_eq!(access["mode"], "project");
+    let prefix = access["name"].as_str().unwrap();
+    assert_eq!(shared["Name"], format!("/{prefix}-shared"));
+    assert_eq!(created["Name"], format!("/{prefix}-created"));
+    assert!(
+        access["selected"]["containers"]
+            .as_array()
+            .unwrap()
+            .contains(&shared["Id"])
+    );
+    let shared_volume = shared["Mounts"][0]["Name"].as_str().unwrap();
+    let volume = json!({"CreatedAt":access["shared"]["volumes"][shared_volume]});
+    assert!(volume["CreatedAt"].is_string());
+    let states: Vec<_> = std::fs::read_dir(client.join("data/docker-projects"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(states.len(), 1, "reuse the actual single project state");
+    let state: Value = serde_json::from_slice(&std::fs::read(&states[0]).unwrap()).unwrap();
+    assert_eq!(state["adoption"], access["adoption"]);
+    let audit_before = std::fs::read_to_string(client.join("audit.jsonl")).unwrap();
+    let events: Vec<Value> = audit_before
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_interrupted_audit(
+        &events,
+        &format!("/v1.45/containers/create?name={prefix}-created"),
+    );
+
+    // Project association is endpoint-bound. Keep the saved endpoint, policy,
+    // identity and state; only renew the stopped test listener's TLS certificate.
+    let endpoint = definition["docker"]["endpoint"].as_str().unwrap();
+    let address: hyper::Uri = endpoint.parse().unwrap();
+    assert_eq!(address.scheme_str(), Some("https"));
+    assert_eq!(address.host(), Some("127.0.0.1"));
+    let port = address.port_u16().unwrap();
+    assert_ne!(port, 0);
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+        .await
+        .unwrap();
+    let creations = Arc::new(AtomicUsize::new(0));
+    // An empty allowed creation path rejects every POST before Engine dispatch.
+    let (local, backend) =
+        interrupted_creation_origin(&root, &inputs, String::new(), creations.clone(), listener)
+            .await;
+    assert_eq!(local.endpoint, endpoint);
+    let proxy = start_saved_proxy(&client, &local.ca).await;
+    project_volume_removal(&inputs, &root, &shared, &created, &volume, &state).await;
+    proxy.shutdown().await;
+    backend.abort();
+    assert!(backend.await.unwrap_err().is_cancelled());
+    assert_eq!(creations.load(Ordering::SeqCst), 0);
+    let audit_after = std::fs::read_to_string(client.join("audit.jsonl")).unwrap();
+    assert!(audit_after.starts_with(&audit_before));
+    for line in audit_after[audit_before.len()..].lines() {
+        let event: Value = serde_json::from_str(line).unwrap();
+        assert!(
+            !(event["event"] == "gateway.docker_request" && event["details"]["method"] == "POST")
+        );
+    }
+    println!(
+        "Remaining shared/owned volume checks passed without creation; retain {} and the shared volume {shared_volume} for verified operator cleanup. The original run's in-memory creation-counter assertion was not reached.",
+        root.display()
+    );
+}
+
+async fn project_volume_removal(
+    inputs: &Inputs,
+    root: &Path,
+    shared: &Value,
+    created: &Value,
+    volume: &Value,
+    state: &Value,
+) {
+    let client = root.join("project-client");
+    let shared_id = shared["Id"].as_str().unwrap();
+    let shared_volume = shared["Mounts"][0]["Name"].as_str().unwrap();
+    let id = created["Id"].as_str().unwrap();
+    let owned_volume = created["Mounts"][0]["Name"].as_str().unwrap();
+
+    let shared_now = operator(
+        inputs,
+        root,
+        "GET",
+        &format!("/v1.45/containers/{shared_id}/json"),
+        &Value::Null,
+    )
+    .await;
+    let created_now = operator(
+        inputs,
+        root,
+        "GET",
+        &format!("/v1.45/containers/{id}/json"),
+        &Value::Null,
+    )
+    .await;
+    let shared_volume_now = operator(
+        inputs,
+        root,
+        "GET",
+        &format!("/v1.45/volumes/{shared_volume}"),
+        &Value::Null,
+    )
+    .await;
+    let owned_volume_now = operator(
+        inputs,
+        root,
+        "GET",
+        &format!("/v1.45/volumes/{owned_volume}"),
+        &Value::Null,
+    )
+    .await;
+    std::fs::write(
+        root.join("volume-continuation-before.json"),
+        json!({
+            "shared_container":shared_now,"created_container":created_now,
+            "shared_volume":shared_volume_now,"owned_volume":owned_volume_now,"project_state":state
+        })
+        .to_string(),
+    )
+    .unwrap();
+    for (saved, current) in [(shared, &shared_now), (created, &created_now)] {
+        assert_eq!(current.0, 200);
+        assert_eq!(current.1["Id"], saved["Id"]);
+        assert_eq!(current.1["Name"], saved["Name"]);
+        assert_eq!(current.1["Created"], saved["Created"]);
+        assert_eq!(current.1["Mounts"], saved["Mounts"]);
+        assert_eq!(current.1["State"]["Running"], false);
+    }
+    assert_eq!(shared_volume_now.0, 200);
+    assert_eq!(shared_volume_now.1["Name"], shared_volume);
+    assert_eq!(shared_volume_now.1["CreatedAt"], volume["CreatedAt"]);
+    assert_eq!(owned_volume_now.0, 200);
+    assert_eq!(owned_volume_now.1["Name"], owned_volume);
+    assert_eq!(
+        owned_volume_now.1["CreatedAt"],
+        state["volumes"][owned_volume]["created"]
+    );
+    assert_eq!(
+        created_now.1["Config"]["Labels"]["io.safeyolo.creation"],
+        state["volumes"][owned_volume]["marker"]
+    );
+    assert!(state["pending"].is_null());
+    assert!(
+        state["containers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == id)
+    );
+    assert!(state["volumes"].get(shared_volume).is_none());
+
+    // Criteria 4/5: shared use cannot authorize anonymous-volume deletion.
+    let (status, body) = api(
+        &client,
+        "DELETE",
+        &format!("/v1.45/containers/{shared_id}?v=true"),
+        &Value::Null,
+    )
+    .await;
+    let shared_after = operator(
+        inputs,
+        root,
+        "GET",
+        &format!("/v1.45/containers/{shared_id}/json"),
+        &Value::Null,
+    )
+    .await;
+    let volume_after = operator(
+        inputs,
+        root,
+        "GET",
+        &format!("/v1.45/volumes/{shared_volume}"),
+        &Value::Null,
+    )
+    .await;
+    println!(
+        "Shared anonymous-volume removal: gateway {status}; actual container {}, volume {}",
+        shared_after.0, volume_after.0
+    );
+    std::fs::write(root.join("volume-shared-rm-v.json"), json!({"gateway_status":status,"gateway_response":body,"container":shared_after,"volume":volume_after}).to_string()).unwrap();
+    assert_eq!(status, 404, "shared volume deletion: {body}");
+    assert_eq!(shared_after.0, 200);
+    assert_eq!(volume_after.0, 200);
+    assert_eq!(shared_after.1["Id"], shared_id);
+    assert_eq!(volume_after.1["CreatedAt"], volume["CreatedAt"]);
+    let shared_delete = api(
+        &client,
+        "DELETE",
+        &format!("/v1.45/volumes/{shared_volume}"),
+        &Value::Null,
+    )
+    .await;
+    let shared_after_delete = operator(
+        inputs,
+        root,
+        "GET",
+        &format!("/v1.45/volumes/{shared_volume}"),
+        &Value::Null,
+    )
+    .await;
+    std::fs::write(root.join("volume-shared-delete.json"), json!({"gateway_status":shared_delete.0,"gateway_response":shared_delete.1,"volume":shared_after_delete}).to_string()).unwrap();
+    assert_eq!(shared_delete.0, 404);
+    assert_eq!(shared_after_delete.0, 200);
+    assert_eq!(shared_after_delete.1["CreatedAt"], volume["CreatedAt"]);
+    // Ordinary container removal remains permitted and preserves the shared volume.
+    let shared_remove = api(
+        &client,
+        "DELETE",
+        &format!("/v1.45/containers/{shared_id}"),
+        &Value::Null,
+    )
+    .await;
+    let shared_removed = operator(
+        inputs,
+        root,
+        "GET",
+        &format!("/v1.45/containers/{shared_id}/json"),
+        &Value::Null,
+    )
+    .await;
+    let retained_volume = operator(
+        inputs,
+        root,
+        "GET",
+        &format!("/v1.45/volumes/{shared_volume}"),
+        &Value::Null,
+    )
+    .await;
+    std::fs::write(root.join("volume-shared-container-removed.json"), json!({"gateway_status":shared_remove.0,"gateway_response":shared_remove.1,"container":shared_removed,"volume":retained_volume}).to_string()).unwrap();
+    assert_eq!(shared_remove.0, 204);
+    assert_eq!(shared_removed.0, 404);
+    assert_eq!(retained_volume.0, 200);
+    assert_eq!(retained_volume.1["CreatedAt"], volume["CreatedAt"]);
+    // The interrupted creation's recorded volume is owned, so rm -v must work.
+    let (status, body) = api(
+        &client,
+        "DELETE",
+        &format!("/v1.45/containers/{id}?v=true"),
+        &Value::Null,
+    )
+    .await;
+    let container_after = operator(
+        inputs,
+        root,
+        "GET",
+        &format!("/v1.45/containers/{id}/json"),
+        &Value::Null,
+    )
+    .await;
+    let owned_after = operator(
+        inputs,
+        root,
+        "GET",
+        &format!("/v1.45/volumes/{owned_volume}"),
+        &Value::Null,
+    )
+    .await;
+    println!(
+        "Owned anonymous-volume removal: gateway {status}; actual container {}, volume {}",
+        container_after.0, owned_after.0
+    );
+    std::fs::write(root.join("volume-owned-rm-v.json"), json!({"gateway_status":status,"gateway_response":body,"container":container_after,"volume":owned_after}).to_string()).unwrap();
+    assert_eq!(status, 204, "owned volume deletion: {body}");
+    assert_eq!(container_after.0, 404);
+    assert_eq!(owned_after.0, 404);
 }

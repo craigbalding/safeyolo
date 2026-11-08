@@ -367,9 +367,100 @@ integration.
 
 ## Internal Docker management connection
 
-This separate check is maintained by #1437 in [its current candidate](https://github.com/craigbalding/safeyolo/pull/1453/commits/232ab6aed74d32ab9c65b40321baaf6c91bd7b50).
-Use that checkout's observer; the onboarding change does not duplicate it.
+Execution 16006 reused the repaired four-file runtime from producer 42482622552
+and the existing driver at `232ab6aed74d32ab9c65b40321baaf6c91bd7b50`.
+The debug proxy at `e340a934` has the same Docker, host and provider source as
+`ae76f656`; their proxy source differences are confined to Coord supervisor
+modules. This is mixed-input debug proof, not shipping-package acceptance.
+Docker CLI/Engine 26.1.5 with API 1.45 passed internal create/start/inspect,
+16-byte exec output, 27-byte attach output and removal. The exact container from
+the interrupted execution 15490 was absent before these writes.
 
+The stopped-daemon phase returned only `Error response from daemon: \n\n` on
+stderr. The fixture then failed its literal `502`/`503` CLI assertion. Raw HTTP
+status and body were not collected; no HTTP status is established by that
+client output. Closed-port and stopped-provider phases did not run. All owned
+processes stopped and the original four runtime files, modes, checksum file,
+policy, service, configuration and binary selection were restored. Reuse the positive results and the subsequently passed negative controls from
+execution 16032 at `69fa02a5`. The recipe below is for changed behavior, not a
+request to repeat the accepted controls.
+
+Docker 26.1.5's [API error decoder](https://github.com/moby/moby/blob/v26.1.5/client/request.go#L188-L221)
+reads JSON failures from `message`. SafeYolo adds that field to its local Docker
+failure replies while retaining their existing fields, status and attribution
+headers. It uses the existing sanitized diagnostic, or a local refusal message
+when the error is structured. Daemon responses pass through unchanged. The
+client check requires nonzero exit and diagnostic text beyond Docker's generic
+prefix; it does not require HTTP numbers in stderr. Each negative phase retains
+the actual exit, stderr and a separate read-only HTTP status/body capture before
+checking the diagnostic.
+
+The [provider diagnosis](https://github.com/craigbalding/safeyolo/issues/1437#issuecomment-6713267349)
+bound the failure to deployed runsc source
+`97e8e896904cb364319cd9758241d3f0bd27a6f4`. In execution 15499, a controlled
+origin received 16 bytes, observed input EOF and sent 16 bytes in both controls.
+The direct client received all 16; the donated runsc stream received none.
+This establishes the provider defect without excluding further Docker defects.
+
+### Qualify the repaired provider first
+
+The existing runtime builder applies both
+[`nofollow.patch`](../../scripts/gvisor/nofollow.patch) and
+[`portforward.patch`](../../scripts/gvisor/portforward.patch) to that pinned
+upstream source. The second patch keeps the reverse copy alive after orderly
+EOF and cancels both copies on a real error or shutdown. Its focused upstream
+tests include response after EOF in either direction, buffered final bytes,
+write/read/shutdown errors, and the three connection adapters.
+
+For a hosted native build, use the existing `installed-arm64.yml` workflow with
+`mode=runsc-build`. Select `runsc_architecture=amd64` for the AMD64 provider
+fixture; the default remains `arm64`. This input affects only the runtime build
+job. Relay admits one selected run at the candidate branch and verifies its
+actual head against the candidate commit. The hosted build is independent of
+the protected provider fixture's execution slot.
+
+The workflow runs the focused tests, builds the four runtime files and qualifies
+the selected native payload on both guest filesystems. Its artifact is named
+`runsc-ARCHITECTURE-SOURCE-RUN-ATTEMPT`. With `runsc_build_run`, reuse selects
+that architecture's artifact and compares the builder, both patches, packaging
+helper and qualification inputs before checking the output hashes. Reached
+logs, downloaded operands and test results are retained on failure. Preserve
+those results before deciding whether another acquisition or build is needed.
+Hosted qualification does not replace the provider and Docker controls below.
+
+For a build on the owned Linux venue, obtain the factory's serialized build
+slot and inspect the retained upstream checkout and compatible Bazel outputs.
+Preserve active source, prepared runtime and the existing disk reserves. If the
+checkout is clean at the pinned revision, invoke the candidate's
+`scripts/build_runsc.sh UPSTREAM_SOURCE NEW_RUNTIME_DIRECTORY`. For a retained
+checkout that already has the unchanged nofollow patch, verify that delta and
+apply only the new portforward patch. Do not reset the warm checkout. Resume the
+builder's focused tests and four-target build with its existing Bazel output
+root, architecture configuration, opt profile and one job.
+
+The compatible runtime version marker remains
+`release-20261005.0-safeyolo.1`. Record the actual SafeYolo source, both patch
+inputs and all four output hashes; that version string alone does not distinguish
+the repaired runtime from the defective donor. Acquisition now includes the new
+patch in its cache key. Do not relabel or reuse an unmodified runtime as repaired.
+
+The response-after-EOF control passed in execution 16003: the origin and both
+clients received the expected 16 bytes and exited successfully. Reuse that
+result and its actual four-file hashes for the unchanged payload. When a changed
+runtime needs qualification, use the existing operator wrapper to select it in
+an isolated installation. Preserve the donor bytes and original runtime
+selection. Reuse the retained response-after-EOF control from execution 15499
+through its actual `nsenter`/`runsc port-forward --stream` route. Run no Docker
+operation during this control. Require the origin to receive the 16-byte marker,
+observe EOF and then send its 16-byte response. Require both the direct client
+and provider client to receive that exact response, and both origin and runsc to
+exit 0. Record the selected runtime path, version and hash with that result.
+Restore the selection and stop the fixture on failure. Direct TCP or source
+tests alone do not establish that this runtime defect is repaired.
+
+After qualifying a changed runtime, use that selected runtime for the finite
+Docker management check below. For the current correction, reuse the qualified
+payload and select the corrected debug proxy. No gVisor rebuild is needed.
 
 Reuse the stopped, qualified Linux/gVisor fixture from #1436. This check adds
 only the missing Docker management connection through its existing provider
@@ -379,8 +470,8 @@ caller, their workspaces, and qualified Docker image data. Both agents must be
 stopped before starting this check.
 
 On that owned Linux venue, prepare a task-owned installation directory. Reuse
-the qualified CLI, guest, runsc, assets and runtime configuration. Put the current
-candidate proxy in that directory's `bin`; copy binaries into the overlay rather
+the qualified CLI, guest and assets. Select the complete repaired runtime as
+described above. Put the current candidate proxy in that directory's `bin`; copy binaries into the overlay rather
 than overwriting a donor or writing through a symlink. Verify source identities
 and current capacity first. Reuse the compatible warm Cargo target when a current
 proxy must be built. Preserve the original installation and useful warm outputs.
@@ -398,24 +489,50 @@ python3 -m tests.blackbox.installed_docker_preflight \
   --prepared-config PREPARED_OVERLAY --root RETAINED_INSTANCE \
   --output NEW_PRIVATE_OUTPUT --revision CLI_REVISION \
   --guest-revision GUEST_REVISION --proxy-revision CANDIDATE \
-  --nested-docker --reuse-root --docker-data RETAINED_GUEST_DATA --gateway
+  --nested-docker --reuse-root --docker-data RETAINED_GUEST_DATA \
+  --gateway --gateway-failures-only
 ```
 
 The check temporarily selects the overlay's binaries and a Docker service for
 the existing provider. It restores lost guest packages through the existing
 proxy and policy, then uses guest root to expose the inner daemon's Unix socket
 on guest loopback port 2375. The caller uses its scoped gateway token and ordinary Docker TCP
-configuration. The check records client/server versions, refuses an unapproved
-caller, creates and inspects one uniquely named container, exercises exec and
-attach with stdin closure, then removes the container. Requests with a stopped
-daemon, closed port or stopped provider must fail clearly. The normal result must report
-`gateway-passed` and cleanup `stopped`.
+configuration. The check records client/server versions and refuses an
+unapproved caller. With `--gateway-failures-only`, it skips container operations
+and checks requests with a stopped daemon, closed port and stopped provider.
+Without that option, it also creates and inspects one uniquely named container,
+exercises exec/attach with stdin closure and removes it. The normal result must
+report `gateway-passed`, `gateway_failures_only` for the selected mode and cleanup
+`stopped`. A failure-only result supplements the retained positive witness.
 
 After stopping the proxy, the check restores the original service, policy and
 binary directory or link. The original prepared binary bytes remain unchanged.
-On failure, keep the normal output, audit log, printed container name and guest
+The operator wrapper must also restore its original runtime selection. Retain
+the complete `gateway.docker_stream.end` details, including request ID,
+uploaded/downloaded bytes, outcome and error, plus daemon/closed-port/stopped-
+provider diagnostics from the existing audit log. On failure, keep the original
+result, private rollback inputs, audit log, printed container name and guest
 state. Inspect the actual daemon before removing or retrying an uncertain
 operation. No automatic mutation replay or broad cleanup is performed.
+
+### Accepted #1437 evidence
+
+Lens accepted all eight #1437 criteria, and the issue is closed. The repair is
+integrated at `bf34856d52355d31230b7947473d00df14db43d7`. The
+[acceptance ledger](https://github.com/craigbalding/safeyolo/issues/1437#issuecomment-6722880979)
+records the exact source/runtime limits. Reuse each result at its actual boundary;
+#1439 project acceptance remains separate.
+
+| Criterion | Retained evidence and limits |
+|---|---|
+| 1. Multi-service lifecycle | Execution 15475 at `67cdb272` passed pull/build, two communicating Compose services, inspect/logs/follow, exec, interactive attach, archive copy, recreation, persistent data and teardown. CLI/Engine 29.1.3, API 1.45, Compose 2.40.3. The later project phase failed; the workload itself passed. |
+| 2. Streams and payloads | That workload and the controlled transport tests cover admitted exec/attach, builds and archives. Execution 16006 passed internal-provider exec/attach with the repaired payload at the debug source boundary described above. |
+| 3. Before-effect checks | Accepted #1438 enforcement and controlled negative/body-bound tests refuse forbidden dispatch and unavailable inspection. No new enforcement policy is added here. |
+| 4. Mandatory mediation | Retained token, path/version, opaque-tunnel and TLS/credential controls cover the configured endpoint. The external workload uses scoped tokens and operator-held credentials. |
+| 5. Connections | The authenticated HTTPS workload and execution 15505 walkthrough are retained. #1436 supplies internal runtime/application-provider proof. Execution 16006 passed Docker management through the repaired provider at its recorded source/runtime boundary. |
+| 6. Failure diagnostics | Controlled truncation and uncertain-mutation tests remain applicable. Execution 16006 exposed a blank stopped-daemon diagnostic. Execution 16032 at `69fa02a5` passed the corrected daemon/closed-port/stopped-provider controls, with raw responses and audit details. Provider EOF proof from execution 16003 is retained. No real interrupted mutation is claimed. |
+| 7. Setup and matrix | [Docker guidance](../../docs/docker.md) defines the client setup, API 1.45 matrix, unsupported operations and limits. Transport does not establish project isolation or host-risk enforcement. |
+| 8. Independent acceptance | Lens accepted the corrected candidate and the retained real client/daemon results. The shared project result at `a72c6477` (execution 15482) stays separate from #1437 acceptance. |
 
 ## Project scope witness
 
@@ -468,8 +585,9 @@ and removed them, then confirmed both absent. The failed scratch and diagnostic
 output remain available. This result does not judge the interrupted-mutation
 contract. Do not repeat the failed run or its cleanup to correct the fixture.
 
-Before another real Engine run, exercise the forwarding fixture's protocol
-control in the same warm target. It covers HEAD with an advertised GET length,
+When that forwarding behavior changes, exercise the fixture's protocol control
+in the same warm target. Reuse the successful protocol result from execution
+16036 for the unchanged forwarding behavior. It covers HEAD with an advertised GET length,
 GET ping/version, chunked upstream framing, a 404 and a bodyless 204. It creates
 no Docker resources and does not establish project-state behavior:
 
@@ -479,15 +597,60 @@ CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
   --test docker_real_daemon interrupted_origin_preserves_docker_http -- --exact --nocapture
 ```
 
-With that control passing, use the same venue, private inputs and warm build
-settings to run only the missing real Engine interruption and anonymous-volume
-checks:
+For a new interruption sequence that needs qualification, use the same venue,
+private inputs and warm build settings with the command below. Do not run it
+for the preserved execution 16036; use its finite continuation below instead:
 
 ```sh
 CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
   ../scripts/cargo_with_space.sh test --locked --config profile.dev.debug=0 \
   --test docker_real_daemon real_docker_project_interrupted_creation -- --ignored --exact --nocapture
 ```
+
+Execution 16036 at `b9fd17881b6c173f989b26258cad18282eff6fc4` passed the
+protocol control and ordinary Docker version path. The real Engine returned
+creation 201; the gateway returned 503. The test passed pending-kind/marker
+assertions, actual inspect 200, dependent GET 200 and reconciled association.
+It then stopped at an observer that compared a canonical audit request path
+with the full query. The corrected observer retains the canonical POST path
+and full query-bearing reconciliation path separately. Product audit identity
+is unchanged. The original raw pre-reconciliation state was not separately saved. The original
+in-memory creation-counter assertion was not reached, and its value was not
+retained. The continuation does not reconstruct those missing operands.
+
+The two stopped containers, their volumes and saved policy/project state remain
+in that run's private root. Before the continuation, Sylab verifies that the
+original proxy/listener has stopped and retains the existing Engine endpoint,
+CA and credential binding. Set `SAFEYOLO_DOCKER_CONTINUATION_ROOT` to the exact
+retained root supplied with execution 16036. This is an existing directory,
+not a new scratch path. From the corrected candidate's `proxy` directory with
+the same warm target and private Engine inputs, run only:
+
+```sh
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
+  ../scripts/cargo_with_space.sh test --locked --config profile.dev.debug=0 \
+  --test docker_real_daemon real_docker_project_volume_continuation -- --ignored --exact --nocapture
+```
+
+The continuation reopens the saved policy, identity and project state. It binds
+the original local endpoint, renews only the fixture's TLS certificate and gets
+the agent token through ordinary service discovery. It verifies current exact
+container IDs, names, creation times, mounts, stopped state, volume CreatedAt
+values and the recorded owned-volume marker before Docker writes. It saves
+those operands in `volume-continuation-before.json`. The shared-use refusal,
+direct shared-volume refusal, ordinary container removal and owned `rm -v`
+results are saved in `volume-shared-rm-v.json`, `volume-shared-delete.json`,
+`volume-shared-container-removed.json` and `volume-owned-rm-v.json` before their
+assertions. These use the same removal checks as a fresh witness.
+
+The continuation rejects every creation POST before Engine dispatch and checks
+that no new creation is audited. It stops its proxy/listener and retains the
+private root and remaining shared volume. After preserving the result, Sylab
+may remove only that verified fixture volume: compare its name/CreatedAt with
+the saved selection and confirm no container consumes it before deletion.
+On failure, inspect the saved responses and actual Engine effects before any
+later write. Do not automatically repeat a partially completed continuation,
+recreate a fixture, or rerun creation to fill an observer gap.
 
 This case forwards the project gateway's requests through a local HTTPS fixture
 to the actual authenticated Engine. The fixture verifies the Engine's certificate
@@ -520,5 +683,5 @@ bridge network remain reusable.
 
 The controlled HTTP regression remains focused protocol proof. Its simulated
 origin does not establish real Engine acceptance. The new real Engine case also
-does not replace #1437's internal Docker connection result or independent #1439
-acceptance.
+reuses the accepted #1437 internal Docker connection result; it still requires
+independent #1439 acceptance.

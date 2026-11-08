@@ -18,14 +18,17 @@ esac
 [[ $(git -C "$upstream" rev-parse HEAD) == "$revision" ]] || { package_error "gVisor source must be $revision"; exit 1; }
 [[ -z $(git -C "$upstream" status --porcelain) ]] || { package_error 'use a clean upstream checkout; retain an interrupted build and resume its Bazel commands there'; exit 1; }
 [[ ! -e $output && ! -L $output ]] || { package_error "runtime destination already exists: $output"; exit 1; }
-git -C "$upstream" apply --check "$script_dir/gvisor/nofollow.patch"
-git -C "$upstream" apply "$script_dir/gvisor/nofollow.patch"
+patches=("$script_dir/gvisor/nofollow.patch" "$script_dir/gvisor/portforward.patch")
+git -C "$upstream" apply --check "${patches[@]}"
+git -C "$upstream" apply "${patches[@]}"
 
 # The caller selects the build filesystem and preserves its required reserve.
 # Bazelisk honors the upstream .bazelversion; the source pins the Go toolchain.
 cd -- "$upstream"
 bazel test --jobs=1 --config="$configuration" --compilation_mode=opt //pkg/sentry/vfs:vfs_test \
   --test_filter='TestShouldFollowSymlinkDirectoryRequirement|TestSymlinkTargetTrailingSlash' --test_arg=-test.v
+bazel test --jobs=1 --config="$configuration" --compilation_mode=opt \
+  //runsc/boot/portforward:portforward_test --test_arg=-test.v
 targets=(//runsc:runsc //runsc/cmd/sentry:gvisor_sentry \
   //runsc/prewarmer:prewarmer_binary //runsc/fdparking:fdparking_binary)
 names=(runsc gvisor-bin/gvisor_sentry gvisor-bin/gvisor-sentry-prewarmer gvisor-bin/runsc-fd-parking)
@@ -45,4 +48,4 @@ observed=$("$stage/runsc" --version)
 [[ ${observed%%$'\n'*} == "runsc version $version" ]] || { package_error "built gVisor version differs: $observed"; exit 1; }
 mv -T -- "$stage" "$output"
 trap - EXIT
-echo "Prepared gVisor $version $platform from $revision and gvisor/nofollow.patch" >&2
+echo "Prepared gVisor $version $platform from $revision and gvisor/{nofollow,portforward}.patch" >&2

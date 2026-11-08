@@ -78,7 +78,8 @@ def runsc_build_inputs(
     (scripts / "gvisor").mkdir(parents=True)
     for name in ("native_package.sh", "acquire_runsc.sh"):
         shutil.copy2(REPO / "scripts" / name, scripts / name)
-    shutil.copy2(REPO / "scripts/gvisor/nofollow.patch", scripts / "gvisor/nofollow.patch")
+    for name in ("nofollow.patch", "portforward.patch"):
+        shutil.copy2(REPO / "scripts/gvisor" / name, scripts / "gvisor" / name)
     build_calls = tmp_path / "build-calls"
     (scripts / "build_runsc.sh").write_text(
         '#!/bin/bash\nset -eu\nprintf "build\\n" >> "$RUNSC_TEST_BUILD_CALLS"\n'
@@ -109,6 +110,7 @@ def test_runsc_acquisition_reuses_its_build_and_refuses_corrupt_cached_companion
         result = run("bash", str(scripts / "acquire_runsc.sh"), str(tmp_path / name))
         assert result.returncode == 0, result.stderr
     assert build_calls.read_text().splitlines() == ["build"]
+
     companion, = cache.glob("**/runtime/gvisor-bin/gvisor_sentry")
     with companion.open("ab") as stream:
         stream.write(b"corruption after the valid ELF header")
@@ -116,6 +118,13 @@ def test_runsc_acquisition_reuses_its_build_and_refuses_corrupt_cached_companion
     assert result.returncode != 0 and "FAILED" in result.stdout
     assert not (tmp_path / "corrupt").exists()
     assert build_calls.read_text().splitlines() == ["build"]
+
+    # A provider repair must not reuse the cached runtime without that patch.
+    patch = scripts / "gvisor/portforward.patch"
+    patch.write_bytes(patch.read_bytes() + b"\n")
+    result = run("bash", str(scripts / "acquire_runsc.sh"), str(tmp_path / "repaired"))
+    assert result.returncode == 0, result.stderr
+    assert build_calls.read_text().splitlines() == ["build", "build"]
 
 
 @pytest.mark.parametrize("outcome", ["transient", "exhausted", "checksum"])
