@@ -381,8 +381,9 @@ stderr. The fixture then failed its literal `502`/`503` CLI assertion. Raw HTTP
 status and body were not collected; no HTTP status is established by that
 client output. Closed-port and stopped-provider phases did not run. All owned
 processes stopped and the original four runtime files, modes, checksum file,
-policy, service, configuration and binary selection were restored. Retain the
-positive results and run only the missing negative controls below.
+policy, service, configuration and binary selection were restored. Reuse the positive results and the subsequently passed negative controls from
+execution 16032 at `69fa02a5`. The recipe below is for changed behavior, not a
+request to repeat the accepted controls.
 
 Docker 26.1.5's [API error decoder](https://github.com/moby/moby/blob/v26.1.5/client/request.go#L188-L221)
 reads JSON failures from `message`. SafeYolo adds that field to its local Docker
@@ -514,26 +515,29 @@ result, private rollback inputs, audit log, printed container name and guest
 state. Inspect the actual daemon before removing or retrying an uncertain
 operation. No automatic mutation replay or broad cleanup is performed.
 
-### #1437 evidence and remaining acceptance
+### Accepted #1437 evidence
 
-All eight issue criteria remain subject to independent exact-candidate review.
-Reuse each result only at its actual source and runtime boundary.
+Lens accepted all eight #1437 criteria, and the issue is closed. The repair is
+integrated at `bf34856d52355d31230b7947473d00df14db43d7`. The
+[acceptance ledger](https://github.com/craigbalding/safeyolo/issues/1437#issuecomment-6722880979)
+records the exact source/runtime limits. Reuse each result at its actual boundary;
+#1439 project acceptance remains separate.
 
-| Criterion | Retained evidence and remaining work |
+| Criterion | Retained evidence and limits |
 |---|---|
 | 1. Multi-service lifecycle | Execution 15475 at `67cdb272` passed pull/build, two communicating Compose services, inspect/logs/follow, exec, interactive attach, archive copy, recreation, persistent data and teardown. CLI/Engine 29.1.3, API 1.45, Compose 2.40.3. The later project phase failed; the workload itself passed. |
 | 2. Streams and payloads | That workload and the controlled transport tests cover admitted exec/attach, builds and archives. Execution 16006 passed internal-provider exec/attach with the repaired payload at the debug source boundary described above. |
 | 3. Before-effect checks | Accepted #1438 enforcement and controlled negative/body-bound tests refuse forbidden dispatch and unavailable inspection. No new enforcement policy is added here. |
 | 4. Mandatory mediation | Retained token, path/version, opaque-tunnel and TLS/credential controls cover the configured endpoint. The external workload uses scoped tokens and operator-held credentials. |
 | 5. Connections | The authenticated HTTPS workload and execution 15505 walkthrough are retained. #1436 supplies internal runtime/application-provider proof. Execution 16006 passed Docker management through the repaired provider at its recorded source/runtime boundary. |
-| 6. Failure diagnostics | Controlled truncation and uncertain-mutation tests remain applicable. Execution 16006 exposed a blank stopped-daemon diagnostic. Corrected daemon/closed-port/stopped-provider client controls and their raw responses/audit details remain required. Provider EOF proof from execution 16003 is retained. No real interrupted mutation is claimed. |
+| 6. Failure diagnostics | Controlled truncation and uncertain-mutation tests remain applicable. Execution 16006 exposed a blank stopped-daemon diagnostic. Execution 16032 at `69fa02a5` passed the corrected daemon/closed-port/stopped-provider controls, with raw responses and audit details. Provider EOF proof from execution 16003 is retained. No real interrupted mutation is claimed. |
 | 7. Setup and matrix | [Docker guidance](../../docs/docker.md) defines the client setup, API 1.45 matrix, unsupported operations and limits. Transport does not establish project isolation or host-risk enforcement. |
-| 8. Independent acceptance | Lens review of the corrected immutable candidate and the real client/daemon results is pending. The shared project result at `a72c6477` (execution 15482) stays separate from #1437 acceptance. |
+| 8. Independent acceptance | Lens accepted the corrected candidate and the retained real client/daemon results. The shared project result at `a72c6477` (execution 15482) stays separate from #1437 acceptance. |
 
 ## Project scope witness
 
-For #1439, reuse the same protected venue and private inputs after the active
-workload witness returns. Reuse a prepared qualified BusyBox image instead of
+For #1439, reuse the same protected venue and private inputs. Reuse a prepared
+qualified BusyBox image instead of
 repeating its build/pull suite. The project test creates two unrelated projects,
 ordinary selected existing resources and a shared network through its explicit
 operator connection. It then exercises the project gateway. It retains its
@@ -555,7 +559,7 @@ CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
 ```
 
 With those checks passing and the operator-bound Engine inputs available, run
-only the project Engine witness:
+the project lifecycle when that behavior needs qualification:
 
 ```sh
 CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
@@ -566,7 +570,118 @@ CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
 Record actual Engine/CLI/Compose versions and the exact candidate. This witness
 covers selected resources, shared dependencies, Compose creation/recreation,
 persistent data, direct/indirect refusals, management metadata, restart,
-co-administrator rename/replacement and explicit volume re-adoption. The
-controlled HTTP regression exercises an origin that applies creation and then
-interrupts its response. It must observe reconciliation and exactly one mutation.
-Neither source checks nor a controlled origin establish real Engine acceptance.
+co-administrator rename/replacement and explicit volume re-adoption. Reuse the
+observed project result at `a72c6477c3c6b37923c767d55e1ec61dcfc5d2d0`
+(execution 15482); a new interruption case does not require another lifecycle run.
+
+Execution 16022 ran the interruption case at
+`cd3799f3e7602b23db7c4f786a81417d46d03c96` on 8 November 2026. Engine preflight
+passed at 29.1.3 on AMD64. The forwarding fixture then rejected the ordinary
+Docker client's `HEAD /_ping` before the intended interrupted creation. The
+retained audit records that request. Operator inspection confirmed no pending
+creation or intended container; only the stopped shared fixture container and
+its sole anonymous volume existed. Execution 16027 verified their identities
+and removed them, then confirmed both absent. The failed scratch and diagnostic
+output remain available. This result does not judge the interrupted-mutation
+contract. Do not repeat the failed run or its cleanup to correct the fixture.
+
+When that forwarding behavior changes, exercise the fixture's protocol control
+in the same warm target. Reuse the successful protocol result from execution
+16036 for the unchanged forwarding behavior. It covers HEAD with an advertised GET length,
+GET ping/version, chunked upstream framing, a 404 and a bodyless 204. It creates
+no Docker resources and does not establish project-state behavior:
+
+```sh
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
+  ../scripts/cargo_with_space.sh test --locked --config profile.dev.debug=0 \
+  --test docker_real_daemon interrupted_origin_preserves_docker_http -- --exact --nocapture
+```
+
+For a new interruption sequence that needs qualification, use the same venue,
+private inputs and warm build settings with the command below. Do not run it
+for the preserved execution 16036; use its finite continuation below instead:
+
+```sh
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
+  ../scripts/cargo_with_space.sh test --locked --config profile.dev.debug=0 \
+  --test docker_real_daemon real_docker_project_interrupted_creation -- --ignored --exact --nocapture
+```
+
+Execution 16036 at `b9fd17881b6c173f989b26258cad18282eff6fc4` passed the
+protocol control and ordinary Docker version path. The real Engine returned
+creation 201; the gateway returned 503. The test passed pending-kind/marker
+assertions, actual inspect 200, dependent GET 200 and reconciled association.
+It then stopped at an observer that compared a canonical audit request path
+with the full query. The corrected observer retains the canonical POST path
+and full query-bearing reconciliation path separately. Product audit identity
+is unchanged. The original raw pre-reconciliation state was not separately saved. The original
+in-memory creation-counter assertion was not reached, and its value was not
+retained. The continuation does not reconstruct those missing operands.
+
+The two stopped containers, their volumes and saved policy/project state remain
+in that run's private root. Before the continuation, Sylab verifies that the
+original proxy/listener has stopped and retains the existing Engine endpoint,
+CA and credential binding. Set `SAFEYOLO_DOCKER_CONTINUATION_ROOT` to the exact
+retained root supplied with execution 16036. This is an existing directory,
+not a new scratch path. From the corrected candidate's `proxy` directory with
+the same warm target and private Engine inputs, run only:
+
+```sh
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
+  ../scripts/cargo_with_space.sh test --locked --config profile.dev.debug=0 \
+  --test docker_real_daemon real_docker_project_volume_continuation -- --ignored --exact --nocapture
+```
+
+The continuation reopens the saved policy, identity and project state. It binds
+the original local endpoint, renews only the fixture's TLS certificate and gets
+the agent token through ordinary service discovery. It verifies current exact
+container IDs, names, creation times, mounts, stopped state, volume CreatedAt
+values and the recorded owned-volume marker before Docker writes. It saves
+those operands in `volume-continuation-before.json`. The shared-use refusal,
+direct shared-volume refusal, ordinary container removal and owned `rm -v`
+results are saved in `volume-shared-rm-v.json`, `volume-shared-delete.json`,
+`volume-shared-container-removed.json` and `volume-owned-rm-v.json` before their
+assertions. These use the same removal checks as a fresh witness.
+
+The continuation rejects every creation POST before Engine dispatch and checks
+that no new creation is audited. It stops its proxy/listener and retains the
+private root and remaining shared volume. After preserving the result, Sylab
+may remove only that verified fixture volume: compare its name/CreatedAt with
+the saved selection and confirm no container consumes it before deletion.
+On failure, inspect the saved responses and actual Engine effects before any
+later write. Do not automatically repeat a partially completed continuation,
+recreate a fixture, or rerun creation to fill an observer gap.
+
+This case forwards the project gateway's requests through a local HTTPS fixture
+to the actual authenticated Engine. The fixture verifies the Engine's certificate
+with the existing CA and sends the existing bearer on stdin. Before creating
+either stopped fixture container, it runs ordinary `docker version` through the
+same forwarding path. HEAD replies carry no body; Docker negotiation headers
+and real Engine status codes are retained. The fixture saves the successful
+creation reply, then truncates that reply on the connection to the gateway.
+Prerequisite and reconciliation responses come from the Engine. No Docker state
+is simulated. The case must observe the client failure, retained pending creation,
+actual container and anonymous volume, reconciliation before returning the
+dependent inspect response, and exactly one creation request. The gateway's
+private audit must report an unknown mutation outcome followed by reconciliation
+without replay. The test also requires `rm -v` to remove the recorded owned
+anonymous volume, refuse removal with a shared anonymous volume, and allow
+ordinary container removal while preserving that shared volume. These cases
+exercise #1439's reference and shared-dependency criteria; they add no new product
+restriction.
+
+The case prints the actual effects and keeps its scratch directory on failure.
+Before another write or cleanup, inspect `interrupted-engine-reply.json`,
+`created-container.json`, `shared-engine-reply.json`, `shared-container.json`, the
+gateway's `data/docker-projects` state and `audit.jsonl` under `project-client`.
+Use the operator connection to inspect the returned container IDs and their
+mounted volume names. A failed creation response is not evidence of rollback.
+Remove only those verified owned fixtures after preserving the diagnostic result.
+Never rerun an uncertain mutation automatically. Successful cleanup removes both
+fixture containers and both anonymous volumes; the prepared image and shared
+bridge network remain reusable.
+
+The controlled HTTP regression remains focused protocol proof. Its simulated
+origin does not establish real Engine acceptance. The new real Engine case also
+reuses the accepted #1437 internal Docker connection result; it still requires
+independent #1439 acceptance.
