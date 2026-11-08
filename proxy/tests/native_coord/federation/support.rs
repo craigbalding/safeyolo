@@ -2,7 +2,7 @@
 use super::*;
 use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
 
-fn instance(root: &Path) -> String {
+pub(super) fn instance(root: &Path) -> String {
     fs::read_to_string(root.join("data/instance_id"))
         .unwrap()
         .trim()
@@ -27,7 +27,7 @@ fn receipt(root: &Path, id: &str) -> Option<Value> {
     None
 }
 
-async fn apply(root: &Path, name: &str, mut proposal: Value) -> Value {
+pub(super) async fn apply(root: &Path, name: &str, mut proposal: Value) -> Value {
     let path = root.join(format!("{name}.json"));
     fs::write(&path, proposal.to_string()).unwrap();
     let preview = host_json(
@@ -59,7 +59,7 @@ async fn apply(root: &Path, name: &str, mut proposal: Value) -> Value {
     .await
 }
 
-async fn revoke(root: &Path, name: &str, revision: Value) {
+pub(super) async fn revoke(root: &Path, name: &str, revision: Value) {
     let path = root.join("revoke.json");
     fs::write(&path, json!({"expected_revision":revision}).to_string()).unwrap();
     host_json(
@@ -76,7 +76,7 @@ async fn revoke(root: &Path, name: &str, revision: Value) {
     .await;
 }
 
-fn proposal(owner: &str, source: Option<&str>) -> Value {
+pub(super) fn proposal(owner: &str, source: Option<&str>) -> Value {
     let mut grant = json!({"instance_id":owner,"support":{"name":if source.is_some(){"remote-bob"}else{"bob"},"agent_id":BOB},
         "targets":[{"name":"alice","agent_id":ALICE}],"guest_admin":false,"guest_logs":[],
         "lifecycle":["start_sandbox"],"notifications":["control_availability","sandbox_availability"],
@@ -149,7 +149,12 @@ async fn raw(connection: &async_nats::Client, owner: &str, source: &str, body: V
     serde_json::from_slice(&reply.payload).unwrap()
 }
 
-async fn trust_broker(owner: &Path, source: &Path, source_id: &str, nats: &str) -> String {
+pub(super) async fn trust_broker(
+    owner: &Path,
+    source: &Path,
+    source_id: &str,
+    nats: &str,
+) -> String {
     fs::copy(source.join("federation-secret"), owner.join("peer-secret")).unwrap();
     coord_json(
         owner,

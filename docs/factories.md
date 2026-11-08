@@ -376,6 +376,82 @@ running. Restart uses those same records; completed work is not a new task.
 This is continuity within fresh state. Old Python state is not imported
 or converted.
 
+### Delegate direction to an operator agent
+
+A host operator can separately grant an agent permission to send selected
+directions to an approved factory. The agent remains the canonical sender.
+Room membership, a factory role and peer repair permission grant no direction
+authority. The destination instance owns the grant and factory state.
+
+For an operator agent on instance A and a factory on instance B, first
+[configure scoped NATS connectivity](coord-reference.md#collaborate-through-a-home-safeyolo).
+On B, approve the factory and obtain its snapshot ID from
+`ROOT_B/factories/NAME/approved`. Obtain the operator-input agent's durable ID
+from B's `agent status` command. In a [support proposal](peer-support.md), select
+that agent as a target. Add this separate field to the proposal's `grant`.
+Replace the factory name, snapshot ID and direction types with B's approved
+selection:
+
+```json
+"factory_directions": [{
+  "factory": "selected",
+  "snapshot_id": "FULL_APPROVED_SNAPSHOT_ID",
+  "types": ["DIRECTION"]
+}]
+```
+
+Use B's `support preview` and `support apply` commands. A remote manager uses
+the proposal's `support_instance_id` and its own durable agent ID. The preview
+binds B's current peer trust epoch. An unrelated factory, changed snapshot or
+unselected direction type is refused. Reapproving a changed factory requires
+a new grant preview. Grant expiry and revocation use the existing support
+commands.
+
+Inside A's designated operator agent, call `support_grants(home="primary")`.
+Use the returned B instance ID, target ID and grant name. Inspect the target's
+current run with an ordinary support inspection. Submit the following typed
+operation with `support_operation`, using that run as `expected_run`:
+
+```json
+{
+  "action": "factory_direction",
+  "factory": "selected",
+  "snapshot_id": "FULL_APPROVED_SNAPSHOT_ID",
+  "kind": "DIRECTION",
+  "text": "Progress the original assignment and preserve its required checks."
+}
+```
+
+Select `operation_id` before submission. After a lost reply, read the original
+receipt with `read_support_operation` and the same home. A duplicate operation
+does not publish another direction. An unconfirmed publication is not replayed.
+The canonical envelope retains the initiating instance, agent, run, support
+grant and approved snapshot. The supervisor admits that direction only for its
+selected snapshot and operator-input role. It does not relabel the agent as a
+human operator or require a protocol terminal reply for the direction.
+
+The `factory_state` action takes the same `factory` and `snapshot_id` fields.
+It reports the selected factory's role identities and observed runtime states.
+Read inbound work and current assignments through separately authorized Coord
+room access. Use the existing native work, check, challenge and acceptance
+operations. Factory direction grants none of their actor privileges.
+
+Approval decisions require a separate
+[deciding delegation on B](delegated-approvals.md#remote-reviewers).
+The existing [private attention interface](peer-support.md) can retain selected
+operational and approval references from B alongside A's attention. Persist each
+instance's verified cursor. After a manager restart, reconcile B's pending
+approvals and original work ownership before another action. A missing source
+is unavailable; it is not evidence that its worker stopped.
+
+Guest administration can exercise a managed worker's own Coord and deciding
+permissions. Administration of both producer and reviewer is common
+administrative control. Keep any required independently controlled acceptance
+decider outside the manager's administration. Exchange files through authorized
+guest-file operations, a selected artifact mechanism or an explicitly shared
+project directory. Do not share host administration state or an operator home.
+
+
 ## Direct diagnosis and recovery
 
 Use the read-only diagnosis when readiness fails:

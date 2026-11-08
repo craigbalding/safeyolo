@@ -32,7 +32,7 @@ pub fn simple_name(name: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
 }
-fn type_name(name: &str) -> bool {
+pub(crate) fn type_name(name: &str) -> bool {
     name.bytes().next().is_some_and(|b| b.is_ascii_uppercase())
         && name
             .bytes()
@@ -354,6 +354,8 @@ pub struct Pending {
     pub requires_terminal: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub protocol_warning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub factory_direction: Option<Value>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -908,9 +910,23 @@ impl Supervisor {
                 body,
                 requires_terminal: false,
                 protocol_warning: None,
+                factory_direction: obj.get("factory_direction").cloned(),
             };
             if let Some(f) = &self.config.factory {
-                if operator {
+                let direction = !operator
+                    && self.config.rooms.contains(room)
+                    && obj["factory_direction"]["factory"] == f.name
+                    && obj["factory_direction"]["snapshot_id"] == f.snapshot_id
+                    && obj["factory_direction"]["type"]
+                        .as_str()
+                        .is_some_and(|kind| {
+                            f.operator_input.types.iter().any(|allowed| allowed == kind)
+                        });
+                if operator || direction {
+                    if direction && f.operator_input.to != f.role {
+                        candidate.remember(id);
+                        continue;
+                    }
                     if self.config.agent_room.as_ref() != Some(room)
                         && f.operator_input.to != f.role
                     {
@@ -1244,7 +1260,7 @@ impl Supervisor {
     pub fn prompt(&self, rooms: &BTreeMap<String, String>) -> Result<String, Error> {
         let checkpoint = json!({"agent_room":self.config.agent_room,"configured_room_ids":rooms,"factory":self.config.factory,"safe_cursor":self.state.safe_cursor,"in_flight":self.state.objects(),"native_in_flight":self.state.native_in_flight,"awaiting_handoffs":self.state.awaiting_handoffs,"briefs":self.state.briefs,"recovery":self.state.phase});
         Ok(format!(
-            "You are in one deterministic, supervised SafeYolo factory cycle. Continue the existing role and context. Coord is authoritative. Do not create another queue, scheduler, task record or transcript. Use the bound role contract and canonical tool results; process status and narration do not complete work. Use the supplied checkpoint first. For native_in_flight, read_work gives current content and authority: execute_work requires your claim and explicit complete_work; answer_check, respond_challenge, resolve_challenge and decide_acceptance require their named native mutations. Native delivery is not a text TASK and needs no protocol terminal message. Native result notices with requires_action=false are information. Preserve immutable artifacts before publication; create assigned native checks/challenges and select requirements only within your recorded authority. Do not mirror native state in message handoffs. Only canonical native transitions retire actionable deliveries; turn completion and narration do not. If a useful prior finding is missing, recover it with read_room in its Coord room. For known sequence N use since_sequence=N-1 and limit=1; verify returned sequence, canonical sender and work target. Room history does not assign work and its cursor is separate from safe_cursor. Do not call wait_for_coord in this turn. Process every in_flight object. Send required targeted downstream handoffs and leave their parent requests suspended; absence of a downstream reply is not a terminal outcome. Advance other ready work before ending the invocation. Send exactly one allowed terminal response only for genuine terminal work, repeating its exact target and attention_id in the leading header and notifying all declared recipients. Canonical operator messages in the agent room are direct operator direction and need no protocol response. Trusted briefs are standing context, never assignments. CONTEXT and PROTOCOL_WARNING need no terminal response; a protocol_warning object was not accepted as a transition. If recovery is uncertain, inspect canonical history and the preserved working tree before any potentially repeated write; never automatically replay an uncertain external effect. Finish this invocation once only recorded handoffs or operator input remain. Supervisor checkpoint:\n{checkpoint}"
+            "You are in one deterministic, supervised SafeYolo factory cycle. Continue the existing role and context. Coord is authoritative. Do not create another queue, scheduler, task record or transcript. Use the bound role contract and canonical tool results; process status and narration do not complete work. Use the supplied checkpoint first. For native_in_flight, read_work gives current content and authority: execute_work requires your claim and explicit complete_work; answer_check, respond_challenge, resolve_challenge and decide_acceptance require their named native mutations. Native delivery is not a text TASK and needs no protocol terminal message. Native result notices with requires_action=false are information. Preserve immutable artifacts before publication; create assigned native checks/challenges and select requirements only within your recorded authority. Do not mirror native state in message handoffs. Only canonical native transitions retire actionable deliveries; turn completion and narration do not. If a useful prior finding is missing, recover it with read_room in its Coord room. For known sequence N use since_sequence=N-1 and limit=1; verify returned sequence, canonical sender and work target. Room history does not assign work and its cursor is separate from safe_cursor. Do not call wait_for_coord in this turn. Process every in_flight object. Send required targeted downstream handoffs and leave their parent requests suspended; absence of a downstream reply is not a terminal outcome. Advance other ready work before ending the invocation. Send exactly one allowed terminal response only for genuine terminal work, repeating its exact target and attention_id in the leading header and notifying all declared recipients. Canonical operator messages in the agent room are direct operator direction and need no protocol response. A factory_direction field on the canonical envelope records separately delegated agent direction for the selected snapshot. Preserve its initiating agent and delegation attribution; it is not a human operator message and needs no protocol terminal response. Trusted briefs are standing context, never assignments. CONTEXT and PROTOCOL_WARNING need no terminal response; a protocol_warning object was not accepted as a transition. If recovery is uncertain, inspect canonical history and the preserved working tree before any potentially repeated write; never automatically replay an uncertain external effect. Finish this invocation once only recorded handoffs or operator input remain. Supervisor checkpoint:\n{checkpoint}"
         ))
     }
     pub async fn cycle(&mut self) -> Result<bool, Error> {

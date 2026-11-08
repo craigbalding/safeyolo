@@ -80,16 +80,51 @@ pub(crate) fn preview(policy: &Policy, name: &str, proposal: &Proposal) -> Resul
         "Inspection reports selected host-observed states. Guest output is untrusted. Other workers and host secrets remain private.".to_owned(),
         "Revocation, narrowing and expiry prevent newly unauthorized operations and subsequent result reads. Already-admitted commands can continue. Local pending responses can still deliver output; remote pending responses recheck the owner's current disclosure authority. Revocation cannot undo commands, file changes or disclosed data. Killing a transport does not prove guest descendants stopped.".to_owned(),
     ];
+    let mut factory_directions = Vec::new();
+    for selected in &grant.factory_directions {
+        let root = policy
+            .identity_root()
+            .ok_or_else(|| invalid("owning identity root unavailable"))?;
+        for kind in &selected.types {
+            let snapshot = crate::factory::direction_binding(
+                root,
+                &selected.factory,
+                &selected.snapshot_id,
+                Some(kind),
+            )
+            .map_err(|_| {
+                invalid("select the current approved factory snapshot and declared direction types")
+            })?;
+            if !grant
+                .targets
+                .iter()
+                .any(|target| target.name == snapshot.operator_agent())
+            {
+                return Err(invalid(
+                    "include the factory's current operator-input agent as an explicit target",
+                ));
+            }
+        }
+        let snapshot =
+            crate::factory::direction_binding(root, &selected.factory, &selected.snapshot_id, None)
+                .map_err(|_| invalid("current approved factory unavailable"))?;
+        factory_directions.push(json!({"factory":selected.factory,"snapshot_id":selected.snapshot_id,
+            "room_name":snapshot.room,"recipient_agent":snapshot.operator_agent(),"types":selected.types,
+            "state_disclosure":"The selected factory's role identities and observed runtime states; no checkpoint, contract, guest output or room history."}));
+        warnings.push(format!("Factory {}: selected direction types {} reach its approved operator-input agent under the manager's own identity. This grants selected factory state and direction publication, not room history, native work ownership, acceptance or policy administration. Required checks, challenges and actor rules remain in force.",selected.factory,selected.types.join(", ")));
+    }
     if grant.guest_admin {
+        warnings.push("Guest administration of both producer and reviewer is common administrative control. Configured actor checks still apply, but the reviewer is not independent of this manager. Keep a required independent decider outside the manager's administration.".into());
         warnings.push("Guest administration permits arbitrary guest commands, including existing passwordless guest sudo, all target-accessible files, writable mounts, credentials, network and services, Agent API permissions and existing delegations. Authority can reach other peers and approval decisions through the target. Standing grants follow capabilities later given to the target. Direct target checks do not confine this indirect reach.".into());
         let deciding: Vec<_> = policy
             .delegations()
             .iter()
             .filter(|(_, delegation)| {
-                delegation
-                    .reviewers
-                    .iter()
-                    .any(|reviewer| grant.targets.contains(reviewer))
+                delegation.reviewers.iter().any(|reviewer| {
+                    reviewer
+                        .local_agent()
+                        .is_some_and(|agent| grant.targets.contains(&agent))
+                })
             })
             .map(|(name, _)| name)
             .collect();
@@ -125,7 +160,7 @@ pub(crate) fn preview(policy: &Policy, name: &str, proposal: &Proposal) -> Resul
         warnings.push("Signal disclosure includes selected subjects' material signal summaries and references in the named rooms, including retained revisions and current resolution state. These are agent-authored claims and can contain sensitive text. It grants no room history or unrelated signals.".into());
     }
     Ok(
-        json!({"name":name,"before":before,"after":grant,"revision":grant.revision(),"acknowledgment":grant.revision(),
+        json!({"name":name,"before":before,"after":grant,"revision":grant.revision(),"acknowledgment":grant.revision(),"factory_directions":factory_directions,
         "lifetime":if grant.expires_at.is_some() {"temporary"} else {"standing"},
         "notifications":{"subjects":grant.targets,"recipient":grant.support,"kinds":grant.notifications,"signal_rooms":grant.signal_rooms,
             "disclosure":"Selected operational references and current observation evidence. Signal text requires the explicit signal_rooms selection. Current authority is checked at delivery and resolution. Notifications do not grant or execute repair."},

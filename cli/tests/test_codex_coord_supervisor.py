@@ -77,6 +77,8 @@ class CoordFixture:
                     result = {"members": [{"agent_id": "ag-" + name, "display_name": name} for name in ("relay", "forge", "lens")]}
                 else:
                     return self.reply(404, {"error": "missing fixture route"})
+                if path == "/api/coord/attention/wait":
+                    result = {**result, "instance_id": "sy-fixture"}
                 self.reply(200, result)
 
             def do_POST(self):
@@ -675,6 +677,32 @@ def test_factory_rejects_a_response_for_a_different_review_object(binary, fixtur
     run(binary, fixture)
     assert json.loads(state.read_text())["awaiting_handoffs"] == [awaiting_review()]
     assert prompt_checkpoint(capture)["in_flight"][-1]["protocol_warning"]
+
+
+@pytest.mark.parametrize("matching_snapshot", [True, False])
+def test_factory_direction_keeps_agent_attribution_and_exact_snapshot(binary, fixture, matching_snapshot):
+    coord, _, config, state, harness, capture = fixture
+    factory_configuration(config)
+    settings = json.loads(config.read_text())
+    settings["agent_name"] = "relay"
+    settings["factory"]["role"] = "coordinator"
+    config.write_text(json.dumps(settings))
+    coord.agent_name = "relay"
+    delegation = {"factory": "backlog", "snapshot_id": ("b" if matching_snapshot else "c") * 64,
+                  "type": "DIRECTION", "grant": "selected-factory", "grant_revision": "d" * 64,
+                  "initiator": {"agent_id": "ag-manager", "instance_id": "source-instance"}}
+    coord.objects[ATTENTION]["object"] = {
+        **OBJECT, "sender_agent_name": "remote-manager", "sender_agent_id": "ag-manager",
+        "body": "DIRECTION\n\nProgress the original assignment.", "factory_direction": delegation,
+    }
+    harness_script(harness, binary, capture)
+    result = run(binary, fixture)
+    assert result.returncode == 0, result.stderr
+    pending = prompt_checkpoint(capture)["in_flight"][0]
+    assert pending["sender_agent_id"] == "ag-manager"
+    assert pending["factory_direction"] == delegation
+    assert pending["requires_terminal"] is False
+    assert ("protocol_warning" not in pending) == matching_snapshot
 
 
 @pytest.mark.parametrize("kind", ["READY", "CHANGES_REQUIRED", "BLOCKED"])

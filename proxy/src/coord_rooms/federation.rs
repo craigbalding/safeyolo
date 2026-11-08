@@ -96,6 +96,19 @@ pub(crate) fn registration_available(
                 support|=conn.query_row("SELECT EXISTS(SELECT 1 FROM coord_federation_peers WHERE instance_id=?1 AND enabled=1 AND epoch=?2)",params![instance,grant.support_peer_epoch],|row|row.get::<_,bool>(0))?;
             }
         }
+        for delegation in policy
+            .delegations()
+            .values()
+            .filter(|delegation| delegation.current())
+        {
+            for reviewer in &delegation.reviewers {
+                if let Some(instance) = &reviewer.instance_id
+                    && principal(instance, &reviewer.agent_id) == old
+                {
+                    support |= conn.query_row("SELECT EXISTS(SELECT 1 FROM coord_federation_peers WHERE instance_id=?1 AND enabled=1 AND epoch=?2)", params![instance,reviewer.peer_epoch], |row| row.get::<_,bool>(0))?;
+                }
+            }
+        }
         if member || support {
             return Err("remote display handle is held by an identity with active grants".into());
         }

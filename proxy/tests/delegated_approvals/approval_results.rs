@@ -144,16 +144,18 @@ async fn private_results_survive_offline_decisions_and_broker_proxy_requester_re
     let rejection = result(&f, &rejected, "rejected").await;
     result(&f, &approved, "approved").await;
     // Repeating an outcome is harmless and cannot execute the original traffic.
-    assert_eq!(
-        client(&f, "worker")
-            .call(
-                "read_attention",
-                &json!({"attention_id":rejection["edge"]["attention_id"]})
-            )
-            .await
-            .unwrap(),
-        rejection
-    );
+    let repeated = client(&f, "worker")
+        .call(
+            "read_attention",
+            &json!({"attention_id":rejection["edge"]["attention_id"]}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(repeated["edge"], rejection["edge"]);
+    assert_eq!(repeated["object"], rejection["object"]);
+    // The resolved wait also qualifies its source; that context is not part
+    // of the canonical object returned by a direct attention read.
+    assert_eq!(rejection["instance_id"], "sy-private-result-test");
     no_origin(&f).await;
     let unrelated = client(&f, "helper")
         .call(

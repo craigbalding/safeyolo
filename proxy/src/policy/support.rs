@@ -34,6 +34,14 @@ pub(crate) enum Notification {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct FactoryDirection {
+    pub factory: String,
+    pub snapshot_id: String,
+    pub types: Vec<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Grant {
     pub instance_id: String,
     pub support: Agent,
@@ -51,6 +59,8 @@ pub(crate) struct Grant {
     pub notifications: Vec<Notification>,
     #[serde(default)]
     pub signal_rooms: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub factory_directions: Vec<FactoryDirection>,
     pub expires_at: Option<String>,
     pub acknowledgment: Option<String>,
 }
@@ -93,6 +103,21 @@ impl Grant {
         }
         if self.lifecycle.iter().collect::<BTreeSet<_>>().len() != self.lifecycle.len() {
             return Err(invalid("support lifecycle actions must be distinct"));
+        }
+        for selected in &self.factory_directions {
+            if !crate::coord_supervisor::simple_name(&selected.factory)
+                || selected.snapshot_id.len() != 64
+                || !selected.snapshot_id.bytes().all(|b| b.is_ascii_hexdigit())
+                || selected.types.is_empty()
+                || selected
+                    .types
+                    .iter()
+                    .any(|kind| !crate::coord_supervisor::type_name(kind))
+            {
+                return Err(invalid(
+                    "factory direction requires a factory, exact approved snapshot and explicit direction types",
+                ));
+            }
         }
         if self.notifications.contains(&Notification::NeedsOperator) && self.signal_rooms.is_empty()
         {
