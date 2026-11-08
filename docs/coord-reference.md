@@ -961,6 +961,42 @@ copy into a command line, attach or log their contents. The runtime keeps
 retained JetStream data separately in `nats/jetstream` and canonical room state
 in `v0.db`. Preserve those stores during diagnosis.
 
+### Coord upgrade recovery
+
+Before upgrading an existing instance, stop its owned proxy and Coord. Use the
+updated CLI to start Coord before restarting the proxy. Keep the existing
+instance root, `v0.db`, NATS credentials and JetStream store together.
+
+The previous generated NATS configuration stored private streams in the global
+account, `$G`. At startup, SafeYolo moves that account directory to `SY_LOCAL`
+while the broker is stopped and the runtime lock is held. This is an atomic
+directory rename on the existing filesystem. Messages, stream sequences and
+consumer positions remain in their original files. SQLite work, attention
+references and cursors are not rewritten. The move applies with federation
+disabled or enabled. `SY_LOCAL` and `SY_FED` remain separate roles inside each
+independently owned broker; this does not configure a shared broker or bridge
+private local traffic.
+
+If activation fails or the startup process exits before activation, preserve
+the stores. Correct the reported startup error, then repeat `coord start` with
+the updated CLI for the same root. Startup accepts the complete account at
+either the previous or current path and resumes the move if necessary. It does
+not create a replacement for the previous account or replay room mutations.
+Inspect the owned NATS log when the broker fails to start. Before restarting,
+stop any surviving owned broker through the existing lifecycle; do not start a
+second broker against the same store.
+
+If both `$G` and `SY_LOCAL` account stores exist, startup reports the conflict
+and leaves both unchanged. Preserve both accounts and their paired `v0.db`;
+do not delete, reset or overwrite either account to clear the error. Inspect
+each account with its matching stopped-instance configuration to determine
+whether both contain retained data. This correction does not merge independently
+created account histories. To roll back the account move before accepting new
+operations, stop the owned proxy and Coord, then rename `SY_LOCAL` back to `$G`
+only when `$G` is absent, and restore the previous CLI and generated
+configuration. Keep the same SQLite database and credentials. Never overwrite
+an existing account during rollback.
+
 Federation adds host-held `coord-federation.json`, the private responder
 credential `nats/federation-creds`, and generated local TLS settings. The
 generated server configuration also contains the selected peer passwords.

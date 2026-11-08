@@ -37,6 +37,8 @@ mod signals;
 mod stage0;
 #[path = "native_coord/supervision.rs"]
 mod supervision;
+#[path = "native_coord/upgrade.rs"]
+mod upgrade;
 #[path = "native_coord/work.rs"]
 mod work;
 
