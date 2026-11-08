@@ -44,6 +44,145 @@ async fn denied(client: &Client, tool: &str, args: Value, status: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires pinned NATS; two independently initialized native owners"]
+async fn remote_saved_deciding_authority_preserves_the_canonical_pending_record() {
+    let nats = std::env::var("SAFEYOLO_COORD_NATS_BINARY").unwrap();
+    let retained = tempfile::Builder::new()
+        .prefix("saved-reviewer-")
+        .tempdir()
+        .unwrap();
+    let (a, b) = (retained.path().join("a"), retained.path().join("b"));
+    initialize(&a, &nats).await;
+    initialize(&b, &nats).await;
+    let (_clean_a, _clean_b) = (NatsCleanup(a.clone()), NatsCleanup(b.clone()));
+    let (a_id, b_id) = (instance(&a), instance(&b));
+    coord_json(
+        &a,
+        &[
+            "federation",
+            "credential",
+            a.join("federation-secret").to_str().unwrap(),
+        ],
+    )
+    .await;
+    let endpoint = trust_broker(&b, &a, &a_id, &nats).await;
+    configure_home(&b, &a, &b_id, &endpoint).await;
+    let room = coord_json(&b, &["room", "create", "target"]).await;
+    let generation = "0123456789abcdef0123456789abcdef";
+    let _source = super::super::controlled_runs::agent_run(&a, "bob", BOB, generation);
+    let _worker = super::super::controlled_runs::agent_run(&b, "alice", ALICE, generation);
+    // In-process owners do not drive the executable's policy watcher. Saved
+    // edits therefore deterministically precede cached-policy activation,
+    // while authenticated calls still cross the real scoped NATS transport.
+    let mut proxies = Vec::new();
+    for root in [&a, &b] {
+        let mut config = native_config::read(&root.join("config.toml")).unwrap();
+        safeyolo_proxy::host_commands::prepare_proxy(&mut config)
+            .await
+            .unwrap();
+        proxies.push(safeyolo_proxy::Proxy::start(config).await.unwrap());
+    }
+    let remote = client(&a, "bob", true);
+    let alice = client(&b, "alice", false);
+    let pending = alice.call("request_room_access", &json!({"room_name":"target","permissions":["receive"],"operation_id":"saved-authority"})).await.unwrap();
+    let id = pending["approval_id"].as_str().unwrap();
+    let room_id: String = rusqlite::Connection::open(b.join("data/coord/v0.db"))
+        .unwrap()
+        .query_row("SELECT room_id FROM rooms WHERE name='target'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(room.to_string().contains(&room_id));
+    let proposal = json!({"expected_revision":null,"delegation":{
+        "reviewers":[{"name":"remote.bob","agent_id":BOB,"instance_id":a_id}],
+        "beneficiaries":[{"name":"alice","agent_id":ALICE}],
+        "scopes":[{"type":"coord_room","room_id":room_id,"participants":[{"principal_kind":"operator","principal_id":"operator","permissions":["page_operator","receive","send"]},{"principal_kind":"agent","principal_id":ALICE,"permissions":["receive"]}],"permissions":["receive"]}],
+        "expires_at":null,"grant_seconds":null,"gateway_once":false,"acknowledgment":null}});
+    let deciding = delegation(&b, proposal.clone()).await;
+    assert_eq!(
+        remote
+            .call("read_approval", &json!({"approval_id":id}))
+            .await
+            .unwrap()["status"],
+        "pending"
+    );
+    let canonical = || -> String {
+        rusqlite::Connection::open(b.join("data/approvals.sqlite3"))
+            .unwrap()
+            .query_row(
+                "SELECT record FROM approvals WHERE approval_id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    let before = canonical();
+    let source = fs::read_to_string(b.join("policy.toml")).unwrap();
+    let mut narrow = proposal;
+    narrow["expected_revision"] = deciding["revision"].clone();
+    // A valid deciding scope for another room no longer contains this request.
+    let other = coord_json(&b, &["room", "create", "other"]).await;
+    let other_id: String = rusqlite::Connection::open(b.join("data/coord/v0.db"))
+        .unwrap()
+        .query_row("SELECT room_id FROM rooms WHERE name='other'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(other.to_string().contains(&other_id));
+    narrow["delegation"]["scopes"][0]["room_id"] = json!(other_id);
+    let file = b.join("narrow.json");
+    fs::write(&file, narrow.to_string()).unwrap();
+    let preview = host_json(
+        &b,
+        &[
+            "approvals",
+            "delegation",
+            "check",
+            "deciding",
+            "--file",
+            file.to_str().unwrap(),
+            "--json",
+        ],
+    )
+    .await;
+    let mut narrowed = preview["after"].clone();
+    narrowed["acknowledgment"] = preview["acknowledgment"].clone();
+    for change in ["revoke", "narrow"] {
+        let mut document: toml_edit::DocumentMut = source.parse().unwrap();
+        if change == "revoke" {
+            document["approval_delegations"]
+                .as_table_like_mut()
+                .unwrap()
+                .remove("deciding");
+        } else {
+            document["approval_delegations"]["deciding"] = toml_edit::value(narrowed.to_string());
+        }
+        fs::write(b.join("policy.toml"), document.to_string()).unwrap();
+        for decision in ["reject", "approve", "defer"] {
+            let error = remote.call("resolve_approval", &json!({"approval_id":id,"delegation":"deciding","option":"run","decision":decision})).await.unwrap_err().to_string();
+            assert!(error.contains("409"), "{change}/{decision}: {error}");
+            assert_eq!(canonical(), before, "{change}/{decision}");
+        }
+    }
+    fs::write(b.join("policy.toml"), source).unwrap();
+    assert_eq!(
+        remote
+            .call(
+                "resolve_approval",
+                &json!({"approval_id":id,"delegation":"deciding","option":"run","decision":"defer"})
+            )
+            .await
+            .unwrap()["status"],
+        "pending"
+    );
+    assert_eq!(canonical(), before);
+    assert_eq!(remote.call("resolve_approval", &json!({"approval_id":id,"delegation":"deciding","option":"run","decision":"reject"})).await.unwrap()["status"], "rejected");
+    for proxy in proxies {
+        proxy.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires pinned NATS; two independently initialized native owners"]
 async fn qualified_operator_direction_and_approval_keep_b_ownership_and_independent_checks() {
     let nats = std::env::var("SAFEYOLO_COORD_NATS_BINARY").unwrap();
     let retained = tempfile::Builder::new()

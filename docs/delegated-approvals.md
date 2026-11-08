@@ -585,6 +585,13 @@ offline. New collaboration requests carry their fixed request deadline.
 Denials have status `rejected`. This delivery path does not add an expiry to
 requests that have no existing approval expiry.
 
+Before a delegated decision changes the canonical request, the deciding
+delegation must authorize the choice in both active and saved policy. This check
+includes rejection and typed operator actions. Deferral also checks current
+saved authority and leaves the request unchanged. A direct policy-file revocation
+or narrowing takes effect at this boundary before watcher activation. A later
+response refusal does not undo a decision already admitted by the owner.
+
 A result reports the approval decision. It does not establish current grant
 activation or successful action execution. Read the canonical approval and
 effective access before explicitly retrying an operation. Receiving, rereading

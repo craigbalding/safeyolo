@@ -274,6 +274,51 @@ async fn check() {
     assert_eq!(facts["observed"]["worker_run"], run);
     assert_eq!(facts["choices"][0]["option"], "once");
 
+    // Saved revocation/narrowing must refuse at the operator-action owner,
+    // before a stale cached reviewer can change the canonical request.
+    let policy_path = root.path().join("policy.toml");
+    let source = fs::read_to_string(&policy_path).unwrap();
+    let canonical = || -> String {
+        rusqlite::Connection::open(root.path().join("data/approvals.sqlite3"))
+            .unwrap()
+            .query_row(
+                "SELECT record FROM approvals WHERE approval_id=?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    let before = canonical();
+    let mut narrow = input.clone();
+    narrow["expected_revision"] = json!(revision);
+    narrow["delegation"]["scopes"][0]["max_ttl_seconds"] = json!(2);
+    let preview = admin(port, "/admin/approval-delegations/desktop/preview", narrow).await;
+    let mut narrowed = preview["after"].clone();
+    narrowed["acknowledgment"] = preview["revision"].clone();
+    for change in ["revoke", "narrow"] {
+        let mut document: toml_edit::DocumentMut = source.parse().unwrap();
+        if change == "revoke" {
+            document["approval_delegations"]
+                .as_table_like_mut()
+                .unwrap()
+                .remove("desktop");
+        } else {
+            document["approval_delegations"]["desktop"] = toml_edit::value(narrowed.to_string());
+        }
+        fs::write(&policy_path, document.to_string()).unwrap();
+        for decision in ["reject", "approve", "defer"] {
+            let refused = decide(root.path(), &id, decision, "desktop").await;
+            assert_eq!(
+                status(&refused),
+                409,
+                "{change}/{decision}: {}",
+                String::from_utf8_lossy(&refused)
+            );
+            assert_eq!(canonical(), before, "{change}/{decision}");
+        }
+    }
+    fs::write(&policy_path, source).unwrap();
+
     // Require the reviewer's confirmed explanation write while retaining
     // the same pending request, run and delegation through sink recovery.
     let audit = root.path().join("audit.jsonl");

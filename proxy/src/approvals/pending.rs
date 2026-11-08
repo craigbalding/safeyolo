@@ -1109,7 +1109,7 @@ fn active_policy(state: &crate::RuntimeState) -> Result<std::sync::Arc<Policy>> 
         .ok_or_else(|| invalid("active policy unavailable"))
 }
 
-fn saved_policy(state: &crate::RuntimeState, policy: &Policy) -> Result<Policy> {
+pub(crate) fn saved_policy(state: &crate::RuntimeState, policy: &Policy) -> Result<Policy> {
     let path = state
         .read()
         .map_err(|_| invalid("runtime unavailable"))?
@@ -1223,6 +1223,9 @@ pub(crate) fn resolve_as(
         let delegated = reviewer.map(|(reviewer, name)| delegation::authorize(&policy, record, reviewer, name, option.unwrap_or("run"))).transpose()?;
         if record.status != "pending" { return Ok(()); }
         let saved = saved_policy(state, &policy)?;
+        if let Some((reviewer, name)) = reviewer {
+            delegation::authorize(&saved, record, reviewer, name, option.unwrap_or("run"))?;
+        }
         if let Some(receipt) = record.committed(&policy)?.or(record.committed(&saved)?) {
             record.status = "approved".into();
             record.option = receipt["option"].as_str().map(str::to_owned);

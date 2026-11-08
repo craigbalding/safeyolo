@@ -35,6 +35,27 @@ approval reviewer removes independence from that reviewer. The preview names
 known approval and support delegations; it does not calculate recursive reach
 or prohibit these combinations.
 
+Guest administration can read and change secrets present in the target. It
+can also use the target's authorized service-gateway permissions. The outer
+SafeYolo vault remains protected when it is on the owning host outside the
+guest. A support grant adds no vault-management or Admin API operation.
+
+If a nested SafeYolo stores its vault inside the administered guest, that
+vault is within guest filesystem authority. Accessible local-key vault files
+and their key permit plaintext recovery. Locked passphrase ciphertext alone
+does not permit plaintext recovery. Writable vault files can still be changed
+or deleted.
+
+An operator can deliberately expose host files through a mount or copy secrets
+into the guest. Those exposed files are then accessible within the target's
+guest authority. Host-side service-gateway injection keeps the underlying
+credential outside the guest; the guest can use the authorized service routes.
+When an authorized request needs provider-credential renewal, the existing
+host-side refresh owner performs that renewal under its normal checks. Renewal
+adds no support approval or vault-management permission. Access to the Admin API
+still requires independent Admin authentication; guest administration does not
+grant it.
+
 A temporary grant has an `expires_at` timestamp. A standing grant has
 `expires_at: null` and remains until changed or revoked. Both lifetimes permit
 routine in-scope operations without another prompt. Inspection-only grants
@@ -284,7 +305,9 @@ For revocation, save only the current revision in `revoke.json`:
 safeyolo --root "$ROOT" support revoke incident --file revoke.json --json
 ```
 
-Authority is checked at execution, including after a lifecycle-lock wait.
+Authority is checked at execution, including after setup, launch and guest-control
+waits. The current authorized target must still match the captured name and
+durable ID. Command and probe checks also retain their verified runtime binding.
 Narrowing, revocation or expiry prevents newly unauthorized operations and
 reads. Already-started commands can continue; earlier file changes, repairs
 and disclosure remain. Inspect the actual target before deciding what to do

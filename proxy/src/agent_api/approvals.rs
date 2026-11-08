@@ -497,6 +497,7 @@ async fn delegated<B: Body<Data = Bytes> + Unpin>(
                 let policy=state.read().map_err(|_| crate::approvals::invalid("runtime unavailable"))?.policy.clone().ok_or_else(||crate::approvals::invalid("policy unavailable"))?;
                 let record=pending::lookup(&writer,&id)?.ok_or_else(||crate::approvals::invalid("approval unavailable"))?;
                 delegation::authorize(&policy,&record,&reviewer,&input.delegation,&input.option)?;
+                delegation::authorize(&pending::saved_policy(&state,&policy)?,&record,&reviewer,&input.delegation,&input.option)?;
                 let mut view=json!({"approval_id":record.approval_id,"status":record.current_status(&policy)?,"permission_changed":false});
                 if record.authority.action["kind"]=="operator_action" {
                     let current=pending::current_view(&writer,&policy,&record,Some(&state))?;

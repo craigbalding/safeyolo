@@ -12,6 +12,9 @@ use std::{
 #[path = "support/controlled_runs.rs"]
 mod controlled_runs;
 #[allow(dead_code)]
+#[path = "support/owned_run.rs"]
+mod owned_run;
+#[allow(dead_code)]
 #[path = "support/shared_approvals.rs"]
 mod shared_approval_fixture;
 mod test_owned_endpoint;
@@ -29,14 +32,177 @@ fn agent_run(fixture: &Fixture, name: &str, agent_id: &str, generation: &str) ->
     controlled_runs::agent_run(fixture.root.path(), name, agent_id, generation)
 }
 
+#[test]
+fn guest_command_rechecks_the_target_after_waiting_for_control() {
+    // The controlled adapter uses PATH and OwnedRun's process environment.
+    // Isolate those settings from other tests in the ordinary parallel runner.
+    if std::env::var_os("SAFEYOLO_PEER_COMMAND_TEST_CHILD").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "guest_command_rechecks_the_target_after_waiting_for_control",
+                "--nocapture",
+            ])
+            .env("SAFEYOLO_PEER_COMMAND_TEST_CHILD", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(check_guest_command_after_control());
+}
+
+async fn check_guest_command_after_control() {
+    use std::os::unix::fs::PermissionsExt;
+    let original_path = std::env::var_os("PATH").unwrap();
+    for change in ["rebind", "narrow", "source-run"] {
+        let f = fixture().await;
+        let _support = support_run(&f, RUN);
+        fs::create_dir(f.root.path().join("bin")).unwrap();
+        let _target = owned_run::OwnedRun::start_agent(f.root.path(), "worker");
+        let directory = f.root.path().join("agents/worker");
+        let runtime_path = directory.join("runtime.json");
+        let mut runtime: Value = serde_json::from_slice(&fs::read(&runtime_path).unwrap()).unwrap();
+        runtime["agent_id"] = json!(WORKER_ID);
+        fs::write(&runtime_path, runtime.to_string()).unwrap();
+        let generation = runtime["run_id"].as_str().unwrap();
+        fs::write(
+            directory.join("config-share/host-launch-context.json"),
+            json!({"agent_id":WORKER_ID,"generation":generation}).to_string(),
+        )
+        .unwrap();
+        let root = f.root.path().display();
+        let runsc = f.root.path().join("bin/runsc");
+        fs::write(
+            &runsc,
+            format!(
+                r#"#!/bin/sh
+for arg in "$@"; do
+    if [ "$arg" = state ]; then
+        count=$(cat '{root}/state-count' 2>/dev/null || printf 0)
+        count=$((count + 1))
+        printf '%s' "$count" > '{root}/state-count'
+        if [ "$count" -eq 2 ]; then
+            touch '{root}/waiting-for-control'
+            flock '{root}/control.lock' true
+        fi
+        printf '%s\n' '{{"id":"safeyolo-{generation}","status":"running"}}'
+        exit 0
+    fi
+done
+touch '{root}/command-effect'
+printf 'controlled command completed\n'
+"#
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(runsc, fs::Permissions::from_mode(0o755)).unwrap();
+        let paths =
+            std::iter::once(f.root.path().join("bin")).chain(std::env::split_paths(&original_path));
+        unsafe {
+            std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+        }
+        let mut selected = proposal();
+        selected["grant"]["guest_admin"] = json!(true);
+        let applied = grant(&f, selected).await;
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(f.root.path().join("control.lock"))
+            .unwrap();
+        assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+        let mut input = inspect("command-after-control");
+        input["expected_run"] = json!(generation);
+        input["operation"] =
+            json!({"action":"guest_command","command":"printf authorized","timeout_seconds":3});
+        let response = {
+            let pending = f.agent("helper", "POST", "/support/operations", Some(input));
+            tokio::pin!(pending);
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+            while !f.root.path().join("waiting-for-control").exists() {
+                tokio::select! {
+                    response = &mut pending => panic!("command did not wait for control: {}", response.json()),
+                    () = tokio::time::sleep(Duration::from_millis(10)) => {}
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "command did not reach control wait"
+                );
+            }
+            let _replacement = if change == "source-run" {
+                Some(support_run(&f, "fedcba9876543210fedcba9876543210"))
+            } else {
+                if change == "rebind" {
+                    f.apply(&f.source().replace("[agents.worker]", "[agents.rebound]"))
+                        .await;
+                }
+                let mut next =
+                    json!({"expected_revision":applied["revision"],"grant":applied["after"]});
+                if change == "rebind" {
+                    next["grant"]["targets"][0]["name"] = json!("rebound");
+                } else {
+                    next["grant"]["guest_admin"] = json!(false);
+                }
+                next["grant"]["acknowledgment"] = Value::Null;
+                grant(&f, next).await;
+                None
+            };
+            drop(lock);
+            pending.await
+        };
+        assert_eq!(response.status, 200, "{}", response.json());
+        assert_eq!(
+            response.json()["state"],
+            "refused",
+            "{change}: {}",
+            response.json()
+        );
+        assert_eq!(
+            fs::read(&runtime_path).unwrap(),
+            runtime.to_string().as_bytes()
+        );
+        assert!(
+            !f.root.path().join("command-effect").exists(),
+            "{change}: stale command ran"
+        );
+        assert!(!f.root.path().join("agents/rebound/runtime.json").exists());
+        f.stop().await;
+    }
+}
+
 #[tokio::test]
 async fn guest_probe_rechecks_grant_and_run_after_waiting_for_the_launch_lock() {
-    for change in ["revoke", "target-run"] {
+    for change in [
+        "revoke",
+        "narrow",
+        "expire",
+        "source-run",
+        "target-run",
+        "rebind",
+    ] {
         let f = fixture().await;
         let _support = support_run(&f, RUN);
         let _target = agent_run(&f, "worker", WORKER_ID, RUN);
         let mut selected = proposal();
         selected["grant"]["guest_admin"] = json!(true);
+        if change == "expire" {
+            selected["grant"]["expires_at"] = json!(
+                (time::OffsetDateTime::now_utc() + time::Duration::seconds(2))
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap()
+            );
+        }
         let applied = grant(&f, selected).await;
         let directory = f.root.path().join("agents/worker");
         fs::create_dir(directory.join("home")).unwrap();
@@ -95,6 +261,26 @@ async fn guest_probe_rechecks_grant_and_run_after_waiting_for_the_launch_lock() 
                     200
                 );
                 None
+            } else if matches!(change, "rebind" | "narrow") {
+                if change == "rebind" {
+                    f.apply(&f.source().replace("[agents.worker]", "[agents.rebound]"))
+                        .await;
+                }
+                let mut next =
+                    json!({"expected_revision":applied["revision"],"grant":applied["after"]});
+                if change == "rebind" {
+                    next["grant"]["targets"][0]["name"] = json!("rebound");
+                } else {
+                    next["grant"]["guest_admin"] = json!(false);
+                }
+                next["grant"]["acknowledgment"] = Value::Null;
+                grant(&f, next).await;
+                None
+            } else if change == "source-run" {
+                Some(support_run(&f, "fedcba9876543210fedcba9876543210"))
+            } else if change == "expire" {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                None
             } else {
                 let next = "fedcba9876543210fedcba9876543210";
                 let replacement = agent_run(&f, "worker", WORKER_ID, next);
@@ -123,6 +309,7 @@ async fn guest_probe_rechecks_grant_and_run_after_waiting_for_the_launch_lock() 
                 .join("config-share/command-supervisor-enabled")
                 .exists()
         );
+        assert!(!f.root.path().join("agents/rebound/home").exists());
         f.stop().await;
     }
 }

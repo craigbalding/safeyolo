@@ -202,6 +202,22 @@ pub(crate) fn authorize(
     Ok((grant, agent))
 }
 
+fn authorize_target(
+    state: &RuntimeState,
+    run: &Caller,
+    input: &Request,
+    target: &Agent,
+) -> Result<(Grant, Agent), Error> {
+    let (grant, current) = authorize(&super::current_policy(state)?, run, input)?;
+    if current.name != target.name || current.id != target.id {
+        return Err(super::refuse(
+            409,
+            "target configuration changed while waiting; inspect before a new operation",
+        ));
+    }
+    Ok((grant, current))
+}
+
 fn receipt_path(run: &Caller, operation_id: &str) -> Result<PathBuf, Error> {
     if !valid_operation_id(operation_id) {
         return Err(super::refuse(400, "invalid support operation_id"));
@@ -465,14 +481,7 @@ async fn execute_locked(
         .join("agents")
         .join(&target.name);
     let lock = crate::host_lifecycle::SetupLock::acquire_in_async(&directory).await?;
-    let (grant, current_target) = authorize(&super::current_policy(state)?, run, input)?;
-    if current_target.name != target.name || current_target.id != target.id {
-        return Err(super::refuse(
-            409,
-            "target configuration changed while waiting; inspect before a new operation",
-        ));
-    }
-    let target = current_target;
+    let (grant, target) = authorize_target(state, run, input, target)?;
     let observed = crate::host_runs::observe(&target.name).await;
     let actual_run = observed["run_id"].as_str().map(str::to_owned);
     receipt["target_run"] = json!(actual_run);
@@ -502,7 +511,7 @@ async fn execute_locked(
     emit(writer, run, receipt, "started").await?;
     // Audit and diagnostics can wait too. Check host-held authority again at
     // the execution boundary, including the initiating run and target identity.
-    let (authorizing_grant, _) = authorize(&super::current_policy(state)?, run, input)?;
+    let (authorizing_grant, _) = authorize_target(state, run, input, &target)?;
     receipt["grant_revision"] = json!(authorizing_grant.revision());
     receipt["execution_started"] = json!(!matches!(
         input.operation,
@@ -552,7 +561,7 @@ async fn execute_locked(
                 timeout,
                 8192,
                 &mut || {
-                    let (grant, _) = authorize(&super::current_policy(state)?, run, input)?;
+                    let (grant, _) = authorize_target(state, run, input, &target)?;
                     require_live_owned(&target, &observed)?;
                     receipt["grant_revision"] = json!(grant.revision());
                     receipt["execution_started"] = json!(true);
@@ -584,7 +593,7 @@ async fn execute_locked(
                     let value = crate::host_lifecycle::recover_guest_probe_authorized(
                         &root, &target.name, timeout, Some(lock),
                         &|| {
-                            authorize(&super::current_policy(&state)?, &run, &input)?;
+                            authorize_target(&state, &run, &input, &target)?;
                             if crate::host_runs::authority(&root, &target.name, &target.id).as_ref() != Some(&authority) {
                                 return Err("target run changed during the independent probe; its state was preserved".into());
                             }
@@ -654,7 +663,7 @@ async fn lifecycle(
     lock: crate::host_lifecycle::SetupLock,
 ) -> Result<Value, Error> {
     use crate::host_lifecycle;
-    let check = || authorize(&super::current_policy(state)?, run, input).map(|_| ());
+    let check = || authorize_target(state, run, input, target).map(|_| ());
     match operation {
         Lifecycle::StartSandbox => {
             if observed["runtime_state"] != "stopped" {
@@ -676,10 +685,7 @@ async fn lifecycle(
         }
         Lifecycle::RestartHarness => {
             require_live_owned(target, observed)?;
-            host_lifecycle::restart_harness(target, lock, || {
-                authorize(&super::current_policy(state)?, run, input).map(|_| ())
-            })
-            .await
+            host_lifecycle::restart_harness(target, lock, &check).await
         }
         Lifecycle::StopSandbox => host_lifecycle::stop_authorized(target, Some(lock), &check).await,
         Lifecycle::RestartSandbox => {
@@ -688,7 +694,7 @@ async fn lifecycle(
                 .join("agents")
                 .join(&target.name);
             let lock = host_lifecycle::SetupLock::acquire_in_async(&directory).await?;
-            authorize(&super::current_policy(state)?, run, input)?;
+            check()?;
             let current = crate::host_runs::observe(&target.name).await;
             if current["runtime_state"] != "stopped" || current["run_id"] != observed["run_id"] {
                 return Err(
