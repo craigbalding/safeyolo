@@ -6,6 +6,7 @@ not claim a real model login or a deployed G2/G4 result.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import signal
@@ -47,6 +48,8 @@ class CoordFixture:
         self.backlog = None
         self.bad_object = False
         self.objects = {ATTENTION: {"edge": EDGE, "object": OBJECT}}
+        self.native_actions = {}
+        self.received_actions = set()
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -75,8 +78,17 @@ class CoordFixture:
                     result = {"messages": owner.messages, "next_cursor": 50, "has_more": False}
                 elif path.endswith("/state"):
                     result = {"members": [{"agent_id": "ag-" + name, "display_name": name} for name in ("relay", "forge", "lens")]}
+                elif path.endswith("/work"):
+                    query = parse_qs(urlsplit(self.path).query)
+                    work_id = query["work_id"][0]
+                    result = {"source_work_id": work_id, "actions": [
+                        action for action in owner.native_actions.get(work_id, [])
+                        if query.get("include_received") == ["true"] or action["key"] not in owner.received_actions
+                    ]}
                 else:
                     return self.reply(404, {"error": "missing fixture route"})
+                if path == "/api/coord/attention/wait":
+                    result = {**result, "instance_id": "sy-fixture"}
                 self.reply(200, result)
 
             def do_POST(self):
@@ -85,6 +97,9 @@ class CoordFixture:
                 path = urlsplit(self.path).path
                 if path.endswith("/join"):
                     return self.reply(200, {"room_id": "rm-backlog", "permissions": ["send", "receive"], "brief": {"revision": 0}})
+                if path.endswith("/work") and args["action"] == "receive_action":
+                    owner.received_actions.add(args["action_key"])
+                    return self.reply(200, {"operation_id": args["action_key"]})
                 if path.endswith("/send"):
                     owner.sends += 1
                     envelope = {"body": args["body"], "msg_id": f"msg-{owner.sends}", "sender_kind": "agent", "sender_agent_name": owner.agent_name, "sender_agent_id": "ag-" + owner.agent_name, "sequence": 43 + owner.sends}
@@ -601,6 +616,149 @@ def test_empty_external_wait_does_not_launch_codex(binary, fixture):
     assert not list(capture.iterdir())
 
 
+def approval_notification(kind="approval_result", index=1):
+    edge = {"attention_id": f"attn-{index:032x}", "room_id": None,
+            "kind": kind, "object_id": f"apr-{index:032x}",
+            "revision_or_sequence": index + 1, "membership_granted_at": 0}
+    return {"edge": edge, "object": {
+        "kind": kind, "approval_id": edge["object_id"],
+        "source": "review" if kind == "approval_review" else "approval",
+        "status": "pending" if kind == "approval_review" else "approved",
+        "message": "Read the canonical approval and effective access before retrying. Receiving this result does not grant permission or retry the original request.",
+    }}
+
+
+@pytest.mark.parametrize("kind", ["approval_result", "approval_review"])
+def test_roomless_approvals_reach_worker_with_messages_briefs_and_native_work(binary, fixture, kind):
+    coord, _, config, state, harness, capture = fixture
+    factory_configuration(config)
+    settings = json.loads(config.read_text())
+    settings["native_work"] = True
+    config.write_text(json.dumps(settings))
+    approvals = [approval_notification(kind, index) for index in (1, 2)]
+    if kind == "approval_result":
+        approvals[1]["object"]["status"] = "rejected"
+    markdown = "Keep the original assignment and approval authority."
+    brief = {"room_id": "rm-backlog", "object_id": "brief-backlog", "revision": 1,
+             "markdown": markdown, "content_hash": hashlib.sha256(markdown.encode()).hexdigest()}
+    brief_edge = {**EDGE, "attention_id": f"attn-{3:032x}", "kind": "brief_changed",
+                  "object_id": brief["object_id"], "revision_or_sequence": 1}
+    work_id = "work-" + "c" * 32
+    work_edge = {**EDGE, "attention_id": f"attn-{4:032x}", "kind": "work_changed",
+                 "object_id": work_id, "revision_or_sequence": 1}
+    action = {"key": "action-" + "d" * 64, "kind": "execute_work", "work_id": work_id,
+              "work_version": 1, "claim_generation": 0, "target_generation": 0, "requires_action": True}
+    coord.native_actions[work_id] = [action]
+    resolved = [*approvals, {"edge": brief_edge, "object": brief},
+                {"edge": work_edge, "object": {"work_id": work_id, "room_id": "rm-backlog", "version": 1}},
+                {"edge": EDGE, "object": OBJECT}]
+    coord.objects = {item["edge"]["attention_id"]: item for item in resolved}
+    coord.backlog = [(index, item["edge"]) for index, item in enumerate(resolved, start=1)]
+    harness_script(harness, binary, capture)
+    result = run(binary, fixture)
+    assert result.returncode == 0, result.stderr
+    checkpoint = prompt_checkpoint(capture)
+    assert checkpoint["approval_notifications"] == [{**item, "instance_id": "sy-fixture"} for item in approvals]
+    assert checkpoint["in_flight"][0]["requires_terminal"] is True
+    assert checkpoint["briefs"]["backlog"] == brief
+    assert checkpoint["native_in_flight"][0]["action"] == action
+    saved = json.loads(state.read_text())
+    assert saved["safe_cursor"] == 5
+    assert saved.get("approval_notifications", []) == []
+    assert saved["native_in_flight"][0]["action"] == action, "model narration cannot settle native Work"
+    assert coord.received_actions == {action["key"]}
+    # The native authority settles its own action. Replayed private references
+    # must neither launch another model nor repeat the textual terminal.
+    coord.native_actions[work_id] = []
+    coord.backlog = [(6 + index, item["edge"]) for index, item in enumerate(approvals)]
+    result = run(binary, fixture, confirm_fresh_identity=False)
+    assert result.returncode == 0, result.stderr
+    saved = json.loads(state.read_text())
+    assert saved["safe_cursor"] == 7
+    assert saved.get("native_in_flight", []) == []
+    assert all(item["edge"]["attention_id"] in saved["recent_attention_ids"] for item in approvals)
+    assert len(list(capture.glob("prompt-*"))) == 1
+    assert coord.sends == 1
+
+
+@pytest.mark.parametrize("pi", [False, True])
+def test_approval_notification_survives_failed_turn_and_restart(binary, fixture, pi):
+    coord, _, config, state, harness, capture = fixture
+    settings = json.loads(config.read_text())
+    settings["harness"] = "pi" if pi else "codex"
+    config.write_text(json.dumps(settings))
+    notification = approval_notification()
+    expected = {**notification, "instance_id": "sy-fixture"}
+    coord.objects = {notification["edge"]["attention_id"]: notification}
+    coord.backlog = [(4, notification["edge"])]
+    harness_script(harness, binary, capture, terminal=False, pi=pi)
+    if pi:
+        source = harness.read_text().replace(
+            'print(json.dumps({"type": \'agent_end\'}),flush=True)',
+            'print(json.dumps({"type":"message_end","message":{"role":"assistant","stopReason":"error"}}),flush=True)')
+    else:
+        source = harness.read_text().replace("'turn.completed'", "'turn.failed'")
+    harness.write_text(source)
+    harness_args = ["--provider", "fixture", "--model", "fixture-model"] if pi else []
+    result = run(binary, fixture, *harness_args)
+    assert result.returncode != 0
+    saved = json.loads(state.read_text())
+    assert saved["approval_notifications"] == [expected]
+    assert saved["safe_cursor"] == 4
+    assert saved["recent_attention_ids"] == []
+    harness_script(harness, binary, capture, terminal=False, pi=pi)
+    result = run(binary, fixture, *harness_args, confirm_fresh_identity=False)
+    assert result.returncode == 0, result.stderr
+    prompts = list(capture.glob("prompt-*"))
+    assert len(prompts) == 2
+    assert all(json.loads(prompt.read_text().split("Supervisor checkpoint:\n", 1)[1])["approval_notifications"] == [expected] for prompt in prompts)
+    saved = json.loads(state.read_text())
+    assert saved.get("approval_notifications", []) == []
+    assert saved["recent_attention_ids"] == [notification["edge"]["attention_id"]]
+    assert saved["safe_cursor"] == 4
+    assert coord.sends == 0
+
+
+@pytest.mark.parametrize("part,field,value", [
+    ("object", "approval_id", "apr-unrelated"),
+    ("object", "kind", "message"),
+    ("object", "source", "review"),
+    ("edge", "room_id", "rm-backlog"),
+])
+def test_mismatched_approval_notification_preserves_cursor(binary, fixture, part, field, value):
+    coord, _, _, state, harness, capture = fixture
+    notification = approval_notification()
+    notification[part][field] = value
+    coord.objects = {notification["edge"]["attention_id"]: notification}
+    coord.page = {"edges": [notification["edge"]], "next_cursor": 4}
+    harness_script(harness, binary, capture, terminal=False)
+    assert run(binary, fixture).returncode != 0
+    saved = json.loads(state.read_text())
+    assert saved["safe_cursor"] == 0
+    assert saved.get("approval_notifications", []) == []
+    assert saved["recent_attention_ids"] == []
+    assert not list(capture.iterdir())
+    assert coord.sends == 0
+
+
+def test_approval_notifications_share_bounded_checkpoint_capacity(binary, fixture):
+    coord, _, _, state, harness, capture = fixture
+    approvals = [approval_notification(index=index) for index in range(1, 18)]
+    coord.objects = {item["edge"]["attention_id"]: item for item in approvals}
+    coord.backlog = [(index, item["edge"]) for index, item in enumerate(approvals, start=1)]
+    harness_script(harness, binary, capture, terminal=False)
+    assert run(binary, fixture).returncode == 0
+    assert json.loads(state.read_text())["safe_cursor"] == 16
+    assert len(prompt_checkpoint(capture)["approval_notifications"]) == 16
+    assert run(binary, fixture, confirm_fresh_identity=False).returncode == 0
+    saved = json.loads(state.read_text())
+    assert saved["safe_cursor"] == 17
+    assert saved.get("approval_notifications", []) == []
+    assert len(saved["recent_attention_ids"]) == 17
+    assert len(list(capture.glob("prompt-*"))) == 2
+    assert coord.sends == 0
+
+
 def factory_configuration(config):
     value = json.loads(config.read_text())
     value["factory"] = {
@@ -675,6 +833,32 @@ def test_factory_rejects_a_response_for_a_different_review_object(binary, fixtur
     run(binary, fixture)
     assert json.loads(state.read_text())["awaiting_handoffs"] == [awaiting_review()]
     assert prompt_checkpoint(capture)["in_flight"][-1]["protocol_warning"]
+
+
+@pytest.mark.parametrize("matching_snapshot", [True, False])
+def test_factory_direction_keeps_agent_attribution_and_exact_snapshot(binary, fixture, matching_snapshot):
+    coord, _, config, state, harness, capture = fixture
+    factory_configuration(config)
+    settings = json.loads(config.read_text())
+    settings["agent_name"] = "relay"
+    settings["factory"]["role"] = "coordinator"
+    config.write_text(json.dumps(settings))
+    coord.agent_name = "relay"
+    delegation = {"factory": "backlog", "snapshot_id": ("b" if matching_snapshot else "c") * 64,
+                  "type": "DIRECTION", "grant": "selected-factory", "grant_revision": "d" * 64,
+                  "initiator": {"agent_id": "ag-manager", "instance_id": "source-instance"}}
+    coord.objects[ATTENTION]["object"] = {
+        **OBJECT, "sender_agent_name": "remote-manager", "sender_agent_id": "ag-manager",
+        "body": "DIRECTION\n\nProgress the original assignment.", "factory_direction": delegation,
+    }
+    harness_script(harness, binary, capture)
+    result = run(binary, fixture)
+    assert result.returncode == 0, result.stderr
+    pending = prompt_checkpoint(capture)["in_flight"][0]
+    assert pending["sender_agent_id"] == "ag-manager"
+    assert pending["factory_direction"] == delegation
+    assert pending["requires_terminal"] is False
+    assert ("protocol_warning" not in pending) == matching_snapshot
 
 
 @pytest.mark.parametrize("kind", ["READY", "CHANGES_REQUIRED", "BLOCKED"])
@@ -921,7 +1105,9 @@ def test_runnable_context_survives_launch_failure_and_restart(binary, fixture):
     prompt, = set(capture.glob("prompt-*")) - previous
     assert json.loads(prompt.read_text().split("Supervisor checkpoint:\n", 1)[1])["in_flight"] == original["in_flight"]
     assert coord.sends == 0
-    assert sum(path.endswith(f"/{info_id}/object") for _, path in coord.requests) == 1
+    resolved = [urlsplit(path) for _, path in coord.requests if urlsplit(path).path.endswith(f"/{info_id}/object")]
+    assert len(resolved) == 1
+    assert parse_qs(resolved[0].query)["instance_id"] == ["sy-fixture"]
 
 
 def capacity_harness(harness, binary, *, recover_history=False):

@@ -16,6 +16,54 @@ pub(crate) struct Agent {
     pub agent_id: String,
 }
 
+/// A deciding agent belongs to this owner or to one explicitly trusted peer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Reviewer {
+    pub name: String,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_epoch: Option<i64>,
+}
+
+impl Reviewer {
+    pub(crate) fn principal(&self, policy: &Policy) -> Option<String> {
+        if let Some(instance) = &self.instance_id {
+            let conn = crate::coord_rooms::open(policy.identity_root()?).ok()?;
+            let principal = crate::coord_rooms::federation::principal(instance, &self.agent_id);
+            let current: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM coord_federation_peers p JOIN coord_federation_agents a USING(instance_id) WHERE p.instance_id=?1 AND p.enabled=1 AND p.epoch=?2 AND a.principal_id=?3 AND a.agent_id=?4)",
+                rusqlite::params![instance, self.peer_epoch?, principal, self.agent_id], |row| row.get(0)).ok()?;
+            current.then_some(principal)
+        } else {
+            (self.peer_epoch.is_none()
+                && policy.evidence_agent_id(&self.name) == Some(&self.agent_id))
+            .then(|| self.agent_id.clone())
+        }
+    }
+
+    pub(crate) fn matches(&self, policy: &Policy, caller: &crate::peer_support::Caller) -> bool {
+        caller.current(policy)
+            && self.principal(policy).as_deref() == Some(caller.principal())
+            && match &caller.remote {
+                Some(remote) => {
+                    self.instance_id.as_deref() == Some(&remote.instance_id)
+                        && self.peer_epoch == Some(remote.epoch)
+                }
+                None => self.instance_id.is_none() && self.name == caller.run.agent,
+            }
+    }
+
+    pub(crate) fn local_agent(&self) -> Option<Agent> {
+        self.instance_id.is_none().then(|| Agent {
+            name: self.name.clone(),
+            agent_id: self.agent_id.clone(),
+        })
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Scope {
@@ -121,7 +169,7 @@ fn deserialize_scopes<'de, D: serde::Deserializer<'de>>(
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Delegation {
-    pub reviewers: Vec<Agent>,
+    pub reviewers: Vec<Reviewer>,
     pub beneficiaries: Vec<Agent>,
     #[serde(deserialize_with = "deserialize_scopes")]
     pub scopes: Vec<Scope>,
@@ -184,17 +232,46 @@ impl Delegation {
                 "delegation requires named reviewers, beneficiaries and explicit scopes",
             ));
         }
-        for agent in self.reviewers.iter().chain(&self.beneficiaries) {
-            if !crate::host_platform::valid_agent_name(&agent.name) || agent.agent_id.is_empty() {
+        let identities = self
+            .reviewers
+            .iter()
+            .map(|reviewer| {
+                (
+                    reviewer.name.as_str(),
+                    reviewer.agent_id.as_str(),
+                    reviewer.instance_id.is_some(),
+                )
+            })
+            .chain(
+                self.beneficiaries
+                    .iter()
+                    .map(|agent| (agent.name.as_str(), agent.agent_id.as_str(), false)),
+            );
+        for (name, id, remote) in identities {
+            let valid_name = if remote {
+                crate::agent_api::coord::public_name_part(name)
+            } else {
+                crate::host_platform::valid_agent_name(name)
+            };
+            if !valid_name || id.is_empty() {
                 return Err(invalid(
-                    "delegation requires a valid local name and durable agent_id",
+                    "delegation requires a valid agent name or remote display handle and durable agent_id",
                 ));
             }
         }
         if self.reviewers.iter().any(|reviewer| {
-            self.beneficiaries
-                .iter()
-                .any(|agent| agent.agent_id == reviewer.agent_id || agent.name == reviewer.name)
+            reviewer.instance_id.as_deref().is_some_and(str::is_empty)
+                || reviewer.instance_id.is_some() != reviewer.peer_epoch.is_some()
+        }) {
+            return Err(invalid(
+                "remote reviewer requires its owning instance and acknowledged peer trust epoch",
+            ));
+        }
+        if self.reviewers.iter().any(|reviewer| {
+            self.beneficiaries.iter().any(|agent| {
+                reviewer.instance_id.is_none()
+                    && (agent.agent_id == reviewer.agent_id || agent.name == reviewer.name)
+            })
         }) {
             return Err(invalid(
                 "a reviewer cannot approve for itself or directly benefit from its delegation",
@@ -612,7 +689,12 @@ pub(crate) fn parse(document: &Value) -> Result<BTreeMap<String, Delegation>> {
                 "delegation {name}: acknowledge the exact preview revision before apply"
             )));
         }
-        for agent in delegation.reviewers.iter().chain(&delegation.beneficiaries) {
+        for agent in delegation
+            .reviewers
+            .iter()
+            .filter_map(Reviewer::local_agent)
+            .chain(delegation.beneficiaries.iter().cloned())
+        {
             if document["agents"][&agent.name]["agent_id"] != agent.agent_id
                 || document["agents"]
                     .as_object()
@@ -637,7 +719,7 @@ pub(crate) fn parse(document: &Value) -> Result<BTreeMap<String, Delegation>> {
 pub(crate) struct IssuedAccess {
     pub delegation: String,
     pub delegation_revision: String,
-    pub reviewer: Agent,
+    pub reviewer: Reviewer,
     pub beneficiary: AgentRun,
     pub approval_id: String,
     pub policy_revision: String,
@@ -704,8 +786,7 @@ impl IssuedAccess {
             && delegation.dependencies_current(policy)
             && delegation.contains_effect(&self.action, &self.option)
             && delegation.reviewers.contains(&self.reviewer)
-            && policy.evidence_agent_id(&self.reviewer.name)
-                == Some(self.reviewer.agent_id.as_str())
+            && self.reviewer.principal(policy).is_some()
             && crate::approvals::pending::revision(policy, &self.action).as_deref()
                 == Some(self.policy_revision.as_str())
     }
@@ -916,7 +997,8 @@ impl IssuedAccess {
                     .as_str()
                     .is_none_or(|value| value.len() != 64)
                 || self.expires_at.is_none()
-                || self.reviewer.agent_id == self.beneficiary.agent_id
+                || (self.reviewer.instance_id.is_none()
+                    && self.reviewer.agent_id == self.beneficiary.agent_id)
             {
                 return Err(invalid(
                     "invalid desktop action, presentation, lifetime or self-benefit",
@@ -966,7 +1048,8 @@ impl IssuedAccess {
                         permissions,
                     }],
                 )
-                || self.reviewer.agent_id == self.beneficiary.agent_id
+                || (self.reviewer.instance_id.is_none()
+                    && self.reviewer.agent_id == self.beneficiary.agent_id)
             {
                 return Err(invalid(
                     "invalid Coord room effect, rights, audience or self-benefit",
@@ -1085,16 +1168,16 @@ impl Delegation {
     pub(crate) fn reciprocal_agent_pairs(&self, policy: &Policy) -> BTreeSet<(String, String)> {
         let mut pairs = BTreeSet::new();
         for other in policy.delegations().values() {
-            for reviewer in self
-                .reviewers
-                .iter()
-                .filter(|r| other.beneficiaries.contains(r))
-            {
-                for beneficiary in self
-                    .beneficiaries
-                    .iter()
-                    .filter(|b| other.reviewers.contains(b))
-                {
+            for reviewer in self.reviewers.iter().filter(|r| {
+                r.local_agent()
+                    .is_some_and(|agent| other.beneficiaries.contains(&agent))
+            }) {
+                for beneficiary in self.beneficiaries.iter().filter(|b| {
+                    other
+                        .reviewers
+                        .iter()
+                        .any(|reviewer| reviewer.local_agent().as_ref() == Some(b))
+                }) {
                     pairs.insert((reviewer.agent_id.clone(), beneficiary.agent_id.clone()));
                 }
             }
@@ -1104,6 +1187,25 @@ impl Delegation {
 
     pub(crate) fn dependencies(&self, policy: &Policy) -> Result<BTreeMap<String, String>> {
         let mut result = BTreeMap::new();
+        for reviewer in &self.reviewers {
+            if let Some(instance) = &reviewer.instance_id {
+                let conn = crate::coord_rooms::open(
+                    policy
+                        .identity_root()
+                        .ok_or_else(|| invalid("owning identity root unavailable"))?,
+                )
+                .map_err(|_| invalid("reviewer trust unavailable"))?;
+                let current: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM coord_federation_peers WHERE instance_id=?1 AND enabled=1 AND epoch=?2)", rusqlite::params![instance,reviewer.peer_epoch], |row| row.get(0))
+                    .map_err(|_| invalid("reviewer trust unavailable"))?;
+                if !current {
+                    return Err(invalid("reviewer trust changed; preview a new delegation"));
+                }
+                result.insert(
+                    format!("reviewer:{}:{}", instance, reviewer.agent_id),
+                    digest(&json!(reviewer.peer_epoch)),
+                );
+            }
+        }
         for scope in &self.scopes {
             if let Scope::DesktopPresent { run, .. } = scope {
                 if !run.current(policy) {
@@ -1278,7 +1380,11 @@ impl Policy {
                     Err(_)=>warnings.push(format!("Worker {} has an unresolved mount. Its ability to write reviewer startup files is unknown.",worker.name)),
                 }
             }
-            for reviewer in &delegation.reviewers {
+            for reviewer in delegation
+                .reviewers
+                .iter()
+                .filter(|reviewer| reviewer.instance_id.is_none())
+            {
                 let home = native
                     .identity_root
                     .join("agents")

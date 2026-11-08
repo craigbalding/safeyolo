@@ -45,9 +45,14 @@ impl Supervisor {
             .as_array()
             .filter(|o| o.len() <= self.config.page_limit)
             .ok_or("invalid resolved attention page")?;
-        let reserved_messages = objects
+        let reserved_notifications = objects
             .iter()
-            .filter(|r| r["edge"]["kind"] == "message")
+            .filter(|r| {
+                matches!(
+                    r["edge"]["kind"].as_str(),
+                    Some("message" | "approval_result" | "approval_review")
+                )
+            })
             .count();
         for resolved in objects {
             let edge = &resolved["edge"];
@@ -79,9 +84,7 @@ impl Supervisor {
                 {
                     continue;
                 }
-                if candidate.in_flight.len() + candidate.native_in_flight.len() + reserved_messages
-                    >= MAX_PENDING
-                {
+                if candidate.pending_count() + reserved_notifications >= MAX_PENDING {
                     // Keep the source cursor until the rest can be checkpointed.
                     // Already staged receipts exclude just this batch on retry.
                     complete = false;

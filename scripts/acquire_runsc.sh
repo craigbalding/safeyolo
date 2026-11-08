@@ -32,6 +32,7 @@ if [[ -z $selected ]]; then
       if [[ ! -f $cache/tools/bazel ]]; then
         download=$(mktemp "$cache/tools/download.XXXXXX")
         curl -fLsS --proto '=https' --proto-redir '=https' \
+          --retry 3 --retry-max-time 120 --connect-timeout 15 --max-time 120 \
           "https://github.com/bazelbuild/bazel/releases/download/8.3.1/bazel-8.3.1-linux-$architecture" -o "$download"
         [[ $(file_sha256 "$download") == "$bazel_sha" ]] || { package_error 'Bazel checksum differs'; exit 1; }
         chmod +x "$download"

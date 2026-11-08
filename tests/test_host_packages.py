@@ -9,11 +9,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
+import ssl
 import stat
 import subprocess
 import tarfile
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -66,7 +70,8 @@ def test_runsc_acquisition_checks_the_complete_prepared_input(
                 assert path.read_bytes() == (prepared_runsc / path.relative_to(destination)).read_bytes()
 
 
-def test_runsc_acquisition_reuses_its_build_and_refuses_corrupt_cached_companions(
+@pytest.fixture
+def runsc_build_inputs(
     tmp_path, monkeypatch, prepared_runsc,
 ):
     scripts = tmp_path / "scripts"
@@ -94,6 +99,13 @@ def test_runsc_acquisition_reuses_its_build_and_refuses_corrupt_cached_companion
     monkeypatch.setenv("RUNSC_TEST_BUILD_CALLS", str(build_calls))
     cache = tmp_path / "cache"
     monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    return scripts, tools, build_calls, cache
+
+
+def test_runsc_acquisition_reuses_its_build_and_refuses_corrupt_cached_companions(
+    tmp_path, runsc_build_inputs,
+):
+    scripts, _, build_calls, cache = runsc_build_inputs
     for name in ("first", "second"):
         result = run("bash", str(scripts / "acquire_runsc.sh"), str(tmp_path / name))
         assert result.returncode == 0, result.stderr
@@ -113,6 +125,95 @@ def test_runsc_acquisition_reuses_its_build_and_refuses_corrupt_cached_companion
     result = run("bash", str(scripts / "acquire_runsc.sh"), str(tmp_path / "repaired"))
     assert result.returncode == 0, result.stderr
     assert build_calls.read_text().splitlines() == ["build", "build"]
+
+
+@pytest.mark.parametrize("outcome", ["transient", "exhausted", "checksum"])
+def test_bazel_acquisition_retries_http_failures_before_building(
+    tmp_path, runsc_build_inputs, outcome,
+):
+    from tests.proxy_contracts.test_http2_contract import origin_certificate
+
+    scripts, tools, build_calls, cache = runsc_build_inputs
+    # Keep the real curl retry and SHA-256 checks; substitute only the owned
+    # HTTPS origin, tiny Bazel bytes and their fixture pin, not their logic.
+    payload = b'#!/bin/sh\nprintf "bazel 8.3.1\\n"\n'
+    acquire = scripts / "acquire_runsc.sh"
+    acquire.write_text(re.sub(r"bazel_sha=[0-9a-f]{64}",
+                              f"bazel_sha={hashlib.sha256(payload).hexdigest()}",
+                              acquire.read_text()))
+    (tools / "bazel").write_text("#!/bin/sh\nexit 1\n")
+    attempts = []
+
+    class BazelDownload(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            attempts.append(self.path)
+            unavailable = outcome == "exhausted" or (outcome == "transient" and len(attempts) == 1)
+            body = b"gateway unavailable" if unavailable else payload
+            if outcome == "checksum":
+                body += b"corrupted download"
+            self.send_response(504 if unavailable else 200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    pem, ca = origin_certificate(tmp_path)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(pem)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), BazelDownload)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    curl = shutil.which("curl")
+    assert curl
+    arguments = tmp_path / "curl-arguments"
+    (tools / "curl").write_text(
+        '#!/bin/bash\nset -eu\n'
+        f'printf "%s\\n" "$@" > {shlex.quote(str(arguments))}\n'
+        'args=("$@")\nfor i in "${!args[@]}"; do\n'
+        '  case "${args[i]}" in https://github.com/bazelbuild/bazel/releases/download/8.3.1/*)\n'
+        f'    args[i]="https://localhost:{server.server_port}/bazel";; esac\ndone\n'
+        f'exec {shlex.quote(curl)} --cacert {shlex.quote(str(ca))} "${{args[@]}}"\n',
+    )
+    (tools / "curl").chmod(0o755)
+    destination = tmp_path / "acquired"
+    try:
+        result = run("bash", str(acquire), str(destination))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+    args = arguments.read_text().splitlines()
+    assert args[args.index("--proto") + 1] == "=https"
+    assert args[args.index("--proto-redir") + 1] == "=https"
+    for option in ("--retry-max-time", "--connect-timeout", "--max-time"):
+        assert int(args[args.index(option) + 1]) > 0
+    architecture = "arm64" if os.uname().machine in ("aarch64", "arm64") else "x86_64"
+    assert f"https://github.com/bazelbuild/bazel/releases/download/8.3.1/bazel-8.3.1-linux-{architecture}" in args
+    if outcome == "transient":
+        assert result.returncode == 0, result.stderr
+        assert len(attempts) == 2 and destination.is_dir()
+        assert build_calls.read_text().splitlines() == ["build"]
+        bazel, = cache.glob("**/tools/bazel")
+        assert bazel.read_bytes() == payload
+        # A later source build must still refuse an altered cached Bazel.
+        bazel.write_bytes(payload + b"corruption")
+        runtime, = cache.glob("**/runtime")
+        shutil.rmtree(runtime)
+        result = run("bash", str(acquire), str(tmp_path / "corrupt-bazel"))
+        assert result.returncode != 0 and "cached Bazel checksum differs" in result.stderr
+        assert build_calls.read_text().splitlines() == ["build"]
+    else:
+        assert result.returncode != 0 and not destination.exists()
+        assert not build_calls.exists() and not list(cache.glob("**/tools/bazel"))
+        if outcome == "exhausted":
+            assert result.returncode == 22, result.stderr
+            assert len(attempts) == 1 + int(args[args.index("--retry") + 1])
+        else:
+            assert "Bazel checksum differs" in result.stderr and len(attempts) == 1
 
 
 @pytest.mark.parametrize("workflow_name,job,consumer", [

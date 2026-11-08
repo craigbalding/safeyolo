@@ -67,6 +67,19 @@ fn support_route(request: Request<'_>) -> bool {
                 .is_some_and(|id| !id.is_empty() && !id.contains('/')))
 }
 
+fn approval_route(request: Request<'_>) -> bool {
+    let path = super::super::route(request);
+    (request.method == "GET" && path == "/approvals")
+        || path.strip_prefix("/approvals/").is_some_and(|suffix| {
+            let (id, resolve) = suffix
+                .strip_suffix("/resolve")
+                .map_or((suffix, false), |id| (id, true));
+            crate::approvals::pending::valid_id(id)
+                && !id.contains('/')
+                && ((request.method == "GET" && !resolve) || (request.method == "POST" && resolve))
+        })
+}
+
 fn allowed(request: Request<'_>) -> bool {
     request.path_and_query.len() <= 16384
         && query_parameter(request.path_and_query, "home").is_ok_and(|home| home.is_none())
@@ -74,6 +87,7 @@ fn allowed(request: Request<'_>) -> bool {
             || attention_wait_route(request)
             || attention_object_route(request).is_some()
             || support_route(request)
+            || approval_route(request)
             || (request.method == "POST"
                 && super::super::route(request) == "/api/coord/attention/subscribe"))
 }
@@ -449,6 +463,17 @@ async fn receive(
             Ok(value) => response(200, value),
             Err(_) => response(503, json!({"error":"retained notifications unavailable"})),
         }
+    } else if approval_route(request) {
+        crate::agent_api::approvals::remote(
+            request,
+            runtime,
+            crate::peer_support::Caller {
+                run: peer.source_run,
+                remote: Some(remote.clone()),
+            },
+            payload.as_deref(),
+        )
+        .await
     } else if support_route(request) {
         crate::agent_api::support::remote(
             request,

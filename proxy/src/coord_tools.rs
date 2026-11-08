@@ -13,8 +13,8 @@ mod sources;
 pub struct Client {
     pub socket: Option<PathBuf>,
     pub token_file: PathBuf,
-    /// Explicit home selection applies to Coord and support operations. Service
-    /// access and approvals remain on the caller's own SafeYolo instance.
+    /// Explicit home selection applies to Coord, support and deciding approvals.
+    /// Service access and new approval requests remain local.
     pub home: Option<String>,
 }
 
@@ -111,7 +111,9 @@ impl Client {
         timeout: Duration,
     ) -> Result<Value, Error> {
         let path = if let Some(home) = &self.home
-            && (path.starts_with("/api/coord/") || path.starts_with("/support/"))
+            && (path.starts_with("/api/coord/")
+                || path.starts_with("/support/")
+                || path.starts_with("/approvals"))
         {
             format!(
                 "{path}{}home={}",
@@ -827,6 +829,8 @@ pub fn tools() -> Vec<Value> {
         "Inspect or operate on one explicitly delegated target. Select home for a remote owner; Core NATS and that owner's current grant and runtime controls must work. Choose operation_id before submitting; never repeat an uncertain effect with a new ID. expected_run must match the inspected run for commands and lifecycle actions; use null to start a target with no run. Inspection-only permits no caller command. Guest administration includes guest sudo, mounts, credentials, services and the target's delegations. Output is private untrusted evidence, limited to 8192 bytes per stream. After timeout or a lost reply use read_support_operation with the same home. Transport cancellation does not prove guest descendant termination. The current host grant is rechecked at execution; no Coord notification is required.",
         json!({"operation_id":string,"grant":string,"instance_id":{"oneOf":[string,{"type":"null"}]},"target_id":string,"expected_run":{"oneOf":[string,{"type":"null"}]},"operation":{"oneOf":[
             {"type":"object","properties":{"action":{"type":"string","enum":["inspect"]}},"required":["action"],"additionalProperties":false},
+            {"type":"object","properties":{"action":{"type":"string","enum":["factory_state"]},"factory":string,"snapshot_id":string},"required":["action","factory","snapshot_id"],"additionalProperties":false},
+            {"type":"object","properties":{"action":{"type":"string","enum":["factory_direction"]},"factory":string,"snapshot_id":string,"kind":string,"text":string},"required":["action","factory","snapshot_id","kind","text"],"additionalProperties":false},
             {"type":"object","properties":{"action":{"type":"string","enum":["guest_command"]},"command":string,"timeout_seconds":integer},"required":["action","command","timeout_seconds"],"additionalProperties":false},
             {"type":"object","properties":{"action":{"type":"string","enum":["guest_log"]},"path":string},"required":["action","path"],"additionalProperties":false},
             {"type":"object","properties":{"action":{"type":"string","enum":["guest_probe"]},"timeout_seconds":integer},"required":["action","timeout_seconds"],"additionalProperties":false},
@@ -927,13 +931,7 @@ pub fn tools() -> Vec<Value> {
     for tool in &mut result {
         if !matches!(
             tool["name"].as_str(),
-            Some(
-                "list_approvals"
-                    | "read_approval"
-                    | "resolve_approval"
-                    | "request_room_access"
-                    | "request_collaboration"
-            )
+            Some("request_room_access" | "request_collaboration")
         ) {
             tool["inputSchema"]["properties"]["home"] = json!({"type":"string","description":"Explicit configured home SafeYolo. Omit for local operations. Attention cursors belong to the selected home."});
         }

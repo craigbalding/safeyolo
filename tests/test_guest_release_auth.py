@@ -1,19 +1,20 @@
-"""Exercise release credentials through urllib's real redirect machinery.
+"""Exercise release retries and credentials through urllib's real redirects.
 
-Only the HTTPS transport is replaced. urllib builds and follows requests,
-copies headers, processes redirect statuses and raises HTTP errors normally.
+HTTPS transport is substituted and retry delays are recorded. urllib builds
+and follows requests, copies headers, processes redirects and raises HTTP errors.
 """
 import io
 import json
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 import traceback
 from email.message import Message
 from http import HTTPStatus
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import HTTPHandler, HTTPSHandler
 from urllib.response import addinfourl
 
@@ -35,11 +36,16 @@ def upstream(monkeypatch):
 
     def receive(self, request):
         requests.append((request.full_url, {key.lower(): value for key, value in request.header_items()}))
-        status, headers, body = routes[request.full_url]
+        route = routes[request.full_url]
+        reply = route.pop(0) if isinstance(route, list) else route
+        if isinstance(reply, Exception):
+            raise reply
+        status, headers, body = reply
         message = Message()
         for key, value in headers.items():
             message[key] = value
-        response = addinfourl(io.BytesIO(body), message, request.full_url, status)
+        response = addinfourl(body if isinstance(body, io.BytesIO) else io.BytesIO(body),
+                             message, request.full_url, status)
         response.msg = HTTPStatus(status).phrase
         return response
 
@@ -49,6 +55,13 @@ def upstream(monkeypatch):
     monkeypatch.setattr(HTTPSHandler, "https_open", receive)
     monkeypatch.setattr(HTTPHandler, "http_open", insecure)
     return routes, requests
+
+
+@pytest.fixture
+def retry_sleeps(monkeypatch):
+    delays = []
+    monkeypatch.setattr(inputs.time, "sleep", delays.append)
+    return delays
 
 
 @pytest.fixture
@@ -195,7 +208,9 @@ def test_insecure_redirect_is_refused_before_request(monkeypatch, upstream, dest
 
 
 @pytest.mark.parametrize("status", [401, 403, 404, 503])
-def test_release_api_failure_is_visible_without_fallback_or_token(tmp_path, monkeypatch, capsys, upstream, status):
+def test_release_api_failure_is_visible_without_fallback_or_token(
+    tmp_path, monkeypatch, capsys, upstream, retry_sleeps, status,
+):
     routes, requests = upstream
     monkeypatch.setenv("GH_TOKEN", TOKEN)
     routes[API] = (status, {}, b"release lookup failed")
@@ -205,7 +220,91 @@ def test_release_api_failure_is_visible_without_fallback_or_token(tmp_path, monk
         inputs.main()
     assert error.value.code == status
     assert not output.exists()
-    assert len(requests) == 1
+    assert len(requests) == (3 if status == 503 else 1)
+    assert retry_sleeps == ([1, 2] if status == 503 else [])
+    captured = capsys.readouterr()
+    assert TOKEN not in "".join(traceback.format_exception(error.value)) + captured.out + captured.err
+
+
+@pytest.mark.parametrize("status", [408, 429, 500, 502, 503, 504])
+@pytest.mark.parametrize("redirected", [False, True])
+def test_fetch_retries_transient_http_with_fresh_redirect_history(
+    monkeypatch, upstream, retry_sleeps, status, redirected,
+):
+    routes, requests = upstream
+    monkeypatch.setenv("GH_TOKEN", TOKEN)
+    errors = [io.BytesIO(b"temporary release failure") for _ in range(2)]
+    if redirected:
+        intermediate = API + "?redirect=1"
+        returned = API + "?redirect=2"
+        asset = "https://release-assets.githubusercontent.com/release"
+        routes.update({API: (302, {"Location": intermediate}, b""),
+                       asset: (302, {"Location": returned}, b""),
+                       returned: (302, {"Location": intermediate}, b"")})
+        # Revisit one hop within each attempt. Reusing its old Request would
+        # exhaust urllib's redirect allowance before the third attempt.
+        routes[intermediate] = [
+            (302, {"Location": asset}, b""), (status, {}, errors[0]),
+            (302, {"Location": asset}, b""), (status, {}, errors[1]),
+            (302, {"Location": asset}, b""), (200, {}, b"verified metadata"),
+        ]
+        path = [API, intermediate, asset, returned, intermediate]
+    else:
+        routes[API] = [(status, {}, errors[0]), (status, {}, errors[1]),
+                       (200, {}, b"verified metadata")]
+        path = [API]
+    assert inputs.fetch(API, github_api=True) == b"verified metadata"
+    assert [url for url, _ in requests] == path * 3
+    assert retry_sleeps == [1, 2] and all(error.closed for error in errors)
+    for index, (_, headers) in enumerate(requests):
+        assert headers.get("authorization") == (f"Bearer {TOKEN}" if index % len(path) == 0 else None)
+        assert headers["user-agent"] == "safeyolo-guest-builder"
+
+
+@pytest.mark.parametrize("failure", [URLError("transport failed"), ssl.SSLError("TLS failed"),
+                                     TimeoutError("transport timed out")])
+def test_fetch_preserves_transport_failures_without_retry(upstream, retry_sleeps, failure):
+    routes, requests = upstream
+    routes[API] = failure
+    with pytest.raises(type(failure)) as error:
+        inputs.fetch(API)
+    assert error.value is failure
+    assert len(requests) == 1 and retry_sleeps == []
+
+
+def test_signature_http_exhaustion_preserves_failure_without_output_or_key_fetch(
+    tmp_path, monkeypatch, capsys, upstream, retry_sleeps,
+):
+    routes, requests = upstream
+    monkeypatch.setenv("GH_TOKEN", TOKEN)
+    api = "https://api.github.com/repos/oras-project/oras/releases/latest"
+    base = "https://github.com/oras-project/oras/releases/download/v9.8.7/"
+    sums = base + "oras_9.8.7_checksums.txt"
+    signature = base + "oras_9.8.7_checksums.txt.asc"
+    assets = [{"name": inputs.asset_name("oras", "9.8.7", arch),
+               "browser_download_url": base + inputs.asset_name("oras", "9.8.7", arch)}
+              for arch in inputs.ARCHITECTURES]
+    assets += [{"name": "oras_9.8.7_checksums.txt", "browser_download_url": sums},
+               {"name": "oras_9.8.7_checksums.txt.asc", "browser_download_url": signature}]
+    metadata = {"tag_name": "v9.8.7", "draft": False, "prerelease": False,
+                "html_url": "https://github.com/oras-project/oras/releases/tag/v9.8.7", "assets": assets}
+    errors = [io.BytesIO(f"signature failure {index}".encode()) for index in range(3)]
+    routes.update({api: (200, {}, json.dumps(metadata).encode()), sums: (200, {}, b"checksums"),
+                   signature: [(504, {}, error) for error in errors]})
+    output = tmp_path / "inputs.json"
+    monkeypatch.setattr(sys, "argv", ["resolve_inputs.py", "resolve", "--tools", "oras",
+                                     "--output", str(output)])
+    with pytest.raises(HTTPError) as error:
+        inputs.main()
+    assert error.value.code == 504 and error.value.url == signature
+    assert all(body.closed for body in errors[:2])
+    assert error.value.read() == b"signature failure 2"
+    error.value.close()
+    assert retry_sleeps == [1, 2] and not output.exists()
+    # The official-key fetch precedes every GPG operation in signed_checksums.
+    assert [url for url, _ in requests] == [api, sums, signature, signature, signature]
+    assert requests[0][1]["authorization"] == f"Bearer {TOKEN}"
+    assert all("authorization" not in headers for _, headers in requests[1:])
     captured = capsys.readouterr()
     assert TOKEN not in "".join(traceback.format_exception(error.value)) + captured.out + captured.err
 

@@ -128,16 +128,55 @@ impl Snapshot {
         }
         Ok(bytes)
     }
-    fn id(&self) -> Result<String, Error> {
+    pub(crate) fn id(&self) -> Result<String, Error> {
         Ok(coord_setup::sha256(&self.bytes()?))
     }
     pub(crate) fn agents(&self) -> Vec<String> {
         self.roles.values().map(|role| role.agent.clone()).collect()
     }
-    fn operator_agent(&self) -> &str {
+    pub(crate) fn operator_agent(&self) -> &str {
         &self.roles[&self.operator_input.to].agent
     }
 }
+
+pub(crate) fn direction_binding(
+    root: &Path,
+    name: &str,
+    snapshot_id: &str,
+    kind: Option<&str>,
+) -> Result<Snapshot, Error> {
+    let (snapshot, _) = approved(root, name)?;
+    if snapshot.id()? != snapshot_id
+        || kind.is_some_and(|kind| {
+            !snapshot
+                .operator_input
+                .types
+                .iter()
+                .any(|allowed| allowed == kind)
+        })
+    {
+        return Err("approved factory snapshot or direction type changed".into());
+    }
+    Ok(snapshot)
+}
+
+pub(crate) async fn management_state(root: &Path, snapshot: &Snapshot) -> Result<Value, Error> {
+    let agents = host_agents::list()?;
+    let mut roles = Vec::new();
+    for (role, configured) in &snapshot.roles {
+        let agent = agents.iter().find(|agent| agent.name == configured.agent);
+        let observed = crate::host_runs::observe(&configured.agent).await;
+        roles.push(json!({"role":role,"agent":configured.agent,"agent_id":agent.map(|agent| &agent.id),
+            "run_id":observed["run_id"],"runtime_state":observed["runtime_state"],"control_state":observed["control_state"]}));
+    }
+    // Room access and native-work reads retain their separate membership and
+    // actor checks. No checkpoint bodies, contracts or private logs are copied.
+    Ok(
+        json!({"factory":snapshot.name,"snapshot_id":snapshot.id()?,"instance_id":crate::peer_support::events::instance(root)?,
+        "room_name":snapshot.room,"operator_agent":snapshot.operator_agent(),"direction_types":snapshot.operator_input.types,"roles":roles}),
+    )
+}
+
 fn load_file(path: &Path) -> Result<Snapshot, Error> {
     let path = path.canonicalize()?;
     let mut raw = crate::policy::parse_toml_document(std::str::from_utf8(&read(&path)?)?)?;

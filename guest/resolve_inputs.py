@@ -10,6 +10,8 @@ import re
 import shlex
 import subprocess
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
@@ -48,18 +50,27 @@ class HTTPSRedirectHandler(urllib.request.HTTPRedirectHandler):
 def fetch(url: str, *, github_api: bool = False) -> bytes:
     if not url.startswith("https://"):
         raise ValueError("upstream downloads require HTTPS")
-    request = urllib.request.Request(url, headers={"User-Agent": "safeyolo-guest-builder"})
+    token = None
     if github_api:
         token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        if token and ("\r" in token or "\n" in token):
+            raise ValueError("GitHub API token must not contain line breaks")
+    for attempt in range(3):
+        # Give each attempt its own urllib redirect history.
+        request = urllib.request.Request(url, headers={"User-Agent": "safeyolo-guest-builder"})
         if token:
-            if "\r" in token or "\n" in token:
-                raise ValueError("GitHub API token must not contain line breaks")
             # urllib omits unredirected headers from every redirected request.
             request.add_unredirected_header("Authorization", f"Bearer {token}")
-    with urllib.request.build_opener(HTTPSRedirectHandler()).open(request, timeout=120) as response:
-        if not response.url.startswith("https://"):
-            raise ValueError("upstream redirect must retain HTTPS")
-        return response.read()
+        try:
+            with urllib.request.build_opener(HTTPSRedirectHandler()).open(request, timeout=120) as response:
+                if not response.url.startswith("https://"):
+                    raise ValueError("upstream redirect must retain HTTPS")
+                return response.read()
+        except urllib.error.HTTPError as error:
+            if error.code not in {408, 429, 500, 502, 503, 504} or attempt == 2:
+                raise
+            error.close()
+            time.sleep(attempt + 1)
 
 
 def sha256(data: bytes) -> str:

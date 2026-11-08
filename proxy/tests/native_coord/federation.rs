@@ -1,6 +1,8 @@
 //! Two owned native SafeYolos, real Agent API and scoped TLS NATS.
 #![cfg(target_os = "linux")]
 use super::*;
+#[path = "federation/operator.rs"]
+mod operator;
 #[path = "federation/support.rs"]
 mod support;
 use hyper::Method;
@@ -137,13 +139,13 @@ fn mutable_work(mut value: Value) -> Value {
     value
 }
 
-async fn owned_stream(root: &Path) -> async_nats::jetstream::stream::Stream {
+async fn local_nats(root: &Path) -> async_nats::Client {
     let record: Value =
         serde_json::from_slice(&fs::read(root.join("data/coord/nats/process.json")).unwrap())
             .unwrap();
     let password =
         zeroize::Zeroizing::new(fs::read_to_string(root.join("data/coord/nats/creds")).unwrap());
-    let connection = async_nats::ConnectOptions::new()
+    async_nats::ConnectOptions::new()
         .require_tls(true)
         .add_root_certificates(root.join("peer.pem"))
         .user_and_password("safeyolo".into(), password.trim().into())
@@ -151,7 +153,11 @@ async fn owned_stream(root: &Path) -> async_nats::jetstream::stream::Stream {
         .request_timeout(Some(Duration::from_secs(2)))
         .connect(format!("tls://127.0.0.1:{}", record["client_port"]))
         .await
-        .unwrap();
+        .unwrap()
+}
+
+async fn owned_stream(root: &Path) -> async_nats::jetstream::stream::Stream {
+    let connection = local_nats(root).await;
     let room: String = rusqlite::Connection::open(root.join("data/coord/v0.db"))
         .unwrap()
         .query_row("SELECT room_id FROM rooms WHERE name='shared'", [], |r| {

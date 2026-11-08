@@ -246,6 +246,75 @@ impl CoordClient {
         self
     }
 
+    pub(crate) async fn send_factory_direction(
+        &self,
+        caller: &crate::peer_support::Caller,
+        input: &crate::peer_support::Request,
+        revision: &str,
+    ) -> Result<Value, OperatorCoordError> {
+        let crate::peer_support::operations::Action::FactoryDirection {
+            factory,
+            snapshot_id,
+            kind,
+            text,
+        } = &input.operation
+        else {
+            return Err(OperatorCoordError::display_error(
+                "typed factory direction required".into(),
+            ));
+        };
+        let root = self.instance_root.as_ref().ok_or_else(|| {
+            OperatorCoordError::display_error("owning instance unavailable".into())
+        })?;
+        let snapshot = crate::factory::direction_binding(root, factory, snapshot_id, Some(kind))
+            .map_err(|_| {
+                OperatorCoordError::display_error("approved factory direction changed".into())
+            })?;
+        let room = &snapshot.room;
+        let recipient = snapshot.operator_agent();
+        let body = format!("{kind}\n\n{text}");
+        let mut scoped = self.clone();
+        scoped.remote = caller.remote.clone();
+        scoped.request_run = Some(Arc::new(if caller.remote.is_some() {
+            SourceRun::Remote {
+                run: caller.run.clone(),
+            }
+        } else {
+            SourceRun::Local {
+                run: caller.run.clone(),
+                root: self.instance_root.clone().ok_or_else(|| {
+                    OperatorCoordError::display_error("owning instance unavailable".into())
+                })?,
+            }
+        }));
+        let name = caller
+            .remote
+            .as_ref()
+            .map_or(caller.run.agent.as_str(), |remote| {
+                remote.display_name.as_str()
+            });
+        let sender = Sender::Direction {
+            id: caller.principal(),
+            name,
+            caller,
+            input,
+            revision,
+        };
+        let payload =
+            json!({"body":body,"notify":[recipient],"declared_content_type":"text/plain"})
+                .to_string();
+        let value = operator_result(prepare_send(&scoped, room, sender, payload.as_bytes()).await)?;
+        let mut prepared: PreparedMessage = serde_json::from_value(value["prepared"].clone())
+            .map_err(|_| {
+                OperatorCoordError::display_error("direction preparation unavailable".into())
+            })?;
+        prepared.envelope["factory_direction"] = json!({"factory":factory,"snapshot_id":snapshot_id,"type":kind,
+            "grant":input.grant,"grant_revision":revision,"operation_id":input.operation_id,"initiator":caller});
+        operator_result(
+            publish_prepared(&scoped, local_operator_request(), room, sender, &prepared).await,
+        )
+    }
+
     /// Only the host approval path calls this operation. Use the existing
     /// private agent room, membership checks and transport-owned attribution.
     pub(crate) async fn send_approval_notice(
@@ -420,6 +489,50 @@ impl CoordClient {
     ) -> Result<RoomAccess, CoordError> {
         self.check_remote().await?;
         match sender {
+            Sender::Direction {
+                caller,
+                input,
+                revision,
+                ..
+            } => {
+                self.bound_current()?;
+                let root = self.instance_root.as_ref().ok_or(CoordError::Unavailable)?;
+                let path = self.policy_file.as_ref().ok_or(CoordError::Unavailable)?;
+                let mut policy = crate::policy::Policy::from_native_path(path)
+                    .map_err(|_| CoordError::Unavailable)?;
+                policy.set_identity_root(root.clone());
+                let (grant, _) = crate::peer_support::operations::authorize(&policy, caller, input)
+                    .map_err(|_| CoordError::Forbidden)?;
+                let crate::peer_support::operations::Action::FactoryDirection {
+                    factory,
+                    snapshot_id,
+                    kind,
+                    ..
+                } = &input.operation
+                else {
+                    return Err(CoordError::Forbidden);
+                };
+                let snapshot =
+                    crate::factory::direction_binding(root, factory, snapshot_id, Some(kind))
+                        .map_err(|_| CoordError::Forbidden)?;
+                if snapshot.room != room || grant.revision() != revision {
+                    return Err(CoordError::Forbidden);
+                }
+                let db = self.owner.data_dir.join("v0.db");
+                let room = room.to_owned();
+                let mut access = tokio::task::spawn_blocking(move || {
+                    read_access_as(&db, &room, "operator", "operator")
+                })
+                .await
+                .map_err(|_| CoordError::Unavailable)??;
+                // This path exposes only the selected direction publication.
+                // It does not grant the caller room or native-work privileges.
+                access.permissions = vec!["send".into()];
+                if let Some(remote) = &caller.remote {
+                    access.instance_id = remote.instance_id.clone();
+                }
+                Ok(access)
+            }
             Sender::Agent { id, .. } => {
                 let mut access = self.access(room, id).await?;
                 if let Some(remote) = &self.remote {
@@ -598,7 +711,7 @@ impl CoordClient {
         let mut visible = Vec::new();
         for edge in page.edges {
             let authorized = match edge.kind.as_str() {
-                "approval_result" => {
+                "approval_result" | "approval_review" => {
                     approval_results::authorized(runtime, &edge, &principal_for_results).await?
                 }
                 "operational_event" => {
@@ -951,7 +1064,7 @@ impl CoordClient {
         })
         .await
         .map_err(|_| CoordError::Unavailable)??;
-        if edge.kind == "approval_result" {
+        if matches!(edge.kind.as_str(), "approval_result" | "approval_review") {
             return approval_results::read(self, runtime, principal, &edge).await;
         }
         if edge.kind == "operational_event" {
@@ -1416,7 +1529,10 @@ fn read_attention_feed(
         let (edge, generation) = row.map_err(|_| CoordError::Data)?;
         let permitted = match edge.room_id.as_deref() {
             Some(room) => attention_member(&conn, room, principal, generation)?,
-            None => matches!(edge.kind.as_str(), "approval_result" | "operational_event"),
+            None => matches!(
+                edge.kind.as_str(),
+                "approval_result" | "approval_review" | "operational_event"
+            ),
         };
         if permitted {
             edges.push(edge);
@@ -1474,8 +1590,10 @@ fn read_attention_edge(
         .optional()
         .map_err(|_| CoordError::Data)?
         .ok_or(CoordError::NotFound)?;
-    if !(matches!(edge.kind.as_str(), "approval_result" | "operational_event")
-        && edge.room_id.is_none()
+    if !(matches!(
+        edge.kind.as_str(),
+        "approval_result" | "approval_review" | "operational_event"
+    ) && edge.room_id.is_none()
         || attention_member(
             &conn,
             edge.room_id.as_deref().ok_or(CoordError::Data)?,
@@ -3036,7 +3154,17 @@ fn query_bool(path_and_query: &str, wanted: &str, default: bool) -> Result<bool,
 // constructs Agent from its reconciled listener; payload fields cannot select it.
 #[derive(Clone, Copy)]
 enum Sender<'a> {
-    Agent { id: &'a str, name: &'a str },
+    Agent {
+        id: &'a str,
+        name: &'a str,
+    },
+    Direction {
+        id: &'a str,
+        name: &'a str,
+        caller: &'a crate::peer_support::Caller,
+        input: &'a crate::peer_support::Request,
+        revision: &'a str,
+    },
     Operator,
 }
 
@@ -3451,7 +3579,7 @@ fn inspect_collaboration(
         addon: "agent-api",
         summary: error.into(),
         agent: match sender {
-            Sender::Agent { name, .. } => Some(name.into()),
+            Sender::Agent { name, .. } | Sender::Direction { name, .. } => Some(name.into()),
             Sender::Operator => None,
         },
         request_id: None,
@@ -3469,7 +3597,9 @@ async fn prepare_send(
     payload: &[u8],
 ) -> Outcome<'static> {
     let (principal, agent_name, sender_kind) = match sender {
-        Sender::Agent { id, name } => (id, Some(name), "agent"),
+        Sender::Agent { id, name } | Sender::Direction { id, name, .. } => {
+            (id, Some(name), "agent")
+        }
         Sender::Operator => ("operator", None, "operator"),
     };
     let Ok(document) = serde_json::from_slice::<Value>(payload) else {
@@ -3730,7 +3860,9 @@ fn validate_prepared(
     let envelope = &prepared.envelope;
     let (kind, id, name) = match sender {
         Sender::Operator => ("operator", Value::Null, Value::Null),
-        Sender::Agent { id, name } => ("agent", json!(id), json!(name)),
+        Sender::Agent { id, name } | Sender::Direction { id, name, .. } => {
+            ("agent", json!(id), json!(name))
+        }
     };
     let msg_id = envelope["msg_id"].as_str().ok_or(CoordError::Data)?;
     if prepared.room_id != access.room_id
@@ -3921,7 +4053,7 @@ async fn publish_prepared(
             addon: "agent-api",
             summary: "Collaboration message inspected and accepted".into(),
             agent: match sender {
-                Sender::Agent { name, .. } => Some(name.into()),
+                Sender::Agent { name, .. } | Sender::Direction { name, .. } => Some(name.into()),
                 Sender::Operator => None,
             },
             request_id: Some(request.request_id.into()),
@@ -4079,7 +4211,7 @@ async fn read_messages_with_timeout(
     mut cancellation: tokio::sync::watch::Receiver<bool>,
 ) -> Outcome<'static> {
     let principal = match sender {
-        Sender::Agent { id, .. } => id,
+        Sender::Agent { id, .. } | Sender::Direction { id, .. } => id,
         Sender::Operator => "operator",
     };
     let connection = match client.client().await {
