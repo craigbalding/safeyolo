@@ -558,7 +558,7 @@ nodes:
         - path: proxy/src/peer_support/authority/graph.rs
           sha256: a335b7dc5d789817ff29148aa6a1ed3fb331b7fd78e0081e58d2971e2bdc5e32
         - path: proxy/src/peer_support/authority/graph_tests.rs
-          sha256: 41e9fbd0165a711b46ffda31c55ca9c6fa61fa5a72e3c462027b409943ef0146
+          sha256: 7803851ecbfdbc4720f3e434d33ddd2395a0527a962e894a61d8c77ad18b06e8
         - path: proxy/src/policy/authority.rs
           sha256: 62744ef08967975b5be6cf0afb2c83cac8dc5c104cef8441534abaad0672dee3
         - path: proxy/tests/native_coord/federation/support_authority.rs

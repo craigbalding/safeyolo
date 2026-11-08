@@ -50,7 +50,7 @@ fn only_guest_administration_extends_control_and_qualified_identities_never_coll
     let mut inspection = control(b.clone(), c.clone(), "inspection");
     inspection.capability = Capability::Inspection { target: c.clone() };
     inspection.identify();
-    let facts = vec![
+    let facts = [
         control(a.clone(), b.clone(), "a-b"),
         inspection,
         deciding(b.clone(), c.clone()),
@@ -120,7 +120,7 @@ fn multi_hop_common_controller_names_scope_without_controlling_other_beneficiari
         principal("d", "worker"),
         principal("e", "other"),
     );
-    let facts = vec![
+    let facts = [
         control(a.clone(), b.clone(), "a-b"),
         control(b, c.clone(), "b-c"),
         control(c.clone(), r.clone(), "c-r"),
