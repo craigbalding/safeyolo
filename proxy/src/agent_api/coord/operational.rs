@@ -6,7 +6,7 @@ use crate::peer_support::{
 };
 use crate::policy::support::Notification;
 
-fn retained(db: &Path, event: &str) -> Result<Reference, CoordError> {
+pub(super) fn retained(db: &Path, event: &str) -> Result<Reference, CoordError> {
     let reference: String = open_db(db, false)?
         .query_row(
             "SELECT reference_json FROM coord_operational_references WHERE event_id=?1",
@@ -46,9 +46,8 @@ pub(super) async fn authorized(
         .clone()
         .ok_or(CoordError::Unavailable)?;
     let instance = events::instance(&root).map_err(|_| CoordError::Unavailable)?;
-    Ok(events::permits(
-        &policy, &instance, principal, &reference, false,
-    ))
+    events::permits(&policy, &instance, principal, &reference, false)
+        .map_err(|_| CoordError::Unavailable)
 }
 
 fn signal_evidence(db: &Path, reference: &Reference) -> Result<Value, CoordError> {
@@ -94,7 +93,9 @@ pub(super) async fn read(
         .clone()
         .ok_or(CoordError::Unavailable)?;
     let instance = events::instance(&root).map_err(|_| CoordError::Unavailable)?;
-    if !events::permits(&policy, &instance, principal, &reference, false) {
+    if !events::permits(&policy, &instance, principal, &reference, false)
+        .map_err(|_| CoordError::Unavailable)?
+    {
         return Err(CoordError::ObservationRequired);
     }
     let evidence = if reference.kind == Notification::NeedsOperator {
@@ -105,7 +106,9 @@ pub(super) async fn read(
     // Source I/O is not authority. Recheck current observation and disclosure
     // immediately before returning any identifiers or source facts.
     let policy = peer_support::current_policy(runtime).map_err(|_| CoordError::Unavailable)?;
-    if !events::permits(&policy, &instance, principal, &reference, false) {
+    if !events::permits(&policy, &instance, principal, &reference, false)
+        .map_err(|_| CoordError::Unavailable)?
+    {
         return Err(CoordError::ObservationRequired);
     }
     client.bound_current()?;
@@ -278,15 +281,19 @@ pub(super) async fn reconcile(
     crate::host_platform::in_config(root.join("config.toml"), async {
         let policy = peer_support::current_policy(runtime).map_err(|_| CoordError::Unavailable)?;
         let instance = peer_support::instance_id().map_err(|_| CoordError::Unavailable)?;
-        let grants = policy.support_grants();
+        let mut grants = std::collections::BTreeMap::new();
+        for (name, grant) in policy.support_grants() {
+            if peer_support::checked_support_principal(&policy, &grant)
+                .map_err(|_| CoordError::Unavailable)?
+                .is_some()
+            {
+                grants.insert(name, grant);
+            }
+        }
         let targets: std::collections::BTreeSet<_> = grants
             .values()
             .filter(|grant| {
-                grant.active()
-                    && grant.instance_id == instance
-                    && !grant.notifications.is_empty()
-                    && policy.evidence_agent_id(&grant.support.name)
-                        == Some(grant.support.agent_id.as_str())
+                grant.active() && grant.instance_id == instance && !grant.notifications.is_empty()
             })
             .flat_map(|grant| {
                 grant
@@ -331,8 +338,6 @@ pub(super) async fn reconcile(
                 .filter(|grant| {
                     grant.active()
                         && grant.instance_id == instance
-                        && policy.evidence_agent_id(&grant.support.name)
-                            == Some(grant.support.agent_id.as_str())
                         && grant.notifications.contains(&Notification::NeedsOperator)
                         && grant
                             .targets
@@ -356,20 +361,16 @@ pub(super) async fn reconcile(
                 // backend probe was in flight must prevent new delivery.
                 let policy =
                     peer_support::current_policy(runtime).map_err(|_| CoordError::Unavailable)?;
-                let recipients: std::collections::BTreeSet<_> = policy
-                    .support_grants()
-                    .values()
-                    .filter(|grant| {
-                        events::permits(
-                            &policy,
-                            &instance,
-                            &grant.support.agent_id,
-                            &reference,
-                            true,
-                        )
-                    })
-                    .map(|grant| grant.support.agent_id.clone())
-                    .collect();
+                let mut recipients = std::collections::BTreeSet::new();
+                for grant in policy.support_grants().values() {
+                    if let Some(principal) = peer_support::checked_support_principal(&policy, grant)
+                        .map_err(|_| CoordError::Unavailable)?
+                        && events::permits(&policy, &instance, &principal, &reference, true)
+                            .map_err(|_| CoordError::Unavailable)?
+                    {
+                        recipients.insert(principal);
+                    }
+                }
                 if !recipients.is_empty()
                     && stage(&db, &reference, &recipients.into_iter().collect::<Vec<_>>()).is_err()
                 {

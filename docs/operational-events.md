@@ -1,8 +1,8 @@
-# Selected local operational events
+# Selected operational events
 
 An operator can select operational notices in the same preview and apply
 workflow as a [support grant](peer-support.md#preview-and-grant). The recipient
-and subjects use durable agent identities in the owning instance. Notifications
+and subjects use durable agent identities qualified by their owning instances. Notifications
 require observation authority. Guest administration and lifecycle actions remain
 independent selections. Room membership and target participation are unnecessary.
 
@@ -77,6 +77,19 @@ business event: the long wait rechecks the retained feed. Observer restart
 resumes saved transition positions and scans current actionable conditions.
 An unavailable broker leaves hints pending while local references and audit
 delivery remain independent.
+
+For remote recipients, the owner uses its scoped TLS NATS federation account.
+JetStream retains the latest wake hint for each qualified recipient; the hint
+contains no target evidence. The owner's canonical attention ledger retains the
+selected references. After reconnect, a recipient reads that ledger from its
+own source cursor and resolves each object under current observation rights.
+`wait_for_coord` accepts several selected sources with independent instance IDs,
+cursors and availability. A disconnected source does not prevent useful work
+from another source. No global cross-instance order or copied audit archive is
+created. See the [source selection example](coord-reference.md#collaborate-through-a-home-safeyolo).
+Notification or JetStream failure can make event waiting unavailable while
+Core NATS support requests still work. A full request/reply outage makes remote
+support unavailable; owner-side controls remain the recovery path where usable.
 
 Each host pass visits at most eight selected subjects and reads at most 64
 signal revisions per selected subject/room. The next pass starts after five

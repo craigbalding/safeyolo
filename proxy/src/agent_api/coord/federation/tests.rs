@@ -36,7 +36,7 @@ fn explicit_home_selection_cannot_forward_other_apis_or_relay_recursively() {
 
 #[test]
 fn a_peer_request_has_no_caller_selected_origin_or_principal() {
-    let base = json!({"agent_id":"ag-bob","method":"GET","path":"/api/coord/rooms/shared/state","body":null});
+    let base = json!({"destination_instance_id":"sy-home","source_run":{"agent":"bob","agent_id":"ag-bob","run_id":"0123456789abcdef0123456789abcdef"},"method":"GET","path":"/api/coord/rooms/shared/state","body":null});
     assert!(serde_json::from_value::<PeerRequest>(base.clone()).is_ok());
     for field in [
         "origin_instance_id",

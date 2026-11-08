@@ -18,6 +18,32 @@ where
     let (Some(state), Some(writer)) = (state, writer) else {
         return Ok(response(503, json!({"error":"local support unavailable"})));
     };
+    match super::coord::query_parameter(request.path_and_query, "home") {
+        Ok(Some(home)) => {
+            let payload = if request.method == "POST" {
+                match super::declarations::read_content(body).await? {
+                    Ok(content) => Some(content),
+                    Err(error) => return Ok(super::declarations::content_error(error)),
+                }
+            } else {
+                None
+            };
+            return Ok(super::coord::federation::forward_support(
+                request,
+                state,
+                payload.as_ref().map(|content| content.as_slice()),
+                &home,
+            )
+            .await);
+        }
+        Ok(None) => {}
+        Err(_) => {
+            return Ok(response(
+                400,
+                json!({"error":"select one configured owning instance"}),
+            ));
+        }
+    }
     let Some(run) = request.identity.run().cloned() else {
         return Ok(response(
             403,
@@ -83,4 +109,40 @@ where
             )
         }
     })
+}
+
+pub(crate) async fn remote(
+    request: Request<'_>,
+    state: &crate::RuntimeState,
+    remote: crate::coord_rooms::federation::RemoteAgent,
+    run: crate::host_runs::AgentRun,
+    payload: Option<&[u8]>,
+) -> Outcome<'static> {
+    let writer = match state.read() {
+        Ok(runtime) => runtime.audit.clone(),
+        Err(_) => return response(503, json!({"error":"runtime unavailable"})),
+    };
+    let caller = crate::peer_support::Caller {
+        run,
+        remote: Some(remote),
+    };
+    let result = crate::peer_support::remote(
+        state,
+        &writer,
+        &caller,
+        request.method,
+        super::route(request),
+        payload,
+    )
+    .await;
+    match result {
+        Ok(value) => response(200, value),
+        Err(error) => {
+            let refusal = error.downcast_ref::<crate::peer_support::Refusal>();
+            response(
+                refusal.map_or(503, |refusal| refusal.status),
+                json!({"error":refusal.map_or("support state or runtime control unavailable",|refusal|refusal.message),"next_action":"inspect current B-side grants and the original operation_id before another operation"}),
+            )
+        }
+    }
 }

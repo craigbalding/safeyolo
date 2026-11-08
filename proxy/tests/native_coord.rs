@@ -9,6 +9,9 @@ use std::{
     time::Duration,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(target_os = "linux")]
+#[path = "support/controlled_runs.rs"]
+mod controlled_runs;
 
 #[path = "native_coord/attestations.rs"]
 mod attestations;

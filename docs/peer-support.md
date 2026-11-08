@@ -1,15 +1,16 @@
-# Delegate local peer support
+# Delegate peer support
 
 An operator can grant a support agent authority to inspect and repair selected
-agents in the same SafeYolo instance. The support agent uses the authenticated
+agents in the same instance or in an explicitly selected remote instance. The support agent uses the authenticated
 Agent application programming interface (API) or the existing Model Context
 Protocol (MCP) tools. Neither agent
 needs a shared Coord room. The target model, terminal and Coord loop can be
 unresponsive. Local calls do not depend on Coord or NATS notifications.
 
-The owning API, policy and required runtime controls must still work. This
-interface does not implement support across instances. Remote support will
-require its inter-instance transport.
+The owning API, policy and required runtime controls must still work. Remote
+calls also require Core NATS connectivity. [Configure authenticated TLS NATS](coord-reference.md#collaborate-through-a-home-safeyolo)
+between the separately initialized instances. Guests continue to use their own
+local API; broker credentials and the remote Admin token remain on the hosts.
 
 ## Choose the authority
 
@@ -79,9 +80,18 @@ that exact preview and apply the grant named `incident`:
 
 ```sh
 safeyolo --root "$ROOT" support preview incident --file support.json --json > preview.json
-jq --slurpfile preview preview.json '.grant.acknowledgment = $preview[0].acknowledgment' support.json > acknowledged.json
+jq --slurpfile preview preview.json '.grant = $preview[0].after | .grant.acknowledgment = $preview[0].acknowledgment' support.json > acknowledged.json
 safeyolo --root "$ROOT" support apply incident --file acknowledged.json --json
 ```
+
+For a remote support identity on A, add `support_instance_id` with A's durable
+instance ID before previewing on B. Keep `support.agent_id` as A's actual durable
+agent ID. Choose a B-side display handle distinct from local agent names. The
+preview adds `support_peer_epoch` from B's current trust in A. Apply the returned
+`after` grant and acknowledgment together. Applying the grant registers the
+qualified manager through B's existing principal mapping; no dummy room or
+membership is needed. Later room or display-name changes do not rebind that
+manager. Re-trusting a revoked peer does not revive the old target grant.
 
 A changed grant or durable identity refuses the proposal. Inspect the current
 state and preview the revised proposal. A support agent cannot edit its own
@@ -102,7 +112,10 @@ retained reference still requires current observation and source disclosure.
 ## Investigate and repair
 
 Inside the authorized support agent, call `support_grants()` to discover its
-current local authority. Select a new `operation_id` before each operation.
+current authority. For a remote target, use `support_grants(home="primary")`
+and the same `home` on `support_operation` and `read_support_operation`.
+Use B's returned instance and target IDs. Select a new `operation_id` before
+each deliberate operation.
 Use `support_operation` with the selected grant and durable target ID. The
 equivalent Agent API routes are:
 
@@ -138,7 +151,11 @@ prove that its sandbox stopped. Preserve degraded runtime evidence.
 For subsequent commands or lifecycle operations, set `expected_run` to the
 `run_id` from inspection. A start of a target that has never run uses null.
 Each request also accepts the exact `instance_id`; omission selects the local
-owning instance. The operation contains one of these forms:
+owning instance. For remote calls, the configured `home` selects the owner;
+include its returned `instance_id` to make that selection explicit. B also
+checks the transport request's expected destination before any effect. A
+misrouted request cannot act on another trusted instance. The operation contains
+one of these forms:
 
 ```json
 {"action": "guest_command", "command": "df -h; ps -ef", "timeout_seconds": 30}
@@ -157,6 +174,20 @@ the sandbox generation and verifies the recorded command's exit before starting
 its replacement. Sandbox restart stops and starts the saved worker. Starting
 only a sandbox does not launch its coding harness. Lifecycle controls refuse
 unverified ownership and changed runs.
+
+To verify a repair independently, use the owning host's ordinary `agent status`
+and `agent shell` commands for the selected instance. Check the target's durable
+agent ID, sandbox run, current launch and guest supervisor together. Confirm
+the configured workload's process and useful output, such as its readiness
+marker. A model report or a successful API response alone does not establish
+recovery.
+
+A harness restart creates a new launch ID inside the same sandbox run. The
+saved command begins with `export SAFEYOLO_GUEST_LAUNCH_ID=LAUNCH_ID; `, followed
+by the configured command. Check each saved wrapper against its own recorded
+launch ID before comparing the remaining command. The full wrapper strings
+must change when the launch ID changes. Also verify the workload's configuration
+and script when the repair depends on them.
 
 A lifecycle owner can publish a launch before the guest observes it. If the
 returned observation does not verify the requested running or stopped state,
@@ -189,6 +220,9 @@ A timeout or transport failure does not establish command completion or terminat
 guest descendants. Narrow the next diagnostic command if its output was
 truncated. Treat every guest result as untrusted evidence.
 
+Remote request envelopes share the managed NATS broker's 8 MiB payload limit.
+Oversized requests are refused before a remote operation is attempted.
+
 ## Recover an uncertain result
 
 After a lost reply, use `read_support_operation(operation_id="incident-inspect-1")`
@@ -197,6 +231,9 @@ receipt. Reusing an ID with different inputs is refused. No duplicate command
 or lifecycle action is silently replayed. A proxy restart can leave
 `outcome_unknown`; inspect the target before deliberately choosing a new ID.
 The original initiating support run and target run remain in the receipt.
+Remote receipts also retain the authenticated source instance and B-qualified
+principal. A support-agent restart can read an earlier result under its standing
+grant without rebinding the original execution to its new run.
 
 The process owns an admitted operation even if its HTTP caller disconnects.
 Disconnecting that caller is not command cancellation. The operation can keep
@@ -205,12 +242,25 @@ not prove that guest descendants stopped. No automatic rollback is performed.
 
 Private receipts under the owning instance's `data/support-operations` retain
 bounded guest output. Current support authority is required for subsequent
-result reads. An admitted operation's pending response can still deliver output
-after narrowing, expiry or revocation. Routine audit events bind the initiator, owning instance, target/run,
+result reads. A local operation's pending response can still deliver output
+after narrowing, expiry or revocation. Remote pending responses recheck B's
+current disclosure authority before returning a saved result; A also rechecks
+the source run and selected route. Already-started commands can still finish,
+including during a partition or source restart. Routine audit events bind the
+initiator, owning instance, target/run,
 grant/revision, operation and result. They exclude command text and guest
 output. Do not copy raw credentials or host secrets into Coord or a support
 report. Report observed facts, diagnosis, changes, observed recovery and
 unresolved uncertainty separately.
+
+For selected events from several instances, use ordinary `wait_for_coord`
+with each source's durable instance ID and cursor. The [multi-source example](coord-reference.md#collaborate-through-a-home-safeyolo)
+explains availability, reconnection and position advancement. The owner retains
+canonical evidence; attention delivers selected references. Notification or
+JetStream failure does not itself prevent a permitted support operation over
+healthy Core NATS. A full Core outage reports remote control unavailable.
+Use local owner-side controls to recover NATS where those controls work.
+Unreachable does not mean that the target died.
 
 ## Narrow or revoke
 

@@ -1,11 +1,13 @@
 //! Operator trust and room grants for explicitly federated SafeYolo agents.
 use super::*;
 use crate::agent_api::coord::{public_name_part, valid_agent_id};
+use rustls::pki_types::pem::PemObject;
 use serde::{Deserialize, Serialize};
+pub(crate) mod nats;
 
-pub(crate) const HELP: &str = "safeyolo [--root ROOT] coord federation credential PATH\nsafeyolo [--root ROOT] coord federation trust INSTANCE TOKEN_FILE\nsafeyolo [--root ROOT] coord federation revoke INSTANCE\nsafeyolo [--root ROOT] coord federation member ROOM INSTANCE AGENT_ID DISPLAY_NAME [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--root ROOT] coord federation unmember ROOM INSTANCE AGENT_ID [--operation-id ID]\nsafeyolo [--root ROOT] coord federation home NAME INSTANCE HTTPS_URL CA_FILE TOKEN_FILE\nsafeyolo [--root ROOT] coord federation unhome NAME\nsafeyolo [--root ROOT] coord federation serve LISTEN CERT_FILE KEY_FILE\n\nRun serve in the foreground on the room's home instance. Peers use host-held credentials and pinned home TLS trust. Trust alone grants no room access. member grants retained history using the existing room permissions. revoke atomically disables the peer and revokes its room memberships. Re-trust does not restore those memberships. Agents select an explicit home on ordinary Coord tools; omitted home remains local. NATS stays loopback-only and is never connected to a peer.";
+pub(crate) const HELP: &str = "safeyolo [--root ROOT] coord federation credential PATH\nsafeyolo [--root ROOT] coord federation trust INSTANCE TOKEN_FILE\nsafeyolo [--root ROOT] coord federation revoke INSTANCE\nsafeyolo [--root ROOT] coord federation member ROOM INSTANCE AGENT_ID DISPLAY_NAME [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--root ROOT] coord federation unmember ROOM INSTANCE AGENT_ID [--operation-id ID]\nsafeyolo [--root ROOT] coord federation home NAME INSTANCE TLS_NATS_URL CA_FILE TOKEN_FILE\nsafeyolo [--root ROOT] coord federation unhome NAME\n\nConfigure the destination's host-held coord-federation.json before starting its managed NATS and proxy. It selects an authenticated TLS NATS listener and scoped peer subjects in SY_FED. SY_LOCAL has no exports. Core request/reply carries defined Coord and support operations; JetStream retains selected notification hints. Guests use only their local Agent API. Trust alone grants neither room nor target access. Remote support grants register qualified managers without a room. revoke disables the peer and revokes memberships; re-trust restores neither memberships nor old target grants. Omitted home remains local. There is no HTTPS federation listener or fallback.";
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct RemoteAgent {
     pub instance_id: String,
     pub agent_id: String,
@@ -40,11 +42,86 @@ pub(crate) fn token(path: &Path) -> Result<zeroize::Zeroizing<String>, Error> {
     Ok(token)
 }
 
-pub(crate) fn authenticate(
+pub(crate) fn authenticate_transport(
     conn: &Connection,
-    credential: &[u8],
+    instance: &str,
+    credential_hash: &str,
     agent: &str,
 ) -> Result<RemoteAgent, Error> {
+    if !valid_agent_id(agent) {
+        return Err("invalid remote agent identity".into());
+    }
+    let epoch = conn.query_row("SELECT epoch FROM coord_federation_peers WHERE instance_id=?1 AND token_hash=?2 AND enabled=1",params![instance,credential_hash],|row|row.get(0))?;
+    let principal_id = principal(instance, agent);
+    let display_name=conn.query_row("SELECT display_name FROM coord_federation_agents WHERE principal_id=?1 AND instance_id=?2 AND agent_id=?3",params![principal_id,instance,agent],|row|row.get(0))?;
+    Ok(RemoteAgent {
+        instance_id: instance.into(),
+        agent_id: agent.into(),
+        principal_id,
+        display_name,
+        epoch,
+    })
+}
+
+pub(crate) fn registration_available(
+    conn: &Connection,
+    policy: &crate::policy::Policy,
+    instance: &str,
+    agent: &str,
+    name: &str,
+) -> Result<(), Error> {
+    if !valid_agent_id(agent) || !public_name_part(name) || policy.evidence_agent_id(name).is_some()
+    {
+        return Err("choose a valid remote handle distinct from local agents".into());
+    }
+    let id = principal(instance, agent);
+    let old: Option<String> = conn
+        .query_row(
+            "SELECT principal_id FROM coord_federation_agents WHERE display_name=?1",
+            [name],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(old) = old.filter(|old| old != &id) {
+        let member:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM memberships WHERE principal_kind='agent' AND principal_id=?1 AND revoked_at IS NULL)",[&old],|row|row.get(0))?;
+        let mut support = false;
+        for grant in policy
+            .support_grants()
+            .values()
+            .filter(|grant| grant.active())
+        {
+            if let Some(instance) = &grant.support_instance_id
+                && principal(instance, &grant.support.agent_id) == old
+            {
+                support|=conn.query_row("SELECT EXISTS(SELECT 1 FROM coord_federation_peers WHERE instance_id=?1 AND enabled=1 AND epoch=?2)",params![instance,grant.support_peer_epoch],|row|row.get::<_,bool>(0))?;
+            }
+        }
+        if member || support {
+            return Err("remote display handle is held by an identity with active grants".into());
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn register(
+    conn: &Connection,
+    policy: &crate::policy::Policy,
+    instance: &str,
+    agent: &str,
+    name: &str,
+) -> Result<(), Error> {
+    registration_available(conn, policy, instance, agent, name)?;
+    let id = principal(instance, agent);
+    conn.execute(
+        "DELETE FROM coord_federation_agents WHERE display_name=?1 AND principal_id<>?2",
+        params![name, id],
+    )?;
+    conn.execute("INSERT INTO coord_federation_agents VALUES(?1,?2,?3,?4) ON CONFLICT(principal_id) DO UPDATE SET display_name=excluded.display_name",params![id,instance,agent,name])?;
+    Ok(())
+}
+
+#[cfg(test)]
+fn authenticate(conn: &Connection, credential: &[u8], agent: &str) -> Result<RemoteAgent, Error> {
     if !valid_agent_id(agent) {
         return Err("invalid remote agent identity".into());
     }
@@ -95,17 +172,6 @@ pub(crate) async fn run(root: &Path, arguments: &[String]) -> Result<Value, Erro
     if arguments.is_empty() || arguments == ["--help"] {
         println!("{HELP}");
         return Ok(Value::Null);
-    }
-    if let [command, listen, cert, key] = arguments
-        && command == "serve"
-    {
-        return crate::agent_api::coord::federation::serve(
-            root,
-            listen,
-            Path::new(cert),
-            Path::new(key),
-        )
-        .await;
     }
     bootstrap(root)?;
     let mut conn = open(root)?;
@@ -203,13 +269,11 @@ pub(crate) async fn run(root: &Path, arguments: &[String]) -> Result<Value, Erro
                 // Reuse a display name after its former principal's last grant
                 // ends. The same transaction preserves immutable authorship and
                 // prevents replay from restoring the obsolete binding.
-                tx.execute(
-                    "DELETE FROM coord_federation_agents WHERE display_name=?1 AND principal_id<>?2
-                     AND NOT EXISTS(SELECT 1 FROM memberships WHERE principal_kind='agent'
-                       AND principal_id=coord_federation_agents.principal_id AND revoked_at IS NULL)",
-                    params![name,id],
+                let config = crate::native_config::read(&root.join("config.toml"))?;
+                let policy = crate::policy::Policy::from_native_path(
+                    &config.policy_file.ok_or("policy path missing")?,
                 )?;
-                tx.execute("INSERT INTO coord_federation_agents VALUES(?1,?2,?3,?4) ON CONFLICT(principal_id) DO UPDATE SET display_name=excluded.display_name",params![id,instance,agent,name])?;
+                register(&tx, &policy, instance, agent, name)?;
             }
             result
         }
@@ -218,19 +282,24 @@ pub(crate) async fn run(root: &Path, arguments: &[String]) -> Result<Value, Erro
                 return Err("invalid home name".into());
             }
             let uri: hyper::Uri = url.parse()?;
-            if uri.scheme_str() != Some("https")
+            if uri.scheme_str() != Some("tls")
                 || uri.authority().is_none_or(|a| a.as_str().contains('@'))
                 || uri.path_and_query().is_some_and(|p| p.as_str() != "/")
             {
                 return Err(
-                    "home URL must be an HTTPS origin without credentials, path or query".into(),
+                    "home URL must be a TLS NATS origin without credentials, path or query".into(),
                 );
             }
             let ca = fs::canonicalize(ca)?;
             let credential = fs::canonicalize(credential)?;
             token(&credential)?;
-            // Parse pinned trust before recording a route that cannot start.
-            crate::agent_api::coord::federation::pinned_tls(&ca)?;
+            // Broker credentials remain in host files and never enter requests.
+            let certificates =
+                rustls::pki_types::CertificateDer::pem_reader_iter(fs::File::open(&ca)?)
+                    .collect::<Result<Vec<_>, _>>()?;
+            if certificates.is_empty() {
+                return Err("home CA file must contain a certificate".into());
+            }
             tx.execute("INSERT INTO coord_federation_homes VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(name) DO UPDATE SET instance_id=excluded.instance_id,url=excluded.url,ca_file=excluded.ca_file,token_file=excluded.token_file,revision=excluded.revision",params![name,instance,url.trim_end_matches('/'),ca.to_string_lossy(),credential.to_string_lossy(),uuid::Uuid::new_v4().simple().to_string()])?;
             json!({"home":name,"instance_id":instance})
         }

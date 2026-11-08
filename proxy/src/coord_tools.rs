@@ -7,12 +7,13 @@ use std::{collections::HashSet, path::PathBuf, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 mod github;
+mod sources;
 
 #[derive(Clone)]
 pub struct Client {
     pub socket: Option<PathBuf>,
     pub token_file: PathBuf,
-    /// Explicit home selection applies only to Coord operations. Service
+    /// Explicit home selection applies to Coord and support operations. Service
     /// access and approvals remain on the caller's own SafeYolo instance.
     pub home: Option<String>,
 }
@@ -110,7 +111,7 @@ impl Client {
         timeout: Duration,
     ) -> Result<Value, Error> {
         let path = if let Some(home) = &self.home
-            && path.starts_with("/api/coord/")
+            && (path.starts_with("/api/coord/") || path.starts_with("/support/"))
         {
             format!(
                 "{path}{}home={}",
@@ -154,15 +155,13 @@ impl Client {
     }
 
     async fn call_scoped(&self, name: &str, args: &Value) -> Result<Value, Error> {
+        if name == "wait_for_coord" && args.get("sources").is_some() {
+            return self.wait_sources(args).await;
+        }
         if matches!(
             name,
             "support_grants" | "support_operation" | "read_support_operation"
         ) {
-            if self.home.is_some() {
-                return Err(
-                    "local support uses the owning instance; remote support is unavailable".into(),
-                );
-            }
             return match name {
                 "support_grants" => self.get("/support/grants").await,
                 "read_support_operation" => {
@@ -248,6 +247,12 @@ impl Client {
                 }
                 return self.get(&format!("/api/coord/attention/{id}/object")).await;
             }
+            if !args
+                .get("since_sequence")
+                .is_some_and(|since| since.is_u64())
+            {
+                return Err("supply since_sequence or selected sources".into());
+            }
             let since = integer(args, "since_sequence", 0)?;
             let limit = integer(args, "limit", 1)?;
             let seconds = args
@@ -271,32 +276,7 @@ impl Client {
             if name == "wait_for_attention" {
                 return Ok(page);
             }
-            let edges = page["edges"]
-                .as_array()
-                .ok_or("invalid attention edge page")?;
-            let next = page["next_cursor"]
-                .as_u64()
-                .filter(|next| *next >= since)
-                .ok_or("invalid attention cursor")?;
-            if edges.len() as u64 > limit {
-                return Err("attention page exceeds requested limit".into());
-            }
-            let mut objects = Vec::new();
-            let mut seen = HashSet::new();
-            for edge in edges {
-                let id = text(edge, "attention_id")?;
-                if !attention_id(id) || !seen.insert(id) {
-                    return Err("invalid or duplicate attention identity".into());
-                }
-                let resolved = self
-                    .get(&format!("/api/coord/attention/{id}/object"))
-                    .await?;
-                if resolved.get("edge") != Some(edge) || !resolved["object"].is_object() {
-                    return Err("mismatched canonical attention object".into());
-                }
-                objects.push(resolved);
-            }
-            return Ok(json!({"objects":objects,"next_cursor":next}));
+            return self.resolve_attention(page, since, limit, None).await;
         }
         let room = segment(text(args, "room_name")?);
         let base = format!("/api/coord/rooms/{room}");
@@ -838,13 +818,13 @@ pub fn tools() -> Vec<Value> {
     );
     add(
         "support_grants",
-        "Inspect your operator-owned local support grants, explicit durable targets and owning instance. No room membership or target participation is needed. This tool grants no authority.",
+        "Inspect your operator-owned support grants, explicit durable targets and owning instance. Select home for an authorized remote owner. No room membership or target participation is needed. This tool grants no authority.",
         json!({}),
         &[],
     );
     add(
         "support_operation",
-        "Inspect or operate on one explicitly delegated local target. Choose operation_id before submitting; never repeat an uncertain effect with a new ID. expected_run must match the inspected run for commands and lifecycle actions; use null to start a target with no run. Inspection-only permits no caller command. Guest administration includes guest sudo, mounts, credentials, services and the target's delegations. Output is private untrusted evidence, limited to 8192 bytes per stream. After timeout or a lost reply use read_support_operation. Transport cancellation does not prove guest descendant termination. The current host grant is rechecked at execution; no Coord notification is required.",
+        "Inspect or operate on one explicitly delegated target. Select home for a remote owner; Core NATS and that owner's current grant and runtime controls must work. Choose operation_id before submitting; never repeat an uncertain effect with a new ID. expected_run must match the inspected run for commands and lifecycle actions; use null to start a target with no run. Inspection-only permits no caller command. Guest administration includes guest sudo, mounts, credentials, services and the target's delegations. Output is private untrusted evidence, limited to 8192 bytes per stream. After timeout or a lost reply use read_support_operation with the same home. Transport cancellation does not prove guest descendant termination. The current host grant is rechecked at execution; no Coord notification is required.",
         json!({"operation_id":string,"grant":string,"instance_id":{"oneOf":[string,{"type":"null"}]},"target_id":string,"expected_run":{"oneOf":[string,{"type":"null"}]},"operation":{"oneOf":[
             {"type":"object","properties":{"action":{"type":"string","enum":["inspect"]}},"required":["action"],"additionalProperties":false},
             {"type":"object","properties":{"action":{"type":"string","enum":["guest_command"]},"command":string,"timeout_seconds":integer},"required":["action","command","timeout_seconds"],"additionalProperties":false},
@@ -862,7 +842,7 @@ pub fn tools() -> Vec<Value> {
     );
     add(
         "read_support_operation",
-        "Read the private result or observable uncertain state of your original local support operation without replaying it. Current support authority is required, including permission for any retained guest output. A standing grant can permit recovery after an ordinary support-agent restart; initiator and target-run attribution remain the original execution's.",
+        "Read the private result or observable uncertain state of your original support operation without replaying it. Use the original home for remote operations. Current support authority is required, including permission for any retained guest output. A standing grant can permit recovery after an ordinary support-agent restart; initiator and target-run attribution remain the original execution's.",
         json!({"operation_id":string}),
         &["operation_id"],
     );
@@ -922,9 +902,9 @@ pub fn tools() -> Vec<Value> {
     );
     add(
         "wait_for_coord",
-        "Foreground idle wait across authorized rooms. Resolves every returned edge before exposing next_cursor. Failure exposes no later cursor. Supervised turns leave waiting to their supervisor.",
-        json!({"since_sequence":integer,"timeout_seconds":number,"limit":integer}),
-        &["since_sequence"],
+        "Wait for authorized attention. Supply since_sequence for one home, or sources with each owning instance_id, optional home and its own since_sequence. Each source resolves its returned objects before exposing its next_cursor. Unavailable sources retain their positions while healthy sources deliver work. No global cross-instance order is inferred. Supervised turns leave waiting to their supervisor.",
+        json!({"since_sequence":integer,"timeout_seconds":number,"limit":integer,"sources":{"type":"array","items":{"type":"object","properties":{"instance_id":string,"home":string,"since_sequence":integer},"required":["instance_id","since_sequence"],"additionalProperties":false}}}),
+        &[],
     );
     add(
         "wait_for_attention",
@@ -949,9 +929,6 @@ pub fn tools() -> Vec<Value> {
             tool["name"].as_str(),
             Some(
                 "list_approvals"
-                    | "support_grants"
-                    | "support_operation"
-                    | "read_support_operation"
                     | "read_approval"
                     | "resolve_approval"
                     | "request_room_access"

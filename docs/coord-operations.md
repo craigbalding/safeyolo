@@ -790,6 +790,15 @@ home's state. See [federation setup and revocation](coord-reference.md#collabora
 for peer identities, private credentials, certificate trust, permissions and
 per-home attention cursors.
 
+The inter-instance path uses authenticated TLS NATS with a separate federation
+account and peer-specific subjects. Each owner retains its own root, grants,
+canonical records and runtime. A remote support grant needs no shared room.
+For support setup, event selection and repair, use [delegated peer support](peer-support.md).
+The ordinary `wait_for_coord` tool can select several owning instances with
+independent cursors and availability. Notification failure alone does not block
+permitted Core NATS support requests. A full Core transport outage requires
+local owner-side recovery where those controls remain usable.
+
 ### Room storage
 
 Messages are retained within storage limits. Rooms share the managed NATS

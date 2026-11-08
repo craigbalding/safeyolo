@@ -19,14 +19,52 @@ pub(crate) fn preview(policy: &Policy, name: &str, proposal: &Proposal) -> Resul
     if !crate::host_platform::valid_agent_name(name) {
         return Err(invalid("invalid support grant name"));
     }
-    let grant = &proposal.grant;
+    let mut prepared = proposal.grant.clone();
+    if let Some(instance) = &prepared.support_instance_id {
+        let conn = crate::coord_rooms::open(&crate::host_platform::config_dir())
+            .map_err(|_| invalid("trust the source instance before previewing remote support"))?;
+        let epoch: i64 = conn
+            .query_row(
+                "SELECT epoch FROM coord_federation_peers WHERE instance_id=?1 AND enabled=1",
+                [instance],
+                |row| row.get(0),
+            )
+            .map_err(|_| invalid("source instance is not trusted"))?;
+        if prepared
+            .support_peer_epoch
+            .is_some_and(|selected| selected != epoch)
+        {
+            return Err(invalid(
+                "peer trust changed; preview a new grant against current trust",
+            ));
+        }
+        prepared.support_peer_epoch = Some(epoch);
+        crate::coord_rooms::federation::registration_available(
+            &conn,
+            policy,
+            instance,
+            &prepared.support.agent_id,
+            &prepared.support.name,
+        )
+        .map_err(|error| invalid(error.to_string()))?;
+    } else if prepared.support_peer_epoch.is_some() {
+        return Err(invalid("local support has no remote peer trust epoch"));
+    }
+    let grant = &prepared;
     grant
         .validate()
         .map_err(|error| invalid(error.to_string()))?;
     if grant.instance_id != super::instance_id().map_err(|error| invalid(error.to_string()))? {
         return Err(invalid("select this owning instance's durable identity"));
     }
-    if !grant.identities_current(policy) {
+    if !grant
+        .targets
+        .iter()
+        .all(|target| policy.evidence_agent_id(&target.name) == Some(target.agent_id.as_str()))
+        || (grant.support_instance_id.is_none()
+            && policy.evidence_agent_id(&grant.support.name)
+                != Some(grant.support.agent_id.as_str()))
+    {
         return Err(invalid(
             "support or target durable identity is missing, duplicate or changed",
         ));
@@ -40,7 +78,7 @@ pub(crate) fn preview(policy: &Policy, name: &str, proposal: &Proposal) -> Resul
     }
     let mut warnings = vec![
         "Inspection reports selected host-observed states. Guest output is untrusted. Other workers and host secrets remain private.".to_owned(),
-        "Revocation, narrowing and expiry prevent newly unauthorized operations and subsequent result reads. Already-admitted commands and their pending responses can continue, including output delivery. Revocation cannot undo commands, file changes or disclosed data. Killing a transport does not prove guest descendants stopped.".to_owned(),
+        "Revocation, narrowing and expiry prevent newly unauthorized operations and subsequent result reads. Already-admitted commands can continue. Local pending responses can still deliver output; remote pending responses recheck the owner's current disclosure authority. Revocation cannot undo commands, file changes or disclosed data. Killing a transport does not prove guest descendants stopped.".to_owned(),
     ];
     if grant.guest_admin {
         warnings.push("Guest administration permits arbitrary guest commands, including existing passwordless guest sudo, all target-accessible files, writable mounts, credentials, network and services, Agent API permissions and existing delegations. Authority can reach other peers and approval decisions through the target. Standing grants follow capabilities later given to the target. Direct target checks do not confine this indirect reach.".into());
@@ -116,6 +154,20 @@ pub(crate) fn apply(state: &RuntimeState, name: &str, proposal: Proposal) -> Res
             return Err(invalid(
                 "acknowledge the exact support preview revision before apply",
             ));
+        }
+        if let Some(instance) = &proposal.grant.support_instance_id {
+            let conn = crate::coord_rooms::open(&crate::host_platform::config_dir())
+                .map_err(|_| invalid("remote identity store unavailable"))?;
+            crate::coord_rooms::federation::register(
+                &conn,
+                &saved,
+                instance,
+                &proposal.grant.support.agent_id,
+                &proposal.grant.support.name,
+            )
+            .map_err(|_| {
+                invalid("remote identity registration conflicts; inspect the current handle")
+            })?;
         }
         let (mut document, context) = crate::policy::parse_toml_for_edit(source)
             .map_err(|error| invalid(error.to_string()))?;

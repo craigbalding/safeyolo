@@ -5,10 +5,10 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::Caller;
 use crate::{
     Error, RuntimeState, audit,
     host_agents::Agent,
-    host_runs::AgentRun,
     policy::{
         Policy,
         support::{Grant, Lifecycle},
@@ -84,7 +84,7 @@ fn valid_operation_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 1024
 }
 
-fn authorize(policy: &Policy, run: &AgentRun, input: &Request) -> Result<(Grant, Agent), Error> {
+fn authorize(policy: &Policy, run: &Caller, input: &Request) -> Result<(Grant, Agent), Error> {
     if !run.current(policy) {
         return Err(super::refuse(
             403,
@@ -104,7 +104,7 @@ fn authorize(policy: &Policy, run: &AgentRun, input: &Request) -> Result<(Grant,
     }
     let grant = policy.support_grants().remove(&input.grant)
         .filter(|grant| grant.active() && grant.instance_id == instance
-            && grant.support.name == run.agent && grant.support.agent_id == run.agent_id)
+            && run.matches(policy,grant))
         .ok_or_else(|| super::refuse(403, "current support grant required; ask the operator to preview or change support authority"))?;
     let target = grant
         .targets
@@ -131,7 +131,7 @@ fn authorize(policy: &Policy, run: &AgentRun, input: &Request) -> Result<(Grant,
     Ok((grant, agent))
 }
 
-fn receipt_path(run: &AgentRun, operation_id: &str) -> Result<PathBuf, Error> {
+fn receipt_path(run: &Caller, operation_id: &str) -> Result<PathBuf, Error> {
     if !valid_operation_id(operation_id) {
         return Err(super::refuse(400, "invalid support operation_id"));
     }
@@ -139,7 +139,7 @@ fn receipt_path(run: &AgentRun, operation_id: &str) -> Result<PathBuf, Error> {
     std::fs::create_dir_all(&directory)?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
-    let id = crate::approvals::pending::digest(&json!([run.agent_id, operation_id]));
+    let id = crate::approvals::pending::digest(&json!([run.principal(), operation_id]));
     Ok(directory.join(format!("{id}.json")))
 }
 
@@ -167,7 +167,7 @@ fn agent_view(receipt: Value, active: bool) -> Value {
     value
 }
 
-pub(crate) fn discover(state: &RuntimeState, run: &AgentRun) -> Result<Value, Error> {
+pub(crate) fn discover(state: &RuntimeState, run: &Caller) -> Result<Value, Error> {
     let policy = super::current_policy(state)?;
     if !run.current(&policy) {
         return Err(super::refuse(
@@ -179,21 +179,13 @@ pub(crate) fn discover(state: &RuntimeState, run: &AgentRun) -> Result<Value, Er
     let grants: Vec<_> = policy
         .support_grants()
         .into_iter()
-        .filter(|(_, grant)| {
-            grant.instance_id == instance
-                && grant.support.name == run.agent
-                && grant.support.agent_id == run.agent_id
-        })
+        .filter(|(_, grant)| grant.instance_id == instance && run.matches(&policy, grant))
         .map(|(name, grant)| super::grant_view(&policy, &name, &grant, &instance))
         .collect();
     Ok(json!({"instance_id":instance,"grants":grants}))
 }
 
-pub(crate) fn read(
-    state: &RuntimeState,
-    run: &AgentRun,
-    operation_id: &str,
-) -> Result<Value, Error> {
+pub(crate) fn read(state: &RuntimeState, run: &Caller, operation_id: &str) -> Result<Value, Error> {
     let path = receipt_path(run, operation_id)?;
     if !path.try_exists()? {
         return Err(super::refuse(404, "support operation unavailable"));
@@ -213,7 +205,7 @@ pub(crate) fn read(
 pub(crate) async fn submit(
     state: &RuntimeState,
     writer: &Arc<audit::Writer>,
-    run: &AgentRun,
+    run: &Caller,
     input: Request,
 ) -> Result<Value, Error> {
     if !valid_operation_id(&input.operation_id) {
@@ -280,7 +272,7 @@ pub(crate) async fn submit(
 
 async fn emit(
     writer: &audit::Writer,
-    run: &AgentRun,
+    run: &Caller,
     receipt: &Value,
     phase: &str,
 ) -> Result<(), Error> {
@@ -290,7 +282,12 @@ async fn emit(
         audit::Severity::High,
         format!("Delegated support operation {phase}"),
     );
-    event.agent = Some(run.agent.clone());
+    event.agent = Some(
+        run.remote
+            .as_ref()
+            .map_or(&run.run.agent, |remote| &remote.display_name)
+            .clone(),
+    );
     event.details = json!({"instance_id":receipt["instance_id"],"initiator":run,
         "target_id":receipt["target_id"],"target_run":receipt["target_run"],
         "grant":receipt["grant"],"grant_revision":receipt["grant_revision"],"target_binding":receipt.get("target_binding").cloned().unwrap_or(json!("authorized")),
@@ -306,7 +303,7 @@ async fn emit(
 async fn execute(
     state: &RuntimeState,
     writer: &audit::Writer,
-    run: &AgentRun,
+    run: &Caller,
     input: Request,
 ) -> Result<Value, Error> {
     let policy = super::current_policy(state)?;
@@ -379,7 +376,7 @@ async fn execute(
 async fn execute_locked(
     state: &RuntimeState,
     writer: &audit::Writer,
-    run: &AgentRun,
+    run: &Caller,
     input: &Request,
     target: &Agent,
     path: &std::path::Path,
@@ -543,7 +540,7 @@ fn require_live_owned(target: &Agent, observed: &Value) -> Result<(), Error> {
 
 async fn lifecycle(
     state: &RuntimeState,
-    run: &AgentRun,
+    run: &Caller,
     input: &Request,
     target: &Agent,
     operation: Lifecycle,
