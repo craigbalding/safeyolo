@@ -169,21 +169,28 @@ struct StreamEvidence {
     finished: bool,
 }
 impl StreamEvidence {
-    fn finish(&mut self, outcome: &str, uploaded: Option<u64>, downloaded: Option<u64>) {
+    fn finish(
+        &mut self,
+        outcome: &str,
+        uploaded: Option<u64>,
+        downloaded: Option<u64>,
+        error: Option<&crate::tunnels::RelayError>,
+    ) {
         self.finished = true;
         let _ = self.runtime.audit.emit(self.identity.request_event(
             "gateway.docker_stream.end", crate::audit::Kind::Gateway, &self.request_id,
             "Docker exec/attach stream ended. Inspect process state to determine the operation outcome.",
             json!({"service":self.service,"path":self.path,"stream_outcome":outcome,
                 "uploaded_bytes":uploaded,"downloaded_bytes":downloaded,
-                "duration_ms":self.started.elapsed().as_millis(),"operation_outcome":"unknown","replayed":false}),
+                "duration_ms":self.started.elapsed().as_millis(),"operation_outcome":"unknown","replayed":false,
+                "error":error}), // DOC: docs/docker.md
         ));
     }
 }
 impl Drop for StreamEvidence {
     fn drop(&mut self) {
         if !self.finished {
-            self.finish("interrupted", None, None);
+            self.finish("interrupted", None, None, None);
         }
     }
 }
@@ -253,7 +260,7 @@ pub(super) fn upgrade(
     tasks.spawn(async move {
         let _connection = connection;
         if *stop.borrow() {
-            evidence.finish("shutdown", None, None);
+            evidence.finish("shutdown", None, None, None);
             return;
         }
         let switched = tokio::select! {
@@ -272,10 +279,11 @@ pub(super) fn upgrade(
                     result.outcome,
                     Some(result.uploaded),
                     Some(result.downloaded),
+                    result.error.as_ref(),
                 );
             }
-            Some(Err(_)) => evidence.finish("upgrade_failed", None, None),
-            None => evidence.finish("shutdown", None, None),
+            Some(Err(_)) => evidence.finish("upgrade_failed", None, None, None),
+            None => evidence.finish("shutdown", None, None, None),
         }
     });
     Ok((

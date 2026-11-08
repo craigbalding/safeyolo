@@ -331,30 +331,6 @@ pub(crate) async fn gateway_json(
             proxy_socket: socket,
             require_proxy: true,
             max_response_bytes: 1024 * 1024,
-            ..HttpsRoute::default()
-        },
-    )
-    .await
-}
-
-/// Only the host's explicit federation route supplies pinned peer trust.
-/// Loopback peers stay inside this host. External peers use the configured
-/// proxy, including its normal TLS trust and credential mediation.
-pub(crate) async fn federation_json(
-    url: &str,
-    token: &str,
-    body: Value,
-    tls: std::sync::Arc<rustls::ClientConfig>,
-) -> Result<Value, Error> {
-    https_json_from(
-        url,
-        token,
-        Method::POST,
-        body,
-        HttpsRoute {
-            peer_tls: Some(tls),
-            max_response_bytes: 8 * 1024 * 1024,
-            ..HttpsRoute::default()
         },
     )
     .await
@@ -364,7 +340,6 @@ struct HttpsRoute<'a> {
     proxy_socket: Option<&'a Path>,
     require_proxy: bool,
     max_response_bytes: usize,
-    peer_tls: Option<std::sync::Arc<rustls::ClientConfig>>,
 }
 impl Default for HttpsRoute<'_> {
     fn default() -> Self {
@@ -372,7 +347,6 @@ impl Default for HttpsRoute<'_> {
             proxy_socket: None,
             require_proxy: false,
             max_response_bytes: usize::MAX,
-            peer_tls: None,
         }
     }
 }
@@ -404,24 +378,14 @@ async fn https_json_from(
     let path = uri.path_and_query().map_or("/", |p| p.as_str());
     let ca = std::env::var_os("SSL_CERT_FILE").or_else(|| std::env::var_os("REQUESTS_CA_BUNDLE"));
     let parent_tls = crate::http::client_tls(ca.as_deref().map(Path::new))?;
-    let tls = route.peer_tls.clone().unwrap_or_else(|| parent_tls.clone());
-    let loopback = route.peer_tls.is_some()
-        && host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback());
-    let timeout = if route.peer_tls.is_some() {
-        Duration::from_secs(330)
-    } else {
-        Duration::from_secs(15)
-    };
+    let tls = parent_tls.clone();
+    let timeout = Duration::from_secs(15);
     tokio::time::timeout(timeout, async {
         let proxy = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
             .into_iter()
             .find_map(|key| std::env::var(key).ok().filter(|v| !v.is_empty()));
         let proxy_stream: Option<(crate::tunnels::BoxStream, Option<Zeroizing<String>>)> =
-            if loopback {
-                None
-            } else if let Some(socket) = route.proxy_socket {
+            if let Some(socket) = route.proxy_socket {
                 Some((
                     Box::new(tokio::net::UnixStream::connect(socket).await?),
                     None,

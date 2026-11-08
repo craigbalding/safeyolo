@@ -871,6 +871,78 @@ mod tests {
         );
     }
     #[test]
+    fn rename_requires_the_inspected_container_to_be_owned() {
+        let root = tempfile::tempdir().unwrap();
+        let mut selected = project();
+        selected.shared.containers.insert("e".repeat(64));
+        let membership = Membership::open(root.path(), "https://engine", &selected).unwrap();
+        for (id, allowed) in [('a', true), ('e', false), ('f', false)] {
+            let mut inspection = Inspection::default();
+            inspection.container_id = Some(id.to_string().repeat(64));
+            inspection.observed.insert(
+                Resource::Container("temporary-name".into()),
+                Some(json!({"Id":id.to_string().repeat(64)})),
+            );
+            assert_eq!(
+                membership
+                    .authorize(
+                        &inspection,
+                        "POST",
+                        "/v1.45/containers/temporary-name/rename?name=alpha-web-1",
+                    )
+                    .is_ok(),
+                allowed,
+                "container {id}",
+            );
+        }
+    }
+    #[test]
+    fn default_network_alias_requires_the_observed_bridge_to_belong_to_the_project() {
+        let root = tempfile::tempdir().unwrap();
+        let selected = project();
+        let membership = Membership::open(root.path(), "https://engine", &selected).unwrap();
+        let access = DockerAccess::Project {
+            project: Box::new(selected),
+            bind_mounts: Vec::new(),
+        };
+        for (bridge, allowed) in [('b', true), ('d', true), ('e', false)] {
+            let mut inspection = access
+                .request(
+                    "POST",
+                    "/v1.45/containers/create",
+                    include_bytes!("../../../tests/fixtures/docker/create-defaults.json"),
+                )
+                .unwrap();
+            while let Some(resource) = inspection.next() {
+                let value = match &resource {
+                    Resource::Daemon { .. } => {
+                        json!({"OSType":"linux","SecurityOptions":["name=cgroupns"],"DefaultRuntime":"runc","LoggingDriver":"json-file"})
+                    }
+                    Resource::Network(name) => {
+                        assert_eq!(name, "bridge");
+                        json!({"Id":bridge.to_string().repeat(64),"Name":"bridge","Driver":"bridge","IPAM":{"Driver":"default"}})
+                    }
+                    Resource::Image(_) => {
+                        json!({"Id":format!("sha256:{}", "c".repeat(64)),"Os":"linux"})
+                    }
+                    _ => panic!("unexpected resource {resource:?}"),
+                };
+                inspection.observe(&access, &resource, Some(value)).unwrap();
+            }
+            assert!(
+                inspection
+                    .observed
+                    .contains_key(&Resource::Network("bridge".into()))
+            );
+            assert_eq!(
+                membership
+                    .authorize(&inspection, "POST", "/v1.45/containers/create")
+                    .is_ok(),
+                allowed
+            );
+        }
+    }
+    #[test]
     fn shared_container_references_and_reserved_resource_names_keep_their_bounds() {
         let root = tempfile::tempdir().unwrap();
         let mut selected = project();
@@ -956,7 +1028,7 @@ mod tests {
         let anchor =
             json!({"Type":"container","Action":"start","Actor":{"ID":"a".repeat(64)},"timeNano":1});
         let volume = json!({"CreatedAt":"2026-11-07T01:02:03Z"});
-        membership.events(&[anchor.clone()]).unwrap();
+        membership.events(std::slice::from_ref(&anchor)).unwrap();
         assert!(membership.volume("ordinary-data", &volume));
         let destroy =
             json!({"Type":"volume","Action":"destroy","Actor":{"ID":"ordinary-data"},"timeNano":2});

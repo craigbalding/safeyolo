@@ -35,6 +35,7 @@ mod audit_events;
 mod coord_signals;
 mod gateway;
 mod services;
+mod support;
 mod traffic;
 
 /// These errors terminate the connection without a fabricated HTTP response.
@@ -66,6 +67,24 @@ struct ServiceMutationState {
 }
 
 impl ServiceMutationOwner {
+    /// Keep asynchronous mutations alive after their HTTP caller disconnects,
+    /// without occupying the blocking pool while waiting for I/O or a lock.
+    pub(crate) async fn spawn<T: Send + 'static>(
+        &self,
+        work: impl std::future::Future<Output = Result<T, Error>> + Send + 'static,
+    ) -> Result<oneshot::Receiver<Result<T, Error>>, Error> {
+        let (sender, receiver) = oneshot::channel();
+        let mut state = self.state.lock().await;
+        while state.tasks.try_join_next().is_some() {}
+        if state.closing {
+            return Err(Error::ServiceMutation);
+        }
+        state.tasks.spawn(async move {
+            let _ = sender.send(work.await);
+        });
+        Ok(receiver)
+    }
+
     /// Admit one blocking service mutation into the process owner. A caller
     /// may drop the receiver, but the owner retains and joins the work.
     pub(crate) async fn spawn_blocking<T: Send + 'static>(
@@ -1249,6 +1268,9 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 }
             }),
         ));
+    }
+    if path == "/admin/support-grants" || path.starts_with("/admin/support-grants/") {
+        return support::respond(request, &path, task_state, service_audit).await;
     }
     if path == "/admin/approval-delegations" || path.starts_with("/admin/approval-delegations/") {
         return approvals::delegations(request, &path, policy_snapshot, task_state, service_audit)

@@ -80,6 +80,7 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
         transaction.execute_batch(include_str!("coord_work_upgrade_6.sql"))?;
     }
     transaction.execute_batch(include_str!("coord_signal_schema.sql"))?;
+    transaction.execute_batch(include_str!("coord_operational_schema.sql"))?;
     transaction.execute_batch(include_str!("coord_federation_schema.sql"))?;
     transaction.execute_batch(include_str!("coord_membership_grants.sql"))?;
     // Earlier writers drop assignment and selected authority on rewrite.
@@ -419,10 +420,52 @@ pub async fn start(
         return Err("NATS credential file is empty".into());
     }
     let server_name = format!("safeyolo-{}", uuid::Uuid::new_v4().simple());
+    let federation = federation::nats::broker(root)?;
+    let owner_credentials = nats.join("federation-creds");
+    if federation.is_some() && !owner_credentials.exists() {
+        atomic_write(
+            &owner_credentials,
+            format!(
+                "{}{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            )
+            .as_bytes(),
+            0o600,
+        )?;
+    }
+    let owner_password = zeroize::Zeroizing::new(if federation.is_some() {
+        fs::read_to_string(&owner_credentials)?
+    } else {
+        String::new()
+    });
+    let instance = fs::read_to_string(root.join("data/instance_id"))?;
+    let (authorization, transport_peers) = federation::nats::server_config(
+        federation.as_ref(),
+        instance.trim(),
+        password.trim(),
+        owner_password.trim(),
+    )?;
+    let listen = federation
+        .as_ref()
+        .map_or_else(|| "127.0.0.1".to_owned(), |setup| setup.listen.to_string());
+    let local_tls = nats.join("local-tls.json");
+    if let Some(setup) = &federation {
+        atomic_write(
+            &local_tls,
+            &serde_json::to_vec(&federation::nats::LocalTls {
+                server_name: setup.local_server_name.clone(),
+                ca_file: setup.ca_file.clone(),
+            })?,
+            0o600,
+        )?;
+    } else if local_tls.try_exists()? {
+        fs::remove_file(local_tls)?;
+    }
     let jetstream = nats.join("jetstream");
     fs::create_dir_all(&jetstream)?;
     let config = nats.join("server.conf");
-    atomic_write(&config,format!("host: 127.0.0.1\nport: {selected_client}\nhttp: 127.0.0.1:{selected_monitor}\nserver_name: {server_name}\nmax_payload: {COLLABORATION_MAX_ENVELOPE_BYTES}\nports_file_dir: {}\nauthorization {{ user: safeyolo, password: {} }}\njetstream {{ store_dir: {}, max_file_store: 1073741824 }}\n",serde_json::to_string(&nats.to_string_lossy())?,serde_json::to_string(password.trim())?,serde_json::to_string(&jetstream.to_string_lossy())?).as_bytes(),0o600)?;
+    atomic_write(&config,format!("host: {}\nport: {selected_client}\nhttp: 127.0.0.1:{selected_monitor}\nserver_name: {server_name}\nmax_payload: {COLLABORATION_MAX_ENVELOPE_BYTES}\nports_file_dir: {}\n{authorization}jetstream {{ store_dir: {}, max_file_store: 1073741824 }}\n",serde_json::to_string(&listen)?,serde_json::to_string(&nats.to_string_lossy())?,serde_json::to_string(&jetstream.to_string_lossy())?).as_bytes(),0o600)?;
     let log = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -454,7 +497,7 @@ pub async fn start(
             if let Ok((client, monitor_port)) = observed_ports(&nats, pid) {
                 let token = crate::host_lifecycle::process_token(i64::from(pid))
                     .ok_or("NATS process identity is unavailable")?;
-                let saved = json!({"pid":pid,"token":token,"server_name":server_name,"client_port":client,"monitor_port":monitor_port});
+                let saved = json!({"pid":pid,"token":token,"server_name":server_name,"client_port":client,"monitor_port":monitor_port,"federation_peers":transport_peers});
                 // Use the same process/server/endpoint check as reuse,
                 // status, room clients and stop before publishing endpoints.
                 if verified(root, &saved).await.unwrap_or(false) {
@@ -539,11 +582,16 @@ async fn jetstream(root: &Path) -> Result<async_nats::jetstream::Context, Error>
         .ok_or("NATS endpoint is missing")?;
     let password =
         zeroize::Zeroizing::new(fs::read_to_string(directory(root)?.join("nats/creds"))?);
-    let client = async_nats::ConnectOptions::new()
+    let (url, options) = federation::nats::local_options(
+        &directory(root)?,
+        format!("nats://127.0.0.1:{port}"),
+        async_nats::ConnectOptions::new(),
+    )?;
+    let client = options
         .user_and_password("safeyolo".into(), password.trim().into())
         .connection_timeout(Duration::from_secs(2))
         .request_timeout(Some(Duration::from_secs(2)))
-        .connect(format!("nats://127.0.0.1:{port}"))
+        .connect(url)
         .await?;
     Ok(async_nats::jetstream::new(client))
 }
@@ -862,7 +910,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
         }
         [help] if help == "--help" => {
             println!(
-                "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT [--operation-id ID]\nInstance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports bind to 127.0.0.1. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
+                "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT [--operation-id ID]\nInstance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports default to 127.0.0.1. Host-held coord-federation.json can explicitly select the TLS client listener address; monitoring stays loopback-only. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
             );
             println!("{}", crate::coord_operator::HELP);
             println!("{}", crate::coord_operator::BRIEF_HELP);

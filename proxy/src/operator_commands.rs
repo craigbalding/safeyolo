@@ -24,6 +24,8 @@ safeyolo [--root ROOT] approvals show|explain|approve|reject ID [--option ID] [-
 safeyolo [--root ROOT] approvals ask|context ID [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals delegations [--json]\nsafeyolo [--root ROOT] approvals delegation check|preview|apply|revoke NAME --file PROPOSAL.json [--json]\nsafeyolo [--root ROOT] approvals review --agent NAME
 safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
+safeyolo [--root ROOT] support grants [--json]
+safeyolo [--root ROOT] support preview|apply|revoke NAME --file PROPOSAL.json [--json]
 safeyolo [--root ROOT] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] logs list [--instance ID] [--runtime ID] [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] logs connection ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]
@@ -55,7 +57,14 @@ pub fn handles(args: &[String]) -> bool {
     args.first().is_some_and(|arg| {
         matches!(
             arg.as_str(),
-            "inspect" | "traffic" | "approvals" | "helper" | "logs" | "diagnose" | "observations"
+            "inspect"
+                | "traffic"
+                | "approvals"
+                | "helper"
+                | "logs"
+                | "diagnose"
+                | "observations"
+                | "support"
         )
     })
 }
@@ -1622,6 +1631,35 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         "traffic" => traffic(root, &options).await?,
         "logs" => logs(root, &options)?,
         "diagnose" => diagnose(root, &options).await?,
+        "support" => match options
+            .positional
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice()
+        {
+            ["grants"] => admin(root, "/admin/support-grants", Method::GET, Value::Null).await?,
+            [operation @ ("preview" | "apply" | "revoke"), name] => {
+                let input = options
+                    .files
+                    .last()
+                    .ok_or("support grant requires --file PROPOSAL.json")?;
+                let proposal = serde_json::from_slice(&std::fs::read(input)?)?;
+                admin(
+                    root,
+                    &format!("/admin/support-grants/{}/{operation}", encoded(name)),
+                    Method::POST,
+                    proposal,
+                )
+                .await?
+            }
+            _ => {
+                return Err(
+                    "use support grants or support preview|apply|revoke NAME --file PROPOSAL.json"
+                        .into(),
+                );
+            }
+        },
         "helper" => helper(&options).await?,
         "approvals" => {
             match options

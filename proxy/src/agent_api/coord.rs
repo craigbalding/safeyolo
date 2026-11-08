@@ -41,6 +41,7 @@ const RECOVERY_INTERVAL: Duration = Duration::from_millis(250);
 mod approval_results;
 pub(crate) mod federation;
 pub(crate) mod inventory;
+mod operational;
 pub(crate) mod outbox;
 pub(crate) mod signals;
 mod work;
@@ -49,6 +50,7 @@ mod work;
 enum CoordError {
     NotFound,
     Forbidden,
+    ObservationRequired,
     Invalid,
     Unavailable,
     Data,
@@ -111,6 +113,7 @@ pub(crate) struct CoordOwner {
     data_dir: PathBuf,
     explicit_directory: bool,
     nats: tokio::sync::Mutex<Option<async_nats::Client>>,
+    federation_nats: tokio::sync::Mutex<Option<async_nats::Client>>,
     cleanup: Arc<CoordCleanup>,
     snapshot_reads: Arc<inventory::SnapshotReads>,
     collaboration_scanner: Option<crate::inspection::Scanner>,
@@ -137,6 +140,7 @@ impl CoordOwner {
             data_dir,
             explicit_directory,
             nats: tokio::sync::Mutex::new(None),
+            federation_nats: tokio::sync::Mutex::new(None),
             cleanup: Arc::new(CoordCleanup::new()),
             snapshot_reads: Arc::new(inventory::SnapshotReads::default()),
             collaboration_scanner,
@@ -144,9 +148,18 @@ impl CoordOwner {
     }
 }
 
+enum SourceRun {
+    Local {
+        run: crate::host_runs::AgentRun,
+        root: PathBuf,
+    },
+    Remote {
+        run: crate::host_runs::AgentRun,
+    },
+}
+
 /// Runtime-scoped policy facade over process-owned coordination state.
-/// Rejected reload candidates are dropped with this facade and leave the
-/// previously active policy path untouched.
+/// Rejected reload candidates leave the active policy path untouched.
 #[derive(Clone)]
 pub struct CoordClient {
     owner: Arc<CoordOwner>,
@@ -155,7 +168,7 @@ pub struct CoordClient {
     instance_root: Option<PathBuf>,
     remote: Option<crate::coord_rooms::federation::RemoteAgent>,
     relay_config: Option<PathBuf>,
-    request_run: Option<Arc<(crate::host_runs::AgentRun, PathBuf)>>,
+    request_run: Option<Arc<SourceRun>>,
     collaboration_config: crate::config::CollaborationConfig,
 }
 
@@ -194,8 +207,26 @@ impl CoordClient {
     }
 
     fn bound_current(&self) -> Result<(), CoordError> {
-        let Some((run, root)) = self.request_run.as_deref() else {
+        let Some(source) = self.request_run.as_deref() else {
             return Ok(());
+        };
+        let (run, root) = match source {
+            SourceRun::Local { run, root } => (run, root),
+            SourceRun::Remote { run } => {
+                // The source authenticated admission. Already-admitted input
+                // retains that run through a source restart or partition;
+                // this owner rechecks current peer and destination grants.
+                let remote = self
+                    .remote
+                    .as_ref()
+                    .filter(|remote| remote.agent_id == run.agent_id)
+                    .ok_or(CoordError::Forbidden)?;
+                return crate::coord_rooms::federation::authorize(
+                    &open_db(&self.owner.data_dir.join("v0.db"), false)?,
+                    remote,
+                )
+                .map_err(|_| CoordError::Forbidden);
+            }
         };
         let path = self.policy_file.as_deref().ok_or(CoordError::Unavailable)?;
         let mut policy =
@@ -213,6 +244,75 @@ impl CoordClient {
             self.provider_directory = Some(root.join("coord-providers"));
         }
         self
+    }
+
+    pub(crate) async fn send_factory_direction(
+        &self,
+        caller: &crate::peer_support::Caller,
+        input: &crate::peer_support::Request,
+        revision: &str,
+    ) -> Result<Value, OperatorCoordError> {
+        let crate::peer_support::operations::Action::FactoryDirection {
+            factory,
+            snapshot_id,
+            kind,
+            text,
+        } = &input.operation
+        else {
+            return Err(OperatorCoordError::display_error(
+                "typed factory direction required".into(),
+            ));
+        };
+        let root = self.instance_root.as_ref().ok_or_else(|| {
+            OperatorCoordError::display_error("owning instance unavailable".into())
+        })?;
+        let snapshot = crate::factory::direction_binding(root, factory, snapshot_id, Some(kind))
+            .map_err(|_| {
+                OperatorCoordError::display_error("approved factory direction changed".into())
+            })?;
+        let room = &snapshot.room;
+        let recipient = snapshot.operator_agent();
+        let body = format!("{kind}\n\n{text}");
+        let mut scoped = self.clone();
+        scoped.remote = caller.remote.clone();
+        scoped.request_run = Some(Arc::new(if caller.remote.is_some() {
+            SourceRun::Remote {
+                run: caller.run.clone(),
+            }
+        } else {
+            SourceRun::Local {
+                run: caller.run.clone(),
+                root: self.instance_root.clone().ok_or_else(|| {
+                    OperatorCoordError::display_error("owning instance unavailable".into())
+                })?,
+            }
+        }));
+        let name = caller
+            .remote
+            .as_ref()
+            .map_or(caller.run.agent.as_str(), |remote| {
+                remote.display_name.as_str()
+            });
+        let sender = Sender::Direction {
+            id: caller.principal(),
+            name,
+            caller,
+            input,
+            revision,
+        };
+        let payload =
+            json!({"body":body,"notify":[recipient],"declared_content_type":"text/plain"})
+                .to_string();
+        let value = operator_result(prepare_send(&scoped, room, sender, payload.as_bytes()).await)?;
+        let mut prepared: PreparedMessage = serde_json::from_value(value["prepared"].clone())
+            .map_err(|_| {
+                OperatorCoordError::display_error("direction preparation unavailable".into())
+            })?;
+        prepared.envelope["factory_direction"] = json!({"factory":factory,"snapshot_id":snapshot_id,"type":kind,
+            "grant":input.grant,"grant_revision":revision,"operation_id":input.operation_id,"initiator":caller});
+        operator_result(
+            publish_prepared(&scoped, local_operator_request(), room, sender, &prepared).await,
+        )
     }
 
     /// Only the host approval path calls this operation. Use the existing
@@ -293,6 +393,11 @@ impl CoordClient {
         if password.is_empty() {
             return Err("NATS credentials unavailable".into());
         }
+        let (url, options) = crate::coord_rooms::federation::nats::local_options(
+            &self.owner.data_dir,
+            url,
+            options,
+        )?;
         let client = options
             .user_and_password(NATS_USER.to_owned(), password)
             .connection_timeout(Duration::from_secs(2))
@@ -384,6 +489,50 @@ impl CoordClient {
     ) -> Result<RoomAccess, CoordError> {
         self.check_remote().await?;
         match sender {
+            Sender::Direction {
+                caller,
+                input,
+                revision,
+                ..
+            } => {
+                self.bound_current()?;
+                let root = self.instance_root.as_ref().ok_or(CoordError::Unavailable)?;
+                let path = self.policy_file.as_ref().ok_or(CoordError::Unavailable)?;
+                let mut policy = crate::policy::Policy::from_native_path(path)
+                    .map_err(|_| CoordError::Unavailable)?;
+                policy.set_identity_root(root.clone());
+                let (grant, _) = crate::peer_support::operations::authorize(&policy, caller, input)
+                    .map_err(|_| CoordError::Forbidden)?;
+                let crate::peer_support::operations::Action::FactoryDirection {
+                    factory,
+                    snapshot_id,
+                    kind,
+                    ..
+                } = &input.operation
+                else {
+                    return Err(CoordError::Forbidden);
+                };
+                let snapshot =
+                    crate::factory::direction_binding(root, factory, snapshot_id, Some(kind))
+                        .map_err(|_| CoordError::Forbidden)?;
+                if snapshot.room != room || grant.revision() != revision {
+                    return Err(CoordError::Forbidden);
+                }
+                let db = self.owner.data_dir.join("v0.db");
+                let room = room.to_owned();
+                let mut access = tokio::task::spawn_blocking(move || {
+                    read_access_as(&db, &room, "operator", "operator")
+                })
+                .await
+                .map_err(|_| CoordError::Unavailable)??;
+                // This path exposes only the selected direction publication.
+                // It does not grant the caller room or native-work privileges.
+                access.permissions = vec!["send".into()];
+                if let Some(remote) = &caller.remote {
+                    access.instance_id = remote.instance_id.clone();
+                }
+                Ok(access)
+            }
             Sender::Agent { id, .. } => {
                 let mut access = self.access(room, id).await?;
                 if let Some(remote) = &self.remote {
@@ -561,9 +710,16 @@ impl CoordClient {
                 .map_err(|_| CoordError::Unavailable)??;
         let mut visible = Vec::new();
         for edge in page.edges {
-            if edge.kind != "approval_result"
-                || approval_results::authorized(runtime, &edge, &principal_for_results).await?
-            {
+            let authorized = match edge.kind.as_str() {
+                "approval_result" | "approval_review" => {
+                    approval_results::authorized(runtime, &edge, &principal_for_results).await?
+                }
+                "operational_event" => {
+                    operational::authorized(runtime, &edge, &principal_for_results).await?
+                }
+                _ => true,
+            };
+            if authorized {
                 visible.push(edge);
             }
         }
@@ -908,8 +1064,11 @@ impl CoordClient {
         })
         .await
         .map_err(|_| CoordError::Unavailable)??;
-        if edge.kind == "approval_result" {
+        if matches!(edge.kind.as_str(), "approval_result" | "approval_review") {
             return approval_results::read(self, runtime, principal, &edge).await;
+        }
+        if edge.kind == "operational_event" {
+            return operational::read(self, runtime, principal, &edge).await;
         }
         if edge.kind == "work_changed" {
             let db = self.owner.data_dir.join("v0.db");
@@ -1370,7 +1529,10 @@ fn read_attention_feed(
         let (edge, generation) = row.map_err(|_| CoordError::Data)?;
         let permitted = match edge.room_id.as_deref() {
             Some(room) => attention_member(&conn, room, principal, generation)?,
-            None => edge.kind == "approval_result",
+            None => matches!(
+                edge.kind.as_str(),
+                "approval_result" | "approval_review" | "operational_event"
+            ),
         };
         if permitted {
             edges.push(edge);
@@ -1428,7 +1590,10 @@ fn read_attention_edge(
         .optional()
         .map_err(|_| CoordError::Data)?
         .ok_or(CoordError::NotFound)?;
-    if !(edge.kind == "approval_result" && edge.room_id.is_none()
+    if !(matches!(
+        edge.kind.as_str(),
+        "approval_result" | "approval_review" | "operational_event"
+    ) && edge.room_id.is_none()
         || attention_member(
             &conn,
             edge.room_id.as_deref().ok_or(CoordError::Data)?,
@@ -2372,7 +2537,10 @@ async fn respond_payload(
         let Some(root) = root else {
             return error_response(CoordError::Unavailable);
         };
-        scoped.request_run = Some(Arc::new((run.clone(), root)));
+        scoped.request_run = Some(Arc::new(SourceRun::Local {
+            run: run.clone(),
+            root,
+        }));
     }
     if let Err(error) = scoped.bound_current() {
         return error_response(error);
@@ -2482,6 +2650,19 @@ async fn respond_as(
     principal: &str,
     agent_name: &str,
 ) -> Outcome<'static> {
+    if let Ok(Some(selected)) = query_parameter(request.path_and_query, "instance_id") {
+        let actual = std::fs::read_to_string(context.client.owner.data_dir.join("instance_id"));
+        if actual
+            .as_ref()
+            .map(|actual| actual.trim() != selected)
+            .unwrap_or(true)
+        {
+            return response(
+                409,
+                json!({"error":"attention position belongs to another owning instance"}),
+            );
+        }
+    }
     if attention_wait_route(request) {
         if request.method != "GET" {
             return response(
@@ -2524,6 +2705,7 @@ async fn respond_as(
                         "revision_or_sequence": edge.revision_or_sequence,
                     })).collect::<Vec<_>>(),
                     "next_cursor": page.next_cursor,
+                    "instance_id":std::fs::read_to_string(context.client.owner.data_dir.join("instance_id")).ok().map(|id|id.trim().to_owned()),
                 }),
             ),
             Err(error) => error_response(error),
@@ -2826,6 +3008,10 @@ fn error_response(error: CoordError) -> Outcome<'static> {
     match error {
         CoordError::NotFound => response(404, json!({"error":"room not found or not accessible"})),
         CoordError::Forbidden => response(403, json!({"error":"coordination permission denied"})),
+        CoordError::ObservationRequired => response(
+            403,
+            json!({"error":"operational reference requires a current support observation grant for this instance and durable target; material signals also require the selected signal_rooms disclosure. Ask the operator to inspect or preview the grant."}),
+        ),
         CoordError::Invalid => response(400, json!({"error":"invalid coordination request"})),
         CoordError::Unavailable => {
             response(503, json!({"error":"coordination substrate unavailable"}))
@@ -2891,7 +3077,7 @@ async fn publish_unknown_response(client: &CoordClient, request: Request<'_>) ->
     outcome
 }
 
-fn query_parameter(path_and_query: &str, wanted: &str) -> Result<Option<String>, ()> {
+pub(super) fn query_parameter(path_and_query: &str, wanted: &str) -> Result<Option<String>, ()> {
     let Some(query) = path_and_query.split_once('?').map(|(_, query)| query) else {
         return Ok(None);
     };
@@ -2968,7 +3154,17 @@ fn query_bool(path_and_query: &str, wanted: &str, default: bool) -> Result<bool,
 // constructs Agent from its reconciled listener; payload fields cannot select it.
 #[derive(Clone, Copy)]
 enum Sender<'a> {
-    Agent { id: &'a str, name: &'a str },
+    Agent {
+        id: &'a str,
+        name: &'a str,
+    },
+    Direction {
+        id: &'a str,
+        name: &'a str,
+        caller: &'a crate::peer_support::Caller,
+        input: &'a crate::peer_support::Request,
+        revision: &'a str,
+    },
     Operator,
 }
 
@@ -3383,7 +3579,7 @@ fn inspect_collaboration(
         addon: "agent-api",
         summary: error.into(),
         agent: match sender {
-            Sender::Agent { name, .. } => Some(name.into()),
+            Sender::Agent { name, .. } | Sender::Direction { name, .. } => Some(name.into()),
             Sender::Operator => None,
         },
         request_id: None,
@@ -3401,7 +3597,9 @@ async fn prepare_send(
     payload: &[u8],
 ) -> Outcome<'static> {
     let (principal, agent_name, sender_kind) = match sender {
-        Sender::Agent { id, name } => (id, Some(name), "agent"),
+        Sender::Agent { id, name } | Sender::Direction { id, name, .. } => {
+            (id, Some(name), "agent")
+        }
         Sender::Operator => ("operator", None, "operator"),
     };
     let Ok(document) = serde_json::from_slice::<Value>(payload) else {
@@ -3662,7 +3860,9 @@ fn validate_prepared(
     let envelope = &prepared.envelope;
     let (kind, id, name) = match sender {
         Sender::Operator => ("operator", Value::Null, Value::Null),
-        Sender::Agent { id, name } => ("agent", json!(id), json!(name)),
+        Sender::Agent { id, name } | Sender::Direction { id, name, .. } => {
+            ("agent", json!(id), json!(name))
+        }
     };
     let msg_id = envelope["msg_id"].as_str().ok_or(CoordError::Data)?;
     if prepared.room_id != access.room_id
@@ -3853,7 +4053,7 @@ async fn publish_prepared(
             addon: "agent-api",
             summary: "Collaboration message inspected and accepted".into(),
             agent: match sender {
-                Sender::Agent { name, .. } => Some(name.into()),
+                Sender::Agent { name, .. } | Sender::Direction { name, .. } => Some(name.into()),
                 Sender::Operator => None,
             },
             request_id: Some(request.request_id.into()),
@@ -4011,7 +4211,7 @@ async fn read_messages_with_timeout(
     mut cancellation: tokio::sync::watch::Receiver<bool>,
 ) -> Outcome<'static> {
     let principal = match sender {
-        Sender::Agent { id, .. } => id,
+        Sender::Agent { id, .. } | Sender::Direction { id, .. } => id,
         Sender::Operator => "operator",
     };
     let connection = match client.client().await {

@@ -5,6 +5,9 @@
 # and isolation. The implemented local log driver extends the specification enum.
 # MemorySwappiness also accepts the CLI's -1 sentinel, which Engine normalizes to
 # unset before validation. Memory bytes remain nonnegative; -1 is not their sentinel.
+# Current Compose emits EndpointSettings.GwPriority (Moby docker-v29.1.3, int64).
+# Container create below API 1.48 resets it to zero; network connect passes it
+# through. Both request paths use this same closed endpoint shape.
 create:
   allow:
     Hostname: {type: string, nullable: true}
@@ -408,7 +411,7 @@ create:
               values:
                 type: object
                 nullable: true
-                object:
+                object: &network_endpoint
                   allow:
                     IPAMConfig:
                       type: object
@@ -426,6 +429,7 @@ create:
                       nullable: true
                       items: {type: string, nullable: true}
                     MacAddress: {type: string, nullable: true}
+                    GwPriority: {type: integer, nullable: true, default: 0, integer_range: [-9223372036854775808, 9223372036854775807]}
                     Aliases:
                       type: array
                       nullable: true
@@ -448,6 +452,7 @@ create:
                       type: array
                       nullable: true
                       items: {type: string, nullable: true}
+network_endpoint: *network_endpoint
 update:
   allow:
     CpuShares: {type: integer, nullable: true}
@@ -716,6 +721,7 @@ volume_create:
                 Availability: {type: string, nullable: true, enum: [active, pause, drain], default: active}
 exec_create:
   allow:
+    Detach: {type: boolean, nullable: true}
     AttachStdin: {type: boolean, nullable: true}
     AttachStdout: {type: boolean, nullable: true}
     AttachStderr: {type: boolean, nullable: true}

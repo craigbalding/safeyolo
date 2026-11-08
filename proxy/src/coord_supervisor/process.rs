@@ -354,6 +354,24 @@ impl Events {
             for id in completed {
                 supervisor.state.complete(&id);
             }
+            let completed: Vec<_> = supervisor
+                .state
+                .approval_notifications
+                .iter()
+                .map(approval_notification_id)
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter(|id| invoked.contains(*id))
+                .map(str::to_owned)
+                .collect();
+            self.consumed_information |= !completed.is_empty();
+            supervisor
+                .state
+                .approval_notifications
+                .retain(|p| !completed.iter().any(|id| p["edge"]["attention_id"] == *id));
+            for id in completed {
+                supervisor.state.remember(&id);
+            }
             let before = supervisor.state.native_in_flight.len();
             supervisor
                 .state
@@ -549,6 +567,13 @@ pub(super) async fn invoke(
         .chain(
             supervisor
                 .state
+                .approval_notifications
+                .iter()
+                .map(|p| p["edge"]["attention_id"].as_str().unwrap().to_owned()),
+        )
+        .chain(
+            supervisor
+                .state
                 .native_in_flight
                 .iter()
                 .map(|d| d.action.key.clone()),
@@ -683,12 +708,9 @@ pub(super) async fn invoke(
         < native_before.len();
     let success = recovered_terminal
         || native_settled
-        || ((!events.unresolved_send
-            || (supervisor.state.in_flight.is_empty()
-                && supervisor.state.native_in_flight.is_empty()))
+        || ((!events.unresolved_send || supervisor.state.pending_count() == 0)
             && (events.canonical
-                || (((supervisor.state.in_flight.is_empty()
-                    && supervisor.state.native_in_flight.is_empty())
+                || ((supervisor.state.pending_count() == 0
                     || (events.consumed_information
                         && !recovering_uncertainty
                         && !supervisor.state.has_ready_work()))
@@ -696,7 +718,7 @@ pub(super) async fn invoke(
                     && !events.failed
                     && !events.harness_failed
                     && exit_success)));
-    if supervisor.state.in_flight.is_empty() && supervisor.state.native_in_flight.is_empty() {
+    if supervisor.state.pending_count() == 0 {
         supervisor.state.phase = "idle".into();
     } else if success {
         supervisor.state.phase = "accepted".into();

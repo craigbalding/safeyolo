@@ -1,0 +1,80 @@
+[
+  {
+    "mode": "attached",
+    "create": {
+      "User": "",
+      "Privileged": false,
+      "Tty": false,
+      "AttachStdin": true,
+      "AttachStderr": true,
+      "AttachStdout": true,
+      "DetachKeys": "",
+      "Env": null,
+      "WorkingDir": "",
+      "Cmd": [
+        "sh",
+        "-c",
+        "echo persistent >/data/value"
+      ],
+      "Detach": false
+    },
+    "start": {
+      "Detach": false,
+      "Tty": false
+    }
+  },
+  {
+    "mode": "detached",
+    "create": {
+      "User": "",
+      "Privileged": false,
+      "Tty": false,
+      "AttachStdin": false,
+      "AttachStderr": false,
+      "AttachStdout": false,
+      "DetachKeys": "",
+      "Env": null,
+      "WorkingDir": "",
+      "Cmd": [
+        "sh",
+        "-c",
+        "echo persistent >/data/value"
+      ],
+      "Detach": false
+    },
+    "start": {
+      "Detach": true,
+      "Tty": false
+    }
+  },
+  {
+    "mode": "tty",
+    "create": {
+      "User": "",
+      "Privileged": false,
+      "Tty": true,
+      "ConsoleSize": [
+        24,
+        80
+      ],
+      "AttachStdin": true,
+      "AttachStderr": true,
+      "AttachStdout": true,
+      "DetachKeys": "",
+      "Env": null,
+      "WorkingDir": "",
+      "Cmd": [
+        "true"
+      ],
+      "Detach": false
+    },
+    "start": {
+      "Detach": false,
+      "Tty": true,
+      "ConsoleSize": [
+        24,
+        80
+      ]
+    }
+  }
+]

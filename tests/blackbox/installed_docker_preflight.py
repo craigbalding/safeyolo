@@ -86,6 +86,7 @@ def compose_journey(args, root, output, workspace, native, guest, background, re
     """Run one finite application journey against the hosting guest's daemon."""
     fixture = workspace / "nested-docker"
     shutil.copytree(Path(__file__).parent / "fixtures/nested-docker", fixture)
+    base_image = shlex.quote((fixture / "Dockerfile").read_text().splitlines()[0].split()[1])
     # Exercise freshly initialized certificate bytes and permissions without
     # altering the retained instance's CA or copying its private material.
     fresh = output / "fresh-init"
@@ -133,8 +134,8 @@ def compose_journey(args, root, output, workspace, native, guest, background, re
           f"cp /usr/local/share/ca-certificates/safeyolo.crt {STATE}/context/safeyolo.crt", "context")
     daemon = start_daemon("daemon-initial")
     if not args.docker_data:
-        docker(f"{DOCKER} pull debian:trixie-slim", "image-pull", timeout=180)
-    report["base_image"] = json.loads(docker(f"{DOCKER} image inspect debian:trixie-slim", "image-identity"))
+        docker(f"{DOCKER} pull {base_image}", "image-pull", timeout=180)
+    report["base_image"] = json.loads(docker(f"{DOCKER} image inspect {base_image}", "image-identity"))
     report["reused_image_data"] = args.docker_data
     # Keep an unexpected 428 or transport error as a failure, not a denial pass.
     denied = guest(f"sudo -n {DOCKER} pull denied.invalid/safeyolo/never:qualification "

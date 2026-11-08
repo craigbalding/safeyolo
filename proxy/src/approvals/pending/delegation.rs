@@ -4,7 +4,7 @@ use crate::{
     host_runs::AgentRun,
     policy::{
         Policy,
-        delegation::{Agent, IssuedAccess},
+        delegation::{IssuedAccess, Reviewer},
     },
 };
 use serde_json::{Value, json};
@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 pub(crate) fn authorize(
     policy: &Policy,
     record: &Record,
-    reviewer: &AgentRun,
+    reviewer: &crate::peer_support::Caller,
     name: &str,
     option: &str,
 ) -> Result<IssuedAccess> {
@@ -23,14 +23,13 @@ pub(crate) fn authorize(
         .delegations()
         .get(name)
         .ok_or_else(|| invalid("delegation is unavailable"))?;
-    let decider = Agent {
-        name: reviewer.agent.clone(),
-        agent_id: reviewer.agent_id.clone(),
-    };
-    if !delegation.dependencies_current(policy)
-        || !delegation.reviewers.contains(&decider)
-        || !delegation.contains(record, option)
-    {
+    let decider = delegation
+        .reviewers
+        .iter()
+        .find(|decider| decider.matches(policy, reviewer))
+        .ok_or_else(|| invalid("reviewer is outside this deciding delegation"))?
+        .clone();
+    if !delegation.dependencies_current(policy) || !delegation.contains(record, option) {
         return Err(invalid(
             "this complete approval option does not fit one current delegation",
         ));
@@ -54,7 +53,7 @@ pub(crate) fn issue(
     policy: &Policy,
     record: &Record,
     name: &str,
-    reviewer: Option<Agent>,
+    reviewer: Option<Reviewer>,
     option: &str,
 ) -> Result<IssuedAccess> {
     let run: AgentRun =
@@ -107,9 +106,11 @@ pub(crate) fn issue(
     Ok(IssuedAccess {
         delegation: name.into(),
         delegation_revision: delegation.map(|d| d.revision()).unwrap_or_default(),
-        reviewer: reviewer.unwrap_or(Agent {
+        reviewer: reviewer.unwrap_or(Reviewer {
             name: "operator".into(),
             agent_id: "operator".into(),
+            instance_id: None,
+            peer_epoch: None,
         }),
         beneficiary: run,
         approval_id: record.approval_id.clone(),
@@ -126,7 +127,7 @@ pub(crate) fn issue(
 pub(crate) fn eligible(
     policy: &Policy,
     record: &Record,
-    reviewer: &AgentRun,
+    reviewer: &crate::peer_support::Caller,
 ) -> Vec<(String, String)> {
     policy
         .delegations()
@@ -141,6 +142,23 @@ pub(crate) fn eligible(
         .collect()
 }
 
+pub(crate) fn list(
+    writer: &crate::audit::Writer,
+    policy: &Policy,
+    state: &crate::RuntimeState,
+    reviewer: &crate::peer_support::Caller,
+) -> Result<Value> {
+    let mut views = vec![];
+    for record in writer.approvals().list()? {
+        if !eligible(policy, &record, reviewer).is_empty()
+            && super::current_view(writer, policy, &record, Some(state))?["status"] == "pending"
+        {
+            views.push(view(writer, policy, &record, state, reviewer)?);
+        }
+    }
+    Ok(json!({"approvals":views}))
+}
+
 /// A reviewer sees bounded canonical facts. Traffic paths, queries, headers,
 /// bodies and agent prose are omitted. A desktop browser URL is an explicitly
 /// validated action parameter, shown as requester-selected data.
@@ -149,7 +167,7 @@ pub(crate) fn view(
     policy: &Policy,
     record: &Record,
     state: &crate::RuntimeState,
-    reviewer: &AgentRun,
+    reviewer: &crate::peer_support::Caller,
 ) -> Result<Value> {
     let choices = eligible(policy, record, reviewer);
     if choices.is_empty() {
@@ -214,6 +232,11 @@ pub(crate) async fn notify(runtime: &crate::Runtime, record: &Record) {
                 .any(|option| delegation.contains(record, &option.id))
         {
             for reviewer in &delegation.reviewers {
+                // Remote references use the same canonical result scan and
+                // private attention feed. They need no local or shared room.
+                if reviewer.instance_id.is_some() {
+                    continue;
+                }
                 reviewers
                     .entry(reviewer.agent_id.clone())
                     .or_insert_with(|| {

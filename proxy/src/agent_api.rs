@@ -34,6 +34,7 @@ mod gateway;
 mod memory;
 mod operator_actions;
 mod route_challenges;
+mod support;
 mod trace;
 pub use gateway::GatewayContext;
 pub use memory::MemoryContext;
@@ -72,6 +73,9 @@ const ENDPOINTS: &[&str] = &[
     "/trace",
     "/memory",
     "/agents",
+    "/support/grants",
+    "/support/operations (POST)",
+    "/support/operations/{operation_id}",
     "/circuits",
     "/gateway/services",
     "/api/flows/search",
@@ -692,6 +696,7 @@ async fn authorize(request: Request<'_>, token_path: &Path) -> Result<AuthScope,
             || path.starts_with("/api/coord/")
             || path == "/api/test-context/current"
             || path == "/desktop/present")
+        && !path.starts_with("/support/")
         && !path.starts_with("/operator-actions")
         && !path.starts_with("/approvals/")
     {

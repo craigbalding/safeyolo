@@ -259,6 +259,7 @@ graceful_shutdown() {
 trap graceful_shutdown TERM INT
 
 COMMAND_SUPERVISOR_PID=
+COMMAND_SUPERVISOR_BINDING=
 COMMAND_SUPERVISOR_STATE=/home/agent/.safeyolo-command-supervisor.json
 COMMAND_SUPERVISOR_STOP=/home/agent/.safeyolo-command-supervisor.stop
 if [ ! -x "$GUEST_HELPER" ]; then
@@ -296,9 +297,18 @@ start_command_supervisor_if_needed() {
         return 0
     fi
     if [ -n "$COMMAND_SUPERVISOR_PID" ]; then
-        wait "$COMMAND_SUPERVISOR_PID" 2>/dev/null || true
+        supervisor_status=0
+        wait "$COMMAND_SUPERVISOR_PID" 2>/dev/null || supervisor_status=$?
+        # The surviving parent records the exit before replacement. The
+        # helper excludes a saved terminal result or intentional stop fence.
+        if ! su agent -s /bin/bash -c "'$GUEST_HELPER' supervise owner-exit '$COMMAND_SUPERVISOR_BINDING' '$supervisor_status'"; then
+            echo '[per-run] command supervisor exit publication failed; saved owner state remains available' >&2
+        fi
         COMMAND_SUPERVISOR_PID=
     fi
+    # Bind the reaped owner to the state PID 1 actually starts. A host probe
+    # or harness replacement may publish another launch before the next reap.
+    COMMAND_SUPERVISOR_BINDING=$("$GUEST_HELPER" supervise owner-binding) || return 1
     # PID 1 is the durable owner: if this child is killed, the next loop
     # iteration starts a fresh runtime supervisor. The supervisor records its
     # command PID and start token so a replacement fences an orphan before

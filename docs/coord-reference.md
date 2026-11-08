@@ -36,6 +36,11 @@ through one common worker. Staging is not delivery. Failed delivery remains
 pending across restart; audit retries can produce duplicates with the same
 `event_id`. The audit directory must permit a sibling `.lock` file. The writer
 needs read and write access to recover an incomplete final line before append.
+For a log inside the configured instance directory, durable delivery syncs the
+file and every containing directory through that instance directory, on every
+attempt. The instance directory already contains the loaded configuration;
+the audit writer does not create its entry. Ancestors above that directory need
+no access. An external log destination retains the full ancestor sync path.
 Canonical brief and message bodies stay in their existing stores.
 These retry semantics do not apply to room creation or message sends.
 
@@ -744,114 +749,166 @@ payloads and errors are never returned in room state or those audit events.
 
 ## Collaborate through a home SafeYolo
 
-Each mutable room has one home SafeYolo. Remote agents use the home for room
-state, messages, claims, briefs and attention. The peer instance keeps no copy
-of the room's mutable state. If the connection fails, remote operations can
-fail or have an unknown outcome. Reconnection reads home state; it does not
-merge claim histories.
+Each room has one home SafeYolo. Remote agents use that home's canonical
+messages, memberships, work, briefs and attention. Reconnection reads the home;
+it does not merge independent records. Delegated [peer support](peer-support.md)
+uses the same transport without requiring a room.
 
-Run setup as the trusted host account on each instance. Both instances must
-have current SafeYolo, their own initialized roots, and running proxies
-and Coord. Keep federation credentials, certificate keys and configuration
-outside agent-writable mounts. The home operator must know the peer's actual
-`data/instance_id` and the remote agent's durable `agent_id` from that peer's
-policy. A human agent name alone does not identify a recreated agent.
+Run setup as the trusted host account on each separately initialized instance.
+Keep each instance's root, runtime and writable administration files separate,
+including when both instances run on one host. The examples use destination B
+at `/srv/home-safeyolo` and source A at `/srv/peer-safeyolo`. Replace `sy-HOME`,
+`sy-PEER` and `ag-BOB` with the actual instance and source agent IDs. The remote
+agent must have a current sandbox run authenticated by A's local ingress.
 
-The examples use a home root at `/srv/home-safeyolo`, a peer root at
-`/srv/peer-safeyolo`, and an existing home room `shared`. Before running them,
-replace `sy-PEER`, `sy-HOME` and `ag-BOB` with the corresponding actual IDs.
-The home needs a Transport Layer Security (TLS) certificate for
-`home.example.test`, its private key, and the certificate authority (CA) file
-that the peer will pin. Use certificate files issued through your existing
-trusted host setup. SafeYolo does not create
-an operator identity or signing hierarchy.
+B's operator must select a reachable NATS listener address and port. Obtain a
+Transport Layer Security (TLS) certificate and key through the existing trusted
+host setup. The certificate must cover B's external broker name and the name
+used by B's local clients. Install the public certificate authority (CA) file
+on both hosts. Do not infer permission for a new listener or network route from
+existing SSH access. Keep credentials, certificate keys, instance roots and
+broker configuration outside guest-writable mounts.
 
-On the peer host, create a credential in an existing private directory:
+On A's host, create a private peer credential:
 
 ```sh
 /srv/peer-safeyolo/bin/safeyolo --root /srv/peer-safeyolo coord federation credential /srv/peer-safeyolo/federation-secret
 ```
 
-Transfer that file privately to `/srv/home-safeyolo/peer-secret` on the home
-host. Keep both copies readable only by their owning host accounts. On the
-home, trust that peer and grant Bob the existing room permissions:
+Transfer a private copy to `/srv/home-safeyolo/peer-secret` on B. B records A's
+transport trust through its own CLI:
 
 ```sh
 /srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation trust sy-PEER /srv/home-safeyolo/peer-secret
+```
+
+On B, save `coord-federation.json` in B's root. This example selects all host
+interfaces and a certificate covering `home.example.test` and `localhost`.
+Use an explicitly authorized listener address for the actual host.
+
+```json
+{
+  "listen": "0.0.0.0",
+  "cert_file": "/srv/home-safeyolo/home-cert.pem",
+  "key_file": "/srv/home-safeyolo/home-key.pem",
+  "ca_file": "/srv/home-safeyolo/home-ca.pem",
+  "local_server_name": "localhost",
+  "peers": [{"instance_id": "sy-PEER", "credential_file": "/srv/home-safeyolo/peer-secret"}]
+}
+```
+
+Stop B's owned proxy and Coord before changing broker setup. Start Coord with
+B's selected client port, then start B's proxy through its ordinary owned
+lifecycle. For example, if port 7443 is authorized:
+
+```sh
+/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord start --client-port 7443
+```
+
+The managed NATS client listener now requires TLS. B's local clients use the
+recorded CA and certificate name. The proxy serves defined Coord and support
+operations in the separate `SY_FED` account. Each peer credential can publish
+only that peer's source request subject. It can receive its own replies,
+notices and selected JetStream consumer delivery. It cannot publish or subscribe
+to unrelated private subjects or use arbitrary JetStream administration.
+No imports or exports connect the private local account to `SY_FED`.
+The native runtime uses `SY_LOCAL` for private streams both with and without
+federation. There is no inter-instance HTTPS listener or HTTPS fallback.
+
+On A, configure B's durable identity, TLS NATS endpoint, public CA and A's
+host-held credential:
+
+```sh
+/srv/peer-safeyolo/bin/safeyolo --root /srv/peer-safeyolo coord federation home primary sy-HOME tls://home.example.test:7443 /srv/peer-safeyolo/home-ca.pem /srv/peer-safeyolo/federation-secret
+```
+
+A connects outbound to B's broker. A needs no application listener to receive
+B's notifications. This topology supports separate roots on one host and hosts
+with authorized connectivity between them. A leaf-node or full-mesh topology
+is not required. NATS [accounts](https://docs.nats.io/learn/security/accounts-and-multitenancy)
+and [subject permissions](https://docs.nats.io/learn/security/authorization)
+provide the broker boundary; B still checks every operation against its own
+current authority.
+
+For room participation, B grants the qualified remote identity ordinary room
+permissions. In this example `shared` already exists on B:
+
+```sh
 /srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation member shared sy-PEER ag-BOB remote-bob --operation-id grant-remote-bob
 ```
 
-Trust alone grants no room access. The home maps the instance and agent IDs to
-a home-qualified principal ID. The display name `remote-bob` is the name used
-for targeted attention in this home. It must differ from local agent names and
-remote names held by agents with active room grants. If the former principal
-has no active grants, a replacement durable ID can reuse its name. Old message
-authorship, work history and operation replay retain their original principal.
-Omitting permissions grants `send`, `receive` and `page_operator`, as for a
-local membership. An explicit permission list replaces
-that set. `member` and `unmember` use the existing membership retry contract.
+Trust alone grants no room or target access. Omitting membership permissions
+grants `send`, `receive` and `page_operator`, as for local membership. An explicit
+list replaces that set. `member` and `unmember` retain the membership operation
+ID retry contract. The display handle must differ from local names and handles
+held by another identity with active room or support grants. Renaming a handle
+does not rebind the qualified identity. Reusing an inactive handle does not
+change old authorship, work history or operation replay.
 
-On the home, run the relay in the foreground. In this example the operator
-has selected TCP port 7443 and placed the certificate and key at the shown
-paths. The listener exposes only authenticated Coord operations. It exposes
-neither the Admin API nor the Agent API's other endpoints.
-
-```sh
-/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation serve 0.0.0.0:7443 /srv/home-safeyolo/home-cert.pem /srv/home-safeyolo/home-key.pem
-```
-
-The first JSON line reports the actual listener address and home instance ID.
-Keep that foreground process running while peers participate. Ctrl-C closes
-the listener and its connections. Federation does not bind, export or connect
-the private loopback NATS account to a peer. The separate TLS relay calls the
-home's current room authorization and kernel operations.
-
-On the peer, install the home's public CA file at the shown path. Configure an
-explicit route named `primary` using the peer's credential:
-
-```sh
-/srv/peer-safeyolo/bin/safeyolo --root /srv/peer-safeyolo coord federation home primary sy-HOME https://home.example.test:7443 /srv/peer-safeyolo/home-ca.pem /srv/peer-safeyolo/federation-secret
-```
-
-Bob uses ordinary Coord tools through his own authenticated Agent API. Set
-`home` to `primary` for remote operations. For example, these are tool arguments:
+Bob uses ordinary tools through A's authenticated local Agent API. Set `home`
+to `primary` for remote operations, for example:
 
 ```json
 {"room_name":"shared","home":"primary"}
 ```
 
-Those arguments work with `join_room`, `get_room_state`, `read_brief` and
-`list_work`. Other room tools take their ordinary additional arguments.
-`wait_for_attention`, `wait_for_coord` and `read_attention` also accept `home`.
-Keep each attention cursor with its selected home. Omitting `home` selects the
-caller's local instance. Approvals and service credentials remain local.
-`read_github_work` reads home-owned work, then uses the caller's own GitHub
-service grant. It rechecks home room access before returning external metadata.
+The same selection applies to room tools, support tools and attention tools.
+Omitting `home` selects A. Approvals and service credentials remain local.
+`read_github_work` reads B-owned work and then uses the caller's own GitHub
+grant, rechecking B's room access before disclosing external metadata.
+Remote envelopes retain authenticated source instance and agent IDs alongside
+B's qualified principal. Agent-authored body text cannot choose those fields.
 
-Remote envelopes carry the authenticated source `origin_instance_id`, the
-home-qualified `sender_agent_id`, and the original source `origin_agent_id`.
-Claims and attestations use the home-qualified principal. These fields come
-from the two SafeYolos, never from the agent's message body. Peer content stays
-attributed and untrusted.
+For several sources, use `wait_for_coord` with each source's durable instance
+ID and position. Use zero only for a source with no retained caller position:
 
-After an unavailable mutation, reconcile with the home. For durable mutations,
-retry only the original operation ID and canonical input. A send has no such
-retry contract; inspect retained home history before repeating an uncertain
-send. A successful local operation during a partition remains home truth.
+```json
+{
+  "sources": [
+    {"instance_id":"sy-PEER","since_sequence":0},
+    {"home":"primary","instance_id":"sy-HOME","since_sequence":0}
+  ],
+  "limit":20,
+  "timeout_seconds":60
+}
+```
 
-On the home, revoke one membership or all access from the peer:
+Each result identifies its owning instance, availability, resolved objects and
+next cursor. Advance only that source's returned cursor after processing its
+objects. An unavailable source keeps its old cursor; another source can return
+work. `waiting` means the call returned for another source before this source
+finished. There is no global order across sources. An alias changed to another
+instance cannot inherit the previous instance's cursor. Reconnection resolves
+B's retained references under current rights. JetStream retains wake hints;
+B's canonical attention ledger and operational owners retain the actual facts.
+Removing delivery authority withholds new evidence; it cannot retract data
+already delivered.
+
+After a lost mutation reply, inspect B's canonical outcome. Retry a durable
+mutation only with its original operation ID and inputs. Inspect room history
+before repeating an uncertain send. Support receipts never silently rerun an
+arbitrary guest command. A source run replacement prevents new input from the
+old run. A command already admitted by B retains its original source identity
+and can continue through a partition or source restart. Loss of connectivity
+does not establish cancellation or target death.
+
+Notification or JetStream failure alone does not block permitted Core NATS
+support requests while B's policy, canonical and runtime owners work. If Core
+NATS is unavailable, remote control is unavailable. Use B's existing local
+owner-side API or CLI to recover the transport where those controls work.
+
+On B, revoke one membership or all peer trust:
 
 ```sh
 /srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation unmember shared sy-PEER ag-BOB --operation-id revoke-remote-bob
 /srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation revoke sy-PEER
 ```
 
-Peer revocation disables authentication and revokes its memberships atomically.
-Re-trusting a peer does not restore revoked room grants. Regranting a room
-exposes its retained history, as for a local membership. A request authenticated
-before a trust change cannot use the new trust epoch to mutate work or signals.
-On the peer, `coord federation unhome primary` removes the outgoing route and
-prevents delivery of responses already in flight through that route.
+Peer revocation disables authentication and revokes memberships atomically.
+Old requests cannot acquire a later trust generation. Re-trust restores neither
+revoked room membership nor old target grants. Preview a new support grant
+against current trust when restoring that authority. On A, `coord federation
+unhome primary` removes the route and withholds replies already in flight.
 
 ## Schedule an operator message
 
@@ -903,6 +960,14 @@ startup creates it with mode `0600`. Generated `nats/server.conf` is also mode
 copy into a command line, attach or log their contents. The runtime keeps
 retained JetStream data separately in `nats/jetstream` and canonical room state
 in `v0.db`. Preserve those stores during diagnosis.
+
+Federation adds host-held `coord-federation.json`, the private responder
+credential `nats/federation-creds`, and generated local TLS settings. The
+generated server configuration also contains the selected peer passwords.
+Protect these files with the same ownership and mount boundaries. The recorded
+peer credential digests bind the running broker configuration to current trust;
+changing a credential file alone does not rotate an existing broker connection.
+Restart the owned broker and proxy after changing this setup.
 
 Status, doctor and lifecycle diagnostics provide health information without
 printing the credential. File modes protect against other host accounts;

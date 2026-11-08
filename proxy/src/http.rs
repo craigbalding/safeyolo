@@ -3102,7 +3102,8 @@ where
                         "uploaded_bytes": result.uploaded,
                         "downloaded_bytes": result.downloaded,
                         "duration_ms": started.elapsed().as_millis(),
-                        "outcome": result.outcome
+                        "outcome": result.outcome,
+                        "error": result.error
                         }),
                     ))?;
                     return Ok(());

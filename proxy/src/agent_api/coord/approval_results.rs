@@ -8,7 +8,12 @@ const STREAM: &str = "APPROVAL_RESULTS";
 
 fn reference(edge: &FeedEdge, principal: &str) -> Reference {
     Reference {
-        source: "approval".into(),
+        source: if edge.kind == "approval_review" {
+            "review"
+        } else {
+            "approval"
+        }
+        .into(),
         approval_id: edge.object_id.clone(),
         agent_id: principal.into(),
         attention_id: edge.attention_id.clone(),
@@ -19,14 +24,15 @@ async fn canonical(
     runtime: Option<&crate::RuntimeState>,
     reference: &Reference,
 ) -> Result<Option<Ready>, CoordError> {
-    let runtime = runtime
-        .ok_or(CoordError::Unavailable)?
-        .read()
-        .map_err(|_| CoordError::Unavailable)?
-        .clone();
-    let policy = runtime.policy.clone().ok_or(CoordError::Unavailable)?;
+    let state = runtime.ok_or(CoordError::Unavailable)?;
+    let runtime = state.read().map_err(|_| CoordError::Unavailable)?.clone();
+    let policy = if reference.source == "review" {
+        Arc::new(crate::peer_support::current_policy(state).map_err(|_| CoordError::Unavailable)?)
+    } else {
+        runtime.policy.clone().ok_or(CoordError::Unavailable)?
+    };
     match reference.source.as_str() {
-        "approval" => {
+        "approval" | "review" => {
             let store = runtime.audit.approvals().clone();
             let reference = reference.clone();
             tokio::task::spawn_blocking(move || store.result(&reference, &policy))
@@ -70,27 +76,32 @@ pub(super) async fn read(
     canonical(runtime, &reference)
         .await?
         .ok_or(CoordError::NotFound)?;
-    let js = jetstream::new(client.client().await?);
-    let stream = js
-        .get_stream(STREAM)
-        .await
-        .map_err(|_| CoordError::Unavailable)?;
-    let raw = stream
-        .get_raw_message(edge.revision_or_sequence)
-        .await
-        .map_err(|_| CoordError::Unavailable)?;
-    let retained: Reference = serde_json::from_slice(&raw.payload).map_err(|_| CoordError::Data)?;
-    if retained != reference {
-        return Err(CoordError::Data);
+    // A pending review reference is derived from the owner's approval and
+    // native attention edge. Broker retention must not expire that request.
+    if reference.source != "review" {
+        let js = jetstream::new(client.client().await?);
+        let stream = js
+            .get_stream(STREAM)
+            .await
+            .map_err(|_| CoordError::Unavailable)?;
+        let raw = stream
+            .get_raw_message(edge.revision_or_sequence)
+            .await
+            .map_err(|_| CoordError::Unavailable)?;
+        let retained: Reference =
+            serde_json::from_slice(&raw.payload).map_err(|_| CoordError::Data)?;
+        if retained != reference {
+            return Err(CoordError::Data);
+        }
     }
-    // Recheck the canonical owner and irreversible tombstone after broker I/O,
+    // Recheck the canonical owner after provider I/O,
     // immediately before disclosing even the outcome or approval identifier.
     let ready = canonical(runtime, &reference)
         .await?
         .ok_or(CoordError::NotFound)?;
     client.bound_current()?;
     Ok(json!({"edge":edge.public_json(),"object":{
-        "kind":"approval_result","approval_id":reference.approval_id,"source":reference.source,
+        "kind":if reference.source == "review" {"approval_review"} else {"approval_result"},"approval_id":reference.approval_id,"source":reference.source,
         "status":ready.outcome,
         "message":"Read the canonical approval and effective access before retrying. Receiving this result does not grant permission or retry the original request."
     }}))
@@ -124,7 +135,7 @@ fn project(db: &Path, reference: &Reference, sequence: u64) -> Result<(), CoordE
             |r| r.get(0),
         )
         .map_err(|_| CoordError::Data)?;
-    tx.execute("INSERT INTO coord_attention_edges(recipient_agent_id,feed_sequence,attention_id,room_id,kind,object_id,revision_or_sequence,membership_granted_at,created_at) VALUES(?1,?2,?3,NULL,'approval_result',?4,?5,0,?6)", params![reference.agent_id, feed_sequence, reference.attention_id, reference.approval_id, i64::try_from(sequence).map_err(|_| CoordError::Data)?, now_ms()]).map_err(|_| CoordError::Data)?;
+    tx.execute("INSERT INTO coord_attention_edges(recipient_agent_id,feed_sequence,attention_id,room_id,kind,object_id,revision_or_sequence,membership_granted_at,created_at) VALUES(?1,?2,?3,NULL,?7,?4,?5,0,?6)", params![reference.agent_id, feed_sequence, reference.attention_id, reference.approval_id, i64::try_from(sequence).map_err(|_| CoordError::Data)?, now_ms(), if reference.source == "review" {"approval_review"} else {"approval_result"}]).map_err(|_| CoordError::Data)?;
     let hint = json!({"recipient_agent_id":reference.agent_id,"attention_id":reference.attention_id,"feed_sequence":feed_sequence});
     tx.execute("INSERT OR IGNORE INTO coord_outbox(event_id,destination,event_type,payload_json,created_at) VALUES(?1,'attention-nats','coord.attention_hint',?2,?3)", params![attention_event_id(&reference.attention_id), hint.to_string(), now_ms()]).map_err(|_| CoordError::Data)?;
     tx.commit().map_err(|_| CoordError::Unavailable)

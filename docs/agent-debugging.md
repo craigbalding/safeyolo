@@ -57,13 +57,19 @@ So the default posture is:
    agent's own uid started, regardless of parent relationship. No sudo
    dance, no capability discovery, no operator ticket.
 
-2. **Cross-boundary debugging is out of scope.** The agent cannot address
-   host PIDs, cannot read host `/proc`, cannot enter another agent's
-   sandbox, cannot install a host-side tracer against a guest PID, and
-   should not ask the operator to do any of those things on its behalf.
+2. **Host-boundary debugging is out of scope.** The agent cannot address
+   host PIDs, cannot read host `/proc`, and cannot install a host-side tracer
+   against a guest PID. The agent should not ask the operator to do any of
+   those things on its behalf.
    That last one — "please attach a debugger from the host side" — is
    boundary erosion masquerading as delegation, and SafeYolo exists to
    prevent it.
+
+   Peers remain isolated by default. An operator can explicitly grant
+   [local peer support](peer-support.md) to durable support and target
+   identities. The support agent then uses authenticated, scoped operations
+   that execute inside the target sandbox. This exception grants no host
+   debugger, host socket or arbitrary host execution.
 
 3. **Kernel-observability tooling is not a promise the sandbox makes.**
    `perf record`, `bpftrace`, ftrace, kprobes and uprobes need real
@@ -182,10 +188,10 @@ strace -f -o /tmp/tr.log ./my_worker
 - **Kernel-side observability.** No agent-facing `perf record`, no
   `bpftrace`, no ftrace, no kprobe/uprobe. If the triage requires these,
   reproduce the workload against a real-kernel microVM outside SafeYolo.
-- **Cross-agent debugging.** Each agent's sandbox is opaque to every
-  other agent. There is no "attach to that other agent's Python for me"
-  facility and there will not be one — that is a trust-domain boundary
-  by design.
+- **Undelegated cross-agent debugging.** Peers are isolated by default.
+  Only an explicit operator-owned [support grant](peer-support.md) permits
+  selected inspection, guest administration or lifecycle actions. A shared
+  room or factory membership grants none of that authority.
 - **Host-side debugging on the agent's behalf.** Do not ask the operator
   to attach a debugger from the host, run a host-side tracer against a
   guest PID, or move a target process out of the sandbox. When no

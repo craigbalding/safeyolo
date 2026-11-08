@@ -166,6 +166,13 @@ impl DockerAccess {
                         &["detachKeys", "logs", "stream", "stdin", "stdout", "stderr"]
                     }
                     ["stop" | "restart"] => &["t", "signal"],
+                    ["rename"] => {
+                        require(
+                            params.get("name").is_some_and(|name| !name.is_empty()),
+                            "container rename requires a name",
+                        )?;
+                        &["name"]
+                    }
                     ["kill"] => &["signal"],
                     ["wait"] => &["condition"],
                     ["resize"] => &["h", "w"],
@@ -182,6 +189,8 @@ impl DockerAccess {
                                 "AttachStdin",
                                 "AttachStdout",
                                 "AttachStderr",
+                                "ConsoleSize",
+                                "Detach",
                                 "DetachKeys",
                                 "Tty",
                                 "Env",
@@ -199,7 +208,9 @@ impl DockerAccess {
                     }
                     ("POST", ["update"]) => {
                         shape("update", &object)?;
-                        self.host_config(&object, &mut inspection)?;
+                        // UpdateConfig changes resources and restart policy, not
+                        // namespaces or mounts. Inspect those on the container.
+                        resource_settings(&object)?;
                     }
                     ("PUT", ["archive"]) => (),
                     _ => require(
@@ -390,10 +401,19 @@ impl DockerAccess {
         config: &Map<String, Value>,
         inspection: &mut Inspection,
     ) -> Result<(), Error> {
-        self.host_config(&optional_object(config, "HostConfig")?, inspection)?;
+        let host = optional_object(config, "HostConfig")?;
+        self.host_config(&host, inspection)?;
+        let default_network = ["", "default"].contains(&text(&host, "NetworkMode")?);
         let networking = optional_object(config, "NetworkingConfig")?;
         fields(&networking, &["EndpointsConfig"])?;
         for (name, settings) in optional_object(&networking, "EndpointsConfig")? {
+            // Moby's create route resolves this alias only for defaulted mode.
+            // Explicit network names and endpoint NetworkID keep their identity.
+            let name = if default_network && name == "default" {
+                "bridge".into()
+            } else {
+                name
+            };
             inspection.add(Resource::Network(name));
             network_endpoint(
                 settings
@@ -449,15 +469,8 @@ impl DockerAccess {
             !boolean(host, "Privileged")?,
             "privileged containers are outside workload authority",
         )?;
-        for field in [
-            "Devices",
-            "DeviceRequests",
-            "DeviceCgroupRules",
-            "CapAdd",
-            "StorageOpt",
-            "Sysctls",
-            "Annotations",
-        ] {
+        resource_settings(host)?;
+        for field in ["CapAdd", "StorageOpt", "Sysctls", "Annotations"] {
             require(
                 empty(host.get(field)),
                 format!("{field} is outside workload authority"),
@@ -485,9 +498,7 @@ impl DockerAccess {
             "only Linux workload isolation is supported",
         )?;
         require(
-            text(host, "ContainerIDFile")?.is_empty()
-                && text(host, "CgroupParent")?.is_empty()
-                && text(host, "Cgroup")?.is_empty(),
+            text(host, "ContainerIDFile")?.is_empty() && text(host, "Cgroup")?.is_empty(),
             "host file or cgroup selection is unsupported",
         )?;
         for value in strings(host, "SecurityOpt")? {
@@ -898,6 +909,19 @@ static SHAPES: LazyLock<BTreeMap<String, Constraints>> = LazyLock::new(|| {
     )
     .expect("authored Docker constraints")
 });
+fn resource_settings(object: &Map<String, Value>) -> Result<(), Error> {
+    for field in ["Devices", "DeviceRequests", "DeviceCgroupRules"] {
+        require(
+            empty(object.get(field)),
+            format!("{field} is outside workload authority"),
+        )?;
+    }
+    require(
+        text(object, "CgroupParent")?.is_empty(),
+        "host file or cgroup selection is unsupported",
+    )
+}
+
 fn shape(name: &str, object: &Map<String, Value>) -> Result<(), Error> {
     check_json_shape(&SHAPES[name], object)
         .map_err(|e| format!("Docker field {:?}: {:?}", e.field, e.code).into())
@@ -1016,25 +1040,7 @@ fn network_endpoint(
     request: bool,
 ) -> Result<(), Error> {
     if request {
-        fields(
-            object,
-            &[
-                "IPAMConfig",
-                "Links",
-                "Aliases",
-                "MacAddress",
-                "DriverOpts",
-                "NetworkID",
-                "EndpointID",
-                "Gateway",
-                "IPAddress",
-                "IPPrefixLen",
-                "IPv6Gateway",
-                "GlobalIPv6Address",
-                "GlobalIPv6PrefixLen",
-                "DNSNames",
-            ],
-        )?;
+        shape("network_endpoint", object)?;
     }
     let id = text(object, "NetworkID")?;
     if !id.is_empty() {
@@ -1125,6 +1131,80 @@ mod tests {
         }
     }
     #[test]
+    fn compose_exec_defaults_require_existing_resource_inspection() {
+        // Compose v2.40.3 at API 1.45, captured against a local synthetic Engine.
+        // Attached, detached and 24x80 terminal sessions all send Detach on create.
+        let fixtures: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/docker/compose-exec-defaults.json"
+        ))
+        .unwrap();
+        for fixture in fixtures.as_array().unwrap() {
+            for (field, path, resource) in [
+                (
+                    "create",
+                    "/v1.45/containers/existing-name/exec",
+                    Resource::Container("existing-name".into()),
+                ),
+                (
+                    "start",
+                    "/v1.45/exec/exec-id/start",
+                    Resource::Exec("exec-id".into()),
+                ),
+            ] {
+                let mut plan = access()
+                    .request("POST", path, &serde_json::to_vec(&fixture[field]).unwrap())
+                    .unwrap();
+                assert_eq!(plan.next(), Some(resource.clone()));
+                assert!(plan.observe(&access(), &resource, None).is_err());
+            }
+        }
+    }
+    #[test]
+    fn exec_create_and_start_keep_typed_fields_and_privilege_bounds() {
+        for (body, allowed) in [
+            (json!({}), true),
+            (json!({"Detach":false,"Tty":false}), true),
+            (
+                json!({"Detach":true,"Tty":true,"ConsoleSize":[24,80]}),
+                true,
+            ),
+            (json!({"Detach":null,"Tty":null,"ConsoleSize":null}), true),
+            (json!({"ConsoleSize":[0,0]}), true),
+            (json!({"Detach":"false"}), false),
+            (json!({"Detach":0}), false),
+            (json!({"Detach":[]}), false),
+            (json!({"Tty":"true"}), false),
+            (json!({"ConsoleSize":[-1,80]}), false),
+            (json!({"ConsoleSize":[24,80.0]}), false),
+            (json!({"ConsoleSize":[24,"80"]}), false),
+            (json!({"ConsoleSize":[24,true]}), false),
+            (json!({"ConsoleSize":24}), false),
+            (json!({"ConsoleSize":{}}), false),
+            (json!({"Detach":false,"detach":true}), false),
+            (
+                json!({"Detach":false,"ConsoleSize":[24,80],"FutureOption":false}),
+                false,
+            ),
+            (
+                json!({"Detach":false,"ConsoleSize":[24,80],"Privileged":true}),
+                false,
+            ),
+        ] {
+            for path in [
+                "/v1.45/containers/existing-name/exec",
+                "/v1.45/exec/exec-id/start",
+            ] {
+                assert_eq!(
+                    access()
+                        .request("POST", path, &serde_json::to_vec(&body).unwrap())
+                        .is_ok(),
+                    allowed,
+                    "{path}: {body}"
+                );
+            }
+        }
+    }
+    #[test]
     fn resource_defaults_and_sentinels_apply_to_create_and_update() {
         for (resources, allowed) in [
             (json!({}), true),
@@ -1163,6 +1243,157 @@ mod tests {
                 allowed,
                 "update {resources}"
             );
+        }
+    }
+    #[test]
+    fn endpoint_defaults_types_and_bounds_apply_to_create_and_connect() {
+        // Compose v2.40.3 createEndpointSettings sets GwPriority even when unset.
+        // Moby docker-v29.1.3 defines it as int64; create at API 1.45 resets it
+        // to zero, while network connect passes the decoded value through.
+        for (endpoint, allowed) in [
+            (json!({}), true),
+            (
+                json!({"IPAMConfig":null,"Links":null,"Aliases":["ordinary-worker-1","worker"],"MacAddress":"","DriverOpts":null,"GwPriority":0,"NetworkID":"","EndpointID":"","Gateway":"","IPAddress":"","IPPrefixLen":0,"IPv6Gateway":"","GlobalIPv6Address":"","GlobalIPv6PrefixLen":0,"DNSNames":null}),
+                true,
+            ),
+            (json!({"GwPriority":null}), true),
+            (json!({"GwPriority":0}), true),
+            (json!({"GwPriority":-1}), true),
+            (json!({"GwPriority":1}), true),
+            (json!({"GwPriority":i64::MIN}), true),
+            (json!({"GwPriority":i64::MAX}), true),
+            (json!({"GwPriority":9223372036854775808_u64}), false),
+            (
+                serde_json::from_str(r#"{"GwPriority":-9223372036854775809}"#).unwrap(),
+                false,
+            ),
+            (json!({"GwPriority":"0"}), false),
+            (json!({"GwPriority":0.0}), false),
+            (json!({"GwPriority":0.5}), false),
+            (json!({"GwPriority":true}), false),
+            (json!({"GwPriority":[]}), false),
+            (json!({"GwPriority":{}}), false),
+            (json!({"GwPriority":0,"gwpriority":1}), false),
+            (json!({"GwPriority":0,"FutureOption":false}), false),
+            (json!({"GwPriority":0,"Aliases":[true]}), false),
+            (
+                json!({"GwPriority":0,"IPAMConfig":{"IPv4Address":7}}),
+                false,
+            ),
+            (
+                json!({"GwPriority":0,"IPAMConfig":{"Driver":"host"}}),
+                false,
+            ),
+            (
+                json!({"GwPriority":0,"DriverOpts":{"com.docker.network.endpoint.sysctls":"net.ipv4.conf.IFNAME.forwarding=1"}}),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                create(json!({"Image":"busybox","NetworkingConfig":{"EndpointsConfig":{"ordinary-net":endpoint}}})).is_ok(),
+                allowed,
+                "create {endpoint}"
+            );
+            assert_eq!(
+                access()
+                    .request(
+                        "POST",
+                        "/v1.45/networks/ordinary-net/connect",
+                        &serde_json::to_vec(
+                            &json!({"Container":"existing-name","EndpointConfig":endpoint})
+                        )
+                        .unwrap(),
+                    )
+                    .is_ok(),
+                allowed,
+                "connect {endpoint}"
+            );
+        }
+    }
+    #[test]
+    fn endpoint_priority_preserves_indirect_inspection() {
+        let endpoint =
+            json!({"GwPriority":1,"NetworkID":"unsafe-network","Links":["unsafe-container:alias"]});
+        for mut plan in [
+            create(json!({"Image":"busybox","NetworkingConfig":{"EndpointsConfig":{"ordinary-net":endpoint}}})).unwrap(),
+            access().request(
+                "POST",
+                "/v1.45/networks/ordinary-net/connect",
+                &serde_json::to_vec(&json!({"Container":"existing-name","EndpointConfig":endpoint})).unwrap(),
+            ).unwrap(),
+        ] {
+            let mut seen = Vec::new();
+            while let Some(resource) = plan.next() {
+                seen.push(resource);
+            }
+            assert!(seen.contains(&Resource::Network("ordinary-net".into())));
+            assert!(seen.contains(&Resource::Network("unsafe-network".into())));
+            assert!(seen.contains(&Resource::Container("unsafe-container".into())));
+        }
+    }
+    #[test]
+    fn endpoint_default_network_alias_depends_on_create_network_mode() {
+        for (host, expected_network) in [
+            (Value::Null, "bridge"),
+            (json!({}), "bridge"),
+            (json!({"NetworkMode":null}), "bridge"),
+            (json!({"NetworkMode":""}), "bridge"),
+            (json!({"NetworkMode":"default"}), "bridge"),
+            (json!({"NetworkMode":"bridge"}), "default"),
+            (json!({"NetworkMode":"none"}), "default"),
+            (json!({"NetworkMode":"ordinary-net"}), "default"),
+        ] {
+            let mut plan = create(json!({"Image":"busybox","HostConfig":host,
+                "NetworkingConfig":{"EndpointsConfig":{"default":{"NetworkID":"referenced-net","Links":["linked-container:alias"]}}}})).unwrap();
+            let mut networks = BTreeSet::new();
+            let mut containers = BTreeSet::new();
+            while let Some(resource) = plan.next() {
+                match resource {
+                    Resource::Network(name) => {
+                        networks.insert(name);
+                    }
+                    Resource::Container(name) => {
+                        containers.insert(name);
+                    }
+                    _ => (),
+                }
+            }
+            assert!(networks.contains(expected_network), "{host}");
+            assert_eq!(
+                networks.contains("default"),
+                expected_network == "default",
+                "{host}"
+            );
+            assert!(networks.contains("referenced-net"));
+            assert!(containers.contains("linked-container"));
+        }
+
+        // The alias belongs to create configuration, not every network ID.
+        for (method, target, body, expected_networks) in [
+            ("GET", "/v1.45/networks/default", json!({}), vec!["default"]),
+            (
+                "POST",
+                "/v1.45/networks/default/connect",
+                json!({"Container":"ordinary"}),
+                vec!["default"],
+            ),
+            (
+                "POST",
+                "/v1.45/containers/create",
+                json!({"Image":"busybox","HostConfig":{"NetworkMode":"default"},"NetworkingConfig":{"EndpointsConfig":{"default":{"NetworkID":"default"}}}}),
+                vec!["bridge", "default"],
+            ),
+        ] {
+            let mut plan = access()
+                .request(method, target, &serde_json::to_vec(&body).unwrap())
+                .unwrap();
+            let mut networks = Vec::new();
+            while let Some(resource) = plan.next() {
+                if let Resource::Network(name) = resource {
+                    networks.push(name);
+                }
+            }
+            assert_eq!(networks, expected_networks, "{target}");
         }
     }
     #[test]
@@ -1314,6 +1545,39 @@ mod tests {
         assert!(plan.observe(&access(), &resource, None).is_err());
         plan.observe(&access(),&resource,Some(json!({"Id":"b".repeat(64),"HostConfig":{"Privileged":false,"CgroupnsMode":"private","NetworkMode":"bridge"},"NetworkSettings":{"Networks":{}},"Mounts":[]}))).unwrap();
         assert_eq!(plan.container_id, Some("b".repeat(64)));
+    }
+    #[test]
+    fn rename_requires_one_name_and_inspects_the_existing_container() {
+        for (query, allowed) in [
+            ("?name=syproof21cd528538cf-web-1", true),
+            ("?name=%2Fweb-1", true),
+            ("", false),
+            ("?name=", false),
+            ("?name=web-1&name=other", false),
+            ("?name=web-1&force=true", false),
+        ] {
+            let result = access().request(
+                "POST",
+                &format!("/v1.45/containers/temporary-name/rename{query}"),
+                b"",
+            );
+            assert_eq!(result.is_ok(), allowed, "{query}");
+            if let Ok(mut inspection) = result {
+                assert_eq!(
+                    inspection.next(),
+                    Some(Resource::Container("temporary-name".into()))
+                );
+                assert!(
+                    inspection
+                        .observe(
+                            &access(),
+                            &Resource::Container("temporary-name".into()),
+                            None
+                        )
+                        .is_err()
+                );
+            }
+        }
     }
     #[test]
     fn confirmed_absence_is_not_found_only_for_the_direct_inspect_target() {

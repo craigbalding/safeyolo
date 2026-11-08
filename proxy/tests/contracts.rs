@@ -84,9 +84,23 @@ fn opaque_bodies_keep_request_constraints_without_claiming_json_inspection() {
         enforce(&document, &wrong_type, true).unwrap_err().code,
         ContractCode::TransportContentType
     );
-    document["capabilities"]["test"]["contract"]["operations"][0]["request"]["body"] =
-        json!({"allow":{"name":{"equals_var":"approved"}}});
-    assert!(ServiceDefinition::from_value(document).is_err());
+    for body in [
+        json!({"allow":{"name":{"equals_var":"approved"}}}),
+        json!({"deny_unknown":false,"values":{"type":"string","enum":["busybox"]}}),
+        json!({"values":{}}),
+    ] {
+        document["capabilities"]["test"]["contract"]["operations"][0]["request"]["body"] =
+            body.clone();
+        let error = ServiceDefinition::from_value(document.clone())
+            .err()
+            .unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("opaque request bodies cannot have JSON field constraints"),
+            "{body}: {error}"
+        );
+    }
     let missing_types = contract_document(json!({"body_format":"opaque"}));
     assert!(ServiceDefinition::from_value(missing_types).is_err());
 }

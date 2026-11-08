@@ -143,7 +143,7 @@ def test_launch_refusal_has_no_setup_service_or_agent_effect(tmp_path, choice, h
 
 
 @pytest.fixture
-def codex_login_launch(tmp_path):
+def codex_login_launch(tmp_path, _binary_cache):
     """Exercise consent, identity and the real import without a guest/build lane."""
     artifacts, _, _ = native_inputs()
     binary = (artifacts / "safeyolo").resolve()
@@ -187,10 +187,9 @@ def codex_login_launch(tmp_path):
 
     instance.cli = cli
     try:
-        if nats_binary := os.environ.get("SAFEYOLO_COORD_NATS_BINARY"):
-            # Reuse the reviewed pin without downloading it for each launch.
-            instance.cli("coord", "start", "--binary", nats_binary)
-            instance.cli("coord", "stop")
+        # Prewarm every isolated root from the session's reviewed binary.
+        instance.cli("coord", "start", "--binary", str(_binary_cache))
+        instance.cli("coord", "stop")
         yield instance
     finally:
         # A failed proxy spawn can still complete the independently owned NATS

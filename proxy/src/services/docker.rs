@@ -107,7 +107,7 @@ pub(crate) fn supported_request(method: &str, target: &str) -> bool {
                 "containers",
                 id,
                 "start" | "stop" | "restart" | "kill" | "pause" | "unpause" | "wait" | "resize"
-                | "update" | "exec" | "attach",
+                | "update" | "exec" | "attach" | "rename",
             ],
         ) if !id.is_empty() => true,
         ("POST", ["exec", id, "start" | "resize"]) if !id.is_empty() => true,

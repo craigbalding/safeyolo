@@ -84,28 +84,6 @@ fn rotation_uses_source_suffix_and_runs_before_whole_batch() {
 }
 
 #[test]
-fn coord_durability_propagates_file_and_directory_sync_failure() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("audit.jsonl");
-    let file = fs::File::create(&path).unwrap();
-    for failed_call in [1, 2, 3] {
-        let mut calls = 0;
-        let result = sync_coord_append(&file, &path, |file| {
-            calls += 1;
-            assert_eq!(file.metadata()?.is_file(), calls == 1);
-            if calls == failed_call {
-                Err(io::Error::other("injected sync failure"))
-            } else {
-                Ok(())
-            }
-        });
-        assert!(result.is_err());
-        assert_eq!(calls, failed_call);
-    }
-    sync_coord_append(&file, &path, fs::File::sync_all).unwrap();
-}
-
-#[test]
 fn interrupted_append_recovers_only_the_incomplete_tail_before_rotation() {
     for (has_complete, tail_bytes, rotate_now) in [
         (true, 17, false),

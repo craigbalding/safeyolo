@@ -1,7 +1,7 @@
 //! One native delivery loop for the existing Coord audit and wake-hint outbox.
 use super::{CoordClient, CoordError, Duration, Path, open_db};
 use crate::{Error, audit};
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::{sync::watch, task::JoinHandle};
@@ -26,6 +26,10 @@ impl Delivery {
         let task = tokio::spawn(async move {
             let mut approval_position = 0;
             let mut results_unavailable = false;
+            let mut operational_position = 0;
+            let mut operational_signal_positions = std::collections::HashMap::new();
+            let mut next_operational = tokio::time::Instant::now();
+            let mut operational_unavailable = false;
             loop {
                 tokio::select! {
                     biased;
@@ -37,6 +41,14 @@ impl Delivery {
                             eprintln!("Private approval result delivery unavailable; canonical approvals and operator controls remain available.");
                         }
                         results_unavailable = unavailable;
+                        if tokio::time::Instant::now() >= next_operational {
+                            let unavailable = super::operational::reconcile(&client,&runtime,&mut operational_position,&mut operational_signal_positions).await.is_err();
+                            if unavailable && !operational_unavailable {
+                                eprintln!("Selected operational observation or delivery unavailable; canonical source state and operator controls remain available. No complete audit history is inferred.");
+                            }
+                            operational_unavailable = unavailable;
+                            next_operational = tokio::time::Instant::now() + Duration::from_secs(5);
+                        }
                     } => {},
                 }
                 tokio::select! {
@@ -76,7 +88,9 @@ struct Pending {
 
 fn coord_audit_payload(row: &Pending) -> Result<&str, Error> {
     let value: Value = serde_json::from_str(&row.payload)?;
-    if value["event_id"] != row.id || value["event"] != row.event_type || value["kind"] != "coord" {
+    let kind_matches = value["kind"] == "coord"
+        || (value["kind"] == "agent" && row.event_type == "agent.operational");
+    if value["event_id"] != row.id || value["event"] != row.event_type || !kind_matches {
         return Err("Coord audit outbox identity is invalid".into());
     }
     Ok(&row.payload)
@@ -154,10 +168,89 @@ async fn deliver(
             // A queued publish is not a delivery receipt. An ambiguous flush
             // leaves the row pending, so a retry may publish the same event ID.
             connection.flush().await?;
+            let remote = super::open_db(&client.owner.data_dir.join("v0.db"), false)
+                .map_err(|_| "Coord identity store unavailable")?
+                .query_row(
+                    "SELECT instance_id FROM coord_federation_agents WHERE principal_id=?1",
+                    [recipient],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            if let Some(source) = remote {
+                if !remote_hint_allowed(client, &source, recipient, attention, sequence)? {
+                    return Ok(());
+                }
+                let instance = std::fs::read_to_string(client.owner.data_dir.join("instance_id"))?;
+                let connection = client
+                    .owner
+                    .federation_nats
+                    .lock()
+                    .await
+                    .clone()
+                    .ok_or("federation notifications unavailable")?;
+                crate::coord_rooms::federation::nats::retained_notices(
+                    &connection,
+                    instance.trim(),
+                    &source,
+                )
+                .await?;
+                async_nats::jetstream::new(connection)
+                    .publish(
+                        crate::coord_rooms::federation::nats::notice_subject(
+                            instance.trim(),
+                            &source,
+                            recipient,
+                        ),
+                        json!({"wake":true}).to_string().into(),
+                    )
+                    .await?
+                    .await?;
+            }
         }
         _ => return Err("unknown Coord outbox destination".into()),
     }
     Ok(())
+}
+
+fn remote_hint_allowed(
+    client: &CoordClient,
+    source: &str,
+    principal: &str,
+    attention: &str,
+    sequence: u64,
+) -> Result<bool, Error> {
+    let db = client.owner.data_dir.join("v0.db");
+    let conn = super::open_db(&db, false).map_err(|_| "Coord identity store unavailable")?;
+    let trusted: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM coord_federation_peers WHERE instance_id=?1 AND enabled=1)",
+        [source],
+        |row| row.get(0),
+    )?;
+    if !trusted {
+        return Ok(false);
+    }
+    let page = super::read_attention_feed(&db, principal, sequence - 1, 1)
+        .map_err(|_| "canonical attention unavailable")?;
+    let Some(edge) = page
+        .edges
+        .into_iter()
+        .find(|edge| edge.attention_id == attention)
+    else {
+        return Ok(false);
+    };
+    if edge.kind != "operational_event" {
+        return Ok(true);
+    }
+    let mut policy = crate::policy::Policy::from_native_path(
+        client.policy_file.as_deref().ok_or("policy unavailable")?,
+    )?;
+    if let Some(root) = &client.instance_root {
+        policy.set_identity_root(root.clone());
+    }
+    let reference = super::operational::retained(&db, &edge.object_id)
+        .map_err(|_| "canonical operational reference unavailable")?;
+    let instance = std::fs::read_to_string(client.owner.data_dir.join("instance_id"))?;
+    crate::peer_support::events::permits(&policy, instance.trim(), principal, &reference, true)
 }
 
 async fn drain(client: &CoordClient, audit: &audit::Writer) {

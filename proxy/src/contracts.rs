@@ -161,7 +161,8 @@ impl ContractTemplate {
             if let Some(transport) = &operation.request.transport {
                 transport.validate()?;
                 if transport.body_format == BodyFormat::Opaque
-                    && !operation.request.body.allow.is_empty()
+                    && (!operation.request.body.allow.is_empty()
+                        || operation.request.body.values.is_some())
                 {
                     return Err("opaque request bodies cannot have JSON field constraints".into());
                 }
