@@ -17,6 +17,21 @@ pub(crate) enum Lifecycle {
     RestartSandbox,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Notification {
+    LaunchFailed,
+    SandboxAvailability,
+    ControlAvailability,
+    SandboxRecovered,
+    CommandExit,
+    CommandRestart,
+    CommandFailed,
+    SupervisorExit,
+    SupervisorRestart,
+    NeedsOperator,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Grant {
@@ -28,6 +43,10 @@ pub(crate) struct Grant {
     /// transport; it never follows guest-controlled links on the host.
     pub guest_logs: Vec<String>,
     pub lifecycle: Vec<Lifecycle>,
+    #[serde(default)]
+    pub notifications: Vec<Notification>,
+    #[serde(default)]
+    pub signal_rooms: Vec<String>,
     pub expires_at: Option<String>,
     pub acknowledgment: Option<String>,
 }
@@ -70,6 +89,12 @@ impl Grant {
         }
         if self.lifecycle.iter().collect::<BTreeSet<_>>().len() != self.lifecycle.len() {
             return Err(invalid("support lifecycle actions must be distinct"));
+        }
+        if self.notifications.contains(&Notification::NeedsOperator) && self.signal_rooms.is_empty()
+        {
+            return Err(invalid(
+                "needs_operator notices require explicit signal_rooms disclosure",
+            ));
         }
         if self
             .guest_logs

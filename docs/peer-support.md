@@ -63,6 +63,8 @@ example grants standing inspection of `worker` to `support`:
     "guest_admin": false,
     "guest_logs": [],
     "lifecycle": [],
+    "notifications": [],
+    "signal_rooms": [],
     "expires_at": null,
     "acknowledgment": null
   }
@@ -84,6 +86,18 @@ safeyolo --root "$ROOT" support apply incident --file acknowledged.json --json
 A changed grant or durable identity refuses the proposal. Inspect the current
 state and preview the revised proposal. A support agent cannot edit its own
 grant through the Agent API.
+
+For selected operational notices, set `notifications` in this same proposal
+before preview and apply. For example, select `launch_failed`,
+`sandbox_availability`, `control_availability`, `sandbox_recovered`,
+`command_exit`, `command_restart`, `command_failed`, `supervisor_exit` and
+`supervisor_restart`. The recipient is `support`; the subjects are `targets`.
+The grant's temporary or standing lifetime applies to observation and notices.
+Repair choices remain independent. For `needs_operator`, also select named
+`signal_rooms` to disclose only the subjects' material signals from those
+rooms. Read the [event meanings, source rights and loss behavior](operational-events.md)
+before selecting notices. Removing a kind stops new notices; an already
+retained reference still requires current observation and source disclosure.
 
 ## Investigate and repair
 

@@ -82,8 +82,112 @@ fn save(paths: &Paths, value: &mut Value) -> Result<(), Error> {
     {
         return Err("supervisor ownership changed; replacement state was left intact".into());
     }
+    // Keep only transition facts in the existing source state. Heartbeat
+    // writes do not create events. Output and command text never enter notices.
+    let exit_changed = value["last_exit_reason"] != current["last_exit_reason"]
+        || value["restart_count"] != current["restart_count"];
+    if exit_changed
+        && !value["last_exit_reason"].is_null()
+        && value["last_exit_reason"] != "supervisor-restarted"
+        && value["last_exit_reason"] != "supervisor-error"
+    {
+        transition(value, "command_exit", "guest_command_supervisor");
+    }
+    if value["state"] == "failed" && current["state"] != "failed" {
+        transition(value, "command_failed", "guest_command_supervisor");
+    }
+    if value["state"] == "running" {
+        if value["supervisor_pid"] != current["supervisor_pid"]
+            && value["pid1_owner_exit"].as_u64().unwrap_or(0)
+                > value["published_owner_restart"].as_u64().unwrap_or(0)
+        {
+            transition(value, "supervisor_restart", "guest_command_supervisor");
+            value["published_owner_restart"] = value["pid1_owner_exit"].clone();
+        } else if current["state"] != "running" && value["restart_count"].as_u64().unwrap_or(0) > 0
+        {
+            transition(value, "command_restart", "guest_command_supervisor");
+        }
+    }
     value["updated_at"] = json!(now());
     write_json(&paths.state, value)
+}
+
+fn transition(value: &mut Value, kind: &str, source: &str) {
+    let sequence = value["event_sequence"].as_u64().unwrap_or(0) + 1;
+    value["event_sequence"] = json!(sequence);
+    let event_state = if kind == "supervisor_exit" {
+        json!("unknown")
+    } else {
+        value["state"].clone()
+    };
+    let event = json!({"sequence":sequence,"kind":kind,"source":source,"at":now(),
+        "state":event_state,"restart_count":value["restart_count"],
+        "exit_code":value["last_exit_code"],"exit_signal":value["last_exit_signal"],
+        "reason":value["last_exit_reason"],"wait_status":value["pid1_wait_status"],
+        "expected_stop":value["last_exit_reason"] == "intentional-stop"});
+    if !value["operational_events"].is_array() {
+        value["operational_events"] = json!([]);
+    }
+    let events = value["operational_events"].as_array_mut().expect("array");
+    events.push(event);
+    if events.len() > 64 {
+        events.drain(..events.len() - 64);
+    }
+}
+
+/// PID 1 has reaped this owner. It publishes before starting a replacement;
+/// normal terminal results and the host's durable stop fence are excluded.
+fn owner_binding(value: &Value) -> String {
+    let identity = json!([
+        value["generation"],
+        value["supervision_id"],
+        value["started_at"],
+        value["command"]
+    ]);
+    ring::digest::digest(
+        &SHA256,
+        &serde_json::to_vec(&identity).expect("JSON identity"),
+    )
+    .as_ref()
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect()
+}
+
+pub(super) fn print_owner_binding(paths: &Paths) -> Result<i32, Error> {
+    let value = state(paths)?;
+    if value["generation"].as_str() != Some(&generation(paths)?) {
+        return Err("supervisor belongs to another sandbox generation".into());
+    }
+    println!("{}", owner_binding(&value));
+    Ok(0)
+}
+
+pub(super) fn owner_exit(paths: &Paths, binding: &str, status: i32) -> Result<i32, Error> {
+    let mut value = state(paths)?;
+    if binding != owner_binding(&value) {
+        // The host replaced this launch after PID 1 started the reaped owner.
+        // Its exit says nothing about that new launch. Do not mutate it.
+        return Ok(0);
+    }
+    if value["generation"].as_str() != Some(&generation(paths)?) {
+        return Err("reaped supervisor belongs to another sandbox generation".into());
+    }
+    if paths.stop.exists()
+        || matches!(
+            value["state"].as_str(),
+            Some("stopped" | "failed" | "exited")
+        )
+    {
+        return Ok(0);
+    }
+    value["pid1_owner_exit"] = json!(value["pid1_owner_exit"].as_u64().unwrap_or(0) + 1);
+    value["pid1_wait_status"] = json!(status);
+    transition(&mut value, "supervisor_exit", "guest_pid1");
+    // No supervisor is running here. Avoid save(), whose command transition
+    // comparison belongs to the live supervisor's writes.
+    write_json(&paths.state, &value)?;
+    Ok(0)
 }
 
 struct Tail {

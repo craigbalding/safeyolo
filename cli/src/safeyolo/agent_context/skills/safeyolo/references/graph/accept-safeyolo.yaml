@@ -272,7 +272,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: ecc0de72cd8d295a673a7a533d36518730e347b5b4c9f2ccee5472626f3a348d
         - path: proxy/src/lib.rs
-          sha256: b0eb8c13003b2bb2ae85f555fe2a2b92357231aa10b59ea85475ab1933d24aac
+          sha256: a9a0cc4ccb214083c859e9099e994491802ea27a1fe3973e709924786a98cfd5
         - path: proxy/src/bin/safeyolo.rs
           sha256: 2f6c5168ea821f0c7415e3cd4459ca2ad9357accb5ac84ef14b775876761146f
         - path: scripts/run_claude_blackbox.py
@@ -337,7 +337,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: ecc0de72cd8d295a673a7a533d36518730e347b5b4c9f2ccee5472626f3a348d
         - path: proxy/src/lib.rs
-          sha256: b0eb8c13003b2bb2ae85f555fe2a2b92357231aa10b59ea85475ab1933d24aac
+          sha256: a9a0cc4ccb214083c859e9099e994491802ea27a1fe3973e709924786a98cfd5
         - path: proxy/src/bin/safeyolo.rs
           sha256: 2f6c5168ea821f0c7415e3cd4459ca2ad9357accb5ac84ef14b775876761146f
         - path: proxy/src/jobs/vz-guest-init.sh
@@ -499,7 +499,7 @@ nodes:
         - path: proxy/tests/native_coord/federation.rs
           sha256: b4f44c1465fd834f467ca5fb4f703efb3c372a57d327644deb8a8e2545e81578
         - path: proxy/src/agent_api/coord.rs
-          sha256: 792f0f3ed78860ae668b2f68a7bfb304a6a53f54c4bebc0e5afd9c0bf03e0d36
+          sha256: cb238eb1cdf5745c47d28f436775087190e90279abdb8204282440387ca1440f
         - path: proxy/src/agent_api/coord/federation.rs
           sha256: fe5736a043c1ff65ad41bef62be0e66ae36a2eb9f0a6d07addf867998b72c5bf
         - path: proxy/src/agent_api/coord/federation/tests.rs
@@ -525,7 +525,7 @@ nodes:
         - path: proxy/tests/native_coord/stage0.rs
           sha256: 455157e783d090a40e30c679c0dc48cc20843c408b65fef8503e4794feb63eb2
         - path: proxy/src/coord_rooms.rs
-          sha256: 543741c61619609b387bb317a2ef170e93d651f00bb2c2b77315d2b6b02673db
+          sha256: 6ba3804287bbcb0884899852fa26e1225be7efd6f078a4de3f084f862bfb0633
         - path: proxy/tests/native_coord/inventory.rs
           sha256: 1de6227ecdc2bbf2062f0e912c0c4ae7d6e149e2ea61837d75705393891b7276
         - path: proxy/src/agent_api/coord/inventory.rs

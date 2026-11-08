@@ -63,7 +63,7 @@ def published(guest):
 @pytest.mark.parametrize("prior_terminal", [None, "stopped", "failed", "exited"])
 def test_recipe_collects_real_probe_and_matching_guest_acknowledgement(staged_guest, prior_terminal):
     if prior_terminal:
-        write_json(staged_guest["state"], {"schema_version": 1, "name": "demo", "command": "exec prior",
+        write_json(staged_guest["state"], {"schema_version": 1, "name": "demo", "generation": "recovery-run", "command": "exec prior",
                                          "state": prior_terminal, "command_pid": None, "command_start_token": None})
         staged_guest["stop"].write_text("prior stop fence")
         (staged_guest["share"] / "command-supervisor-enabled").touch()
@@ -95,7 +95,7 @@ def test_recipe_collects_real_probe_and_matching_guest_acknowledgement(staged_gu
 
 @pytest.mark.parametrize("fenced", [False, True])
 def test_recipe_refuses_occupied_supervisor_even_with_stop_fence(staged_guest, fenced):
-    write_json(staged_guest["state"], {"schema_version": 1, "name": "demo", "command": "exec worker",
+    write_json(staged_guest["state"], {"schema_version": 1, "name": "demo", "generation": "recovery-run", "command": "exec worker",
                                      "state": "running", "command_pid": 123})
     enabled = staged_guest["share"] / "command-supervisor-enabled"
     enabled.touch()
@@ -130,7 +130,7 @@ def test_recipe_refuses_occupied_supervisor_even_with_stop_fence(staged_guest, f
     (None, {}),
 ])
 def test_recipe_preserves_unverified_terminal_identity_and_markers(staged_guest, terminal, pid, token):
-    write_json(staged_guest["state"], {"schema_version": 1, "name": "demo", "command": "exec existing",
+    write_json(staged_guest["state"], {"schema_version": 1, "name": "demo", "generation": "recovery-run", "command": "exec existing",
                                      "state": terminal, "command_pid": pid, "command_start_token": token})
     enabled = staged_guest["share"] / "command-supervisor-enabled"
     enabled.write_text("existing enabled marker")
@@ -138,6 +138,22 @@ def test_recipe_preserves_unverified_terminal_identity_and_markers(staged_guest,
     original = staged_guest["state"].read_bytes()
     response = recover(staged_guest, timeout=0.2)
     assert response.returncode != 0 and "occupied or unverified" in response.stderr
+    assert staged_guest["state"].read_bytes() == original
+    assert enabled.read_text() == "existing enabled marker"
+    assert staged_guest["stop"].read_text() == "existing stop fence"
+
+
+@pytest.mark.parametrize("generation", [None, "prior-run"])
+def test_recipe_preserves_supervisor_from_a_missing_or_different_run(staged_guest, generation):
+    write_json(staged_guest["state"], {"schema_version": 1, "name": "demo", "generation": generation,
+                                     "command": "exec existing", "state": "exited",
+                                     "command_pid": None, "command_start_token": None})
+    enabled = staged_guest["share"] / "command-supervisor-enabled"
+    enabled.write_text("existing enabled marker")
+    staged_guest["stop"].write_text("existing stop fence")
+    original = staged_guest["state"].read_bytes()
+    response = recover(staged_guest, timeout=0.2)
+    assert response.returncode != 0 and "another run" in response.stderr
     assert staged_guest["state"].read_bytes() == original
     assert enabled.read_text() == "existing enabled marker"
     assert staged_guest["stop"].read_text() == "existing stop fence"

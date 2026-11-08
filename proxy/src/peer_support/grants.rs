@@ -67,9 +67,30 @@ pub(crate) fn preview(policy: &Policy, name: &str, proposal: &Proposal) -> Resul
     if !grant.guest_logs.is_empty() {
         warnings.push("Selected log paths are read inside the guest. Guest links may lead to any target-accessible data, including shared mounts and credentials. This permission is broader than host-observed inspection.".into());
     }
+    if !grant.signal_rooms.is_empty() {
+        let connection = crate::coord_rooms::open(&crate::host_platform::config_dir())
+            .map_err(|_| invalid("signal disclosure needs the owning instance's Coord store"))?;
+        for room in &grant.signal_rooms {
+            let exists: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM rooms WHERE name=?1)",
+                    [room],
+                    |row| row.get(0),
+                )
+                .map_err(|_| invalid("signal room lookup unavailable"))?;
+            if !exists {
+                return Err(invalid(
+                    "selected signal room does not exist in this instance",
+                ));
+            }
+        }
+        warnings.push("Signal disclosure includes selected subjects' material signal summaries and references in the named rooms, including retained revisions and current resolution state. These are agent-authored claims and can contain sensitive text. It grants no room history or unrelated signals.".into());
+    }
     Ok(
         json!({"name":name,"before":before,"after":grant,"revision":grant.revision(),"acknowledgment":grant.revision(),
         "lifetime":if grant.expires_at.is_some() {"temporary"} else {"standing"},
+        "notifications":{"subjects":grant.targets,"recipient":grant.support,"kinds":grant.notifications,"signal_rooms":grant.signal_rooms,
+            "disclosure":"Selected operational references and current observation evidence. Signal text requires the explicit signal_rooms selection. Current authority is checked at delivery and resolution. Notifications do not grant or execute repair."},
         "effect":"Inspection is always included. Only the selected guest evidence, administration and lifecycle actions are granted. Routine in-scope operations require no further prompt. Ordinary support and target restarts preserve a standing grant; recreated identities do not inherit it. Lifecycle uses saved worker configuration and accepts no host scripts, mounts, credentials or host commands.",
         "warnings":warnings}),
     )

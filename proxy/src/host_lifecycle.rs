@@ -1565,6 +1565,7 @@ pub(crate) async fn start_authorized(
     let agent = &current;
     let observed = runtime(agent).await?;
     check()?;
+    let result: Result<Value, Error> = async {
     let state = observed
         .get("agent_state")
         .and_then(Value::as_str)
@@ -1706,6 +1707,43 @@ pub(crate) async fn start_authorized(
         json!({}),
     );
     runtime(agent).await
+    }.await;
+    if !result.as_ref().is_ok_and(|value| {
+        value["status_code"]
+            .as_u64()
+            .is_none_or(|status| status < 400)
+    }) {
+        // The lifecycle lock still binds the failed attempt to these source
+        // operands. Keep the fact even if audit or notification is unavailable.
+        let run = crate::host_runs::read(&agent.name).ok().flatten();
+        let launch = read_json(&launch_path(&agent.name)).ok().flatten();
+        let failure = json!({"event_id":format!("evt-{}",uuid::Uuid::new_v4().simple()),
+            "name":agent.name,"agent_id":agent.id,"run_id":run.as_ref().map(|run| &run["run_id"]),
+            "launch_id":launch.as_ref().map(|launch| &launch["launch_id"]),
+            "operation":operation,"at":time::OffsetDateTime::now_utc().unix_timestamp(),
+            "source":"host_start","reason":"The host start request failed; inspect current runtime and operator diagnostics before retrying."});
+        if let Err(error) = write_json(
+            &agent_dir(&agent.name).join("last-start-failure.json"),
+            &failure,
+        ) {
+            eprintln!("Failed start could not retain its operational reference: {error}");
+        }
+    } else if let Ok(Some(mut failure)) =
+        read_json(&agent_dir(&agent.name).join("last-start-failure.json"))
+        && failure["agent_id"] == agent.id
+        && failure["recovery"].is_null()
+    {
+        let value = result.as_ref().expect("successful start");
+        failure["recovery"] = json!({"at":time::OffsetDateTime::now_utc().unix_timestamp(),
+            "run_id":value["run_id"],"launch_id":value["launch_id"]});
+        if let Err(error) = write_json(
+            &agent_dir(&agent.name).join("last-start-failure.json"),
+            &failure,
+        ) {
+            eprintln!("Successful start could not retain its recovery reference: {error}");
+        }
+    }
+    result
 }
 
 // The setup lock is held, and no backend process was spawned for this record.

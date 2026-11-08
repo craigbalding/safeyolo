@@ -41,6 +41,7 @@ const RECOVERY_INTERVAL: Duration = Duration::from_millis(250);
 mod approval_results;
 pub(crate) mod federation;
 pub(crate) mod inventory;
+mod operational;
 pub(crate) mod outbox;
 pub(crate) mod signals;
 mod work;
@@ -49,6 +50,7 @@ mod work;
 enum CoordError {
     NotFound,
     Forbidden,
+    ObservationRequired,
     Invalid,
     Unavailable,
     Data,
@@ -561,9 +563,16 @@ impl CoordClient {
                 .map_err(|_| CoordError::Unavailable)??;
         let mut visible = Vec::new();
         for edge in page.edges {
-            if edge.kind != "approval_result"
-                || approval_results::authorized(runtime, &edge, &principal_for_results).await?
-            {
+            let authorized = match edge.kind.as_str() {
+                "approval_result" => {
+                    approval_results::authorized(runtime, &edge, &principal_for_results).await?
+                }
+                "operational_event" => {
+                    operational::authorized(runtime, &edge, &principal_for_results).await?
+                }
+                _ => true,
+            };
+            if authorized {
                 visible.push(edge);
             }
         }
@@ -910,6 +919,9 @@ impl CoordClient {
         .map_err(|_| CoordError::Unavailable)??;
         if edge.kind == "approval_result" {
             return approval_results::read(self, runtime, principal, &edge).await;
+        }
+        if edge.kind == "operational_event" {
+            return operational::read(self, runtime, principal, &edge).await;
         }
         if edge.kind == "work_changed" {
             let db = self.owner.data_dir.join("v0.db");
@@ -1370,7 +1382,7 @@ fn read_attention_feed(
         let (edge, generation) = row.map_err(|_| CoordError::Data)?;
         let permitted = match edge.room_id.as_deref() {
             Some(room) => attention_member(&conn, room, principal, generation)?,
-            None => edge.kind == "approval_result",
+            None => matches!(edge.kind.as_str(), "approval_result" | "operational_event"),
         };
         if permitted {
             edges.push(edge);
@@ -1428,7 +1440,8 @@ fn read_attention_edge(
         .optional()
         .map_err(|_| CoordError::Data)?
         .ok_or(CoordError::NotFound)?;
-    if !(edge.kind == "approval_result" && edge.room_id.is_none()
+    if !(matches!(edge.kind.as_str(), "approval_result" | "operational_event")
+        && edge.room_id.is_none()
         || attention_member(
             &conn,
             edge.room_id.as_deref().ok_or(CoordError::Data)?,
@@ -2826,6 +2839,10 @@ fn error_response(error: CoordError) -> Outcome<'static> {
     match error {
         CoordError::NotFound => response(404, json!({"error":"room not found or not accessible"})),
         CoordError::Forbidden => response(403, json!({"error":"coordination permission denied"})),
+        CoordError::ObservationRequired => response(
+            403,
+            json!({"error":"operational reference requires a current support observation grant for this instance and durable target; material signals also require the selected signal_rooms disclosure. Ask the operator to inspect or preview the grant."}),
+        ),
         CoordError::Invalid => response(400, json!({"error":"invalid coordination request"})),
         CoordError::Unavailable => {
             response(503, json!({"error":"coordination substrate unavailable"}))

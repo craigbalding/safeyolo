@@ -26,6 +26,10 @@ impl Delivery {
         let task = tokio::spawn(async move {
             let mut approval_position = 0;
             let mut results_unavailable = false;
+            let mut operational_position = 0;
+            let mut operational_signal_positions = std::collections::HashMap::new();
+            let mut next_operational = tokio::time::Instant::now();
+            let mut operational_unavailable = false;
             loop {
                 tokio::select! {
                     biased;
@@ -37,6 +41,14 @@ impl Delivery {
                             eprintln!("Private approval result delivery unavailable; canonical approvals and operator controls remain available.");
                         }
                         results_unavailable = unavailable;
+                        if tokio::time::Instant::now() >= next_operational {
+                            let unavailable = super::operational::reconcile(&client,&runtime,&mut operational_position,&mut operational_signal_positions).await.is_err();
+                            if unavailable && !operational_unavailable {
+                                eprintln!("Selected operational observation or delivery unavailable; canonical source state and operator controls remain available. No complete audit history is inferred.");
+                            }
+                            operational_unavailable = unavailable;
+                            next_operational = tokio::time::Instant::now() + Duration::from_secs(5);
+                        }
                     } => {},
                 }
                 tokio::select! {
@@ -76,7 +88,9 @@ struct Pending {
 
 fn coord_audit_payload(row: &Pending) -> Result<&str, Error> {
     let value: Value = serde_json::from_str(&row.payload)?;
-    if value["event_id"] != row.id || value["event"] != row.event_type || value["kind"] != "coord" {
+    let kind_matches = value["kind"] == "coord"
+        || (value["kind"] == "agent" && row.event_type == "agent.operational");
+    if value["event_id"] != row.id || value["event"] != row.event_type || !kind_matches {
         return Err("Coord audit outbox identity is invalid".into());
     }
     Ok(&row.payload)

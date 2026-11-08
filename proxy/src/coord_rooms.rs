@@ -80,6 +80,7 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
         transaction.execute_batch(include_str!("coord_work_upgrade_6.sql"))?;
     }
     transaction.execute_batch(include_str!("coord_signal_schema.sql"))?;
+    transaction.execute_batch(include_str!("coord_operational_schema.sql"))?;
     transaction.execute_batch(include_str!("coord_federation_schema.sql"))?;
     transaction.execute_batch(include_str!("coord_membership_grants.sql"))?;
     // Earlier writers drop assignment and selected authority on rewrite.
