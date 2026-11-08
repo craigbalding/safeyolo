@@ -202,6 +202,55 @@ def test_selected_attention_loss_restart_and_current_observation(tmp_path, _bina
             assert call(instance, "read_attention", {"attention_id": attention})["object"]["reference"] == event["reference"]
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="Directory read denial needs an ordinary owner")
+def test_audit_directory_sync_failure_stays_pending_then_retries_same_event(tmp_path, _binary_cache):
+    with contextmanager(proposal_instance)(tmp_path, nats_binary=_binary_cache) as instance:
+        apply(instance, proposal(instance, ["launch_failed"]))
+        log = instance.root / "logs/audit.jsonl"
+        original_mode = log.parent.stat().st_mode & 0o777
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with database(instance) as db:
+                pending = db.execute("SELECT count(*) FROM coord_outbox WHERE destination='audit-jsonl' AND delivered_at IS NULL").fetchone()[0]
+            if pending == 0:
+                break
+            time.sleep(0.02)
+        assert pending == 0
+        log.parent.chmod(0o300)  # Append/search works; opening the directory for fsync fails.
+        try:
+            source_failure(instance, "directory-sync")
+            events, _ = wait_reference(instance)
+            event_id = events[0]["object"]["reference"]["event_id"]
+
+            def audit_receipt():
+                with database(instance) as db:
+                    return db.execute("SELECT attempt_count,delivered_at,last_error_class FROM coord_outbox WHERE destination='audit-jsonl' AND event_id=?", (event_id,)).fetchone()
+
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                receipt = audit_receipt()
+                if receipt and receipt[0] > 0:
+                    break
+                time.sleep(0.02)
+            (tmp_path / "failed-audit-receipt.json").write_text(json.dumps({"event_id": event_id, "receipt": receipt}))
+            assert receipt and receipt[0] > 0 and receipt[1:] == (None, "delivery_failed")
+            assert any(json.loads(line).get("event_id") == event_id for line in log.read_text().splitlines())
+        finally:
+            log.parent.chmod(original_mode)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            receipt = audit_receipt()
+            if receipt[1] is not None:
+                break
+            time.sleep(0.02)
+        assert receipt[0] >= 2 and receipt[1] is not None and receipt[2] is None
+        records = [json.loads(line) for line in log.read_text().splitlines()]
+        assert sum(record.get("event_id") == event_id for record in records) >= 2
+        assert "audit writer flush failed" in (instance.root / "process.log").read_text()
+        with database(instance) as db:
+            assert db.execute("SELECT count(*) FROM coord_work").fetchone() == (0,)
+
+
 def test_signal_disclosure_uses_canonical_state_without_room_history(tmp_path, _binary_cache):
     with contextmanager(proposal_instance)(tmp_path, nats_binary=_binary_cache) as instance:
         (instance.root / "agents/lens/home").mkdir(parents=True)

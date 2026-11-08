@@ -551,6 +551,7 @@ impl Runtime {
                         None => audit::Settings::from_env()?,
                     },
                 )
+                .with_instance_directory(config.native_config_dir.clone())
                 .with_named_controls(config.native_product)
                 .with_approvals(config.data_dir().join("approvals.sqlite3")),
             ),
