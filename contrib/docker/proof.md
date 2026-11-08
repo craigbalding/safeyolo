@@ -457,8 +457,31 @@ co-administrator rename/replacement and explicit volume re-adoption. Reuse the
 observed project result at `a72c6477c3c6b37923c767d55e1ec61dcfc5d2d0`
 (execution 15482); a new interruption case does not require another lifecycle run.
 
-On the same venue, use the same private inputs and warm build settings to run
-only the missing real Engine interruption and anonymous-volume checks:
+Execution 16022 ran the interruption case at
+`cd3799f3e7602b23db7c4f786a81417d46d03c96` on 8 November 2026. Engine preflight
+passed at 29.1.3 on AMD64. The forwarding fixture then rejected the ordinary
+Docker client's `HEAD /_ping` before the intended interrupted creation. The
+retained audit records that request. Operator inspection confirmed no pending
+creation or intended container; only the stopped shared fixture container and
+its sole anonymous volume existed. Execution 16027 verified their identities
+and removed them, then confirmed both absent. The failed scratch and diagnostic
+output remain available. This result does not judge the interrupted-mutation
+contract. Do not repeat the failed run or its cleanup to correct the fixture.
+
+Before another real Engine run, exercise the forwarding fixture's protocol
+control in the same warm target. It covers HEAD with an advertised GET length,
+GET ping/version, chunked upstream framing, a 404 and a bodyless 204. It creates
+no Docker resources and does not establish project-state behavior:
+
+```sh
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
+  ../scripts/cargo_with_space.sh test --locked --config profile.dev.debug=0 \
+  --test docker_real_daemon interrupted_origin_preserves_docker_http -- --exact --nocapture
+```
+
+With that control passing, use the same venue, private inputs and warm build
+settings to run only the missing real Engine interruption and anonymous-volume
+checks:
 
 ```sh
 CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
@@ -468,7 +491,10 @@ CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
 
 This case forwards the project gateway's requests through a local HTTPS fixture
 to the actual authenticated Engine. The fixture verifies the Engine's certificate
-with the existing CA and sends the existing bearer on stdin. It saves the successful
+with the existing CA and sends the existing bearer on stdin. Before creating
+either stopped fixture container, it runs ordinary `docker version` through the
+same forwarding path. HEAD replies carry no body; Docker negotiation headers
+and real Engine status codes are retained. The fixture saves the successful
 creation reply, then truncates that reply on the connection to the gateway.
 Prerequisite and reconciliation responses come from the Engine. No Docker state
 is simulated. The case must observe the client failure, retained pending creation,

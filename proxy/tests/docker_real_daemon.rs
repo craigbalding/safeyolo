@@ -210,34 +210,54 @@ async fn operator(
     path: &str,
     body: &Value,
 ) -> (u16, Value) {
-    let (status, body) = operator_bytes(inputs, root, method, path, body).await;
-    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+    let reply = operator_reply(inputs, root, method, path, body).await;
+    (
+        reply.status,
+        serde_json::from_slice(&reply.body).unwrap_or(Value::Null),
+    )
 }
 
-async fn operator_bytes(
+struct EngineReply {
+    status: u16,
+    headers: String,
+    body: Vec<u8>,
+}
+
+async fn operator_reply(
     inputs: &Inputs,
     root: &Path,
     method: &str,
     path: &str,
     body: &Value,
-) -> (u16, Vec<u8>) {
+) -> EngineReply {
     let payload = root.join("operator-body.json");
+    let response_body = root.join("operator-response-body");
+    let response_headers = root.join("operator-response-headers");
     std::fs::write(&payload, serde_json::to_vec(body).unwrap()).unwrap();
     let mut command = Command::new("curl");
     command
         .kill_on_drop(true)
         .args(["--silent", "--show-error", "--cacert"])
         .arg(&inputs.ca)
+        .arg("--output")
+        .arg(&response_body)
+        .arg("--dump-header")
+        .arg(&response_headers)
         .args([
             "--header",
             "@-",
             "--request",
             method,
             "--write-out",
-            "\n%{http_code}",
+            "%{http_code}",
             "--header",
             "Content-Type: application/json",
         ]);
+    // --request HEAD alone makes curl expect the advertised GET body length.
+    // --head uses HEAD semantics; its header output is not an entity body.
+    if method == "HEAD" {
+        command.arg("--head");
+    }
     if !body.is_null() {
         command
             .arg("--data-binary")
@@ -265,9 +285,49 @@ async fn operator_bytes(
         "operator endpoint failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let text = String::from_utf8(output.stdout).unwrap();
-    let (body, status) = text.rsplit_once('\n').unwrap();
-    (status.parse().unwrap(), body.as_bytes().to_vec())
+    EngineReply {
+        status: String::from_utf8(output.stdout).unwrap().parse().unwrap(),
+        headers: std::fs::read_to_string(response_headers).unwrap(),
+        body: if method == "HEAD" {
+            Vec::new()
+        } else {
+            std::fs::read(response_body).unwrap()
+        },
+    }
+}
+
+fn engine_reply_bytes(method: &str, reply: &EngineReply) -> Vec<u8> {
+    let bodyless = method == "HEAD" || matches!(reply.status, 204 | 304);
+    let mut head = format!("HTTP/1.1 {} Engine\r\nConnection: close\r\n", reply.status);
+    // curl can include a CONNECT or informational header block. Use only the
+    // final Engine headers, retaining Docker's ordinary negotiation metadata.
+    let headers = reply.headers.trim_end().rsplit("\r\n\r\n").next().unwrap();
+    for (name, value) in headers.lines().filter_map(|line| line.split_once(':')) {
+        if matches!(
+            name.to_ascii_lowercase().as_str(),
+            "api-version"
+                | "docker-experimental"
+                | "ostype"
+                | "server"
+                | "builder-version"
+                | "content-type"
+        ) || (name.eq_ignore_ascii_case("content-length")
+            && (method == "HEAD" || reply.status == 304))
+        {
+            head.push_str(&format!("{name}: {}\r\n", value.trim()));
+        }
+    }
+    // curl has decoded transfer framing. Recompute the length only for replies
+    // that carry a body; a 204 must not have Content-Length, and HEAD sends none.
+    if !bodyless {
+        head.push_str(&format!("Content-Length: {}\r\n", reply.body.len()));
+    }
+    head.push_str("\r\n");
+    let mut response = head.into_bytes();
+    if !bodyless {
+        response.extend_from_slice(&reply.body);
+    }
+    response
 }
 
 /// Forward to the actual authenticated Engine, but truncate the single named
@@ -335,24 +395,137 @@ async fn interrupted_creation_origin(
                         return;
                     }
                 } else {
-                    assert!(matches!(method, "GET" | "DELETE"));
+                    assert!(matches!(method, "HEAD" | "GET" | "DELETE"));
                 }
-                let (status, response) = operator_bytes(&inputs, &root, method, path, &body).await;
+                let reply = operator_reply(&inputs, &root, method, path, &body).await;
                 if create {
                     // Save the actual effect before any assertion or response loss.
-                    std::fs::write(root.join("interrupted-engine-reply.json"), &response).unwrap();
-                    println!("Actual Engine creation before reply interruption: status {status}, {}", String::from_utf8_lossy(&response));
-                    assert_eq!(status, 201);
+                    std::fs::write(root.join("interrupted-engine-reply.json"), &reply.body).unwrap();
+                    println!("Actual Engine creation before reply interruption: status {}, {}", reply.status, String::from_utf8_lossy(&reply.body));
+                    assert_eq!(reply.status, 201);
                     stream.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n{\"Id\":\"").await.unwrap();
                 } else {
-                    stream.write_all(format!("HTTP/1.1 {status} Engine\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len()).as_bytes()).await.unwrap();
-                    stream.write_all(&response).await.unwrap();
+                    stream.write_all(&engine_reply_bytes(method, &reply)).await.unwrap();
                 }
                 stream.shutdown().await.unwrap();
             }).await.expect("interrupted-creation origin deadline");
         }
     });
     (local, backend)
+}
+
+#[tokio::test]
+async fn interrupted_origin_preserves_docker_http() {
+    use rustls::pki_types::{CertificateDer, ServerName, pem::PemObject};
+
+    // Protocol control only: no daemon, project state or container effects.
+    // The forwarding hop still uses its actual TLS, curl and bearer path.
+    let root = tempfile::tempdir().unwrap();
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let inputs = Inputs {
+        endpoint: format!("http://{}", upstream.local_addr().unwrap()),
+        ca: root.path().join("unused-for-http.pem"),
+        credential: "synthetic-protocol-control".into(),
+        image: String::new(),
+    };
+    let cases = [
+        ("HEAD", "/_ping", 200, ""),
+        ("GET", "/_ping", 200, "OK"),
+        ("GET", "/v1.45/version", 200, "{\"Version\":\"29.1.3\"}"),
+        (
+            "GET",
+            "/v1.45/containers/missing/json",
+            404,
+            "{\"message\":\"missing\"}",
+        ),
+        ("DELETE", "/v1.45/containers/owned", 204, ""),
+    ];
+    let control = tokio::spawn(async move {
+        for (method, path, status, body) in cases {
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                head.push(stream.read_u8().await.unwrap());
+                assert!(head.len() < 64 * 1024);
+            }
+            let head = String::from_utf8(head).unwrap();
+            assert!(head.starts_with(&format!("{method} {path} HTTP/1.1\r\n")));
+            assert!(head.lines().any(|line| {
+                line.eq_ignore_ascii_case("Authorization: Bearer synthetic-protocol-control")
+            }));
+            let mut response = format!(
+                "HTTP/1.1 {status} Control\r\nAPI-Version: 1.52\r\nOstype: linux\r\nConnection: close\r\n"
+            );
+            if method == "HEAD" {
+                // Docker advertises the length of GET /_ping, with no HEAD body.
+                response.push_str("Content-Length: 2\r\n\r\n");
+            } else if status == 204 {
+                response.push_str("\r\n");
+            } else if path.ends_with("/version") {
+                response.push_str(&format!("Transfer-Encoding: chunked\r\nContent-Type: application/json\r\n\r\n{:x}\r\n{body}\r\n0\r\n\r\n", body.len()));
+            } else {
+                response.push_str(&format!("Content-Length: {}\r\n\r\n{body}", body.len()));
+            }
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.shutdown().await.unwrap();
+        }
+    });
+    let creations = Arc::new(AtomicUsize::new(0));
+    let (local, backend) = interrupted_creation_origin(
+        root.path(),
+        &inputs,
+        "/v1.45/containers/create?name=unused".into(),
+        creations.clone(),
+    )
+    .await;
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(CertificateDer::from_pem_file(&local.ca).unwrap())
+        .unwrap();
+    let tls = tokio_rustls::TlsConnector::from(Arc::new(
+        rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth(),
+    ));
+    let address = local.endpoint.strip_prefix("https://").unwrap();
+    for (method, path, status, body) in cases {
+        let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        let mut stream = tls
+            .connect(ServerName::try_from("127.0.0.1").unwrap(), stream)
+            .await
+            .unwrap();
+        stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n", inputs.credential).as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        timeout(Duration::from_secs(10), stream.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        let response = String::from_utf8(response).unwrap();
+        let (head, received) = response.split_once("\r\n\r\n").unwrap();
+        assert!(head.starts_with(&format!("HTTP/1.1 {status} ")));
+        assert_eq!(received, body);
+        assert!(head.lines().any(|line| line == "API-Version: 1.52"));
+        assert!(head.lines().any(|line| line == "Ostype: linux"));
+        assert!(!head.to_ascii_lowercase().contains("transfer-encoding:"));
+        if method == "HEAD" {
+            assert!(head.contains("Content-Length: 2"));
+        } else if status == 204 {
+            assert!(!head.to_ascii_lowercase().contains("content-length:"));
+        } else {
+            assert!(head.contains(&format!("Content-Length: {}", body.len())));
+        }
+    }
+    timeout(Duration::from_secs(10), control)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(creations.load(Ordering::SeqCst), 0);
+    backend.abort();
+    assert!(backend.await.unwrap_err().is_cancelled());
 }
 
 #[tokio::test]
@@ -1292,6 +1465,20 @@ async fn real_docker_project_interrupted_creation() {
     assert_eq!(status, 200);
     let network_id = network["Id"].as_str().unwrap();
 
+    let name = format!("{prefix}-created");
+    let create_path = format!("/v1.45/containers/create?name={name}");
+    let creations = Arc::new(AtomicUsize::new(0));
+    let (local, backend) =
+        interrupted_creation_origin(&root, &inputs, create_path.clone(), creations.clone()).await;
+    // Exercise the actual ordinary client through this forwarding path before
+    // the first fixture creation. A prerequisite failure leaves no new resources.
+    let protocol_client = root.join("protocol-client");
+    let preflight = start(&protocol_client, &local).await;
+    println!("{}", run(&protocol_client, &["version"]).await);
+    println!("{}", run(&protocol_client, &["compose", "version"]).await);
+    assert_eq!(creations.load(Ordering::SeqCst), 0);
+    preflight.shutdown().await;
+
     // The operator selects an existing container but grants only use of its
     // anonymous volume. Removing that container must not destroy the dependency.
     let shared_name = format!("{prefix}-shared");
@@ -1333,14 +1520,7 @@ async fn real_docker_project_interrupted_creation() {
     .await;
     assert_eq!(status, 200);
     let access = json!({"mode":"project","name":prefix,"adoption":"operator-selection-1","selected":{"containers":[shared_id]},"shared":{"images":[image_id],"networks":[network_id],"volumes":{shared_volume:volume["CreatedAt"]}}});
-    let name = format!("{prefix}-created");
-    let create_path = format!("/v1.45/containers/create?name={name}");
-    let creations = Arc::new(AtomicUsize::new(0));
-    let (local, backend) =
-        interrupted_creation_origin(&root, &inputs, create_path.clone(), creations.clone()).await;
     let proxy = start_with_access(&client, &local, Some(access), None).await;
-    println!("{}", run(&client, &["version"]).await);
-    println!("{}", run(&client, &["compose", "version"]).await);
     let (create_status, response) = api(&client, "POST", &create_path, &config).await;
     std::fs::write(root.join("interrupted-client-response.txt"), &response).unwrap();
 
