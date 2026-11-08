@@ -548,7 +548,7 @@ nodes:
         - path: proxy/tests/native_coord/federation/support_audit.rs
           sha256: 9178f9871dce1d402710c7d49edd897e1598fbc92c51eb42e9a68b6bf5bf18f2
         - path: proxy/tests/peer_support.rs
-          sha256: 8c3af5cf7aacf2621aa8eeeb363adcdcacee9f0261854f95b85afa484cb7b454
+          sha256: b2a8cd6aff8da071762da6aa51ee00389755a2def5d99d694aa55792cda798ef
         - path: proxy/tests/peer_support/audit.rs
           sha256: 6ec24072c63c9f6b7df45e7147cb8adbbcd0d1e39343b9bbfb65166b1e0ea3c1
         - path: proxy/tests/support/owned_run.rs

@@ -844,12 +844,15 @@ async fn a_lost_http_reply_preserves_the_admitted_operation_without_replay() {
             .await;
         assert_eq!(response.status, 200, "{}", response.json());
         let receipt = response.json();
-        if !matches!(receipt["state"].as_str(), Some("queued" | "running")) {
+        // Execution can finish before canonical audit delivery updates the receipt.
+        if !matches!(receipt["state"].as_str(), Some("queued" | "running"))
+            && receipt["audit_delivered"] == true
+        {
             break receipt;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "operation lost its owner: {receipt}"
+            "operation or final audit did not finish: {receipt}"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     };
