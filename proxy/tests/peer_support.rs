@@ -5,73 +5,28 @@
 use serde_json::{Value, json};
 use std::{
     fs,
-    os::{
-        fd::AsRawFd,
-        unix::{fs::OpenOptionsExt, process::CommandExt},
-    },
-    process::{Child, Command},
+    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     time::Duration,
 };
 
+#[path = "support/controlled_runs.rs"]
+mod controlled_runs;
 #[allow(dead_code)]
 #[path = "support/shared_approvals.rs"]
 mod shared_approval_fixture;
 mod test_owned_endpoint;
+use controlled_runs::Backend;
 use shared_approval_fixture::*;
 
 const INSTANCE: &str = "sy-11111111111111111111111111111111";
 const RUN: &str = "0123456789abcdef0123456789abcdef";
-
-struct Backend(Child);
-impl Drop for Backend {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 fn support_run(fixture: &Fixture, generation: &str) -> Backend {
     agent_run(fixture, "helper", HELPER_ID, generation)
 }
 
 fn agent_run(fixture: &Fixture, name: &str, agent_id: &str, generation: &str) -> Backend {
-    let mut command = Command::new("python3");
-    let child = command
-        .arg0("runsc-sandbox")
-        .args([
-            "-c",
-            "import time; time.sleep(300)",
-            "boot",
-            &format!("safeyolo-{generation}"),
-            "--root",
-        ])
-        .arg(fixture.root.path().join("run"))
-        .spawn()
-        .unwrap();
-    let pid = child.id();
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
-    let birth = stat
-        .rsplit_once(')')
-        .unwrap()
-        .1
-        .split_whitespace()
-        .nth(19)
-        .unwrap();
-    let token = format!(
-        "linux:{}:{pid}:{birth}",
-        fs::read_to_string("/proc/sys/kernel/random/boot_id")
-            .unwrap()
-            .trim()
-    );
-    let directory = fixture.root.path().join("agents").join(name);
-    fs::create_dir_all(directory.join("config-share")).unwrap();
-    fs::write(directory.join("runtime.json"), json!({"name":name,"agent_id":agent_id,"run_id":generation,"state":"running","backend_pid":pid,"backend_token":token}).to_string()).unwrap();
-    fs::write(
-        directory.join("config-share/host-launch-context.json"),
-        json!({"agent_id":agent_id,"generation":generation}).to_string(),
-    )
-    .unwrap();
-    Backend(child)
+    controlled_runs::agent_run(fixture.root.path(), name, agent_id, generation)
 }
 
 #[tokio::test]

@@ -1,4 +1,4 @@
-//! Operator-owned authority for local support of explicit durable peers.
+//! Operator-owned support authority for explicit durable peers.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,6 +37,10 @@ pub(crate) enum Notification {
 pub(crate) struct Grant {
     pub instance_id: String,
     pub support: Agent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_instance_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_peer_epoch: Option<i64>,
     pub targets: Vec<Agent>,
     pub guest_admin: bool,
     /// Exact guest paths selected by the operator. Execution uses the guest
@@ -115,12 +119,6 @@ impl Grant {
             ));
         }
         Ok(())
-    }
-
-    pub(crate) fn identities_current(&self, policy: &Policy) -> bool {
-        std::iter::once(&self.support)
-            .chain(&self.targets)
-            .all(|agent| policy.evidence_agent_id(&agent.name) == Some(agent.agent_id.as_str()))
     }
 }
 

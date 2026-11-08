@@ -1964,6 +1964,7 @@ pub struct Proxy {
     readiness_file: PathBuf,
     circuit_snapshots: Option<circuit_runtime::Snapshots>,
     coord_delivery: Option<agent_api::coord::outbox::Delivery>,
+    coord_federation: Option<agent_api::coord::federation::Running>,
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     heap_release: Option<heap_release::HeapRelease>,
     service_files: Option<services::CatalogMetadata>,
@@ -2026,6 +2027,7 @@ impl Proxy {
             readiness_file: config.readiness_file.clone(),
             circuit_snapshots: None,
             coord_delivery: None,
+            coord_federation: None,
             #[cfg(all(target_os = "linux", target_env = "gnu"))]
             heap_release: None,
             service_check_at: service_files.as_ref().map(|_| tokio::time::Instant::now()),
@@ -2071,6 +2073,8 @@ impl Proxy {
                 Some(circuit_runtime::Snapshots::start(proxy.runtime.clone())?);
         }
         startup.record("listeners_readiness");
+        proxy.coord_federation =
+            agent_api::coord::federation::Running::start(proxy.runtime.clone());
         {
             let runtime = proxy
                 .runtime
@@ -2449,6 +2453,7 @@ impl Proxy {
             .service_mutations
             .clone();
         service_mutations.stop_admission().await;
+        self.coord_federation.take();
         if let Some(share) = self.command_centre_share.take() {
             share.stop().await;
         }

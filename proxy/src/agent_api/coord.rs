@@ -113,6 +113,7 @@ pub(crate) struct CoordOwner {
     data_dir: PathBuf,
     explicit_directory: bool,
     nats: tokio::sync::Mutex<Option<async_nats::Client>>,
+    federation_nats: tokio::sync::Mutex<Option<async_nats::Client>>,
     cleanup: Arc<CoordCleanup>,
     snapshot_reads: Arc<inventory::SnapshotReads>,
     collaboration_scanner: Option<crate::inspection::Scanner>,
@@ -139,6 +140,7 @@ impl CoordOwner {
             data_dir,
             explicit_directory,
             nats: tokio::sync::Mutex::new(None),
+            federation_nats: tokio::sync::Mutex::new(None),
             cleanup: Arc::new(CoordCleanup::new()),
             snapshot_reads: Arc::new(inventory::SnapshotReads::default()),
             collaboration_scanner,
@@ -146,9 +148,18 @@ impl CoordOwner {
     }
 }
 
+enum SourceRun {
+    Local {
+        run: crate::host_runs::AgentRun,
+        root: PathBuf,
+    },
+    Remote {
+        run: crate::host_runs::AgentRun,
+    },
+}
+
 /// Runtime-scoped policy facade over process-owned coordination state.
-/// Rejected reload candidates are dropped with this facade and leave the
-/// previously active policy path untouched.
+/// Rejected reload candidates leave the active policy path untouched.
 #[derive(Clone)]
 pub struct CoordClient {
     owner: Arc<CoordOwner>,
@@ -157,7 +168,7 @@ pub struct CoordClient {
     instance_root: Option<PathBuf>,
     remote: Option<crate::coord_rooms::federation::RemoteAgent>,
     relay_config: Option<PathBuf>,
-    request_run: Option<Arc<(crate::host_runs::AgentRun, PathBuf)>>,
+    request_run: Option<Arc<SourceRun>>,
     collaboration_config: crate::config::CollaborationConfig,
 }
 
@@ -196,8 +207,26 @@ impl CoordClient {
     }
 
     fn bound_current(&self) -> Result<(), CoordError> {
-        let Some((run, root)) = self.request_run.as_deref() else {
+        let Some(source) = self.request_run.as_deref() else {
             return Ok(());
+        };
+        let (run, root) = match source {
+            SourceRun::Local { run, root } => (run, root),
+            SourceRun::Remote { run } => {
+                // The source authenticated admission. Already-admitted input
+                // retains that run through a source restart or partition;
+                // this owner rechecks current peer and destination grants.
+                let remote = self
+                    .remote
+                    .as_ref()
+                    .filter(|remote| remote.agent_id == run.agent_id)
+                    .ok_or(CoordError::Forbidden)?;
+                return crate::coord_rooms::federation::authorize(
+                    &open_db(&self.owner.data_dir.join("v0.db"), false)?,
+                    remote,
+                )
+                .map_err(|_| CoordError::Forbidden);
+            }
         };
         let path = self.policy_file.as_deref().ok_or(CoordError::Unavailable)?;
         let mut policy =
@@ -295,6 +324,11 @@ impl CoordClient {
         if password.is_empty() {
             return Err("NATS credentials unavailable".into());
         }
+        let (url, options) = crate::coord_rooms::federation::nats::local_options(
+            &self.owner.data_dir,
+            url,
+            options,
+        )?;
         let client = options
             .user_and_password(NATS_USER.to_owned(), password)
             .connection_timeout(Duration::from_secs(2))
@@ -2385,7 +2419,10 @@ async fn respond_payload(
         let Some(root) = root else {
             return error_response(CoordError::Unavailable);
         };
-        scoped.request_run = Some(Arc::new((run.clone(), root)));
+        scoped.request_run = Some(Arc::new(SourceRun::Local {
+            run: run.clone(),
+            root,
+        }));
     }
     if let Err(error) = scoped.bound_current() {
         return error_response(error);
@@ -2495,6 +2532,19 @@ async fn respond_as(
     principal: &str,
     agent_name: &str,
 ) -> Outcome<'static> {
+    if let Ok(Some(selected)) = query_parameter(request.path_and_query, "instance_id") {
+        let actual = std::fs::read_to_string(context.client.owner.data_dir.join("instance_id"));
+        if actual
+            .as_ref()
+            .map(|actual| actual.trim() != selected)
+            .unwrap_or(true)
+        {
+            return response(
+                409,
+                json!({"error":"attention position belongs to another owning instance"}),
+            );
+        }
+    }
     if attention_wait_route(request) {
         if request.method != "GET" {
             return response(
@@ -2537,6 +2587,7 @@ async fn respond_as(
                         "revision_or_sequence": edge.revision_or_sequence,
                     })).collect::<Vec<_>>(),
                     "next_cursor": page.next_cursor,
+                    "instance_id":std::fs::read_to_string(context.client.owner.data_dir.join("instance_id")).ok().map(|id|id.trim().to_owned()),
                 }),
             ),
             Err(error) => error_response(error),
@@ -2908,7 +2959,7 @@ async fn publish_unknown_response(client: &CoordClient, request: Request<'_>) ->
     outcome
 }
 
-fn query_parameter(path_and_query: &str, wanted: &str) -> Result<Option<String>, ()> {
+pub(super) fn query_parameter(path_and_query: &str, wanted: &str) -> Result<Option<String>, ()> {
     let Some(query) = path_and_query.split_once('?').map(|(_, query)| query) else {
         return Ok(None);
     };

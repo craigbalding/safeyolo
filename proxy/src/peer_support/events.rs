@@ -39,20 +39,26 @@ pub(crate) fn permits(
     principal: &str,
     reference: &Reference,
     selected: bool,
-) -> bool {
-    reference.instance_id == instance
-        && policy.evidence_agent_id(&reference.target.name)
-            == Some(reference.target.agent_id.as_str())
-        && policy.support_grants().values().any(|grant| {
-            grant.active()
-                && grant.instance_id == instance
-                && grant.support.agent_id == principal
-                && policy.evidence_agent_id(&grant.support.name) == Some(principal)
-                && grant.targets.contains(&reference.target)
-                && (!selected || grant.notifications.contains(&reference.kind))
-                && (reference.kind != Notification::NeedsOperator
-                    || grant.signal_rooms.contains(&reference.source_id))
-        })
+) -> Result<bool, Error> {
+    if reference.instance_id != instance
+        || policy.evidence_agent_id(&reference.target.name)
+            != Some(reference.target.agent_id.as_str())
+    {
+        return Ok(false);
+    }
+    for grant in policy.support_grants().values() {
+        if grant.active()
+            && grant.instance_id == instance
+            && grant.targets.contains(&reference.target)
+            && (!selected || grant.notifications.contains(&reference.kind))
+            && (reference.kind != Notification::NeedsOperator
+                || grant.signal_rooms.contains(&reference.source_id))
+            && super::checked_support_principal(policy, grant)?.as_deref() == Some(principal)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(crate) fn instance(root: &Path) -> Result<String, Error> {
