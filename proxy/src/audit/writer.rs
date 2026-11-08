@@ -16,6 +16,9 @@ use zeroize::Zeroizing;
 use super::{Error, ErrorKind, Event, Result, envelope::Record};
 use crate::circuits::CircuitValue;
 
+mod durability;
+use durability::{create_audit_directory, sync_coord_append};
+
 #[derive(Clone)]
 pub struct Settings {
     pub max_queue: BigInt,
@@ -528,7 +531,8 @@ fn append_batch(path: &Path, settings: &Settings, batch: &[Record], durable: boo
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        fs::create_dir_all(parent).map_err(|_| Error(ErrorKind::Io))?;
+        create_audit_directory(parent, &mut fs::File::sync_all)
+            .map_err(|_| Error(ErrorKind::Io))?;
     }
     // Host commands share this sink with the proxy. Serialize tail recovery,
     // rotation and append through the existing host file-lock primitive.
@@ -603,23 +607,6 @@ fn recover_incomplete_tail(path: &Path) -> Result<()> {
     recovered.map_err(|_| Error(ErrorKind::Io))
 }
 
-fn sync_coord_append(
-    file: &fs::File,
-    path: &Path,
-    mut sync: impl FnMut(&fs::File) -> io::Result<()>,
-) -> io::Result<()> {
-    sync(file)?;
-    // Sync ancestors on retries too: a previous failed sync may have left
-    // an existing directory whose entry is not yet durable.
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    for directory in fs::canonicalize(parent)?.ancestors() {
-        sync(&fs::File::open(directory)?)?;
-    }
-    Ok(())
-}
 #[cfg(unix)]
 pub(super) fn close(file: std::fs::File) -> Result<()> {
     use std::os::fd::IntoRawFd;

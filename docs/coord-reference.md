@@ -36,6 +36,9 @@ through one common worker. Staging is not delivery. Failed delivery remains
 pending across restart; audit retries can produce duplicates with the same
 `event_id`. The audit directory must permit a sibling `.lock` file. The writer
 needs read and write access to recover an incomplete final line before append.
+Durable delivery syncs the log file and its direct containing directory.
+When the writer creates a missing directory, it syncs that directory's entry
+before using it. Unchanged ancestors above existing directories need no access.
 Canonical brief and message bodies stay in their existing stores.
 These retry semantics do not apply to room creation or message sends.
 
