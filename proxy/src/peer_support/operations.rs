@@ -119,7 +119,7 @@ pub(crate) struct Request {
     pub operation: Action,
 }
 
-fn valid_operation_id(value: &str) -> bool {
+pub(crate) fn valid_operation_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 1024
 }
 
@@ -222,10 +222,7 @@ fn receipt_path(run: &Caller, operation_id: &str) -> Result<PathBuf, Error> {
     if !valid_operation_id(operation_id) {
         return Err(super::refuse(400, "invalid support operation_id"));
     }
-    let directory = crate::host_platform::config_dir().join("data/support-operations");
-    std::fs::create_dir_all(&directory)?;
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+    let directory = super::audit_delivery::directory("support-operations")?;
     let id = crate::approvals::pending::digest(&json!([run.principal(), operation_id]));
     Ok(directory.join(format!("{id}.json")))
 }
@@ -235,6 +232,7 @@ fn reconcile(mut receipt: Value, active: bool) -> Value {
         if !active {
             receipt["last_recorded_state"] = receipt["state"].clone();
             receipt["state"] = json!("outcome_unknown");
+            receipt["audit_status"] = json!(super::audit_delivery::PENDING);
         }
         receipt["completion_verified"] = json!(false);
         receipt["recovery"] = json!(
@@ -247,7 +245,7 @@ fn reconcile(mut receipt: Value, active: bool) -> Value {
 fn agent_view(receipt: Value, active: bool) -> Value {
     let mut value = reconcile(receipt, active);
     if let Some(fields) = value.as_object_mut() {
-        for field in ["request_digest", "permission"] {
+        for field in ["request_digest", "permission", "audit_pending"] {
             fields.shift_remove(field);
         }
     }
@@ -365,12 +363,7 @@ pub(crate) async fn submit(
         .await??
 }
 
-async fn emit(
-    writer: &audit::Writer,
-    run: &Caller,
-    receipt: &Value,
-    phase: &str,
-) -> Result<(), Error> {
+fn event(run: &Caller, receipt: &Value, phase: &str) -> audit::Event {
     let mut event = audit::Event::new(
         format!("agent.support_operation_{phase}"),
         audit::Kind::Agent,
@@ -389,9 +382,102 @@ async fn emit(
         "operation_id":receipt["operation_id"],"action":receipt["action"],
         "lifecycle_operation":receipt["lifecycle_operation"],"state":receipt["state"],"result_state":receipt["result"]["state"],
         "exit_code":receipt["result"]["exit_code"],"transport_exit_code":receipt["result"]["transport_exit_code"],
-        "transport_signal":receipt["result"]["transport_signal"],"resulting_run":receipt["resulting_run"]})
+        "transport_signal":receipt["result"]["transport_signal"],"resulting_run":receipt["resulting_run"],
+        "execution_started":receipt["execution_started"],"completion_verified":receipt["completion_verified"],
+        "last_recorded_state":receipt["last_recorded_state"],"requested_at":receipt["requested_at"],"finished_at":receipt["finished_at"],
+        "phase":receipt["phase"],"reason":receipt["reason"],"untrusted_claims":receipt["untrusted_claims"]})
     .into();
-    writer.emit_confirmed(event).await?;
+    event
+}
+
+async fn emit(
+    writer: &audit::Writer,
+    run: &Caller,
+    receipt: &Value,
+    phase: &str,
+) -> Result<(), Error> {
+    writer.emit_confirmed(event(run, receipt, phase)).await?;
+    Ok(())
+}
+
+async fn denied(
+    writer: &audit::Writer,
+    run: &Caller,
+    input: &Request,
+    phase: &str,
+) -> Result<(), Error> {
+    let denied = json!({"instance_id":super::instance_id().ok(),
+        "untrusted_claims":{"target_id":Some(&input.target_id).filter(|id|crate::agent_api::coord::valid_agent_id(id)),
+            "grant":Some(&input.grant).filter(|name|crate::host_platform::valid_agent_name(name))},
+        "operation_id":input.operation_id,"action":input.operation.name(),
+        "state":"refused","target_binding":"unverified","phase":phase,"reason":"authorization_changed_or_unavailable"});
+    emit(writer, run, &denied, "denied").await
+}
+
+fn stage_final(receipt: &mut Value) -> Result<(), Error> {
+    let run: Caller = serde_json::from_value(receipt["initiator"].clone())?;
+    let mut final_event = event(&run, receipt, "finished");
+    let id = format!(
+        "evt-{}",
+        &crate::approvals::pending::digest(&json!([
+            receipt["instance_id"],
+            receipt["initiator"],
+            receipt["operation_id"],
+            "finished"
+        ]))[..32]
+    );
+    final_event.event_id = Some(id.clone());
+    receipt["audit_event_id"] = json!(id);
+    receipt["audit_pending"] = json!(final_event.encode_at(time::OffsetDateTime::now_utc())?);
+    receipt["audit_status"] = json!(super::audit_delivery::PENDING);
+    Ok(())
+}
+
+/// Called only with the operation lock held. Delivery retries an envelope,
+/// never the operation. Retain the receipt's execution result unchanged.
+async fn deliver_final(
+    writer: &audit::Writer,
+    path: &std::path::Path,
+    receipt: &mut Value,
+) -> Result<(), Error> {
+    if receipt["audit_delivered"] == true {
+        return Ok(());
+    }
+    if !receipt["audit_pending"].is_string() {
+        *receipt = reconcile(std::mem::take(receipt), false);
+        if receipt["finished_at"].is_null() {
+            receipt["finished_at"] = json!(time::OffsetDateTime::now_utc().unix_timestamp());
+        }
+        stage_final(receipt)?;
+        crate::guest_commands::write_json(path, receipt)?;
+    }
+    writer
+        .deliver_coord(
+            receipt["audit_pending"]
+                .as_str()
+                .ok_or("support audit obligation missing")?,
+        )
+        .await?;
+    let mut delivered = receipt.clone();
+    let fields = delivered
+        .as_object_mut()
+        .ok_or("support receipt unavailable")?;
+    fields.shift_remove("audit_pending");
+    fields.shift_remove("audit_status");
+    delivered["audit_delivered"] = json!(true);
+    crate::guest_commands::write_json(path, &delivered)?;
+    *receipt = delivered;
+    Ok(())
+}
+
+pub(super) async fn recover_audit(
+    writer: &audit::Writer,
+    path: &std::path::Path,
+) -> Result<(), Error> {
+    let _lock = crate::host_platform::try_lock_host_state(&path.with_extension("lock"))?;
+    if let Some(mut receipt) = crate::guest_commands::read_state_bounded(path, 1024 * 1024)? {
+        deliver_final(writer, path, &mut receipt).await?;
+    }
     Ok(())
 }
 
@@ -405,10 +491,7 @@ async fn execute(
     let (grant, target) = match authorize(&policy, run, &input) {
         Ok(authorization) => authorization,
         Err(error) => {
-            let denied = json!({"instance_id":super::instance_id().ok(),"target_id":input.target_id.chars().take(128).collect::<String>(),
-                "grant":input.grant.chars().take(63).collect::<String>(),"operation_id":input.operation_id,
-                "action":input.operation.name(),"state":"denied","target_binding":"unverified"});
-            emit(writer, run, &denied, "denied").await?;
+            denied(writer, run, &input, "initial_authorization").await?;
             return Err(error);
         }
     };
@@ -416,14 +499,20 @@ async fn execute(
     let digest = crate::approvals::pending::digest(&json!(input));
     let lock_path = path.with_extension("lock");
     let _operation_lock = crate::host_platform::lock_host_state_async(&lock_path).await?;
-    authorize(&super::current_policy(state)?, run, &input)?;
-    if let Some(previous) = crate::guest_commands::read_state_bounded(&path, 1024 * 1024)? {
+    if let Err(error) =
+        super::current_policy(state).and_then(|policy| authorize(&policy, run, &input))
+    {
+        denied(writer, run, &input, "operation_lock").await?;
+        return Err(error);
+    }
+    if let Some(mut previous) = crate::guest_commands::read_state_bounded(&path, 1024 * 1024)? {
         if previous["request_digest"] != digest {
             return Err(super::refuse(
                 409,
                 "operation_id already belongs to different inputs; read its original result",
             ));
         }
+        let _ = deliver_final(writer, &path, &mut previous).await;
         return Ok(agent_view(previous, false));
     }
     let mut permission = input.clone();
@@ -459,12 +548,9 @@ async fn execute(
         }
     }
     receipt["finished_at"] = json!(time::OffsetDateTime::now_utc().unix_timestamp());
+    stage_final(&mut receipt)?;
     crate::guest_commands::write_json(&path, &receipt)?;
-    if emit(writer, run, &receipt, "finished").await.is_err() {
-        receipt["audit_status"] =
-            json!("unavailable; the private receipt is saved. Inspect it before a new operation.");
-        crate::guest_commands::write_json(&path, &receipt)?;
-    }
+    let _ = deliver_final(writer, &path, &mut receipt).await;
     Ok(agent_view(receipt, false))
 }
 

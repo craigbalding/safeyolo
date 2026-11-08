@@ -1,5 +1,6 @@
 //! Delegated support. The target's policy and host owners retain authority.
 
+pub(crate) mod audit_delivery;
 pub(crate) mod events;
 pub(crate) mod grants;
 pub(crate) mod operations;
@@ -7,7 +8,7 @@ pub(crate) use operations::Request;
 
 use crate::{Error, RuntimeState, policy::Policy};
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Caller {
     #[serde(flatten)]
     pub run: crate::host_runs::AgentRun,

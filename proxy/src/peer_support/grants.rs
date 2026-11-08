@@ -160,7 +160,7 @@ pub(crate) fn preview(policy: &Policy, name: &str, proposal: &Proposal) -> Resul
         warnings.push("Signal disclosure includes selected subjects' material signal summaries and references in the named rooms, including retained revisions and current resolution state. These are agent-authored claims and can contain sensitive text. It grants no room history or unrelated signals.".into());
     }
     Ok(
-        json!({"name":name,"before":before,"after":grant,"revision":grant.revision(),"acknowledgment":grant.revision(),"factory_directions":factory_directions,
+        json!({"name":name,"before":before,"after":grant,"revision":grant.revision(),"previous_revision":proposal.expected_revision,"acknowledgment":grant.revision(),"factory_directions":factory_directions,
         "lifetime":if grant.expires_at.is_some() {"temporary"} else {"standing"},
         "notifications":{"subjects":grant.targets,"recipient":grant.support,"kinds":grant.notifications,"signal_rooms":grant.signal_rooms,
             "disclosure":"Selected operational references and current observation evidence. Signal text requires the explicit signal_rooms selection. Current authority is checked at delivery and resolution. Notifications do not grant or execute repair."},
@@ -170,7 +170,10 @@ pub(crate) fn preview(policy: &Policy, name: &str, proposal: &Proposal) -> Resul
 }
 
 pub(crate) fn apply(state: &RuntimeState, name: &str, proposal: Proposal) -> Result<Value> {
-    crate::edit_native_policy(state, true, |source| {
+    let _audit_lock =
+        super::audit_delivery::lock_grants().map_err(|error| invalid(error.to_string()))?;
+    let mut pending = None;
+    let result = crate::edit_native_policy(state, true, |source| {
         let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?;
         let policy = runtime
             .policy
@@ -209,16 +212,23 @@ pub(crate) fn apply(state: &RuntimeState, name: &str, proposal: Proposal) -> Res
         document["support_grants"][name] = toml_edit::value(
             serde_json::to_string(&proposal.grant).map_err(|error| invalid(error.to_string()))?,
         );
+        pending = Some(
+            super::audit_delivery::prepare_grant(name, "apply", &view)
+                .map_err(|error| invalid(error.to_string()))?,
+        );
         Ok((
             view,
             crate::policy::restore_large_toml_integers(&document.to_string(), &context),
         ))
-    })
-    .map_err(|error| invalid(error.to_string()))
+    });
+    saved_change(result, pending)
 }
 
 pub(crate) fn revoke(state: &RuntimeState, name: &str, expected_revision: &str) -> Result<Value> {
-    crate::edit_native_policy(state, true, |source| {
+    let _audit_lock =
+        super::audit_delivery::lock_grants().map_err(|error| invalid(error.to_string()))?;
+    let mut pending = None;
+    let result = crate::edit_native_policy(state, true, |source| {
         let (mut document, context) = crate::policy::parse_toml_for_edit(source)
             .map_err(|error| invalid(error.to_string()))?;
         let value = crate::policy::parse_toml_document(source)
@@ -237,10 +247,30 @@ pub(crate) fn revoke(state: &RuntimeState, name: &str, expected_revision: &str) 
             .as_table_like_mut()
             .ok_or_else(|| invalid("support grants unavailable"))?
             .remove(name);
+        let view = json!({"name":name,"revoked":true,"previous_revision":expected_revision});
+        pending = Some(
+            super::audit_delivery::prepare_grant(name, "revoke", &view)
+                .map_err(|error| invalid(error.to_string()))?,
+        );
         Ok((
-            json!({"name":name,"revoked":true,"previous_revision":expected_revision}),
+            view,
             crate::policy::restore_large_toml_integers(&document.to_string(), &context),
         ))
-    })
-    .map_err(|error| invalid(error.to_string()))
+    });
+    saved_change(result, pending)
+}
+
+fn saved_change(
+    result: std::result::Result<Value, crate::Error>,
+    pending: Option<String>,
+) -> Result<Value> {
+    let mut value = result.map_err(|error| invalid(error.to_string()))?;
+    let id = pending.ok_or_else(|| invalid("support audit obligation unavailable"))?;
+    value["audit_event_id"] = json!(id);
+    if super::audit_delivery::grant_saved(&id).is_err() {
+        value["audit_status"] = json!(
+            "Canonical transaction outcome unavailable; the saved authority can have an outcome_unknown audit record. Inspect the current grant before another change."
+        );
+    }
+    Ok(value)
 }

@@ -512,6 +512,17 @@ nodes:
       establish an installed guest repair or the required real support-model
       journey across two actual hosts. Reuse source-equivalent local backend
       controls; retain the new remote consumer observation separately.
+      For canonical support audit recovery, select federation::support::audit
+      with --ignored and --test-threads=1. Direct authenticated NATS peers
+      exercise destination decisions, a full one-entry audit queue and owner
+      termination between saved results and canonical delivery. Recovery keeps
+      stable event identities without repeating effects or completing an
+      unverified operation. Local grant write/termination and post-lock refusal
+      controls use the peer_support target with the audit_delivery filter.
+      Its guest_command_rechecks_the_target_after_waiting_for_control control
+      also checks final-audit write failure and identical-ID reuse after a
+      completed controlled command. Use the existing mapped namespace fixture;
+      these controls do not repeat installed backend qualification.
       For optional operator catch-up, select
       catch_up::native_catch_up_keeps_current_authority_and_inspectable_bounded_history
       with --ignored. It exercises the read-only CLI against authenticated agent
@@ -527,13 +538,23 @@ nodes:
         - path: proxy/tests/delegated_approvals/collaboration.rs
           sha256: cc249a3fcdf97f033e57cc1a82f64ac7ef97f2c83f9c59c115eca21a7861ef17
         - path: proxy/tests/native_coord.rs
-          sha256: 15c0fa3fc0aa563d43da783ac6c93c747b8e3f879817e61100e843eb4c56fa0c
+          sha256: 583175095e47d5634d3e7bccfb8df4ee8b51d535e6043b2d5e4dbf7ab84ecb29
         - path: proxy/src/coord_rooms/federation/nats.rs
           sha256: 288abb784372c84b3b63673797631b758c602003fa18de7adbb3568f765fc073
         - path: proxy/src/coord_tools/sources.rs
           sha256: 233f6bea4146f20ded5231938012e0282007bb9852d2d7bd8a746ab6ebedaca8
+        - path: proxy/src/peer_support/audit_delivery.rs
+          sha256: acd53a6b2433ba0eb7fc2351cf0e73293bf786b64d84535c23ab86ed2b823010
+        - path: proxy/tests/native_coord/federation/support_audit.rs
+          sha256: 9178f9871dce1d402710c7d49edd897e1598fbc92c51eb42e9a68b6bf5bf18f2
+        - path: proxy/tests/peer_support.rs
+          sha256: b2a8cd6aff8da071762da6aa51ee00389755a2def5d99d694aa55792cda798ef
+        - path: proxy/tests/peer_support/audit.rs
+          sha256: 6ec24072c63c9f6b7df45e7147cb8adbbcd0d1e39343b9bbfb65166b1e0ea3c1
+        - path: proxy/tests/support/owned_run.rs
+          sha256: ba639e14354fc8425fb735bece123b10529886742d3ed4f1528791c899fbd439
         - path: proxy/tests/native_coord/federation/support.rs
-          sha256: b0a78947a1a9dae790d4e3036fa511aff032710c0c0209fd7d8e718a1da7c28a
+          sha256: c6cd75a5eeb7eab409123c1bc31d18e00c19fe91cd9c55ce0d72cfd4defc569d
         - path: proxy/tests/native_coord/federation/operator.rs
           sha256: 2be9311eafb53611f3bb8ca687339ee989a162856f8d01c07cb3b9a756c168e1
         - path: proxy/tests/support/controlled_runs.rs
@@ -543,13 +564,13 @@ nodes:
         - path: proxy/src/agent_api/coord/operational.rs
           sha256: 5d2320572ad95603f2e71b10b6074c688ae5c1caf560197ce9bcd0c37d96bfba
         - path: proxy/src/agent_api/coord/outbox.rs
-          sha256: e2f4748cbb7db768fa9cc763efa0349e42685a58fe54d338b9c270f8590f745a
+          sha256: 9b0cfced1a0395cfdb9fb9063e3fae68f533aeeb1b908140dafd07ddce376a16
         - path: proxy/src/peer_support.rs
-          sha256: 15dbc3c94bfdd2303049fa77c274adf749825084739a66a9e3204cea15f81c94
+          sha256: 072fa6b2ada7172acbf23021bb594dbd46d059c99e2bbf6db52599e577b975b1
         - path: proxy/src/peer_support/operations.rs
-          sha256: 0f18afad48bcd0b531682f423fdce0696c172cad30f594a95c8a8e45ae55c2a8
+          sha256: a1c809704871806a7f579f5325b150632821a7d3e111dd3a50908d33294494b0
         - path: proxy/src/peer_support/grants.rs
-          sha256: feff6129b31693bcda19fd1d18faa7c74d784fc6fda25c173da9038624ff7ab9
+          sha256: e2b11a4b4bbc6da4ad0b8d8ec306838fa5733bab8c5f17129f5391a7fd541c22
         - path: proxy/src/peer_support/events.rs
           sha256: ce708ef9d44900fcb2ab9dc49a9236bec8d07adac1610b441f3259dcc4684ad0
         - path: proxy/src/policy/support.rs
@@ -561,11 +582,11 @@ nodes:
         - path: proxy/src/agent_api/coord.rs
           sha256: ed2f9f0f65287734e74390857f18b3b8d0b3526b1b6b9e8942de92ca68b7f500
         - path: proxy/src/agent_api/coord/federation.rs
-          sha256: 0584269711fc0fcb14d4f5126b64bf9f0a84df700139ea89954fb628eb3fe0f0
+          sha256: 3001dc3651876dcdc68051577f6dcd49a7ce3a56a11f491873b438ddcd9aeb78
         - path: proxy/src/agent_api/coord/federation/tests.rs
           sha256: 1bd1a7bb1b05f9c8672679b4abc354946887c5fd23c07e8e5695f6bd380cbb5f
         - path: proxy/src/coord_rooms/federation.rs
-          sha256: 6ff8ac27ee26fb12401b2aca7ad5de6e180683c508a21d0a994aec9e65efffce
+          sha256: 2e2c2406627504ba3047248f84f1395a234b2276b9a03ff63a75f3bbcca69fb6
         - path: proxy/src/coord_rooms/federation/tests.rs
           sha256: 28b822cdd49a65e275a4e654882a18eea818830667c695de5a4d16083af257da
         - path: proxy/src/coord_federation_schema.sql

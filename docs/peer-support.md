@@ -277,7 +277,37 @@ the source run and selected route. Already-started commands can still finish,
 including during a partition or source restart. Routine audit events bind the
 initiator, owning instance, target/run,
 grant/revision, operation and result. They exclude command text and guest
-output. Do not copy raw credentials or host secrets into Coord or a support
+output.
+
+Before saving a support-grant change, the owner persists a stable audit event
+ID and a retry obligation under `data/support-grant-audit`. A saved operation
+outcome carries its final audit obligation in the same private receipt as its
+execution result. The existing delivery owner retries these records through
+the configured canonical JSON Lines (JSONL) writer, including after a proxy
+restart or a local NATS outage. Delivery is confirmed after the audit file and
+its required directories are synced. Successful delivery removes the staged
+envelope; private receipts retain execution results and delivery metadata.
+
+If delivery fails, `audit_status` reports the pending record and `audit_event_id`
+identifies it. An identical operation-ID retry can reconcile missing final audit
+without executing the operation again. A receipt can be `queued`, `running`,
+`refused`, `completed` or `outcome_unknown`; `execution_started` separately
+records admission to execution. Recovery keeps an unverified interrupted
+operation `outcome_unknown`, with `completion_verified: false`. If a grant
+transaction terminates before its saved outcome is recorded, its audit record
+also reports `outcome_unknown`. Inspect the current saved authority before
+another policy change. An interruption after audit append but before delivery
+acknowledgment can repeat an event with the same ID; this is one logical event.
+
+The destination records well-formed federation refusals with its phase, reason,
+qualified peer identity and separately labeled untrusted claims. A refusal
+after dispatch can withhold a response after an effect; it does not roll back
+that effect. Refusal records use the existing writer's bounded admission,
+without a persistent retry obligation for each input. If the destination cannot
+confirm its refusal record, its response includes an `audit_status` warning.
+Malformed inputs do not create audit retry work.
+
+Do not copy raw credentials or host secrets into Coord or a support
 report. Report observed facts, diagnosis, changes, observed recovery and
 unresolved uncertainty separately.
 

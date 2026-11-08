@@ -2,6 +2,9 @@
 use super::*;
 use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
 
+#[path = "support_audit.rs"]
+mod audit;
+
 pub(super) fn instance(root: &Path) -> String {
     fs::read_to_string(root.join("data/instance_id"))
         .unwrap()
@@ -228,9 +231,10 @@ async fn authenticated_mutation_misrouted_to_another_trusted_instance_has_no_eff
     );
     assert!(receipt(&c, "misrouted-start").is_none());
     assert!(
-        !fs::read_to_string(c.join("audit.jsonl"))
-            .unwrap_or_default()
-            .contains("misrouted-start")
+        audit::refusals(&c)
+            .iter()
+            .any(|event| event["details"]["reason"] == "destination_mismatch"
+                && event["details"]["untrusted_claims"]["operation_id"] == "misrouted-start")
     );
     let correct = raw(
         &conn,
@@ -546,9 +550,10 @@ async fn remote_support_uses_owner_grants_receipts_and_independent_attention_sou
     let wire = json!({"destination_instance_id":"sy-wrong-owner","source_run":{"agent":"bob","agent_id":BOB,"run_id":"0123456789abcdef0123456789abcdef"},"method":"POST","path":"/support/operations","body":inspect(&b_id,"misroute")});
     assert_eq!(raw(&conn, &b_id, &a_id, wire.clone()).await["status"], 403);
     assert!(
-        !fs::read_to_string(b.join("audit.jsonl"))
-            .unwrap_or_default()
-            .contains("misroute")
+        audit::refusals(&b)
+            .iter()
+            .any(|event| event["details"]["reason"] == "destination_mismatch"
+                && event["details"]["untrusted_claims"]["operation_id"] == "misroute")
     );
     let mut forged = wire;
     forged["destination_instance_id"] = json!(b_id);
