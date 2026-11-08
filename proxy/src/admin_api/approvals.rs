@@ -457,12 +457,7 @@ pub(super) async fn delegations<B: Body<Data = Bytes>>(
             ));
         }
     };
-    let (name, operation, state, policy) = (
-        name.to_owned(),
-        operation.to_owned(),
-        state.clone(),
-        Arc::clone(policy),
-    );
+    let (name, operation, state) = (name.to_owned(), operation.to_owned(), state.clone());
     let Some(owner) = owner else {
         return Ok(response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -480,20 +475,36 @@ pub(super) async fn delegations<B: Body<Data = Bytes>>(
             }
         } else {
             match serde_json::from_value::<crate::approvals::delegations::Proposal>(data.0.clone()) {
-                Ok(input) if operation=="apply"=>crate::approvals::delegations::apply(&state,&name,input),
-                Ok(input)=>crate::approvals::delegations::preview(&policy,&name,&input,&state),
+                Ok(input) => crate::operator_actions::config_path(&state).map_err(|error| crate::approvals::invalid(error.to_string())).and_then(|config| tokio::runtime::Handle::current().block_on(crate::host_platform::in_config(config, async {
+                    let saved_policy = crate::peer_support::current_policy(&state).map_err(|_| crate::approvals::invalid("current authority policy unavailable"))?;
+                    let mut view = crate::approvals::delegations::preview(&saved_policy, &name, &input, &state)?;
+                    let prepared = serde_json::from_value(view["after"].clone()).map_err(|_| crate::approvals::invalid("prepared delegation unavailable"))?;
+                    let report = crate::peer_support::authority::delegation_report(&state, &input.authority, &name, &prepared).await
+                        .map_err(|error| crate::approvals::invalid(error.to_string()))?;
+                    if operation == "apply" {
+                        if !crate::peer_support::authority::acknowledged(&input.authority, &report) {
+                            crate::peer_support::authority::attach(&mut view, &input.authority, report);
+                            view["error"] = json!("authority evidence changed or was not acknowledged; inspect and acknowledge this refreshed preview");
+                            return Ok(view);
+                        }
+                        crate::approvals::delegations::apply(&state, &name, input, &report)
+                    } else {
+                        crate::peer_support::authority::attach(&mut view, &input.authority, report);
+                        Ok(view)
+                    }
+                }))),
                 Err(_)=>Err(crate::approvals::invalid("invalid delegation proposal; unknown fields and unsupported bounds are rejected")),
             }
         };
         Ok(match result { Ok(mut value)=>{
-            if operation != "preview" {
-                let mut event=crate::audit::Event::new("admin.approval_delegation_changed",crate::audit::Kind::Admin,crate::audit::Severity::High,format!("Approval delegation {name} {operation}"));
-                event.details=json!({"delegation":name,"operation":operation,"before_revision":before_revision,"revision":value["revision"]}).into();
+            if value.get("error").is_none() {
+                let mut event=crate::audit::Event::new(if operation == "preview" {"admin.approval_authority_preview"} else {"admin.approval_delegation_changed"},crate::audit::Kind::Admin,crate::audit::Severity::High,format!("Approval delegation {name} {operation}"));
+                event.details=json!({"delegation":name,"operation":operation,"before_revision":before_revision,"revision":value["revision"],"considered_report":value["authority"]["considered"],"authority_recheck":value["authority_recheck"]}).into();
                 if tokio::runtime::Handle::current().block_on(writer.emit_confirmed(event)).is_err() {
-                    value["audit_status"]=json!("unavailable; the delegation change is saved. Inspect current state before retrying.");
+                    value["audit_status"]=json!(if operation == "preview" { "authority preview audit unavailable" } else { "unavailable; the delegation change is saved. Inspect current state before retrying." });
                 }
             }
-            response(StatusCode::OK,value)
+            response(if value.get("error").is_some() {StatusCode::CONFLICT} else {StatusCode::OK},value)
         },Err(e)=>response(StatusCode::CONFLICT,json!({"error":e.to_string()})) })
     }).await?.await.map_err(|_| Error::ServiceMutation)?
 }

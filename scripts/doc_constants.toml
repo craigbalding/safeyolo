@@ -9,6 +9,27 @@
 # phrases over generic ones ("2048 MiB" beats "MiB").
 
 [[assertion]]
+name = "support-authority-owner-budget"
+source = "proxy/src/peer_support/authority.rs"
+pattern = 'MAX_OWNERS: usize = (?P<owners>\d+)'
+docs = ["docs/peer-support.md"]
+must_contain = "at most {owners} selected owners"
+
+[[assertion]]
+name = "support-authority-page-budget"
+source = "proxy/src/peer_support/authority.rs"
+pattern = 'PAGE_FACTS: usize = (?P<facts>\d+)'
+docs = ["docs/peer-support.md"]
+must_contain = "{facts} facts per"
+
+[[assertion]]
+name = "support-authority-report-budget"
+source = "proxy/src/peer_support/authority.rs"
+pattern = 'MAX_REPORT_BYTES: usize = (?P<kib>\d+) \* 1024'
+docs = ["docs/peer-support.md"]
+must_contain = "{kib} KiB report"
+
+[[assertion]]
 name = "docker-engine-api-version"
 source = "proxy/src/services/docker.rs"
 pattern = 'API_PREFIX: &str = "/v(?P<version>[0-9.]+)"'

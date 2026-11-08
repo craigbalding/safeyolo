@@ -36,6 +36,7 @@ def room_exchange(args, ids, guest, coord, operator, native, host_send, host_his
     proposal["delegation"] = preview["body"]["after"]
     revision = preview["body"]["revision"]
     proposal["delegation"]["acknowledgment"] = revision
+    proposal["authority"] = preview["body"]["authority"]
     applied = operator("POST", endpoint + "/apply", proposal)
     assert applied["status"] == 200, applied
     cutoff = coord(reviewer, "wait_for_attention", {"since_sequence": 0, "timeout_seconds": 0, "limit": 200})

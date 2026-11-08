@@ -75,6 +75,16 @@ impl Fixture {
         let root = tempfile::tempdir().unwrap();
         let data = root.path().join("data");
         fs::create_dir(&data).unwrap();
+        fs::write(
+            data.join("instance_id"),
+            "sy-11111111111111111111111111111111",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("config.toml"),
+            "policy_file='policy.toml'\n",
+        )
+        .unwrap();
         fs::create_dir(root.path().join("builtin-services")).unwrap();
         fs::create_dir(root.path().join("services")).unwrap();
         fs::write(data.join("agent_token"), "synthetic-agent-token").unwrap();

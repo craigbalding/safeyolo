@@ -21,6 +21,7 @@ async fn delegation(root: &Path, mut proposal: Value) -> Value {
     .await;
     proposal["delegation"] = preview["after"].clone();
     proposal["delegation"]["acknowledgment"] = preview["acknowledgment"].clone();
+    proposal["authority"] = preview["authority"].clone();
     fs::write(&file, proposal.to_string()).unwrap();
     host_json(
         root,
@@ -297,6 +298,31 @@ independent=true
     grant["grant"]["factory_directions"] =
         json!([{"factory":"selected","snapshot_id":snapshot,"types":["DIRECTION"]}]);
     let granted = apply(&b, "incident", grant.clone()).await;
+    let facts = granted["authority"]["considered"]["proposed_facts"]
+        .as_array()
+        .unwrap();
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact["capability"]["type"] == "factory_directions"
+                && fact["capability"]["factory"] == "selected"
+                && fact["capability"]["snapshot_id"] == snapshot
+                && fact["capability"]["recipient"]["instance_id"] == b_id
+                && fact["capability"]["recipient"]["agent_id"] == ALICE
+                && fact["capability"]["types"] == json!(["DIRECTION"]))
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact["capability"]["type"] == "notifications"
+                && fact["capability"]["kinds"]
+                    == json!(["control_availability", "sandbox_availability"]))
+    );
+    assert!(
+        !facts
+            .iter()
+            .any(|fact| fact["capability"]["type"] == "guest_admin")
+    );
     assert!(
         granted["warnings"]
             .as_array()

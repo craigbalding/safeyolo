@@ -559,6 +559,7 @@ def run(args: argparse.Namespace) -> None:
             assert preview["status"] == 200
             delegation["delegation"] = preview["body"]["after"]
             delegation["delegation"]["acknowledgment"] = preview["body"]["acknowledgment"]
+            delegation["authority"] = preview["body"]["authority"]
             assert operator("POST", path + "/apply", delegation)["status"] == 200
 
             def approve_current(*, expected_status: int = 200) -> dict:
@@ -803,6 +804,7 @@ def run(args: argparse.Namespace) -> None:
                 preview = native("approvals", "delegation", "preview", name, "--file", str(path))
                 proposal["delegation"] = preview["after"]
                 proposal["delegation"]["acknowledgment"] = preview["acknowledgment"]
+                proposal["authority"] = preview["authority"]
                 path.write_text(json.dumps(proposal))
                 native("approvals", "delegation", "apply", name, "--file", str(path))
                 proposals.append({"name": name, "revision": preview["revision"]})

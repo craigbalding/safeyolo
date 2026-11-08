@@ -712,6 +712,7 @@ impl Policy {
 }
 
 fn validate_authoring(document: &Value) -> Result<()> {
+    super::authority::validate(document)?;
     super::support::parse(document)?;
     super::delegation::parse(document)?;
     super::delegation::validate_grants(document)?;

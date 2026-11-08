@@ -126,6 +126,7 @@ def run(args):
         preview = host("support", "preview", grant_name, "--file", str(proposal_file), "--json")
         save("preview", preview)
         grant["acknowledgment"] = preview["acknowledgment"]
+        proposal["authority"] = preview["authority"]
         proposal_file.write_text(json.dumps(proposal))
         applied = host("support", "apply", grant_name, "--file", str(proposal_file), "--json")
         revision = applied["revision"]

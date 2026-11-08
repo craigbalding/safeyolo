@@ -118,6 +118,30 @@ async fn service_grant_routing_never_enables_reviewers_or_unrelated_operator_tok
                     200
                 );
                 no_origin(&f).await;
+                let mut inspection = service_proposal(&f);
+                inspection["expected_revision"] = Value::Null;
+                let metadata = f
+                    .admin(
+                        "POST",
+                        "/admin/approval-delegations/inspection/preview",
+                        Some(inspection),
+                    )
+                    .await;
+                assert_eq!(metadata.status, 200, "{}", metadata.json());
+                let report = metadata.json();
+                let facts = report["authority"]["considered"]["snapshots"][0]["facts"]
+                    .as_array()
+                    .unwrap();
+                assert!(
+                    facts
+                        .iter()
+                        .any(|fact| fact["source_type"] == "issued_permission"
+                            && fact["current"] == true
+                            && fact["capability"]["permission"]["action"]["kind"]
+                                == "service_authorize"
+                            && fact["holder"]["agent_id"] == WORKER_ID)
+                );
+                assert!(!report.to_string().contains(SECRET));
                 let services = f
                     .agent("worker", "GET", "/gateway/services", None)
                     .await
@@ -379,6 +403,7 @@ async fn service_envelope_fields_and_partial_delegations_cannot_widen_access() {
         .json();
     input["delegation"] = preview["after"].clone();
     input["delegation"]["acknowledgment"] = preview["acknowledgment"].clone();
+    input["authority"] = preview["authority"].clone();
     assert_eq!(
         f.admin(
             "POST",

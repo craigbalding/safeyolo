@@ -25,6 +25,7 @@ use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+pub(crate) mod authority;
 mod baseline;
 mod budgets;
 pub(crate) mod circuit_settings;

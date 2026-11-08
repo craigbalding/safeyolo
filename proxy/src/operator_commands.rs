@@ -25,7 +25,7 @@ safeyolo [--root ROOT] approvals ask|context ID [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals delegations [--json]\nsafeyolo [--root ROOT] approvals delegation check|preview|apply|revoke NAME --file PROPOSAL.json [--json]\nsafeyolo [--root ROOT] approvals review --agent NAME
 safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
 safeyolo [--root ROOT] support grants [--json]
-safeyolo [--root ROOT] support preview|apply|revoke NAME --file PROPOSAL.json [--json]
+safeyolo [--root ROOT] support preview|apply|revoke|report NAME --file PROPOSAL.json [--json]
 safeyolo [--root ROOT] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] logs list [--instance ID] [--runtime ID] [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] logs connection ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]
@@ -1639,7 +1639,10 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
             .as_slice()
         {
             ["grants"] => admin(root, "/admin/support-grants", Method::GET, Value::Null).await?,
-            [operation @ ("preview" | "apply" | "revoke"), name] => {
+            [
+                operation @ ("preview" | "apply" | "revoke" | "report"),
+                name,
+            ] => {
                 let input = options
                     .files
                     .last()
@@ -1655,7 +1658,7 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
             }
             _ => {
                 return Err(
-                    "use support grants or support preview|apply|revoke NAME --file PROPOSAL.json"
+                    "use support grants or support preview|apply|revoke|report NAME --file PROPOSAL.json"
                         .into(),
                 );
             }
@@ -1774,7 +1777,12 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         show_explanation(&value)
     } else if !options.json && value.get("acknowledgment").is_some() {
         println!(
-            "Delegation: {}\nRevision / acknowledgment: {}\n{}\nBefore: {}\nAfter: {}",
+            "{}: {}\nRevision / acknowledgment: {}\n{}\nBefore: {}\nAfter: {}",
+            if args[0] == "support" {
+                "Support grant"
+            } else {
+                "Delegation"
+            },
             safe(text(&value["name"])),
             safe(text(&value["revision"])),
             safe(text(&value["effect"])),
@@ -1784,11 +1792,38 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         for warning in value["warnings"].as_array().into_iter().flatten() {
             println!("Acknowledge: {}", safe(text(warning)));
         }
+        if let Some(summary) = value["impact_summary"].as_str() {
+            println!("Authority impact: {}", safe(summary));
+            for effect in value["authority"]["considered"]["added"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .take(8)
+            {
+                println!(
+                    "Added or changed effect for {}:{}: {}",
+                    safe(text(&effect["controller"]["instance_id"])),
+                    safe(text(&effect["controller"]["agent_id"])),
+                    safe(text(&effect["explanation"]))
+                );
+            }
+            println!(
+                "Report: {}. Use --json to inspect owner facts, deciding scopes, coverage and supporting paths.",
+                safe(text(&value["authority"]["considered"]["report_id"]))
+            );
+        }
         println!(
             "Independent access that remains after revocation: {}",
             context_json(&value["independent_access"])?
         );
         println!("{}", safe(text(&value["revocation"])));
+        Ok(())
+    } else if !options.json && value.get("impact_summary").is_some() {
+        println!(
+            "{}\nReport: {}\nUse --json to inspect typed effects, paths, owner revisions and gaps.",
+            safe(text(&value["impact_summary"])),
+            safe(text(&value["authority"]["considered"]["report_id"]))
+        );
         Ok(())
     } else if args[0] == "approvals" && !options.json && value.get("action").is_some() {
         show_approval(&value)

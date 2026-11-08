@@ -5,7 +5,7 @@ use rustls::pki_types::pem::PemObject;
 use serde::{Deserialize, Serialize};
 pub(crate) mod nats;
 
-pub(crate) const HELP: &str = "safeyolo [--root ROOT] coord federation credential PATH\nsafeyolo [--root ROOT] coord federation trust INSTANCE TOKEN_FILE\nsafeyolo [--root ROOT] coord federation revoke INSTANCE\nsafeyolo [--root ROOT] coord federation member ROOM INSTANCE AGENT_ID DISPLAY_NAME [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--root ROOT] coord federation unmember ROOM INSTANCE AGENT_ID [--operation-id ID]\nsafeyolo [--root ROOT] coord federation home NAME INSTANCE TLS_NATS_URL CA_FILE TOKEN_FILE\nsafeyolo [--root ROOT] coord federation unhome NAME\n\nConfigure the destination's host-held coord-federation.json before starting its managed NATS and proxy. It selects an authenticated TLS NATS listener and scoped peer subjects in SY_FED. SY_LOCAL has no exports. Core request/reply carries defined Coord and support operations; JetStream retains selected notification hints. Guests use only their local Agent API. Trust alone grants neither room nor target access. Remote support grants register qualified managers without a room. revoke disables the peer and revokes memberships; re-trust restores neither memberships nor old target grants. Omitted home remains local. There is no HTTPS federation listener or fallback.";
+pub(crate) const HELP: &str = "safeyolo [--root ROOT] coord federation peers\nsafeyolo [--root ROOT] coord federation credential PATH\nsafeyolo [--root ROOT] coord federation trust INSTANCE TOKEN_FILE\nsafeyolo [--root ROOT] coord federation revoke INSTANCE\nsafeyolo [--root ROOT] coord federation member ROOM INSTANCE AGENT_ID DISPLAY_NAME [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--root ROOT] coord federation unmember ROOM INSTANCE AGENT_ID [--operation-id ID]\nsafeyolo [--root ROOT] coord federation home NAME INSTANCE TLS_NATS_URL CA_FILE TOKEN_FILE\nsafeyolo [--root ROOT] coord federation unhome NAME\n\nConfigure the destination's host-held coord-federation.json before starting its managed NATS and proxy. It selects an authenticated TLS NATS listener and scoped peer subjects in SY_FED. SY_LOCAL has no exports. Core request/reply carries defined Coord and support operations; JetStream retains selected notification hints. Guests use only their local Agent API. Trust alone grants neither room nor target access. Remote support grants register qualified managers without a room. revoke disables the peer and revokes memberships; re-trust restores neither memberships nor old target grants. Omitted home remains local. There is no HTTPS federation listener or fallback.";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct RemoteAgent {
@@ -194,6 +194,12 @@ pub(crate) async fn run(root: &Path, arguments: &[String]) -> Result<Value, Erro
         arguments => (arguments, uuid::Uuid::new_v4().simple().to_string()),
     };
     let result = match arguments {
+        [command] if command == "peers" => {
+            let peers = tx.prepare("SELECT instance_id,epoch,enabled FROM coord_federation_peers ORDER BY instance_id")?
+                .query_map([], |row| Ok(json!({"instance_id":row.get::<_,String>(0)?,"epoch":row.get::<_,i64>(1)?,"trusted":row.get::<_,bool>(2)?})))?
+                .collect::<std::result::Result<Vec<_>,_>>()?;
+            json!({"peers":peers})
+        }
         [command, path] if command == "credential" => {
             use std::io::Write;
             let mut file = fs::OpenOptions::new()

@@ -56,6 +56,7 @@ def apply(instance, value):
     assert preview["notifications"]["kinds"] == value["grant"]["notifications"]
     value["grant"] = preview["after"]
     value["grant"]["acknowledgment"] = preview["acknowledgment"]
+    value["authority"] = preview["authority"]
     path.write_text(json.dumps(value))
     result = support(instance, "apply", "events", "--file", str(path), "--json")
     value["expected_revision"] = result["revision"]

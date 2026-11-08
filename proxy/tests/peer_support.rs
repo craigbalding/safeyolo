@@ -394,6 +394,7 @@ async fn grant(fixture: &Fixture, mut input: Value) -> Value {
     assert_eq!(preview.status, 200, "{}", preview.json());
     input["grant"] = preview.json()["after"].clone();
     input["grant"]["acknowledgment"] = preview.json()["acknowledgment"].clone();
+    input["authority"] = preview.json()["authority"].clone();
     let applied = fixture
         .admin("POST", "/admin/support-grants/incident/apply", Some(input))
         .await;
@@ -403,6 +404,186 @@ async fn grant(fixture: &Fixture, mut input: Value) -> Value {
 
 fn inspect(id: &str) -> Value {
     json!({"operation_id":id,"grant":"incident","target_id":WORKER_ID,"expected_run":null,"operation":{"action":"inspect"}})
+}
+
+#[tokio::test]
+async fn apply_recomputes_paths_even_when_a_modified_report_has_a_valid_digest() {
+    fn canonical(value: &Value) -> Value {
+        match value {
+            Value::Object(fields) => Value::Object(
+                fields
+                    .iter()
+                    .collect::<std::collections::BTreeMap<_, _>>()
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), canonical(value)))
+                    .collect(),
+            ),
+            Value::Array(values) => Value::Array(values.iter().map(canonical).collect()),
+            _ => value.clone(),
+        }
+    }
+    let f = fixture().await;
+    let mut input = proposal();
+    let preview = f
+        .admin(
+            "POST",
+            "/admin/support-grants/incident/preview",
+            Some(input.clone()),
+        )
+        .await
+        .json();
+    input["grant"] = preview["after"].clone();
+    input["grant"]["acknowledgment"] = preview["acknowledgment"].clone();
+    input["authority"] = preview["authority"].clone();
+    let considered = &mut input["authority"]["considered"];
+    considered["summary"] = json!("fabricated decision context");
+    considered["report_id"] = json!("");
+    let bytes = serde_json::to_vec(&canonical(considered)).unwrap();
+    considered["report_id"] = json!(
+        ring::digest::digest(&ring::digest::SHA256, &bytes)
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    let applied = f
+        .admin("POST", "/admin/support-grants/incident/apply", Some(input))
+        .await;
+    assert_eq!(applied.status, 409, "{}", applied.json());
+    assert_ne!(
+        applied.json()["authority"]["considered"]["summary"],
+        "fabricated decision context"
+    );
+    assert!(!f.source().contains("[support_grants.incident]"));
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn partial_authority_report_remains_an_operator_choice() {
+    let f = fixture().await;
+    let mut input = proposal();
+    input["grant"]["guest_logs"] = json!(
+        (0..600)
+            .map(|index| format!("/var/log/{index}-{}.log", "x".repeat(60)))
+            .collect::<Vec<_>>()
+    );
+    let applied = grant(&f, input).await;
+    let report = &applied["authority"]["considered"];
+    assert!(report["added"].is_null());
+    assert!(report["removed"].is_null());
+    assert!(
+        report["unresolved_frontier"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|gap| gap.as_str().unwrap().contains("budget"))
+    );
+    assert_eq!(
+        applied["after"]["guest_logs"].as_array().unwrap().len(),
+        600
+    );
+    assert!(!f.root.path().join("data/support-operations").exists());
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn standing_preview_survives_route_initialization_and_runtime_unavailability() {
+    let f = fixture().await;
+    let backend = support_run(&f, RUN);
+    let mut input = proposal();
+    let preview = f
+        .admin(
+            "POST",
+            "/admin/support-grants/incident/preview",
+            Some(input.clone()),
+        )
+        .await
+        .json();
+    assert!(
+        preview["authority"]["considered"]["snapshots"][0]["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|binding| binding["execution"]
+                .as_str()
+                .unwrap()
+                .starts_with("current_host_run"))
+    );
+    safeyolo_proxy::coord_rooms::bootstrap(f.root.path()).unwrap();
+    drop(backend);
+    input["grant"] = preview["after"].clone();
+    input["grant"]["acknowledgment"] = preview["acknowledgment"].clone();
+    input["authority"] = preview["authority"].clone();
+    let applied = f
+        .admin("POST", "/admin/support-grants/incident/apply", Some(input))
+        .await;
+    assert_eq!(applied.status, 200, "{}", applied.json());
+    assert_eq!(
+        applied.json()["authority"]["considered"]["report_id"],
+        preview["authority"]["considered"]["report_id"]
+    );
+    let report = f
+        .admin(
+            "POST",
+            "/admin/support-grants/incident/report",
+            Some(json!({})),
+        )
+        .await
+        .json();
+    assert!(
+        report["authority"]["considered"]["snapshots"][0]["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|binding| binding["execution"]
+                .as_str()
+                .unwrap()
+                .contains("no_verified_live_run"))
+    );
+    assert_eq!(
+        report["authority"]["considered"]["snapshots"][0]["configured_destinations"],
+        json!([])
+    );
+    f.stop().await;
+}
+
+#[tokio::test]
+async fn local_metadata_requires_explicit_current_reader_and_never_executes() {
+    let f = fixture().await;
+    let _run = support_run(&f, RUN);
+    let path = "/support/authority/metadata";
+    assert_eq!(
+        f.agent("helper", "POST", path, Some(json!({})))
+            .await
+            .status,
+        403
+    );
+    let saved = f.source();
+    fs::write(f.root.path().join("policy.toml"), format!("{saved}\n[[authority_readers]]\ninstance_id='{INSTANCE}'\nagent_id='{HELPER_ID}'\nall_agents=false\nagent_ids=['{WORKER_ID}']\n")).unwrap();
+    let source = fs::read(f.root.path().join("policy.toml")).unwrap();
+    let read = f.agent("helper", "POST", path, Some(json!({}))).await;
+    assert_eq!(read.status, 200, "{}", read.json());
+    assert_eq!(
+        read.json()["snapshot"]["bindings"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        read.json()["snapshot"]["bindings"][0]["principal"]["agent_id"],
+        WORKER_ID
+    );
+    assert_eq!(fs::read(f.root.path().join("policy.toml")).unwrap(), source);
+    fs::write(f.root.path().join("policy.toml"), saved).unwrap();
+    assert_eq!(
+        f.agent("helper", "POST", path, Some(json!({})))
+            .await
+            .status,
+        403
+    );
+    assert!(!f.root.path().join("data/support-operations").exists());
+    f.stop().await;
 }
 
 fn lock_target_setup(fixture: &Fixture) -> fs::File {

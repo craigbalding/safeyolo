@@ -13,6 +13,8 @@ use serde_json::{Value, json};
 pub(crate) struct Proposal {
     pub expected_revision: Option<String>,
     pub grant: Grant,
+    #[serde(default)]
+    pub authority: super::authority::Selection,
 }
 
 pub(crate) fn preview(policy: &Policy, name: &str, proposal: &Proposal) -> Result<Value> {
@@ -116,26 +118,7 @@ pub(crate) fn preview(policy: &Policy, name: &str, proposal: &Proposal) -> Resul
     if grant.guest_admin {
         warnings.push("Guest administration of both producer and reviewer is common administrative control. Configured actor checks still apply, but the reviewer is not independent of this manager. Keep a required independent decider outside the manager's administration.".into());
         warnings.push("Guest administration permits arbitrary guest commands, including existing passwordless guest sudo, all target-accessible files, writable mounts, credentials, network and services, Agent API permissions and existing delegations. Authority can reach other peers and approval decisions through the target. Standing grants follow capabilities later given to the target. Direct target checks do not confine this indirect reach.".into());
-        let deciding: Vec<_> = policy
-            .delegations()
-            .iter()
-            .filter(|(_, delegation)| {
-                delegation.reviewers.iter().any(|reviewer| {
-                    reviewer
-                        .local_agent()
-                        .is_some_and(|agent| grant.targets.contains(&agent))
-                })
-            })
-            .map(|(name, _)| name)
-            .collect();
-        warnings.push(format!("Targets can act as reviewers in these configured approval delegations: {}. A support agent controlling a reviewer is not independent of that reviewer.", serde_json::to_string(&deciding).unwrap_or_default()));
-        let indirect: Vec<_> = policy
-            .support_grants()
-            .into_iter()
-            .filter(|(_, other)| grant.targets.contains(&other.support))
-            .map(|(name, _)| name)
-            .collect();
-        warnings.push(format!("Targets hold these configured support grants: {}. This preview does not recursively calculate indirect authority.", serde_json::to_string(&indirect).unwrap_or_default()));
+        warnings.push("The authority report shows typed upstream and downstream reach within the selected owner inventory and authorized disclosure. Inspect its supporting paths and unknown frontier. Partial evidence cannot establish reviewer independence.".into());
     }
     if !grant.guest_logs.is_empty() {
         warnings.push("Selected log paths are read inside the guest. Guest links may lead to any target-accessible data, including shared mounts and credentials. This permission is broader than host-observed inspection.".into());
@@ -169,7 +152,12 @@ pub(crate) fn preview(policy: &Policy, name: &str, proposal: &Proposal) -> Resul
     )
 }
 
-pub(crate) fn apply(state: &RuntimeState, name: &str, proposal: Proposal) -> Result<Value> {
+pub(crate) fn apply(
+    state: &RuntimeState,
+    name: &str,
+    proposal: Proposal,
+    report: &super::authority::Report,
+) -> Result<Value> {
     let _audit_lock =
         super::audit_delivery::lock_grants().map_err(|error| invalid(error.to_string()))?;
     let mut pending = None;
@@ -187,7 +175,14 @@ pub(crate) fn apply(state: &RuntimeState, name: &str, proposal: Proposal) -> Res
         let saved = policy
             .reload_native_source(source, path)
             .map_err(|error| invalid(error.to_string()))?;
-        let view = preview(&saved, name, &proposal)?;
+        let mut view = preview(&saved, name, &proposal)?;
+        if !super::authority::local_current(&saved, report) {
+            return Err(invalid(
+                "local authority changed before apply; refresh and acknowledge the report",
+            ));
+        }
+        view["authority"] = json!(&proposal.authority);
+        view["authority_recheck"] = json!({"report_id":report.report_id,"collection_finished_at":report.collection_finished_at,"coverage":report.coverage});
         if proposal.grant.acknowledgment.as_deref() != view["revision"].as_str() {
             return Err(invalid(
                 "acknowledge the exact support preview revision before apply",
