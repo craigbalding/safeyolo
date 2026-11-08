@@ -19,6 +19,16 @@ use crate::{
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Action {
     Inspect,
+    FactoryState {
+        factory: String,
+        snapshot_id: String,
+    },
+    FactoryDirection {
+        factory: String,
+        snapshot_id: String,
+        kind: String,
+        text: String,
+    },
     GuestCommand {
         command: String,
         timeout_seconds: u64,
@@ -38,6 +48,22 @@ impl Action {
     fn permitted(&self, grant: &Grant) -> bool {
         match self {
             Self::Inspect => true,
+            Self::FactoryState {
+                factory,
+                snapshot_id,
+            } => grant.factory_directions.iter().any(|selected| {
+                &selected.factory == factory && &selected.snapshot_id == snapshot_id
+            }),
+            Self::FactoryDirection {
+                factory,
+                snapshot_id,
+                kind,
+                ..
+            } => grant.factory_directions.iter().any(|selected| {
+                &selected.factory == factory
+                    && &selected.snapshot_id == snapshot_id
+                    && selected.types.contains(kind)
+            }),
             Self::GuestCommand { .. } | Self::GuestProbe { .. } => grant.guest_admin,
             Self::GuestLog { path } => grant.guest_admin || grant.guest_logs.contains(path),
             Self::Lifecycle { operation } => grant.lifecycle.contains(operation),
@@ -54,6 +80,17 @@ impl Action {
                 command: String::new(),
                 timeout_seconds: *timeout_seconds,
             },
+            Self::FactoryDirection {
+                factory,
+                snapshot_id,
+                kind,
+                ..
+            } => Self::FactoryDirection {
+                factory: factory.clone(),
+                snapshot_id: snapshot_id.clone(),
+                kind: kind.clone(),
+                text: String::new(),
+            },
             other => other.clone(),
         }
     }
@@ -61,6 +98,8 @@ impl Action {
     fn name(&self) -> &'static str {
         match self {
             Self::Inspect => "inspect",
+            Self::FactoryState { .. } => "factory_state",
+            Self::FactoryDirection { .. } => "factory_direction",
             Self::GuestCommand { .. } => "guest_command",
             Self::GuestLog { .. } => "guest_log",
             Self::GuestProbe { .. } => "guest_probe",
@@ -84,7 +123,11 @@ fn valid_operation_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 1024
 }
 
-fn authorize(policy: &Policy, run: &Caller, input: &Request) -> Result<(Grant, Agent), Error> {
+pub(crate) fn authorize(
+    policy: &Policy,
+    run: &Caller,
+    input: &Request,
+) -> Result<(Grant, Agent), Error> {
     if !run.current(policy) {
         return Err(super::refuse(
             403,
@@ -128,6 +171,34 @@ fn authorize(policy: &Policy, run: &Caller, input: &Request) -> Result<(Grant, A
         .cloned()
         .filter(|agent| agent.name == target.name)
         .ok_or("durable target configuration changed")?;
+    if let Action::FactoryState {
+        factory,
+        snapshot_id,
+    }
+    | Action::FactoryDirection {
+        factory,
+        snapshot_id,
+        ..
+    } = &input.operation
+    {
+        let kind = match &input.operation {
+            Action::FactoryDirection { kind, .. } => Some(kind.as_str()),
+            _ => None,
+        };
+        let snapshot = crate::factory::direction_binding(
+            &crate::host_platform::config_dir(),
+            factory,
+            snapshot_id,
+            kind,
+        )
+        .map_err(|_| super::refuse(403, "current approved factory and direction type required"))?;
+        if snapshot.operator_agent() != target.name {
+            return Err(super::refuse(
+                403,
+                "select the factory's current operator-input agent",
+            ));
+        }
+    }
     Ok((grant, agent))
 }
 
@@ -210,6 +281,14 @@ pub(crate) async fn submit(
 ) -> Result<Value, Error> {
     if !valid_operation_id(&input.operation_id) {
         return Err(super::refuse(400, "invalid support operation_id"));
+    }
+    if let Action::FactoryDirection { text, .. } = &input.operation
+        && (text.trim().is_empty() || text.len() > 256 * 1024)
+    {
+        return Err(super::refuse(
+            400,
+            "factory direction needs nonempty text within the Coord message bound",
+        ));
     }
     if let Action::GuestCommand {
         command,
@@ -398,14 +477,21 @@ async fn execute_locked(
     let actual_run = observed["run_id"].as_str().map(str::to_owned);
     receipt["target_run"] = json!(actual_run);
     receipt["grant_revision"] = json!(grant.revision());
-    if !matches!(input.operation, Action::Inspect) && input.expected_run != actual_run {
+    if !matches!(
+        input.operation,
+        Action::Inspect | Action::FactoryState { .. }
+    ) && input.expected_run != actual_run
+    {
         return Err(super::refuse(
             409,
             "target run changed; inspect the target and use a new operation_id for a deliberate new operation",
         ));
     }
-    if !matches!(input.operation, Action::Inspect)
-        && crate::host_runs::read(&target.name)?.is_some_and(|saved| saved["agent_id"] != target.id)
+    if !matches!(
+        input.operation,
+        Action::Inspect | Action::FactoryState { .. }
+    ) && crate::host_runs::read(&target.name)?
+        .is_some_and(|saved| saved["agent_id"] != target.id)
     {
         return Err(
             "saved runtime belongs to a different durable target; no mutation was attempted".into(),
@@ -424,6 +510,26 @@ async fn execute_locked(
     ));
     crate::guest_commands::write_json(path, receipt)?;
     match &input.operation {
+        Action::FactoryState {
+            factory,
+            snapshot_id,
+        } => {
+            let root = crate::host_platform::config_dir();
+            let snapshot = crate::factory::direction_binding(&root, factory, snapshot_id, None)?;
+            let state = crate::factory::management_state(&root, &snapshot).await?;
+            Ok(json!({"state":"completed","factory":state}))
+        }
+        Action::FactoryDirection { .. } => {
+            let client = state
+                .read()
+                .map_err(|_| "runtime unavailable")?
+                .coord
+                .clone();
+            let result = client
+                .send_factory_direction(run, input, &authorizing_grant.revision())
+                .await?;
+            Ok(json!({"state":"completed","publication":result}))
+        }
         Action::Inspect => Ok(inspection(
             &crate::host_commands::diagnostics(&target).await?,
         )),

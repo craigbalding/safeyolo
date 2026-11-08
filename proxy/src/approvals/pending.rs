@@ -1204,7 +1204,7 @@ pub(crate) fn resolve_as(
     id: &str,
     decision: super::network_action::Decision,
     option: Option<&str>,
-    reviewer: Option<(&crate::host_runs::AgentRun, &str)>,
+    reviewer: Option<(&crate::peer_support::Caller, &str)>,
 ) -> Result<Option<(u16, Value)>> {
     match lookup(writer, id)? {
         Some(record) if record.authority.action["kind"] == "operator_action" => {
@@ -1417,7 +1417,8 @@ pub(crate) fn resolve_as(
         event.request_id = Some(selected.request_id.clone());
         event.details =
             json!({"approval_id":selected.approval_id,"authority_digest":selected.authority_digest,
-            "status":selected.status,"option":selected.option,"result":selected.result})
+            "status":selected.status,"option":selected.option,"result":selected.result,
+            "decider":match reviewer { Some((caller,name))=>json!({"kind":"agent","initiator":caller,"delegation":name}),None=>json!({"kind":"operator"}) }})
             .into();
         if tokio::runtime::Handle::current()
             .block_on(writer.emit_confirmed(event))

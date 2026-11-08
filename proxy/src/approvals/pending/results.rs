@@ -66,6 +66,59 @@ pub(crate) struct Ready {
 }
 
 impl Record {
+    fn review_references(&self, policy: &Policy) -> Result<Vec<Ready>> {
+        if self.status != "pending" || self.current_status(policy)? != "pending" {
+            return Ok(vec![]);
+        }
+        let mut reviewers = std::collections::BTreeMap::new();
+        for (name, delegation) in policy.delegations() {
+            if !delegation.dependencies_current(policy) {
+                continue;
+            }
+            for reviewer in delegation
+                .reviewers
+                .iter()
+                .filter(|reviewer| reviewer.instance_id.is_some())
+            {
+                let Some(principal) = reviewer.principal(policy) else {
+                    continue;
+                };
+                if !self.authority.options.iter().any(|option| {
+                    delegation.contains(self, &option.id)
+                        && super::delegation::issue(
+                            policy,
+                            self,
+                            name,
+                            Some(reviewer.clone()),
+                            &option.id,
+                        )
+                        .is_ok()
+                }) {
+                    continue;
+                }
+                let digest = digest(&json!(["review", self.approval_id, principal]));
+                let attention_id = format!("attn-{}", &digest[..32]);
+                reviewers.entry(principal.clone()).or_insert(Ready {
+                    scan_position: 0,
+                    reference: Reference {
+                        approval_id: self.approval_id.clone(),
+                        source: "review".into(),
+                        agent_id: principal,
+                        attention_id: attention_id.clone(),
+                    },
+                    delivery: Delivery {
+                        attention_id,
+                        expires_at: None,
+                        withheld: false,
+                        stream_sequence: None,
+                    },
+                    outcome: "pending".into(),
+                });
+            }
+        }
+        Ok(reviewers.into_values().collect())
+    }
+
     fn result_reference(&self) -> Reference {
         Reference {
             approval_id: self.approval_id.clone(),
@@ -148,6 +201,10 @@ impl Store {
                 result.scan_position = position;
                 ready.push(result);
             }
+            for mut result in record.review_references(policy)? {
+                result.scan_position = position;
+                ready.push(result);
+            }
             if serde_json::to_string(&record).map_err(unavailable)? != encoded {
                 save(&tx, &record)?;
             }
@@ -159,6 +216,12 @@ impl Store {
     pub(crate) fn result(&self, reference: &Reference, policy: &Policy) -> Result<Option<Ready>> {
         let mut ready = None;
         self.decide(&reference.approval_id, |record| {
+            if reference.source == "review" {
+                ready = record
+                    .review_references(policy)?
+                    .into_iter()
+                    .find(|ready| ready.reference == *reference);
+            }
             if record.result_reference() == *reference {
                 ready = record.refresh_result(policy)?;
             }
@@ -168,6 +231,9 @@ impl Store {
     }
 
     pub(crate) fn result_published(&self, reference: &Reference, sequence: u64) -> Result<()> {
+        if reference.source == "review" {
+            return Ok(());
+        }
         self.decide(&reference.approval_id, |record| {
             if record.result_reference() == *reference && !record.result_delivery.withheld {
                 record.result_delivery.stream_sequence = Some(sequence);

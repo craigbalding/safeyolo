@@ -33,6 +33,37 @@ pub(crate) fn preview(
         return Err(invalid("invalid delegation name"));
     }
     let mut candidate = proposal.delegation.clone();
+    for reviewer in &mut candidate.reviewers {
+        if let Some(instance) = &reviewer.instance_id {
+            let conn = crate::coord_rooms::open(
+                policy
+                    .identity_root()
+                    .ok_or_else(|| invalid("owning identity root unavailable"))?,
+            )
+            .map_err(|_| invalid("trust the reviewer instance before previewing delegation"))?;
+            let epoch: i64 = conn
+                .query_row(
+                    "SELECT epoch FROM coord_federation_peers WHERE instance_id=?1 AND enabled=1",
+                    [instance],
+                    |row| row.get(0),
+                )
+                .map_err(|_| invalid("reviewer instance is not trusted"))?;
+            if reviewer.peer_epoch.is_some_and(|saved| saved != epoch) {
+                return Err(invalid(
+                    "reviewer trust changed; preview against current trust",
+                ));
+            }
+            reviewer.peer_epoch = Some(epoch);
+            crate::coord_rooms::federation::registration_available(
+                &conn,
+                policy,
+                instance,
+                &reviewer.agent_id,
+                &reviewer.name,
+            )
+            .map_err(|error| invalid(error.to_string()))?;
+        }
+    }
     let runtime = state
         .read()
         .map_err(|_| invalid("runtime unavailable"))?
@@ -164,11 +195,11 @@ pub(crate) fn preview(
             "delegation changed; inspect and preview the current revision",
         ));
     }
-    for agent in proposal
-        .delegation
+    for agent in candidate
         .reviewers
         .iter()
-        .chain(&proposal.delegation.beneficiaries)
+        .filter_map(crate::policy::delegation::Reviewer::local_agent)
+        .chain(candidate.beneficiaries.iter().cloned())
     {
         if policy.evidence_agent_id(&agent.name) != Some(agent.agent_id.as_str()) {
             return Err(invalid(format!(
@@ -178,6 +209,14 @@ pub(crate) fn preview(
         }
     }
     let mut warnings = proposal.delegation.warnings();
+    if candidate
+        .reviewers
+        .iter()
+        .any(|reviewer| reviewer.instance_id.is_some())
+    {
+        warnings.push("The selected remote reviewer uses its own qualified identity. This instance owns each approval, deciding scope, issued permission and result. Trust alone and peer repair grants do not authorize decisions. Revoking peer trust invalidates this delegation's remote deciding authority and derived access; re-trust requires a new preview.".into());
+        warnings.push("This instance cannot inspect the remote reviewer's startup files, mounts or other grants. This preview does not establish independence or bound indirect administration.".into());
+    }
     warnings.extend(policy.reviewer_write_warnings(&proposal.delegation));
     if !candidate.reciprocal_agent_pairs(policy).is_empty() {
         warnings.push("These reviewers and beneficiaries have reciprocal deciding authority through another delegation. This does not prevent indirect cooperation.".into());
@@ -222,6 +261,24 @@ pub(crate) fn apply(state: &crate::RuntimeState, name: &str, proposal: Proposal)
             ));
         }
         drop(runtime);
+        for reviewer in &proposal.delegation.reviewers {
+            if let Some(instance) = &reviewer.instance_id {
+                let conn = crate::coord_rooms::open(
+                    saved
+                        .identity_root()
+                        .ok_or_else(|| invalid("owning identity root unavailable"))?,
+                )
+                .map_err(|_| invalid("remote identity store unavailable"))?;
+                crate::coord_rooms::federation::register(
+                    &conn,
+                    &saved,
+                    instance,
+                    &reviewer.agent_id,
+                    &reviewer.name,
+                )
+                .map_err(|error| invalid(error.to_string()))?;
+            }
+        }
         let (mut document, context) =
             crate::policy::parse_toml_for_edit(source).map_err(|e| invalid(e.to_string()))?;
         if proposal.expected_revision.as_deref() != Some(proposal.delegation.revision().as_str()) {

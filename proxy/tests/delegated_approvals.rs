@@ -46,7 +46,14 @@ fn runs(fixture: &Fixture) -> std::process::Child {
 }
 fn bound_runs(fixture: &Fixture, generation: &str, agents: &[(&str, &str)]) -> std::process::Child {
     use std::os::unix::process::CommandExt;
-    let mut command = std::process::Command::new("python3");
+    // Resolve the installed runtime before selecting the synthetic backend name.
+    let selected = std::process::Command::new("python3")
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()
+        .unwrap();
+    assert!(selected.status.success());
+    let python = std::str::from_utf8(&selected.stdout).unwrap().trim();
+    let mut command = std::process::Command::new(python);
     command
         .arg0("runsc-sandbox")
         .args([

@@ -2,7 +2,7 @@
 
 pub(crate) mod events;
 pub(crate) mod grants;
-mod operations;
+pub(crate) mod operations;
 pub(crate) use operations::Request;
 
 use crate::{Error, RuntimeState, policy::Policy};
@@ -22,12 +22,12 @@ impl Caller {
             remote: None,
         }
     }
-    fn principal(&self) -> &str {
+    pub(crate) fn principal(&self) -> &str {
         self.remote
             .as_ref()
             .map_or(&self.run.agent_id, |remote| &remote.principal_id)
     }
-    fn current(&self, policy: &Policy) -> bool {
+    pub(crate) fn current(&self, policy: &Policy) -> bool {
         if let Some(remote) = &self.remote {
             remote.agent_id == self.run.agent_id
                 && policy.identity_root().is_some_and(|root| {
@@ -39,7 +39,7 @@ impl Caller {
             self.run.current(policy)
         }
     }
-    fn matches(&self, policy: &Policy, grant: &crate::policy::support::Grant) -> bool {
+    pub(crate) fn matches(&self, policy: &Policy, grant: &crate::policy::support::Grant) -> bool {
         self.current(policy)
             && grant.support.agent_id == self.run.agent_id
             && support_principal(policy, grant).as_deref() == Some(self.principal())

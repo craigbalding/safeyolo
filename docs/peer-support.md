@@ -24,6 +24,7 @@ grant. Ordinary restarts preserve the durable identity.
 | `guest_logs` | Read the exact selected paths through guest execution. Guest links can expose any target-accessible data. Output is untrusted. |
 | `guest_admin` | Execute arbitrary commands inside the target guest, including its existing passwordless guest sudo. Investigate and repair files through those commands. |
 | `lifecycle` | Use selected actions on the saved worker configuration: `start_sandbox`, `start_harness`, `restart_harness`, `stop_sandbox`, or `restart_sandbox`. No new host script, mount, credential or host command is accepted. |
+| `factory_directions` | Read role identities and observed state for the selected approved factory. Send only its explicitly selected direction types. This grants no room history, native work or approval-decision privileges. |
 
 Guest administration includes the target's writable mounts, shared data,
 credentials, network and service permissions, Agent API access and existing
@@ -37,7 +38,8 @@ or prohibit these combinations.
 A temporary grant has an `expires_at` timestamp. A standing grant has
 `expires_at: null` and remains until changed or revoked. Both lifetimes permit
 routine in-scope operations without another prompt. Inspection-only grants
-have `guest_admin: false`, `guest_logs: []` and `lifecycle: []`.
+have `guest_admin: false`, `guest_logs: []`, `lifecycle: []` and no
+`factory_directions` selection.
 
 ## Preview and grant
 
@@ -110,6 +112,11 @@ before selecting notices. Removing a kind stops new notices; an already
 retained reference still requires current observation and source disclosure.
 
 ## Investigate and repair
+
+Factory direction is a separate explicit selection within a support grant.
+See [delegated factory direction](factories.md#delegate-direction-to-an-operator-agent)
+for its snapshot binding, preview and typed actions. Ordinary support grants
+contain no factory direction or approval-decision authority.
 
 Inside the authorized support agent, call `support_grants()` to discover its
 current authority. For a remote target, use `support_grants(home="primary")`

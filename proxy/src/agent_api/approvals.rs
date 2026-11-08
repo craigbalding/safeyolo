@@ -90,6 +90,35 @@ pub(super) async fn respond<B>(
 where
     B: Body<Data = Bytes> + Unpin,
 {
+    match super::coord::query_parameter(request.path_and_query, "home") {
+        Ok(Some(home)) => {
+            let payload = if request.method == "POST" {
+                match super::declarations::read_content(body).await? {
+                    Ok(content) => Some(content),
+                    Err(error) => return Ok(super::declarations::content_error(error)),
+                }
+            } else {
+                None
+            };
+            let Some(state) = state else {
+                return Ok(response(503, json!({"error":"approval owner unavailable"})));
+            };
+            return Ok(super::coord::federation::forward_support(
+                request,
+                state,
+                payload.as_ref().map(|content| content.as_slice()),
+                &home,
+            )
+            .await);
+        }
+        Ok(None) => {}
+        Err(_) => {
+            return Ok(response(
+                400,
+                json!({"error":"select one configured approval owner"}),
+            ));
+        }
+    }
     let path = super::route(request);
     let reviewing = request.identity.run().is_some_and(|run| {
         policy.delegations().values().any(|d| {
@@ -108,7 +137,21 @@ where
                 json!({"error":"approval state unavailable; operator controls remain available"}),
             ));
         };
-        return delegated(request, writer, state, policy, body).await;
+        let Some(run) = request.identity.run() else {
+            return Ok(response(
+                403,
+                json!({"error":"trusted current-run reviewer identity required"}),
+            ));
+        };
+        return delegated(
+            request,
+            writer,
+            state,
+            policy,
+            crate::peer_support::Caller::local(run),
+            body,
+        )
+        .await;
     }
     if let Some(id) = super::route(request)
         .strip_prefix("/approvals/")
@@ -356,15 +399,16 @@ async fn delegated<B: Body<Data = Bytes> + Unpin>(
     writer: &Arc<Writer>,
     state: &crate::RuntimeState,
     policy: &Arc<Policy>,
+    reviewer: crate::peer_support::Caller,
     body: RequestBody<'_, B>,
 ) -> Result<Outcome<'static>, B::Error> {
     use crate::approvals::pending::{self, delegation};
-    let Some(reviewer) = request.identity.run().filter(|run| run.current(policy)) else {
+    if !reviewer.current(policy) {
         return Ok(response(
             403,
             json!({"error":"trusted current-run reviewer identity required"}),
         ));
-    };
+    }
     let path = super::route(request);
     if path == "/approvals" && request.method == "GET" {
         let (writer, policy, state, reviewer) = (
@@ -375,18 +419,7 @@ async fn delegated<B: Body<Data = Bytes> + Unpin>(
         );
         return Ok(
             match tokio::task::spawn_blocking(move || -> crate::approvals::Result<_> {
-                let mut views = vec![];
-                for record in writer.approvals().list()? {
-                    if !delegation::eligible(&policy, &record, &reviewer).is_empty()
-                        && pending::current_view(&writer, &policy, &record, Some(&state))?["status"]
-                            == "pending"
-                    {
-                        views.push(delegation::view(
-                            &writer, &policy, &record, &state, &reviewer,
-                        )?);
-                    }
-                }
-                Ok(json!({"approvals":views}))
+                delegation::list(&writer, &policy, &state, &reviewer)
             })
             .await
             {
@@ -499,4 +532,112 @@ async fn delegated<B: Body<Data = Bytes> + Unpin>(
             json!({"error":"decision owner unavailable; operator controls remain available"}),
         ),
     })
+}
+
+/// Federation supplies the authenticated qualified caller, never an identity
+/// selected from an approval payload or a worker's credentials.
+pub(crate) async fn remote(
+    request: Request<'_>,
+    state: &crate::RuntimeState,
+    reviewer: crate::peer_support::Caller,
+    payload: Option<&[u8]>,
+) -> Outcome<'static> {
+    let writer = match state.read() {
+        Ok(runtime) => runtime.audit.clone(),
+        Err(_) => return response(503, json!({"error":"approval owner unavailable"})),
+    };
+    let policy = match crate::peer_support::current_policy(state) {
+        Ok(policy) => Arc::new(policy),
+        Err(_) => return response(503, json!({"error":"approval policy unavailable"})),
+    };
+    let mut body = http_body_util::Full::new(Bytes::copy_from_slice(payload.unwrap_or_default()));
+    let caller = reviewer.clone();
+    let mut outcome = match delegated(
+        request,
+        &writer,
+        state,
+        &policy,
+        reviewer,
+        RequestBody {
+            body: &mut body,
+            content_encoding: b"",
+            content_length: payload.map(|p| p.len() as u64),
+            observation: None,
+        },
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(never) => match never {},
+    };
+    if matches!(outcome.response.status, 404 | 409)
+        && let super::ResponseBody::Json(body) = &mut outcome.response.body
+    {
+        body["next_action"] = json!(
+            "Ask the owning instance's human operator to inspect this request or preview missing deciding scope. Read the canonical request before repeating an uncertain decision."
+        );
+    }
+    if outcome.response.status != 200 {
+        return outcome;
+    }
+    // Native owner I/O can overlap revocation. Reproject reads using current
+    // B-side authority immediately before remote disclosure. Decisions already
+    // admitted remain canonical even when their response is withheld.
+    let reading = request.method == "GET";
+    let path = super::route(request).to_owned();
+    let (check_state, check_writer) = (state.clone(), writer.clone());
+    let current =
+        tokio::task::spawn_blocking(move || -> crate::approvals::Result<serde_json::Value> {
+            let (state, writer) = (&check_state, &check_writer);
+            use crate::approvals::pending::{self, delegation};
+            let policy = crate::peer_support::current_policy(state).map_err(|_| {
+                crate::approvals::ApprovalError {
+                    kind: crate::approvals::ErrorKind::Io,
+                    message: "current approval authority unavailable".into(),
+                }
+            })?;
+            if !caller.current(&policy) {
+                return Err(crate::approvals::invalid("reviewer authority changed"));
+            }
+            if path == "/approvals" {
+                return delegation::list(writer, &policy, state, &caller);
+            }
+            let id = path
+                .strip_prefix("/approvals/")
+                .unwrap_or("")
+                .trim_end_matches("/resolve");
+            let record = pending::lookup(writer, id)?
+                .ok_or_else(|| crate::approvals::invalid("approval unavailable"))?;
+            if !reading {
+                if delegation::eligible(&policy, &record, &caller).is_empty() {
+                    return Err(crate::approvals::invalid("reviewer authority changed"));
+                }
+                return Ok(serde_json::Value::Null);
+            }
+            let mut value = delegation::view(writer, &policy, &record, state, &caller)?;
+            value["instance_id"] = json!(
+                policy
+                    .identity_root()
+                    .and_then(|root| crate::peer_support::events::instance(root).ok())
+            );
+            Ok(value)
+        })
+        .await;
+    match current {
+        Ok(Ok(value)) if reading => response(200, value),
+        Ok(Ok(_)) => outcome,
+        Ok(Err(error)) if error.kind == crate::approvals::ErrorKind::Io => response(
+            503,
+            json!({"error":"canonical approval owner unavailable; read the original request before retrying"}),
+        ),
+        Err(_) => response(
+            503,
+            json!({"error":"approval disclosure owner unavailable; inspect the original request before retrying"}),
+        ),
+        Ok(Err(_)) => response(
+            403,
+            json!({"error":"current deciding authority unavailable; the canonical request or admitted decision remains on its owner",
+            "next_action":"Ask the owning instance's human operator to inspect the original approval. Do not replay an uncertain request."}),
+        ),
+    }
 }

@@ -233,7 +233,7 @@ pub(crate) fn resolve(
     id: &str,
     decision: Decision,
     option: Option<&str>,
-    reviewer: Option<(&crate::host_runs::AgentRun, &str)>,
+    reviewer: Option<(&crate::peer_support::Caller, &str)>,
 ) -> Result<(u16, Value)> {
     let path = config_path(state)?;
     let mut execute = false;
