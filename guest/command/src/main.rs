@@ -178,7 +178,7 @@ fn run() -> Result<i32, Error> {
         }
         [help] if help == "--help" => {
             println!(
-                "safeyolo-guest [--context FILE] [--records DIR] [--state FILE] [--stop FILE] [--workspace DIR] observe check | observe exec -- PROGRAM [ARGS] | observe stop GENERATION LAUNCH_ID | supervise [check] | clock-sync [watch] | probe ID [--ssh-port PORT] | desktop-probe | desktop-bridge --web DIRECTORY LOOPBACK:PORT VNC_LOOPBACK:PORT | lab-evidence capture --output DIR [--socket PATH] [--pane ID] [--file PATH] | lab-evidence redact [--check-text FILE | INPUT OUTPUT]\nGuest-only Linux executable. PID 1 launches supervise as the agent user. The host publishes command state in the shared home."
+                "safeyolo-guest [--context FILE] [--records DIR] [--state FILE] [--stop FILE] [--workspace DIR] observe check | observe exec -- PROGRAM [ARGS] | observe stop GENERATION LAUNCH_ID | supervise [check | owner-binding | owner-exit BINDING STATUS] | clock-sync [watch] | probe ID [--ssh-port PORT] | desktop-probe | desktop-bridge --web DIRECTORY LOOPBACK:PORT VNC_LOOPBACK:PORT | lab-evidence capture --output DIR [--socket PATH] [--pane ID] [--file PATH] | lab-evidence redact [--check-text FILE | INPUT OUTPUT]\nGuest-only Linux executable. PID 1 launches supervise as the agent user and uses owner-binding/owner-exit to record its reaped owner. The host publishes command state in the shared home."
             );
             Ok(0)
         }
@@ -205,6 +205,21 @@ fn run() -> Result<i32, Error> {
         [supervise] if supervise == "supervise" => supervision::run(&paths),
         [supervise, check] if supervise == "supervise" && check == "check" => {
             supervision::check(&paths)
+        }
+        [supervise, binding] if supervise == "supervise" && binding == "owner-binding" => {
+            supervision::print_owner_binding(&paths)
+        }
+        [supervise, report, binding, status]
+            if supervise == "supervise" && report == "owner-exit" =>
+        {
+            supervision::owner_exit(
+                &paths,
+                binding.to_str().ok_or("owner binding must be text")?,
+                status
+                    .to_str()
+                    .ok_or("owner exit status must be text")?
+                    .parse()?,
+            )
         }
         [probe, id] if probe == "probe" => probe::run(
             &paths,

@@ -837,3 +837,24 @@ model/terminal participation or working Coord/NATS notifications. They still
 need the owning API, policy and required runtime controls. Remote support is
 outside this local interface. Ask the operator to preview or change the
 support grant when an action lacks authority. Do not substitute host access.
+
+The operator can select operational event kinds in the same support-grant
+preview. Selected references arrive as `operational_event` objects through
+ordinary identity-wide Coord attention. A target need not join a room or run a
+responsive model. Resolve each reference before advancing the attention cursor.
+The reference identifies its owning instance, durable target, run/launch where
+applicable, event kind and source. Host availability observations and guest
+supervision evidence differ from agent-authored material signals. A normal
+harness invocation completing inside a live Coord supervisor is not supervisor
+death. Unknown or degraded control does not prove sandbox death.
+
+Resolution rechecks current observation authority. Material signal text also
+requires the operator's explicit `signal_rooms` disclosure. This does not grant
+room history or unrelated signals. Revocation and expiry refuse later reads;
+a matching regrant can expose retained references again. Deselection stops new
+notices. Source details can be replaced or pruned; a retained reference does
+not reconstruct them or establish complete audit history. Lost wake hints are
+recovered from retained attention and bounded host reconciliation. Use the
+ordinary long wait, without polling every worker. Notifications and reads do
+not create work, resolve signals or execute repair. Inspect current state and
+check the separate action grant before acting.

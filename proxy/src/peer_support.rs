@@ -1,5 +1,6 @@
 //! Local delegated support. Policy owns authority; existing host owners execute.
 
+pub(crate) mod events;
 pub(crate) mod grants;
 mod operations;
 pub(crate) use operations::{Request, discover, read, submit};
