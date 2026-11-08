@@ -16,11 +16,14 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
+
 from tests.proxy_contracts.harness import child_process, wait_ready
 from tests.proxy_contracts.native_proposal_fixture import ROOM, proposal_instance
 
 RECIPIENT = "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 TARGET = "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+linux_guest = pytest.mark.skipif(os.uname().sysname != "Linux", reason="This native guest or /proc control requires Linux; VZ uses the installed driver")
 
 
 def support(instance, *arguments, check=True):
@@ -244,13 +247,19 @@ def test_signal_disclosure_uses_canonical_state_without_room_history(tmp_path, _
             assert db.execute("SELECT count(*) FROM coord_work").fetchone() == (0,)
 
 
+@linux_guest
 def test_guest_metadata_cannot_spoof_host_or_a_different_generation(tmp_path, _binary_cache):
     with contextmanager(proposal_instance)(tmp_path, nats_binary=_binary_cache) as instance:
         directory = instance.root / "agents/lens"
         home = directory / "home"
         home.mkdir(parents=True)
         generation = "0123456789abcdef0123456789abcdef"
-        (directory / "runtime.json").write_text(json.dumps({"name":"lens","agent_id":TARGET,"run_id":generation,"state":"stopped"}))
+        absent_pid = 2147483647
+        with pytest.raises(ProcessLookupError):
+            os.kill(absent_pid,0)
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        (directory / "runtime.json").write_text(json.dumps({"name":"lens","agent_id":TARGET,"run_id":generation,"state":"stopped",
+                                                            "backend_pid":absent_pid,"backend_token":f"linux:{boot}:{absent_pid}:1"}))
         (directory / "current-launch.json").write_text(json.dumps({"name":"lens","agent_id":TARGET,"launch_id":"launch-controlled","state":"managed"}))
         source = {"name":"lens","generation":generation,"supervision_id":"launch-controlled","operational_events":[{
             "sequence":1,"kind":"command_exit","source":"host_start","at":time.time(),
@@ -268,6 +277,9 @@ def test_guest_metadata_cannot_spoof_host_or_a_different_generation(tmp_path, _b
         source["generation"] = "fedcba9876543210fedcba9876543210"
         source["operational_events"][0]["sequence"] = 2
         path.write_text(json.dumps(source))
+        original = next(item for item in events if item["object"]["reference"]["kind"] == "command_exit")
+        old = call(instance,"read_attention",{"attention_id":original["edge"]["attention_id"]})
+        assert old["object"]["evidence"]["source_status"] == "details_unavailable"
         # Invocation-exit telemetry is ordinary room data. It cannot become
         # evidence that a still-running supervisor died.
         instance.send('normal invocation completed: {"event":"exit","exit_code":0}')
@@ -283,6 +295,7 @@ def test_guest_metadata_cannot_spoof_host_or_a_different_generation(tmp_path, _b
         assert all(reference["state"]["runtime_state"] == "unknown" for reference in references)
 
 
+@linux_guest
 def test_guest_source_survives_abrupt_child_and_owner_exit(tmp_path):
     """Run the Linux guest executable as an owned local process.
 
