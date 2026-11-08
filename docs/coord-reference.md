@@ -970,8 +970,9 @@ instance root, `v0.db`, NATS credentials and JetStream store together.
 The previous generated NATS configuration stored private streams in the global
 account, `$G`. At startup, SafeYolo moves that account directory to `SY_LOCAL`
 while the broker is stopped and the runtime lock is held. This is an atomic
-directory rename on the existing filesystem. Messages, stream sequences and
-consumer positions remain in their original files. SQLite work, attention
+directory rename on the existing filesystem. NATS places these accounts under
+`nats/jetstream/jetstream/`; the repeated directory name is intentional. Messages,
+stream sequences and consumer positions remain in their original files. SQLite work, attention
 references and cursors are not rewritten. The move applies with federation
 disabled or enabled. `SY_LOCAL` and `SY_FED` remain separate roles inside each
 independently owned broker; this does not configure a shared broker or bridge

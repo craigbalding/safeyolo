@@ -130,7 +130,7 @@ async fn previous_generated_store_upgrades_with_and_without_federation() {
             })
             .await
             .unwrap();
-        let mut messages = consumer.messages().await.unwrap();
+        let mut messages = consumer.fetch().max_messages(1).messages().await.unwrap();
         messages
             .next()
             .await
@@ -141,7 +141,10 @@ async fn previous_generated_store_upgrades_with_and_without_federation() {
             .unwrap();
         drop(messages);
         stage0::base(&root, &["coord", "stop"]).await;
-        assert!(root.join("data/coord/nats/jetstream/$G/streams").is_dir());
+        assert!(
+            root.join("data/coord/nats/jetstream/jetstream/$G/streams")
+                .is_dir()
+        );
         let before = canonical_rows(&root);
         assert!(
             !before["coord_attention_edges"]
@@ -175,10 +178,10 @@ async fn previous_generated_store_upgrades_with_and_without_federation() {
         .await;
         assert!(!failed.status.success());
         assert!(
-            root.join("data/coord/nats/jetstream/SY_LOCAL/streams")
+            root.join("data/coord/nats/jetstream/jetstream/SY_LOCAL/streams")
                 .is_dir()
         );
-        assert!(!root.join("data/coord/nats/jetstream/$G").exists());
+        assert!(!root.join("data/coord/nats/jetstream/jetstream/$G").exists());
         assert_eq!(canonical_rows(&root), before);
         drop(occupied);
         let output = host_cli(&root, &["coord", "start", "--binary", &binary]).await;
@@ -199,7 +202,7 @@ async fn previous_generated_store_upgrades_with_and_without_federation() {
         let mut consumer: async_nats::jetstream::consumer::PullConsumer =
             stream.get_consumer("upgrade-reader").await.unwrap();
         assert_eq!(consumer.info().await.unwrap().ack_floor.stream_sequence, 1);
-        let mut messages = consumer.messages().await.unwrap();
+        let mut messages = consumer.fetch().max_messages(1).messages().await.unwrap();
         let second = tokio::time::timeout(Duration::from_secs(3), messages.next())
             .await
             .unwrap()

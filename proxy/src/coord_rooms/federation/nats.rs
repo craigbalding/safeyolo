@@ -132,8 +132,13 @@ pub(crate) fn server_config(
 /// is stopped and the runtime lock is held. Moving the entire account preserves
 /// stream/consumer sequences; SQLite references must not be rewritten.
 pub(crate) fn upgrade_local_store(jetstream: &Path) -> Result<(), Error> {
-    let previous = jetstream.join("$G");
-    let current = jetstream.join("SY_LOCAL");
+    // NATS appends its own jetstream directory to the configured store_dir.
+    let accounts = jetstream.join("jetstream");
+    if !accounts.try_exists()? {
+        return Ok(());
+    }
+    let previous = accounts.join("$G");
+    let current = accounts.join("SY_LOCAL");
     if previous.try_exists()? {
         if current.try_exists()? {
             return Err("Coord found both previous ($G) and current (SY_LOCAL) NATS account stores; neither was changed. Preserve both stores and v0.db; see Coord upgrade recovery in docs/coord-reference.md".into());
@@ -145,7 +150,7 @@ pub(crate) fn upgrade_local_store(jetstream: &Path) -> Result<(), Error> {
     }
     // Also sync on a resumed start: a prior process may have exited immediately
     // after rename and before persisting the directory entry.
-    fs::File::open(jetstream)?.sync_all()?;
+    fs::File::open(accounts)?.sync_all()?;
     Ok(())
 }
 
@@ -222,8 +227,10 @@ mod upgrade_tests {
     #[test]
     fn local_account_move_preserves_both_stores_on_conflict() {
         let root = tempfile::tempdir().unwrap();
-        let previous = root.path().join("$G/streams/ROOM_original");
-        let current = root.path().join("SY_LOCAL/streams/ROOM_other");
+        upgrade_local_store(root.path()).unwrap();
+        assert!(!root.path().join("jetstream").exists());
+        let previous = root.path().join("jetstream/$G/streams/ROOM_original");
+        let current = root.path().join("jetstream/SY_LOCAL/streams/ROOM_other");
         fs::create_dir_all(&previous).unwrap();
         fs::create_dir_all(&current).unwrap();
         fs::write(previous.join("meta.inf"), "original").unwrap();
@@ -243,7 +250,7 @@ mod upgrade_tests {
         }
         let root = tempfile::tempdir().unwrap();
         let relative = "streams/ROOM_original/obs/reader/o.dat";
-        let previous = root.path().join("$G").join(relative);
+        let previous = root.path().join("jetstream/$G").join(relative);
         fs::create_dir_all(previous.parent().unwrap()).unwrap();
         fs::write(&previous, "retained-consumer-position").unwrap();
         let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -252,10 +259,10 @@ mod upgrade_tests {
             .status()
             .unwrap();
         assert_eq!(status.code(), Some(73));
-        assert!(!root.path().join("$G").exists());
+        assert!(!root.path().join("jetstream/$G").exists());
         upgrade_local_store(root.path()).unwrap();
         assert_eq!(
-            fs::read(root.path().join("SY_LOCAL").join(relative)).unwrap(),
+            fs::read(root.path().join("jetstream/SY_LOCAL").join(relative)).unwrap(),
             b"retained-consumer-position"
         );
     }

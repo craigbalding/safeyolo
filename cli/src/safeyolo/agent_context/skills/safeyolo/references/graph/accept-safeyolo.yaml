@@ -521,7 +521,7 @@ nodes:
         - path: proxy/tests/native_coord.rs
           sha256: 15c0fa3fc0aa563d43da783ac6c93c747b8e3f879817e61100e843eb4c56fa0c
         - path: proxy/src/coord_rooms/federation/nats.rs
-          sha256: 77adb104d56651eefae8ad6560335a1974643b58e14be64b76a68530a176acec
+          sha256: 7713ddfd3ff1f10c93f42b1182aeab245958d3e2049f23f4bd1e7abd02a8e890
         - path: proxy/src/coord_tools/sources.rs
           sha256: 233f6bea4146f20ded5231938012e0282007bb9852d2d7bd8a746ab6ebedaca8
         - path: proxy/tests/native_coord/federation/support.rs
@@ -573,7 +573,7 @@ nodes:
         - path: cli/src/safeyolo/services/github.yaml
           sha256: 38880c71fbe0a2f995a790c64d21d001baa7a5911d10f44d8e50973914f543d3
         - path: proxy/tests/native_coord/upgrade.rs
-          sha256: 5d28fb42ba8c5ca142c26e3dc26ef3cdd18711d313a5397c4724c093c550945d
+          sha256: ead31ae0e2e33003970a4456492c417957c111a3a04247852bddf132867235bb
         - path: proxy/tests/native_coord/stage0.rs
           sha256: a288d8dd6bbdb84c38aa72ca1c27f6bbc860f5faf9b208e2f5d7d876c7d7ad62
         - path: proxy/src/coord_rooms.rs
