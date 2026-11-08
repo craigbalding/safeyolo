@@ -134,15 +134,17 @@ jobs:
           "$RUNSC_WORK/tools/bazel" --version
           echo "$RUNSC_WORK/tools" >> "$GITHUB_PATH"
           compiler_packages=(build-essential)
+          # Upstream embeds both VDSOs, including the other architecture.
           if [[ $RUNSC_ARCHITECTURE == arm64 ]]; then
-            # Upstream generates the AMD64 VDSO while building native ARM64 tools.
             compiler_packages+=(crossbuild-essential-amd64)
+          else
+            compiler_packages+=(crossbuild-essential-arm64)
           fi
           sudo -n apt-get update -qq
           sudo -n apt-get install -y --no-install-recommends "${compiler_packages[@]}" clang libbpf-dev
           ln -s /usr/bin/clang "$RUNSC_WORK/tools/clang"
           /usr/bin/x86_64-linux-gnu-gcc --version
-          if [[ $RUNSC_ARCHITECTURE == arm64 ]]; then /usr/bin/aarch64-linux-gnu-gcc --version; fi
+          /usr/bin/aarch64-linux-gnu-gcc --version
           /usr/bin/clang --version
           /usr/bin/clang -print-targets | grep -w bpf
           test -r /usr/include/bpf/bpf_helpers.h

@@ -256,6 +256,53 @@ else:
     assert "${{ env.RUNSC_WORK }}/reused/" in upload["with"]["path"]
 
 
+@pytest.mark.parametrize("architecture,cross_package", [
+    ("amd64", "crossbuild-essential-arm64"), ("arm64", "crossbuild-essential-amd64"),
+])
+@pytest.mark.parametrize("missing_compiler", [None, "x86_64-linux-gnu-gcc", "aarch64-linux-gnu-gcc"])
+def test_runsc_acquisition_requires_both_vdso_compilers(
+    tmp_path, runsc_inputs, monkeypatch, architecture, cross_package, missing_compiler,
+):
+    tools = tmp_path / "tools"
+    for name in ("sudo", "x86_64-linux-gnu-gcc", "aarch64-linux-gnu-gcc", "clang", "dpkg-query"):
+        if name == missing_compiler:
+            continue
+        tool = tools / name
+        tool.write_text(f"#!{sys.executable}\n" + '''import json, sys
+from pathlib import Path
+name = Path(sys.argv[0]).name
+with Path('compiler-calls.jsonl').open('a') as log:
+    log.write(json.dumps([name, *sys.argv[1:]]) + '\\n')
+if name == 'clang' and sys.argv[1:] == ['-print-targets']:
+    print('bpf')
+''')
+        tool.chmod(0o755)
+    header = tmp_path / "bpf_helpers.h"
+    header.touch()
+    work = Path(runsc_inputs["RUNSC_WORK"])
+    (work / "tools").mkdir(parents=True)
+    acquisition = step("Acquire the pinned upstream source and compiler", RUNSC_JOB)
+    # Run the actual compiler acquisition section with commands confined to
+    # the fixture. Source and Bazel download failure have separate controls.
+    commands = "set -euo pipefail\ncompiler_packages=" + acquisition["run"].split("compiler_packages=", 1)[1]
+    commands = commands.replace("/usr/bin/", f"{tools}/").replace("/usr/include/bpf/bpf_helpers.h", str(header))
+    monkeypatch.setitem(acquisition, "run", commands)
+    result = execute(acquisition["name"], tmp_path, {**runsc_inputs, "RUNSC_ARCHITECTURE": architecture}, RUNSC_JOB)
+    calls = [json.loads(line) for line in (tmp_path / "compiler-calls.jsonl").read_text().splitlines()]
+    packages = ["build-essential", cross_package, "clang", "libbpf-dev"]
+    assert ["sudo", "-n", "apt-get", "install", "-y", "--no-install-recommends", *packages] in calls
+    if missing_compiler:
+        assert result.returncode == 127, result.stdout + result.stderr
+        assert missing_compiler in result.stderr
+        assert not any(call[0] == "dpkg-query" for call in calls)
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert ["x86_64-linux-gnu-gcc", "--version"] in calls
+        assert ["aarch64-linux-gnu-gcc", "--version"] in calls
+        assert ["clang", "-print-targets"] in calls
+        assert ["dpkg-query", "-W", *packages] in calls
+
+
 def test_runsc_acquisition_failure_retains_download_diagnostic_and_acquired_inputs(tmp_path, runsc_inputs):
     env = runsc_inputs
     result = execute("Verify the native runner and pinned build inputs", tmp_path, env, RUNSC_JOB)
