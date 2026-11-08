@@ -419,8 +419,8 @@ operation. No automatic mutation replay or broad cleanup is performed.
 
 ## Project scope witness
 
-For #1439, reuse the same protected venue and private inputs after the active
-workload witness returns. Reuse a prepared qualified BusyBox image instead of
+For #1439, reuse the same protected venue and private inputs. Reuse a prepared
+qualified BusyBox image instead of
 repeating its build/pull suite. The project test creates two unrelated projects,
 ordinary selected existing resources and a shared network through its explicit
 operator connection. It then exercises the project gateway. It retains its
@@ -442,7 +442,7 @@ CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
 ```
 
 With those checks passing and the operator-bound Engine inputs available, run
-only the project Engine witness:
+the project lifecycle when that behavior needs qualification:
 
 ```sh
 CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
@@ -453,7 +453,46 @@ CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
 Record actual Engine/CLI/Compose versions and the exact candidate. This witness
 covers selected resources, shared dependencies, Compose creation/recreation,
 persistent data, direct/indirect refusals, management metadata, restart,
-co-administrator rename/replacement and explicit volume re-adoption. The
-controlled HTTP regression exercises an origin that applies creation and then
-interrupts its response. It must observe reconciliation and exactly one mutation.
-Neither source checks nor a controlled origin establish real Engine acceptance.
+co-administrator rename/replacement and explicit volume re-adoption. Reuse the
+observed project result at `a72c6477c3c6b37923c767d55e1ec61dcfc5d2d0`
+(execution 15482); a new interruption case does not require another lifecycle run.
+
+On the same venue, use the same private inputs and warm build settings to run
+only the missing real Engine interruption and anonymous-volume checks:
+
+```sh
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=1 SAFEYOLO_CARGO_RESERVE_GIB=10 \
+  ../scripts/cargo_with_space.sh test --locked --config profile.dev.debug=0 \
+  --test docker_real_daemon real_docker_project_interrupted_creation -- --ignored --exact --nocapture
+```
+
+This case forwards the project gateway's requests through a local HTTPS fixture
+to the actual authenticated Engine. The fixture verifies the Engine's certificate
+with the existing CA and sends the existing bearer on stdin. It saves the successful
+creation reply, then truncates that reply on the connection to the gateway.
+Prerequisite and reconciliation responses come from the Engine. No Docker state
+is simulated. The case must observe the client failure, retained pending creation,
+actual container and anonymous volume, reconciliation before returning the
+dependent inspect response, and exactly one creation request. The gateway's
+private audit must report an unknown mutation outcome followed by reconciliation
+without replay. The test also requires `rm -v` to remove the recorded owned
+anonymous volume, refuse removal with a shared anonymous volume, and allow
+ordinary container removal while preserving that shared volume. These cases
+exercise #1439's reference and shared-dependency criteria; they add no new product
+restriction.
+
+The case prints the actual effects and keeps its scratch directory on failure.
+Before another write or cleanup, inspect `interrupted-engine-reply.json`,
+`created-container.json`, `shared-engine-reply.json`, `shared-container.json`, the
+gateway's `data/docker-projects` state and `audit.jsonl` under `project-client`.
+Use the operator connection to inspect the returned container IDs and their
+mounted volume names. A failed creation response is not evidence of rollback.
+Remove only those verified owned fixtures after preserving the diagnostic result.
+Never rerun an uncertain mutation automatically. Successful cleanup removes both
+fixture containers and both anonymous volumes; the prepared image and shared
+bridge network remain reusable.
+
+The controlled HTTP regression remains focused protocol proof. Its simulated
+origin does not establish real Engine acceptance. The new real Engine case also
+does not replace #1437's internal Docker connection result or independent #1439
+acceptance.
