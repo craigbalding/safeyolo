@@ -60,7 +60,60 @@ where
         }
     };
     let path = super::route(request);
-    let result = if request.method == "GET" && path == "/support/grants" {
+    let result = if request.method == "POST"
+        && path == crate::peer_support::authority::METADATA_PATH
+    {
+        let content = match super::declarations::read_content(body).await? {
+            Ok(content) => content,
+            Err(error) => return Ok(super::declarations::content_error(error)),
+        };
+        crate::host_platform::in_config(config, async {
+            let policy = crate::peer_support::authority::read_policy(state)?;
+            if !run.current(&policy) {
+                return Err(crate::peer_support::refuse(
+                    403,
+                    "current metadata reader run required",
+                ));
+            }
+            let instance = crate::peer_support::instance_id()?;
+            let disclosure = policy
+                .authority_disclosure(&instance, Some(&run.agent_id), None)
+                .map_err(|_| {
+                    crate::peer_support::refuse(
+                        403,
+                        "authority metadata is not disclosed to this reader",
+                    )
+                })?;
+            let result = crate::peer_support::authority::metadata(
+                state,
+                &policy,
+                Some(&disclosure),
+                serde_json::from_slice(&content)?,
+            )?;
+            let current = crate::peer_support::authority::read_policy(state)?;
+            let reader = current
+                .authority_disclosure(&instance, Some(&run.agent_id), None)
+                .map_err(|_| {
+                    crate::peer_support::refuse(403, "authority metadata disclosure was revoked")
+                })?;
+            if !run.current(&current) || json!(reader) != json!(disclosure) {
+                return Err(crate::peer_support::refuse(
+                    403,
+                    "authority metadata reader changed",
+                ));
+            }
+            if crate::peer_support::authority::snapshot(state, &current, Some(&reader))?.revision
+                != result["snapshot"]["revision"]
+            {
+                return Err(crate::peer_support::refuse(
+                    409,
+                    "owner authority changed during collection",
+                ));
+            }
+            Ok(result)
+        })
+        .await
+    } else if request.method == "GET" && path == "/support/grants" {
         crate::host_platform::in_config(config, async {
             crate::peer_support::discover(state, &run)
         })

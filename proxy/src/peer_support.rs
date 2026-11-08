@@ -1,6 +1,7 @@
 //! Delegated support. The target's policy and host owners retain authority.
 
 pub(crate) mod audit_delivery;
+pub(crate) mod authority;
 pub(crate) mod events;
 pub(crate) mod grants;
 pub(crate) mod operations;
@@ -148,7 +149,7 @@ impl std::fmt::Display for Refusal {
 }
 impl std::error::Error for Refusal {}
 
-fn refuse(status: u16, message: &'static str) -> Error {
+pub(crate) fn refuse(status: u16, message: &'static str) -> Error {
     Box::new(Refusal { status, message })
 }
 

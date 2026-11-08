@@ -9,6 +9,8 @@ use serde_json::{Value, json};
 pub(crate) struct Proposal {
     pub expected_revision: Option<String>,
     pub delegation: Delegation,
+    #[serde(default)]
+    pub authority: crate::peer_support::authority::Selection,
 }
 
 #[derive(Serialize)]
@@ -215,7 +217,7 @@ pub(crate) fn preview(
         .any(|reviewer| reviewer.instance_id.is_some())
     {
         warnings.push("The selected remote reviewer uses its own qualified identity. This instance owns each approval, deciding scope, issued permission and result. Trust alone and peer repair grants do not authorize decisions. Revoking peer trust invalidates this delegation's remote deciding authority and derived access; re-trust requires a new preview.".into());
-        warnings.push("This instance cannot inspect the remote reviewer's startup files, mounts or other grants. This preview does not establish independence or bound indirect administration.".into());
+        warnings.push("The authority report uses metadata explicitly disclosed by selected owners. Unknown owners, undisclosed grants and unmodeled influences prevent a claim of reviewer independence.".into());
     }
     warnings.extend(policy.reviewer_write_warnings(&proposal.delegation));
     if !candidate.reciprocal_agent_pairs(policy).is_empty() {
@@ -237,7 +239,12 @@ pub(crate) fn preview(
     Ok(preview)
 }
 
-pub(crate) fn apply(state: &crate::RuntimeState, name: &str, proposal: Proposal) -> Result<Value> {
+pub(crate) fn apply(
+    state: &crate::RuntimeState,
+    name: &str,
+    proposal: Proposal,
+    report: &crate::peer_support::authority::Report,
+) -> Result<Value> {
     crate::edit_native_policy(state, true, |source| {
         let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?;
         let current = runtime
@@ -252,7 +259,12 @@ pub(crate) fn apply(state: &crate::RuntimeState, name: &str, proposal: Proposal)
         let saved = current
             .reload_native_source(source, path)
             .map_err(|e| invalid(e.to_string()))?;
-        let view = preview(&saved, name, &proposal, state)?;
+        let mut view = preview(&saved, name, &proposal, state)?;
+        if !crate::peer_support::authority::local_current(&saved, report) {
+            return Err(invalid("local authority changed before apply; refresh and acknowledge the report"));
+        }
+        view["authority"] = json!(&proposal.authority);
+        view["authority_recheck"] = json!({"report_id":report.report_id,"collection_finished_at":report.collection_finished_at,"coverage":report.coverage});
         if proposal.delegation.revision() != view["revision"].as_str().unwrap_or("")
             || proposal.delegation.acknowledgment.as_deref() != view["revision"].as_str()
         {

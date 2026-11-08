@@ -233,7 +233,7 @@ fn admission_full() -> Outcome<'static> {
 #[serde(deny_unknown_fields)]
 struct PeerRequest {
     destination_instance_id: String,
-    source_run: crate::host_runs::AgentRun,
+    source_run: Option<crate::host_runs::AgentRun>,
     method: String,
     path: String,
     body: Option<Value>,
@@ -283,7 +283,11 @@ fn without_home(path: &str) -> Result<String, CoordError> {
 fn support_route(request: Request<'_>) -> bool {
     let path = super::super::route(request);
     (request.method == "GET" && path == "/support/grants")
-        || (request.method == "POST" && path == "/support/operations")
+        || (request.method == "POST"
+            && matches!(
+                path,
+                "/support/operations" | crate::peer_support::authority::METADATA_PATH
+            ))
         || (request.method == "GET"
             && path
                 .strip_prefix("/support/operations/")
@@ -438,7 +442,7 @@ pub(super) async fn forward(
     };
     let mut peer = PeerRequest {
         destination_instance_id: home.instance_id.clone(),
-        source_run: run.clone(),
+        source_run: Some(run.clone()),
         method: request.method.into(),
         path,
         body,
@@ -613,6 +617,73 @@ async fn exchange(
         return Err("federation response exceeds limit".into());
     }
     Ok(serde_json::from_slice(&message.payload)?)
+}
+
+/// Admin-authenticated inventory collection uses the existing authenticated
+/// Core NATS connection and request budgets, without selecting an agent run.
+pub(crate) async fn authority_metadata(
+    runtime: &crate::RuntimeState,
+    selected: &crate::peer_support::authority::Owner,
+    query: Value,
+) -> Result<Value, Error> {
+    let client = runtime
+        .read()
+        .map_err(|_| "runtime unavailable")?
+        .coord
+        .clone();
+    let home_name = selected
+        .home
+        .as_deref()
+        .ok_or("remote owner needs a configured home")?;
+    let conn = open_db(&client.owner.data_dir.join("v0.db"), false)
+        .map_err(|_| "metadata route store unavailable")?;
+    let home = trust::home(&conn, home_name)?;
+    if home.instance_id != selected.instance_id {
+        return Err(crate::peer_support::refuse(
+            403,
+            "metadata route identity differs from selected owner",
+        ));
+    }
+    let source = std::fs::read_to_string(client.owner.data_dir.join("instance_id"))?
+        .trim()
+        .to_owned();
+    let before_security = security(&home, &source)?;
+    let _permit = client
+        .owner
+        .federation
+        .requests
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AdmissionFull)?;
+    let connection = client.owner.federation.connect(&home, &source).await?;
+    let peer = PeerRequest {
+        destination_instance_id: selected.instance_id.clone(),
+        source_run: None,
+        method: "POST".into(),
+        path: crate::peer_support::authority::METADATA_PATH.into(),
+        body: Some(query),
+    };
+    let result = exchange(&connection, &home, &source, &peer).await?;
+    if security(&home, &source)? != before_security
+        || trust::home(&conn, home_name)? != home
+        || result["home_instance_id"] != selected.instance_id
+    {
+        return Err(crate::peer_support::refuse(
+            403,
+            "metadata source route or destination identity changed",
+        ));
+    }
+    if result["status"] != 200 {
+        let status = result["status"]
+            .as_u64()
+            .and_then(|s| u16::try_from(s).ok())
+            .unwrap_or(503);
+        return Err(crate::peer_support::refuse(
+            status,
+            "owner authority metadata unavailable",
+        ));
+    }
+    Ok(result["body"].clone())
 }
 
 /// Subscribe before reading B's retained position. There is no network poll
@@ -869,9 +940,9 @@ async fn refuse_peer(
         "phase":phase,"reason":reason,"state":"refused","operation":operation,
         "mutation_outcome":if phase == "post_dispatch" {"response_withheld"} else {"not_attempted"},
         "untrusted_claims":{"destination_instance_id":Some(&peer.destination_instance_id).filter(|id|id.strip_prefix("sy-").is_some_and(valid_wait_id)),
-            "agent_id":Some(&peer.source_run.agent_id).filter(|id| valid_agent_id(id)),
-            "agent_name":Some(&peer.source_run.agent).filter(|name| public_name_part(name)),
-            "run_id":Some(&peer.source_run.run_id).filter(|id| valid_wait_id(id)),"operation_id":operation_id}}).into();
+            "agent_id":peer.source_run.as_ref().map(|run| &run.agent_id).filter(|id| valid_agent_id(id)),
+            "agent_name":peer.source_run.as_ref().map(|run| &run.agent).filter(|name| public_name_part(name)),
+            "run_id":peer.source_run.as_ref().map(|run| &run.run_id).filter(|id| valid_wait_id(id)),"operation_id":operation_id}}).into();
     // Refusals use the existing bounded writer admission and never allocate a
     // persistent obligation per input. Sink failure remains explicit to callers.
     let writer = runtime.read().ok().map(|runtime| runtime.audit.clone());
@@ -904,13 +975,76 @@ async fn receive(
         return reply(instance, 400, json!({"error":"invalid federation request"}));
     };
     let correlation = format!("req-{}", uuid::Uuid::new_v4().simple());
+    if peer.path == crate::peer_support::authority::METADATA_PATH && peer.method == "POST" {
+        if peer.destination_instance_id != instance {
+            return refuse_peer(
+                runtime,
+                (instance, source),
+                &peer,
+                None,
+                &correlation,
+                (
+                    403,
+                    "pre_dispatch",
+                    "destination_mismatch",
+                    "destination instance mismatch; no operation attempted",
+                ),
+            )
+            .await;
+        }
+        let result = crate::peer_support::authority::remote_metadata(
+            runtime,
+            source,
+            credential_hash,
+            peer.source_run.as_ref(),
+            peer.body.clone().unwrap_or(Value::Null),
+        );
+        return match result {
+            Ok(value) => reply(instance, 200, value),
+            Err(error) => {
+                let status = error
+                    .downcast_ref::<crate::peer_support::Refusal>()
+                    .map_or(503, |r| r.status);
+                refuse_peer(
+                    runtime,
+                    (instance, source),
+                    &peer,
+                    None,
+                    &correlation,
+                    (
+                        status,
+                        "pre_dispatch",
+                        "authority_metadata_unavailable",
+                        "authority metadata unavailable or not disclosed to this reader",
+                    ),
+                )
+                .await
+            }
+        };
+    }
+    let Some(run) = peer.source_run.as_ref() else {
+        return refuse_peer(
+            runtime,
+            (instance, source),
+            &peer,
+            None,
+            &correlation,
+            (
+                403,
+                "pre_dispatch",
+                "agent_required",
+                "operator metadata identity cannot execute agent operations",
+            ),
+        )
+        .await;
+    };
     let authentication = open_db(&client.owner.data_dir.join("v0.db"), false)
         .map_err(|_| "identity_store_unavailable")
         .and_then(|conn| {
             let trusted: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM coord_federation_peers WHERE instance_id=?1 AND token_hash=?2 AND enabled=1)",
                 rusqlite::params![source,credential_hash], |row| row.get(0)).map_err(|_| "identity_store_unavailable")?;
             if !trusted { return Err("peer_trust_unavailable"); }
-            trust::authenticate_transport(&conn, source, credential_hash, &peer.source_run.agent_id)
+            trust::authenticate_transport(&conn, source, credential_hash, &run.agent_id)
                 .map_err(|_| "qualified_principal_unavailable")
         });
     // DOC: docs/coord-reference.md, docs/coord-trust-boundary.md
@@ -975,9 +1109,7 @@ async fn receive(
     }
     let mut scoped = client.clone();
     scoped.remote = Some(remote.clone());
-    scoped.request_run = Some(Arc::new(SourceRun::Remote {
-        run: peer.source_run.clone(),
-    }));
+    scoped.request_run = Some(Arc::new(SourceRun::Remote { run: run.clone() }));
     if scoped.bound_current().is_err() {
         return refuse_peer(
             runtime,
@@ -1048,7 +1180,7 @@ async fn receive(
             request,
             runtime,
             crate::peer_support::Caller {
-                run: peer.source_run.clone(),
+                run: run.clone(),
                 remote: Some(remote.clone()),
             },
             payload.as_deref(),
@@ -1059,7 +1191,7 @@ async fn receive(
             request,
             runtime,
             remote.clone(),
-            peer.source_run.clone(),
+            run.clone(),
             payload.as_deref(),
         )
         .await
@@ -1297,7 +1429,7 @@ async fn serve(root: &Path, runtime: &crate::RuntimeState) -> Result<(), Error> 
                     continue;
                 };
                 let cancellation=if waiting {
-                    if let Some((agent,id))=parsed.as_ref().and_then(|peer|Some((peer.source_run.agent_id.clone(),peer.body.as_ref()?["wait_id"].as_str()?.to_owned()))).filter(|(_,id)|valid_wait_id(id)) {
+                    if let Some((agent,id))=parsed.as_ref().and_then(|peer|Some((peer.source_run.as_ref()?.agent_id.clone(),peer.body.as_ref()?["wait_id"].as_str()?.to_owned()))).filter(|(_,id)|valid_wait_id(id)) {
                         let key=ReadWaitId {source:source.instance_id.clone(),agent,id};
                         match client.owner.federation.register_wait(key.clone()) {
                             Ok(registration)=>Some((ActiveReadWait {owner:client.owner.clone(),key},registration)),

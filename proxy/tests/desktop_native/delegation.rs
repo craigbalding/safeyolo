@@ -43,6 +43,7 @@ pub(super) async fn delegate(port: u16, name: &str, mut input: Value) -> (Value,
     let revision = preview["revision"].as_str().unwrap().to_owned();
     input["delegation"] = preview["after"].clone();
     input["delegation"]["acknowledgment"] = json!(revision);
+    input["authority"] = preview["authority"].clone();
     admin(
         port,
         &format!("/admin/approval-delegations/{name}/apply"),

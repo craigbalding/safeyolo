@@ -169,6 +169,7 @@ def test_lifecycle_late_failure_keeps_completed_observations_and_cleanup(tmp_pat
     monkeypatch.setattr(installed_shared_approvals, "apply_fixture_policy", apply_policy)
     real_connection = http.client.HTTPConnection
     delegation_applies = []
+    authority = {"owners": [], "considered": {"report_id": "controlled-lifecycle"}}
     class OperatorReply:
         def __init__(self, *_args, **_kwargs):
             pass
@@ -176,11 +177,12 @@ def test_lifecycle_late_failure_keeps_completed_observations_and_cleanup(tmp_pat
             self.proposal = json.loads(body)
             self.status = 200
             if _path.endswith("/apply"):
+                assert self.proposal["authority"] == authority
                 delegation_applies.append(_path)
                 self.status = 200 if len(delegation_applies) == 1 else 409
         def getresponse(self):
             return SimpleNamespace(status=self.status, read=lambda _limit: json.dumps({
-                "after": self.proposal["delegation"], "acknowledgment": None}).encode())
+                "after": self.proposal["delegation"], "acknowledgment": None, "authority": authority}).encode())
         def close(self):
             pass
     monkeypatch.setattr(installed_shared_approvals.http.client, "HTTPConnection", OperatorReply)
@@ -416,6 +418,7 @@ def test_delegated_clients_wait_for_selected_operator_choices_with_failed_attent
     servers, stopped, choices = [], [], []
     origin_addresses = {}
     records = {}
+    delegation_previews, delegation_applies = {}, []
     coord = {"state": "running", "process": {"client_port": 19422, "monitor_port": 19822}}
     def origin_server(address, handler):
         # Each logical origin retains its own allocated local address and port.
@@ -440,7 +443,15 @@ def test_delegated_clients_wait_for_selected_operator_choices_with_failed_attent
                 return json.dumps(records[arguments[2]])
             assert arguments[:2] == ["approvals", "delegation"]
             proposal = json.loads(Path(arguments[-2]).read_text())
-            return json.dumps({"after": proposal["delegation"], "acknowledgment": "controlled", "revision": "controlled"})
+            name = arguments[3]
+            if arguments[2] == "preview":
+                delegation_previews[name] = {"owners": [], "considered": {"report_id": "controlled-" + name}}
+            else:
+                assert arguments[2] == "apply"
+                assert proposal["authority"] == delegation_previews[name]
+                delegation_applies.append(name)
+            return json.dumps({"after": proposal["delegation"], "acknowledgment": "controlled", "revision": "controlled",
+                               "authority": delegation_previews[name]})
         name, text = command[1:]
         if text.endswith("safeyolo-guest --version"):
             return version
@@ -499,6 +510,7 @@ def test_delegated_clients_wait_for_selected_operator_choices_with_failed_attent
         with pytest.raises(AssertionError, match="different lifetime" if control == "wrong_option" else "attention did not fail"):
             installed_shared_approvals.run(args)
     output = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert delegation_applies == list(delegation_previews)
     pending = [row["observation"] for row in output if row.get("phase") == "client_pending"]
     assert [row["type"] for row in pending] == (["network", "credential", "gateway"] if control == "clean" else ["network"])
     assert pending[0]["origin_hits_before"] == []

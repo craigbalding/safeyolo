@@ -48,6 +48,7 @@ pub(super) fn prepare_grant(name: &str, operation: &str, view: &Value) -> Result
         "initiator":{"kind":"operator","authentication":"admin_bearer"},
         "grant":name,"operation":operation,"revision":view["revision"],
         "previous_revision":view["previous_revision"],"authority":view["after"],
+        "considered_report":view["authority"]["considered"],"authority_recheck":view["authority_recheck"],
         "phase":"policy_transaction","state":"outcome_unknown"})
     .into();
     let value: Value = serde_json::from_str(&event.encode_at(time::OffsetDateTime::now_utc())?)?;

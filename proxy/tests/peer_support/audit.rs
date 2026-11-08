@@ -102,6 +102,7 @@ async fn support_grant_cannot_save_without_a_durable_audit_obligation() {
         .json();
     input["grant"] = preview["after"].clone();
     input["grant"]["acknowledgment"] = preview["acknowledgment"].clone();
+    input["authority"] = preview["authority"].clone();
     let result = f
         .admin("POST", "/admin/support-grants/incident/apply", Some(input))
         .await;
@@ -133,6 +134,7 @@ async fn support_grant_audit_survives_owner_termination_before_delivery() {
             .json();
         input["grant"] = preview["after"].clone();
         input["grant"]["acknowledgment"] = preview["acknowledgment"].clone();
+        input["authority"] = preview["authority"].clone();
         let audit_lock = fs::OpenOptions::new()
             .create(true)
             .truncate(false)

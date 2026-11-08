@@ -5,6 +5,9 @@ use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
 #[path = "support_audit.rs"]
 mod audit;
 
+#[path = "support_authority.rs"]
+mod authority;
+
 pub(super) fn instance(root: &Path) -> String {
     fs::read_to_string(root.join("data/instance_id"))
         .unwrap()
@@ -47,6 +50,7 @@ pub(super) async fn apply(root: &Path, name: &str, mut proposal: Value) -> Value
     .await;
     proposal["grant"] = preview["after"].clone();
     proposal["grant"]["acknowledgment"] = preview["acknowledgment"].clone();
+    proposal["authority"] = preview["authority"].clone();
     fs::write(&path, proposal.to_string()).unwrap();
     host_json(
         root,

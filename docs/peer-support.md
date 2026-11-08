@@ -31,9 +31,12 @@ credentials, network and service permissions, Agent API access and existing
 delegations. If the target can administer another agent or decide approvals,
 the support agent can exercise those powers through the target. A standing
 grant follows capabilities subsequently given to the target. Controlling an
-approval reviewer removes independence from that reviewer. The preview names
-known approval and support delegations; it does not calculate recursive reach
-or prohibit these combinations.
+approval reviewer removes independence from that reviewer. The preview calculates
+upstream and downstream guest control from metadata disclosed by the selected
+owners. Other permissions remain typed effects. The report identifies common
+control of beneficiaries and reviewers and names the deciding scope. A controlled
+reviewer does not confer guest administration of its beneficiaries. The report
+informs the operator's choice and does not prohibit combinations.
 
 Guest administration can read and change secrets present in the target. It
 can also use the target's authorized service-gateway permissions. The outer
@@ -103,7 +106,7 @@ that exact preview and apply the grant named `incident`:
 
 ```sh
 safeyolo --root "$ROOT" support preview incident --file support.json --json > preview.json
-jq --slurpfile preview preview.json '.grant = $preview[0].after | .grant.acknowledgment = $preview[0].acknowledgment' support.json > acknowledged.json
+jq --slurpfile preview preview.json '.grant = $preview[0].after | .grant.acknowledgment = $preview[0].acknowledgment | .authority = $preview[0].authority' support.json > acknowledged.json
 safeyolo --root "$ROOT" support apply incident --file acknowledged.json --json
 ```
 
@@ -131,6 +134,165 @@ Repair choices remain independent. For `needs_operator`, also select named
 rooms. Read the [event meanings, source rights and loss behavior](operational-events.md)
 before selecting notices. Removing a kind stops new notices; an already
 retained reference still requires current observation and source disclosure.
+
+## Inspect upstream and downstream authority
+
+On the operator host, select the instances whose authority you intend to inspect.
+Use independently initialized instance IDs. Configure existing authenticated
+Transport Layer Security (TLS) NATS `home` routes from the instance that will
+collect the report. A route names a destination; it does not authorize disclosure.
+No full mesh is required. Querying every selected owner can find a grant that
+its holder's home or outbound-route inventory has forgotten.
+
+Each destination operator must explicitly disclose authority metadata to the
+actual reader. Trust, room membership and support repair authority do not imply
+this disclosure. On each destination, inspect its existing peer trust epoch with
+that installation's native CLI (substitute its actual executable path):
+
+```sh
+/srv/destination-safeyolo/bin/safeyolo --root "$DESTINATION_ROOT" coord federation peers
+```
+
+In that destination's `policy.toml`, add a reader selection using the collector's
+instance ID and the destination's current trust epoch. This example permits the
+collector's authenticated operator to read all modeled authority on that owner.
+Replace the example ID and epoch with the values just inspected:
+
+```toml
+[[authority_readers]]
+instance_id = "sy-11111111111111111111111111111111"
+peer_epoch = 1
+all_agents = true
+agent_ids = []
+```
+
+Omitting `agent_id` selects the operator authenticated by the source Admin API.
+To authorize one agent instead, set `agent_id` to its durable ID. That reader needs
+no unrelated room membership or repair grant. The source API binds the current
+reader run; the destination binds its instance and ID to this disclosure.
+For a local agent reader, use the local instance ID and omit `peer_epoch`.
+Authorized agents read `POST /support/authority/metadata`, adding `?home=NAME`
+for an existing remote route. The body selects `after` (initially 0) and an
+optional `revision`. For a continuation, send `next_after` and the first page's
+revision as `after` and `revision`.
+An optional `expires_at` limits disclosure. Revocation or re-trust does not revive
+a reader selection made in an earlier epoch.
+
+For selective disclosure, set `all_agents = false` and list the owner's durable
+subjects in `agent_ids`. The response includes incoming support permissions for
+those subjects and their relevant deciding scopes and service permissions.
+A selected reviewer discloses its deciding scopes and beneficiaries. Selecting
+a beneficiary discloses the relevant reviewers and that beneficiary's scopes.
+Unselected subjects and unrelated configuration remain private. Scoped disclosure
+is partial coverage; it cannot establish absence of other authority. Remove the
+selection to revoke future metadata reads. Already disclosed metadata cannot be
+retracted.
+
+Add an explicit `authority.owners` inventory to the support proposal. The following
+shape selects the proposal owner locally and three existing remote routes. Replace
+the IDs and route names with the instances and routes you intend to inspect:
+
+```json
+"authority": {
+  "owners": [
+    {"instance_id": "sy-11111111111111111111111111111111", "home": "upstream"},
+    {"instance_id": "sy-22222222222222222222222222222222", "home": "support-home"},
+    {"instance_id": "sy-33333333333333333333333333333333", "home": null},
+    {"instance_id": "sy-44444444444444444444444444444444", "home": "reviewer-home"}
+  ]
+}
+```
+
+For example, A:ops already administers B:helper. You propose B:helper administration
+of C:codey. C:codey already administers D:reviewer. The report shows B's new reach
+through C into D and A's new reach through B, C and D. D supplies its own revisioned
+deciding scopes. Inspection, exact guest-log paths, lifecycle actions, notifications,
+factory/snapshot/recipient/direction selections, approval scopes, service use and
+issued permissions keep their distinct types. Only current `guest_admin` facts
+extend guest control. Supporting paths retain the identity and revision of every
+owner-held hop. Names are labels; `(instance_id, agent_id)` identifies an agent.
+
+The ordinary preview command prints an impact summary. With `--json`, inspect
+`authority.considered`: `snapshots` contains owner facts and durable bindings;
+`before`, `after`, `added`, `removed` and `remaining` contain reach and supporting
+fact paths and readable `explanation` paths. Each view's `common_control` names
+the controller, beneficiary, reviewer, deciding fact and paths to both agents.
+The deciding fact distinguishes a future eligible
+approval from an already issued permission and retains issuance restrictions.
+Configured actor checks still apply.
+
+`added` and `removed` compare exact typed scope descriptions. A changed scope
+appears on both sides. These counts do not establish an authority increase or
+complete revocation; inspect the before/after scope and remaining paths.
+
+Omitting the inventory selects only the local owner. Referenced unselected owners
+remain explicit gaps. Discovery never expands trust, adds readers, impersonates
+an inspected agent, distributes broker credentials, executes guest commands or
+decides an approval.
+
+To refresh an existing grant on its owning instance, save the same `owners` array
+as the top-level field of `inventory.json`. The following command reads current
+metadata and does not change the grant:
+
+```sh
+safeyolo --root "$ROOT" support report incident --file inventory.json --json > report.json
+```
+
+Set `remove: true` beside `owners` to preview revocation. The report shows remaining
+alternative paths. A removed edge does not imply that all access disappears.
+Narrowing, expiry, replacement and re-trust also affect only the paths whose
+current facts no longer permit them.
+
+Each report ID binds the proposal, inventory, collection interval, per-owner
+coverage and evidence. Owner revisions bind their typed facts and durable
+bindings. Observation and collection times use Unix milliseconds. Pages from a
+changed owner are discarded and reported as inconsistent or stale. Collection
+is not globally atomic; another owner can change immediately after observation.
+The implementation keeps no historical policy replica or cross-network polling
+loop.
+
+Apply the `after` grant, its acknowledgment and the returned `authority` together,
+as in the preview example. Apply recollects the selected owners. If known facts,
+coverage or the proposal changed, HTTP 409 returns a refreshed preview for
+inspection and acknowledgment. The local policy transaction checks local evidence
+again. The canonical preview and grant audit records identify the considered
+report and the apply-time coverage. The report creates no permanent condition
+on the saved grant and no recurring approval for routine operations.
+Approval-delegation previews use this same owner-backed report and accept the
+same optional owner inventory in their proposal's `authority` field.
+
+Collection permits at most 16 selected owners, 64 page requests, 32 facts per
+page, 64 KiB per page, 2 seconds per remote page and 10 seconds overall.
+Metadata reads accept at most 4 MiB of policy source and 32 KiB per definition;
+a definition or collection budget overflow produces partial coverage. It retains
+at most 2,048 facts. Traversal visits qualified identities, with at most 50,000
+steps and 32 control hops per before/after view. Output retains at most 128
+effects and 64 common-control relationships per view, within a 512 KiB report.
+If an analysis budget is reached, `added` and `removed` are null and change
+totals are unknown; retained before/after paths remain inspectable. This partial
+report can still be acknowledged and applied by the operator. One supporting
+path per effect is sufficient. A reached bound, refused disclosure, missing owner,
+inconsistent page or unreachable route means additional reach is unknown. It never means
+there is no authority or that a reviewer is independent.
+
+Standing authority is separate from execution availability. `bindings.execution`
+shows whether the owner verified a current host run binding; it does not probe
+a guest action. `configured_destinations` names known source-side routes when
+full disclosure permits that read. These observations do not invalidate an
+unchanged standing-authority revision. Selected-owner coverage still records
+unreachable routes and refused disclosure as unknown. A missing run, route, broker or credential
+can prevent execution without erasing the grant. Later capabilities given to a
+controlled target can intentionally expand standing authority.
+
+The report models declared SafeYolo guest control and scoped approval composition.
+It includes known shared writable-data warnings from the owner's existing metadata.
+It does not exhaustively analyze guest programs, arbitrary files, external APIs
+or undeclared owners. Host gateway injection permits scoped credential **use**;
+it does not expose the host vault's credential values. A secret copied into a
+guest-readable file or writable mount is within guest administration and may also
+be exposed through a selected log path's links. Unknown owners and unmodeled
+influence prevent a fleet-wide claim of completeness or reviewer independence.
+The operator retains the grant decision.
 
 ## Investigate and repair
 

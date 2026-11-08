@@ -113,6 +113,7 @@ async fn delegate(fixture: &Fixture, mut input: Value) -> (Value, String) {
     let revision = preview.json()["revision"].as_str().unwrap().to_owned();
     input["delegation"] = preview.json()["after"].clone();
     input["delegation"]["acknowledgment"] = json!(revision);
+    input["authority"] = preview.json()["authority"].clone();
     let applied = fixture
         .admin(
             "POST",
@@ -122,6 +123,45 @@ async fn delegate(fixture: &Fixture, mut input: Value) -> (Value, String) {
         .await;
     assert_eq!(applied.status, 200, "{}", applied.json());
     (input, revision)
+}
+
+#[tokio::test]
+async fn approval_preview_shows_scoped_deciding_effects_without_inventing_guest_control() {
+    let f = Fixture::new().await;
+    let _backend = Backend(runs(&f));
+    let preview = f
+        .admin(
+            "POST",
+            "/admin/approval-delegations/local/preview",
+            Some(proposal(&f)),
+        )
+        .await
+        .json();
+    let report = &preview["authority"]["considered"];
+    let proposed = report["proposed_facts"].as_array().unwrap();
+    assert!(
+        report["after"]["effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|effect| proposed
+                .iter()
+                .any(|fact| fact["fact_id"] == effect["fact_id"]
+                    && fact["capability"]["type"] == "approval_decision"
+                    && fact["capability"]["scopes"][0]["ports"] == json!([f.address.port()])))
+    );
+    assert!(
+        report["after"]["common_control"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        proposed
+            .iter()
+            .all(|fact| fact["capability"]["type"] != "guest_admin")
+    );
+    f.stop().await;
 }
 async fn decide(f: &Fixture, reviewer: &str, id: &str, decision: &str, option: &str) -> Reply {
     f.agent(
@@ -350,6 +390,7 @@ async fn reciprocal_warning_changes_require_a_new_acknowledgment() {
     let mut stale = forward.clone();
     stale["delegation"] = preview["after"].clone();
     stale["delegation"]["acknowledgment"] = preview["revision"].clone();
+    stale["authority"] = preview["authority"].clone();
 
     let mut reverse = proposal(&f);
     reverse["delegation"]["reviewers"] = forward["delegation"]["beneficiaries"].clone();
@@ -366,6 +407,7 @@ async fn reciprocal_warning_changes_require_a_new_acknowledgment() {
     assert!(!checked["warnings"].to_string().contains("reciprocal"));
     reverse["delegation"] = checked["after"].clone();
     reverse["delegation"]["acknowledgment"] = checked["revision"].clone();
+    reverse["authority"] = checked["authority"].clone();
     assert_eq!(
         f.admin(
             "POST",
@@ -424,6 +466,7 @@ async fn reciprocal_warning_changes_require_a_new_acknowledgment() {
     assert_eq!(checked.status, 200, "{}", checked.json());
     reverse["delegation"] = checked.json()["after"].clone();
     reverse["delegation"]["acknowledgment"] = checked.json()["revision"].clone();
+    reverse["authority"] = checked.json()["authority"].clone();
     assert_eq!(
         f.admin(
             "POST",
@@ -846,6 +889,28 @@ async fn delegated_gateway_once_reserves_consumes_and_keeps_service_authorizatio
         200
     );
     let approved = assert_grant_readback(&f, &id, "delegated_once", true).await;
+    let inspected = f
+        .admin(
+            "POST",
+            "/admin/approval-delegations/inspection/preview",
+            Some(proposal(&f)),
+        )
+        .await;
+    assert_eq!(inspected.status, 200, "{}", inspected.json());
+    let report = inspected.json();
+    assert!(
+        report["authority"]["considered"]["snapshots"][0]["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|fact| fact["source_type"] == "gateway_grant"
+                && fact["current"] == true
+                && fact["capability"]["permission"]["service"] == "fixture"
+                && fact["capability"]["permission"]["method"] == "POST"
+                && fact["capability"]["permission"]["path"] == "/write"
+                && fact["holder"]["agent_id"] == WORKER_ID)
+    );
+    assert!(!report.to_string().contains(token));
     // Read the current service view before retrying the approved route.
     let current = f
         .agent("worker", "GET", "/gateway/services", None)
@@ -1234,6 +1299,7 @@ async fn network_decision_cannot_union_two_partial_delegations() {
         .json();
     two["delegation"] = preview["after"].clone();
     two["delegation"]["acknowledgment"] = preview["revision"].clone();
+    two["authority"] = preview["authority"].clone();
     assert_eq!(
         f.admin("POST", "/admin/approval-delegations/other/apply", Some(two))
             .await
@@ -1657,6 +1723,7 @@ async fn native_operator_and_reviewer_clients_use_the_canonical_resolver() {
     );
     input["delegation"] = preview["after"].clone();
     input["delegation"]["acknowledgment"] = preview["revision"].clone();
+    input["authority"] = preview["authority"].clone();
     fs::write(&proposal_file, input.to_string()).unwrap();
     assert!(
         native(

@@ -66,6 +66,16 @@ Unknown effects remain explicit. Port 443, GET and a capability name do not
 establish business safety. Known worker write paths into reviewer startup files
 are warnings. A shared source workspace alone does not imply such a path.
 
+The `authority.considered` report uses the same owner-backed calculation as
+[support previews](peer-support.md#inspect-upstream-and-downstream-authority).
+Select an explicit `authority.owners` inventory to inspect other owners through
+their authenticated NATS routes and destination-approved disclosure. Omission
+selects local coverage. The report shows typed deciding effects, supporting
+paths, common controllers and unknown boundaries. Partial coverage cannot
+establish reviewer independence. Apply recollects the evidence; a changed report
+returns HTTP 409 for inspection and acknowledgment. The report does not become
+a permanent condition on the delegation or its runtime permissions.
+
 After inspecting these findings, create the apply input from the host's `after`
 projection. This keeps its definition revisions and acknowledges this specific
 proposal. The following command changes only the local proposal file:
@@ -78,6 +88,7 @@ original = json.loads(Path('proposal.json').read_text())
 preview = json.loads(Path('preview.json').read_text())
 original['delegation'] = preview['after']
 original['delegation']['acknowledgment'] = preview['acknowledgment']
+original['authority'] = preview['authority']
 Path('proposal.json').write_text(json.dumps(original, indent=2) + '\n')
 PY
 safeyolo --root ROOT approvals delegation apply local --file proposal.json --json
