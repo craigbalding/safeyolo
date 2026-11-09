@@ -23,6 +23,46 @@ async fn command(root: &Path, args: &[&str]) -> Result<Value, Error> {
     run(root, &args.iter().map(|s| (*s).into()).collect::<Vec<_>>()).await
 }
 
+#[test]
+fn tls_route_upgrade_preserves_route_and_instance_state() {
+    let root = fixture();
+    let path = root.path();
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let ca = path.join("ca.pem");
+    fs::write(&ca, cert.cert.pem()).unwrap();
+    let conn = open(path).unwrap();
+    conn.execute_batch("DROP TABLE coord_federation_homes;
+        CREATE TABLE coord_federation_homes(name TEXT PRIMARY KEY,instance_id TEXT NOT NULL,url TEXT NOT NULL,ca_file TEXT NOT NULL,token_file TEXT NOT NULL,revision TEXT NOT NULL);").unwrap();
+    conn.execute("INSERT INTO coord_federation_homes VALUES('primary','sy-owner','tls://localhost',?1,'/host/credential','retained-revision')",[ca.to_str().unwrap()]).unwrap();
+    conn.pragma_update(None, "user_version", 11).unwrap();
+    drop(conn);
+    bootstrap(path).unwrap();
+    let route = home(&open(path).unwrap(), "primary").unwrap();
+    assert_eq!(route.instance_id, "sy-owner");
+    assert_eq!(route.url, "tls://localhost");
+    assert_eq!(route.revision, "retained-revision");
+    assert_eq!(route.mode, endpoint::Mode::Tls);
+    assert_eq!(
+        route.ca_sha256,
+        Some(tls_material::trust_hash(&ca).unwrap())
+    );
+    fs::write(&ca, format!("\n{}\n{}", cert.cert.pem(), cert.cert.pem())).unwrap();
+    assert_eq!(
+        route.ca_sha256,
+        Some(tls_material::trust_hash(&ca).unwrap())
+    );
+    assert_eq!(
+        open(path)
+            .unwrap()
+            .query_row("SELECT room_id FROM rooms WHERE name='shared'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
+        "rm-shared"
+    );
+    route.endpoint().origin().unwrap();
+}
+
 #[tokio::test]
 async fn qualified_identity_peer_epochs_and_membership_replay_preserve_authority() {
     let root = fixture();

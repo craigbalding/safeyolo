@@ -18,6 +18,7 @@ const MAX_PEER_WAITS: usize = 8;
 
 struct Cached {
     destination: String,
+    endpoint: trust::endpoint::Endpoint,
     used: tokio::time::Instant,
     connection: Arc<OnceCell<async_nats::Client>>,
 }
@@ -56,29 +57,23 @@ impl Default for Connections {
 
 fn security(home: &trust::Home, source: &str) -> Result<String, Error> {
     let credential = trust::token(&home.token_file)?;
-    let ca = std::fs::read(&home.ca_file)?;
     Ok(crate::approvals::pending::digest(&json!([
         source,
         home.instance_id,
-        home.url,
+        home.endpoint().security()?,
         home.revision,
-        trust::nats::subject_token(credential.trim()),
-        hash_hex(&ca)
+        trust::nats::subject_token(credential.trim())
     ])))
 }
 
-fn hash_hex(bytes: &[u8]) -> String {
-    ring::digest::digest(&ring::digest::SHA256, bytes)
-        .as_ref()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-
 impl Connections {
-    fn options(&self, destination: String) -> async_nats::ConnectOptions {
+    pub(super) fn options(
+        &self,
+        destination: String,
+        options: async_nats::ConnectOptions,
+    ) -> async_nats::ConnectOptions {
         let events = self.events.clone();
-        async_nats::ConnectOptions::new().event_callback(move |event| {
+        options.event_callback(move |event| {
             let (events, destination) = (events.clone(), destination.clone());
             async move {
                 // Error text may contain authored subjects or credentials.
@@ -130,6 +125,7 @@ impl Connections {
                 .entry(key.clone())
                 .or_insert_with(|| Cached {
                     destination: home.instance_id.clone(),
+                    endpoint: home.endpoint(),
                     used: tokio::time::Instant::now(),
                     connection: Arc::new(OnceCell::new()),
                 })
@@ -142,11 +138,9 @@ impl Connections {
         };
         let connection = cell
             .get_or_try_init(|| async {
-                let result = trust::nats::connect_with_options(
-                    home,
-                    source,
-                    self.options(home.instance_id.clone()),
-                )
+                let result = trust::nats::connect_with_options(home, source, |options| {
+                    self.options(home.instance_id.clone(), options)
+                })
                 .await;
                 if result.is_err() {
                     self.delivery_failures.fetch_add(1, Ordering::Relaxed);
@@ -199,7 +193,7 @@ impl Connections {
 
     pub(super) async fn diagnostics(&self) -> Value {
         let cache = self.cache.lock().await;
-        let connections: Vec<_> = cache.values().map(|entry| json!({"instance_id":entry.destination,
+        let connections: Vec<_> = cache.values().map(|entry| json!({"instance_id":entry.destination,"endpoint":entry.endpoint,
             "state":entry.connection.get().map(|client|format!("{:?}", client.connection_state())).unwrap_or_else(||"connecting".into())})).collect();
         json!({"connections":connections,"connection_count":cache.len(),
             "active_read_waits":self.read_waits.lock().map(|waits|waits.len()).unwrap_or(0),
@@ -975,6 +969,24 @@ async fn receive(
         return reply(instance, 400, json!({"error":"invalid federation request"}));
     };
     let correlation = format!("req-{}", uuid::Uuid::new_v4().simple());
+    if peer.path == "/federation/check" && peer.method == "GET" {
+        let trusted = open_db(&client.owner.data_dir.join("v0.db"),false).and_then(|conn| {
+            conn.query_row("SELECT EXISTS(SELECT 1 FROM coord_federation_peers WHERE instance_id=?1 AND token_hash=?2 AND enabled=1)",rusqlite::params![source,credential_hash],|row|row.get::<_,bool>(0)).map_err(|_|CoordError::Unavailable)
+        }).unwrap_or(false);
+        return if peer.destination_instance_id == instance && trusted {
+            reply(
+                instance,
+                200,
+                json!({"instance_id":instance,"source_instance_id":source,"peer_trust":"current","operation_permission":"not_checked"}),
+            )
+        } else {
+            reply(
+                instance,
+                403,
+                json!({"error":"destination or current peer trust mismatch; no operation attempted"}),
+            )
+        };
+    }
     if peer.path == crate::peer_support::authority::METADATA_PATH && peer.method == "POST" {
         if peer.destination_instance_id != instance {
             return refuse_peer(
@@ -1373,17 +1385,27 @@ async fn serve(root: &Path, runtime: &crate::RuntimeState) -> Result<(), Error> 
     let instance = std::fs::read_to_string(root.join("data/instance_id"))?
         .trim()
         .to_owned();
-    let password = trust::token(&client.owner.data_dir.join("nats/federation-creds"))?;
     let (url, options) = trust::nats::local_options(
         &client.owner.data_dir,
         client.nats_url(),
-        client.owner.federation.options("owner".into()),
-    )?;
-    let connection = options
-        .user_and_password("safeyolo-federation".into(), password.trim().into())
-        .connection_timeout(Duration::from_secs(2))
+        "safeyolo-federation".into(),
+        client.owner.data_dir.join("nats/federation-creds"),
+    )
+    .await?;
+    let connection = client
+        .owner
+        .federation
+        .options("owner".into(), options)
         .connect(url)
         .await?;
+    *client
+        .owner
+        .owner_federation_endpoint
+        .lock()
+        .map_err(|_| "owner NATS state unavailable")? = Some(trust::nats::local_endpoint(
+        &client.owner.data_dir,
+        client.nats_url(),
+    )?);
     let mut requests = connection
         .subscribe(format!(
             "SY_FED.request.{}.*",

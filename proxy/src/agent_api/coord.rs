@@ -119,6 +119,8 @@ pub(crate) struct CoordOwner {
     explicit_directory: bool,
     nats: tokio::sync::Mutex<Option<async_nats::Client>>,
     federation_nats: tokio::sync::Mutex<Option<async_nats::Client>>,
+    local_endpoint: StdMutex<Option<crate::coord_rooms::federation::endpoint::Endpoint>>,
+    owner_federation_endpoint: StdMutex<Option<crate::coord_rooms::federation::endpoint::Endpoint>>,
     federation: federation::Connections,
     cleanup: Arc<CoordCleanup>,
     snapshot_reads: Arc<inventory::SnapshotReads>,
@@ -147,6 +149,8 @@ impl CoordOwner {
             explicit_directory,
             nats: tokio::sync::Mutex::new(None),
             federation_nats: tokio::sync::Mutex::new(None),
+            local_endpoint: StdMutex::new(None),
+            owner_federation_endpoint: StdMutex::new(None),
             federation: federation::Connections::default(),
             cleanup: Arc::new(CoordCleanup::new()),
             snapshot_reads: Arc::new(inventory::SnapshotReads::default()),
@@ -383,6 +387,18 @@ impl CoordClient {
                 .as_ref()
                 .map(|client| format!("{:?}", client.connection_state()))
         );
+        diagnostics["local_endpoint"] = self
+            .owner
+            .local_endpoint
+            .lock()
+            .map(|endpoint| json!(*endpoint))
+            .unwrap_or(Value::Null);
+        diagnostics["owner_federation_endpoint"] = self
+            .owner
+            .owner_federation_endpoint
+            .lock()
+            .map(|endpoint| json!(*endpoint))
+            .unwrap_or(Value::Null);
         Ok(diagnostics)
     }
 
@@ -400,39 +416,39 @@ impl CoordClient {
             };
         }
         let client = self
-            .connect_nats(async_nats::ConnectOptions::new())
+            .connect_nats()
             .await
             .map_err(|_| CoordError::Unavailable)?;
         *current = Some(client.clone());
         Ok(client)
     }
 
-    pub(crate) async fn connect_nats(
-        &self,
-        options: async_nats::ConnectOptions,
-    ) -> Result<async_nats::Client, crate::Error> {
+    pub(crate) async fn connect_nats(&self) -> Result<async_nats::Client, crate::Error> {
         let url = self.nats_url();
-        let password = std::fs::read(self.owner.data_dir.join("nats/creds"))
-            .map_err(|_| "NATS credentials unavailable")?;
-        let password = std::str::from_utf8(&password)
-            .map_err(|_| "NATS credentials unavailable")?
-            .trim()
-            .to_owned();
-        if password.is_empty() {
-            return Err("NATS credentials unavailable".into());
-        }
         let (url, options) = crate::coord_rooms::federation::nats::local_options(
             &self.owner.data_dir,
             url,
-            options,
+            NATS_USER.to_owned(),
+            self.owner.data_dir.join("nats/creds"),
+        )
+        .await?;
+        let endpoint = crate::coord_rooms::federation::nats::local_endpoint(
+            &self.owner.data_dir,
+            url.clone(),
         )?;
-        let client = options
-            .user_and_password(NATS_USER.to_owned(), password)
-            .connection_timeout(Duration::from_secs(2))
+        let client = self
+            .owner
+            .federation
+            .options("local".into(), options)
             .request_timeout(Some(Duration::from_secs(2)))
             .connect(url)
             .await
             .map_err(|_| "NATS connection unavailable")?;
+        *self
+            .owner
+            .local_endpoint
+            .lock()
+            .map_err(|_| "local NATS state unavailable")? = Some(endpoint);
         Ok(client)
     }
 

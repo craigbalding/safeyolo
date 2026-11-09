@@ -3,9 +3,13 @@ use super::*;
 use crate::agent_api::coord::{public_name_part, valid_agent_id};
 use rustls::pki_types::pem::PemObject;
 use serde::{Deserialize, Serialize};
+pub(crate) mod configuration;
+pub(crate) mod endpoint;
 pub(crate) mod nats;
+mod tailscale;
+pub(crate) mod tls_material;
 
-pub(crate) const HELP: &str = "safeyolo [--root ROOT] coord federation peers\nsafeyolo [--root ROOT] coord federation credential PATH\nsafeyolo [--root ROOT] coord federation trust INSTANCE TOKEN_FILE\nsafeyolo [--root ROOT] coord federation revoke INSTANCE\nsafeyolo [--root ROOT] coord federation member ROOM INSTANCE AGENT_ID DISPLAY_NAME [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--root ROOT] coord federation unmember ROOM INSTANCE AGENT_ID [--operation-id ID]\nsafeyolo [--root ROOT] coord federation home NAME INSTANCE TLS_NATS_URL CA_FILE TOKEN_FILE\nsafeyolo [--root ROOT] coord federation unhome NAME\n\nConfigure the destination's host-held coord-federation.json before starting its managed NATS and proxy. It selects an authenticated TLS NATS listener and scoped peer subjects in SY_FED. SY_LOCAL has no exports. Core request/reply carries defined Coord and support operations; JetStream retains selected notification hints. Guests use only their local Agent API. Trust alone grants neither room nor target access. Remote support grants register qualified managers without a room. revoke disables the peer and revokes memberships; re-trust restores neither memberships nor old target grants. Omitted home remains local. There is no HTTPS federation listener or fallback.";
+pub(crate) const HELP: &str = "safeyolo [--root ROOT] coord federation peers\nsafeyolo [--root ROOT] coord federation credential PATH\nsafeyolo [--root ROOT] coord federation trust INSTANCE TOKEN_FILE\nsafeyolo [--root ROOT] coord federation revoke INSTANCE\nsafeyolo [--root ROOT] coord federation member ROOM INSTANCE AGENT_ID DISPLAY_NAME [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--root ROOT] coord federation unmember ROOM INSTANCE AGENT_ID [--operation-id ID]\nsafeyolo [--root ROOT] coord federation home NAME INSTANCE [tls] TLS_NATS_URL CA_FILE TOKEN_FILE [--rotate-trust]\nsafeyolo [--root ROOT] coord federation home NAME INSTANCE tailscale NATS_IP_URL NODE_ID TOKEN_FILE\nsafeyolo [--root ROOT] coord federation home NAME INSTANCE loopback NATS_IP_URL TOKEN_FILE\nsafeyolo [--root ROOT] coord federation unhome NAME\nsafeyolo [--root ROOT] coord federation broker check|apply FILE [--rotate-trust]\nsafeyolo [--root ROOT] coord federation check [HOME]\n\nConfigure the destination's host-held coord-federation.json before starting its managed NATS and proxy. Select mode tls (default), tailscale or loopback. TLS requires dedicated cert_file, key_file, ca_file and local_server_name; server_names lists additional certificate names to validate. Tailscale requires a literal listen address assigned to this host's selected tailscale_node stable ID. Loopback requires a literal loopback listen address. Remove TLS-only fields for non-TLS modes. Monitoring stays on loopback.\nBroker check validates supplied material without saving. Broker apply saves configuration, reports trust changes and requires an owned Coord/proxy restart; it does not claim activation. Leaf renewal under the same CA retains credentials and grants. CA rotation requires --rotate-trust; update client routes explicitly. Credential rotation through trust advances the existing peer generation; old support and approval grants do not regain authority. Check separates configured/active endpoints, protection, broker authentication, owner reachability and notification stream availability. It does not grant or prove operation permission.\nCredentials stay host-held. Peers have scoped SY_FED subjects; SY_LOCAL has no exports. Selected Tailscale node identity, host route and WireGuard reachability are checked before credentials on initial connections and reconnects. Broker advertisements cannot add destinations. Subnet-router onward legs require TLS. There is no mode fallback. Tailnet membership grants no instance or agent authority. Guests use only their local Agent API. Trust alone grants neither room nor target access. revoke disables the peer and revokes memberships; re-trust restores neither memberships nor old target grants. Omitted home remains local. NATS remains the only inter-instance transport.";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct RemoteAgent {
@@ -23,6 +27,23 @@ pub(crate) struct Home {
     pub ca_file: PathBuf,
     pub token_file: PathBuf,
     pub revision: String,
+    #[serde(default)]
+    pub mode: endpoint::Mode,
+    #[serde(default)]
+    pub tailscale_node: Option<String>,
+    pub ca_sha256: Option<String>,
+}
+
+impl Home {
+    pub fn endpoint(&self) -> endpoint::Endpoint {
+        endpoint::Endpoint {
+            mode: self.mode,
+            url: self.url.clone(),
+            ca_file: (self.mode == endpoint::Mode::Tls).then(|| self.ca_file.clone()),
+            ca_sha256: self.ca_sha256.clone(),
+            tailscale_node: self.tailscale_node.clone(),
+        }
+    }
 }
 
 pub(crate) fn principal(instance: &str, agent: &str) -> String {
@@ -170,8 +191,8 @@ pub(crate) fn authorize(conn: &Connection, remote: &RemoteAgent) -> Result<(), E
 
 pub(crate) fn home(conn: &Connection, name: &str) -> Result<Home, Error> {
     conn.query_row(
-        "SELECT instance_id,url,ca_file,token_file,revision FROM coord_federation_homes WHERE name=?1", [name],
-        |r| Ok(Home { instance_id:r.get(0)?,url:r.get(1)?,ca_file:PathBuf::from(r.get::<_,String>(2)?),token_file:PathBuf::from(r.get::<_,String>(3)?),revision:r.get(4)? }),
+        "SELECT instance_id,url,ca_file,token_file,revision,mode,tailscale_node,trust_hash FROM coord_federation_homes WHERE name=?1", [name],
+        |r| Ok(Home { instance_id:r.get(0)?,url:r.get(1)?,ca_file:PathBuf::from(r.get::<_,String>(2)?),token_file:PathBuf::from(r.get::<_,String>(3)?),revision:r.get(4)?, mode: match r.get::<_,String>(5)?.as_str() { "tls"=>endpoint::Mode::Tls,"tailscale"=>endpoint::Mode::Tailscale,"loopback"=>endpoint::Mode::Loopback,_=>return Err(rusqlite::Error::InvalidQuery) },tailscale_node:r.get(6)?,ca_sha256:r.get(7)? }),
     ).map_err(Into::into)
 }
 
@@ -187,6 +208,9 @@ pub(crate) async fn run(root: &Path, arguments: &[String]) -> Result<Value, Erro
         return Ok(Value::Null);
     }
     bootstrap(root)?;
+    if let Some(result) = configuration::run(root, arguments).await? {
+        return Ok(result);
+    }
     let mut conn = open(root)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let (arguments, operation_id) = match arguments {
@@ -230,7 +254,12 @@ pub(crate) async fn run(root: &Path, arguments: &[String]) -> Result<Value, Erro
                 return Err("federation peers require distinct credentials".into());
             }
             tx.execute("INSERT INTO coord_federation_peers VALUES(?1,?2,1,1) ON CONFLICT(instance_id) DO UPDATE SET token_hash=excluded.token_hash,epoch=CASE WHEN enabled=1 AND token_hash=excluded.token_hash THEN epoch ELSE epoch+1 END,enabled=1",params![instance,digest])?;
-            json!({"instance_id":instance,"trusted":true})
+            let epoch: i64 = tx.query_row(
+                "SELECT epoch FROM coord_federation_peers WHERE instance_id=?1",
+                [instance],
+                |row| row.get(0),
+            )?;
+            json!({"instance_id":instance,"trusted":true,"epoch":epoch,"activation":"If broker credentials changed, restart this instance's Coord and proxy after updating the scoped broker peer file. Support and approval grants from a previous trust generation remain invalid; explicitly grant current authority where required."})
         }
         [command, instance] if command == "revoke" => {
             tx.execute("UPDATE coord_federation_peers SET enabled=0,epoch=epoch+1 WHERE instance_id=?1 AND enabled=1",[instance])?;
@@ -296,31 +325,37 @@ pub(crate) async fn run(root: &Path, arguments: &[String]) -> Result<Value, Erro
             }
             result
         }
-        [command, name, instance, url, ca, credential] if command == "home" => {
+        [command, name, instance, rest @ ..] if command == "home" => {
             if !public_name_part(name) {
                 return Err("invalid home name".into());
             }
-            let uri: hyper::Uri = url.parse()?;
-            if uri.scheme_str() != Some("tls")
-                || uri.authority().is_none_or(|a| a.as_str().contains('@'))
-                || uri.path_and_query().is_some_and(|p| p.as_str() != "/")
-            {
-                return Err(
-                    "home URL must be a TLS NATS origin without credentials, path or query".into(),
-                );
-            }
-            let ca = fs::canonicalize(ca)?;
+            let (endpoint, credential, rotate) = configuration::home_arguments(rest)?;
+            let url = &endpoint.url;
+            let ca = endpoint.ca_file.clone().unwrap_or_default();
             let credential = fs::canonicalize(credential)?;
             token(&credential)?;
-            // Broker credentials remain in host files and never enter requests.
-            let certificates =
-                rustls::pki_types::CertificateDer::pem_reader_iter(fs::File::open(&ca)?)
-                    .collect::<Result<Vec<_>, _>>()?;
-            if certificates.is_empty() {
-                return Err("home CA file must contain a certificate".into());
+            let trust_hash = endpoint
+                .ca_file
+                .as_ref()
+                .map(|path| tls_material::trust_hash(path))
+                .transpose()?;
+            let old: Option<Option<String>> = tx
+                .query_row(
+                    "SELECT trust_hash FROM coord_federation_homes WHERE name=?1",
+                    [name],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let changed_trust = old.as_ref().is_some_and(|old| {
+                old.as_ref()
+                    .zip(trust_hash.as_ref())
+                    .is_some_and(|(old, new)| old != new)
+            });
+            if changed_trust && !rotate {
+                return Err("home CA trust changed; repeat with --rotate-trust after verifying the owning instance's new CA".into());
             }
-            tx.execute("INSERT INTO coord_federation_homes VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(name) DO UPDATE SET instance_id=excluded.instance_id,url=excluded.url,ca_file=excluded.ca_file,token_file=excluded.token_file,revision=excluded.revision",params![name,instance,url.trim_end_matches('/'),ca.to_string_lossy(),credential.to_string_lossy(),uuid::Uuid::new_v4().simple().to_string()])?;
-            json!({"home":name,"instance_id":instance})
+            tx.execute("INSERT INTO coord_federation_homes(name,instance_id,url,ca_file,token_file,revision,mode,tailscale_node,trust_hash) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(name) DO UPDATE SET instance_id=excluded.instance_id,url=excluded.url,ca_file=excluded.ca_file,token_file=excluded.token_file,revision=excluded.revision,mode=excluded.mode,tailscale_node=excluded.tailscale_node,trust_hash=excluded.trust_hash",params![name,instance,url.trim_end_matches('/'),ca.to_string_lossy(),credential.to_string_lossy(),uuid::Uuid::new_v4().simple().to_string(),serde_json::to_value(endpoint.mode)?.as_str(),endpoint.tailscale_node,trust_hash])?;
+            json!({"home":name,"instance_id":instance,"configured":endpoint,"activation":"next_request","trust_changed":changed_trust,"authority":"route selection grants no room, support or approval authority"})
         }
         [command, name] if command == "unhome" => {
             tx.execute("DELETE FROM coord_federation_homes WHERE name=?1", [name])?;

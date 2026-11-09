@@ -1,18 +1,30 @@
 //! Host-held NATS setup. The federation account has no imports from SY_LOCAL.
 use super::*;
 
-#[derive(Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Broker {
+    #[serde(default)]
+    pub mode: endpoint::Mode,
     pub listen: std::net::IpAddr,
-    pub cert_file: PathBuf,
-    pub key_file: PathBuf,
-    pub ca_file: PathBuf,
-    pub local_server_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cert_file: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_file: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_file: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_server_name: Option<String>,
+    #[serde(default)]
+    pub server_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tailscale_node: Option<String>,
     pub peers: Vec<Peer>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Peer {
     pub instance_id: String,
@@ -30,22 +42,22 @@ pub(crate) fn broker(root: &Path) -> Result<Option<Broker>, Error> {
     if !path.try_exists()? {
         return Ok(None);
     }
+    read_broker(root, &path, false).map(Some)
+}
+
+pub(crate) fn read_broker(root: &Path, path: &Path, rotate_trust: bool) -> Result<Broker, Error> {
     let mut value: Broker = serde_json::from_slice(&fs::read(path)?)?;
-    if value.local_server_name.is_empty()
-        || value.local_server_name.contains(['/', '@', '?', '#'])
-        || (value.local_server_name.contains(':')
-            && value
-                .local_server_name
-                .parse::<std::net::Ipv6Addr>()
-                .is_err())
-    {
-        return Err("local_server_name must name the broker TLS certificate".into());
+    if rotate_trust {
+        value.ca_sha256 = None;
     }
     for path in [
         &mut value.cert_file,
         &mut value.key_file,
         &mut value.ca_file,
-    ] {
+    ]
+    .into_iter()
+    .flatten()
+    {
         if path.is_relative() {
             *path = root.join(&*path);
         }
@@ -60,7 +72,98 @@ pub(crate) fn broker(root: &Path) -> Result<Option<Broker>, Error> {
         }
         token(&peer.credential_file)?;
     }
-    Ok(Some(value))
+    value.validate(root)?;
+    Ok(value)
+}
+
+impl Broker {
+    pub fn endpoint(&self, port: u16) -> endpoint::Endpoint {
+        endpoint::Endpoint {
+            mode: self.mode,
+            url: endpoint::url(
+                self.mode,
+                self.local_server_name
+                    .as_deref()
+                    .filter(|_| self.mode == endpoint::Mode::Tls)
+                    .unwrap_or(&self.listen.to_string()),
+                port,
+            ),
+            ca_file: self.ca_file.clone(),
+            ca_sha256: self.ca_sha256.clone(),
+            tailscale_node: self.tailscale_node.clone(),
+        }
+    }
+
+    pub fn validate(&self, root: &Path) -> Result<Value, Error> {
+        self.endpoint(4222).origin()?;
+        match self.mode {
+            endpoint::Mode::Tls => {
+                let cert = self
+                    .cert_file
+                    .as_ref()
+                    .ok_or("TLS broker certificate file missing")?;
+                let key = self
+                    .key_file
+                    .as_ref()
+                    .ok_or("TLS broker key file missing")?;
+                let ca = self.ca_file.as_ref().ok_or("TLS broker CA file missing")?;
+                let local = self
+                    .local_server_name
+                    .as_ref()
+                    .ok_or("TLS broker local_server_name missing")?;
+                // Broker keys must not reuse the interception signing identity.
+                let config = read_config(root)?;
+                if let Some(interception) = config.tls_ca_file {
+                    let interception_cert = tls_material::certificates(&interception).ok();
+                    let same_key = interception_cert.as_ref().is_some_and(|interception| {
+                        [cert, ca].iter().any(|path| {
+                            tls_material::certificates(path).is_ok_and(|certs| {
+                                certs.iter().any(|cert| {
+                                    interception.iter().any(|interception| {
+                                        tls_material::same_public_key(cert, interception)
+                                    })
+                                })
+                            })
+                        })
+                    });
+                    if same_key {
+                        return Err("use dedicated broker TLS material, separate from the interception CA and key".into());
+                    }
+                }
+                let mut names = self.server_names.clone();
+                if !names.contains(local) {
+                    names.push(local.clone());
+                }
+                tls_material::validate(cert, key, ca, &names)
+            }
+            endpoint::Mode::Loopback | endpoint::Mode::Tailscale => {
+                if self.cert_file.is_some()
+                    || self.key_file.is_some()
+                    || self.local_server_name.is_some()
+                    || !self.server_names.is_empty()
+                {
+                    return Err(
+                        "remove TLS-only broker fields when selecting loopback or Tailscale".into(),
+                    );
+                }
+                Ok(json!({"verified":true,"mode":self.mode}))
+            }
+        }
+    }
+
+    pub async fn verify_listener(&self) -> Result<(), Error> {
+        if self.mode == endpoint::Mode::Tailscale {
+            tailscale::verify(
+                self.listen,
+                self.tailscale_node
+                    .as_deref()
+                    .ok_or("Tailscale node missing")?,
+                true,
+            )
+            .await?;
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn subject_token(instance: &str) -> String {
@@ -87,7 +190,7 @@ pub(crate) fn reply_prefix(source: &str) -> String {
     format!("SY_FED.reply.{}", subject_token(source))
 }
 
-/// The operator explicitly opts into a TLS listener. Every peer user can only
+/// The operator explicitly selects listener protection. Every peer user can only
 /// publish its own source path and receive its own replies and wake hints.
 pub(crate) fn server_config(
     setup: Option<&Broker>,
@@ -118,12 +221,14 @@ pub(crate) fn server_config(
                         notice_subject(instance,&peer.instance_id,"*")]}}}));
         }
         accounts["SY_FED"] = json!({"users":users,"jetstream":"enabled"});
-        tls = format!(
-            "tls {{ cert_file: {}, key_file: {}, ca_file: {}, timeout: 2 }}\n",
-            serde_json::to_string(&setup.cert_file)?,
-            serde_json::to_string(&setup.key_file)?,
-            serde_json::to_string(&setup.ca_file)?
-        );
+        if setup.mode == endpoint::Mode::Tls {
+            tls = format!(
+                "tls {{ cert_file: {}, key_file: {}, ca_file: {}, timeout: 2 }}\n",
+                serde_json::to_string(&setup.cert_file)?,
+                serde_json::to_string(&setup.key_file)?,
+                serde_json::to_string(&setup.ca_file)?
+            );
+        }
     }
     Ok((format!("accounts: {accounts}\n{tls}"), peers))
 }
@@ -176,55 +281,67 @@ pub(crate) async fn retained_notices(
         .await?)
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct LocalTls {
-    pub server_name: String,
-    pub ca_file: PathBuf,
-}
-
-pub(crate) fn local_options(
+pub(crate) async fn local_options(
     data: &Path,
     url: String,
-    options: async_nats::ConnectOptions,
+    username: String,
+    token_file: PathBuf,
 ) -> Result<(String, async_nats::ConnectOptions), Error> {
-    let path = data.join("nats/local-tls.json");
-    if !path.try_exists()? {
-        return Ok((url, options));
+    let endpoint = local_endpoint(data, url)?;
+    let options = endpoint.options(username, token_file).await?;
+    Ok((endpoint.url, options))
+}
+
+pub(crate) fn local_endpoint(data: &Path, fallback: String) -> Result<endpoint::Endpoint, Error> {
+    let path = data.join("nats/local-endpoint.json");
+    if path.try_exists()? {
+        return Ok(serde_json::from_slice(&fs::read(path)?)?);
     }
-    let tls: LocalTls = serde_json::from_slice(&fs::read(path)?)?;
-    let address: async_nats::ServerAddr = url.parse()?;
-    Ok((
-        format!(
-            "tls://{}:{}",
-            if tls.server_name.contains(':') {
-                format!("[{}]", tls.server_name)
-            } else {
-                tls.server_name
-            },
-            address.port()
-        ),
-        options.require_tls(true).add_root_certificates(tls.ca_file),
-    ))
+    // An existing TLS broker can remain live during the source upgrade. Read
+    // its old active record until its next controlled Coord start replaces it.
+    let previous = data.join("nats/local-tls.json");
+    if previous.try_exists()? {
+        #[derive(Deserialize)]
+        struct Previous {
+            server_name: String,
+            ca_file: PathBuf,
+        }
+        let tls: Previous = serde_json::from_slice(&fs::read(previous)?)?;
+        let address: async_nats::ServerAddr = fallback.parse()?;
+        return Ok(endpoint::Endpoint {
+            mode: endpoint::Mode::Tls,
+            url: endpoint::url(endpoint::Mode::Tls, &tls.server_name, address.port()),
+            ca_sha256: Some(tls_material::trust_hash(&tls.ca_file)?),
+            ca_file: Some(tls.ca_file),
+            tailscale_node: None,
+        });
+    }
+    Ok(endpoint::Endpoint {
+        mode: endpoint::Mode::Loopback,
+        url: fallback,
+        ca_file: None,
+        ca_sha256: None,
+        tailscale_node: None,
+    })
 }
 
 pub(crate) async fn connect_with_options(
     home: &Home,
     source: &str,
-    options: async_nats::ConnectOptions,
+    configure: impl FnOnce(async_nats::ConnectOptions) -> async_nats::ConnectOptions,
 ) -> Result<async_nats::Client, Error> {
-    let credential = token(&home.token_file)?;
-    Ok(options
-        .require_tls(true)
-        .add_root_certificates(home.ca_file.clone())
-        .user_and_password(subject_token(source), credential.trim().to_owned())
-        .custom_inbox_prefix(reply_prefix(source))
-        .connection_timeout(Duration::from_secs(2))
-        // A request is submitted once. The library reconnects subscriptions,
-        // but SafeYolo never retries a possibly executed request.
-        .request_timeout(Some(Duration::from_secs(60)))
-        .connect(&home.url)
-        .await?)
+    let endpoint = home.endpoint();
+    Ok(configure(
+        endpoint
+            .options(subject_token(source), home.token_file.clone())
+            .await?,
+    )
+    .custom_inbox_prefix(reply_prefix(source))
+    // A request is submitted once. The library reconnects subscriptions,
+    // but SafeYolo never retries a possibly executed request.
+    .request_timeout(Some(Duration::from_secs(60)))
+    .connect(&home.url)
+    .await?)
 }
 
 #[cfg(test)]

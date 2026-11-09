@@ -493,6 +493,15 @@ nodes:
       uniqueness, unchanged authorship and original-operation replay. It proves this
       two-instance boundary on one owned host; WAN behavior, external GitHub
       access and three actual model participants remain separate observations.
+      For explicit loopback protection, select
+      federation::loopback_preserves_authority_retained_notifications_and_recovery
+      with the same inputs. For dedicated broker certificate validation,
+      renewal and explicit CA rotation, select federation::modes with --ignored.
+      These controls retain credentials, membership, peer generations and
+      room state. They check invalid keys, names and trust, pending activation
+      and recovery after owned restart. Neither control proves separate-host
+      Tailscale delivery; use installed owners on their verified tailnet nodes
+      for that boundary.
       For delivery isolation and resource recovery, select federation::reliability
       with --ignored and --test-threads=1. Three independently initialized roots
       and brokers exercise a sealed peer stream, disconnected recipient, cached
@@ -546,7 +555,7 @@ nodes:
         - path: proxy/tests/native_coord.rs
           sha256: 583175095e47d5634d3e7bccfb8df4ee8b51d535e6043b2d5e4dbf7ab84ecb29
         - path: proxy/src/coord_rooms/federation/nats.rs
-          sha256: 288abb784372c84b3b63673797631b758c602003fa18de7adbb3568f765fc073
+          sha256: 9b378b90317797b44ba3621207dea52bc78a5bd9b765293cca114b4d8e03da44
         - path: proxy/src/coord_tools/sources.rs
           sha256: 233f6bea4146f20ded5231938012e0282007bb9852d2d7bd8a746ab6ebedaca8
         - path: proxy/src/peer_support/audit_delivery.rs
@@ -596,19 +605,19 @@ nodes:
         - path: proxy/tests/native_coord/federation/reliability.rs
           sha256: 8338ae6fad7d2c24b1450e2fefc10a9e3b53e91ff2d16bdb726daee7e4acff44
         - path: proxy/tests/native_coord/federation.rs
-          sha256: 628636276ada1a195f8b5dff353d32a5c4d127d72b76f560ae24d4df0d51a877
+          sha256: 9fc991bef60293781e8b80b2ed9eb8c16e3476022eb434ed3f6ed8da39072879
         - path: proxy/src/agent_api/coord.rs
-          sha256: ed2f9f0f65287734e74390857f18b3b8d0b3526b1b6b9e8942de92ca68b7f500
+          sha256: a4671ca73f60f072c534d9c9cea92260646390f0f19cd0ec92f28a8357d10032
         - path: proxy/src/agent_api/coord/federation.rs
-          sha256: f41a1b991629e5a2e62ce672e554092d0ce24019db22f45f0659018c5e9e9e66
+          sha256: 699b6103139e178606c5280d0e8ecd887de4629f13894edd69eb479e49991aef
         - path: proxy/src/agent_api/coord/federation/tests.rs
           sha256: 1bd1a7bb1b05f9c8672679b4abc354946887c5fd23c07e8e5695f6bd380cbb5f
         - path: proxy/src/coord_rooms/federation.rs
-          sha256: 065e27347bc87324a892ca8eb5c9d24c2f4f12671edc9aab63ab6a7b32de4256
+          sha256: 4760be4bea642e61a65f65c6311b4e01bbbef45f6fa40b43120ce31828ff855b
         - path: proxy/src/coord_rooms/federation/tests.rs
-          sha256: 28b822cdd49a65e275a4e654882a18eea818830667c695de5a4d16083af257da
+          sha256: 4571c76b42f2c8559a653fc73c947504bd054250ffadb02211a421bc4b555adc
         - path: proxy/src/coord_federation_schema.sql
-          sha256: 342a5fb315c9b2013afb291b0223ab2c83312af3f5a8ee2b7dfda6f6b493d12b
+          sha256: f584ae2f71bf5001e08c3a9398cf232236416f444cffab4b32c111881dd2ebc1
         - path: proxy/src/coord_rooms/membership.rs
           sha256: cb6b57cd126bae0d3c0471d5d2c683e32d3ec55a93b53663666c9f31c646e5ca
         - path: proxy/tests/native_coord/github.rs
@@ -626,7 +635,7 @@ nodes:
         - path: proxy/tests/native_coord/stage0.rs
           sha256: a288d8dd6bbdb84c38aa72ca1c27f6bbc860f5faf9b208e2f5d7d876c7d7ad62
         - path: proxy/src/coord_rooms.rs
-          sha256: 5b7ccadaac35e96b6ff1349cea9b4085a8beb16fbca50aa3e817b3eb84c42e58
+          sha256: 2d5b60dd6012643f1cbdf7ddb90855d35b9e14243ebb72e4aed91847f1cf74c7
         - path: proxy/tests/native_coord/inventory.rs
           sha256: 1de6227ecdc2bbf2062f0e912c0c4ae7d6e149e2ea61837d75705393891b7276
         - path: proxy/src/agent_api/coord/inventory.rs

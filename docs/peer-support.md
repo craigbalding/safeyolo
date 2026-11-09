@@ -8,7 +8,7 @@ needs a shared Coord room. The target model, terminal and Coord loop can be
 unresponsive. Local calls do not depend on Coord or NATS notifications.
 
 The owning API, policy and required runtime controls must still work. Remote
-calls also require Core NATS connectivity. [Configure authenticated TLS NATS](coord-reference.md#collaborate-through-a-home-safeyolo)
+calls also require Core NATS connectivity. [Configure authenticated NATS and its protection mode](coord-reference.md#collaborate-through-a-home-safeyolo)
 between the separately initialized instances. Guests continue to use their own
 local API; broker credentials and the remote Admin token remain on the hosts.
 
@@ -138,9 +138,10 @@ retained reference still requires current observation and source disclosure.
 ## Inspect upstream and downstream authority
 
 On the operator host, select the instances whose authority you intend to inspect.
-Use independently initialized instance IDs. Configure existing authenticated
-Transport Layer Security (TLS) NATS `home` routes from the instance that will
-collect the report. A route names a destination; it does not authorize disclosure.
+Use independently initialized instance IDs. From the instance that will collect
+the report, configure authenticated NATS `home` routes with explicit Transport
+Layer Security (TLS), Tailscale or loopback protection. A route names a destination;
+it does not authorize disclosure.
 No full mesh is required. Querying every selected owner can find a grant that
 its holder's home or outbound-route inventory has forgotten.
 
