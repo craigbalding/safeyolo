@@ -231,7 +231,7 @@ pub(crate) async fn remove_definition(selected: &Agent, apply: bool) -> Result<(
         .as_table_like_mut()
         .ok_or("agents table is missing")?
         .remove(&selected.name);
-    validate_document(&path, &document).map_err(|error| format!("cannot remove agent {}: {error}. Resolve named approval dependencies with configure approvals before retrying retirement", selected.name))?;
+    validate_document(&path, &document).map_err(|error| format!("cannot remove agent {}: {error}. Resolve the reported policy error through its configuration owner before retrying retirement; use configure approvals for named approval dependencies", selected.name))?;
     if apply {
         save_document(&path, &document)?;
     }
@@ -246,7 +246,7 @@ pub(crate) fn retained_references(agent: &Agent) -> Value {
             .support_grants()
             .into_iter()
             .filter_map(|(name, grant)| {
-                (grant.support.agent_id == agent.id
+                ((grant.support_instance_id.is_none() && grant.support.agent_id == agent.id)
                     || grant
                         .targets
                         .iter()

@@ -4055,11 +4055,12 @@ fn saved_mounts_are_destination_keyed_and_preserve_other_configuration() {
         let policy_path = root.join("policy.toml");
         let mut document: toml_edit::DocumentMut =
             fs::read_to_string(&policy_path).unwrap().parse().unwrap();
-        if inline {
-            let table = document["agents"]["alice"].as_table().unwrap().clone();
-            document["agents"]["alice"] =
-                toml_edit::Item::Value(toml_edit::Value::InlineTable(table.into_inline_table()));
-        }
+        let table = document["agents"]["alice"].clone().into_table().unwrap();
+        document["agents"]["alice"] = if inline {
+            toml_edit::Item::Value(toml_edit::Value::InlineTable(table.into_inline_table()))
+        } else {
+            toml_edit::Item::Table(table)
+        };
         let bob = document["agents"]["bob"].clone();
         fs::write(&policy_path, document.to_string()).unwrap();
         let runtime_path = root.join("agents/alice/runtime.json");
@@ -4117,11 +4118,27 @@ fn saved_mounts_are_destination_keyed_and_preserve_other_configuration() {
         value(cli(
             &root,
             &[
+                "agent",
+                "mounts",
+                "update",
+                "alice",
+                &spec("new", "/mnt/selected"),
+            ],
+        ));
+        value(cli(
+            &root,
+            &[
                 "mount",
                 "protect",
                 temp.path().join("new").to_str().unwrap(),
             ],
         ));
+        // Repair saved writable intent after its old source becomes protected.
+        value(cli(
+            &root,
+            &["agent", "mounts", "update", "alice", &replacement],
+        ));
+
         assert!(
             !cli(
                 &root,

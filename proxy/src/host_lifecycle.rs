@@ -2419,6 +2419,8 @@ async fn cleanup(agent: &Agent) -> Result<Value, Error> {
 
 /// The caller retains the setup lock until cleanup and any saved deletion finish.
 async fn cleanup_stopped(agent: &Agent) -> Result<Value, Error> {
+    let current = crate::host_agents::refresh(agent)?;
+    let agent = &current;
     let directory = agent_dir(&agent.name);
     if crate::host_runs::observe(&agent.name).await["runtime_state"] != "stopped" {
         return Err("backend is not proven stopped; its state was preserved".into());
