@@ -71,6 +71,185 @@ def host_pair(package_inputs, tmp_path):
     return first, second
 
 
+def stock_runsc(bundle):
+    """Use the exact retained stock pin with controlled executable identities."""
+    metadata = bundle / "package-info"
+    metadata.write_text(metadata.read_text().replace(
+        "release-20261005.0-safeyolo.1", "release-20261005.0",
+    ).replace(
+        "https://github.com/google/gvisor/commit/97e8e896904cb364319cd9758241d3f0bd27a6f4",
+        "https://github.com/google/gvisor/releases/tag/release-20261005.0",
+    ))
+    executable(bundle / "libexec/runsc", "runsc version release-20261005.0")
+    for name in ("gvisor_sentry", "gvisor-sentry-prewarmer", "runsc-fd-parking"):
+        shutil.copy2(bundle / "libexec/runsc", bundle / "libexec/gvisor-bin" / name)
+    checksums(bundle)
+
+
+@pytest.fixture
+def stock_installation(native_cli, host_pair, registry, guest_store, tmp_path):
+    first, second = host_pair
+    contents, _requests, _faults, environment = registry
+    contents.update(release(compressed_archive()))
+    root = tmp_path / "i"
+    installation(native_cli, root, first, guest_store, environment)
+    # Acquisition sets up current-format guest inputs before we retain the
+    # installed stock package. A fresh target cannot use that stock pin.
+    stock_runsc(first)
+    for name in ("package-info", "SHA256SUMS", "libexec/runsc",
+                 "libexec/gvisor-bin/gvisor_sentry", "libexec/gvisor-bin/gvisor-sentry-prewarmer",
+                 "libexec/gvisor-bin/runsc-fd-parking"):
+        shutil.copy2(first / name, root / name)
+    return root, second
+
+
+@pytest.mark.parametrize("omitted_installers", [False, True])
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+def test_stock_installed_pair_status_upgrade_and_rollback(
+        native_cli, stock_installation, registry, omitted_installers):
+    root, target = stock_installation
+    _contents, requests, _faults, environment = registry
+    if omitted_installers:
+        for name in ("install.sh", "install_native.sh", "native_package.sh"):
+            (root / name).unlink()
+    original = upgrade(native_cli, root, environment, "status")
+    assert original["current"]["host"]["runsc_version"] == "release-20261005.0"
+    assert original["previous"] is None
+    saved = state_files(root)
+    receipt = (root / "SHA256SUMS").read_bytes()
+    tree = (root / "share/rootfs-tree").resolve()
+    tree_identity = tree.stat().st_ino, tree.stat().st_uid, tree.stat().st_gid
+    before = len(requests)
+    selected = upgrade(native_cli, root, environment, "--bundle", target)
+    assert selected["current"]["host"]["runsc_version"] == "release-20261005.0-safeyolo.1"
+    assert selected["previous"] == original["current"]
+    assert selected["current"]["guest"] == original["current"]["guest"]
+    assert upgrade(native_cli, root, environment, "status") == selected
+    link = os.readlink(root / "current")
+    assert upgrade(native_cli, root, environment, "--bundle", target) == selected
+    assert os.readlink(root / "current") == link
+    assert upgrade(native_cli, root, environment, "rollback") == original
+    assert (root / "SHA256SUMS").read_bytes() == receipt
+    assert (root / "share/rootfs-tree").resolve() == tree
+    assert (tree.stat().st_ino, tree.stat().st_uid, tree.stat().st_gid) == tree_identity
+    assert len(requests) == before
+    assert_preserved(root, saved)
+
+
+@pytest.mark.parametrize("fault", [
+    "current-checksum", "current-runtime", "current-source", "target-checksum",
+    "target-stock", "target-runtime", "target-source", "target-origin", "target-profile",
+])
+def test_runsc_pin_refusals_preserve_current_and_state(
+        native_cli, stock_installation, registry, fault):
+    root, target = stock_installation
+    _contents, _requests, _faults, environment = registry
+    saved = preserved(root)
+    current = os.readlink(root / "current") if (root / "current").is_symlink() else None
+    selection = (root / "share/guest-selection.json").read_bytes()
+    package = (root / "package-info").resolve().parent if fault.startswith("current-") else target
+    if fault.endswith("checksum"):
+        with (package / "libexec/gvisor-bin/gvisor_sentry").open("ab") as stream:
+            stream.write(b"tampered")
+    elif fault == "target-stock":
+        stock_runsc(target)
+    elif fault.endswith("runtime"):
+        version = "release-20261005.0-safeyolo.1" if fault.startswith("current-") else "release-20261005.0"
+        executable(package / "libexec/runsc", f"runsc version {version}")
+        checksums(package)
+    else:
+        metadata = package / "package-info"
+        text = metadata.read_text()
+        if fault.endswith("source"):
+            text = text.replace("https://github.com/google/gvisor/", "https://example.test/")
+        elif fault.endswith("origin"):
+            text = text.replace("runsc_origin=bundled", "runsc_origin=system")
+        else:
+            text = text.replace("profile=debug", "profile=invalid")
+        metadata.write_text(text)
+        checksums(package)
+    # Save after deliberate metadata damage; validation must make no changes.
+    saved["package-info"] = (root / "package-info").read_bytes()
+    original = upgrade(native_cli, root, environment, "status") if fault != "current-source" else None
+    refused = command(native_cli, root, environment, "upgrade", "--bundle", str(target))
+    assert refused.returncode != 0
+    assert "gVisor" in refused.stderr or "checksum" in refused.stderr or "source/profile" in refused.stderr
+    assert (os.readlink(root / "current") if (root / "current").is_symlink() else None) == current
+    assert (root / "share/guest-selection.json").read_bytes() == selection
+    assert_preserved(root, saved)
+    if fault != "current-source":
+        assert upgrade(native_cli, root, environment, "status") == original
+
+
+@pytest.mark.parametrize("fault", ["checksum", "runtime"])
+def test_bad_retained_stock_runtime_cannot_replace_current_on_rollback(
+        native_cli, stock_installation, registry, fault):
+    root, target = stock_installation
+    _contents, _requests, _faults, environment = registry
+    upgrade(native_cli, root, environment, "--bundle", target)
+    current = os.readlink(root / "current")
+    saved = preserved(root)
+    previous = (root / "current/previous/host").resolve()
+    if fault == "checksum":
+        with (previous / "libexec/runsc").open("ab") as stream:
+            stream.write(b"tampered")
+    else:
+        executable(previous / "libexec/runsc", "runsc version release-20261005.0-safeyolo.1")
+        checksums(previous)
+    # Record the deliberately changed receipt before checking refusal effects.
+    selected = upgrade(native_cli, root, environment, "status")
+    refused = command(native_cli, root, environment, "upgrade", "rollback")
+    assert refused.returncode != 0
+    assert "checksum" in refused.stderr or "incompatible gVisor runtime" in refused.stderr
+    assert os.readlink(root / "current") == current
+    assert upgrade(native_cli, root, environment, "status") == selected
+    assert_preserved(root, saved)
+
+
+@pytest.mark.parametrize("stock", [False, True])
+@pytest.mark.parametrize("installed", [False, True])
+def test_shell_verifier_distinguishes_installed_and_target_runsc_pins(host_pair, stock, installed):
+    bundle, _target = host_pair
+    if stock:
+        stock_runsc(bundle)
+    result = packages.run(
+        "bash", "-c", 'source "$1"; verify_native_package "$2" "${3:-}"',
+        "verify", str(packages.REPO / "scripts/native_package.sh"), str(bundle),
+        "--installed" if installed else "",
+    )
+    assert (result.returncode == 0) == (installed or not stock), result.stderr
+
+
+@pytest.mark.parametrize("fault", ["checksum", "runtime", "source", "origin", "missing", "unlisted"])
+def test_shell_installed_stock_runtime_keeps_integrity_checks(host_pair, fault):
+    bundle, _target = host_pair
+    stock_runsc(bundle)
+    if fault == "checksum":
+        with (bundle / "libexec/gvisor-bin/gvisor_sentry").open("ab") as stream:
+            stream.write(b"tampered")
+    elif fault == "runtime":
+        executable(bundle / "libexec/runsc", "runsc version release-20261005.0-safeyolo.1")
+        checksums(bundle)
+    elif fault in ("source", "origin"):
+        metadata = bundle / "package-info"
+        text = metadata.read_text()
+        metadata.write_text(text.replace("releases/tag/release-20261005.0", "commit/unknown")
+                            if fault == "source" else text.replace("runsc_origin=bundled", "runsc_origin=system"))
+        checksums(bundle)
+    elif fault == "missing":
+        (bundle / "libexec/gvisor-bin/gvisor_sentry").unlink()
+    else:
+        sums = bundle / "SHA256SUMS"
+        sums.write_text("".join(line for line in sums.read_text().splitlines(keepends=True)
+                                if not line.endswith(" ./libexec/gvisor-bin/gvisor_sentry\n")))
+    result = packages.run(
+        "bash", "-c", 'source "$1"; verify_native_package "$2" --installed',
+        "verify", str(packages.REPO / "scripts/native_package.sh"), str(bundle),
+    )
+    assert result.returncode != 0
+    assert "gVisor" in result.stderr or "checksum" in result.stderr
+
+
 def exchange_available(parent):
     left, right = parent / "exchange-left", parent / "exchange-right"
     left.mkdir()

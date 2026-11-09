@@ -146,7 +146,7 @@ pub(super) async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error
         return Err("guest upgrade and rollback require an installed instance".into());
     }
     let root = root.canonicalize()?;
-    let package = PackageGuest::read(&root.join("package-info"))?;
+    let package = PackageGuest::read(&root.join("package-info"), true)?;
     let _install_lock = crate::host_platform::lock_host_state(&root.join("guest-install.lock"))?;
     let selected = if rollback_requested {
         rollback(&root, &package)?

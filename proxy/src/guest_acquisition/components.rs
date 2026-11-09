@@ -113,7 +113,7 @@ fn payload_files(
 }
 
 fn verify_package(package: &Path, installed: bool) -> Result<PackageGuest, Error> {
-    let metadata = PackageGuest::read(&package.join("package-info"))?;
+    let metadata = PackageGuest::read(&package.join("package-info"), installed)?;
     let legacy_installed = installed && legacy_installer_omissions(package);
     let mut checked = BTreeSet::new();
     for line in fs::read_to_string(package.join("SHA256SUMS"))?.lines() {
@@ -419,7 +419,7 @@ fn stage_share(
 }
 
 fn describe(host: &Path, share: &Path) -> Result<Value, Error> {
-    PackageGuest::read(&host.join("package-info"))?;
+    PackageGuest::read(&host.join("package-info"), true)?;
     let fields = fs::read_to_string(host.join("package-info"))?;
     let fields = fields
         .lines()
