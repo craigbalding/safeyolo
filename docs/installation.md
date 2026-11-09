@@ -475,10 +475,11 @@ pair and retained state stay unchanged. Component restoration cannot reverse
 store changes made by a newer host. Keep the selected host or select a newer
 compatible bundle; preserve the Coord store and its retained work.
 
-If you choose rollback, stop the proxy and use the retained executable. Start
-the proxy only after rollback succeeds. If rollback is refused after stopping,
-start the still-selected host or repair it with a compatible bundle. For the
-default instance, run these commands separately and inspect each result:
+If you choose rollback, stop the proxy and use the retained executable. Inspect
+its result before starting the proxy: success selects the previous pair. If
+rollback is refused, start the still-selected host or repair it with a compatible
+bundle. For the default instance, run these commands separately and inspect each
+result:
 
 ```sh
 safeyolo stop
