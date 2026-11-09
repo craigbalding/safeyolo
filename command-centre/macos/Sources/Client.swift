@@ -516,6 +516,10 @@ final class SafeYoloClient: ObservableObject {
             socket.cancel(with: .goingAway, reason: nil)
             if webSocket === socket { webSocket = nil }
         }
+        // Foundation needs an active receive to deliver the pong callback.
+        // Retain that first message until the attachment snapshot is reconciled.
+        let firstReceive = Task { try await socket.receive() }
+        defer { firstReceive.cancel() }
         do {
             try await ping(socket)
             guard !stopping, !Task.isCancelled, webSocket === socket else { return }
@@ -532,7 +536,7 @@ final class SafeYoloClient: ObservableObject {
                 eventFeedGap = "Live event feed reconnected after a gap; events during the gap may be missing."
             }
             setRequestError("Live events", nil)
-            try await receiveEvents(from: socket)
+            try await receiveEvents(from: socket, firstReceive: firstReceive)
         } catch {
             guard !stopping, !Task.isCancelled, webSocket === socket else { return }
             if let response = socket.response as? HTTPURLResponse {
@@ -550,9 +554,19 @@ final class SafeYoloClient: ObservableObject {
         }
     }
 
-    private func receiveEvents(from socket: any EventSocket) async throws {
+    private func receiveEvents(
+        from socket: any EventSocket,
+        firstReceive: Task<URLSessionWebSocketTask.Message, Error>
+    ) async throws {
+        var initial: Task<URLSessionWebSocketTask.Message, Error>? = firstReceive
         while !stopping, !Task.isCancelled, webSocket === socket {
-            let message = try await socket.receive()
+            let message: URLSessionWebSocketTask.Message
+            if let first = initial {
+                initial = nil
+                message = try await first.value
+            } else {
+                message = try await socket.receive()
+            }
             try Task.checkCancellation()
             let data: Data
             switch message {

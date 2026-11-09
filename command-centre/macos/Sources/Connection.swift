@@ -4,14 +4,12 @@ enum RemoteTransport: String, Codable, CaseIterable, Sendable {
     case tailnet
     case sshTunnel = "ssh-tunnel"
     case loopback
-    case tls
 
     var label: String {
         switch self {
         case .tailnet: return "Tailscale"
         case .sshTunnel: return "SSH tunnel"
         case .loopback: return "Same host (loopback)"
-        case .tls: return "TLS (system trust)"
         }
     }
 }

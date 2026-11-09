@@ -428,8 +428,6 @@ struct ConnectionSettingsView: View {
             return "Start your existing SSH port forwards, then enter their loopback Admin and Events URLs. The forwarded instance remains remote."
         case .loopback:
             return "Enter this Mac's selected instance Admin and Events loopback URLs. Separate roots keep separate identities and credentials."
-        case .tls:
-            return "Enter the owner's HTTPS and WSS URLs. macOS must trust its TLS certificates. This does not configure the separate federation broker."
         }
     }
 
