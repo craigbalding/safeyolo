@@ -71,7 +71,7 @@ if [[ -z ${GUEST_INPUTS:-} ]]; then
         --tools mise gh --base --output "$GUEST_INPUTS"
     export GUEST_INPUTS
 fi
-guest_inputs "$DEB_ARCH"
+guest_rootfs_inputs "$DEB_ARCH"
 
 # --- Helper: `command -v` that also probes /usr/sbin / /sbin --------------
 # Debian packages these binaries into system sbin dirs that aren't on
@@ -137,13 +137,6 @@ rm -f -- "$OUTPUT_DIR/build-base.txt"
 DOWNLOAD_CACHE="$OUTPUT_DIR/.download-cache"
 OCI_CACHE="$DOWNLOAD_CACHE/oci"
 mkdir -p "$DOWNLOAD_CACHE" "$OCI_CACHE"
-
-# Reuse downloads only after matching the frozen official identities.
-MISE_TARBALL="$DOWNLOAD_CACHE/mise-$MISE_VERSION-$DEB_ARCH.tar.gz"
-GH_TARBALL="$DOWNLOAD_CACHE/gh-$GH_VERSION-$DEB_ARCH.tar.gz"
-guest_download "$DEB_ARCH" mise "$MISE_TARBALL"
-guest_download "$DEB_ARCH" gh "$GH_TARBALL"
-export MISE_TARBALL GH_TARBALL
 
 # --- Pull the Debian OCI image ---------------------------------------------
 rm -f "$OUTPUT_DIR/build-base.txt"

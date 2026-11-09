@@ -330,3 +330,42 @@ def test_resolve_workflow_supplies_its_scoped_token_to_the_resolver_step():
     step = next(step for step in job["steps"] if step.get("id") == "inputs")
     assert step["env"]["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
     assert 'python3 guest/resolve_inputs.py resolve --base --output "$RUNNER_TEMP/inputs.json"' in step["run"]
+
+
+@pytest.mark.parametrize("architecture", ["amd64", "arm64"])
+@pytest.mark.parametrize("outcome", ["cached", "http-error", "checksum"])
+def test_download_cli_identifies_tool_and_architecture_without_url_secrets(
+    tmp_path, monkeypatch, capsys, upstream, retry_sleeps, architecture, outcome,
+):
+    routes, requests = upstream
+    url = (f"https://fixture-user:private-password@upstream.invalid/gh-9.8.7-linux-{architecture}.tar.gz"
+           "?signature=private-query#private-fragment")
+    output = tmp_path / "gh.tar.gz"
+    payload = b"verified archive"
+    frozen = tmp_path / "inputs.json"
+    frozen.write_text(json.dumps({"tools": {"gh": {"version": "9.8.7", "assets": {
+        architecture: {"url": url, "sha256": inputs.sha256(payload)},
+    }}}}))
+    monkeypatch.setattr(sys, "argv", ["resolve_inputs.py", "download", "--inputs", str(frozen),
+                                    "--architecture", architecture, "--tool", "gh", "--output", str(output)])
+    if outcome == "cached":
+        output.write_bytes(payload)
+        inputs.main()
+        assert not requests and not retry_sleeps
+    else:
+        routes[url] = (504, {}, b"unavailable") if outcome == "http-error" else (200, {}, b"wrong bytes")
+        with pytest.raises(HTTPError if outcome == "http-error" else ValueError) as error:
+            inputs.main()
+        if outcome == "http-error":
+            assert error.value.code == 504
+            assert retry_sleeps == [1, 2] and len(requests) == 3
+        else:
+            assert "frozen official checksum" in str(error.value)
+            assert not retry_sleeps and len(requests) == 1
+        assert not output.exists()
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert (f"Preparing gh 9.8.7 for linux/{architecture}: "
+            f"'https://upstream.invalid/gh-9.8.7-linux-{architecture}.tar.gz'") in captured.err
+    for secret in ("fixture-user", "private-password", "private-query", "private-fragment"):
+        assert secret not in captured.err

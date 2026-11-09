@@ -258,7 +258,7 @@ nodes:
         - path: proxy/src/host_boot.rs
           sha256: 52b02d5b4f0819e8b3b49a85fcff07364c5058128f8d8a9cf22c6c9d80d2c80a
         - path: guest/build-rootfs.sh
-          sha256: 4a30c9ece1b79e9e53bbb1dd301596ff94552d99be25386ac395f1f9490d05ed
+          sha256: 31ab9b5883222b0f43dfff80dfa7ac83ab4908b9b6ff8234d36abf6b0b1b8139
         - path: proxy/src/jobs.rs
           sha256: bf49088efe6c8f53ee6a07fdddcb5c01335e5ea5894734538ad67ada1c971502
         - path: proxy/src/jobs/input.rs
@@ -856,9 +856,9 @@ nodes:
       obtain_from: "trusted-base build scripts; skopeo, umoci, and e2fsprogs from operator-approved signed OS repositories or the checksum-pinned umoci fallback in safeyolo bootstrap"
       sources:
         - path: guest/build-all.sh
-          sha256: 63b9ec48a6fbd6a4ea010a0ccc1a320376a5d0875a5268dec9f7b5652829fc4e
+          sha256: 16c67862eec323060c15afa4d215f16d076e087eb04c6661123aba6d75b0ee70
         - path: guest/build-rootfs.sh
-          sha256: 4a30c9ece1b79e9e53bbb1dd301596ff94552d99be25386ac395f1f9490d05ed
+          sha256: 31ab9b5883222b0f43dfff80dfa7ac83ab4908b9b6ff8234d36abf6b0b1b8139
         - path: guest/rootfs-customize-hook.sh
           sha256: 84333056f8957049ae511cc3e9565342ddf8fd4cbf265e2e8dcfffd36736da15
       setup: "Use an approved Linux builder or the repository's narrow Lima builder; set OUTPUT_DIR to a disposable acceptance directory."

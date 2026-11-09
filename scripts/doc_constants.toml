@@ -181,14 +181,14 @@ must_contain = "{marker}"
 [[assertion]]
 name = "mise-stable-resolution"
 source = "guest/build-rootfs.sh"
-pattern = 'guest_inputs "\$DEB_ARCH"'
+pattern = 'guest_rootfs_inputs "\$DEB_ARCH"'
 docs = ["guest/README.md"]
 must_contain = "mise"
 
 [[assertion]]
 name = "gh-stable-resolution"
 source = "guest/build-rootfs.sh"
-pattern = 'guest_inputs "\$DEB_ARCH"'
+pattern = 'guest_rootfs_inputs "\$DEB_ARCH"'
 docs = ["guest/README.md"]
 must_contain = "gh"
 
