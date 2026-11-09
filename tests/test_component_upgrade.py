@@ -186,7 +186,7 @@ def test_bad_retained_stock_runtime_cannot_replace_current_on_rollback(
         native_cli, stock_installation, registry, fault):
     root, target = stock_installation
     _contents, _requests, _faults, environment = registry
-    selected = upgrade(native_cli, root, environment, "--bundle", target)
+    upgrade(native_cli, root, environment, "--bundle", target)
     current = os.readlink(root / "current")
     saved = preserved(root)
     previous = (root / "current/previous/host").resolve()
@@ -196,6 +196,8 @@ def test_bad_retained_stock_runtime_cannot_replace_current_on_rollback(
     else:
         executable(previous / "libexec/runsc", "runsc version release-20261005.0-safeyolo.1")
         checksums(previous)
+    # Record the deliberately changed receipt before checking refusal effects.
+    selected = upgrade(native_cli, root, environment, "status")
     refused = command(native_cli, root, environment, "upgrade", "rollback")
     assert refused.returncode != 0
     assert "checksum" in refused.stderr or "incompatible gVisor runtime" in refused.stderr
