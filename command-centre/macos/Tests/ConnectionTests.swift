@@ -6,15 +6,17 @@ import SwiftUI
 private final class StubEventSocket: EventSocket {
     var response: URLResponse?
     var closeCode = URLSessionWebSocketTask.CloseCode.invalid
-    var pingError: Error?
+    var openError: Error?
     var receiveError: Error?
     var cancelled = false
     var receiving = false
     var onResume: (() -> Void)?
     var messages: [URLSessionWebSocketTask.Message] = []
 
-    func resume() { onResume?() }
-    func sendPing(pongReceiveHandler: @escaping @Sendable (Error?) -> Void) { pongReceiveHandler(pingError) }
+    func open() async throws {
+        onResume?()
+        if let openError { throw openError }
+    }
     func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) { cancelled = true }
     func receive() async throws -> URLSessionWebSocketTask.Message {
         receiving = true
@@ -135,7 +137,7 @@ extension ModelTests {
         var presented: [String] = []
         client.onNewApproval = { presented.append($0.id) }
         client.start()
-        try await until { socket.receiving }
+        try await until { socket.receiving && client.connectionState == .connected }
         let idle = StubURLProtocol.requestCount
         try await Task.sleep(for: .milliseconds(1200))
         precondition(StubURLProtocol.requestCount == idle, "Healthy idle Commander must not poll pending state")
@@ -696,7 +698,7 @@ extension ModelTests {
         var presented: [String] = []
         client.onNewApproval = { presented.append($0.id) }
         client.start()
-        try await until { socket.receiving }
+        try await until { socket.receiving && client.connectionState == .connected }
         precondition(presented == ["apr-one", "apr-two"])
         precondition(client.approvals.map(\.id) == presented, "Every presentation callback must have a pending menu item")
 
@@ -737,7 +739,7 @@ extension ModelTests {
         var presented: [String] = []
         client.onNewApproval = { presented.append($0.id) }
         client.start()
-        try await until { first.receiving }
+        try await until { first.receiving && client.connectionState == .connected }
         precondition(presented == ["apr-gap"] && client.approvals.map(\.id) == presented,
                      "A pending approval in the subscribe gap must be presented and appear in the menu")
 
@@ -745,14 +747,14 @@ extension ModelTests {
         try await until { gate.waits == 1 }
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals([]))
         gate.release()
-        try await until { second.receiving }
+        try await until { second.receiving && client.connectionState == .connected }
         precondition(client.approvals.isEmpty && presented.count == 1,
                      "Reconnect must remove resolved approvals without replaying their windows")
         second.receiveError = URLError(.networkConnectionLost)
         try await until { gate.waits == 2 }
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["during-outage"]))
         gate.release()
-        try await until { third.receiving }
+        try await until { third.receiving && client.connectionState == .connected }
         precondition(presented == ["apr-gap", "apr-during-outage"],
                      "Reconnect must present a still-pending approval missed during the outage")
     }
@@ -784,7 +786,7 @@ extension ModelTests {
 
         StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["recovered"]))
         gate.release()
-        try await until { second.receiving }
+        try await until { second.receiving && client.connectionState == .connected }
         precondition(client.connectionState == .connected)
         precondition(presented == ["apr-recovered"] && client.approvals.map(\.id) == presented)
         precondition(client.requestErrors["Pending approvals"] == nil && client.requestErrors["Live events"] == nil)
@@ -810,7 +812,7 @@ extension ModelTests {
         var presented: [String] = []
         client.onNewApproval = { presented.append($0.id) }
         client.start()
-        try await until { socket.receiving }
+        try await until { socket.receiving && client.connectionState == .connected }
         precondition(client.connectionState == .connected && presented == ["apr-first"])
         precondition(client.requestErrors["Agent status"] != nil && client.requestErrors["Live events"] == nil)
 
@@ -855,7 +857,7 @@ extension ModelTests {
         precondition(updates == 0, "Unchanged snapshots must not rebuild open menus")
         snapshot(events: #", "command_centre_events":{"enabled":true,"port":19091}"#)
         gate.release()
-        try await until { socket.receiving }
+        try await until { socket.receiving && client.connectionState == .connected }
         precondition(client.connectionState == .connected && client.connectionGuidance == nil)
         precondition(socketCount == 1)
         precondition(client.diagnosticReport.contains("Live events disabled"), "Recovery erased history")
@@ -877,7 +879,7 @@ extension ModelTests {
             makeEventSocket: { request in
                 precondition(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-secret")
                 let socket = sockets.count < 2 ? StubEventSocket() : healthy
-                if sockets.count < 2 { socket.pingError = URLError(.cannotConnectToHost) }
+                if sockets.count < 2 { socket.openError = URLError(.cannotConnectToHost) }
                 sockets.append(socket)
                 return socket
             }, retryPause: { try await gate.pause() }
@@ -899,7 +901,7 @@ extension ModelTests {
         precondition(sockets.count == 2 && sockets[1].cancelled)
         precondition(updates == 0, "Repeated identical failures must not rebuild open menus")
         gate.release()
-        try await until { healthy.receiving }
+        try await until { healthy.receiving && client.connectionState == .connected }
         precondition(client.requestErrors["Live events"] == nil && client.connectionState == .connected)
         precondition(client.diagnosticReport.contains("NSURLErrorDomain (-1004)"), "Recovery erased the failure")
         healthy.receiveError = URLError(.networkConnectionLost)

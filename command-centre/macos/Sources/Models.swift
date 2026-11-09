@@ -545,3 +545,113 @@ func encodePathComponent(_ value: String) -> String? {
     }
     return value.addingPercentEncoding(withAllowedCharacters: allowed)
 }
+
+// These are owner reads of existing records. Receipt identity includes the
+// initiator because two initiators can select the same operation ID.
+struct SupportReceipt: Decodable, Hashable, Identifiable {
+    let fields: [String: JSONValue]
+    let operationID: String
+    let instanceID: String
+    let initiator: String
+    var id: String { "\(instanceID)/\(initiator)/\(operationID)" }
+    var targetID: String { fields["target_id"]?.text ?? "unavailable" }
+    var title: String {
+        "\(fields["action"]?.text ?? "Action unavailable") → \(fields["target_name"]?.text ?? targetID): \(fields["state"]?.text ?? "unknown")"
+    }
+
+    init(from decoder: Decoder) throws {
+        let fields = try [String: JSONValue](from: decoder)
+        guard let operation = fields["operation_id"]?.text,
+              let instance = fields["instance_id"]?.text,
+              let initiator = fields["initiator_principal"]?.text,
+              fields["target_id"]?.text != nil else {
+            throw ClientError.invalidResponse
+        }
+        self.fields = fields
+        operationID = operation
+        instanceID = instance
+        self.initiator = initiator
+    }
+
+    var summary: String {
+        let labels = [
+            ("Original operation ID", "operation_id"), ("Owning instance", "instance_id"),
+            ("Initiator principal", "initiator_principal"), ("Initiator and original run", "initiator"),
+            ("Target", "target_name"), ("Durable target", "target_id"), ("Original target run", "target_run"),
+            ("Recorded action", "action"), ("Action selections", "recorded_action"),
+            ("Lifecycle action", "lifecycle_operation"), ("Grant at admission", "grant"),
+            ("Grant revision at admission", "grant_revision"), ("Grant expiry at admission", "grant_expires_at"),
+            ("Requested (Unix seconds)", "requested_at"), ("Finished (Unix seconds)", "finished_at"),
+            ("Outcome", "state"), ("Execution started", "execution_started"),
+            ("Completion verified", "completion_verified"), ("Resulting run", "resulting_run"),
+            ("Canonical audit event", "audit_event_id"), ("Canonical audit delivered", "audit_delivered"),
+            ("Audit delivery", "audit_status"), ("Diagnostic", "diagnostic"), ("Recovery", "recovery")
+        ]
+        return labels.compactMap { label, key -> String? in
+            guard let value = fields[key] else { return nil }
+            if value == .null {
+                if key == "grant_expires_at" { return "Grant lifetime at admission: standing" }
+                if key == "audit_event_id" { return "Canonical audit reference: pending or unavailable" }
+                return nil
+            }
+            return "\(label): \(supportEvidence(value))"
+        }.joined(separator: "\n")
+    }
+}
+
+struct SupportReceiptPage: Decodable {
+    let instanceID: String
+    let receipts: [SupportReceipt]
+    let total: Int
+    let omitted: Int
+    enum CodingKeys: String, CodingKey { case instanceID = "instance_id", receipts, total, omitted }
+}
+
+struct SupportReceiptDetail: Decodable {
+    let receipt: SupportReceipt
+    let outputIncluded: Bool
+    let currentTarget: JSONValue?
+    let currentGrant: JSONValue?
+    let recordedResult: JSONValue?
+    let recovery: String
+    enum CodingKeys: String, CodingKey {
+        case receipt, recovery
+        case outputIncluded = "output_included", currentTarget = "current_target", currentGrant = "current_grant"
+        case recordedResult = "recorded_result"
+    }
+}
+
+struct OperatorSignal: Decodable, Hashable, Identifiable {
+    let signalID: String
+    let roomID: String
+    let revision: Int
+    let kind: String
+    let author: JSONValue
+    var id: String { signalID }
+    enum CodingKeys: String, CodingKey { case signalID = "signal_id", roomID = "room_id", revision, kind, author }
+}
+
+struct OperatorSignalPage: Decodable {
+    let items: [OperatorSignal]
+    let total: Int
+    let nextAfter: String?
+    enum CodingKeys: String, CodingKey { case items, total, nextAfter = "next_after" }
+}
+
+extension JSONValue {
+    var text: String? { if case .string(let value) = self { return value }; return nil }
+    var fields: [String: JSONValue]? { if case .object(let value) = self { return value }; return nil }
+    var values: [JSONValue]? { if case .array(let value) = self { return value }; return nil }
+}
+
+func supportEvidence(_ value: JSONValue) -> String {
+    switch value {
+    case .null: return "Not reported"
+    case .object(let fields):
+        return fields.keys.sorted().filter { fields[$0] != .null }.map {
+            "\($0.replacingOccurrences(of: "_", with: " ").capitalized): \(supportEvidence(fields[$0]!))"
+        }.joined(separator: "\n")
+    case .array(let values): return values.isEmpty ? "None reported" : values.map(supportEvidence).joined(separator: "\n\n")
+    default: return value.description
+    }
+}

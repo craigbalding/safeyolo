@@ -6,6 +6,7 @@ use std::{fs, os::unix::fs::OpenOptionsExt};
 mod connection;
 
 pub(super) const HELP: &str = "safeyolo [--root ROOT] configure identity FILE
+safeyolo [--root ROOT] configure command-centre [FILE]
 safeyolo [--root ROOT] configure connection
 safeyolo [--root ROOT] configure support NAME
 safeyolo [--root ROOT] configure approvals NAME
@@ -19,7 +20,11 @@ EOF cancels without applying the pending edit. Existing explicit/file commands r
 identity exports public durable identities. Transfer handoffs only through an
 authenticated administrative channel you already trust. Connection handoffs also
 contain a scoped broker credential; keep them private. Broker private keys stay
-on their owning host. Connection setup reports saved and active steps separately.";
+on their owning host. Connection setup reports saved and active steps separately.
+command-centre reads the running owner's endpoints and identity. FILE exports a
+private connection handoff containing its full operator Admin credential. Keep
+that file private; import it in Command Centre only through your authenticated
+administrative channel. Export changes no listener, sharing or agent authority.";
 
 fn ask(label: &str, default: &str) -> Result<String, Error> {
     print!(
@@ -1095,6 +1100,86 @@ async fn revoke(root: &Path, name: &str, approvals: bool) -> Result<(), Error> {
     }
 }
 
+async fn command_centre(root: &Path, destination: Option<&Path>) -> Result<(), Error> {
+    let config_path = host_platform::config_path();
+    let settings = native_config::read(&config_path)?;
+    let (socket, host, token) = crate::native_client::operator_socket(&config_path).await?;
+    let current = crate::native_client::send_json(
+        socket,
+        &host,
+        "/admin/instance",
+        token.trim(),
+        Method::GET,
+        Value::Null,
+        Duration::from_secs(5),
+    )
+    .await?;
+    let expected = fs::read_to_string(root.join("data/instance_id"))?;
+    if current["safeyolo_instance_id"].as_str() != Some(expected.trim()) {
+        return Err("running owner differs from this root's durable identity; restore the selected owner before exporting a connection".into());
+    }
+    let events_port = current["command_centre_events"]["port"].as_u64()
+        .filter(|port| *port > 0 && *port <= u16::MAX as u64)
+        .ok_or("live events are disabled; on this owner set command_centre.enabled=true and restart its proxy before exporting a connection")?;
+    let (transport, admin_url, events_url) = if settings
+        .native_settings
+        .as_ref()
+        .ok_or("operator settings unavailable")?
+        .command_centre
+        .share
+        == "tailnet"
+    {
+        let publication: Value = serde_json::from_slice(&fs::read(
+            root.join("data/command-centre-tailnet-status.json"),
+        )?)?;
+        if publication["state"] != "healthy" {
+            return Err("this owner's Tailnet publication is unavailable; inspect its command-centre sharing configuration and restart before exporting".into());
+        }
+        (
+            "tailnet",
+            publication["admin_url"]
+                .as_str()
+                .ok_or("published Admin URL unavailable")?
+                .to_owned(),
+            publication["events_url"]
+                .as_str()
+                .ok_or("published Events URL unavailable")?
+                .to_owned(),
+        )
+    } else {
+        (
+            "loopback",
+            format!("http://{host}"),
+            format!("ws://127.0.0.1:{events_port}/admin/events"),
+        )
+    };
+    println!("Owning instance: {}", safe(expected.trim()));
+    println!(
+        "Owning root: {}",
+        safe(&root.canonicalize()?.to_string_lossy())
+    );
+    println!("Admin URL: {}", safe(&admin_url));
+    println!("Events URL: {}", safe(&events_url));
+    println!(
+        "Transport: {transport}. The Admin read authenticated this owner; live event delivery and support authority require their own checks."
+    );
+    if let Some(destination) = destination {
+        let mut handoff = json!({"schema":"safeyolo.command-centre-connection/v1",
+            "friendly_name":root.file_name().and_then(|name| name.to_str()).unwrap_or("SafeYolo"),
+            "admin_url":admin_url,"events_url":events_url,"instance_id":expected.trim(),
+            "owner_root":root.canonicalize()?,"token":token.trim(),"transport":transport});
+        let serialized = serde_json::to_vec_pretty(&handoff);
+        crate::credentials::wipe_json(&mut handoff);
+        let bytes = zeroize::Zeroizing::new(serialized?);
+        write_new(destination, &bytes)?;
+        println!(
+            "Private operator connection handoff saved to {}. It contains full Admin access to this owner. Import Connection File in Command Centre reviews the pinned owner before connecting. Transfer only through your authenticated administrative channel.",
+            safe(&destination.to_string_lossy())
+        );
+    }
+    Ok(())
+}
+
 pub(super) async fn run(root: &Path, arguments: &[String]) -> Result<(), Error> {
     match arguments
         .iter()
@@ -1117,6 +1202,8 @@ pub(super) async fn run(root: &Path, arguments: &[String]) -> Result<(), Error> 
             );
             Ok(())
         }
+        ["command-centre"] => command_centre(root, None).await,
+        ["command-centre", file] => command_centre(root, Some(Path::new(file))).await,
         ["connection"] => connection::run(root).await,
         ["support", name] => {
             validate_name(name)?;
