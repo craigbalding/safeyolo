@@ -615,6 +615,7 @@ extension ModelTests {
         precondition(recoveredLocalStop.agentState == "stopped")
         precondition(remote.approvalOutcomes["apr-shared"]?.status == "approved", "Another instance's failure cannot erase a decision")
         endpoints.remote()
+        remote.start()
         try await credentialUntil { remote.adminConnected && remote.connectionState == .eventsDisabled }
         precondition(controller.localConnection.client === local && local.adminConnected && remote.approvals.isEmpty)
 
@@ -628,6 +629,7 @@ extension ModelTests {
         guard case .failure = remoteDecision! else { preconditionFailure("A mismatched instance cannot decide or supply an approval outcome") }
         precondition(endpoints.posts.count == postsBeforeMismatch && local.adminConnected)
         endpoints.remote()
+        remote.start()
         try await credentialUntil { remote.adminConnected }
         var wrongToken: Result<RemoteConnectionProfile, Error>?
         controller.configureRemote(RemoteConnectionInput(friendlyName: "Wrong credential", adminURL: profile.adminURL,

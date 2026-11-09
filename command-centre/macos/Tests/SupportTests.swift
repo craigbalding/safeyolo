@@ -193,6 +193,14 @@ extension ModelTests {
         controller.start(commandLine: CommandLineConfiguration(adminURL: nil, eventsURL: nil))
         try await supportUntil { controller.connections.filter { $0.client?.adminConnected == true }.count == 2 }
         precondition(!controller.connections.contains { $0.remoteProfile?.instanceID == profiles[0].instanceID })
+        // Imported public identity remains a required pin at the verifier boundary.
+        let verifier = RemoteConnectionVerifier(session: session)
+        var imported: Result<RemoteConnectionProfile, Error>?
+        verifier.verify(RemoteConnectionInput(friendlyName: "Imported owner", adminURL: profiles[1].adminURL,
+            eventsURL: profiles[1].eventsURL, token: tokens[profiles[1].instanceID]!, transport: .loopback,
+            expectedInstanceID: profiles[0].instanceID)) { imported = $0 }
+        try await supportUntil { imported != nil }
+        guard case .failure = imported! else { preconditionFailure("An imported handoff must not adopt another authenticated owner") }
         defaults.set(Data("unreadable profile selection".utf8), forKey: "connectionProfiles")
         controller.start(commandLine: CommandLineConfiguration(adminURL: nil, eventsURL: nil))
         precondition(controller.profileError != nil, "Unavailable saved profiles cannot look like a healthy empty selection")

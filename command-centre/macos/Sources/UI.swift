@@ -733,6 +733,7 @@ struct InstanceMenu: View {
                     Text("Key copied—paste to sign in")
                 }
             }
+            Button("Reconnect to This Owner") { client.start() }
             Button("Support, Notices and Receipts…") { showSupport(client) }
             Divider()
             if client.requestErrors["Pending approvals"] != nil || !client.adminConnected {
