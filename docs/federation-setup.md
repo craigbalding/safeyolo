@@ -146,11 +146,88 @@ safeyolo --root OWNER_ROOT support grants
 safeyolo --root OWNER_ROOT approvals delegations
 ```
 
-An active grant is configured authority, not proof that a model is progressing.
-Use the selected support agent's existing `support_grants` and inspection-only
-`support_operation` tool against the addressed owner to verify authorized access.
-The [support reference](peer-support.md#investigate-and-repair) describes the exact
-operation interface. Do not manufacture a repair merely to test access.
+On the source host, select the configured support agent and destination home.
+In this example, replace `support` with that agent's name, `worker` with its
+selected target, and `primary` with the imported home route. The support agent
+must have a current run. This command uses its existing authenticated listener
+and the destination's current grant. It performs an inspection and records a
+receipt; it runs no guest command or lifecycle action:
+
+```sh
+safeyolo --root SOURCE_ROOT support verify incident worker --agent support --home primary
+```
+
+The result separates saved connection configuration, endpoint protection,
+broker authentication, owning-instance Core request/reply, notification
+transport, applicable authority and current sandbox/control/harness state.
+`Authorized inspection verified: true` establishes this selected read path.
+The result prints the original inspection operation ID and its canonical audit
+reference. Model health remains unverified. Observation sources show their
+last observation, age and unavailable reason; recorded or old evidence is not
+a current health guarantee. If a source is unavailable, inspect that owner's
+Coord diagnostics and the named observation source. For local support, omit
+`--home`.
+
+Read selected operational notices through the same source identity:
+
+```sh
+safeyolo --root SOURCE_ROOT support notices --agent support --home primary
+```
+
+Each notice shows its meaning, durable target, original run/launch, expected
+stop, source/observation times, canonical event and available owner evidence.
+Recovery evidence does not establish model progress. A replaced or unreadable
+source remains explicit. `needs_operator` includes the selected room's
+agent-authored signal claim; it does not resolve the signal. The command reads
+one retained page. Use its scanned cursor with `--since` for another page.
+This cursor is separate from coding-harness cursors. An empty page does not
+establish complete observation coverage. An unavailable feed exits unsuccessfully.
+An unresolved notice retains its unavailable status and next action. Neither
+is an empty healthy list. See [event meanings](operational-events.md).
+
+On the destination owner, list the existing private operation receipts:
+
+```sh
+safeyolo --root OWNER_ROOT support receipts
+```
+
+The list shows the original initiating identity and run, target/run, recorded
+action, grant/lifetime at admission, timing, outcome, completion verification
+and canonical audit delivery. A completed inspection verifies the inspection,
+not the target's model health. The list excludes guest output. Replace
+`OPERATION_ID` below with the original operation ID shown by verification or
+the receipt list. These owner-side reads use the operator's Admin access;
+they remain available after support revocation:
+
+```sh
+safeyolo --root OWNER_ROOT support receipt OPERATION_ID
+safeyolo --root OWNER_ROOT support recover OPERATION_ID
+```
+
+`recover` reads the original receipt and separately observes the current durable
+target and current grant. It never submits the original operation again.
+An interrupted operation can remain `outcome_unknown` with completion unverified.
+Current state cannot attribute an uncertain earlier effect. Preserve the
+original ID and select any further action deliberately under current authority.
+If the target was recreated with the same name, recovery reports the identity
+change instead of observing the replacement as the old target. If two
+initiators used the same operation ID, select `--initiator` using the qualified
+principal shown in the list.
+
+The existing `inspect` session also offers `verify`, `notices`, `receipts`,
+`receipt` and `recover`. On the source, select the support agent for `verify`
+and `notices`; append the home route name for a remote owner. On the destination,
+select the target for its `receipts` listing. Receipt reads continue to display
+the original owner and durable target.
+
+Add `--output` to an explicit receipt/detail read only when private, untrusted
+guest results are needed. Source-side recovery of the recorded result uses
+`support result OPERATION_ID --agent support --home primary`, optionally with
+`--output`; the destination rechecks the agent's current authority, including
+permission for retained guest output. After narrowing or revocation this read
+can be refused. Use the local owning operator's receipt and diagnostic commands
+when remote authority or transport is unavailable. A lost reply is a reason to
+read that original receipt, not repeat the command with a new ID.
 
 Run the same named configuration command to edit. Revoke by name on the owner:
 
@@ -195,6 +272,7 @@ The [support](peer-support.md), [approval](delegated-approvals.md) and
 [factory](factories.md#delegate-direction-to-an-operator-agent) references retain the explicit
 file interfaces, error semantics and authority limits. Guided configuration is
 the first delivery slice of [#1465](https://github.com/craigbalding/safeyolo/issues/1465).
-Installed verification/recovery, human operation receipts and ongoing supervision
-across at least three saved Command Centre instances remain separate acceptance
-work in that issue. These CLI results do not establish those later outcomes.
+Human CLI verification/recovery uses the same owners and private receipts.
+Installed TLS/Tailscale journeys and ongoing supervision across at least three
+saved Command Centre instances still require their separate acceptance in that
+issue. Source CLI tests do not establish those installed outcomes.

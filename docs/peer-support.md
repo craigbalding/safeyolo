@@ -436,8 +436,12 @@ running. If a command times out, SafeYolo stops its host transport; that does
 not prove that guest descendants stopped. No automatic rollback is performed.
 
 Private receipts under the owning instance's `data/support-operations` retain
-bounded guest output. Current support authority is required for subsequent
-result reads. A local operation's pending response can still deliver output
+bounded guest output. Agent result reads require current support authority.
+On the owning operator host, the CLI receipt and recovery views instead use
+the operator's Admin access. They retain the original operation identity after
+support revocation and exclude guest output unless `--output` is selected.
+See the [human verification and recovery path](federation-setup.md#verify-change-and-revoke).
+A local operation's pending response can still deliver output
 after narrowing, expiry or revocation. Remote pending responses recheck B's
 current disclosure authority before returning a saved result; A also rechecks
 the source run and selected route. Already-started commands can still finish,

@@ -23,6 +23,51 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
             ));
         }
     };
+    if request.method() == Method::POST
+        && matches!(
+            path,
+            "/admin/support-operations/list" | "/admin/support-operations/read"
+        )
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Read {
+            operation_id: Option<String>,
+            initiator: Option<String>,
+            target_id: Option<String>,
+            #[serde(default)]
+            include_output: bool,
+            #[serde(default)]
+            current: bool,
+            #[serde(default = "receipt_limit")]
+            limit: usize,
+        }
+        fn receipt_limit() -> usize {
+            100
+        }
+        let value = match read_json(request).await? {
+            ParsedBody::Value(value) => value.0.clone(),
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => json!({}),
+        };
+        let Ok(input) = serde_json::from_value::<Read>(value) else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"select original operation_id, optional initiator, include_output, current and limit"}),
+            ));
+        };
+        return Ok(crate::host_platform::in_config(config, async {
+            let result = if path.ends_with("/list") {
+                crate::peer_support::operations::receipts::list(input.limit, input.target_id.as_deref())
+            } else if let Some(id) = input.operation_id {
+                crate::peer_support::operations::receipts::detail(state, &id, input.initiator.as_deref(), input.include_output, input.current).await
+            } else { return response(StatusCode::BAD_REQUEST, json!({"error":"original operation_id required; list support receipts first"})); };
+            match result {
+                Ok(value) => response(StatusCode::OK, value),
+                Err(error) => response(StatusCode::SERVICE_UNAVAILABLE, json!({"availability":"unavailable","error":error.to_string(),"next_action":"On this owner, inspect support receipts and local agent diagnostics; do not repeat the original operation."})),
+            }
+        }).await);
+    }
     if request.method() == Method::GET && path == "/admin/support-grants" {
         return Ok(crate::host_platform::in_config(config, async {
             match crate::peer_support::current_policy(state).and_then(|policy| {
