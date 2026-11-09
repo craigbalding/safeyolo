@@ -5,6 +5,8 @@ verify that access. Use the operator accounts on the hosts that own those
 instances. Each instance must already be initialized with its agents configured.
 You need each owner's command-line interface (CLI) and, for different hosts,
 an existing authenticated administrative channel for the file transfers below.
+Run each command in that host's operator terminal. Use absolute paths for roots;
+relative export and import paths refer to that terminal's working directory.
 
 Replace `OWNER_ROOT` with the destination instance's directory and `SOURCE_ROOT`
 with the support agent's instance directory. Multiple roots on one host are
@@ -40,8 +42,8 @@ use `tailscale` with an existing displayed Tailscale address, `loopback` for a
 source on this same host, or `tls` with generated dedicated material or your
 organization's certificate, key and certificate authority (CA) files already
 on this owner. Tailscale uses the resolved stable node identity and existing
-tailnet policy. Loopback
-requires a literal loopback address. Neither asks for certificates.
+tailnet policy. Loopback requires a literal loopback address. Neither asks for
+certificates.
 
 For Transport Layer Security (TLS), select the listen address and certificate
 names. Generated material asks for CA and leaf lifetimes. The broker checks
@@ -95,29 +97,31 @@ change; the command does not retry the write automatically.
 
 ### Verify from the source
 
-If the source support agent is stopped, start it on the source host first.
-This starts its configured sandbox and coding harness:
+If the source support agent has no running sandbox, start its configured
+sandbox on the source host first. Inspection needs a current support run;
+it does not need a running coding harness. This command starts no coding
+command or launch hooks:
 
 ```sh
-safeyolo --root SOURCE_ROOT agent start support
+safeyolo --root SOURCE_ROOT agent start support --sandbox-only
 ```
 
 With that agent in its current run, execute this on the source host. The
 command uses that agent's authenticated listener and the owner's current grant.
-It performs an inspection and records its receipt. It
-runs no guest command or lifecycle action:
+It performs an inspection and records its receipt. It runs no guest command
+or lifecycle action:
 
 ```sh
 safeyolo --root SOURCE_ROOT support verify incident worker --agent support --home primary
 ```
 
-A successful result includes these representative fields; identities and the
-original operation ID differ for your instances:
+A successful result includes these representative fields among the connection,
+authority and target observations. The original operation ID differs for your
+inspection:
 
 ```text
 Authorized inspection verified: true
 Model health: unverified
-...
 Original operation ID: inspect-...
 Completion verified: true
 ```
@@ -131,15 +135,34 @@ old evidence or an empty page is not a current health guarantee.
 A notification stream can be absent before the first notification creates it;
 verification reports notification availability separately.
 
-If verification fails, follow its named next action. On the source, use
-`configure connection` → `verify` for `primary` to check the route and owner.
-On the destination, use `support grants` to check `incident` and its durable
-target bindings. Check the selected source agent's current run if its listener
-is unavailable. If an inspection ID was printed before a lost reply, read
-`support result OPERATION_ID --agent support --home primary` on this source;
-use [the owner's receipt recovery](#verify-change-and-revoke) if the route or
-authority is unavailable. Preserve the original ID instead of repeating the
-operation. For support within one instance, omit `--home`.
+### Return after a failed or interrupted inspection
+
+If an operation ID was printed before a lost reply, recover that inspection
+before considering another operation. On the same source host, replace
+`OPERATION_ID` with that original ID:
+
+```sh
+safeyolo --root SOURCE_ROOT support result OPERATION_ID --agent support --home primary
+```
+
+This reads the original receipt through current support authority. If the route
+or authority is unavailable, use [the owner's receipt recovery](#verify-change-and-revoke).
+An unknown outcome remains unknown; reading current target state does not prove
+what the earlier operation did. For support within one instance, omit `--home`.
+
+For a failed verification, follow the printed next action on the named host.
+Use the same `safeyolo --root SOURCE_ROOT` or `safeyolo --root OWNER_ROOT`
+prefix as the earlier commands for that host:
+
+| Reported failure | Where to return | What to check |
+| --- | --- | --- |
+| Source listener unavailable | Source host, `agent status support` | The selected support agent's current sandbox run and proxy attachment. |
+| Route, protection, authentication or owning instance unavailable | Source host, `configure connection` → `verify` for `primary` | The selected route and named owner. After incomplete setup, use [the completed-step return](#return-after-interruption-or-certificate-changes). |
+| Inspection authority inactive or missing | Destination owner, `support grants` | `incident`, its lifetime, peer trust generation and durable target bindings. Use `configure support incident` for a deliberate change. |
+| Target or observation source unavailable | Destination owner, `agent diagnostics worker` | The named target/source and its current run. Preserve the original receipt and observation age. |
+
+After correcting the reported cause, verify the intended path again. Preserve
+any earlier original ID; do not use a new inspection to reconcile an old one.
 
 ## Supervise saved instances in Command Centre
 
