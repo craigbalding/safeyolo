@@ -54,6 +54,9 @@ or resulting behaviour before implementation. Keep this proportional to the
 change; it is not a mandatory questionnaire or approval step. Match implementation
 and verification to the agreed effort, and flag material expansion early.
 
+For changes to operator journeys, apply the
+[operator interaction contract](docs/operator-interaction-contract.md).
+
 Before committing, apply this necessity checklist to the diff:
 
 - State the concrete outcome separately from the implementation; added scope
