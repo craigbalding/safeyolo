@@ -171,11 +171,19 @@ pub(crate) async fn operate(
         Err(error) => (false, Value::Null, json!(error.to_string())),
     };
     let current = host_runs::read(&agent.name)?;
+    let next_start = host_lifecycle::runtime(&agent).await?;
+    let returns_on_restart = operation == "unmount"
+        && agent.mounts.iter().any(|spec| {
+            host_boot::mount_destination(spec)
+                .is_ok_and(|target| Path::new(&target) == Path::new(operand))
+        });
     Ok(
-        json!({"ok":ok,"operation":operation,"agent":agent.name,"run_id":generation,
+        json!({"ok":ok,"operation":operation,"root":host_platform::config_dir(),"agent":agent.name,"agent_id":agent.id,"run_id":generation,
         "share":share,"error":error,"live_mounts":current.as_ref().map(recorded),
         "saved_mounts":agent.mounts,"saved_configuration_changed":false,
-        "scope":"current sandbox only; saved mounts are unchanged. The next start uses saved mounts.",
+        "next_start_configuration":next_start["next_start_configuration"],
+        "saved_mount_returns_on_restart":returns_on_restart,
+        "scope":if returns_on_restart {"current sandbox only; this saved mount returns on the next explicit start. Use agent mounts remove to remove its saved entry."} else {"current sandbox only; saved mounts are unchanged. The next explicit start uses saved mounts; unsaved live additions disappear."},
         "recovery":if ok {Value::Null} else {json!(format!("Inspect agent status {}. Retry the same action when safe. An uncertain backend outcome retains its owned resources and can require an explicit stop/start; no restart was performed.",agent.name))}}),
     )
 }

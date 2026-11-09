@@ -140,6 +140,19 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
 pub(crate) fn open(root: &Path) -> Result<Connection, Error> {
     open_with_flags(root, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
 }
+
+/// Retirement inspects existing records without bootstrapping or mutating Coord.
+pub(crate) fn agent_references(root: &Path, agent_id: &str) -> Result<Value, Error> {
+    let connection = open_with_flags(root, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let rooms = connection.prepare("SELECT r.name FROM memberships m JOIN rooms r USING(room_id) WHERE m.principal_kind='agent' AND m.principal_id=?1 UNION SELECT r.name FROM coord_membership_grants g JOIN rooms r USING(room_id) WHERE g.agent_id=?1 ORDER BY 1")?
+        .query_map([agent_id], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    let claims = connection.prepare("SELECT work_id, room_id FROM coord_work WHERE state='claimed' AND json_extract(document_json,'$.claim_agent_id')=?1 ORDER BY work_id")?
+        .query_map([agent_id], |row| Ok(json!({"work_id":row.get::<_, String>(0)?,"room_id":row.get::<_, String>(1)?})))?.collect::<Result<Vec<_>, _>>()?;
+    Ok(
+        json!({"state":"observed","membership_records":rooms,"claimed_work":claims,
+        "scope":"Retained local records, not effective access. Membership, attention, work and history remain; reconcile work through Coord."}),
+    )
+}
 fn open_with_flags(root: &Path, flags: rusqlite::OpenFlags) -> Result<Connection, Error> {
     let connection = Connection::open_with_flags(directory(root)?.join("v0.db"), flags)?;
     connection.busy_timeout(Duration::from_secs(5))?;

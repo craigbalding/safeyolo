@@ -888,7 +888,7 @@ nodes:
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: proxy/tests/native_host_cli.rs
-          sha256: 2997f1266c63feb1b74334aa714f75846302f8f5c60a7a2d68074ad925f53383
+          sha256: f39e3ed72ebe189b907921dfc95363d9b9ed4adf679d14d9e912df407bc3eb56
       setup: "Use the prepared native proxy/platform lane for system evidence. For an ownership probe, select the affected native_host_cli test with the trusted Cargo toolchain and warm target."
       verify: "sha256sum tests/blackbox/run-tests.sh tests/blackbox/host/uds_transport.py proxy/tests/native_host_cli.rs"
       run:

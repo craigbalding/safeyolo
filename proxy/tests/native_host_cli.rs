@@ -1810,7 +1810,7 @@ fn conflicting_ids_reject_named_operations_without_touching_either_agent() {
     let before: Vec<_> = paths.iter().map(|path| fs::read(path).unwrap()).collect();
     for name in ["alpha", "beta"] {
         for operation in [
-            "stop", "start", "cleanup", "status", "attach", "shell", "present",
+            "stop", "start", "cleanup", "retire", "status", "attach", "shell", "present",
         ] {
             let rejected = cli(&root, &["agent", operation, name]);
             assert!(!rejected.status.success(), "{operation} {name}");
@@ -4011,4 +4011,289 @@ fn native_demo_is_discoverable_and_early_cancellation_preserves_workspace() {
         "operator files"
     );
     assert_eq!(fs::read(root.path().join("policy.toml")).unwrap(), original);
+}
+
+#[test]
+fn saved_mounts_are_destination_keyed_and_preserve_other_configuration() {
+    for inline in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("instance");
+        initialize(&root);
+        for directory in ["workspace", "old", "new", "unrelated"] {
+            fs::create_dir(temp.path().join(directory)).unwrap();
+        }
+        let spec =
+            |source: &str, guest: &str| format!("{}:{guest}", temp.path().join(source).display());
+        let old = spec("old", "/mnt/selected");
+        let unrelated = spec("unrelated", "/mnt/unrelated:ro");
+        for name in ["alice", "bob"] {
+            value(cli(
+                &root,
+                &[
+                    "agent",
+                    "create",
+                    name,
+                    "--workspace",
+                    temp.path().join("workspace").to_str().unwrap(),
+                    "--launcher",
+                    "supervisor",
+                ],
+            ));
+        }
+        value(cli(
+            &root,
+            &[
+                "agent",
+                "configure",
+                "alice",
+                "--mount",
+                &old,
+                "--mount",
+                &unrelated,
+            ],
+        ));
+        let policy_path = root.join("policy.toml");
+        let mut document: toml_edit::DocumentMut =
+            fs::read_to_string(&policy_path).unwrap().parse().unwrap();
+        if inline {
+            let table = document["agents"]["alice"].as_table().unwrap().clone();
+            document["agents"]["alice"] =
+                toml_edit::Item::Value(toml_edit::Value::InlineTable(table.into_inline_table()));
+        }
+        let bob = document["agents"]["bob"].clone();
+        fs::write(&policy_path, document.to_string()).unwrap();
+        let runtime_path = root.join("agents/alice/runtime.json");
+        let recorded = b"{\"state\":\"running\",\"run_id\":\"unknown-receipt\"}";
+        fs::write(&runtime_path, recorded).unwrap();
+        // An unavailable old source must not prevent replacement or removal.
+        fs::remove_dir(temp.path().join("old")).unwrap();
+        let replacement = spec("new", "/mnt//selected/.:ro");
+        let changed = value(cli(
+            &root,
+            &["agent", "mounts", "update", "alice", &replacement],
+        ));
+        assert_eq!(changed["destination"], "/mnt/selected");
+        assert_eq!(changed["saved_configuration_changed"], true);
+        assert_eq!(
+            changed["saved_mounts"],
+            serde_json::json!([replacement, unrelated])
+        );
+        assert_eq!(fs::read(&runtime_path).unwrap(), recorded);
+        let once = fs::read(&policy_path).unwrap();
+        for action in ["add", "update", "add"] {
+            let repeated = value(cli(
+                &root,
+                &["agent", "mounts", action, "alice", &replacement],
+            ));
+            assert_eq!(repeated["saved_configuration_changed"], false);
+            assert_eq!(fs::read(&policy_path).unwrap(), once);
+        }
+        value(cli(
+            &root,
+            &[
+                "agent",
+                "configure",
+                "alice",
+                "--mount",
+                &replacement,
+                "--mount",
+                &replacement,
+            ],
+        ));
+        assert_eq!(fs::read(&policy_path).unwrap(), once);
+        for operand in [
+            "/:/safeyolo",
+            "/missing-saved-source:/mnt/new",
+            "/:/mnt/../escape",
+            "/:/mnt/x:rw",
+        ] {
+            assert!(
+                !cli(&root, &["agent", "mounts", "add", "alice", operand])
+                    .status
+                    .success()
+            );
+            assert_eq!(fs::read(&policy_path).unwrap(), once);
+        }
+        value(cli(
+            &root,
+            &[
+                "mount",
+                "protect",
+                temp.path().join("new").to_str().unwrap(),
+            ],
+        ));
+        assert!(
+            !cli(
+                &root,
+                &[
+                    "agent",
+                    "mounts",
+                    "update",
+                    "alice",
+                    &spec("new", "/mnt/selected")
+                ]
+            )
+            .status
+            .success()
+        );
+        assert_eq!(fs::read(&policy_path).unwrap(), once);
+        fs::remove_dir(temp.path().join("new")).unwrap();
+        for destination in ["/mnt/selected", "/mnt//selected/."] {
+            let removed = value(cli(
+                &root,
+                &["agent", "mounts", "remove", "alice", destination],
+            ));
+            assert_eq!(removed["saved_mounts"], serde_json::json!([unrelated]));
+        }
+        let after: toml_edit::DocumentMut =
+            fs::read_to_string(&policy_path).unwrap().parse().unwrap();
+        assert_eq!(after["agents"]["bob"].to_string(), bob.to_string());
+        assert_eq!(fs::read(&runtime_path).unwrap(), recorded);
+    }
+}
+
+#[test]
+fn retirement_previews_retention_and_preserves_a_concurrent_saved_writer() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    let workspace = temp.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let mut ids = Vec::new();
+    for name in ["alice", "bob"] {
+        let created = value(cli(
+            &root,
+            &[
+                "agent",
+                "create",
+                name,
+                "--workspace",
+                workspace.to_str().unwrap(),
+                "--launcher",
+                "supervisor",
+            ],
+        ));
+        ids.push(created["configuration"]["id"].clone());
+    }
+    let home = root.join("agents/alice/home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("retained"), b"operator data").unwrap();
+    let policy = fs::read(root.join("policy.toml")).unwrap();
+    let preview = value(cli(&root, &["agent", "retire", "alice"]));
+    assert_eq!(preview["retirement_state"], "preview");
+    assert_eq!(preview["agent_id"], ids[0]);
+    assert_eq!(preview["home"], home.to_str().unwrap());
+    assert_eq!(preview["retained_references"]["coord"]["state"], "unknown");
+    assert_eq!(
+        preview["retained_references"]["credentials"]["state"],
+        "unknown"
+    );
+    assert_eq!(fs::read(root.join("policy.toml")).unwrap(), policy);
+    assert!(!root.join("data/credentials.enc").exists());
+    // The launcher's existing stop hook represents a cooperating writer that
+    // completes after retirement preflight and before final saved deletion.
+    let script = temp.path().join("stop.sh");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n'{}' --root '{}' agent configure bob --memory 777 >/dev/null\n",
+            env!("CARGO_BIN_EXE_safeyolo"),
+            root.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(root.join("agents/alice/current-launch.json"), serde_json::to_vec(&serde_json::json!({
+        "name":"alice","agent_id":ids[0],"launch_id":"launch-retirement","state":"unknown","launcher":{"kind":"script","script":script}
+    })).unwrap()).unwrap();
+    let retired = value(cli(&root, &["agent", "retire", "alice", "--yes"]));
+    assert_eq!(retired["retirement_state"], "retired");
+    assert_eq!(retired["definition_removed"], true);
+    assert_eq!(fs::read(home.join("retained")).unwrap(), b"operator data");
+    let document: toml_edit::DocumentMut = fs::read_to_string(root.join("policy.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(document["agents"].get("alice").is_none());
+    assert_eq!(
+        document["agents"]["bob"]["agent_id"].as_str(),
+        ids[1].as_str()
+    );
+    assert_eq!(
+        document["agents"]["bob"]["memory_mb"].as_integer(),
+        Some(777)
+    );
+    assert!(!root.join("data/credentials.enc").exists());
+}
+
+#[test]
+fn retirement_preserves_definition_on_stop_failure_and_reports_final_write_failure() {
+    for fail_stop in [true, false] {
+        if !fail_stop && unsafe { libc::geteuid() } == 0 {
+            continue;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("instance");
+        initialize(&root);
+        let workspace = temp.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let created = value(cli(
+            &root,
+            &[
+                "agent",
+                "create",
+                "alice",
+                "--workspace",
+                workspace.to_str().unwrap(),
+                "--launcher",
+                "supervisor",
+            ],
+        ));
+        let directory = root.join("agents/alice");
+        fs::create_dir_all(directory.join("home")).unwrap();
+        fs::write(directory.join("home/retained"), "kept").unwrap();
+        let script = temp.path().join("stop.sh");
+        fs::write(
+            &script,
+            if fail_stop {
+                "#!/bin/sh\nexit 1\n".to_owned()
+            } else {
+                format!("#!/bin/sh\nchmod 500 '{}'\n", root.display())
+            },
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(directory.join("current-launch.json"), serde_json::to_vec(&serde_json::json!({
+            "name":"alice","agent_id":created["configuration"]["id"],"launch_id":"launch-failure","state":"unknown","launcher":{"kind":"script","script":script}
+        })).unwrap()).unwrap();
+        let policy = fs::read(root.join("policy.toml")).unwrap();
+        let failed = cli(&root, &["agent", "retire", "alice", "--yes"]);
+        // Restore permission before assertions so the fixture is always removable.
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            !failed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&failed.stdout)
+        );
+        let result: Value = serde_json::from_slice(&failed.stdout).unwrap();
+        assert_eq!(result["retirement_state"], "incomplete");
+        assert_eq!(
+            result["failed_stage"],
+            if fail_stop { "stop" } else { "saved_removal" }
+        );
+        assert_eq!(result["definition_removed"], false);
+        assert_eq!(result["saved_definition"]["state"], "present");
+        if !fail_stop {
+            assert_eq!(result["cleanup_completed"], true);
+            assert_eq!(result["runtime_state"], "stopped");
+            let retry = value(cli(&root, &["agent", "retire", "alice", "--yes"]));
+            assert_eq!(retry["retirement_state"], "retired");
+        } else {
+            assert_eq!(fs::read(root.join("policy.toml")).unwrap(), policy);
+        }
+        assert_eq!(
+            fs::read_to_string(directory.join("home/retained")).unwrap(),
+            "kept"
+        );
+    }
 }
