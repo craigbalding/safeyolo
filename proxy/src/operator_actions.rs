@@ -98,6 +98,9 @@ pub(crate) fn agent_result(result: &Value) -> Value {
     let mut view = json!({"status":result["status"],"presentation":result["presentation"],
         "preview_active":result["preview_active"],"reused":result["reused"],
         "expires_at":expires_at,"diagnostic":result["diagnostic"]});
+    if let Some(diagnostic) = view["diagnostic"].as_object_mut() {
+        diagnostic.remove("operator_details");
+    }
     if result["status"] == "started"
         && expires_at
             .as_str()
@@ -346,7 +349,7 @@ pub(crate) fn resolve(
                 result
             }
             Err(error) => {
-                json!({"status":"failed","diagnostic":error.json(),"issued_access":issued})
+                json!({"status":"failed","diagnostic":error.operator_json(),"issued_access":issued})
             }
         };
         let record = writer

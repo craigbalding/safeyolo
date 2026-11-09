@@ -669,6 +669,158 @@ async fn check_interrupted_desktop_action() {
 }
 
 #[test]
+fn desktop_readiness_failures_are_distinct_private_and_cleaned_up() {
+    let _environment = DESKTOP_TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(check_desktop_readiness_failures());
+}
+
+async fn check_desktop_readiness_failures() {
+    for (fault, code, command_state) in [
+        ("nonzero", "desktop_not_ready", "completed"),
+        ("timeout", "desktop_readiness_timeout", "timed_out"),
+        ("spawn", "desktop_readiness_command_failed", "command_error"),
+        (
+            "signal",
+            "desktop_readiness_command_failed",
+            "transport_cancelled",
+        ),
+    ] {
+        let root = TempDir::new().unwrap();
+        fixture(root.path());
+        fs::write(root.path().join("config.toml"),"admin_port=0\nadmin_api_token_file='token'\npolicy_file='policy.toml'\nreadiness_file='ready.json'\naudit_log_path='audit.jsonl'\n[desktop]\nsize='1280x800'\n").unwrap();
+        install_preview_host_commands(root.path());
+        let mut run = OwnedRun::start(root.path());
+        bind_action_run(root.path(), "alice", ID);
+        fs::write(root.path().join("desktop-ready"), "").unwrap();
+        fs::write(root.path().join("readiness-fault"), fault).unwrap();
+        let script = root.path().join("bin/runsc");
+        let source = fs::read_to_string(&script).unwrap();
+        // The initial status succeeds. Only the post-presentation readiness
+        // boundary fails, after the normal approval and preview setup.
+        fs::write(
+            &script,
+            source.replace(
+                "*\"guest-desktop status\"*) [ -e \"$SAFEYOLO_CONFIG_DIR/desktop-ready\" ];;",
+                r#"*"guest-desktop status"*)
+        fault=$(/bin/cat "$SAFEYOLO_CONFIG_DIR/readiness-fault")
+        if [ ! -e "$SAFEYOLO_CONFIG_DIR/readiness-checked" ]; then
+          : > "$SAFEYOLO_CONFIG_DIR/readiness-checked"
+          if [ "$fault" = spawn ]; then /bin/chmod -x "$0"; fi
+          exit 0
+        fi
+        printf 'private-readiness-output'
+        printf 'private-readiness-error' >&2
+        case "$fault" in
+          nonzero)
+            /usr/bin/head -c 131072 /dev/zero | /usr/bin/tr '\000' x
+            /usr/bin/head -c 131072 /dev/zero | /usr/bin/tr '\000' y >&2
+            exit 23;;
+          timeout) exec /bin/sleep 30;;
+          signal) kill -TERM $$;;
+          *) exit 2;;
+        esac
+        ;;"#,
+            ),
+        )
+        .unwrap();
+        let mut config = config(root.path());
+        config.native_product = true;
+        config.native_config_dir = Some(root.path().into());
+        config.native_config_path = Some(root.path().join("config.toml"));
+        config.policy_file = Some(root.path().join("policy.toml"));
+        let proxy = Proxy::start(config).await.unwrap();
+        let ready: Value =
+            serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();
+        let port = ready["admin_port"].as_u64().unwrap() as u16;
+        let auth = [("Authorization", format!("Bearer {TOKEN}"))];
+        let pending = action_request(
+            root.path(),
+            "POST",
+            "/operator-actions",
+            json!({"action_id":"desktop.present","parameters":{"ttl_seconds":60}}),
+            "alice",
+        )
+        .await;
+        assert_eq!(status(&pending), 202, "{fault}: {:?}", body(&pending));
+        let id = body(&pending)["approval_id"].as_str().unwrap().to_owned();
+        let started = std::time::Instant::now();
+        let approved = body(
+            &request(
+                port,
+                "POST",
+                &format!("/admin/approvals/{id}"),
+                &auth,
+                br#"{"decision":"approve"}"#,
+            )
+            .await,
+        );
+        assert_eq!(approved["status"], "approved", "{fault}: {approved}");
+        assert_eq!(
+            approved["result"]["status"], "failed",
+            "{fault}: {approved}"
+        );
+        assert_eq!(
+            approved["result"]["diagnostic"]["code"], code,
+            "{fault}: {approved}"
+        );
+        let details = &approved["result"]["diagnostic"]["operator_details"];
+        assert_eq!(details["phase"], "desktop_readiness");
+        assert_eq!(details["state"], command_state);
+        if fault == "nonzero" {
+            assert_eq!(details["exit_code"], 23);
+            for stream in ["stdout", "stderr"] {
+                assert_eq!(details[stream].as_str().unwrap().len(), 4096);
+                assert_eq!(details[format!("{stream}_truncated")], true);
+            }
+        } else if fault == "timeout" {
+            assert!(started.elapsed() >= Duration::from_secs(8));
+            assert!(started.elapsed() < Duration::from_secs(12));
+            assert_eq!(details["stdout"], "private-readiness-output");
+            assert_eq!(details["stderr"], "private-readiness-error");
+            assert!(details["exit_code"].is_null());
+        } else if fault == "spawn" {
+            assert!(details["error_kind"].is_string());
+            assert!(details["error"].is_string());
+        } else {
+            assert_eq!(details["transport_signal"], libc::SIGTERM);
+            assert!(details["exit_code"].is_null());
+        }
+        let retained =
+            body(&request(port, "GET", &format!("/admin/approvals/{id}"), &auth, b"").await);
+        assert_eq!(
+            retained["result"]["diagnostic"],
+            approved["result"]["diagnostic"]
+        );
+        assert_eq!(retained["grant_active"], false);
+        assert_eq!(retained["result"]["preview_active"], false);
+        for path in [
+            format!("/operator-actions/{id}"),
+            format!("/approvals/{id}"),
+        ] {
+            let response = action_request(root.path(), "GET", &path, Value::Null, "alice").await;
+            assert_eq!(status(&response), 200);
+            let text = String::from_utf8_lossy(&response);
+            assert!(
+                !text.contains("operator_details") && !text.contains("private-readiness"),
+                "{text}"
+            );
+            assert_eq!(body(&response)["result"]["diagnostic"]["code"], code);
+        }
+        assert!(!root.path().join("opened").exists());
+        assert!(!root.path().join("desktop-start-command").exists());
+        assert!(!root.path().join("desktop-stopped").exists());
+        assert!(root.path().join("desktop-ready").exists());
+        proxy.shutdown().await;
+        drop(run.child.stdin.take());
+        run.assert_exited();
+    }
+}
+
+#[test]
 fn typed_desktop_action_binds_approval_and_keeps_preview_access_with_operator() {
     let _environment = DESKTOP_TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
     tokio::runtime::Builder::new_current_thread()

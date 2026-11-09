@@ -142,6 +142,16 @@ its diagnostic history. Browser network events and a return to a visible page
 trigger fresh checks. A browser's offline hint alone does not disable a working
 local preview.
 
+If an approved `desktop.present` action fails its final readiness check, inspect
+the saved approval result. `desktop_not_ready` means the status command exited
+unsuccessfully. `desktop_readiness_timeout` means the check exceeded eight
+seconds. `desktop_readiness_command_failed` means SafeYolo could not complete
+the command. The operator result's diagnostic includes `operator_details` with
+the failed phase, command state and available exit or transport status. It
+retains at most 4096 bytes from each output stream and reports truncation.
+Keep these details private; guest output can contain sensitive data. Agent
+responses omit these details. Inspect current state before requesting again.
+
 The page checks both legs of its existing viewer connection with WebSocket
 Ping/Pong messages. The replies verify the existing browser-to-SafeYolo and
 SafeYolo-to-guest WebSocket paths. They do not check the relay's existing TCP

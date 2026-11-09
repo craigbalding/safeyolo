@@ -7,6 +7,9 @@
 mod command_output;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use command_output::wait_guest_command_output_bounded;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;

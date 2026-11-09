@@ -56,6 +56,11 @@ pub(super) async fn read(
                 return match crate::approvals::pending::current_view(&writer, &policy, &record, state.as_ref()) {
                     Ok(mut view) => {
                         if let Some(fields) = view.as_object_mut() { fields.shift_remove("untrusted_reason_text"); fields.shift_remove("details"); }
+                        if action["kind"] == "operator_action"
+                            && let Some(diagnostic) = view["result"]["diagnostic"].as_object_mut()
+                        {
+                            diagnostic.remove("operator_details");
+                        }
                         if read == Read::Diagnostic { view["diagnostic"] = json!({"decision":"require_approval","agent":action["agent"],"host":action["host"],"port":action["port"]}); }
                         response(200, view)
                     }

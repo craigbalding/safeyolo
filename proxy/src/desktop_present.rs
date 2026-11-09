@@ -109,16 +109,29 @@ pub(crate) fn instance_id() -> Result<String, Diagnostic> {
 pub(crate) struct Diagnostic {
     pub(crate) code: &'static str,
     pub(crate) message: &'static str,
+    operator_details: Option<Value>,
 }
 
 impl Diagnostic {
     pub(crate) fn json(&self) -> Value {
         json!({"code":self.code,"message":self.message,"graph":"triage-desktop-preview"})
     }
+
+    pub(crate) fn operator_json(&self) -> Value {
+        let mut value = self.json();
+        if let Some(details) = &self.operator_details {
+            value["operator_details"] = details.clone();
+        }
+        value
+    }
 }
 
 fn diagnostic(code: &'static str, message: &'static str) -> Diagnostic {
-    Diagnostic { code, message }
+    Diagnostic {
+        code,
+        message,
+        operator_details: None,
+    }
 }
 
 fn executable(program: &str) -> bool {
@@ -425,6 +438,60 @@ async fn desktop_command_status(name: &str, command: &str) -> std::io::Result<i3
     Ok(status.code().unwrap_or(1))
 }
 
+async fn desktop_readiness(name: &str) -> Result<(), Diagnostic> {
+    // Keep one eight-second deadline across spawning and draining. The existing
+    // bounded capture retains partial output on timeout and kills on drop.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+    let result = match tokio::time::timeout_at(
+        deadline,
+        host_platform::spawn_guest_command_with_output(
+            name,
+            "/safeyolo/guest-desktop status",
+            true,
+            false,
+        ),
+    )
+    .await
+    {
+        Ok(Ok(child)) => {
+            host_platform::wait_guest_command_output_bounded(
+                child,
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+                4096,
+            )
+            .await
+        }
+        Ok(Err(error)) => Err(error),
+        Err(_) => Ok(json!({"state":"timed_out"})),
+    };
+    let mut details = match result {
+        Ok(output) => output,
+        Err(error) => json!({
+            "state":"command_error",
+            "error_kind":format!("{:?}",error.kind()),
+            "error":error.to_string().chars().take(4096).collect::<String>(),
+        }),
+    };
+    let mut error = match details["state"].as_str() {
+        Some("completed") if details["exit_code"] == 0 => return Ok(()),
+        Some("completed") => diagnostic(
+            "desktop_not_ready",
+            "The desktop readiness status command exited unsuccessfully. Inspect this action's operator diagnostic and run /safeyolo/guest-desktop status in this agent.",
+        ),
+        Some("timed_out") => diagnostic(
+            "desktop_readiness_timeout",
+            "The desktop readiness status command exceeded eight seconds. Inspect this action's operator diagnostic and the agent's desktop diagnostics before a new request.",
+        ),
+        _ => diagnostic(
+            "desktop_readiness_command_failed",
+            "SafeYolo could not complete the desktop readiness status command. Inspect this action's operator diagnostic and the agent's runtime diagnostics.",
+        ),
+    };
+    details["phase"] = json!("desktop_readiness");
+    error.operator_details = Some(details);
+    Err(error)
+}
+
 pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Result<Value, Error> {
     let mut presentations = PRESENTATIONS.lock().await;
     present_locked(
@@ -630,9 +697,7 @@ pub(crate) async fn present_action(
         if !authority.active() {
             return Err(diagnostic("authority_changed", "Preview authority expired or changed during desktop startup. Inspect the desktop before a new request."));
         }
-        if !matches!(tokio::time::timeout(std::time::Duration::from_secs(8), desktop_command_status(name, "/safeyolo/guest-desktop status >/dev/null 2>&1")).await, Ok(Ok(0))) {
-            return Err(diagnostic("desktop_not_ready", "The guest desktop did not become ready. Run /safeyolo/guest-desktop status and use the desktop preview graph."));
-        }
+        desktop_readiness(name).await?;
         if let Some(url) = &parameters.browser_url {
             let command = format!("/safeyolo/guest-desktop browser '{}'", url.replace('\'', "'\\''"));
             if !matches!(tokio::time::timeout(std::time::Duration::from_secs(8), desktop_command_status(name, &command)).await, Ok(Ok(0))) {
