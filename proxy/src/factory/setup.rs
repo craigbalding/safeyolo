@@ -15,6 +15,9 @@ pub(super) fn prepared(
         .workspaces
         .get(name)
         .is_none_or(|selected| folder.as_ref() == Some(selected));
+    if !workspace_matches {
+        return Ok(false);
+    }
     if let Some(folder) = &folder {
         host_boot::workspace(
             folder,
@@ -22,7 +25,6 @@ pub(super) fn prepared(
         )?;
     }
     Ok(folder.is_some()
-        && workspace_matches
         && (!choices.allow_unowned || agent.dangerously_allow_unowned)
         && agent.launcher.as_deref() == Some("supervisor")
         && agent.host_script.as_deref() == setup_script(root, &role.harness)?.to_str()
@@ -42,6 +44,25 @@ fn command(root: &Path, args: &[&str]) -> String {
         .join(" ")
 }
 
+fn resume(root: &Path, file: &Path, choices: &Preparation, extra: &[&str]) -> String {
+    let mut args = vec![
+        "factory".to_owned(),
+        "setup".to_owned(),
+        file.display().to_string(),
+    ];
+    for (role, workspace) in &choices.workspaces {
+        args.extend([
+            "--workspace".to_owned(),
+            format!("{role}={}", workspace.display()),
+        ]);
+    }
+    if choices.allow_unowned {
+        args.push("--dangerously-allow-unowned".to_owned());
+    }
+    args.extend(extra.iter().map(|arg| (*arg).to_owned()));
+    command(root, &args.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
 fn report(value: &Value) -> Result<(), Error> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
@@ -57,7 +78,7 @@ fn pending(value: &mut Value, state: &str, next: String, error: &str) -> Result<
 
 /// Starts only an authentication sandbox, checks the actual installed harness,
 /// then stops it. No supervisor, checkpoint initialization or model turn runs.
-async fn authentication(role: &Role) -> Result<(), Error> {
+async fn authentication(root: &Path, role: &Role) -> Result<(), Error> {
     let agents = host_agents::list()?;
     let agent = agents
         .iter()
@@ -65,11 +86,17 @@ async fn authentication(role: &Role) -> Result<(), Error> {
         .ok_or("role is not prepared")?;
     let runtime = host_lifecycle::runtime(agent).await?;
     if runtime["runtime_state"] != "stopped" {
+        if runtime["runtime_state"] != "running" || runtime["agent_state"] != "running" {
+            return Err(format!("agent {} has an unfinished or unknown runtime; inspect agent diagnostics and stop this role before repeating authentication",role.agent).into());
+        }
         return guest_preflight(
             role,
             role.args.as_deref().unwrap_or(&agent.user_default_args),
         )
         .await;
+    }
+    if role.harness == "codex" {
+        coord_setup::codex_state(&home(root, role), None, true, None)?;
     }
     let started = host_lifecycle::start(agent, "sandbox-start", None, None, false).await?;
     if let Some(error) = role_lifecycle_error(&started) {
@@ -226,7 +253,7 @@ pub(super) async fn run(root: &Path, file: &Path, options: &[String]) -> Result<
             "staging_error":staging_error,"authentication":"unverified"}));
     }
     let mut value = json!({"root":root,"source":file,"factory":snapshot.name,"snapshot":id,
-        "approved":same,"status":"preview","roles":roles,
+        "approved":same,"status":"preview","roles":roles,"resume":resume(root,&file,&choices,&[]),
         "login_roles":logins,"confirm_fresh_identity":fresh,"dangerously_allow_unowned":choices.allow_unowned,
         "previous_contract":if same {None} else {previous.as_ref()},
         "selected_contract":if !same || preview {Some(&snapshot)} else {None},
@@ -295,15 +322,11 @@ pub(super) async fn run(root: &Path, file: &Path, options: &[String]) -> Result<
             return pending(
                 &mut value,
                 "workspace-required",
-                command(
+                resume(
                     root,
-                    &[
-                        "factory",
-                        "setup",
-                        file.to_str().unwrap(),
-                        "--workspace",
-                        &format!("{name}=PATH"),
-                    ],
+                    &file,
+                    &choices,
+                    &["--workspace", &format!("{name}=PATH")],
                 ),
                 &format!("role {name} needs an owned workspace"),
             );
@@ -321,7 +344,7 @@ pub(super) async fn run(root: &Path, file: &Path, options: &[String]) -> Result<
         return pending(
             &mut value,
             "preparation-incomplete",
-            command(root, &["factory", "setup", file.to_str().unwrap()]),
+            resume(root, &file, &choices, &[]),
             &error.to_string(),
         );
     }
@@ -352,15 +375,7 @@ pub(super) async fn run(root: &Path, file: &Path, options: &[String]) -> Result<
                 let next = if state.try_exists()? {
                     command(root, &["agent", "diagnostics", &role.agent])
                 } else {
-                    command(
-                        root,
-                        &[
-                            "factory",
-                            "setup",
-                            file.to_str().unwrap(),
-                            "--confirm-fresh-identity",
-                        ],
-                    )
+                    resume(root, &file, &choices, &["--confirm-fresh-identity"])
                 };
                 return pending(
                     &mut value,
@@ -372,7 +387,7 @@ pub(super) async fn run(root: &Path, file: &Path, options: &[String]) -> Result<
         }
     }
     for (name, role) in &snapshot.roles {
-        let mut checked = authentication(role).await;
+        let mut checked = authentication(root, role).await;
         if checked.is_err() && interactive {
             eprintln!("role {name}: {}", checked.as_ref().unwrap_err());
             println!(
@@ -384,7 +399,7 @@ pub(super) async fn run(root: &Path, file: &Path, options: &[String]) -> Result<
             std::io::stdin().read_line(&mut choice)?;
             if choice.trim() == "login" {
                 checked = match login(&snapshot, name).await {
-                    Ok(()) => authentication(role).await,
+                    Ok(()) => authentication(root, role).await,
                     Err(error) => Err(error),
                 };
             }

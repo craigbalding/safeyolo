@@ -10,14 +10,18 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import sqlite3
 import subprocess
 import tomllib
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import tomlkit
 
+from tests.proxy_contracts.test_native_coord_operator import terminal
 from tests.proxy_contracts.test_native_policy_cli import native_instance
 
 
@@ -210,6 +214,39 @@ def test_setup_approval_and_workspace_requirements_do_not_launch_roles(tmp_path)
         assert '"approved": true' in result.stdout
         assert "coordinator=PATH" in result.stderr
         assert not tomllib.loads((instance.root / "policy.toml").read_text()).get("agents", {})
+
+
+def test_setup_keeps_explicit_codex_adoption_before_runtime_start(tmp_path, _binary_cache):
+    with prepared(tmp_path, _binary_cache) as (instance, _):
+        source = tmp_path / "contract/factory.toml"
+        auth = instance.root / "agents/fixture-relay/home/.codex/auth.json"
+        auth.write_text('{"synthetic":"unadopted-source-control"}')
+        auth.chmod(0o600)
+        original = auth.read_bytes()
+        result = instance.cli("factory", "setup", str(source), "--confirm-fresh-identity")
+        assert result.returncode != 0 and '"status": "authentication-required"' in result.stdout
+        assert "explicit agent-local adopt or reset" in result.stderr
+        assert auth.read_bytes() == original
+        assert_no_role_launch(instance)
+
+
+def test_setup_repairs_stopped_staging_and_explicitly_changed_workspace(tmp_path, _binary_cache):
+    with prepared(tmp_path, _binary_cache) as (instance, workspaces):
+        before = roles(instance)
+        old = Path(before["fixture-forge"]["folder"])
+        replacement = old.with_name("moved-owner-workspace")
+        old.rename(replacement)
+        choices = [f"owner={replacement}" if value.startswith("owner=") else value for value in workspaces]
+        instructions = instance.root / "agents/fixture-forge/home/.safeyolo/AGENTS.md"
+        original = instructions.read_bytes()
+        instructions.write_text("Unapproved stopped staging.\n")
+        result = instance.cli("factory", "setup", str(tmp_path / "contract/factory.toml"), *choices)
+        assert result.returncode != 0 and '"status": "checkpoint-required"' in result.stdout, (result.stdout, result.stderr)
+        current = roles(instance)
+        assert current["fixture-forge"]["folder"] == str(replacement)
+        assert {name: row["agent_id"] for name, row in current.items()} == {name: row["agent_id"] for name, row in before.items()}
+        assert instructions.read_bytes() == original
+        assert_no_role_launch(instance)
 
 
 def test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants(tmp_path, _binary_cache):
@@ -557,6 +594,48 @@ def test_factory_run_requires_confirmation_before_any_role_starts(tmp_path, _bin
                 assert not (directory / "home/.safeyolo/coord-supervisor-state.json").exists()
 
 
+def test_factory_setup_interruption_preserves_prepared_roles():
+    """First installed phase; provision role-local authentication afterward.
+
+    Supply a fresh owned installed root, dedicated Factory source and a JSON
+    role/workspace map. The supported host runtime and pinned NATS must already
+    be prepared. This uses real preparation, then interrupts at the existing
+    fresh-identity decision before any supervisor or model starts.
+    """
+    supplied = os.environ.get("SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE")
+    if not supplied:
+        pytest.skip("requires the separately owned installed guided-setup witness")
+    source = Path(supplied).resolve()
+    root = Path(os.environ["SAFEYOLO_FACTORY_ACCEPTANCE_ROOT"]).resolve()
+    name = tomllib.loads(source.read_text())["name"]
+    assert name == os.environ["SAFEYOLO_FACTORY_ACCEPTANCE_NAME"]
+    assert not (root / "factories" / name / "approved").exists()
+    workspaces = json.loads(os.environ["SAFEYOLO_FACTORY_ACCEPTANCE_WORKSPACES"])
+    arguments = ["factory", "setup", str(source)]
+    for role, folder in workspaces.items():
+        arguments += ["--workspace", f"{role}={folder}"]
+    instance = SimpleNamespace(root=root, environment=dict(os.environ))
+    with terminal(instance, arguments=arguments) as (process, master, until):
+        output = until(b"Approve this exact Factory contract?", timeout=180)
+        os.write(master, b"y\n")
+        output += until(b"Confirm these fresh identities for this launch?", timeout=180)
+        (root / "setup-interruption.log").write_bytes(output)
+        process.send_signal(signal.SIGINT)
+    configured = tomllib.loads((root / "policy.toml").read_text())["agents"]
+    snapshot = (root / "factories" / name / "approved").read_bytes()
+    declared = tomllib.loads(source.read_text())["roles"]
+    for role in declared.values():
+        home = root / "agents" / role["agent"] / "home"
+        assert not (home / ".safeyolo/coord-supervisor-state.json").exists()
+    resumed = subprocess.run([str(root / "bin/safeyolo"), "--root", str(root), *arguments[:3]],
+                             capture_output=True, text=True, timeout=180)
+    (root / "setup-interrupted-resume.log").write_text(resumed.stdout + resumed.stderr)
+    assert resumed.returncode != 0 and '"status": "checkpoint-required"' in resumed.stdout
+    assert "--confirm-fresh-identity" in resumed.stderr
+    assert tomllib.loads((root / "policy.toml").read_text())["agents"] == configured
+    assert (root / "factories" / name / "approved").read_bytes() == snapshot
+
+
 def test_factory_run_executes_staged_worker_commands():
     """Run only on the explicit disposable installed Ubuntu acceptance root."""
     supplied = os.environ.get("SAFEYOLO_FACTORY_ACCEPTANCE_ROOT")
@@ -566,17 +645,46 @@ def test_factory_run_executes_staged_worker_commands():
     executable = root / "bin/safeyolo"
     name = os.environ["SAFEYOLO_FACTORY_ACCEPTANCE_NAME"]
     command = [str(executable), "--root", str(root), "factory"]
+    source = os.environ.get("SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE")
+    start = ["setup", source, "--confirm-fresh-identity"] if source else ["run", name]
     try:
-        result = subprocess.run([*command, "run", name], capture_output=True, text=True, timeout=180)
-        assert result.returncode == 0 and "Started Factory" in result.stdout, (result.stdout, result.stderr)
+        result = subprocess.run([*command, *start], capture_output=True, text=True, timeout=600)
+        (root / "setup-start.log").write_text(result.stdout + result.stderr)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert ('"status": "running"' if source else "Started Factory") in result.stdout
         report = subprocess.run([*command, "doctor", name], capture_output=True, text=True, timeout=180)
         assert report.returncode == 0, report.stderr
         observed = json.loads(report.stdout)
         assert observed["status"] == "ready"
         role_checks = [item for item in observed["checks"] if item["component"] == "role"]
-        assert len(role_checks) == 3 and all(item["status"] == "PASS" for item in role_checks)
-        assert len({item["observation"]["agent_id"] for item in role_checks}) == 3
+        expected = len(tomllib.loads(Path(source).read_text())["roles"]) if source else 3
+        assert len(role_checks) == expected and all(item["status"] == "PASS" for item in role_checks)
+        assert len({item["observation"]["agent_id"] for item in role_checks}) == expected
         assert all(item["observation"]["runtime"]["agent_state"] == "running" for item in role_checks)
+        if source:
+            identities = {item["role"]: (item["observation"]["agent_id"], item["observation"]["runtime"]["run_id"])
+                          for item in role_checks}
+            returned = subprocess.run([*command, "setup", source], capture_output=True, text=True, timeout=180)
+            (root / "setup-return.log").write_text(returned.stdout + returned.stderr)
+            assert returned.returncode == 0, (returned.stdout, returned.stderr)
+            current = json.loads(subprocess.check_output([*command, "doctor", name], text=True, timeout=180))
+            assert identities == {item["role"]: (item["observation"]["agent_id"], item["observation"]["runtime"]["run_id"])
+                                  for item in current["checks"] if item["component"] == "role"}
+            original = (root / "factories" / name / "approved").read_bytes()
+            changed = tomlkit.parse(Path(source).read_text())
+            changed["room"] += "-unapproved"
+            changed_source = Path(source).with_name("setup-unapproved.toml")
+            with changed_source.open("x") as output:
+                output.write(tomlkit.dumps(changed))
+            refused = subprocess.run([*command, "setup", str(changed_source)], capture_output=True, text=True, timeout=180)
+            (root / "setup-unapproved.log").write_text(refused.stdout + refused.stderr)
+            assert refused.returncode != 0 and '"status": "conflict"' in refused.stdout
+            assert (root / "factories" / name / "approved").read_bytes() == original
+            stopped = subprocess.run([*command, "stop", name], capture_output=True, text=True, timeout=180)
+            assert stopped.returncode == 0, stopped.stderr
+            resumed = subprocess.run([*command, "setup", source], capture_output=True, text=True, timeout=600)
+            (root / "setup-checkpoint-resume.log").write_text(resumed.stdout + resumed.stderr)
+            assert resumed.returncode == 0 and '"status": "running"' in resumed.stdout, (resumed.stdout, resumed.stderr)
     finally:
         stopped = subprocess.run([*command, "stop", name], capture_output=True, text=True, timeout=180)
         assert stopped.returncode == 0, stopped.stderr
