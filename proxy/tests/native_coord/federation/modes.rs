@@ -112,6 +112,15 @@ async fn renewal_and_explicit_rotation_preserve_retained_state_and_report_activa
     ];
     coord_json(&peer, &home_args).await;
     coord_json(&home, &["room", "create", "initial-tls"]).await;
+    let ca_pem = fs::read_to_string(home.join("ca.pem")).unwrap();
+    fs::write(home.join("ca.pem"), format!("\n{ca_pem}\n")).unwrap();
+    let reformatted = apply_broker(&home, false, true).await;
+    assert_eq!(reformatted["trust_changed"], false);
+    assert_eq!(reformatted["active"], true);
+    assert_eq!(
+        coord_json(&peer, &["federation", "check", "primary"]).await["broker_authentication"],
+        "authenticated"
+    );
 
     // Invalid material never replaces the saved configuration.
     let saved = fs::read(home.join("coord-federation.json")).unwrap();

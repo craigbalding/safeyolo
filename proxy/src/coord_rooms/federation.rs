@@ -7,7 +7,7 @@ pub(crate) mod configuration;
 pub(crate) mod endpoint;
 pub(crate) mod nats;
 mod tailscale;
-mod tls_material;
+pub(crate) mod tls_material;
 
 pub(crate) const HELP: &str = "safeyolo [--root ROOT] coord federation peers\nsafeyolo [--root ROOT] coord federation credential PATH\nsafeyolo [--root ROOT] coord federation trust INSTANCE TOKEN_FILE\nsafeyolo [--root ROOT] coord federation revoke INSTANCE\nsafeyolo [--root ROOT] coord federation member ROOM INSTANCE AGENT_ID DISPLAY_NAME [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--root ROOT] coord federation unmember ROOM INSTANCE AGENT_ID [--operation-id ID]\nsafeyolo [--root ROOT] coord federation home NAME INSTANCE [tls] TLS_NATS_URL CA_FILE TOKEN_FILE [--rotate-trust]\nsafeyolo [--root ROOT] coord federation home NAME INSTANCE tailscale NATS_IP_URL NODE_ID TOKEN_FILE\nsafeyolo [--root ROOT] coord federation home NAME INSTANCE loopback NATS_IP_URL TOKEN_FILE\nsafeyolo [--root ROOT] coord federation unhome NAME\nsafeyolo [--root ROOT] coord federation broker check|apply FILE [--rotate-trust]\nsafeyolo [--root ROOT] coord federation check [HOME]\n\nConfigure the destination's host-held coord-federation.json before starting its managed NATS and proxy. Select mode tls (default), tailscale or loopback. TLS requires dedicated cert_file, key_file, ca_file and local_server_name; server_names lists additional certificate names to validate. Tailscale requires a literal listen address assigned to this host's selected tailscale_node stable ID. Loopback requires a literal loopback listen address. Remove TLS-only fields for non-TLS modes. Monitoring stays on loopback.\nBroker check validates supplied material without saving. Broker apply saves configuration, reports trust changes and requires an owned Coord/proxy restart; it does not claim activation. Leaf renewal under the same CA retains credentials and grants. CA rotation requires --rotate-trust; update client routes explicitly. Credential rotation through trust advances the existing peer generation; old support and approval grants do not regain authority. Check separates configured/active endpoints, protection, broker authentication, owner reachability and notification stream availability. It does not grant or prove operation permission.\nCredentials stay host-held. Peers have scoped SY_FED subjects; SY_LOCAL has no exports. Selected Tailscale node identity, host route and WireGuard reachability are checked before credentials on initial connections and reconnects. Broker advertisements cannot add destinations. Subnet-router onward legs require TLS. There is no mode fallback. Tailnet membership grants no instance or agent authority. Guests use only their local Agent API. Trust alone grants neither room nor target access. revoke disables the peer and revokes memberships; re-trust restores neither memberships nor old target grants. Omitted home remains local. NATS remains the only inter-instance transport.";
 
@@ -337,9 +337,8 @@ pub(crate) async fn run(root: &Path, arguments: &[String]) -> Result<Value, Erro
             let trust_hash = endpoint
                 .ca_file
                 .as_ref()
-                .map(fs::read)
-                .transpose()?
-                .map(|bytes| hash(&bytes));
+                .map(|path| tls_material::trust_hash(path))
+                .transpose()?;
             let old: Option<Option<String>> = tx
                 .query_row(
                     "SELECT trust_hash FROM coord_federation_homes WHERE name=?1",

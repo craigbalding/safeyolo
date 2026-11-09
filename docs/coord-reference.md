@@ -908,8 +908,9 @@ the proxy. Saving configuration does not prove activation or messaging readiness
 Ordinary leaf renewal under the same CA preserves credentials, peer generations,
 retained state and grants. For an explicit CA rotation, use `broker apply FILE
 --rotate-trust`, distribute the verified public CA, then update A's TLS `home`
-command with `--rotate-trust`. A changed CA file is refused until that explicit
-route update. CA rotation changes server verification; it does not change
+command with `--rotate-trust`. Changed CA trust is refused until that explicit
+route update. Trust fingerprints identify the certificate set; PEM whitespace,
+ordering and duplicate entries do not rotate trust. CA rotation changes server verification; it does not change
 per-peer credential authority. Rotating a peer credential through `federation
 trust` advances its existing trust generation. Update the broker's host-held
 peer file and restart owned Coord and the proxy. Old support and approval grants

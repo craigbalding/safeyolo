@@ -106,10 +106,10 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         for (name, ca) in previous {
-            if let Ok(bytes) = fs::read(ca) {
+            if let Ok(trust_hash) = federation::tls_material::trust_hash(Path::new(&ca)) {
                 transaction.execute(
                     "UPDATE coord_federation_homes SET trust_hash=?2 WHERE name=?1",
-                    params![name, hash(&bytes)],
+                    params![name, trust_hash],
                 )?;
             }
         }
@@ -534,7 +534,7 @@ pub async fn start(
                 let token = crate::host_lifecycle::process_token(i64::from(pid))
                     .ok_or("NATS process identity is unavailable")?;
                 let mut endpoint = federation.as_ref().map(|setup|setup.endpoint(client)).unwrap_or(federation::endpoint::Endpoint { mode:federation::endpoint::Mode::Loopback, url:format!("nats://127.0.0.1:{client}"),ca_file:None,ca_sha256:None,tailscale_node:None });
-                endpoint.ca_sha256 = endpoint.ca_file.as_ref().map(fs::read).transpose()?.map(|bytes|hash(&bytes));
+                endpoint.ca_sha256 = endpoint.ca_file.as_ref().map(|path|federation::tls_material::trust_hash(path)).transpose()?;
                 let saved = json!({"pid":pid,"token":token,"server_name":server_name,"client_port":client,"monitor_port":monitor_port,"federation_peers":transport_peers,"local_endpoint":endpoint,"broker_configuration":federation,"protection":endpoint.security()?,"protection_check":protection_check});
                 // Use the same process/server/endpoint check as reuse,
                 // status, room clients and stop before publishing endpoints.

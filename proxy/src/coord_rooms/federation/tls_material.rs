@@ -31,6 +31,16 @@ pub(crate) fn roots(path: &Path) -> Result<rustls::RootCertStore, Error> {
     Ok(roots)
 }
 
+pub(crate) fn trust_hash(path: &Path) -> Result<String, Error> {
+    let mut certs: Vec<_> = certificates(path)?
+        .into_iter()
+        .map(|cert| cert.to_vec())
+        .collect();
+    certs.sort();
+    certs.dedup();
+    Ok(hash(&serde_json::to_vec(&certs)?))
+}
+
 pub(crate) fn client_config(ca: &Path) -> Result<rustls::ClientConfig, Error> {
     Ok(rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
@@ -71,6 +81,6 @@ pub(crate) fn validate(
         .map_err(|_| "invalid broker leaf certificate")?;
     Ok(
         json!({"verified":true,"endpoint_names":names,"certificate_sha256":hash(&chain[0]),
-        "trust_sha256":hash(&fs::read(ca)?),"not_before":leaf.validity().not_before.to_string(),"not_after":leaf.validity().not_after.to_string()}),
+        "trust_sha256":trust_hash(ca)?,"not_before":leaf.validity().not_before.to_string(),"not_after":leaf.validity().not_after.to_string()}),
     )
 }

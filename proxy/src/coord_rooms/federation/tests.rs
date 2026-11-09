@@ -42,7 +42,15 @@ fn tls_route_upgrade_preserves_route_and_instance_state() {
     assert_eq!(route.url, "tls://localhost");
     assert_eq!(route.revision, "retained-revision");
     assert_eq!(route.mode, endpoint::Mode::Tls);
-    assert_eq!(route.ca_sha256, Some(hash(&fs::read(ca).unwrap())));
+    assert_eq!(
+        route.ca_sha256,
+        Some(tls_material::trust_hash(&ca).unwrap())
+    );
+    fs::write(&ca, format!("\n{}\n{}", cert.cert.pem(), cert.cert.pem())).unwrap();
+    assert_eq!(
+        route.ca_sha256,
+        Some(tls_material::trust_hash(&ca).unwrap())
+    );
     assert_eq!(
         open(path)
             .unwrap()

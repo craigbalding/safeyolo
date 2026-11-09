@@ -311,7 +311,7 @@ pub(crate) fn local_endpoint(data: &Path, fallback: String) -> Result<endpoint::
         return Ok(endpoint::Endpoint {
             mode: endpoint::Mode::Tls,
             url: endpoint::url(endpoint::Mode::Tls, &tls.server_name, address.port()),
-            ca_sha256: Some(hash(&fs::read(&tls.ca_file)?)),
+            ca_sha256: Some(tls_material::trust_hash(&tls.ca_file)?),
             ca_file: Some(tls.ca_file),
             tailscale_node: None,
         });

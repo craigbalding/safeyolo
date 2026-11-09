@@ -46,7 +46,8 @@ impl Endpoint {
                 }
                 tls_material::roots(self.ca_file.as_ref().expect("checked CA"))?;
                 if let Some(expected) = &self.ca_sha256
-                    && &hash(&fs::read(self.ca_file.as_ref().expect("checked CA"))?) != expected
+                    && &tls_material::trust_hash(self.ca_file.as_ref().expect("checked CA"))?
+                        != expected
                 {
                     return Err("NATS CA material changed; verify and explicitly apply the new trust with --rotate-trust before connecting".into());
                 }
@@ -157,9 +158,8 @@ impl Endpoint {
             self,
             self.ca_file
                 .as_ref()
-                .map(fs::read)
+                .map(|path| tls_material::trust_hash(path))
                 .transpose()?
-                .map(|bytes| hash(&bytes))
         ]))
     }
 }

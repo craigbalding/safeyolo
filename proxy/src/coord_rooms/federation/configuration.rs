@@ -31,9 +31,8 @@ pub(crate) fn home_arguments(
         url: url.trim_end_matches('/').to_owned(),
         ca_sha256: ca_file
             .as_ref()
-            .map(fs::read)
-            .transpose()?
-            .map(|bytes| hash(&bytes)),
+            .map(|path| tls_material::trust_hash(path))
+            .transpose()?,
         ca_file,
         tailscale_node: node,
     };
@@ -83,9 +82,8 @@ pub(crate) async fn run(root: &Path, arguments: &[String]) -> Result<Option<Valu
             let current_trust = setup
                 .ca_file
                 .as_ref()
-                .map(fs::read)
-                .transpose()?
-                .map(|bytes| hash(&bytes));
+                .map(|path| tls_material::trust_hash(path))
+                .transpose()?;
             let trust_changed = previous_trust
                 .zip(current_trust.as_deref())
                 .is_some_and(|(old, new)| old != new);
