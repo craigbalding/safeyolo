@@ -778,7 +778,6 @@ final class SafeYoloClient: ObservableObject {
         timeout: TimeInterval? = nil
     ) async throws -> Data {
         try Task.checkCancellation()
-        guard !stopping else { throw ClientError.connectionUnavailable }
         if method == "POST" {
             guard !stopping, await refreshInstance(), !stopping else { throw ClientError.connectionUnavailable }
         }
