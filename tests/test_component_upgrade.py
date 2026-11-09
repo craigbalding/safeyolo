@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import pty
 import shutil
 import socket
 import subprocess
@@ -860,6 +861,39 @@ def test_guided_activation_failure_reports_selected_pair_and_retained_rollback(
 
 
 
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+def test_terminal_upgrade_can_defer_activation_after_choosing_a_release(
+        native_cli, host_pair, registry, guest_store, tmp_path):
+    first, target = host_pair
+    contents, _requests, _faults, environment = registry
+    contents.update(release(compressed_archive()))
+    root = tmp_path / "i"
+    installation(native_cli, root, first, guest_store, environment)
+    original = upgrade(native_cli, root, environment, "status")
+    saved = state_files(root)
+    published, _archive_key = publish_host(contents, target)
+    contents["/repos/craigbalding/safeyolo/releases"] = json.dumps([published]).encode()
+    environment = {**environment, "HOME": str(tmp_path / "consumer"),
+                   "CURL_CA_BUNDLE": environment["SSL_CERT_FILE"]}
+    terminal, slave = pty.openpty()
+    try:
+        # Choose the displayed default release, then defer activation through
+        # the real terminal interface, without spelling a release identifier.
+        os.write(terminal, b"\nn\n")
+        deferred = subprocess.run([str(native_cli), "--root", str(root), "upgrade"],
+                                  env=environment, stdin=slave, stderr=slave,
+                                  stdout=subprocess.PIPE, text=True, timeout=30)
+        assert deferred.returncode == 0, deferred.stdout
+        assert "Selection is unchanged" in deferred.stdout
+    finally:
+        os.close(slave)
+        os.close(terminal)
+    assert upgrade(native_cli, root, environment, "status") == original
+    assert not (root / "safeyolo-upgrade").exists()
+    assert not (root / "data/proxy-process.json").exists()
+    assert_preserved(root, saved)
+
+
 def test_guided_invalid_agent_choice_does_not_select_or_interrupt(
         native_cli, host_pair, registry, guest_store, tmp_path):
     first, target = host_pair
@@ -907,6 +941,8 @@ def test_guided_installed_upgrade_keeps_other_instance_live_and_recovers_failed_
         config.write_text(config.read_text().replace("admin_port = 9090", "admin_port = 0"))
     try:
         for instance in (root, unrelated):
+            coord = command(candidate_cli, instance, environment, "coord", "start", "--binary", nats)
+            assert coord.returncode == 0, coord.stderr
             started = command(candidate_cli, instance, environment, "start")
             assert started.returncode == 0, started.stderr
         other_proxy = (unrelated / "data/proxy-process.json").read_bytes()
@@ -976,3 +1012,4 @@ def test_guided_installed_upgrade_keeps_other_instance_live_and_recovers_failed_
     finally:
         for instance in (root, unrelated):
             assert command(candidate_cli, instance, environment, "stop").returncode == 0
+            assert command(candidate_cli, instance, environment, "coord", "stop").returncode == 0
