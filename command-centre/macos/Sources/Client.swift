@@ -4,13 +4,62 @@ import Foundation
 protocol EventSocket: AnyObject {
     var response: URLResponse? { get }
     var closeCode: URLSessionWebSocketTask.CloseCode { get }
-    func resume()
-    func sendPing(pongReceiveHandler: @escaping @Sendable (Error?) -> Void)
+    func open() async throws
     func receive() async throws -> URLSessionWebSocketTask.Message
     func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
 }
 
-extension URLSessionWebSocketTask: EventSocket {}
+private final class EventSocketHandshake: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var cancelled = false
+
+    func open(_ socket: URLSessionWebSocketTask) async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let cancelled = lock.withLock {
+                    if self.cancelled { return true }
+                    self.continuation = continuation
+                    return false
+                }
+                if cancelled { continuation.resume(throwing: CancellationError()) }
+                else {
+                    socket.delegate = self
+                    socket.resume()
+                }
+            }
+        } onCancel: {
+            self.lock.withLock { self.cancelled = true }
+            self.finish(.failure(CancellationError()))
+            socket.cancel(with: .goingAway, reason: nil)
+        }
+    }
+
+    private func finish(_ result: Result<Void, Error>) {
+        let completion = lock.withLock {
+            let current = continuation
+            continuation = nil
+            return current
+        }
+        completion?.resume(with: result)
+    }
+
+    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+        finish(.success(()))
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        finish(.failure(error ?? URLError(.networkConnectionLost)))
+    }
+}
+
+extension URLSessionWebSocketTask: EventSocket {
+    func open() async throws {
+        let handshake = EventSocketHandshake()
+        defer { withExtendedLifetime(handshake) {} }
+        try await handshake.open(self)
+    }
+}
 
 @MainActor
 final class SafeYoloClient: ObservableObject {
@@ -66,12 +115,12 @@ final class SafeYoloClient: ObservableObject {
     var connectionGuidance: String? {
         guard adminConnected, connectionState != .connected, connectionState != .stopped else { return nil }
         let host = isLocalConnection ? "this Mac" : "the connected SafeYolo host"
+        let owner = "Selected owner: \(expectedInstanceID). Root: \(hostRoot ?? "unavailable"). Configuration: \(hostConfigPath ?? "unavailable")."
         if eventEndpoint?.enabled == false {
             return """
             Admin API connected. Live events are disabled in the running SafeYolo host.
-            On \(host), set enabled = true in the [command_centre] table of the connected instance's TOML configuration, then run its installed CLI:
-            safeyolo stop
-            safeyolo start
+            \(owner)
+            On \(host), set enabled = true in this owner's [command_centre] TOML table. Use its installed CLI with the selected configuration or root to stop and start that instance.
 
             If you already enabled live events, restart SafeYolo to apply the change.
             Restarting briefly interrupts agent networking and Coord. Agents stay running.
@@ -80,7 +129,8 @@ final class SafeYoloClient: ObservableObject {
         if requestErrors["Live events"] != nil {
             return """
             Admin API connected, but the live-event connection failed.
-            On \(host), run the connected instance's installed CLI: safeyolo doctor.
+            \(owner)
+            On \(host), run doctor with this owner's installed CLI and selected configuration or root.
             Check [command_centre] in its TOML configuration, the event port, and any SSH tunnel or Tailnet forwarding.
             Copy Diagnostics includes the connection failure and retry history.
             """
@@ -511,17 +561,14 @@ final class SafeYoloClient: ObservableObject {
         let socket = makeEventSocket(request)
         diagnostics.socketAttempts += 1
         webSocket = socket
-        socket.resume()
         defer {
             socket.cancel(with: .goingAway, reason: nil)
             if webSocket === socket { webSocket = nil }
         }
-        // Foundation needs an active receive to deliver the pong callback.
-        // Retain that first message until the attachment snapshot is reconciled.
-        let firstReceive = Task { try await socket.receive() }
-        defer { firstReceive.cancel() }
         do {
-            try await ping(socket)
+            // didOpen confirms the authenticated HTTP upgrade. Waiting for a
+            // pong before receiving can stall Foundation's WebSocket task.
+            try await socket.open()
             guard !stopping, !Task.isCancelled, webSocket === socket else { return }
             diagnostics.lastEventSuccess = Date()
             // The listener registers before the handshake completes. Re-read the
@@ -536,7 +583,7 @@ final class SafeYoloClient: ObservableObject {
                 eventFeedGap = "Live event feed reconnected after a gap; events during the gap may be missing."
             }
             setRequestError("Live events", nil)
-            try await receiveEvents(from: socket, firstReceive: firstReceive)
+            try await receiveEvents(from: socket)
         } catch {
             guard !stopping, !Task.isCancelled, webSocket === socket else { return }
             if let response = socket.response as? HTTPURLResponse {
@@ -554,19 +601,9 @@ final class SafeYoloClient: ObservableObject {
         }
     }
 
-    private func receiveEvents(
-        from socket: any EventSocket,
-        firstReceive: Task<URLSessionWebSocketTask.Message, Error>
-    ) async throws {
-        var initial: Task<URLSessionWebSocketTask.Message, Error>? = firstReceive
+    private func receiveEvents(from socket: any EventSocket) async throws {
         while !stopping, !Task.isCancelled, webSocket === socket {
-            let message: URLSessionWebSocketTask.Message
-            if let first = initial {
-                initial = nil
-                message = try await first.value
-            } else {
-                message = try await socket.receive()
-            }
+            let message = try await socket.receive()
             try Task.checkCancellation()
             let data: Data
             switch message {
@@ -775,18 +812,6 @@ final class SafeYoloClient: ObservableObject {
         let observation = SecurityObservation(event)
         securityEvents.insert(observation, at: 0)
         onNewSecurityEvent?(observation)
-    }
-
-    private func ping(_ socket: any EventSocket) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            socket.sendPing { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
-            }
-        }
     }
 
     private func request(

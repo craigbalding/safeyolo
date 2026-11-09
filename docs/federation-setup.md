@@ -151,8 +151,17 @@ sharing or SSH forwards. Adding a profile does not publish a listener or grant
 reverse access. These Admin connections are separate from the broker route
 configured above.
 
-On each owning host, replace `INSTANCE_ROOT` with its selected root and
-`operator-connection.json` with a new private destination file. This export
+For each owner below, replace `INSTANCE_ROOT` with that instance's root.
+If live events are disabled, edit this owner's `config.toml` on its host.
+In its `[command_centre]` table, set `enabled = true` and select an unused
+`events_port`. Each root on the same host needs a distinct event port.
+Then run `safeyolo --root INSTANCE_ROOT stop` and
+`safeyolo --root INSTANCE_ROOT start` with that owner's root to apply the change.
+This interrupts requests and feeds; existing guests remain. Export below
+refuses disabled live events and identifies the selected owner to correct.
+
+On each owning host, replace `operator-connection.json` with a new private
+destination file. This export
 contains the full operator Admin credential for that owner. Keep the file
 private and transfer it only through your authenticated administrative channel:
 

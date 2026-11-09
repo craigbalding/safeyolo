@@ -6,26 +6,20 @@ import SwiftUI
 private final class StubEventSocket: EventSocket {
     var response: URLResponse?
     var closeCode = URLSessionWebSocketTask.CloseCode.invalid
-    var pingError: Error?
+    var openError: Error?
     var receiveError: Error?
     var cancelled = false
     var receiving = false
-    var pongNeedsReceive = false
-    private var pendingPong: (@Sendable (Error?) -> Void)?
     var onResume: (() -> Void)?
     var messages: [URLSessionWebSocketTask.Message] = []
 
-    func resume() { onResume?() }
-    func sendPing(pongReceiveHandler: @escaping @Sendable (Error?) -> Void) {
-        if pongNeedsReceive && !receiving { pendingPong = pongReceiveHandler }
-        else { pongReceiveHandler(pingError) }
+    func open() async throws {
+        onResume?()
+        if let openError { throw openError }
     }
     func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) { cancelled = true }
     func receive() async throws -> URLSessionWebSocketTask.Message {
         receiving = true
-        let pong = pendingPong
-        pendingPong = nil
-        pong?(pingError)
         while !cancelled {
             if let receiveError { throw receiveError }
             if !messages.isEmpty { return messages.removeFirst() }
@@ -724,7 +718,6 @@ extension ModelTests {
         defer { StubURLProtocol.responsesByPath = [:] }
         let gate = RetryGate()
         let first = StubEventSocket()
-        first.pongNeedsReceive = true
         first.onResume = {
             // The server registers the stream during the handshake. This
             // approval is absent from the earlier HTTP snapshot and stream.
@@ -886,7 +879,7 @@ extension ModelTests {
             makeEventSocket: { request in
                 precondition(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-secret")
                 let socket = sockets.count < 2 ? StubEventSocket() : healthy
-                if sockets.count < 2 { socket.pingError = URLError(.cannotConnectToHost) }
+                if sockets.count < 2 { socket.openError = URLError(.cannotConnectToHost) }
                 sockets.append(socket)
                 return socket
             }, retryPause: { try await gate.pause() }
