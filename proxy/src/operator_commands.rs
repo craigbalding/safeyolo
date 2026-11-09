@@ -786,15 +786,11 @@ async fn resolve_preview(
     if preview["approval_id"] == inspected["approval_id"] && preview["status"] != "pending" {
         return Ok(preview);
     }
-    if [
-        "approval_id",
-        "request_id",
-        "authority_digest",
-        "action",
-        "options",
-    ]
-    .iter()
-    .any(|field| preview[*field] != inspected[*field])
+    // The authority digest binds fixed option scopes. Their current availability
+    // can change independently; the host resolver checks the selected option.
+    if ["approval_id", "request_id", "authority_digest", "action"]
+        .iter()
+        .any(|field| preview[*field] != inspected[*field])
     {
         preview["status"] = json!("stale");
         preview["effect"] = json!(
