@@ -678,7 +678,7 @@ def test_factory_run_executes_staged_worker_commands():
                 output.write(tomlkit.dumps(changed))
             refused = subprocess.run([*command, "setup", str(changed_source)], capture_output=True, text=True, timeout=180)
             (root / "setup-unapproved.log").write_text(refused.stdout + refused.stderr)
-            assert refused.returncode != 0 and '"status": "conflict"' in refused.stdout
+            assert refused.returncode != 0 and '"status": "approval-required"' in refused.stdout
             assert (root / "factories" / name / "approved").read_bytes() == original
             stopped = subprocess.run([*command, "stop", name], capture_output=True, text=True, timeout=180)
             assert stopped.returncode == 0, stopped.stderr

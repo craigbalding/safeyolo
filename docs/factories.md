@@ -322,7 +322,7 @@ source path for recovery:
 |---|---|
 | `approval-required` | Inspect the exact preview and use the existing approval decision. A changed source is not silently selected. |
 | `workspace-required` | Repeat setup with the named role's workspace. |
-| `preparation-incomplete` or `conflict` | Inspect the named staging, identity or runtime difference. Preserve unknown live state and use the existing stop or agent recovery path. |
+| `preparation-incomplete` | Inspect the named staging, identity or runtime difference. Preserve unknown live state and use the existing stop or agent recovery path. Approval can select future instructions while roles run; staging changed instructions still requires the affected roles to stop. |
 | `checkpoint-required` | For a missing checkpoint, satisfy the existing fresh-identity rule. For an invalid retained checkpoint, inspect the named agent; do not delete history to manufacture freshness. |
 | `authentication-required` | Correct the named harness, authentication or Coord preflight failure. Use that role's login or supported provider configuration, then repeat setup. This report does not prove provider access. |
 | `start-incomplete` | Inspect `factory doctor NAME` for the same instance. Preserve started roles and checkpoints, correct the failed prerequisite, then repeat setup. |

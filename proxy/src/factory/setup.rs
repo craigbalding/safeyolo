@@ -263,28 +263,10 @@ pub(super) async fn run(root: &Path, file: &Path, options: &[String]) -> Result<
     }
 
     // Preview exact old/new contract bytes and the workspace choices before
-    // the existing approval decision. A changed selection cannot replace live
-    // bindings, including roles removed from the new contract.
+    // the existing approval decision. Approval selects future instructions;
+    // prepare_roles retains the existing refusal to replace live staging.
     report(&value)?;
     if !same {
-        for agent in &configured {
-            if (snapshot.agents().contains(&agent.name)
-                || previous
-                    .as_ref()
-                    .is_some_and(|old| old.agents().contains(&agent.name)))
-                && host_lifecycle::runtime(agent).await?["runtime_state"] != "stopped"
-            {
-                return pending(
-                    &mut value,
-                    "conflict",
-                    command(root, &["agent", "diagnostics", &agent.name]),
-                    &format!(
-                        "agent {} is live or unknown; stop the affected roles before approving changed instructions",
-                        agent.name
-                    ),
-                );
-            }
-        }
         if !yes {
             if !interactive {
                 return pending(
