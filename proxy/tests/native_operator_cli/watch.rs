@@ -40,9 +40,11 @@ async fn native_watch_keeps_selected_input_arrivals_deferral_and_concurrent_outc
     let worker_view = shown(&fixture, &worker.id()).await;
     let helper_view = shown(&fixture, &helper.id()).await;
     let mut terminal = Terminal::start(fixture.root.path(), &["watch", "--no-color"]);
-    let attached = terminal
+    terminal
         .until(0, "PENDING APPROVALS: 2 (current state refreshed)")
         .await;
+    terminal.until(0, "agent=worker ").await;
+    let attached = terminal.until(0, "agent=helper ").await;
     let worker_number = number(&attached, "worker");
     let helper_number = number(&attached, "helper");
     assert_ne!(worker_number, helper_number);
@@ -54,9 +56,10 @@ async fn native_watch_keeps_selected_input_arrivals_deferral_and_concurrent_outc
     let arrival = terminal.mark();
     let peer = fixture.network("peer", fixture.address).await;
     assert_eq!(peer.status, 428);
-    let output = terminal
+    terminal
         .until(arrival, "PENDING APPROVALS: 3 (current state refreshed)")
         .await;
+    let output = terminal.until(arrival, "agent=peer ").await;
     let peer_number = number(&output, "peer");
     assert_eq!(number(&output, "worker"), worker_number);
     assert_eq!(number(&output, "helper"), helper_number);

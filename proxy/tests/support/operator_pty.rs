@@ -61,7 +61,9 @@ impl Terminal {
         let bytes = output.clone();
         let notify = changed.clone();
         let reader = tokio::spawn(async move {
-            let terminal = tokio::io::unix::AsyncFd::new(master).unwrap();
+            // The owned File keeps this descriptor open and unchanged until
+            // AsyncFd drops it. The input clone owns a separate descriptor.
+            let terminal = unsafe { tokio::io::unix::AsyncFd::register(master) }.unwrap();
             loop {
                 let mut ready = terminal.readable().await.unwrap();
                 let mut buffer = [0; 4096];

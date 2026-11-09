@@ -721,7 +721,7 @@ refresh identifies the recovered current set. Recovery does not replay resolved,
 cancelled or expired historical requests as pending. An uncertain decision is
 reconciled without automatically retrying it. Select the request again to inspect
 its current outcome before deciding again. Unsupported request types stay
-visible with a specific inspection command and their policy-control next action.
+visible with an explicit inspection command; watch does not apply a generic approval.
 
 For a snapshot, use `safeyolo watch --once`. `--json`, `--no-interactive`, or
 redirected input or output keep the observer interface without prompts.

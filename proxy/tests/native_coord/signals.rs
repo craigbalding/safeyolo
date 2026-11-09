@@ -871,9 +871,10 @@ async fn native_watch_pty_recovers_complete_pending_state_while_a_choice_is_unfi
         .unwrap();
     pending_network(root, addresses[1], "during-attachment").await;
     release.notify_one();
-    let attached = terminal
+    terminal
         .until(0, "PENDING APPROVALS: 2 (current state refreshed)")
         .await;
+    let attached = terminal.until(0, &addresses[0].to_string()).await;
     let number = attached
         .lines()
         .find_map(|line| {
@@ -887,7 +888,7 @@ async fn native_watch_pty_recovers_complete_pending_state_while_a_choice_is_unfi
                 .parse::<usize>()
                 .ok()
         })
-        .expect("first request retained during attachment");
+        .unwrap_or_else(|| panic!("first request retained during attachment: {attached}"));
     terminal.send(&format!("{number}\n"));
     terminal
         .until(0, &format!("Request #{number}: approve"))
