@@ -690,7 +690,7 @@ nodes:
         - path: proxy/src/coord_rooms/work/outputs.rs
           sha256: 6ba6bf5162638eace4705b92f73fb27b8ecc48ae7010cfe5ac68a54b923c44ff
         - path: proxy/src/coord_rooms/work/output_tests.rs
-          sha256: 71ce8bee29448adde6bd3cd3ee59c1c9779145872846663c1420ca8e79db218a
+          sha256: 25253b2e5bba273832d45ce7f608bb0fabc137dfec09c3a5b3cc0d380a5a1587
         - path: proxy/tests/native_coord/outputs.rs
           sha256: a119e527d1af7d8772f22deba4b9aee28f46d5551b1a8f959b84f593059e1e22
         - path: proxy/src/coord_work_upgrade_6.sql
