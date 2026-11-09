@@ -20,6 +20,64 @@ def rust_workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
+def test_quick_acquisition_finishes_before_any_cargo_compilation():
+    steps = rust_workflow()["jobs"]["focused-pr"]["steps"]
+    first_compile = next(index for index, step in enumerate(steps)
+                         if "cargo_with_space.sh" in step.get("run", ""))
+    for name in (
+        "Install uv", "Install the native CLI test environment", "Install preview test system dependency",
+        "Install patched runtime build dependencies", "Prepare the pinned NATS test binary",
+        "Install the pinned Codex execpolicy test consumer", "Prepare the complete patched gVisor runtime",
+        "Install Linux guest build tools",
+    ):
+        step = next(step for step in steps if step.get("name") == name)
+        assert steps.index(step) < first_compile, name
+        assert not step.get("continue-on-error")
+    nats = next(step for step in steps if step.get("name") == "Prepare the pinned NATS test binary")
+    consumer = next(step for step in steps if step.get("name") == "Test current native Coord fixture boundaries")
+    assert nats["if"] == consumer["if"] == "steps.changes.outputs.rust == 'true'"
+    assert "from safeyolo.coord.nats_runtime import ensure_binary" in nats["run"]
+    assert "binary = ensure_binary()" in nats["run"]
+    assert "SAFEYOLO_COORD_NATS_BINARY={binary}" in nats["run"]
+    assert "GITHUB_ENV" in nats["run"]
+    assert "SAFEYOLO_COORD_NATS_BINARY" not in consumer["env"]
+    assert nats["env"] == {
+        "SAFEYOLO_NATS_TEST_INSTANCE": "quick-inputs",
+        "SAFEYOLO_COORD_DATA_DIR": "${{ runner.temp }}/nats-inputs",
+    }
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_quick_runtime_acquisition_preserves_pipeline_failure_before_compilation(tmp_path, failure):
+    steps = rust_workflow()["jobs"]["focused-pr"]["steps"]
+    prepare = next(step for step in steps if step.get("id") == "runsc_inputs")
+    assert prepare["shell"] == "bash"
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    acquire = scripts / "acquire_runsc.sh"
+    acquire.write_text('#!/bin/bash\necho "runtime acquisition diagnostic" >&2\n'
+                       'if [[ $ACQUIRE_FAIL == 1 ]]; then exit 23; fi\n'
+                       'mkdir -p "$1/gvisor-bin"\nprintf runsc > "$1/runsc"\n'
+                       'printf companion > "$1/gvisor-bin/gvisor_sentry"\n')
+    acquire.chmod(0o755)
+    environment = tmp_path / "github-env"
+    compiled = tmp_path / "compiled"
+    # Explicit Actions bash uses -e -o pipefail; its default bash uses -e.
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c",
+         prepare["run"] + '\ntouch "$COMPILED"'],
+        cwd=tmp_path, capture_output=True, text=True,
+        env=dict(os.environ, BASH_ENV=os.devnull, RUNNER_TEMP=str(tmp_path), GITHUB_ENV=str(environment),
+                 ACQUIRE_FAIL="1" if failure else "0", COMPILED=str(compiled)),
+    )
+    assert result.returncode == (23 if failure else 0), result.stderr
+    assert "runtime acquisition diagnostic" in (tmp_path / "gvisor-preparation.log").read_text()
+    assert compiled.exists() == (not failure)
+    assert environment.exists() == (not failure)
+    if not failure:
+        assert environment.read_text() == f"SAFEYOLO_RUNSC_ARTIFACTS={tmp_path}/gvisor-runtime\n"
+
+
 def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_workflow() -> None:
     workflow = rust_workflow()
     # PyYAML's YAML 1.1 loader parses the Actions key `on` as boolean True.

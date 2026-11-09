@@ -60,6 +60,16 @@ run_builds_native() {
     cp "$GUEST_INPUTS" "$OUTPUT_DIR/provenance/inputs.json"
     "${SAFEYOLO_BUILD_PYTHON:-python3}" -c 'from datetime import UTC, datetime; print(datetime.now(UTC).isoformat())' > "$OUTPUT_DIR/provenance/build-started-at.txt"
 
+    # Acquire rootfs tools before kernel compilation. The rootfs builder
+    # checks these same frozen downloads again before using them.
+    local architecture
+    case "${ARCH:-$(uname -m)}" in
+        aarch64|arm64) architecture=arm64 ;;
+        x86_64|amd64) architecture=amd64 ;;
+        *) die "Unsupported architecture: ${ARCH:-$(uname -m)}" ;;
+    esac
+    guest_rootfs_inputs "$architecture"
+
     # Kernel and initramfs are only needed for macOS microVMs
     # (Virtualization.framework). On Linux, gVisor provides its own kernel —
     # only the rootfs is needed. Set BUILD_KERNEL=1 to force kernel+initramfs
