@@ -233,7 +233,7 @@
     "vm/Sources/SafeYoloVM/VSockTerminal.swift": "88d9a6a365509301570c1d6cc0b62a3205c06c68c082a41a64ef5e59f668cd74",
     "vm/Sources/SafeYoloVM/main.swift": "2e6e47a3f4b9ecfb85e07959e739fc350509e68ce808910b4fb9d8b717f88e39"
   },
-  "map_sha256": "92214adaf82f83065591a67b07ba12d437677daf7a7eabb46bb077f7b2d5d04f",
+  "map_sha256": "9a9e44685361e4931a92ed65c10f955ed25576eb203115d894a32ba647bdc962",
   "mapped_functions": {
     "cli/src/safeyolo/commands/agent.py::authorize": "c2ca5349dd8ffc4d0592515b5db4c6d3bd6c40013797416a462f8d2bf5b90e73",
     "cli/src/safeyolo/provider_stream.py::main": "3eeddd6113fa532ac9e8a13efa2c3c37b13c33b26a69dfcf8bfbfe37a5ebab2c",
@@ -7568,6 +7568,6 @@
   ],
   "source_revision": "8ba22365616d83b8b8b18b87781f0e9b9ad1e439",
   "stale_symbols": [],
-  "tool_lock_sha256": "20e1378bdd1b877ea129e5967309ff04f658aaf958d35ebad38fd4363703495c",
-  "workflow_sha256": "c02870a9036657ba654d49f596aa89a184a33543b180994b72f3f03fcc24f39a"
+  "tool_lock_sha256": "1e5c3ea9b0a8559bd4b39debfe03afc064221f92fb06687e06691f6c0caca2bb",
+  "workflow_sha256": "80f940c164dd2e6ed80c16ed20f9c7324268a9f7f1e7e26085b937441f327131"
 }
