@@ -55,7 +55,12 @@ def checksums(bundle):
 
 
 @pytest.fixture
-def host_pair(package_inputs, tmp_path):
+def host_pair(package_inputs, tmp_path, monkeypatch):
+    # The controlled package identities use the real CLI for Coord validation.
+    # Individual prior-writer controls select a different executable explicitly.
+    monkeypatch.setenv("PACKAGE_COORD_CLI", str(os.environ.get(
+        "SAFEYOLO_NATIVE_CLI", acquisition.REPO / "proxy/target/release/safeyolo",
+    )))
     first = build_bundle(package_inputs, tmp_path)
     second = tmp_path / "target"
     shutil.copytree(first, second, symlinks=True)
@@ -911,10 +916,14 @@ def test_guided_unavailable_host_discovery_retains_explicit_bundle_path(
     assert preview["outcome"] == "preview_only"
 
 
+@pytest.mark.parametrize("coord_state", ["compatible", "incompatible"])
 def test_guided_activation_failure_reports_selected_pair_and_retained_rollback(
-        native_cli, host_pair, registry, guest_store, tmp_path):
+        native_cli, host_pair, registry, guest_store, tmp_path, coord_state):
     first, target = host_pair
     contents, _requests, _faults, environment = registry
+    prior = (Path(os.environ.get("SAFEYOLO_ROLLBACK_PRIOR_CLI", native_cli))
+             if coord_state == "incompatible" else native_cli)
+    environment = {**environment, "PACKAGE_COORD_CLI": str(prior)}
     contents.update(release(compressed_archive()))
     root = tmp_path / "i"
     installation(native_cli, root, first, guest_store, environment)
@@ -933,7 +942,23 @@ def test_guided_activation_failure_reports_selected_pair_and_retained_rollback(
         assert failure["next_action"]["rollback"] == [str(root / "safeyolo-upgrade"), "--root", str(root), "rollback"]
         assert "can refuse without changing selection" in failure["next_action"]["limit"]
         assert "only after rollback succeeds" in failure["next_action"]["limit"]
-        assert upgrade(native_cli, root, environment, "rollback") == original
+        if coord_state == "compatible":
+            assert upgrade(native_cli, root, environment, "rollback") == original
+        else:
+            store = root / "data/coord/v0.db"
+            if prior.resolve() == native_cli.resolve():
+                with sqlite3.connect(store) as connection:
+                    version, = connection.execute("PRAGMA user_version").fetchone()
+                    connection.execute(f"PRAGMA user_version={version + 1}")
+            retained = store.read_bytes()
+            link = os.readlink(root / "current")
+            refused = command(native_cli, root, environment, "upgrade", "rollback")
+            assert refused.returncode != 0
+            assert "rollback refused before changing selection" in refused.stderr
+            assert "expected version" in refused.stderr
+            assert os.readlink(root / "current") == link
+            assert store.read_bytes() == retained
+            assert upgrade(native_cli, root, environment, "status") == failure["selected"]
         assert_preserved(root, saved)
     finally:
         assert command(native_cli, root, environment, "stop").returncode == 0
