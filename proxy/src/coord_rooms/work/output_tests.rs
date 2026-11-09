@@ -440,8 +440,10 @@ fn publication_bounds_and_output_read_permissions_fail_without_writes() {
 fn current_native_store_upgrade_keeps_claims_original_receipts_and_unknown_producers() {
     let root = fixture();
     let mut conn = db(&root);
-    // Native schema 5 had the same ownership contract, with no output receipt.
-    conn.execute_batch("DROP TABLE coord_work;
+    // Reconstruct both shapes changed by the version-gated upgrades. The
+    // current fixture already has the outbox retry column added after schema 5.
+    conn.execute_batch("ALTER TABLE coord_outbox DROP COLUMN next_attempt_at;
+        DROP TABLE coord_work;
         CREATE TABLE coord_work (work_id TEXT PRIMARY KEY,room_id TEXT NOT NULL REFERENCES rooms(room_id),version INTEGER NOT NULL,state TEXT NOT NULL CHECK(state IN ('open','claimed','done')),document_json TEXT NOT NULL,FOREIGN KEY(work_id,version) REFERENCES coord_work_revisions(work_id,version) DEFERRABLE INITIALLY DEFERRED);
         CREATE INDEX coord_work_room ON coord_work(room_id,work_id);
         PRAGMA user_version=5;").unwrap();
@@ -468,23 +470,43 @@ fn current_native_store_upgrade_keeps_claims_original_receipts_and_unknown_produ
     );
     conn.execute("INSERT INTO coord_operations VALUES('agent','alice','coord.work.claim','old-claim',?1,'success',?2,1)",params![request_hash,receipt.to_string()]).unwrap();
     let before = counts(&conn);
-    // An interrupted/failed schema transaction leaves the old state usable for
-    // recovery; it must not publish a partially upgraded schema version.
-    conn.execute_batch("CREATE TABLE coord_work_upgrade(fixture INTEGER)")
+    let work_schema: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name='coord_work'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
-    assert!(super::super::super::bootstrap(root.path()).is_err());
+    // Reject the instance identity after the schema writes, so rollback must
+    // restore the table and column shapes as well as the version and records.
+    fs::write(root.path().join("data/instance_id"), "wrong-instance").unwrap();
+    let error = super::super::super::bootstrap(root.path()).unwrap_err();
+    assert!(error.to_string().contains("Coord identity differs"));
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
         5
     );
     assert_eq!(counts(&conn), before);
-    conn.execute_batch("DROP TABLE coord_work_upgrade").unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT sql FROM sqlite_schema WHERE name='coord_work'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        work_schema
+    );
+    assert!(
+        conn.prepare("SELECT next_attempt_at FROM coord_outbox")
+            .is_err()
+    );
+    fs::write(root.path().join("data/instance_id"), "owned-instance").unwrap();
     super::super::super::bootstrap(root.path()).unwrap();
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        10
+        super::super::super::SCHEMA_VERSION as i64
     );
     assert_eq!(
         revision(&conn, "rm-owned", "work-retained", 2)
@@ -506,6 +528,8 @@ fn current_native_store_upgrade_keeps_claims_original_receipts_and_unknown_produ
         receipt
     );
     let work = read(&mut conn, "owned", Actor::Agent("alice"), "work-retained").unwrap();
+    assert_eq!(work["state"], "claimed");
+    assert_eq!(work["claim_agent_id"], "alice");
     assert_eq!(work["claim_generation"], 1);
     assert!(work["output"].is_null());
     assert_eq!(
