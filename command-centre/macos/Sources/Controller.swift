@@ -147,7 +147,7 @@ final class CommandCentreConnection: ObservableObject, Identifiable {
         session: URLSession = .shared
     ) {
         self.id = id
-        self.connectionName = id == "remote" ? "Remote SafeYolo" : "Local SafeYolo"
+        self.connectionName = id == "local" ? "Local SafeYolo" : "Remote SafeYolo"
         self.presenter = presenter
         self.securityNotifier = securityNotifier
         self.keychain = keychain

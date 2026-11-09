@@ -530,6 +530,14 @@ struct ModelTests: App {
             _ = try validatedRemoteURL("http://public.example:9090", scheme: "https", transport: .sshTunnel)
             preconditionFailure("A tunnel option must not send an Admin credential over public plaintext HTTP")
         } catch ConnectionError.invalidRemoteURL {}
+        let local = try validatedRemoteURL("http://127.0.0.1:29090", scheme: "https", transport: .loopback)
+        precondition(local.port == 29090)
+        for value in ["http://public.example:9090", "https://public.example:9443"] {
+            do {
+                _ = try validatedRemoteURL(value, scheme: "https", transport: .loopback)
+                preconditionFailure("A same-host profile cannot select a remote endpoint")
+            } catch ConnectionError.invalidRemoteURL {}
+        }
         let input = RemoteConnectionInput(friendlyName: "remote", adminURL: "", eventsURL: "", token: "")
         precondition(input.transport == .tailnet)
     }

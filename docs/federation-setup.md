@@ -196,7 +196,9 @@ target/run and grant at admission with current target and authority evidence.
 The view uses the existing event stream and coalesces bursts into owner reads
 while open. Reconnect refreshes current evidence; it does not replay missing
 history or prove model health. If evidence is unavailable, inspect that named
-owner's source and local diagnostics. The CLI recovery below remains available.
+owner's source and local diagnostics. If its endpoints changed, export and
+import a new connection file; Connect still checks the pinned owner identity.
+The CLI recovery below remains available.
 Removing a saved profile disconnects this viewer; it does not revoke authority.
 
 ## Verify, change and revoke

@@ -40,7 +40,10 @@ private final class SupportEndpoints: @unchecked Sendable {
             value = ["schema_version": 1, "safeyolo_instance_id": owner == changedOwner ? "sy-recreated" : owner,
                      "host_root": "/owned/\(owner)", "host_executable": "/installed/bin/safeyolo",
                      "command_centre_events": ["enabled": false]]
-        } else if path == "/admin/agents" { value = ["agents": []] }
+        } else if path == "/admin/agents" {
+            value = ["agents": [["agent_id": "ag-shared", "name": "worker", "sandbox_state": "running",
+                "agent_state": "running", "attachable": true]]]
+        }
         else if path == "/admin/approvals" { value = ["approvals": []] }
         else if path == "/admin/support-operations/list" {
             receiptReads += 1
@@ -115,6 +118,9 @@ extension ModelTests {
         for (index, connection) in connections.enumerated() {
             let client = connection.client!
             precondition(client.expectedInstanceID == profiles[index].instanceID && client.supportReceipts.count == 2)
+            let terminal = try connection.terminalCommand(client.agents[0], client: client, action: .shell)
+            precondition(terminal.contains("--root '/owned/\(client.expectedInstanceID)' agent shell --persistent")
+                         && !terminal.hasPrefix("ssh"), "Same-host terminals select their owner's root without an SSH hop")
             let first = try await client.readSupportReceipt(client.supportReceipts[0])
             precondition(first.receipt.instanceID == client.expectedInstanceID && !first.outputIncluded && first.recordedResult == nil)
             precondition(first.currentGrant?.fields?["active"] == .bool(false))
@@ -125,6 +131,10 @@ extension ModelTests {
         }
         let first = connections[0].client!
         let second = connections[1].client!
+        do {
+            _ = try connections[0].terminalCommand(second.agents[0], client: second, action: .shell)
+            preconditionFailure("An overlapping agent name/ID cannot route a terminal through another owner")
+        } catch ClientError.connectionUnavailable {}
         let retained = first.supportReceipts
         do {
             _ = try await second.readSupportReceipt(retained[0])
