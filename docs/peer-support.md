@@ -138,9 +138,10 @@ retained reference still requires current observation and source disclosure.
 ## Inspect upstream and downstream authority
 
 On the operator host, select the instances whose authority you intend to inspect.
-Use independently initialized instance IDs. Configure existing authenticated
-authenticated NATS `home` routes with explicit TLS, Tailscale or loopback protection from the instance that will
-collect the report. A route names a destination; it does not authorize disclosure.
+Use independently initialized instance IDs. From the instance that will collect
+the report, configure authenticated NATS `home` routes with explicit Transport
+Layer Security (TLS), Tailscale or loopback protection. A route names a destination;
+it does not authorize disclosure.
 No full mesh is required. Querying every selected owner can find a grant that
 its holder's home or outbound-route inventory has forgotten.
 
