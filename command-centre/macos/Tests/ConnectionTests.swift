@@ -259,7 +259,7 @@ extension ModelTests {
         StubURLProtocol.requestCount = 0
         StubURLProtocol.responsesByPath = [
             "/admin/instance": (200, Data("""
-            {"schema_version":1,"safeyolo_instance_id":"sy-connection-test"\(events)}
+            {"schema_version":1,"safeyolo_instance_id":"sy-connection-test","host_user":"operator","host_executable":"/opt/selected/bin/safeyolo","host_root":"/opt/selected","host_config_path":"/opt/selected/custom.toml"\(events)}
             """.utf8)),
             "/admin/approvals": (200, Data(#"{"approvals":[]}"#.utf8)),
             "/admin/agents": (200, Data(#"{"agents":[{"agent_id":"ag-test","name":"test","sandbox_state":"ready","agent_state":"running","attachable":true}]}"#.utf8)),
@@ -845,16 +845,13 @@ extension ModelTests {
         try await until { gate.waits == 1 }
         precondition(client.connectionState == .eventsDisabled && client.adminConnected)
         precondition(client.agents.count == 1 && socketCount == 0)
-        precondition(client.connectionGuidance!.contains("On this Mac"))
+        precondition(client.connectionGuidance!.contains("'/opt/selected/bin/safeyolo' --config '/opt/selected/custom.toml' stop"))
         precondition(client.connectionGuidance!.contains("[command_centre]"))
         precondition(client.connectionGuidance!.contains("Agents stay running."))
         precondition(client.eventFeedGap == nil, "A feed that never connected has no observed interruption")
-        var updates = 0
-        let subscription = client.objectWillChange.sink { updates += 1 }
-        defer { subscription.cancel() }
         gate.release()
         try await until { gate.waits == 2 }
-        precondition(updates == 0, "Unchanged snapshots must not rebuild open menus")
+        precondition(client.agentObservation.observedAt != nil && client.approvalObservation.observedAt != nil, "Unchanged successful reads still have their own observation time")
         snapshot(events: #", "command_centre_events":{"enabled":true,"port":19091}"#)
         gate.release()
         try await until { socket.receiving && client.connectionState == .connected }
@@ -890,16 +887,13 @@ extension ModelTests {
         precondition(sockets.count == 1 && sockets[0].cancelled)
         precondition(client.connectionState == .reconnecting && client.adminConnected)
         precondition(client.eventEndpoint == nil && client.eventFeedGap == nil)
-        precondition(client.connectionGuidance!.contains("On the connected SafeYolo host"))
+        precondition(client.connectionGuidance!.contains("'/opt/selected/bin/safeyolo'"))
         precondition(client.connectionGuidance!.contains("Check [command_centre]"))
         precondition(client.diagnosticReport.contains("NSURLErrorDomain (-1004)"))
-        var updates = 0
-        let subscription = client.objectWillChange.sink { updates += 1 }
-        defer { subscription.cancel() }
         gate.release()
         try await until { gate.waits == 2 }
         precondition(sockets.count == 2 && sockets[1].cancelled)
-        precondition(updates == 0, "Repeated identical failures must not rebuild open menus")
+        precondition(client.requestErrors["Live events"] != nil && client.agentObservation.observedAt != nil, "Failed events do not erase successful per-list reads")
         gate.release()
         try await until { healthy.receiving && client.connectionState == .connected }
         precondition(client.requestErrors["Live events"] == nil && client.connectionState == .connected)
@@ -926,15 +920,15 @@ extension ModelTests {
         let gate = RetryGate()
         let client = try SafeYoloClient(
             adminURL: "http://127.0.0.1:19090", eventsURL: "ws://127.0.0.1:19091/admin/events",
-            token: "fixture-secret", expectedInstanceID: "sy-connection-test", session: stubSession(),
+            token: "fixture-secret", expectedInstanceID: "sy-connection-test", session: stubSession(), terminalTarget: "selected-mac", transport: .sshTunnel, usesRemoteTerminal: true,
             makeEventSocket: { _ in preconditionFailure("Disabled host must not open a socket") },
             retryPause: { try await gate.pause() }
         )
         defer { client.stop(); gate.release() }
         client.start()
         try await until { gate.waits == 1 }
-        precondition(client.connectionGuidance!.contains("On the connected SafeYolo host"))
-        precondition(!client.connectionGuidance!.contains("On this Mac"), "An SSH tunnel is not a local host")
+        precondition(client.connectionGuidance!.contains("'/opt/selected/bin/safeyolo'"))
+        precondition(client.connectionGuidance!.contains("ssh -t -- 'selected-mac'"), "An SSH tunnel must preserve its authenticated target")
     }
 
     @MainActor

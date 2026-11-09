@@ -7,6 +7,16 @@ same observations. A successful launch script does not, by itself, prove the
 coding agent is running. Install the [host commands](installation.md)
 before following this reference.
 
+For ordinary project return, run `safeyolo agent launch` from the saved workspace.
+An omitted harness reuses an unambiguous saved Claude or Codex binding, including
+custom agent names. With `--name NAME` and no workspace argument, launch reuses
+that agent’s saved workspace. When several agents match, an interactive terminal asks for
+a name; a noninteractive call lists the choices and requires `--name NAME`.
+`--harness` selects the matching saved harness explicitly. Conflicting named
+configuration is retained and reported. Only a new agent defaults to Claude.
+Launch still needs an interactive terminal for setup, login and approvals;
+explicit `agent create` and `agent start` remain available for automation.
+
 Recorded launch transitions refresh Command Centre through the existing event
 stream. Opening its menu also requests current status; Refresh Agent Status
 lets the operator recheck after host/session-manager failure, which cannot

@@ -162,6 +162,40 @@ enum JSONValue: Decodable, Hashable, CustomStringConvertible {
     }
 }
 
+extension JSONValue {
+    subscript(_ key: String) -> JSONValue? {
+        if case .object(let fields) = self { return fields[key] }
+        return nil
+    }
+
+    var evidenceDescription: String {
+        func lines(_ value: JSONValue, indent: String) -> [String] {
+            switch value {
+            case .object(let fields):
+                return fields.keys.sorted().flatMap { key -> [String] in
+                    let label = approvalDisplayText(key.replacingOccurrences(of: "_", with: " "))
+                    return [indent + label + ":"] + lines(fields[key]!, indent: indent + "  ")
+                }
+            case .array(let values):
+                if values.isEmpty { return [indent + "None"] }
+                return values.flatMap { [indent + "–"] + lines($0, indent: indent + "  ") }
+            case .null: return [indent + "Not reported"]
+            default: return [indent + approvalDisplayText(value.description)]
+            }
+        }
+        return lines(self, indent: "").joined(separator: "\n")
+    }
+}
+
+// The canonical guidance repeats the assessment and alternatives. Show each
+// once when they are identical; preserve distinct guidance in full.
+func approvalGuidance(_ guidance: JSONValue, assessment: JSONValue?) -> JSONValue {
+    guard case .object(var fields) = guidance, let assessment else { return guidance }
+    if fields["assessment"] == assessment { fields.removeValue(forKey: "assessment") }
+    if fields["alternatives"] == assessment["alternatives"] { fields.removeValue(forKey: "alternatives") }
+    return .object(fields)
+}
+
 struct OperatorEventEnvelope: Decodable, Hashable {
     struct ApprovalMarker: Decodable, Hashable {
         let required: Bool
@@ -297,12 +331,39 @@ struct ApprovalRequestHistory: Decodable, Hashable {
 struct ApprovalAttentionDelivery: Decodable, Hashable { let status: String }
 struct ApprovalAttentionClaim: Decodable { let notify: Bool }
 
+struct ListObservation: Equatable {
+    var observedAt: Date?
+    var unavailable: String?
+
+    mutating func succeeded() { observedAt = Date(); unavailable = nil }
+    mutating func failed(_ reason: String) { unavailable = reason }
+    mutating func interrupted() {
+        if observedAt != nil && unavailable == nil {
+            unavailable = "Live updates interrupted; refresh this list."
+        }
+    }
+
+    func summary(_ list: String, count: Int) -> String {
+        let previous = observedAt.map { "Last observed \(count) at \($0.formatted(date: .abbreviated, time: .standard))." }
+        if let unavailable {
+            return "\(list) unavailable. \(previous.map { $0 + " Snapshot is stale. " } ?? "No successful read yet. ")\(unavailable)"
+        }
+        guard let observedAt else { return "\(list) not loaded yet." }
+        return "\(count == 0 ? "No " + list.lowercased() : list + ": " + String(count)). Observed \(observedAt.formatted(date: .abbreviated, time: .standard))."
+    }
+}
+
 struct ApprovalEvent: Decodable, Hashable, Identifiable {
     struct Option: Decodable, Hashable, Identifiable {
         let id: String
         let effect: String
         let status: String?
+        let parameters: JSONValue?
         var available: Bool { status == nil || status == "available" }
+    }
+    struct Authority: Decodable, Hashable {
+        let expiresAt: Double?
+        enum CodingKeys: String, CodingKey { case expiresAt = "expires_at" }
     }
     struct Request: Decodable, Hashable {
         struct Scope: Decodable, Hashable {
@@ -354,6 +415,12 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
 
     let approvalID: String?
     let options: [Option]?
+    let authority: Authority?
+    let assessment: JSONValue?
+    let guidance: JSONValue?
+    let assessmentChanged: Bool?
+    let status: String?
+    let createdAt: Double?
     let eventID: String?
     let requestID: String?
     let event: String
@@ -367,7 +434,9 @@ struct ApprovalEvent: Decodable, Hashable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case approvalID = "approval_id"
-        case options
+        case options, authority, assessment, guidance, status
+        case assessmentChanged = "assessment_changed"
+        case createdAt = "created_at"
         case eventID = "event_id"
         case requestID = "request_id"
         case event
@@ -462,11 +531,24 @@ struct ApprovalResolution: Decodable, Equatable {
         struct Diagnostic: Decodable, Equatable { let message: String }
         let status: String?
         let diagnostic: Diagnostic?
+        let evidence: JSONValue
+
+        enum CodingKeys: String, CodingKey { case status, diagnostic }
+        init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: CodingKeys.self)
+            status = try fields.decodeIfPresent(String.self, forKey: .status)
+            diagnostic = try fields.decodeIfPresent(Diagnostic.self, forKey: .diagnostic)
+            evidence = try JSONValue(from: decoder)
+        }
     }
     let approvalID: String?
     let requestID: String
     let status: String
     let effect: String
+    let assessment: JSONValue?
+    let guidance: JSONValue?
+    let assessmentChanged: Bool?
+    let option: String?
     let untrustedReasonText: String?
     let result: ActionResult?
     let operatorPreview: DesktopPresentation?
@@ -476,7 +558,8 @@ struct ApprovalResolution: Decodable, Equatable {
     enum CodingKeys: String, CodingKey {
         case approvalID = "approval_id"
         case requestID = "request_id"
-        case status, effect
+        case status, effect, assessment, guidance, option
+        case assessmentChanged = "assessment_changed"
         case untrustedReasonText = "untrusted_reason_text"
         case result
         case operatorPreview = "operator_preview"
@@ -497,6 +580,29 @@ struct ApprovalResolution: Decodable, Equatable {
 enum ResolutionResult: Equatable {
     case decided(String)
     case desktop(DesktopPresentation)
+}
+
+enum DesktopOpenError: LocalizedError {
+    case url, clipboard, browser
+    var errorDescription: String? {
+        switch self {
+        case .url: return "Desktop presentation is ready, but its browser URL is invalid. Inspect this agent's presentation before retrying."
+        case .clipboard: return "Desktop presentation is ready, but the unlock code could not be copied. Command Centre did not open the browser."
+        case .browser: return "The desktop unlock code was copied, but macOS could not open the browser."
+        }
+    }
+}
+
+extension DesktopPresentation {
+    var handoffNotice: String {
+        "\(agent): unlock code copied. Paste it into the browser's Unlock preview page. The browser open request succeeded; desktop connection is checked in that page."
+    }
+
+    func open(copyCode: (String) -> Bool, openBrowser: (URL) -> Bool) throws {
+        guard let target = URL(string: url), ["http", "https"].contains(target.scheme ?? "") else { throw DesktopOpenError.url }
+        guard copyCode(unlockCode) else { throw DesktopOpenError.clipboard }
+        guard openBrowser(target) else { throw DesktopOpenError.browser }
+    }
 }
 
 enum WebMITMOpenError: LocalizedError {

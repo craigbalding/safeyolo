@@ -284,6 +284,11 @@
             const value = await get('diagnostics', signal);
             if (!value || signal.aborted || closed || terminal) return;
             originReplied = true;
+            const instance = typeof value.instance_id === 'string' && value.instance_id ? value.instance_id : 'Instance identity unavailable';
+            const agent = typeof value.agent === 'string' && value.agent ? value.agent : 'Agent identity unavailable';
+            const agentId = typeof value.agent_id === 'string' && value.agent_id ? ` (${value.agent_id})` : '';
+            byId('identity').textContent = `${instance} — ${agent}${agentId}`;
+            document.title = `SafeYolo Desktop — ${instance} — ${agent}`;
             const ready = assess(value);
             if (connected && viewerId) {
                 const health = await get('session?' + viewerId, signal, 5000);

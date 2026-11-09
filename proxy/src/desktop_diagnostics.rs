@@ -121,7 +121,8 @@ pub(crate) async fn snapshot(name: &str, agent_id: &str) -> Value {
     } else {
         json!({"tcp":"unknown","greeting":"not_checked","transport":"unavailable","duration_ms":0})
     };
-    json!({"observed_at":crate::circuit_runtime::now(),"recorded_agent_state":recorded,"saved_run":saved_run,
+    json!({"instance_id":crate::desktop_present::instance_id().ok(),"agent":name,"agent_id":agent_id,
+        "observed_at":crate::circuit_runtime::now(),"recorded_agent_state":recorded,"saved_run":saved_run,
         "runtime":{"state":observed,"inspection":if observed=="unknown" {"failed"} else {"observed"},
         "control":runtime["control_state"],"disagreement":disagreement,"duration_ms":runtime_ms},
         "guest":guest})

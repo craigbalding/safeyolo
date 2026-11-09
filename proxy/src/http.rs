@@ -4019,12 +4019,15 @@ where
                 // atomic refresh publication still fail closed on a visible
                 // replacement.
                 let loaded = if credential.auth_kind.is_some() {
-                    runtime.gateway_vault.load_async().await?
+                    runtime.gateway_vault.load_for_injection().await?
                 } else {
-                    None
+                    Err(crate::credential_injection::VaultUnavailable::Unavailable)
                 };
-                let vault = loaded.as_ref().map(|loaded| &loaded.vault);
-                if let Some(vault) = vault {
+                let vault = loaded
+                    .as_ref()
+                    .map(|loaded| &loaded.vault)
+                    .map_err(|reason| *reason);
+                if let Ok(vault) = vault {
                     let _ = vault.reload_if_changed();
                 }
                 let selected_model_request = crate::prompt_injection::is_claude_messages(
@@ -4074,7 +4077,7 @@ where
                         crate::credential_injection::Start::Refresh(pending) => {
                             resolve_refresh(
                                 &runtime,
-                                loaded.as_ref().map(|loaded| &loaded.oauth),
+                                loaded.as_ref().ok().map(|loaded| &loaded.oauth),
                                 identity,
                                 request_id,
                                 &upgrades,

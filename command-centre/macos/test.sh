@@ -27,6 +27,7 @@ xcrun swiftc \
   "$ROOT/Sources/SecurityNotifications.swift" \
   "$ROOT/Tests/ModelTests.swift" \
   "$ROOT/Tests/ConnectionTests.swift" \
+  "$ROOT/Tests/OperatorContextTests.swift" \
   "$ROOT/Tests/CredentialStartupTests.swift" \
   "$ROOT/Tests/SupportTests.swift" \
   -o "$TEST_APP/Contents/MacOS/ModelTests" \
@@ -35,7 +36,7 @@ codesign --force --sign - --timestamp=none "$TEST_APP"
 "$TEST_APP/Contents/MacOS/ModelTests"
 
 # Focused credential controls use synthetic stores, without native item changes.
-if [[ "${SAFEYOLO_COMMAND_CENTRE_TEST_FILTER:-}" == "saved-support" || "${SAFEYOLO_COMMAND_CENTRE_TEST_FILTER:-}" == "credential-startup" || "${SAFEYOLO_COMMAND_CENTRE_TEST_FILTER:-}" == "approval-attention" || "${SAFEYOLO_COMMAND_CENTRE_TEST_FILTER:-}" == "operator-recovery" ]]; then
+if [[ "${SAFEYOLO_COMMAND_CENTRE_TEST_FILTER:-}" == "saved-support" || "${SAFEYOLO_COMMAND_CENTRE_TEST_FILTER:-}" == "credential-startup" || "${SAFEYOLO_COMMAND_CENTRE_TEST_FILTER:-}" == "approval-attention" || "${SAFEYOLO_COMMAND_CENTRE_TEST_FILTER:-}" == "operator-recovery" || "${SAFEYOLO_COMMAND_CENTRE_TEST_FILTER:-}" == "operator-context" ]]; then
   exit 0
 fi
 

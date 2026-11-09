@@ -41,6 +41,9 @@ safeyolo [--root ROOT] logs connection ID --instance ID --runtime ID [--sandbox-
 safeyolo [--root ROOT] logs request ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] observations [--instance ID] [--runtime ID] [--json]
 safeyolo [--root ROOT] diagnose [--agent NAME] [--json]
+Diagnostics: diagnose reads saved/current policy and audit availability without test traffic.
+agent diagnostics NAME probes the selected runtime/control and reports its next_action.
+doctor probes host prerequisites and each configured policy pipeline; it does not prove coding-agent readiness.
 safeyolo helper show ID|diagnostic ID|prepare ID --reason TEXT [--socket PATH] [--token-file FILE]
 safeyolo helper list\nsafeyolo helper approve|reject|defer ID --delegation NAME --option ID\nsafeyolo helper context|respond ID [--reason TEXT] [--socket PATH] [--token-file FILE]
 
@@ -370,6 +373,86 @@ fn show_context(view: &Value) -> Result<(), Error> {
     Ok(())
 }
 
+// Render canonical decision facts as readable fields, including nested effects,
+// alternatives and uncertainty. Requester prose is rendered separately below.
+fn show_evidence_fields(value: &Value, indent: usize) {
+    let prefix = " ".repeat(indent);
+    match value {
+        Value::Object(fields) => {
+            let priority = [
+                "enables",
+                "risk_policy",
+                "persistent_effects",
+                "execution_authority",
+                "status",
+                "uncertainty",
+                "unverified_prerequisites",
+                "unresolved_conditions",
+                "limitations",
+                "model",
+                "direct",
+                "rules",
+            ];
+            let mut ordered = fields.iter().collect::<Vec<_>>();
+            ordered.sort_by_key(|(key, _)| {
+                priority
+                    .iter()
+                    .position(|name| *name == key.as_str())
+                    .unwrap_or(priority.len())
+            });
+            for (key, value) in ordered {
+                let label = safe(&key.replace('_', " "));
+                if value.is_object() || value.is_array() {
+                    println!("{prefix}{label}:");
+                    show_evidence_fields(value, indent + 2);
+                } else {
+                    println!(
+                        "{prefix}{label}: {}",
+                        safe(value.as_str().unwrap_or(&value.to_string()))
+                    );
+                }
+            }
+        }
+        Value::Array(items) if items.is_empty() => println!("{prefix}None"),
+        Value::Array(items) => {
+            for value in items {
+                println!("{prefix}-");
+                show_evidence_fields(value, indent + 2);
+            }
+        }
+        _ => println!(
+            "{prefix}{}",
+            safe(value.as_str().unwrap_or(&value.to_string()))
+        ),
+    }
+}
+
+fn show_decision_evidence(view: &Value) {
+    for (label, field) in [
+        ("SafeYolo assessment (includes request data)", "assessment"),
+        ("Policy and reviewed guidance", "guidance"),
+        ("Assessment changed since request", "assessment_changed"),
+        ("Recorded outcome", "result"),
+        ("Selected option", "option"),
+    ] {
+        if let Some(value) = view.get(field).filter(|value| !value.is_null()) {
+            println!("{label}:");
+            let mut value = value.clone();
+            if field == "guidance"
+                && let Some(fields) = value.as_object_mut()
+            {
+                if fields.get("assessment") == view.get("assessment") {
+                    fields.remove("assessment");
+                }
+                if fields.get("alternatives") == view["assessment"].get("alternatives") {
+                    fields.remove("alternatives");
+                }
+            }
+            show_evidence_fields(&value, 2);
+        }
+    }
+}
+
 fn show_explanation(view: &Value) -> Result<(), Error> {
     println!(
         "Approval: {} | Status: {}\nObserved by SafeYolo:",
@@ -377,15 +460,10 @@ fn show_explanation(view: &Value) -> Result<(), Error> {
         safe(text(&view["status"]))
     );
     show_request_history(view)?;
+    show_decision_evidence(view);
     if view["action"]["route_exception"] == true {
-        println!(
-            "Host-recorded route scope: {}",
-            context_json(&view["action"])?
-        );
-        println!(
-            "Policy and reviewed guidance: {}",
-            context_json(&view["guidance"])?
-        );
+        println!("Host-recorded route scope:");
+        show_evidence_fields(&view["action"], 2);
     }
     let facts = &view["observed"];
     for (label, key) in [
@@ -504,6 +582,12 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
         println!("Approval: {}", safe(id));
     }
     show_request_history(view)?;
+    show_decision_evidence(view);
+    if let Some(options) = view.get("options") {
+        println!("Offered options (identity, effects and lifetime):");
+        show_evidence_fields(options, 2);
+    }
+
     if view["action"]["kind"] == "operator_action" {
         if let Some(audit) = view["audit_status"].as_str() {
             println!("Audit: {}", safe(audit));
@@ -607,6 +691,15 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
 }
 
 fn show_request_history(view: &Value) -> Result<(), Error> {
+    if let Some(created) = view["created_at"].as_i64() {
+        println!("Requested at: {created} (Unix seconds)");
+    }
+    if let Some(expiry) = view["expires_at"]
+        .as_i64()
+        .or_else(|| view["authority"]["expires_at"].as_i64())
+    {
+        println!("Request expires at: {expiry} (Unix seconds)");
+    }
     if let Some(count) = view["request_history"]["equivalent_request_count"].as_u64() {
         println!(
             "Equivalent requests: {count} | Approvals: {} | First requested: {} | Last requested: {} (Unix seconds)",
@@ -1335,8 +1428,8 @@ async fn diagnose(root: &Path, options: &Options) -> Result<Value, Error> {
             json!({"available":false,"error":safe(&error.to_string()),"guidance":"Local logs remain available. Restore the Admin API, then read policy show; active state is unverified."})
         }
     };
-    let mut value =
-        json!({"root":root,"local_policy":policy,"admin":active,"audit_log":config.audit_log_path});
+    let mut value = json!({"root":root,"local_policy":policy,"admin":active,"audit_log":config.audit_log_path,
+            "diagnostic_commands":crate::host_commands::diagnostic_commands(options.agent.as_deref())});
     if let Some(name) = &options.agent {
         validate_name(name)?;
         let last = root.join("agents").join(name).join("current-launch.json");
@@ -1521,7 +1614,7 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
             }
         }
         println!(
-            "select NAME | state | traffic [FILTER] | show ID | body ID SIDE | websocket ID | message ID NUMBER [--offset BYTES] | export ID FORMAT FILE | pending | approval ID | explain ID [--option ID] | ask ID | context ID | review | share ID HELPER | approve ID | reject ID | verify GRANT TARGET [HOME] | notices [HOME] | receipts | receipt ID | recover ID | logs | diagnose | attach | back | quit"
+            "select NAME | state | diagnose (policy/audit; no traffic probes) | diagnostics (agent runtime/control probes) | doctor (host/pipeline probes) | traffic [FILTER] | show ID | body ID SIDE | websocket ID | message ID NUMBER [--offset BYTES] | export ID FORMAT FILE | pending | approval ID | explain ID [--option ID] | ask ID | context ID | review | share ID HELPER | approve ID | reject ID | verify GRANT TARGET [HOME] | notices [HOME] | receipts | receipt ID | recover ID | logs | attach | back | quit"
         );
         print!("inspect> ");
         std::io::stdout().flush()?;
@@ -1560,6 +1653,15 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
             };
             match command {
                 "state" => print_json(&state(root, name).await?),
+                "diagnostics" => {
+                    let current = crate::host_agents::list()?;
+                    let agent = current.iter().find(|agent| agent.name == *name).ok_or("selected agent is no longer configured")?;
+                    print_json(&crate::host_commands::diagnostics(agent).await?)
+                }
+                "doctor" => {
+                    let code = Box::pin(crate::host_commands::run(host_platform::config_path(), &["doctor".into()])).await?;
+                    if code == 0 { Ok(()) } else { Err("doctor reported a failed check; follow its findings".into()) }
+                }
                 "traffic" => print_json(
                     &flows(
                         root,
