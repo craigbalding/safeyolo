@@ -124,11 +124,11 @@ fn package_guest_uses_the_existing_strict_fields() {
         guest_oci::REPOSITORY
     );
     fs::write(&path, &original).unwrap();
-    assert!(PackageGuest::read(&path).is_ok());
+    assert!(PackageGuest::read(&path, false).is_ok());
     for libc in ["glibc", "musl"] {
         fs::write(&path, format!("{original}libc={libc}\n")).unwrap();
         let expected = libc != "musl" || os == "linux";
-        assert_eq!(PackageGuest::read(&path).is_ok(), expected);
+        assert_eq!(PackageGuest::read(&path, false).is_ok(), expected);
     }
     for bad in [
         original.replace("compat-v1", "compat-v2"),
@@ -141,7 +141,64 @@ fn package_guest_uses_the_existing_strict_fields() {
         format!("{original}libc=musl\nlibc=glibc\n"),
     ] {
         fs::write(&path, bad).unwrap();
-        assert!(PackageGuest::read(&path).is_err());
+        for installed in [false, true] {
+            assert!(PackageGuest::read(&path, installed).is_err());
+        }
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn package_guest_allows_only_known_installed_runsc_pins() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("package-info");
+    let (os, architecture) = consumer_platform().unwrap().os_architecture();
+    let base = format!(
+        "source_commit=99b0e98ac3b1ef0ddfdccfeb98eddea782d5bee3\nprofile=production\nplatform={os}-{architecture}\nminimum_runtime=2.39\nguest_compatibility=v1\nguest_repository={}\nguest_discovery_tag=compat-v1\n",
+        guest_oci::REPOSITORY
+    );
+    let stock_version = "release-20261005.0";
+    let stock_source = "https://github.com/google/gvisor/releases/tag/release-20261005.0";
+    let patched_version = "release-20261005.0-safeyolo.1";
+    let patched_source =
+        "https://github.com/google/gvisor/commit/97e8e896904cb364319cd9758241d3f0bd27a6f4";
+    for (version, source, target_allowed) in [
+        (stock_version, stock_source, false),
+        (patched_version, patched_source, true),
+    ] {
+        let metadata =
+            format!("{base}runsc_version={version}\nrunsc_source={source}\nrunsc_origin=bundled\n");
+        fs::write(&path, &metadata).unwrap();
+        assert_eq!(PackageGuest::read(&path, false).is_ok(), target_allowed);
+        assert!(PackageGuest::read(&path, true).is_ok());
+        assert_eq!(
+            packaged_runsc_version(temp.path()).unwrap().as_deref(),
+            Some(version)
+        );
+        for bad in [
+            metadata.replace(source, "https://example.test/runsc"),
+            metadata.replace("runsc_origin=bundled", "runsc_origin=system"),
+            metadata.replace(&format!("runsc_source={source}\n"), ""),
+            metadata.replace("profile=production", "profile=unknown"),
+            metadata.replace("source_commit=99b", "source_commit=xyz"),
+            metadata.replace(version, "release-unknown"),
+        ] {
+            fs::write(&path, bad).unwrap();
+            for installed in [false, true] {
+                assert!(PackageGuest::read(&path, installed).is_err());
+            }
+        }
+    }
+    for (version, source) in [
+        (stock_version, patched_source),
+        (patched_version, stock_source),
+    ] {
+        fs::write(
+            &path,
+            format!("{base}runsc_version={version}\nrunsc_source={source}\nrunsc_origin=bundled\n"),
+        )
+        .unwrap();
+        assert!(PackageGuest::read(&path, true).is_err());
     }
 }
 

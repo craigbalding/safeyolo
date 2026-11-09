@@ -376,6 +376,14 @@ It also shows the guest version, compatibility identifier and separate Open
 Container Initiative (OCI) index, child-manifest and archive digests. A retained
 previous pair appears after the first component change.
 
+Installed Linux packages can retain the bundled stock gVisor
+`release-20261005.0` pin or the patched `release-20261005.0-safeyolo.1` pin.
+Status reports each package's recorded runtime identity. Upgrade validates
+the installed package against its exact runtime pin and source. A newly
+selected bundle must use the patched pin. Rollback validates the retained
+previous package against its own pin before selecting the complete prior pair.
+Both pins require the complete checksummed runtime payload.
+
 For a host-only upgrade, choose an official `host-COMMIT` release from the
 [release list](https://github.com/craigbalding/safeyolo/releases). Replace
 `COMMIT` below with that release's full 40-character commit. The command

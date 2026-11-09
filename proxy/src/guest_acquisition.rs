@@ -67,7 +67,7 @@ struct PackageGuest {
 }
 
 impl PackageGuest {
-    fn read(path: &Path) -> Result<Self, Error> {
+    fn read(path: &Path, installed: bool) -> Result<Self, Error> {
         let text = fs::read_to_string(path)?;
         let mut fields = BTreeMap::new();
         for line in text.split_terminator('\n') {
@@ -134,13 +134,27 @@ impl PackageGuest {
         if ["runsc_version", "runsc_source", "runsc_origin"]
             .iter()
             .any(|key| fields.contains_key(key))
-            && (platform == ConsumerPlatform::DarwinArm64
-                || field("runsc_version")? != "release-20261005.0-safeyolo.1"
-                || field("runsc_source")?
-                    != "https://github.com/google/gvisor/commit/97e8e896904cb364319cd9758241d3f0bd27a6f4"
-                || field("runsc_origin")? != "bundled")
         {
-            return Err("invalid gVisor package metadata".into());
+            let runtime = (field("runsc_version")?, field("runsc_source")?);
+            // Retained installed packages may use the stock pin. New targets
+            // must use the current patched build, with its exact source.
+            let known_runtime = runtime
+                == (
+                    "release-20261005.0-safeyolo.1",
+                    "https://github.com/google/gvisor/commit/97e8e896904cb364319cd9758241d3f0bd27a6f4",
+                )
+                || (installed
+                    && runtime
+                        == (
+                            "release-20261005.0",
+                            "https://github.com/google/gvisor/releases/tag/release-20261005.0",
+                        ));
+            if platform == ConsumerPlatform::DarwinArm64
+                || !known_runtime
+                || field("runsc_origin")? != "bundled"
+            {
+                return Err("invalid gVisor package metadata".into());
+            }
         }
         if platform != consumer_platform()? {
             return Err("package platform differs from this host".into());
@@ -171,14 +185,14 @@ impl PackageGuest {
     }
 }
 
-/// Reuse the package's strict reader for Linux runtime selection and doctor.
+/// Validate installed package metadata for Linux runtime selection and doctor.
 #[cfg(target_os = "linux")]
 pub(crate) fn packaged_runsc_version(root: &Path) -> Result<Option<String>, Error> {
     let path = root.join("package-info");
     if !path.try_exists()? {
         return Ok(None);
     }
-    Ok(PackageGuest::read(&path)?.runsc_version)
+    Ok(PackageGuest::read(&path, true)?.runsc_version)
 }
 
 fn consumer_platform() -> Result<ConsumerPlatform, Error> {
@@ -675,7 +689,7 @@ fn selected_inputs_at(host: &Path, share: &Path) -> Result<PathBuf, Error> {
     if !share.join("guest-selection.json").try_exists()? {
         return Ok(share.to_path_buf());
     }
-    let package = PackageGuest::read(&host.join("package-info"))?;
+    let package = PackageGuest::read(&host.join("package-info"), true)?;
     let selection: GuestSelection =
         serde_json::from_slice(&fs::read(share.join("guest-selection.json"))?)?;
     selection.validate(&package)?;
@@ -755,7 +769,7 @@ pub async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
             return Err("unknown or duplicate guest acquire option".into());
         }
     }
-    let package = PackageGuest::read(&package_info.ok_or("--package-info is required")?)?;
+    let package = PackageGuest::read(&package_info.ok_or("--package-info is required")?, false)?;
     if download_only && (selection_file.is_some() || host_settings.is_some()) {
         return Err("guest download does not extract or write an installed selection".into());
     }
