@@ -1,5 +1,9 @@
 # Delegate approval decisions
 
+For guided reviewer, beneficiary and scope selection without proposal files,
+use [the configuration journey](federation-setup.md#configure-approval-reviewers-separately).
+The explicit interfaces below retain structured output and the full scope model.
+
 A host operator can let named local or qualified remote reviewer agents decide
 network, credential, service authorization, contract binding, gateway route,
 existing local Coord room access and desktop presentation requests for named

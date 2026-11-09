@@ -34,6 +34,10 @@ you opened. A running proxy alone does not mean that the agent is running.
 
 Keep the operator credential in the instance's `data/admin_token` on the host.
 
+For connections between instances and separately scoped support, notices,
+approval reviewers and factory directions, follow [guided federation and
+authority setup](federation-setup.md). It includes editing and named revocation.
+
 ## Schedule shell work
 
 Inside a running standard Debian guest, use cron for recurring work and at for

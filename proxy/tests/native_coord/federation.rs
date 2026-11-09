@@ -1,6 +1,8 @@
 //! Two owned native SafeYolos, real Agent API and scoped TLS NATS.
 #![cfg(target_os = "linux")]
 use super::*;
+#[path = "federation/guided.rs"]
+mod guided;
 #[path = "federation/modes.rs"]
 mod modes;
 #[path = "federation/operator.rs"]

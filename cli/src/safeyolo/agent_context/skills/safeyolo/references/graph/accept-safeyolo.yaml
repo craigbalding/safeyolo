@@ -515,6 +515,13 @@ nodes:
       actual NATS, the acknowledged support/delegation previews, B-owned work
       and approvals, source restart and scoped factory/approval denials.
       Its controlled ingress records do not prove the installed operator journey.
+      For guided configuration, select federation::guided with --ignored and
+      --test-threads=1. Piped human answers exercise addressed connection handoffs,
+      owner activation, generated/imported/renewed TLS, separately scoped authority,
+      interruption and stale previews. The native_operator_cli target's
+      guided_credential_scope filter selects a real pending request without
+      copying fingerprints or deciding it. These CLI controls do not establish
+      installed Command Centre operation or real model supervision.
       For delegated remote support, select federation::support with --ignored.
       It exercises scoped broker publish/subscribe denials, room-independent
       grants, current qualified identities, owner receipts, discarded replies,
@@ -604,8 +611,12 @@ nodes:
           sha256: d0317762ef1aacaa97f3cee42e107c385d3c0ad8af97c7ed745e6d223435c5bb
         - path: proxy/tests/native_coord/federation/reliability.rs
           sha256: 8338ae6fad7d2c24b1450e2fefc10a9e3b53e91ff2d16bdb726daee7e4acff44
+        - path: proxy/tests/native_coord/federation/guided.rs
+          sha256: eabaaa76f34911149c078b5bdf88de32c4df2d9e182b8ca552f53c85dc794c20
+        - path: proxy/tests/native_operator_cli.rs
+          sha256: fa2b0c95074f5e66c8b036b7e413573dc1e4f436544fa354e6f403e9e9c76b47
         - path: proxy/tests/native_coord/federation.rs
-          sha256: 9fc991bef60293781e8b80b2ed9eb8c16e3476022eb434ed3f6ed8da39072879
+          sha256: 7bfc83e871c120479782f1e0d027a6346de321b819e823d7f985a4d4509edcb7
         - path: proxy/src/agent_api/coord.rs
           sha256: a4671ca73f60f072c534d9c9cea92260646390f0f19cd0ec92f28a8357d10032
         - path: proxy/src/agent_api/coord/federation.rs
@@ -627,7 +638,7 @@ nodes:
         - path: proxy/src/coord_tools/github.rs
           sha256: da9e4c6e244c232da4aedf17d7f58484862743996c084317a37f4e602d70c164
         - path: proxy/src/native_client.rs
-          sha256: ae3f1f295305381994b2c730a1288bd3cd42dd9174a58dab52ce97f1e7e54dc5
+          sha256: 0ce42c6017fc8fc9b8fa4b8a84d9946f3d867eff829b6b909011186dba9d8264
         - path: cli/src/safeyolo/services/github.yaml
           sha256: 38880c71fbe0a2f995a790c64d21d001baa7a5911d10f44d8e50973914f543d3
         - path: proxy/tests/native_coord/upgrade.rs

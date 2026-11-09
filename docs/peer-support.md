@@ -1,5 +1,9 @@
 # Delegate peer support
 
+For guided connection, authority selection, editing and named revocation, start
+with [connect instances and delegate support](federation-setup.md). The explicit
+file interfaces and authority details below remain available for automation.
+
 An operator can grant a support agent authority to inspect and repair selected
 agents in the same instance or in an explicitly selected remote instance. The support agent uses the authenticated
 Agent application programming interface (API) or the existing Model Context
