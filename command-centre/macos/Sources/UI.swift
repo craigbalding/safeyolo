@@ -736,11 +736,11 @@ struct InstanceMenu: View {
             Button("Reconnect to This Owner") { client.start() }
             Button("Support, Notices and Receipts…") { showSupport(client) }
             Divider()
-            if client.requestErrors["Pending approvals"] != nil || !client.adminConnected {
+            if client.requestErrors["Pending approvals"] != nil || !client.adminConnected || !client.hasApprovalSnapshot {
                 Text("Pending approvals unavailable; retained entries may be stale")
             }
             if client.approvals.isEmpty {
-                Text(client.requestErrors["Pending approvals"] == nil && client.adminConnected ? "No pending approvals in last read" : "No current approval snapshot")
+                Text(client.hasApprovalSnapshot && client.requestErrors["Pending approvals"] == nil && client.adminConnected ? "No pending approvals in last read" : "No current approval snapshot")
             } else {
                 Text("Approvals (\(client.approvals.count))")
                 ForEach(client.approvals) { approval in
@@ -762,11 +762,11 @@ struct InstanceMenu: View {
                 Text("Approval evidence unavailable: \(id). Direct policy controls remain available.")
             }
             Divider()
-            if client.requestErrors["Agent status"] != nil || !client.adminConnected {
+            if client.requestErrors["Agent status"] != nil || !client.adminConnected || !client.hasAgentSnapshot {
                 Text("Agent inventory unavailable; retained entries may be stale")
             }
             if client.agents.isEmpty {
-                Text(client.requestErrors["Agent status"] == nil && client.adminConnected ? "No configured agents in last read" : "No current agent inventory")
+                Text(client.hasAgentSnapshot && client.requestErrors["Agent status"] == nil && client.adminConnected ? "No configured agents in last read" : "No current agent inventory")
             } else {
                 Text("Agents")
                 Button("Refresh Agent Status") {

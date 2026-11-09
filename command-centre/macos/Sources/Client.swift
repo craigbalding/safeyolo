@@ -24,11 +24,13 @@ final class SafeYoloClient: ObservableObject {
 
     @Published private(set) var connectionState = ConnectionState.connecting
     @Published private(set) var approvals: [ApprovalEvent] = []
+    @Published private(set) var hasApprovalSnapshot = false
     // Session projections of canonical records. Reconnect reads the host;
     // disappearance from the pending list alone never means approval.
     @Published private(set) var approvalOutcomes: [String: ApprovalResolution] = [:]
     @Published private(set) var unavailableApprovalOutcomes = Set<String>()
     @Published private(set) var agents: [AgentInfo] = []
+    @Published private(set) var hasAgentSnapshot = false
     @Published private(set) var securityEvents: [SecurityObservation] = []
     @Published private(set) var busyAgentIDs = Set<String>()
     @Published private(set) var pendingTerminalIDs = Set<String>()
@@ -453,6 +455,7 @@ final class SafeYoloClient: ObservableObject {
                 }
             }
             if approvals != fresh { approvals = fresh }
+            if !hasApprovalSnapshot { hasApprovalSnapshot = true }
             let newApprovals = fresh.filter { !knownApprovalIDs.contains($0.id) }
             knownApprovalIDs = Set(fresh.map(\.id))
             for approval in newApprovals {
@@ -488,6 +491,7 @@ final class SafeYoloClient: ObservableObject {
             let data = try await request(path: "/admin/agents")
             let fresh = try JSONDecoder().decode(AgentInventory.self, from: data).agents
             if agents != fresh { agents = fresh }
+            if !hasAgentSnapshot { hasAgentSnapshot = true }
             finishPendingTerminals(agents, completeInventory: true)
             setRequestError("Agent status", nil)
             return true

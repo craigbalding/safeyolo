@@ -484,9 +484,11 @@ struct ModelTests: App {
             makeEventSocket: { socketSession.webSocketTask(with: $0) }
         )
         defer { client.stop() }
+        precondition(!client.hasAgentSnapshot && !client.hasApprovalSnapshot)
         let failedRefresh = await client.refreshAgents()
         precondition(!failedRefresh && client.connectionState == .connecting,
                      "A manual inventory failure must not claim the event connection is reconnecting")
+        precondition(!client.hasAgentSnapshot, "An unavailable first read is not an empty inventory")
         var agentErrors: [String?] = []
         let subscription = client.$requestErrors.sink { agentErrors.append($0["Agent status"]) }
         defer { subscription.cancel() }
@@ -512,7 +514,7 @@ struct ModelTests: App {
         client.stop()
         StubURLProtocol.responsesByPath["/admin/agents"] = (200, Data(#"{"agents":[]}"#.utf8))
         let recovered = await client.refreshAgents()
-        precondition(recovered && client.requestErrors["Agent status"] == nil)
+        precondition(recovered && client.hasAgentSnapshot && client.requestErrors["Agent status"] == nil)
         precondition(client.requestErrors["Live events"] != nil,
                      "Recovering agent status must not clear the independent socket error")
     }
