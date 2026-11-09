@@ -1,6 +1,8 @@
 //! Two owned native SafeYolos, real Agent API and scoped TLS NATS.
 #![cfg(target_os = "linux")]
 use super::*;
+#[path = "federation/modes.rs"]
+mod modes;
 #[path = "federation/operator.rs"]
 mod operator;
 #[path = "federation/reliability.rs"]
@@ -48,11 +50,20 @@ fn client(root: &Path, agent: &str, home: bool) -> Client {
 }
 
 async fn broker(root: &Path, peer: &Path, peer_id: &str, nats: &str) -> String {
+    broker_mode(root, peer, peer_id, nats, "tls").await
+}
+
+async fn broker_mode(root: &Path, peer: &Path, peer_id: &str, nats: &str, mode: &str) -> String {
     coord_json(root, &["stop"]).await;
     fs::copy(peer.join("federation-secret"), root.join("peer-secret")).unwrap();
-    fs::write(root.join("coord-federation.json"),json!({"listen":"127.0.0.1",
-        "cert_file":root.join("peer.pem"),"key_file":root.join("peer.key"),"ca_file":root.join("peer.pem"),
-        "local_server_name":"127.0.0.1","peers":[{"instance_id":peer_id,"credential_file":root.join("peer-secret")}]}).to_string()).unwrap();
+    let mut setup = json!({"mode":mode,"listen":"127.0.0.1","peers":[{"instance_id":peer_id,"credential_file":root.join("peer-secret")}]});
+    if mode == "tls" {
+        setup["cert_file"] = json!(root.join("peer.pem"));
+        setup["key_file"] = json!(root.join("peer.key"));
+        setup["ca_file"] = json!(root.join("peer.pem"));
+        setup["local_server_name"] = json!("127.0.0.1");
+    }
+    fs::write(root.join("coord-federation.json"), setup.to_string()).unwrap();
     let ready = host_json(root, &["coord", "start", "--binary", nats]).await;
     format!("127.0.0.1:{}", ready["client_port"])
 }
@@ -155,19 +166,37 @@ async fn await_remote_connection(root: &Path, instance: &str) {
 }
 
 async fn configure_home(home: &Path, peer: &Path, home_id: &str, endpoint: &str) {
-    coord_json(
-        peer,
-        &[
-            "federation",
-            "home",
-            "primary",
-            home_id,
-            &format!("tls://{endpoint}"),
-            home.join("peer.pem").to_str().unwrap(),
-            peer.join("federation-secret").to_str().unwrap(),
-        ],
-    )
-    .await;
+    let setup: Value =
+        serde_json::from_slice(&fs::read(home.join("coord-federation.json")).unwrap()).unwrap();
+    if setup["mode"] == "loopback" {
+        coord_json(
+            peer,
+            &[
+                "federation",
+                "home",
+                "primary",
+                home_id,
+                "loopback",
+                &format!("nats://{endpoint}"),
+                peer.join("federation-secret").to_str().unwrap(),
+            ],
+        )
+        .await;
+    } else {
+        coord_json(
+            peer,
+            &[
+                "federation",
+                "home",
+                "primary",
+                home_id,
+                &format!("tls://{endpoint}"),
+                home.join("peer.pem").to_str().unwrap(),
+                peer.join("federation-secret").to_str().unwrap(),
+            ],
+        )
+        .await;
+    }
 }
 
 fn count(root: &Path, sql: &str) -> i64 {
@@ -187,18 +216,23 @@ fn mutable_work(mut value: Value) -> Value {
 }
 
 async fn local_nats(root: &Path) -> async_nats::Client {
-    let record: Value =
-        serde_json::from_slice(&fs::read(root.join("data/coord/nats/process.json")).unwrap())
-            .unwrap();
     let password =
         zeroize::Zeroizing::new(fs::read_to_string(root.join("data/coord/nats/creds")).unwrap());
-    async_nats::ConnectOptions::new()
-        .require_tls(true)
-        .add_root_certificates(root.join("peer.pem"))
+    let endpoint: Value = serde_json::from_slice(
+        &fs::read(root.join("data/coord/nats/local-endpoint.json")).unwrap(),
+    )
+    .unwrap();
+    let mut options = async_nats::ConnectOptions::new();
+    if endpoint["mode"] == "tls" {
+        options = options
+            .require_tls(true)
+            .add_root_certificates(root.join("peer.pem"));
+    }
+    options
         .user_and_password("safeyolo".into(), password.trim().into())
         .connection_timeout(Duration::from_secs(2))
         .request_timeout(Some(Duration::from_secs(2)))
-        .connect(format!("tls://127.0.0.1:{}", record["client_port"]))
+        .connect(endpoint["url"].as_str().unwrap())
         .await
         .unwrap()
 }
@@ -233,6 +267,16 @@ async fn armed(stream: &mut async_nats::jetstream::stream::Stream, baseline: usi
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires pinned NATS; two real owned native SafeYolo instances"]
 async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_revocation() {
+    authority_journey("tls").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires pinned NATS; two owned instances over explicit loopback"]
+async fn loopback_preserves_authority_retained_notifications_and_recovery() {
+    authority_journey("loopback").await;
+}
+
+async fn authority_journey(mode: &str) {
     use std::os::unix::fs::PermissionsExt;
     let started = std::time::Instant::now();
     let nats = std::env::var("SAFEYOLO_COORD_NATS_BINARY").expect("set pinned NATS binary");
@@ -298,7 +342,8 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
         certificate.signing_key.serialize_pem(),
     )
     .unwrap();
-    let endpoint = broker(&home, &peer, &peer_id, &nats).await;
+    let endpoint = broker_mode(&home, &peer, &peer_id, &nats, mode).await;
+    coord_json(&home, &["room", "create", "after-mode-selection"]).await;
     let link = Link::new(endpoint).await;
     configure_home(&home, &peer, &home_id, &link.endpoint).await;
     let mut home_proxy = stage0::start_proxy(&home).await;
@@ -356,6 +401,19 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
             .unwrap()
     );
     assert_eq!(state["origin_instance_id"], home_id);
+    let check = coord_json(&peer, &["federation", "check", "primary"]).await;
+    assert_eq!(check["broker_authentication"], "authenticated");
+    assert_eq!(check["owner"]["identity_verified"], true);
+    assert_eq!(check["operation_permission"], "not_checked");
+    let local = coord_json(&home, &["federation", "check"]).await;
+    assert_eq!(local["broker_authentication"], "authenticated");
+    assert_eq!(local["owner"], "reachable");
+    assert_eq!(local["configuration_active"], true);
+    assert_eq!(local["runtime"]["local_endpoint"]["mode"], mode);
+    assert_eq!(
+        local["runtime"]["local_endpoint"],
+        local["runtime"]["owner_federation_endpoint"]
+    );
     let remote_bob = state["members"]
         .as_array()
         .unwrap()
@@ -403,6 +461,12 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
         .await
         .unwrap_err()
         .to_string();
+    let denied_check = coord_json(&peer, &["federation", "check", "primary"]).await;
+    assert_eq!(
+        denied_check["broker_authentication"], "denied",
+        "{denied_check}"
+    );
+    assert_eq!(denied_check["protection"]["verified"], true);
     fs::write(peer.join("federation-secret"), credential.as_slice()).unwrap();
     assert!(denied.contains("403"));
     assert!(!denied.contains("different-credential"));
@@ -525,7 +589,7 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
     };
     let bob_cursor = feed(bob.clone()).await["next_cursor"].as_u64().unwrap();
     let carol_cursor = feed(carol.clone()).await["next_cursor"].as_u64().unwrap();
-    let notice=alice.call("send",&json!({"room_name":"shared","body":"Remote intended recipient","notify":["remote-bob"]})).await.unwrap();
+    let notice=alice.call("send",&json!({"room_name":"shared","body":"Remote intended recipient","notify":["remote-bob"]})).await.unwrap_or_else(|error|panic!("local notification send failed: {error}; inspect {}",home.display()));
     let attention = bob
         .call(
             "wait_for_coord",
@@ -534,6 +598,8 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
         .await
         .unwrap();
     assert_eq!(attention["objects"].as_array().unwrap().len(), 1);
+    let check = coord_json(&peer, &["federation", "check", "primary"]).await;
+    assert_eq!(check["notifications"]["stream"], "available", "{check}");
     assert_eq!(
         attention["objects"][0]["object"]["body"],
         "Remote intended recipient"
@@ -908,7 +974,7 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
         .await
         .unwrap();
     assert!(local_after.to_string().contains("Private local history"));
-    let report = json!({"home_instance_id":home_id,"peer_instance_id":peer_id,"remote_principal_id":remote_bob,"contested_winner":winner,"partition_home_claim":claimed,"replayed_creation":replay["work"],"retained_message":retained_message,"local_only_message_id":local_message["envelope"]["msg_id"],"brief_revisions":[brief["revision"].clone(),update["revision"].clone()],"targeted_attention":attention,"github":remote_external,"name_reuse":{"after_unmember":replacement,"after_peer_retrust":replacement_after_trust},"peer_work_rows":count(&peer,"SELECT count(*) FROM coord_work"),"seconds":started.elapsed().as_secs_f64(),"limits":"Two independent native roots, proxy processes, NATS processes and scoped TLS NATS on one owned host. TCP link interruption during a source mutation; discarded response after observed durable commit. No second physical host, real WAN performance, GitHub external access or model participation is inferred by this test."});
+    let report = json!({"mode":mode,"home_instance_id":home_id,"peer_instance_id":peer_id,"remote_principal_id":remote_bob,"contested_winner":winner,"partition_home_claim":claimed,"replayed_creation":replay["work"],"retained_message":retained_message,"local_only_message_id":local_message["envelope"]["msg_id"],"brief_revisions":[brief["revision"].clone(),update["revision"].clone()],"targeted_attention":attention,"github":remote_external,"name_reuse":{"after_unmember":replacement,"after_peer_retrust":replacement_after_trust},"peer_work_rows":count(&peer,"SELECT count(*) FROM coord_work"),"seconds":started.elapsed().as_secs_f64(),"limits":"Two independent native roots, proxy processes, NATS processes and scoped NATS on one owned host. TCP link interruption during a source mutation; discarded response after observed durable commit. No second physical host, real WAN performance, GitHub external access or model participation is inferred by this test."});
     fs::write(
         retained.join("observations.json"),
         serde_json::to_vec_pretty(&report).unwrap(),

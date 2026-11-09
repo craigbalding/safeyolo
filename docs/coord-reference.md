@@ -510,14 +510,14 @@ factory roles and other Coord writers. Preserve the instance root, role homes,
 checkpoints, source trees and retained artifacts. Install matching host and
 guest executables before resuming those roles.
 
-The current store uses native schema 11. Bootstrap transactionally upgrades the
+The current store uses native schema 12. Bootstrap transactionally upgrades the
 retained native schema 5 work projection to admit cancellation and fences
-schema 5/6/7/8/9/10 writers before storing reviews, requirements, decisions,
-execution assignments or selected Factory policy. Schema 11 also records outbox
+schema 5/6/7/8/9/10/11 writers before storing reviews, requirements, decisions,
+execution assignments, selected Factory policy or explicit NATS protection. The store also records outbox
 retry deadlines and per-source observation health. It preserves
-claim IDs and generations, immutable revision bytes, operation receipts,
+TLS home routes, claim IDs and generations, immutable revision bytes, operation receipts,
 attention, outbox rows and retained messages. A failed upgrade rolls back. An
-older executable refuses schema 11; do not run mixed writers or overwrite the
+older executable refuses schema 12; do not run mixed writers or overwrite the
 store to make an older executable start. Unsupported implementation generations
 remain refused.
 
@@ -762,13 +762,20 @@ at `/srv/home-safeyolo` and source A at `/srv/peer-safeyolo`. Replace `sy-HOME`,
 `sy-PEER` and `ag-BOB` with the actual instance and source agent IDs. The remote
 agent must have a current sandbox run authenticated by A's local ingress.
 
-B's operator must select a reachable NATS listener address and port. Obtain a
-Transport Layer Security (TLS) certificate and key through the existing trusted
-host setup. The certificate must cover B's external broker name and the name
-used by B's local clients. Install the public certificate authority (CA) file
-on both hosts. Do not infer permission for a new listener or network route from
-existing SSH access. Keep credentials, certificate keys, instance roots and
-broker configuration outside guest-writable mounts.
+B's operator must select a reachable NATS listener address, port and protection
+mode. `tls` is the default for existing broker files and home commands. Use TLS
+for remote endpoints without verified Tailscale protection. `tailscale` selects
+a node hosting NATS at its own assigned Tailscale address. `loopback` selects a
+literal loopback address on the same host. A failed protection check never
+selects another mode. Tailnet membership grants no SafeYolo authority.
+
+For TLS, obtain a dedicated broker certificate, key and public certificate
+authority (CA) file through trusted host setup. Keep broker material separate
+from SafeYolo's interception CA and key. The certificate must cover B's external
+broker name, `local_server_name` and any additional `server_names`. Install the
+public CA on A. Keep credentials, certificate keys, instance roots and broker
+configuration outside guest-writable mounts. Existing SSH access does not grant
+permission for another listener or network route.
 
 On A's host, create a private peer credential:
 
@@ -789,7 +796,9 @@ Use an explicitly authorized listener address for the actual host.
 
 ```json
 {
+  "mode": "tls",
   "listen": "0.0.0.0",
+  "server_names": ["home.example.test"],
   "cert_file": "/srv/home-safeyolo/home-cert.pem",
   "key_file": "/srv/home-safeyolo/home-key.pem",
   "ca_file": "/srv/home-safeyolo/home-ca.pem",
@@ -830,6 +839,101 @@ is not required. NATS [accounts](https://docs.nats.io/learn/security/accounts-an
 and [subject permissions](https://docs.nats.io/learn/security/authorization)
 provide the broker boundary; B still checks every operation against its own
 current authority.
+
+### Select Tailscale or loopback
+
+On both host accounts, the installed `tailscale` command must reach the running
+Tailscale daemon. Tailscale must use a host network interface. Linux also needs
+`ip route get`; macOS uses `/sbin/route`. SafeYolo checks the selected stable node
+ID and its own assigned address, the host route through the Tailscale interface,
+and WireGuard reachability before sending NATS credentials. The authentication
+callback repeats these checks on reconnect. Client sockets bind a local
+Tailscale address and cannot adopt an ordinary LAN source address. DERP relays
+are supported.
+
+On B, read `tailscale status --json` and select B's `Self.ID` and one address in
+`Self.TailscaleIPs`. Verify that identity with the intended host operator before
+using its credential. For example, if B's actual ID is `n-HOME` and its assigned
+address is `100.64.10.20`, B's broker file can contain:
+
+```json
+{
+  "mode": "tailscale",
+  "listen": "100.64.10.20",
+  "tailscale_node": "n-HOME",
+  "peers": [{"instance_id": "sy-PEER", "credential_file": "/srv/home-safeyolo/peer-secret"}]
+}
+```
+
+Remove TLS-only fields when selecting this mode. Bind only B's selected
+Tailscale address. A private or carrier-grade NAT address alone is not proof of
+protection. An address behind a subnet router is refused; use TLS for that
+onward leg. Listener monitoring remains on loopback. SafeYolo ignores broker
+advertisements and reconnects only to the configured literal endpoint.
+
+On A, save B's selected node ID and NATS endpoint with A's host-held credential:
+
+```sh
+/srv/peer-safeyolo/bin/safeyolo --root /srv/peer-safeyolo coord federation home primary sy-HOME tailscale nats://100.64.10.20:7443 n-HOME /srv/peer-safeyolo/federation-secret
+```
+
+For two instances on the same host, B can instead save `mode: "loopback"` and
+`listen: "127.0.0.1"`, with the same `peers` list. Omit all TLS and Tailscale
+fields. After B's owned restart on port 7443, A selects:
+
+```sh
+/srv/peer-safeyolo/bin/safeyolo --root /srv/peer-safeyolo coord federation home primary sy-HOME loopback nats://127.0.0.1:7443 /srv/peer-safeyolo/federation-secret
+```
+
+Loopback accepts literal IPv4 or IPv6 loopback addresses. It does not resolve a
+hostname or accept a LAN listener. All three modes retain scoped NATS users,
+account isolation, instance/reply identity checks and current grants. Each
+instance still has its own root and credentials. Selecting A's route to B does
+not create a reverse route, room membership or delegated authority.
+
+### Validate and apply broker TLS material
+
+On B's trusted host account, prepare a broker JSON file with the certificate,
+key, CA and required names. These commands check key matching, validity,
+endpoint names and the certificate chain. `check` saves nothing. `apply` writes
+B's private broker configuration and reports required activation:
+
+```sh
+/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation broker check /srv/home-safeyolo/broker-input.json
+/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation broker apply /srv/home-safeyolo/broker-input.json
+```
+
+Stop B's owned proxy and Coord. Start Coord with its selected ports, then start
+the proxy. Saving configuration does not prove activation or messaging readiness.
+Ordinary leaf renewal under the same CA preserves credentials, peer generations,
+retained state and grants. For an explicit CA rotation, use `broker apply FILE
+--rotate-trust`, distribute the verified public CA, then update A's TLS `home`
+command with `--rotate-trust`. A changed CA file is refused until that explicit
+route update. CA rotation changes server verification; it does not change
+per-peer credential authority. Rotating a peer credential through `federation
+trust` advances its existing trust generation. Update the broker's host-held
+peer file and restart owned Coord and the proxy. Old support and approval grants
+remain bound to their recorded generation; re-trust does not restore them.
+
+### Check configuration and usable messaging
+
+On B, run the first command for local settings and the running process. On A,
+run the second command for its selected home route:
+
+```sh
+/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation check
+/srv/peer-safeyolo/bin/safeyolo --root /srv/peer-safeyolo coord federation check primary
+```
+
+The JSON separates configured and active protection, broker authentication,
+owner reachability and notification stream availability. A local process or
+socket alone is not usable authenticated messaging. A successful owner check
+does not establish permission for an agent operation. Notification metadata
+availability does not prove retained delivery; the existing Coord diagnostics
+report pending delivery and connection failures. Restore the selected protected
+path on its owner before retrying. Recover original operation receipts and
+attention cursors after interruption; do not repeat an uncertain mutation with
+a new operation ID. No check changes mode or restores invalidated grants.
 
 For room participation, B grants the qualified remote identity ordinary room
 permissions. In this example `shared` already exists on B:
@@ -924,7 +1028,7 @@ room processing adds at most two seconds per group of four. Larger room sets
 rotate through subsequent batches.
 No repair reissues the original mutation or changes a caller's source cursor.
 
-Repeated calls reuse a TLS NATS connection for their destination and security
+Repeated calls reuse an authenticated NATS connection for their destination and security
 context. Changing a route revision, destination, credential bytes or CA bytes
 invalidates reuse. Each proxy caches up to 32 connections. It admits 32 outgoing
 long waits and 32 outgoing commands or waits of at most one second. Cancellation
@@ -1040,7 +1144,13 @@ retained JetStream data separately in `nats/jetstream` and canonical room state
 in `v0.db`. Preserve those stores during diagnosis.
 
 Federation adds host-held `coord-federation.json`, the private responder
-credential `nats/federation-creds`, and generated local TLS settings. The
+credential `nats/federation-creds`, and `nats/local-endpoint.json`. This endpoint
+records the selected URL, protection and optional TLS material. The proxy
+Coord client, host commands and federation responder use this same record.
+A controlled Coord start replaces a stale `nats/local-tls.json` override. An
+already running TLS broker remains usable during the source upgrade until that
+restart. The mode change does not delete instance roots, credentials, accounts
+or retained state. The
 generated server configuration also contains the selected peer passwords.
 Protect these files with the same ownership and mount boundaries. The recorded
 peer credential digests bind the running broker configuration to current trust;

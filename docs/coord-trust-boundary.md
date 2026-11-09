@@ -20,8 +20,9 @@ its own attribution, and nothing an agent writes reaches those fields.
 
 For an explicitly selected remote home, the source SafeYolo derives the local
 agent ID and current run from that same authenticated listener. The home binds
-the peer to its authenticated TLS NATS user and permitted source subject, then
-qualifies the principal by source instance and agent ID. A request also names
+the peer to its authenticated NATS user and permitted source subject. The
+connection uses the explicitly selected protection mode. The home qualifies
+the principal by source instance and agent ID. A request also names
 its expected destination; the receiver checks that identity before dispatch.
 The home sets `origin_instance_id`, `origin_agent_id` and its qualified
 `sender_agent_id`. The separate federation account has no imports from or

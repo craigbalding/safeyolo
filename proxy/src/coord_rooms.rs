@@ -13,7 +13,7 @@ use std::{
 };
 
 const NATS_VERSION: &str = "2.14.5";
-pub(crate) const SCHEMA_VERSION: u32 = 11;
+pub(crate) const SCHEMA_VERSION: u32 = 12;
 pub(crate) const COLLABORATION_MAX_ENVELOPE_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) mod brief;
 mod inventory;
@@ -69,7 +69,7 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
         }
         transaction.execute_batch(include_str!("coord_schema.sql"))?;
         transaction.execute("INSERT INTO instance(id) VALUES (?1)", [id.trim()])?;
-    } else if ![5, 6, 7, 8, 9, 10, SCHEMA_VERSION].contains(&version) {
+    } else if ![5, 6, 7, 8, 9, 10, 11, SCHEMA_VERSION].contains(&version) {
         return Err(format!(
             "Coord schema {version} is not operational; expected version {SCHEMA_VERSION}"
         )
@@ -87,6 +87,33 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
         )?;
     }
     transaction.execute_batch(include_str!("coord_federation_schema.sql"))?;
+    if !transaction
+        .prepare("PRAGMA table_info(coord_federation_homes)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .any(|name| name == "mode")
+    {
+        transaction.execute_batch(
+            "ALTER TABLE coord_federation_homes ADD COLUMN mode TEXT NOT NULL DEFAULT 'tls';
+            ALTER TABLE coord_federation_homes ADD COLUMN tailscale_node TEXT;
+            ALTER TABLE coord_federation_homes ADD COLUMN trust_hash TEXT;",
+        )?;
+        let previous = transaction
+            .prepare("SELECT name,ca_file FROM coord_federation_homes")?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        for (name, ca) in previous {
+            if let Ok(bytes) = fs::read(ca) {
+                transaction.execute(
+                    "UPDATE coord_federation_homes SET trust_hash=?2 WHERE name=?1",
+                    params![name, hash(&bytes)],
+                )?;
+            }
+        }
+    }
     transaction.execute_batch(include_str!("coord_membership_grants.sql"))?;
     // Earlier writers drop assignment and selected authority on rewrite.
     // Fence them before accepting work with that authority context.
@@ -403,6 +430,11 @@ pub async fn start(
                 )
                 .into());
             }
+            let mut saved = saved;
+            let active =
+                federation::configuration::configuration_active(root, &saved).unwrap_or(false);
+            saved["configuration_active"] = json!(active);
+            saved["restart_required"] = json!(!active);
             return Ok(saved);
         }
         return Err("a recorded NATS process is live but ownership is unverified; preserve it and inspect coord status before restarting".into());
@@ -430,6 +462,13 @@ pub async fn start(
     }
     let server_name = format!("safeyolo-{}", uuid::Uuid::new_v4().simple());
     let federation = federation::nats::broker(root)?;
+    if let Some(setup) = &federation {
+        setup.verify_listener().await?;
+    }
+    let protection_check = federation
+        .as_ref()
+        .map(|setup| setup.validate(root))
+        .transpose()?;
     let owner_credentials = nats.join("federation-creds");
     if federation.is_some() && !owner_credentials.exists() {
         atomic_write(
@@ -458,19 +497,6 @@ pub async fn start(
     let listen = federation
         .as_ref()
         .map_or_else(|| "127.0.0.1".to_owned(), |setup| setup.listen.to_string());
-    let local_tls = nats.join("local-tls.json");
-    if let Some(setup) = &federation {
-        atomic_write(
-            &local_tls,
-            &serde_json::to_vec(&federation::nats::LocalTls {
-                server_name: setup.local_server_name.clone(),
-                ca_file: setup.ca_file.clone(),
-            })?,
-            0o600,
-        )?;
-    } else if local_tls.try_exists()? {
-        fs::remove_file(local_tls)?;
-    }
     let jetstream = nats.join("jetstream");
     fs::create_dir_all(&jetstream)?;
     let config = nats.join("server.conf");
@@ -507,7 +533,9 @@ pub async fn start(
             if let Ok((client, monitor_port)) = observed_ports(&nats, pid) {
                 let token = crate::host_lifecycle::process_token(i64::from(pid))
                     .ok_or("NATS process identity is unavailable")?;
-                let saved = json!({"pid":pid,"token":token,"server_name":server_name,"client_port":client,"monitor_port":monitor_port,"federation_peers":transport_peers});
+                let mut endpoint = federation.as_ref().map(|setup|setup.endpoint(client)).unwrap_or(federation::endpoint::Endpoint { mode:federation::endpoint::Mode::Loopback, url:format!("nats://127.0.0.1:{client}"),ca_file:None,ca_sha256:None,tailscale_node:None });
+                endpoint.ca_sha256 = endpoint.ca_file.as_ref().map(fs::read).transpose()?.map(|bytes|hash(&bytes));
+                let saved = json!({"pid":pid,"token":token,"server_name":server_name,"client_port":client,"monitor_port":monitor_port,"federation_peers":transport_peers,"local_endpoint":endpoint,"broker_configuration":federation,"protection":endpoint.security()?,"protection_check":protection_check});
                 // Use the same process/server/endpoint check as reuse,
                 // status, room clients and stop before publishing endpoints.
                 if verified(root, &saved).await.unwrap_or(false) {
@@ -516,6 +544,9 @@ pub async fn start(
                     {
                         return Err("NATS reported listener ports different from the selected ports".into());
                     }
+                    atomic_write(&nats.join("local-endpoint.json"), &serde_json::to_vec(&endpoint)?, 0o600)?;
+                    let previous = nats.join("local-tls.json");
+                    if previous.try_exists()? { fs::remove_file(previous)?; }
                     atomic_write(&nats.join("process.json"), &serde_json::to_vec(&saved)?, 0o600)?;
                     if dynamic {
                         atomic_write(&nats.join("test-endpoints.json"), &serde_json::to_vec(&saved)?, 0o600)?;
@@ -613,16 +644,14 @@ async fn jetstream(root: &Path) -> Result<async_nats::jetstream::Context, Error>
     let port = saved["client_port"]
         .as_u64()
         .ok_or("NATS endpoint is missing")?;
-    let password =
-        zeroize::Zeroizing::new(fs::read_to_string(directory(root)?.join("nats/creds"))?);
     let (url, options) = federation::nats::local_options(
         &directory(root)?,
         format!("nats://127.0.0.1:{port}"),
-        async_nats::ConnectOptions::new(),
-    )?;
+        "safeyolo".into(),
+        directory(root)?.join("nats/creds"),
+    )
+    .await?;
     let client = options
-        .user_and_password("safeyolo".into(), password.trim().into())
-        .connection_timeout(Duration::from_secs(2))
         .request_timeout(Some(Duration::from_secs(2)))
         .connect(url)
         .await?;
@@ -944,7 +973,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
         }
         [help] if help == "--help" => {
             println!(
-                "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT [--operation-id ID]\nInstance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports default to 127.0.0.1. Host-held coord-federation.json can explicitly select the TLS client listener address; monitoring stays loopback-only. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
+                "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT [--operation-id ID]\nInstance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports default to 127.0.0.1. Host-held coord-federation.json explicitly selects TLS, verified Tailscale or loopback protection and the client listener address; monitoring stays loopback-only. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
             );
             println!("{}", crate::coord_operator::HELP);
             println!("{}", crate::coord_operator::BRIEF_HELP);
