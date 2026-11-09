@@ -1286,7 +1286,11 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             }),
         ));
     }
-    if path == "/admin/support-grants" || path.starts_with("/admin/support-grants/") {
+    if path == "/admin/support-grants"
+        || path.starts_with("/admin/support-grants/")
+        || path == "/admin/support-operations"
+        || path.starts_with("/admin/support-operations/")
+    {
         return support::respond(request, &path, task_state, service_audit).await;
     }
     if path == "/admin/approval-delegations" || path.starts_with("/admin/approval-delegations/") {

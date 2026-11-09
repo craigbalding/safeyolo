@@ -15,6 +15,7 @@ use crate::{Error, host_platform, native_client, native_config, network_guard};
 
 mod configure;
 mod observations;
+mod support;
 
 pub const HELP: &str = "safeyolo [--root ROOT] inspect [--factory NAME] [--agent NAME]
 safeyolo [--root ROOT] configure connection|support NAME|approvals NAME
@@ -28,6 +29,11 @@ safeyolo [--root ROOT] approvals ask|context ID [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals delegations [--json]\nsafeyolo [--root ROOT] approvals delegation check|preview|apply|revoke NAME --file PROPOSAL.json [--json]\nsafeyolo [--root ROOT] approvals review --agent NAME
 safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
 safeyolo [--root ROOT] support grants [--json]
+safeyolo [--root ROOT] support verify GRANT TARGET --agent SUPPORT [--home HOME] [--json]
+safeyolo [--root ROOT] support notices --agent SUPPORT [--home HOME] [--since CURSOR] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] support result OPERATION_ID --agent SUPPORT [--home HOME] [--output] [--json]
+safeyolo [--root ROOT] support receipts [--agent TARGET] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] support receipt|recover OPERATION_ID [--initiator PRINCIPAL] [--output] [--json]
 safeyolo [--root ROOT] support preview|apply|revoke|report NAME --file PROPOSAL.json [--json]
 safeyolo [--root ROOT] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] logs list [--instance ID] [--runtime ID] [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
@@ -124,6 +130,10 @@ struct Options {
     delegation: Option<String>,
     files: Vec<PathBuf>,
     capture: Option<PathBuf>,
+    home: Option<String>,
+    initiator: Option<String>,
+    since: u64,
+    output: bool,
     scope: serde_json::Map<String, Value>,
     positional: Vec<String>,
 }
@@ -138,13 +148,15 @@ impl Options {
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--json" => options.json = true,
+                "--output" => options.output = true,
                 "--unattributed" => {
                     options.scope.insert("unattributed".into(), json!(true));
                 }
                 "--agent" | "--factory" | "--helper" | "--filter" | "--lines" | "--offset"
                 | "--socket" | "--token-file" | "--reason" | "--test" | "--intent" | "--role"
                 | "--expect" | "--option" | "--delegation" | "--file" | "--instance"
-                | "--runtime" | "--sandbox-run" | "--capture" => {
+                | "--runtime" | "--sandbox-run" | "--capture" | "--home" | "--since"
+                | "--initiator" => {
                     let value = args
                         .next()
                         .ok_or_else(|| format!("{arg} requires a value"))?;
@@ -165,6 +177,9 @@ impl Options {
                         "--delegation" => options.delegation = Some(value.clone()),
                         "--file" => options.files.push(value.into()),
                         "--capture" => options.capture = Some(value.into()),
+                        "--home" => options.home = Some(value.clone()),
+                        "--since" => options.since = value.parse()?,
+                        "--initiator" => options.initiator = Some(value.clone()),
                         key => {
                             options.scope.insert(
                                 if key == "--test" {
@@ -1506,7 +1521,7 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
             }
         }
         println!(
-            "select NAME | state | traffic [FILTER] | show ID | body ID SIDE | websocket ID | message ID NUMBER [--offset BYTES] | export ID FORMAT FILE | pending | approval ID | explain ID [--option ID] | ask ID | context ID | review | share ID HELPER | approve ID | reject ID | logs | diagnose | attach | back | quit"
+            "select NAME | state | traffic [FILTER] | show ID | body ID SIDE | websocket ID | message ID NUMBER [--offset BYTES] | export ID FORMAT FILE | pending | approval ID | explain ID [--option ID] | ask ID | context ID | review | share ID HELPER | approve ID | reject ID | verify GRANT TARGET [HOME] | notices [HOME] | receipts | receipt ID | recover ID | logs | diagnose | attach | back | quit"
         );
         print!("inspect> ");
         std::io::stdout().flush()?;
@@ -1592,6 +1607,16 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
                     print_json(&share(root, id, helper.trim(), Some(name)).await?)
                 }
                 "logs" => print_json(&logs(root, &local)?),
+                "receipts" => support::run(root,&Options { positional:vec!["receipts".into()],..local }).await,
+                "receipt" | "recover" => support::run(root,&Options { positional:vec![command.into(),rest.into()],..local }).await,
+                "verify" | "notices" => {
+                    let mut parts: Vec<_> = rest.split_whitespace().map(str::to_owned).collect();
+                    let count = if command=="verify" {2}else{0};
+                    if parts.len() < count || parts.len()>count+1 {return Err("use verify GRANT TARGET [HOME] or notices [HOME] with the selected support agent".into());}
+                    let home = (parts.len()>count).then(|| parts.pop().unwrap());
+                    parts.insert(0,command.into());
+                    support::run(root,&Options {positional:parts,home,..local}).await
+                }
                 "diagnose" => print_json(&diagnose(root, &local).await?),
                 "attach" => attach(root, name).await,
                 _ => Err("unknown inspect action".into()),
@@ -1633,6 +1658,9 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         return observations::run(&args[1..]).await;
     }
     let options = Options::parse(&args[1..])?;
+    if args[0] == "support" && support::handles(&options) {
+        return support::run(root, &options).await;
+    }
     let value = match args[0].as_str() {
         "inspect" => return inspect(root, &options).await,
         "traffic" => traffic(root, &options).await?,
@@ -1871,6 +1899,15 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
             )?;
             if let Some(targets) = row.get("target_status") {
                 println!("Current target bindings: {}", context_json(targets)?);
+            }
+            for (label, key) in [
+                ("Authority status", "status"),
+                ("Factory bindings", "factory_status"),
+                ("Next action", "next_action"),
+            ] {
+                if let Some(value) = row.get(key) {
+                    println!("{label}: {}", context_json(value)?);
+                }
             }
         }
         Ok(())

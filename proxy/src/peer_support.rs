@@ -177,10 +177,32 @@ pub(crate) fn grant_view(
     instance: &str,
 ) -> serde_json::Value {
     use serde_json::json;
-    let support_current = support_principal(policy, grant).is_some();
+    let binding = checked_support_principal(policy, grant);
+    let support_current = binding.as_ref().is_ok_and(|principal| principal.is_some());
     let current = grant.active() && grant.instance_id == instance && support_current;
-    let targets: Vec<_> = grant.targets.iter().map(|target| json!({"name":target.name,"agent_id":target.agent_id,
-        "active":current && policy.evidence_agent_id(&target.name) == Some(target.agent_id.as_str())})).collect();
+    let reason = if grant.instance_id != instance {
+        "different_owner"
+    } else if !grant.active() {
+        "expired_or_unacknowledged"
+    } else if binding.is_err() {
+        "support_binding_unavailable"
+    } else if !support_current {
+        "support_identity_or_peer_trust_changed"
+    } else {
+        "current"
+    };
+    let targets: Vec<_> = grant.targets.iter().map(|target| {
+        let identity_current = policy.evidence_agent_id(&target.name) == Some(target.agent_id.as_str());
+        json!({"name":target.name,"agent_id":target.agent_id,"active":current && identity_current,
+            "reason":if !identity_current {"target_identity_changed_or_removed"} else {reason}})
+    }).collect();
+    let factory_status: Vec<_> = grant.factory_directions.iter().map(|selected| {
+        let binding = crate::factory::direction_binding(&crate::host_platform::config_dir(), &selected.factory, &selected.snapshot_id, None);
+        json!({"factory":selected.factory,"snapshot_id":selected.snapshot_id,"types":selected.types,
+            "binding":if binding.is_ok(){"current"}else{"changed_or_unavailable"},
+            "next_action":"On this owner, use configure support to review the current approved snapshot and operator-input agent before a factory direction."})
+    }).collect();
     json!({"name":name,"revision":grant.revision(),"active":targets.iter().any(|target| target["active"] == true),
-        "target_status":targets,"grant":grant})
+        "status":if current && !targets.iter().any(|target|target["active"]==true){"target_identity_changed_or_removed"}else{reason},"target_status":targets,"factory_status":factory_status,"grant":grant,
+        "next_action":"On this owner, use configure support to inspect expiry, durable identities and current peer trust. A changed trust generation or recreated same-name identity needs deliberate reselection. Use support report for remaining authority paths; partial coverage is not no access."})
 }

@@ -15,6 +15,8 @@ use crate::{
     },
 };
 
+pub(crate) mod receipts;
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Action {
@@ -242,8 +244,29 @@ fn reconcile(mut receipt: Value, active: bool) -> Value {
     receipt
 }
 
-fn agent_view(receipt: Value, active: bool) -> Value {
+fn filter_observations(value: &mut Value, grant: Option<&Grant>) {
+    if !value["observations"].is_object() {
+        return;
+    }
+    if grant.is_none_or(|grant| grant.notifications.is_empty()) {
+        value["observations"] = json!({"availability":if grant.is_some(){"not_selected"}else{"current_authority_unavailable"},"sources":[],
+            "next_action":"Inspect current notice authority on the owner; retained health does not grant disclosure."});
+    } else if let Some(sources) = value["observations"]["sources"].as_array_mut() {
+        let count = sources.len();
+        sources.retain(|row| {
+            row["source"]
+                .as_str()
+                .is_some_and(|source| super::events::observation_selected(grant.unwrap(), source))
+        });
+        if sources.len() != count {
+            value["observations"]["availability"] = json!("recorded_partial");
+        }
+    }
+}
+
+fn agent_view(receipt: Value, active: bool, grant: Option<&Grant>) -> Value {
     let mut value = reconcile(receipt, active);
+    filter_observations(&mut value["result"], grant);
     if let Some(fields) = value.as_object_mut() {
         for field in ["request_digest", "permission", "audit_pending"] {
             fields.shift_remove(field);
@@ -283,8 +306,8 @@ pub(crate) fn read(state: &RuntimeState, run: &Caller, operation_id: &str) -> Re
     let receipt = crate::guest_commands::read_state_bounded(&path, 1024 * 1024)?
         .ok_or_else(|| super::refuse(404, "support operation unavailable"))?;
     let input: Request = serde_json::from_value(receipt["permission"].clone())?;
-    authorize(&super::current_policy(state)?, run, &input)?;
-    Ok(agent_view(receipt, lock.is_none()))
+    let (grant, _) = authorize(&super::current_policy(state)?, run, &input)?;
+    Ok(agent_view(receipt, lock.is_none(), Some(&grant)))
 }
 
 pub(crate) async fn submit(
@@ -513,14 +536,25 @@ async fn execute(
             ));
         }
         let _ = deliver_final(writer, &path, &mut previous).await;
-        return Ok(agent_view(previous, false));
+        let current = super::current_policy(state)
+            .ok()
+            .and_then(|policy| authorize(&policy, run, &input).ok());
+        return Ok(agent_view(
+            previous,
+            false,
+            current.as_ref().map(|(grant, _)| grant),
+        ));
     }
     let mut permission = input.clone();
     permission.operation = input.operation.permission();
+    let mut recorded_action = json!(permission.operation);
+    for field in ["command", "text", "path"] {
+        recorded_action.as_object_mut().unwrap().shift_remove(field);
+    }
     let mut receipt = json!({"operation_id":input.operation_id,"request_digest":digest,
         "permission":permission,"instance_id":grant.instance_id,"initiator":run,
-        "target_id":target.id,"target_run":null,"grant":input.grant,"grant_revision":grant.revision(),
-        "action":input.operation.name(),"lifecycle_operation":match &input.operation { Action::Lifecycle { operation } => json!(operation), _ => Value::Null },"state":"queued","completion_verified":false,
+        "target_id":target.id,"target_name":target.name,"target_run":null,"grant":input.grant,"grant_revision":grant.revision(),"grant_expires_at":grant.expires_at,
+        "action":input.operation.name(),"recorded_action":recorded_action,"lifecycle_operation":match &input.operation { Action::Lifecycle { operation } => json!(operation), _ => Value::Null },"state":"queued","completion_verified":false,
         "requested_at":time::OffsetDateTime::now_utc().unix_timestamp()});
     crate::guest_commands::write_json(&path, &receipt)?;
     let result = execute_locked(state, writer, run, &input, &target, &path, &mut receipt).await;
@@ -551,7 +585,14 @@ async fn execute(
     stage_final(&mut receipt)?;
     crate::guest_commands::write_json(&path, &receipt)?;
     let _ = deliver_final(writer, &path, &mut receipt).await;
-    Ok(agent_view(receipt, false))
+    let current = super::current_policy(state)
+        .ok()
+        .and_then(|policy| authorize(&policy, run, &input).ok());
+    Ok(agent_view(
+        receipt,
+        false,
+        current.as_ref().map(|(grant, _)| grant),
+    ))
 }
 
 async fn execute_locked(
@@ -572,6 +613,7 @@ async fn execute_locked(
     let actual_run = observed["run_id"].as_str().map(str::to_owned);
     receipt["target_run"] = json!(actual_run);
     receipt["grant_revision"] = json!(grant.revision());
+    receipt["grant_expires_at"] = json!(grant.expires_at);
     if !matches!(
         input.operation,
         Action::Inspect | Action::FactoryState { .. }
@@ -599,6 +641,7 @@ async fn execute_locked(
     // the execution boundary, including the initiating run and target identity.
     let (authorizing_grant, _) = authorize_target(state, run, input, &target)?;
     receipt["grant_revision"] = json!(authorizing_grant.revision());
+    receipt["grant_expires_at"] = json!(authorizing_grant.expires_at);
     receipt["execution_started"] = json!(!matches!(
         input.operation,
         Action::GuestCommand { .. } | Action::GuestLog { .. }
@@ -625,9 +668,13 @@ async fn execute_locked(
                 .await?;
             Ok(json!({"state":"completed","publication":result}))
         }
-        Action::Inspect => Ok(inspection(
-            &crate::host_commands::diagnostics(&target).await?,
-        )),
+        Action::Inspect => {
+            let mut view = inspection(&crate::host_commands::diagnostics(&target).await?);
+            view["observations"] = observations(state, &authorizing_grant, &target.id).await;
+            let (current, _) = authorize_target(state, run, input, &target)?;
+            filter_observations(&mut view, Some(&current));
+            Ok(view)
+        }
         Action::GuestCommand { .. } | Action::GuestLog { .. } => {
             require_live_owned(&target, &observed)?;
             let (command, timeout) = match &input.operation {
@@ -650,6 +697,7 @@ async fn execute_locked(
                     let (grant, _) = authorize_target(state, run, input, &target)?;
                     require_live_owned(&target, &observed)?;
                     receipt["grant_revision"] = json!(grant.revision());
+                    receipt["grant_expires_at"] = json!(grant.expires_at);
                     receipt["execution_started"] = json!(true);
                     crate::guest_commands::write_json(path, receipt)
                 },
@@ -723,6 +771,47 @@ async fn execute_locked(
                 "outcome_unknown"
             });
             Ok(result)
+        }
+    }
+}
+
+async fn observations(state: &RuntimeState, grant: &Grant, target: &str) -> Value {
+    if grant.notifications.is_empty() {
+        return json!({"availability":"not_selected","sources":[],"next_action":"Select notices on the grant's owner if observation coverage is wanted."});
+    }
+    let client = match state.read() {
+        Ok(runtime) => runtime.coord.clone(),
+        Err(_) => {
+            return json!({"availability":"unavailable","next_action":"On the owner, inspect Coord diagnostics and its observer."});
+        }
+    };
+    match client.diagnostics().await {
+        Ok(value) => {
+            let now = time::OffsetDateTime::now_utc().unix_timestamp() * 1000;
+            let sources: Vec<_> = value["observations"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|row| {
+                    row["agent_id"] == target
+                        && row["source"].as_str().is_some_and(|source| {
+                            super::events::observation_selected(grant, source)
+                        })
+                })
+                .map(|row| {
+                    let mut row = row.clone();
+                    row["age_ms"] = row["last_observed_at"]
+                        .as_i64()
+                        .map(|at| json!(now.saturating_sub(at)))
+                        .unwrap_or(Value::Null);
+                    row
+                })
+                .collect();
+            json!({"availability":if sources.is_empty(){"not_observed"}else{"recorded"},"sources":sources,"read_at":now,
+                "next_action":"Compare last_observed_at and age_ms with the current inspection. Missing, old or unavailable source evidence does not establish target failure. On the owner, inspect Coord diagnostics and restore the named observation source."})
+        }
+        Err(_) => {
+            json!({"availability":"unavailable","sources":[],"next_action":"On the owner, inspect Coord diagnostics and restore its observation store. Current target inspection is separate."})
         }
     }
 }
