@@ -206,9 +206,9 @@ fn receipt(value: &Value) {
         ("Recorded action", "action"),
         ("Recorded action selections", "recorded_action"),
         ("Lifecycle action", "lifecycle_operation"),
-        ("Grant", "grant"),
-        ("Grant revision", "grant_revision"),
-        ("Grant expiry (RFC 3339)", "grant_expires_at"),
+        ("Grant at admission", "grant"),
+        ("Grant revision at admission", "grant_revision"),
+        ("Grant expiry at admission (RFC 3339)", "grant_expires_at"),
         ("Requested (Unix seconds)", "requested_at"),
         ("Finished (Unix seconds)", "finished_at"),
         ("Outcome", "state"),
@@ -292,6 +292,8 @@ fn connection(value: &Value) {
 fn grant(value: &Value) -> Result<(), Error> {
     field("Authority status", &value["status"]);
     field("Authority availability", &value["availability"]);
+    field("Current authority active", &value["active"]);
+    field("Current authority reason", &value["reason"]);
     if value["grant"].is_object() {
         configure::show_record(&value["grant"], false)?;
     }

@@ -612,7 +612,7 @@ nodes:
         - path: proxy/tests/native_coord/federation/reliability.rs
           sha256: 8338ae6fad7d2c24b1450e2fefc10a9e3b53e91ff2d16bdb726daee7e4acff44
         - path: proxy/tests/native_coord/federation/guided.rs
-          sha256: e695dc0d4c2891d8078ce097d60f0caa5b4c194563d037fd644d2c880f73cc39
+          sha256: bd75463f2fdf619679cbc036481ea06d69c930d4f445d540a036a00d3ac9e708
         - path: proxy/tests/native_operator_cli.rs
           sha256: fa2b0c95074f5e66c8b036b7e413573dc1e4f436544fa354e6f403e9e9c76b47
         - path: proxy/tests/native_coord/federation.rs

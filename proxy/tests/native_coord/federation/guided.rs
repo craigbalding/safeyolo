@@ -709,10 +709,20 @@ async fn guided_verification_recovers_original_receipts_without_repeating_operat
     // agent cannot recover guest evidence through its former grant.
     support::revoke(&b, "incident", granted["revision"].clone()).await;
     assert!(!host_cli(&a, &verify).await.status.success());
-    assert_eq!(
-        host_json(&b, &["support", "recover", id, "--json"]).await["current_grant"]["reason"],
-        "removed"
-    );
+    let revoked = host_json(&b, &["support", "recover", id, "--json"]).await;
+    assert_eq!(revoked["current_grant"]["active"], false);
+    assert_eq!(revoked["current_grant"]["reason"], "removed");
+    let human = success(&host_cli(&b, &["support", "recover", id]).await);
+    for expected in [
+        "Current authority active: false",
+        "Current authority reason: removed",
+        "Authority next action: Inspect remaining authority",
+        "Grant at admission: incident",
+        "Grant lifetime at admission: standing",
+        "Outcome: completed",
+    ] {
+        assert!(human.contains(expected), "missing {expected}: {human}");
+    }
     assert!(
         !host_cli(
             &a,
