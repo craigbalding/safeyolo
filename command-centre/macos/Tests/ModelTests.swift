@@ -109,11 +109,16 @@ struct ModelTests: App {
             try await testOperatorRecoveryControls()
             return
         }
+        if ProcessInfo.processInfo.environment["SAFEYOLO_COMMAND_CENTRE_TEST_FILTER"] == "saved-support" {
+            try await testSavedInstancesAndSupport()
+            return
+        }
         try testCredentialFileAndReload()
         try testRemoteProfileStorage()
         try await testRemoteConnectionVerification()
         try testPinnedInstanceIdentity()
         try await testCredentialStartup()
+        try await testSavedInstancesAndSupport()
         if ProcessInfo.processInfo.environment["SAFEYOLO_COMMAND_CENTRE_TEST_FILTER"] == "credential-startup" {
             print("credential-startup-tests: PASS")
             return
@@ -485,9 +490,11 @@ struct ModelTests: App {
             makeEventSocket: { socketSession.webSocketTask(with: $0) }
         )
         defer { client.stop() }
+        precondition(client.agentObservation.observedAt == nil && client.approvalObservation.observedAt == nil)
         let failedRefresh = await client.refreshAgents()
         precondition(!failedRefresh && client.connectionState == .connecting,
                      "A manual inventory failure must not claim the event connection is reconnecting")
+        precondition(client.agentObservation.observedAt == nil, "An unavailable first read is not an empty inventory")
         var agentErrors: [String?] = []
         let subscription = client.$requestErrors.sink { agentErrors.append($0["Agent status"]) }
         defer { subscription.cancel() }
@@ -513,7 +520,7 @@ struct ModelTests: App {
         client.stop()
         StubURLProtocol.responsesByPath["/admin/agents"] = (200, Data(#"{"agents":[]}"#.utf8))
         let recovered = await client.refreshAgents()
-        precondition(recovered && client.requestErrors["Agent status"] == nil)
+        precondition(recovered && client.agentObservation.observedAt != nil && client.requestErrors["Agent status"] == nil)
         precondition(client.requestErrors["Live events"] != nil,
                      "Recovering agent status must not clear the independent socket error")
     }
@@ -529,6 +536,14 @@ struct ModelTests: App {
             _ = try validatedRemoteURL("http://public.example:9090", scheme: "https", transport: .sshTunnel)
             preconditionFailure("A tunnel option must not send an Admin credential over public plaintext HTTP")
         } catch ConnectionError.invalidRemoteURL {}
+        let local = try validatedRemoteURL("http://127.0.0.1:29090", scheme: "https", transport: .loopback)
+        precondition(local.port == 29090)
+        for value in ["http://public.example:9090", "https://public.example:9443"] {
+            do {
+                _ = try validatedRemoteURL(value, scheme: "https", transport: .loopback)
+                preconditionFailure("A same-host profile cannot select a remote endpoint")
+            } catch ConnectionError.invalidRemoteURL {}
+        }
         let input = RemoteConnectionInput(friendlyName: "remote", adminURL: "", eventsURL: "", token: "")
         precondition(input.transport == .tailnet)
     }
@@ -825,15 +840,23 @@ struct ModelTests: App {
         )
 
         let initiallyMissing = try store.load()
-        precondition(initiallyMissing == nil)
+        precondition(initiallyMissing.isEmpty)
         try store.save(profile)
         let loaded = try store.load()
-        precondition(loaded == profile)
-        let persisted = defaults.data(forKey: "remoteConnectionProfile")!
+        precondition(loaded == [profile])
+        let second = RemoteConnectionProfile(friendlyName: profile.friendlyName, adminURL: "http://127.0.0.1:29090",
+            eventsURL: "ws://127.0.0.1:29091/admin/events", instanceID: "sy-another-root", transport: .loopback)
+        let third = RemoteConnectionProfile(friendlyName: profile.friendlyName, adminURL: "http://127.0.0.1:39090",
+            eventsURL: "ws://127.0.0.1:39091/admin/events", instanceID: "sy-third-root", transport: .loopback)
+        try store.save(second)
+        try store.save(third)
+        let threeProfiles = try store.load()
+        precondition(threeProfiles.count == 3)
+        let persisted = defaults.data(forKey: "connectionProfiles")!
         precondition(!String(decoding: persisted, as: UTF8.self).contains("token"))
-        try store.delete()
+        try store.delete(instanceID: profile.instanceID)
         let deleted = try store.load()
-        precondition(deleted == nil)
+        precondition(deleted == [second, third])
     }
 
     @MainActor

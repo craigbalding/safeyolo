@@ -57,12 +57,17 @@ private final class HeldCredentialStore: CredentialStore, @unchecked Sendable {
 }
 
 private final class MemoryConnectionProfiles: ConnectionProfileStore {
-    var profile: RemoteConnectionProfile?
+    var profiles: [RemoteConnectionProfile]
+    var profile: RemoteConnectionProfile? { profiles.first }
     var saved: [RemoteConnectionProfile] = []
-    init(_ profile: RemoteConnectionProfile? = nil) { self.profile = profile }
-    func load() throws -> RemoteConnectionProfile? { profile }
-    func save(_ profile: RemoteConnectionProfile) throws { self.profile = profile; saved.append(profile) }
-    func delete() throws { profile = nil }
+    init(_ profile: RemoteConnectionProfile? = nil) { profiles = profile.map { [$0] } ?? [] }
+    func load() throws -> [RemoteConnectionProfile] { profiles }
+    func save(_ profile: RemoteConnectionProfile) throws {
+        profiles.removeAll { $0.instanceID == profile.instanceID }
+        profiles.append(profile)
+        saved.append(profile)
+    }
+    func delete(instanceID: String) throws { profiles.removeAll { $0.instanceID == instanceID } }
 }
 
 private final class HeldVerification: @unchecked Sendable {
@@ -343,29 +348,29 @@ extension ModelTests {
         let store = HeldCredentialStore(tokens: [profile.instanceID: "synthetic-remote-token"], holdRead: true)
         let controller = credentialController(root, store, profiles)
         defer { controller.stop(); store.readGate?.signal() }
-        precondition(controller.remoteConnection.restoreRemote())
+        let remoteConnection = controller.restore(profile)
         try await credentialUntil { store.readAccounts == [profile.instanceID] }
-        controller.remoteConnection.useCredentialFile()
-        try await credentialUntil { controller.remoteConnection.startupError != nil }
-        precondition(controller.remoteConnection.client == nil && controller.remoteConnection.startupError!.contains("expected sy-remote-test"))
+        remoteConnection.useCredentialFile()
+        try await credentialUntil { remoteConnection.startupError != nil }
+        precondition(remoteConnection.client == nil && remoteConnection.startupError!.contains("expected sy-remote-test"))
         precondition(store.writeAccounts.isEmpty && profiles.profile == profile)
         store.readGate?.signal()
-        try await credentialUntil { store.readsFinished == 1 && controller.remoteConnection.client?.adminConnected == true }
+        try await credentialUntil { store.readsFinished == 1 && remoteConnection.client?.adminConnected == true }
         precondition(StubURLProtocol.observedAuthorization == "Bearer synthetic-remote-token", "An invalid file must leave legitimate Keychain access available")
         controller.stop()
 
         credentialSnapshot(profile.instanceID)
         let saved = credentialController(root, HeldCredentialStore(tokens: [profile.instanceID: "synthetic-remote-token"]), profiles)
         defer { saved.stop() }
-        precondition(saved.remoteConnection.restoreRemote())
-        try await credentialUntil { saved.remoteConnection.client?.adminConnected == true }
-        precondition(saved.remoteConnection.client?.instanceID == profile.instanceID && saved.remoteConnection.connectionName == profile.friendlyName)
+        let savedRemote = saved.restore(profile)
+        try await credentialUntil { savedRemote.client?.adminConnected == true }
+        precondition(savedRemote.client?.instanceID == profile.instanceID && savedRemote.connectionName == profile.friendlyName)
         saved.stop()
         let missing = credentialController(root, HeldCredentialStore(), profiles)
         defer { missing.stop() }
-        precondition(missing.remoteConnection.restoreRemote())
-        try await credentialUntil { missing.remoteConnection.startupError != nil }
-        precondition(missing.remoteConnection.client == nil && missing.remoteConnection.startupError!.contains("No Keychain credential"))
+        let missingRemote = missing.restore(profile)
+        try await credentialUntil { missingRemote.startupError != nil }
+        precondition(missingRemote.client == nil && missingRemote.startupError!.contains("No Keychain credential"))
         print("credential-callers: saved remote account, mismatched-file refusal, Keychain-only startup and returned missing credential PASS")
     }
 
@@ -380,19 +385,20 @@ extension ModelTests {
         try await credentialUntil { store.readAccounts.count == 1 }
         var first: Result<RemoteConnectionProfile, Error>?
         controller.configureRemote(RemoteConnectionInput(friendlyName: "First remote", adminURL: "https://remote.example", eventsURL: "wss://remote.example/events", token: "synthetic-first-token")) { first = $0 }
-        try await credentialUntil { first != nil && controller.remoteConnection.client?.adminConnected == true && store.writeAccounts.count == 1 }
+        let remoteConnection = controller.connections.last!
+        try await credentialUntil { first != nil && remoteConnection.client?.adminConnected == true && store.writeAccounts.count == 1 }
         _ = try first!.get()
         precondition(profiles.saved.isEmpty && store.writesFinished == 0, "Connect and settings completion cannot wait for optional storage")
         var newer: Result<RemoteConnectionProfile, Error>?
-        controller.configureRemote(RemoteConnectionInput(friendlyName: "Newer remote", adminURL: "https://newer.example", eventsURL: "wss://newer.example/events", token: "synthetic-newer-token")) { newer = $0 }
-        try await credentialUntil { newer != nil && controller.remoteConnection.client?.adminConnected == true }
+        controller.configureRemote(RemoteConnectionInput(friendlyName: "Newer remote", adminURL: "https://newer.example", eventsURL: "wss://newer.example/events", token: "synthetic-newer-token"), replacing: remoteConnection) { newer = $0 }
+        try await credentialUntil { newer != nil && remoteConnection.client?.adminConnected == true }
         let newerProfile = try newer!.get()
-        precondition(controller.remoteProfile == newerProfile, "Settings and terminals must use the current profile while storage is pending")
+        precondition(remoteConnection.remoteProfile == newerProfile, "Settings and terminals must use the current profile while storage is pending")
         store.readGate?.signal()
         store.writeGate?.signal()
         store.writeGate?.signal()
         try await credentialUntil { store.readsFinished == 1 && store.writesFinished == 2 && profiles.profile == newerProfile }
-        precondition(controller.remoteConnection.connectionName == "Newer remote" && controller.remoteConnection.client?.instanceID == "sy-remote-test")
+        precondition(remoteConnection.connectionName == "Newer remote" && remoteConnection.client?.instanceID == "sy-remote-test")
         precondition(profiles.saved == [newerProfile] && store.token("sy-remote-test") == "synthetic-newer-token")
         controller.stop()
         print("credential-callers: remote verification, held import, immediate settings completion and newer-selection persistence PASS")
@@ -407,10 +413,11 @@ extension ModelTests {
         defer { controller.stop() }
         var result: Result<RemoteConnectionProfile, Error>?
         controller.configureRemote(RemoteConnectionInput(friendlyName: "Refused", adminURL: "https://remote.example", eventsURL: "wss://remote.example/events", token: "synthetic-refused-token")) { result = $0 }
+        let remoteConnection = controller.connections.last!
         try await credentialUntil { result != nil }
         guard case .failure = result! else { preconditionFailure("A refused backend must not connect") }
-        precondition(controller.remoteConnection.client == nil && store.writeAccounts.isEmpty && controller.remoteConnection.startupError?.contains("403") == true)
-        precondition(controller.remoteConnection.credentialStatus == nil)
+        precondition(remoteConnection.client == nil && store.writeAccounts.isEmpty && remoteConnection.startupError?.contains("403") == true)
+        precondition(remoteConnection.credentialStatus == nil)
         print("credential-callers: returned backend refusal with usable settings/error state PASS")
     }
 
@@ -429,6 +436,7 @@ extension ModelTests {
         defer { controller.stop() }
         var result: Result<RemoteConnectionProfile, Error>?
         controller.configureRemote(RemoteConnectionInput(friendlyName: "Late remote", adminURL: "https://remote.example", eventsURL: "wss://remote.example/events", token: "synthetic-late-token")) { result = $0 }
+        let remoteConnection = controller.connections.last!
         try await credentialUntil { held.started }
         controller.stop()
         held.gate.signal()
@@ -436,7 +444,7 @@ extension ModelTests {
         guard case .failure(let error) = result!, error is CancellationError else {
             preconditionFailure("A superseded verification must report cancellation")
         }
-        precondition(controller.remoteConnection.client == nil && controller.remoteConnection.credentialStatus == nil && controller.remoteConnection.startupError == nil)
+        precondition(remoteConnection.client == nil && remoteConnection.credentialStatus == nil && remoteConnection.startupError == nil)
         precondition(profiles.saved.isEmpty && store.writeAccounts.isEmpty)
         print("credential-callers: late remote verification cannot reconnect or save after disconnect PASS")
     }
@@ -540,12 +548,13 @@ extension ModelTests {
             localCredentialDirectory: root, session: session)
         defer { controller.stop() }
         controller.start(commandLine: CommandLineConfiguration(adminURL: nil, eventsURL: nil))
+        let remoteConnection = controller.connections.first { $0.remoteProfile?.instanceID == profile.instanceID }!
         try await credentialUntil {
-            controller.localConnection.client?.approvals.count == 1 && controller.remoteConnection.client?.approvals.count == 1
-                && controller.localConnection.client?.agents.count == 1 && controller.remoteConnection.client?.agents.count == 1
+            controller.localConnection.client?.approvals.count == 1 && remoteConnection.client?.approvals.count == 1
+                && controller.localConnection.client?.agents.count == 1 && remoteConnection.client?.agents.count == 1
         }
         let local = controller.localConnection.client!
-        var remote = controller.remoteConnection.client!
+        var remote = remoteConnection.client!
         let localAgent = local.agents[0]
         let remoteAgent = remote.agents[0]
         let localApproval = local.approvals[0]
@@ -561,7 +570,7 @@ extension ModelTests {
             errorPresenter: ErrorWindowPresenter()))
         _ = menu.view
         let localCommand = try controller.localConnection.terminalCommand(localAgent, client: local, action: .shell)
-        let remoteCommand = try controller.remoteConnection.terminalCommand(remoteAgent, client: remote, action: .shell)
+        let remoteCommand = try remoteConnection.terminalCommand(remoteAgent, client: remote, action: .shell)
         precondition(localCommand == "'/local/bin/safeyolo' --root '/local/instance' agent shell --persistent -- 'worker'")
         precondition(remoteCommand.hasPrefix("ssh -t -- 'ops@remote.example' ") && remoteCommand.contains("/remote/bin/safeyolo"))
         do {
@@ -606,6 +615,7 @@ extension ModelTests {
         precondition(recoveredLocalStop.agentState == "stopped")
         precondition(remote.approvalOutcomes["apr-shared"]?.status == "approved", "Another instance's failure cannot erase a decision")
         endpoints.remote()
+        remote.start()
         try await credentialUntil { remote.adminConnected && remote.connectionState == .eventsDisabled }
         precondition(controller.localConnection.client === local && local.adminConnected && remote.approvals.isEmpty)
 
@@ -619,31 +629,32 @@ extension ModelTests {
         guard case .failure = remoteDecision! else { preconditionFailure("A mismatched instance cannot decide or supply an approval outcome") }
         precondition(endpoints.posts.count == postsBeforeMismatch && local.adminConnected)
         endpoints.remote()
+        remote.start()
         try await credentialUntil { remote.adminConnected }
         var wrongToken: Result<RemoteConnectionProfile, Error>?
         controller.configureRemote(RemoteConnectionInput(friendlyName: "Wrong credential", adminURL: profile.adminURL,
-            eventsURL: profile.eventsURL, token: "synthetic-local-token")) { wrongToken = $0 }
+            eventsURL: profile.eventsURL, token: "synthetic-local-token"), replacing: remoteConnection) { wrongToken = $0 }
         try await credentialUntil { wrongToken != nil }
         guard case .failure = wrongToken! else { preconditionFailure("A different instance's token must be refused") }
         precondition(controller.localConnection.client === local && local.adminConnected && profiles.profile == profile)
         precondition(store.token(profile.instanceID) == "synthetic-remote-token" && store.writeAccounts.isEmpty)
-        precondition(controller.remoteConnection.restoreRemote())
-        try await credentialUntil { controller.remoteConnection.client?.agents.count == 1 }
+        remoteConnection.restoreRemote(profile)
+        try await credentialUntil { remoteConnection.client?.agents.count == 1 }
         let replaced = remote
-        remote = controller.remoteConnection.client!
+        remote = remoteConnection.client!
         do {
-            _ = try controller.remoteConnection.terminalCommand(remoteAgent, client: replaced, action: .attach)
+            _ = try remoteConnection.terminalCommand(remoteAgent, client: replaced, action: .attach)
             preconditionFailure("A late terminal callback cannot use a replacement connection")
         } catch ClientError.connectionUnavailable {}
         controller.useLocal()
         try await credentialUntil { controller.localConnection.client?.agents.count == 1 }
-        precondition(controller.remoteConnection.client === remote && remote.adminConnected && profiles.profile == profile)
-        try controller.removeRemote()
+        precondition(remoteConnection.client === remote && remote.adminConnected && profiles.profile == profile)
+        try controller.remove(remoteConnection)
         precondition(controller.connections.count == 1 && controller.localConnection.client?.adminConnected == true && profiles.profile == nil)
         try profiles.save(profile)
         controller.start(commandLine: CommandLineConfiguration(adminURL: "http://127.0.0.1:19190", eventsURL: "ws://127.0.0.1:19191/admin/events"))
         try await credentialUntil { controller.localConnection.client?.agents.count == 1 }
-        precondition(controller.connections.count == 1 && controller.remoteConnection.client == nil && profiles.profile == profile)
+        precondition(controller.connections.count == 1 && remoteConnection.client == nil && profiles.profile == profile)
         print("concurrent-instances: dual controller/client routing, overlapping IDs/windows, credentials, approvals, terminals, reconnect/mismatch isolation and explicit endpoints PASS")
 
         // An existing remote-only installation must work even without local identity files.
@@ -651,9 +662,10 @@ extension ModelTests {
             keychain: store, profileStore: profiles, localCredentialDirectory: root.appendingPathComponent("no-local-install"), session: session)
         defer { remoteOnly.stop() }
         remoteOnly.start(commandLine: CommandLineConfiguration(adminURL: nil, eventsURL: nil))
-        try await credentialUntil { remoteOnly.remoteConnection.client?.agents.count == 1 }
+        let remoteOnlyConnection = remoteOnly.connections.first { $0.remoteProfile?.instanceID == profile.instanceID }!
+        try await credentialUntil { remoteOnlyConnection.client?.agents.count == 1 }
         precondition(remoteOnly.localConnection.startupError != nil && remoteOnly.hasConnectedInstance)
-        precondition(remoteOnly.remoteConnection.client?.instanceID == profile.instanceID && profiles.profile == profile)
+        precondition(remoteOnlyConnection.client?.instanceID == profile.instanceID && profiles.profile == profile)
         print("concurrent-instances: existing saved remote remains usable without a local installation PASS")
     }
 }
