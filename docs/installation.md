@@ -469,9 +469,14 @@ the reported prerequisite, then repeat the same explicit target with
 does not establish that every agent or managed Coord is ready.
 
 The first component change retains `safeyolo-upgrade` in the instance directory.
-Rollback checks whether the previous host can use a private snapshot of the
-retained Coord store before changing selection. If that check fails, the selected
-pair and retained state stay unchanged. Component restoration cannot reverse
+Use a current CLI for the retained-state check below. A retained upgrader keeps
+the behavior of the CLI that saved it. If it predates this check, use a current
+verified bundle's `bin/safeyolo --root ROOT upgrade rollback`, with the existing
+instance directory in place of `ROOT`.
+
+Rollback checks whether the previous host can use retained Coord state before
+changing selection. If that check fails, the selected pair and retained state
+stay unchanged. Component restoration cannot reverse
 store changes made by a newer host. Keep the selected host or select a newer
 compatible bundle; preserve the Coord store and its retained work.
 
