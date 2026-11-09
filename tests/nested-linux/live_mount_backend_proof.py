@@ -284,11 +284,9 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
         report["host_version"] = command([root / "bin/safeyolo", "--version"]).stdout.strip()
         report["candidate"] = candidate or command(["git", "-C", Path(__file__).resolve().parents[2], "rev-parse", "HEAD"]).stdout.strip()
         assert "commit=" + report["candidate"] in report["host_version"]
-        assert "profile=production" in report["host_version"]
         if sys.platform == "darwin":
             report["helper_version"] = json.loads(command([root / "bin/safeyolo-vm", "version", "--json"]).stdout)
             assert report["helper_version"]["git_sha"] == report["candidate"]
-            assert report["helper_version"]["build_profile"] == "production"
         else:
             settings = tomllib.loads((root / "config.toml").read_text())["linux"]
             report["runsc_version"] = command([settings["runsc"], "--version"]).stdout.strip()

@@ -366,8 +366,30 @@ pub(crate) async fn shell_banner(path: &Path) -> Result<(), Error> {
     })?
 }
 
+pub(crate) fn diagnostic_commands(agent: Option<&str>) -> Value {
+    let Ok(executable) = std::env::current_exe() else {
+        return json!({"available":false,"reason":"The current installed executable could not be identified; diagnostic commands cannot be qualified.","next_action":"Use the known installed CLI and configuration for this instance to inspect agent diagnostics, doctor or diagnose."});
+    };
+    let executable = host_lifecycle::shell_quote(&executable.to_string_lossy());
+    let config = host_lifecycle::shell_quote(&host_platform::config_path().to_string_lossy());
+    let prefix = format!("{executable} --config {config}");
+    let mut guidance = json!({
+        "doctor":{"command":format!("{prefix} doctor"),"establishes":"Host prerequisites and a controlled request through the active policy pipeline; does not establish coding-agent readiness.","probes":true,"next_action":"Repair the reported failed prerequisite or control, then repeat this diagnostic."},
+        "diagnose":{"command":format!("{prefix} diagnose"),"establishes":"Saved policy validity, current Admin policy availability, saved/active agreement and audit location; no test traffic.","probes":false,"next_action":"Follow the reported saved/active mismatch or Admin connection guidance; local logs remain available."}
+    });
+    if let Some(agent) = agent {
+        guidance["agent"] = json!({"command":format!("{prefix} agent diagnostics {}",host_lifecycle::shell_quote(agent)),"establishes":"Independent runtime/control observations, recorded coding-agent launch, terminal and proxy attachment. A recorded launch is not current runtime evidence.","probes":true,"next_action":"Follow this agent's next_action; do not start another sandbox solely because its proxy attachment is unavailable."});
+        guidance["diagnose"]["command"] = json!(format!(
+            "{prefix} diagnose --agent {}",
+            host_lifecycle::shell_quote(agent)
+        ));
+    }
+    guidance
+}
+
 pub(crate) async fn diagnostics(agent: &host_agents::Agent) -> Result<Value, Error> {
     let mut observed = Box::pin(host_lifecycle::operate("status", Some(&agent.id))).await?;
+    observed["diagnostic_commands"] = diagnostic_commands(Some(&agent.name));
     observed["proxy_state"] = if proxy_live() {
         "running"
     } else {
@@ -482,7 +504,7 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
         }
         [command] if command == "status" || command == "doctor" => {
             let agents = host_lifecycle::operate("list", None).await?;
-            let mut report = json!({"proxy_state":if proxy_live(){"running"}else{"unavailable"},"agents":agents["agents"],"root":root});
+            let mut report = json!({"proxy_state":if proxy_live(){"running"}else{"unavailable"},"agents":agents["agents"],"root":root,"diagnostic_commands":diagnostic_commands(None)});
             if command == "doctor" {
                 #[cfg(target_os = "linux")]
                 {
@@ -497,7 +519,7 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
             print(&report)?;
         }
         [agent, help] if agent == "agent" && help == "--help" => println!(
-            "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude|codex] [--launcher LAUNCHER]\nsafeyolo [--root ROOT] agent create|configure NAME --workspace PATH [--memory MB] [--nested-docker true|false] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] agent start NAME [--foreground|--sandbox-only] [--dangerously-allow-unowned] [-- ARGUMENTS...]\nsafeyolo [--root ROOT] agent status|stop|cleanup|attach|present|diagnostics|recover NAME\nsafeyolo [--root ROOT] agent watch NAME [--history COUNT] [--once] [--plain]\nsafeyolo [--root ROOT] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--root ROOT] agent mount NAME HOST:GUEST[:ro]\nsafeyolo [--root ROOT] agent unmount NAME GUEST\nsafeyolo [--root ROOT] agent mounts add|update NAME HOST:GUEST[:ro]\nsafeyolo [--root ROOT] agent mounts remove NAME GUEST\nsafeyolo [--root ROOT] agent retire NAME [--yes]\nsafeyolo [--root ROOT] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nSaved mount add/update replaces that guest destination; remove selects the guest path. Saved edits affect the next explicit start; live mount/unmount affects only the current run. A live-removed saved mount returns on restart. retire without --yes previews effects and retained paths/references. --yes stops/cleans the selected agent and removes its saved definition while retaining its home and external data. Home deletion is separate.\nLaunch defaults to the current directory and Claude. Setup and optional Claude host-state copying require host consent. Codex uses agent-local authentication and settings. Detach from the agent terminal to review requests here. Configure changes apply at the next sandbox start. Linux nested-docker enables guest mount and namespace administration for an inner Docker daemon; it adds no host mounts or network interface. Mount and unmount change only the current sandbox; saved mounts are unchanged and apply again on restart. Busy removal is refused. Copied or already resident data is not erased. Start arguments affect only that launch. Attach never launches an absent coding agent. Shell is independent."
+            "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude|codex] [--launcher LAUNCHER]\nsafeyolo [--root ROOT] agent create|configure NAME --workspace PATH [--memory MB] [--nested-docker true|false] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] agent start NAME [--foreground|--sandbox-only] [--dangerously-allow-unowned] [-- ARGUMENTS...]\nsafeyolo [--root ROOT] agent status|stop|cleanup|attach|present|diagnostics|recover NAME\nsafeyolo [--root ROOT] agent watch NAME [--history COUNT] [--once] [--plain]\nsafeyolo [--root ROOT] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--root ROOT] agent mount NAME HOST:GUEST[:ro]\nsafeyolo [--root ROOT] agent unmount NAME GUEST\nsafeyolo [--root ROOT] agent mounts add|update NAME HOST:GUEST[:ro]\nsafeyolo [--root ROOT] agent mounts remove NAME GUEST\nsafeyolo [--root ROOT] agent retire NAME [--yes]\nsafeyolo [--root ROOT] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nSaved mount add/update replaces that guest destination; remove selects the guest path. Saved edits affect the next explicit start; live mount/unmount affects only the current run. A live-removed saved mount returns on restart. retire without --yes previews effects and retained paths/references. --yes stops/cleans the selected agent and removes its saved definition while retaining its home and external data. Home deletion is separate.\nLaunch defaults to the current directory, reuses an unambiguous saved workspace/name harness, and defaults new agents to Claude. Setup and optional Claude host-state copying require host consent. Codex uses agent-local authentication and settings. Detach from the agent terminal to review requests here. Configure changes apply at the next sandbox start. Linux nested-docker enables guest mount and namespace administration for an inner Docker daemon; it adds no host mounts or network interface. Mount and unmount change only the current sandbox; saved mounts are unchanged and apply again on restart. Busy removal is refused. Copied or already resident data is not erased. Start arguments affect only that launch. Attach never launches an absent coding agent. Shell is independent. For runtime, coding-agent, terminal or shell failures, use agent diagnostics NAME; it probes the selected runtime/control and reports a targeted next_action. Use doctor for host/pipeline probes, or diagnose for saved/current policy and audit availability without test traffic."
         ),
         [kind, operation, rest @ ..] if kind == "agent" && operation == "launch" => {
             return crate::host_launch::run(rest).await;

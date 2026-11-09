@@ -444,11 +444,18 @@ fn failure_category(error: &Error) -> FailureCategory {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VaultUnavailable {
+    Locked,
+    Absent,
+    Unavailable,
+}
+
 /// Enter only after selection and risky-route/grant enforcement. The caller owns
 /// any grant lease, including its release for local responses or cancellation.
 pub fn prepare(
     selection: CredentialSelection,
-    vault: Option<&Vault>,
+    vault: std::result::Result<&Vault, VaultUnavailable>,
     request: RequestInfo<'_>,
     now: OffsetDateTime,
 ) -> Result<Start> {
@@ -456,8 +463,9 @@ pub fn prepare(
     if context.selection.auth_kind.is_none() {
         return finish(context, None, 0);
     }
-    let Some(vault) = vault else {
-        return Ok(Start::Blocked(deny(context, Missing::Vault, 0)));
+    let vault = match vault {
+        Ok(vault) => vault,
+        Err(reason) => return Ok(Start::Blocked(deny(context, Missing::Vault(reason), 0))),
     };
     let Some(snapshot) = vault
         .snapshot(&context.selection.vault_token)
@@ -700,14 +708,16 @@ fn finish_with_value(
 }
 enum Missing {
     Provider(crate::credential_resolver::Failure),
-    Vault,
+    Vault(VaultUnavailable),
     Initial,
     AfterRefresh,
 }
 fn deny(context: Context, missing: Missing, refreshed: u64) -> Blocked {
     let (reason,code,action,reflection)=match missing {
         Missing::Provider(failure)=>("External credential resolution failed", failure.code(), "retry", failure.message().into()),
-        Missing::Vault=>("Vault not available","VAULT_UNAVAILABLE","abort","The credential vault is not loaded. The proxy may still be starting up.".into()),
+        Missing::Vault(VaultUnavailable::Locked)=>("Credential vault is locked","VAULT_LOCKED","abort","Passphrase storage is locked. On the host, run the selected instance's installed CLI with `credentials unlock`, then explicitly retry this credential operation. Proxy startup and unrelated traffic do not require unlock.".into()),
+        Missing::Vault(VaultUnavailable::Absent)=>("Credential vault is absent","VAULT_ABSENT","abort","This instance has no credential vault. On the host, use the selected instance's `credentials add` or `credentials reference`, then authorize this service. Storage is created only when you choose to store a credential.".into()),
+        Missing::Vault(VaultUnavailable::Unavailable)=>("Vault not available","VAULT_UNAVAILABLE","abort","Credential storage could not be loaded; its unlock state is unknown. Inspect the selected instance's credential storage and host diagnostics, then retry explicitly. Waiting for proxy startup does not resolve this state.".into()),
         Missing::Initial=>("Credential not found in vault","CREDENTIAL_NOT_FOUND","self_correct",format!("Credential '{}' is not stored. Use host `safeyolo credentials add` or `credentials reference`, then `services authorize`.",sanitize(&context.selection.vault_token))),
         Missing::AfterRefresh=>("Credential lost after refresh","CREDENTIAL_NOT_FOUND","abort","The credential was lost during OAuth2 token refresh. Use host `safeyolo credentials add` to restore it.".into()),
     };

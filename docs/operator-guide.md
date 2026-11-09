@@ -119,8 +119,11 @@ safeyolo agent present work
 ```
 
 The command returns a `url` and an `unlock_code`. Open that URL in your browser
-and enter the code. The Command Centre's approved desktop presentation opens
-the same SafeYolo page. Keep the code private. The existing five-minute,
+and enter the code. Command Centre copies the unlock code and reports whether
+macOS accepted the browser open request. Paste the code into the unlock page.
+A clipboard or browser failure reports the completed steps and the recovery
+action for that agent. The page's header and title identify the instance and
+agent from host metadata. Keep the code private. The existing five-minute,
 single-use unlock rules still apply.
 
 The desktop appears inside this page. Use the page's full-screen, keyboard,
@@ -699,9 +702,16 @@ On the host, use your configured agent name in place of `work`. Copy
 `APPROVAL_ID` from the pending list. These commands leave the approval pending:
 
 ```sh
-safeyolo approvals list --agent work --json
-safeyolo approvals show APPROVAL_ID --agent work --json
+safeyolo approvals list --agent work
+safeyolo approvals show APPROVAL_ID --agent work
+safeyolo approvals explain APPROVAL_ID --agent work
 ```
+
+The normal views retain the applicable SafeYolo assessment, reviewed guidance,
+option IDs, effects, lifetime, uncertainty and recorded outcome. Command Centre
+shows the same canonical decision facts. Agent-provided reasons remain separate,
+untrusted context. Use `--json` for the structured record. Explanation grants
+no permission; a decision still checks current authority.
 
 You can inspect traffic, logs and the approval again before deciding. The
 approval retains its original authority and options. Expect `status: pending`
@@ -800,6 +810,23 @@ window and leaves the request pending. **Deny** records a refusal without adding
 a policy deny rule. Reconnect reads the recorded outcome before another decision.
 
 ## Recover from a failed operation
+
+Command Centre's agent and approval lists report each read separately. A list
+that has not loaded is unknown. A successful empty read says there are no entries
+and gives its observation time. A failed read retains any last-observed entries
+with a stale qualification and a refresh action. An authenticated Admin API or
+healthy live-event connection does not establish a successful inventory read.
+Recovery guidance keeps the connected executable, root/configuration and remote
+terminal target. If that context is missing, supply it in Connection Settings
+or inspect the selected host's installation before retrying.
+
+If a credential operation reports `VAULT_LOCKED`, use the selected instance's
+installed CLI on the owning host to run `credentials unlock`, then explicitly
+retry that credential operation. Startup and unrelated traffic do not need an
+unlocked vault. `VAULT_ABSENT` requires storing a credential first;
+`VAULT_UNAVAILABLE` means storage could not be loaded and its unlock state is
+unknown. Inspect the reported storage failure; waiting for startup is not a
+repair.
 
 If `inspect` reports `inspect requires a terminal`, open it in an interactive
 host terminal or use direct commands with `--agent` and `--json`. Inspect

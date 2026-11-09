@@ -1489,6 +1489,29 @@ impl GatewayVault {
         Ok(())
     }
 
+    // This is a diagnostic after an unsuccessful load, never authority to use a key.
+    fn unavailable_reason(&self) -> credential_injection::VaultUnavailable {
+        use credential_injection::VaultUnavailable;
+        match std::fs::metadata(self.data_dir.join("credentials.enc")) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => VaultUnavailable::Absent,
+            Ok(metadata) if metadata.is_file() => match credentials::storage(&self.data_dir) {
+                Ok(Some(credentials::Storage::Passphrase)) => VaultUnavailable::Locked,
+                _ => VaultUnavailable::Unavailable,
+            },
+            _ => VaultUnavailable::Unavailable,
+        }
+    }
+
+    async fn load_for_injection(
+        &self,
+    ) -> Result<Result<LoadedGatewayVault, credential_injection::VaultUnavailable>, Error> {
+        let owner = self.clone();
+        tokio::task::spawn_blocking(move || {
+            Ok::<_, Error>(owner.load()?.ok_or_else(|| owner.unavailable_reason()))
+        })
+        .await?
+    }
+
     async fn load_async(&self) -> Result<Option<LoadedGatewayVault>, Error> {
         let owner = self.clone();
         tokio::task::spawn_blocking(move || owner.load()).await?

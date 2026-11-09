@@ -32,6 +32,19 @@ repair that run. Follow the diagnostic's `next_action` and the applicable shell
 hop below. On Linux, shell execution needs the recorded runsc namespaces. On
 macOS, the shell probe checks the host Unix socket and guest SSH banner.
 
+Choose the diagnostic for the question, using the selected instance's executable
+and `--root ROOT` or `--config FILE` before the command:
+
+| Command | What it establishes | Probes and next action |
+| --- | --- | --- |
+| `agent diagnostics NAME` | Independent runtime/control observations, recorded coding-agent launch, terminal and proxy attachment. | Probes runtime/control; on macOS also checks the private control and shell path. Follow this agent's `next_action`. |
+| `doctor` | Runtime dimensions, host prerequisites where applicable, and a controlled request through each configured agent policy pipeline. | Sends diagnostic requests. Repair the named prerequisite or failed control and repeat. It does not prove coding-agent readiness. |
+| `diagnose --agent NAME` | Saved policy validity, current Admin policy availability and saved/active agreement, audit location and last recorded launch. | Reads files and Admin state; sends no test traffic. Repair the reported mismatch or connection, or use local logs when Admin state is unavailable. |
+
+`status`, `diagnose` and `agent diagnostics` include qualified diagnostic commands.
+The normal `inspect` navigation also offers `diagnostics` and `doctor` for the
+selected context. Each command retains its existing structured result and effects.
+
 For a running guest with idle command supervision, use
 `safeyolo --root ROOT agent recover NAME` to check guest health without SSH.
 The [shared-home recovery procedure](#probe-the-guest-through-pid-1-when-ssh-is-unavailable)

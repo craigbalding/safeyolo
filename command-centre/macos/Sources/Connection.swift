@@ -165,10 +165,26 @@ func agentTerminalCommand(
     hostExecutable: String? = nil, hostRoot: String? = nil, hostConfigPath: String? = nil,
     transport: RemoteTransport = .tailnet, action: AgentTerminalAction = .attach
 ) throws -> String {
-    func quoted(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
     let actionArguments = action == .shell ? "shell --persistent" : "attach"
+    return try installedHostCommand(
+        arguments: "agent \(actionArguments) -- " + shellQuoted(name),
+        remote: remote, terminalTarget: terminalTarget, adminURL: adminURL, hostUser: hostUser,
+        hostExecutable: hostExecutable, hostRoot: hostRoot, hostConfigPath: hostConfigPath,
+        transport: transport
+    )
+}
+
+func shellQuoted(_ value: String) -> String {
+    "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
+
+// Arguments are constructed here or from fixed diagnostic commands. Values are shell quoted.
+func installedHostCommand(
+    arguments: String, remote: Bool, terminalTarget: String?,
+    adminURL: String? = nil, hostUser: String? = nil,
+    hostExecutable: String? = nil, hostRoot: String? = nil, hostConfigPath: String? = nil,
+    transport: RemoteTransport = .tailnet
+) throws -> String {
     // Both local and SSH terminals use the connected instance's installation.
     // An Admin API credential never supplies SSH authority or a PATH fallback.
     guard let executable = hostExecutable, executable.hasPrefix("/"),
@@ -178,9 +194,9 @@ func agentTerminalCommand(
     let selection: String
     if let config = hostConfigPath {
         guard config.hasPrefix("/") else { throw ConnectionError.missingNativeInstallation }
-        selection = " --config " + quoted(config)
-    } else { selection = " --root " + quoted(root) }
-    let command = quoted(executable) + selection + " agent \(actionArguments) -- " + quoted(name)
+        selection = " --config " + shellQuoted(config)
+    } else { selection = " --root " + shellQuoted(root) }
+    let command = shellQuoted(executable) + selection + " " + arguments
     guard remote else { return command }
     let target: String
     if let override = terminalTarget?.trimmingCharacters(in: .whitespacesAndNewlines), !override.isEmpty {
@@ -195,7 +211,7 @@ func agentTerminalCommand(
     // Both sessions survive viewer disconnection. The persistent shell is independent
     // of the coding-agent terminal; neither action starts the coding agent.
     // SSH credentials are separate from the Admin API credential.
-    return "ssh -t -- " + quoted(target) + " " + quoted(command)
+    return "ssh -t -- " + shellQuoted(target) + " " + shellQuoted(command)
 }
 
 func validatedRemoteURL(_ value: String, scheme: String, transport: RemoteTransport) throws -> URL {
@@ -236,7 +252,7 @@ enum ConnectionError: LocalizedError {
         case .missingTerminalTarget:
             return "The remote terminal target is unavailable. Tailscale uses the connected host and its reported username. For an SSH tunnel or a different login, set user@host or an SSH alias in Connection Settings. Run Agent does not need SSH."
         case .missingNativeInstallation:
-            return "The connected SafeYolo server did not report an installed executable and instance root. Install the SafeYolo CLI for that instance, then retry. Terminal attachment uses that installation. Run Agent does not need SSH."
+            return "The connected SafeYolo server did not report its installed executable and instance root. Verify the selected host’s CLI and configuration, then reconnect. Commands need that reported context. Run Agent uses the Admin API."
         case .missingCredential(let instanceID):
             return "No Keychain credential is stored for \(instanceID)"
         case .requestFailed(let status):

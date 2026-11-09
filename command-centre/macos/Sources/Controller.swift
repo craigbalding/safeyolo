@@ -444,7 +444,11 @@ final class CommandCentreConnection: ObservableObject, Identifiable {
             token: credential.token,
             expectedInstanceID: credential.instanceID,
             session: session,
-            isLocalConnection: selection.isLocalConnection
+            isLocalConnection: selection.isLocalConnection,
+            terminalTarget: selection.remoteProfile?.terminalTarget,
+            transport: selection.remoteProfile?.transport ?? .tailnet,
+            usesRemoteTerminal: selection.remoteProfile != nil
+                || !["127.0.0.1", "localhost", "::1", "[::1]"].contains(URL(string: selection.adminURL)?.host ?? "")
         )
     }
 

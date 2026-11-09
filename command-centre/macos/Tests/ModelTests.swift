@@ -100,6 +100,11 @@ struct ModelTests: App {
             print("approval-attention-tests: PASS")
             return
         }
+        if ProcessInfo.processInfo.environment["SAFEYOLO_COMMAND_CENTRE_TEST_FILTER"] == "operator-context" {
+            try await testOperatorContextEvidence()
+            print("operator-context-tests: PASS")
+            return
+        }
         if ProcessInfo.processInfo.environment["SAFEYOLO_COMMAND_CENTRE_TEST_FILTER"] == "operator-recovery" {
             try await testOperatorRecoveryControls()
             return
@@ -120,6 +125,7 @@ struct ModelTests: App {
         }
         try await testApprovalAttentionAndUntrustedRendering()
         try await testOperatorRecoveryControls()
+        try await testOperatorContextEvidence()
         try testMutationPlans()
         try testAgentAndSecurityModels()
         try testHarnessMarks()
@@ -484,11 +490,11 @@ struct ModelTests: App {
             makeEventSocket: { socketSession.webSocketTask(with: $0) }
         )
         defer { client.stop() }
-        precondition(!client.hasAgentSnapshot && !client.hasApprovalSnapshot)
+        precondition(client.agentObservation.observedAt == nil && client.approvalObservation.observedAt == nil)
         let failedRefresh = await client.refreshAgents()
         precondition(!failedRefresh && client.connectionState == .connecting,
                      "A manual inventory failure must not claim the event connection is reconnecting")
-        precondition(!client.hasAgentSnapshot, "An unavailable first read is not an empty inventory")
+        precondition(client.agentObservation.observedAt == nil, "An unavailable first read is not an empty inventory")
         var agentErrors: [String?] = []
         let subscription = client.$requestErrors.sink { agentErrors.append($0["Agent status"]) }
         defer { subscription.cancel() }
@@ -514,7 +520,7 @@ struct ModelTests: App {
         client.stop()
         StubURLProtocol.responsesByPath["/admin/agents"] = (200, Data(#"{"agents":[]}"#.utf8))
         let recovered = await client.refreshAgents()
-        precondition(recovered && client.hasAgentSnapshot && client.requestErrors["Agent status"] == nil)
+        precondition(recovered && client.agentObservation.observedAt != nil && client.requestErrors["Agent status"] == nil)
         precondition(client.requestErrors["Live events"] != nil,
                      "Recovering agent status must not clear the independent socket error")
     }
