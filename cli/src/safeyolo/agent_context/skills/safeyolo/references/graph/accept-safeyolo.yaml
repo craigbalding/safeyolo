@@ -427,6 +427,15 @@ nodes:
       state and reconnect. Its operator
       recovery runs with NATS stopped and the audit destination impaired.
       Current-state controls do not establish audit recording or historical replay.
+      For live terminal recovery, also select
+      signals::native_watch_pty_recovers_complete_pending_state_while_a_choice_is_unfinished
+      with --ignored. Its real pseudo-terminal retains unfinished input across
+      reconnect, catches an offline arrival and recovers all current requests
+      after a failed pending read without another mutation.
+      For selected decisions and deferral, use the native_operator_cli target
+      with the native_watch_keeps_selected_input filter. It checks several
+      requests, an arrival during input, stable numbers, concurrent resolution,
+      canonical pending state and a later explicitly permitted network attempt.
       Also select the two signals::native_watch_clears_ tests with --ignored
       for requests seen only in attachment snapshots during an audit outage.
       Both consume the initial control before resolving the request entirely
@@ -613,8 +622,12 @@ nodes:
           sha256: 8338ae6fad7d2c24b1450e2fefc10a9e3b53e91ff2d16bdb726daee7e4acff44
         - path: proxy/tests/native_coord/federation/guided.rs
           sha256: bd75463f2fdf619679cbc036481ea06d69c930d4f445d540a036a00d3ac9e708
+        - path: proxy/tests/native_operator_cli/watch.rs
+          sha256: 1e18c2a8ee85e83c019e52130dc671177dcdabaf7d5c3e885d64e24e00c26704
+        - path: proxy/tests/support/operator_pty.rs
+          sha256: ea84f022c3261e09fc542c04647b5e7b0583d6f2ac27f5ce2aeb89528851c259
         - path: proxy/tests/native_operator_cli.rs
-          sha256: fa2b0c95074f5e66c8b036b7e413573dc1e4f436544fa354e6f403e9e9c76b47
+          sha256: 4e8bf2df97b62738a3a2c4f18fad33221b2aebc586458ecc43a575f045502405
         - path: proxy/tests/native_coord/federation.rs
           sha256: 7bfc83e871c120479782f1e0d027a6346de321b819e823d7f985a4d4509edcb7
         - path: proxy/src/agent_api/coord.rs
@@ -720,7 +733,7 @@ nodes:
         - path: proxy/src/coord_schema.sql
           sha256: 31b24a8423738d0d06fd5c6bbfe9a5d575738e25459cc6b1629899d3dc50f939
         - path: proxy/tests/native_coord/signals.rs
-          sha256: fe7250cebc9206d3bcc04ad36cc62b25663bf30808d4d2f2ab20f795c3daabd2
+          sha256: 98cea7bc047d25d44b52dbba5262fb9be474b12e69b3f473e80ca24f03bbf1c5
         - path: proxy/src/coord_rooms/signals.rs
           sha256: bef138d95aa2d06ee547311728ed78b2a38b6cac96ed176a7c87caf54364ff57
         - path: proxy/src/coord_rooms/signals/tests.rs
@@ -734,7 +747,7 @@ nodes:
         - path: proxy/src/admin_api/coord_signals.rs
           sha256: 02a963eef1bf4e390e9c57b9dbb0f95854bbb6c7592f6bb0b461ee2f04f41624
         - path: proxy/src/coord_operator/signals.rs
-          sha256: c9a05a60581829ccfcc26c4d6fae3ad25e1a9674bbe07337498a036dab317778
+          sha256: 90fa9648af1c4c243f776a179142dd267e2a00cc96df9c0b03a2638ec9ec8fee
         - path: proxy/src/coord_tools.rs
           sha256: 4f5cf8b9366e15f2725574e4e34b9506a2e3bc96f32b27b4725e8a6e70950b61
         - path: proxy/src/coord_rooms/room_status.rs

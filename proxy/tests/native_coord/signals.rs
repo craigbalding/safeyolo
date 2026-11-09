@@ -6,6 +6,8 @@ use std::sync::Arc;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::Barrier;
 
+#[path = "../support/operator_pty.rs"]
+mod operator_pty;
 #[path = "../test_owned_endpoint/mod.rs"]
 mod test_owned_endpoint;
 
@@ -45,6 +47,7 @@ async fn read(client: &Client, id: &Value, revision: Option<i64>) -> Value {
 /// proof. The upstream remains the real authenticated Admin listener.
 #[derive(Default)]
 struct ViewerRecords {
+    offline: std::sync::atomic::AtomicBool,
     drop_final: std::sync::atomic::AtomicBool,
     controls: std::sync::atomic::AtomicUsize,
     completed_snapshots: std::sync::atomic::AtomicUsize,
@@ -146,6 +149,7 @@ async fn viewer_relay(
                     connections.spawn(async move {
                         let mut header=Vec::new();
                         while !header.ends_with(b"\r\n\r\n") {header.push(viewer.read_u8().await.unwrap());assert!(header.len()<8192);}
+                        if records.offline.load(std::sync::atomic::Ordering::SeqCst) { return; }
                         if !header.starts_with(b"GET /admin/events ") {requests.fetch_add(1,std::sync::atomic::Ordering::SeqCst);}
                         if header.starts_with(b"GET /admin/approvals ") && fail_approval_read.swap(false,std::sync::atomic::Ordering::SeqCst) {
                             viewer.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
@@ -798,6 +802,196 @@ async fn native_watch_recovers_final_signal_and_approval_changes_without_a_later
     watcher.kill().await.unwrap();
     proxy.kill().await.unwrap();
     relay.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires pinned NATS for setup; live PTY recovery runs with it stopped"]
+async fn native_watch_pty_recovers_complete_pending_state_while_a_choice_is_unfinished() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let binary = std::env::var("SAFEYOLO_COORD_NATS_BINARY").expect("set pinned NATS binary");
+    let temp = tempfile::Builder::new()
+        .prefix("operator-pty-recovery-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    let root = temp.path();
+    assert!(host_cli(root, &["init"]).await.status.success());
+    fs::write(root.join("config.toml"), "admin_port=0\nflow_store_enabled=false\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n").unwrap();
+    let mut origins = Vec::new();
+    let mut addresses = Vec::new();
+    for _ in 0..4 {
+        let (origin, address) = test_owned_endpoint::bind().await;
+        origins.push(origin);
+        addresses.push(address);
+    }
+    let hosts: String = addresses
+        .iter()
+        .map(|address| format!("[hosts.'{address}']\negress='prompt'\n"))
+        .collect();
+    fs::write(
+        root.join("policy.toml"),
+        format!("[controls.network]\nenabled=true\n{hosts}[agents.alice]\nagent_id='{ALICE}'\n"),
+    )
+    .unwrap();
+    assert!(
+        host_cli(root, &["coord", "start", "--binary", &binary])
+            .await
+            .status
+            .success()
+    );
+    let _cleanup = NatsCleanup(root.into());
+    coord_json(root, &["room", "create", "shared"]).await;
+    coord_json(root, &["grant", "shared", "alice"]).await;
+    let mut proxy = stage0::start_proxy(root).await;
+    pending_network(root, addresses[0], "before-attachment").await;
+    let config_path = root.join("config.toml");
+    let ready: Value = serde_json::from_slice(
+        &fs::read(native_config::read(&config_path).unwrap().readiness_file).unwrap(),
+    )
+    .unwrap();
+    let records = Arc::new(ViewerRecords::default());
+    let failures = Arc::new(AtomicBool::new(false));
+    let (cuts, _) = tokio::sync::broadcast::channel(8);
+    let (port, relay, started, release) = viewer_relay(
+        ready["admin_port"].as_u64().unwrap() as u16,
+        Arc::new(AtomicUsize::new(0)),
+        cuts.clone(),
+        failures.clone(),
+        records.clone(),
+    )
+    .await;
+    let source = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        &config_path,
+        source.replace("admin_port=0", &format!("admin_port={port}")),
+    )
+    .unwrap();
+    let mut terminal = operator_pty::Terminal::start(root, &["watch", "--no-color"]);
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
+        .await
+        .unwrap();
+    pending_network(root, addresses[1], "during-attachment").await;
+    release.notify_one();
+    let attached = terminal
+        .until(0, "PENDING APPROVALS: 2 (current state refreshed)")
+        .await;
+    let number = attached
+        .lines()
+        .find_map(|line| {
+            if !line.contains(&addresses[0].to_string()) {
+                return None;
+            }
+            line.split_once('#')?
+                .1
+                .split_whitespace()
+                .next()?
+                .parse::<usize>()
+                .ok()
+        })
+        .expect("first request retained during attachment");
+    terminal.send(&format!("{number}\n"));
+    terminal
+        .until(0, &format!("Request #{number}: approve"))
+        .await;
+    terminal.send("lat");
+    let disconnected = terminal.mark();
+    records.offline.store(true, Ordering::SeqCst);
+    cuts.send(()).unwrap();
+    terminal.until(disconnected, "STALE / UNAVAILABLE").await;
+    pending_network(root, addresses[2], "arrived-offline").await;
+    records.offline.store(false, Ordering::SeqCst);
+    terminal
+        .until(
+            disconnected,
+            "PENDING APPROVALS: 3 (current state refreshed)",
+        )
+        .await;
+    terminal.send("er\nlist\n");
+    terminal
+        .until(
+            disconnected,
+            &format!("#{number} [left pending] agent=alice"),
+        )
+        .await;
+
+    // Lose the final audit notification and fail its pending read once. With
+    // no later mutation, the same live terminal must regain all four requests.
+    assert!(host_cli(root, &["coord", "stop"]).await.status.success());
+    let audit = root.join("logs/audit.jsonl");
+    fs::rename(&audit, root.join("retained-audit")).unwrap();
+    fs::create_dir(&audit).unwrap();
+    let failed_read = terminal.mark();
+    failures.store(true, Ordering::SeqCst);
+    let timer = std::time::Instant::now();
+    pending_network(root, addresses[3], "missing-final-notification").await;
+    terminal
+        .until(failed_read, "Pending approvals unavailable")
+        .await;
+    let recovered = terminal
+        .until(
+            failed_read,
+            "PENDING APPROVALS: 4 (current state refreshed)",
+        )
+        .await;
+    assert!(timer.elapsed() < Duration::from_secs(5));
+    assert!(!failures.load(Ordering::SeqCst));
+    for address in &addresses {
+        assert!(
+            recovered[failed_read..].contains(&address.to_string()),
+            "{recovered}"
+        );
+    }
+    let listed: Value = serde_json::from_slice(
+        &host_cli(root, &["approvals", "list", "--json"])
+            .await
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(listed["approvals"].as_array().unwrap().len(), 4);
+    let id = listed["approvals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| {
+            item["action"]["host"].as_str() == Some(&addresses[0].ip().to_string())
+                && item["action"]["port"] == json!(addresses[0].port())
+        })
+        .map(|item| item["approval_id"].as_str().unwrap().to_owned())
+        .expect("canonical first approval");
+    // Select from the terminal's stable number; canonical API state is checked
+    // independently of the rendered count and text.
+    let review = terminal.mark();
+    terminal.send(&format!("{number}\n"));
+    terminal
+        .until(review, &format!("Request #{number}: approve"))
+        .await;
+    terminal.send("reject\n");
+    terminal
+        .until(
+            review,
+            &format!("CANONICAL OUTCOME Request #{number}: rejected"),
+        )
+        .await;
+    terminal
+        .until(review, "PENDING APPROVALS: 3 (current state refreshed)")
+        .await;
+    let pending: Value = serde_json::from_slice(
+        &host_cli(root, &["approvals", "list", "--json"])
+            .await
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(pending["approvals"].as_array().unwrap().len(), 3);
+    assert!(
+        !pending["approvals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["approval_id"] == id)
+    );
+    terminal.finish().await;
+    proxy.kill().await.unwrap();
+    relay.abort();
+    drop(origins);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

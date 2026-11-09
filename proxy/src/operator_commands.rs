@@ -16,6 +16,8 @@ use crate::{Error, host_platform, native_client, native_config, network_guard};
 mod configure;
 mod observations;
 mod support;
+mod watch;
+pub(crate) use watch::run as watch_approvals;
 
 pub const HELP: &str = "safeyolo [--root ROOT] inspect [--factory NAME] [--agent NAME]
 safeyolo [--root ROOT] configure connection|support NAME|approvals NAME
@@ -781,10 +783,23 @@ async fn resolve_preview(
         }
     }
     let mut preview = approval(root, id, agent).await?;
-    if preview["action"] != inspected["action"] {
+    if preview["approval_id"] == inspected["approval_id"] && preview["status"] != "pending" {
+        return Ok(preview);
+    }
+    if [
+        "approval_id",
+        "request_id",
+        "authority_digest",
+        "action",
+        "options",
+    ]
+    .iter()
+    .any(|field| preview[*field] != inspected[*field])
+    {
         preview["status"] = json!("stale");
-        preview["effect"] =
-            json!("Request scope changed. Inspect the pending requests again before deciding.");
+        preview["effect"] = json!(
+            "Request identity, scope or options changed. Inspect the pending requests again before deciding."
+        );
     }
     if preview["status"] != "pending" {
         return Ok(preview);

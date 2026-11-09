@@ -21,6 +21,8 @@ use shared_approval_fixture::*;
 
 #[path = "native_operator_cli/observations.rs"]
 mod observations;
+#[path = "native_operator_cli/watch.rs"]
+mod watch;
 
 fn configure(fixture: &Fixture) {
     fs::write(fixture.root.path().join("config.toml"), format!(
