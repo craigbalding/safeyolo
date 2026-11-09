@@ -1222,6 +1222,83 @@ async fn pending_network_approval_survives_inspection_and_resolves_through_nativ
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guided_credential_scope_selects_the_canonical_pending_request() {
+    let fixture = Fixture::new().await;
+    configure(&fixture);
+    fixture
+        .apply(
+            &fixture
+                .source()
+                .replace("egress='prompt'", "egress='allow'")
+                .replace("enabled=false", "enabled=true"),
+        )
+        .await;
+    let blocked = fixture
+        .request(
+            "worker",
+            fixture.address,
+            "GET",
+            "/guided-credential",
+            "Authorization: Bearer synthetic-guided-credential-1465\r\n",
+        )
+        .await;
+    assert_eq!(blocked.status, 428);
+    let before = success(
+        fixture.root.path(),
+        &["approvals", "show", &blocked.id(), "--json"],
+    )
+    .await;
+    assert_eq!(before["action"]["kind"], "credential_allow");
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--root")
+        .arg(fixture.root.path())
+        .args(["configure", "approvals", "credential-review"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            format!(
+                "{}\nyes\nhelper\nworker\ncredential\n1\nno\nstanding\nrun\nyes\nyes\n",
+                fixture.root.path().display()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let output = timeout(Duration::from_secs(30), child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let saved = success(fixture.root.path(), &["approvals", "delegations", "--json"]).await;
+    assert_eq!(
+        saved["delegations"][0]["delegation"]["scopes"],
+        json!([{
+            "type":"credential", "host":before["action"]["host"], "fingerprints":before["action"]["credentials"]
+        }])
+    );
+    let after = success(
+        fixture.root.path(),
+        &["approvals", "show", &blocked.id(), "--json"],
+    )
+    .await;
+    assert_eq!(after["status"], "pending");
+    assert_eq!(after["action"], before["action"]);
+    assert!(after["result"].is_null());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pending_credential_approval_binds_the_whole_request_and_preserves_shared_policy() {
     let fixture = Fixture::new().await;
     configure(&fixture);

@@ -13,9 +13,12 @@ use serde_json::{Value, json};
 
 use crate::{Error, host_platform, native_client, native_config, network_guard};
 
+mod configure;
 mod observations;
 
 pub const HELP: &str = "safeyolo [--root ROOT] inspect [--factory NAME] [--agent NAME]
+safeyolo [--root ROOT] configure connection|support NAME|approvals NAME
+safeyolo [--root ROOT] configure --help
 safeyolo [--root ROOT] traffic list [--agent NAME] [--filter EXPRESSION] [--json]
 safeyolo [--root ROOT] traffic show ID|body ID request|response|websocket ID|message ID NUMBER [--offset BYTES] [--agent NAME] [--json]
 safeyolo [--root ROOT] traffic export ID FORMAT FILE [--agent NAME]
@@ -65,6 +68,7 @@ pub fn handles(args: &[String]) -> bool {
                 | "diagnose"
                 | "observations"
                 | "support"
+                | "configure"
         )
     })
 }
@@ -1618,6 +1622,9 @@ pub async fn run(config: &Path, args: &[String]) -> Result<(), Error> {
 }
 
 async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
+    if args[0] == "configure" {
+        return configure::run(root, &args[1..]).await;
+    }
     if args.iter().any(|arg| arg == "--help") {
         println!("{HELP}");
         return Ok(());
@@ -1812,11 +1819,15 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
                 safe(text(&value["authority"]["considered"]["report_id"]))
             );
         }
-        println!(
-            "Independent access that remains after revocation: {}",
-            context_json(&value["independent_access"])?
-        );
-        println!("{}", safe(text(&value["revocation"])));
+        if let Some(remaining) = value.get("independent_access") {
+            println!(
+                "Independent access that remains after revocation: {}",
+                context_json(remaining)?
+            );
+        }
+        if let Some(revocation) = value["revocation"].as_str() {
+            println!("{}", safe(revocation));
+        }
         Ok(())
     } else if !options.json && value.get("impact_summary").is_some() {
         println!(
@@ -1824,6 +1835,44 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
             safe(text(&value["impact_summary"])),
             safe(text(&value["authority"]["considered"]["report_id"]))
         );
+        Ok(())
+    } else if !options.json && (value.get("grants").is_some() || value.get("delegations").is_some())
+    {
+        let approvals = value.get("delegations").is_some();
+        if let Some(owner) = value["instance_id"].as_str() {
+            println!("Owning instance: {}", safe(owner));
+        }
+        let rows = value[if approvals { "delegations" } else { "grants" }]
+            .as_array()
+            .ok_or("authority list unavailable")?;
+        if rows.is_empty() {
+            println!(
+                "No configured {}.",
+                if approvals {
+                    "approval delegations"
+                } else {
+                    "support grants"
+                }
+            );
+        }
+        for row in rows {
+            println!(
+                "{}: {}",
+                safe(text(&row["name"])),
+                if row["active"] == true {
+                    "active"
+                } else {
+                    "inactive; inspect expiry, durable identities, peer trust and scope dependencies on this owner"
+                }
+            );
+            configure::show_record(
+                &row[if approvals { "delegation" } else { "grant" }],
+                approvals,
+            )?;
+            if let Some(targets) = row.get("target_status") {
+                println!("Current target bindings: {}", context_json(targets)?);
+            }
+        }
         Ok(())
     } else if args[0] == "approvals" && !options.json && value.get("action").is_some() {
         show_approval(&value)

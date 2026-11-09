@@ -143,17 +143,37 @@ async fn json(
         } else {
             ""
         };
-        return Err(format!(
+        let message = format!(
             "API {status}: {}{outcome}",
             error
                 .and_then(|value| value.get("error"))
                 .and_then(Value::as_str)
                 .unwrap_or_else(|| status.canonical_reason().unwrap_or("request failed"))
-        )
+        );
+        return Err(ApiError {
+            status: status.as_u16(),
+            body: value.unwrap_or(Value::Null),
+            message,
+        }
         .into());
     }
     Ok(value?)
 }
+
+/// Canonical refusal details let guided operator edits refresh a stale preview.
+/// Transport errors remain distinct: they must never trigger a mutation retry.
+#[derive(Debug)]
+pub(crate) struct ApiError {
+    pub status: u16,
+    pub body: Value,
+    message: String,
+}
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for ApiError {}
 
 pub(crate) async fn operator_socket(
     config_path: &Path,

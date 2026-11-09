@@ -105,6 +105,11 @@ Commander provides the Mac GUI with the same owners.
 
 ## Coord and factories
 
+[Guided federation and authority setup](../docs/federation-setup.md) uses
+`safeyolo configure` to connect selected instances and configure support,
+notices, approval delegation and approved factory directions. It retains the
+explicit file interfaces for automation.
+
 [Coord operations](../docs/coord-operations.md) covers room setup, scripted
 send, chat, canonical history and event observation. The installed
 `safeyolo-coord` supplies guest commands, MCP stdio and bounded supervision.
