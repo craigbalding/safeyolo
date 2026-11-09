@@ -1,7 +1,5 @@
 //! Native PTY selections are checked against canonical state and real effects.
 use super::*;
-#[path = "../support/operator_pty.rs"]
-mod operator_pty;
 use operator_pty::Terminal;
 
 fn number(output: &str, agent: &str) -> usize {
@@ -48,10 +46,24 @@ async fn native_watch_keeps_selected_input_arrivals_deferral_and_concurrent_outc
     let worker_number = number(&attached, "worker");
     let helper_number = number(&attached, "helper");
     assert_ne!(worker_number, helper_number);
+    terminal
+        .until(
+            0,
+            &format!(
+                "Type a displayed request number (for example, {})",
+                worker_number.min(helper_number)
+            ),
+        )
+        .await;
     terminal.send(&format!("{worker_number}\n"));
     terminal
-        .until(0, &format!("Request #{worker_number}: approve"))
+        .until(
+            0,
+            &format!("Request #{worker_number}: approve persistent / reject"),
+        )
         .await;
+    assert!(!terminal.output().contains("approve once"));
+    assert!(!terminal.output().contains("approve run"));
     terminal.send("app");
     let arrival = terminal.mark();
     let peer = fixture.network("peer", fixture.address).await;
@@ -63,7 +75,7 @@ async fn native_watch_keeps_selected_input_arrivals_deferral_and_concurrent_outc
     let peer_number = number(&output, "peer");
     assert_eq!(number(&output, "worker"), worker_number);
     assert_eq!(number(&output, "helper"), helper_number);
-    terminal.send("rove\n");
+    terminal.send("rove persistent\n");
     terminal
         .until(
             arrival,
@@ -111,6 +123,15 @@ async fn native_watch_keeps_selected_input_arrivals_deferral_and_concurrent_outc
         .until(
             listed,
             &format!("#{helper_number} [left pending] agent=helper"),
+        )
+        .await;
+    terminal
+        .until(
+            listed,
+            &format!(
+                "Type a displayed request number (for example, {})",
+                helper_number.min(peer_number)
+            ),
         )
         .await;
     assert_eq!(shown(&fixture, &helper.id()).await["status"], "pending");

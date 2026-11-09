@@ -878,6 +878,48 @@ pub(crate) async fn pending(root: &Path, agent: Option<&str>) -> Result<Value, E
     Ok(value)
 }
 
+fn approval_decision_commands(view: &Value) -> String {
+    let mut commands: Vec<_> = view["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|option| option["status"] == "available")
+        .filter_map(|option| option["id"].as_str())
+        .map(|id| format!("approve {}", safe(id)))
+        .collect();
+    commands.push("reject".into());
+    commands.join(" / ")
+}
+
+#[cfg(test)]
+#[test]
+fn decision_commands_show_current_offered_options_including_single_actions() {
+    for (options, commands) in [
+        (
+            json!([{"id":"once","status":"available"}]),
+            "approve once / reject",
+        ),
+        (
+            json!([{"id":"persistent","status":"available"},{"id":"run","status":"available"}]),
+            "approve persistent / approve run / reject",
+        ),
+        (
+            json!([{"id":"persistent","status":"available"},{"id":"run","status":"superseded"},{"id":"session","status":"expired"}]),
+            "approve persistent / reject",
+        ),
+        (json!([]), "reject"),
+    ] {
+        assert_eq!(
+            approval_decision_commands(&json!({"options":options})),
+            commands
+        );
+    }
+    let escaped = approval_decision_commands(
+        &json!({"options":[{"id":"credential-\u{1b}[31m","status":"available"}]}),
+    );
+    assert!(!escaped.contains('\u{1b}'), "{escaped:?}");
+}
+
 /// Select canonical requests without copying a request ID or fingerprint.
 /// The guest terminal has returned before this host-owned interaction begins.
 pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error> {
@@ -902,7 +944,10 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
             );
             show_request_history(entry)?;
         }
-        let Some(answer) = crate::host_launch::input("Request number (Enter returns): ")? else {
+        let Some(answer) = crate::host_launch::input(
+            "Type a displayed request number (for example, 1; Enter returns): ",
+        )?
+        else {
             return Ok(());
         };
         if answer.is_empty() {
@@ -950,10 +995,11 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
         }
         let mut selected_option: Option<String> = None;
         loop {
-            let Some(answer) = crate::host_launch::input(
-                "approve / reject / explain [OPTION] (e) / ask agent (a) / context (c) / Enter to leave unchanged: ",
-            )?
-            else {
+            let prompt = format!(
+                "{} / explain [OPTION] (e) / ask agent (a) / context (c) / Enter to leave unchanged: ",
+                approval_decision_commands(&view)
+            );
+            let Some(answer) = crate::host_launch::input(&prompt)? else {
                 return Ok(());
             };
             let parts: Vec<_> = answer.split_whitespace().collect();

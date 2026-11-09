@@ -70,6 +70,11 @@ impl PendingRequests {
         if self.current && self.numbered.is_empty() {
             output.push_str("No pending approval requests. Watching for arrivals.\n");
         }
+        if let Some(number) = self.numbered.keys().next() {
+            output.push_str(&format!(
+                "Type a displayed request number (for example, {number}) at watch> to review it.\n"
+            ));
+        }
         Ok(output)
     }
 }
@@ -164,7 +169,8 @@ fn review(
     let mut selected_option = None::<String>;
     loop {
         let prompt = format!(
-            "Request #{number}: approve [OPTION] / reject / explain [OPTION] / ask / context / later > "
+            "Request #{number}: {} / explain [OPTION] / ask / context / later > ",
+            approval_decision_commands(&view)
         );
         let Some(answer) = line(editor, &prompt)? else {
             return Ok(false);
@@ -286,7 +292,7 @@ pub(crate) async fn run(config: &Path, no_color: bool) -> Result<(), Error> {
         let mut printer = editor.create_external_printer()?;
         let requests = Arc::new(Mutex::new(PendingRequests::default()));
         println!("SafeYolo live approvals | Instance configuration: {}", safe(&config.display().to_string()));
-        println!("Choose a request number; list revisits pending requests; later leaves a request pending; q or Ctrl-C detaches. Waiting for current pending state.");
+        println!("Type a displayed request number to review it; list revisits pending requests; later leaves a request pending; q or Ctrl-C detaches. Waiting for current pending state.");
         let received_requests = requests.clone();
         let receiving_config = config.clone();
         let receiver = handle.spawn(async move {
