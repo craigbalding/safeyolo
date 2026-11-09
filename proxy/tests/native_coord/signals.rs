@@ -876,6 +876,10 @@ async fn native_watch_pty_recovers_complete_pending_state_while_a_choice_is_unfi
     tokio::time::timeout(Duration::from_secs(5), started.notified())
         .await
         .unwrap();
+    terminal.send("list\n");
+    terminal
+        .until(0, "PENDING APPROVALS: unavailable (current count unknown)")
+        .await;
     pending_network(root, addresses[1], "during-attachment").await;
     release.notify_one();
     terminal

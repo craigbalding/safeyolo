@@ -733,7 +733,7 @@ nodes:
         - path: proxy/src/coord_schema.sql
           sha256: 31b24a8423738d0d06fd5c6bbfe9a5d575738e25459cc6b1629899d3dc50f939
         - path: proxy/tests/native_coord/signals.rs
-          sha256: e6877e4abee124ca6ce79c9a80e9b8e49a9b8df950bb9885369fcb7a00c0f816
+          sha256: 5d1a43ed711f899c9e4983d95bbbe8e2c9fb327dff3bd044bd7d1eab1fb33b38
         - path: proxy/src/coord_rooms/signals.rs
           sha256: bef138d95aa2d06ee547311728ed78b2a38b6cac96ed176a7c87caf54364ff57
         - path: proxy/src/coord_rooms/signals/tests.rs

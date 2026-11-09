@@ -39,6 +39,12 @@ impl PendingRequests {
     }
 
     fn render(&self, color: bool) -> Result<String, Error> {
+        if !self.current && self.numbered.is_empty() {
+            return Ok(format!(
+                "{}: unavailable (current count unknown)\n",
+                cue("PENDING APPROVALS", "33", color)
+            ));
+        }
         let mut output = format!(
             "{}: {}{}\n",
             cue("PENDING APPROVALS", "33", color),
