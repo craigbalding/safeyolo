@@ -271,7 +271,7 @@ fn display_preview(view: &Value) {
         );
     }
     eprintln!(
-        "Activation reuses a proxy already running the proposed host; otherwise it stops and starts this instance's proxy and managed Coord, interrupting traffic and Coord. Agents keep running with their existing inputs unless you choose to restart them.\nPolicy, credentials, homes and audit data are retained. Component rollback does not reverse later user-state changes."
+        "Activation reuses a proxy already running the proposed host; otherwise it stops and starts this instance's proxy and managed Coord, interrupting traffic and Coord. Agents keep running with their existing inputs unless you choose to restart them.\nPolicy, credentials, homes and audit data are retained. Rollback checks the previous host against retained Coord state and can refuse without changing selection. It does not reverse later store or user-state changes."
     );
 }
 
@@ -421,7 +421,7 @@ async fn run_inner(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
         let mut view = report(root, Ok(prepared.before.clone()), observations(root).await);
         view["proposed"] = proposed(&prepared)?;
         view["release"] = json!(release);
-        view["effect"] = json!({"proxy":"reuse a proxy already running the proposed host; otherwise stop and start this instance's proxy and managed Coord, interrupting traffic and Coord", "agents":"running agents keep their inputs; restart only the agents you choose", "retention":"policy, credentials, homes, audit and unrelated installations are retained", "rollback":"the existing previous-pair command restores components; it does not reverse later user-state changes"});
+        view["effect"] = json!({"proxy":"reuse a proxy already running the proposed host; otherwise stop and start this instance's proxy and managed Coord, interrupting traffic and Coord", "agents":"running agents keep their inputs; restart only the agents you choose", "retention":"policy, credentials, homes, audit and unrelated installations are retained", "rollback":"the previous-pair command validates retained Coord state before restoring components and can refuse without changing selection; it does not reverse later store or user-state changes"});
         if interactive {
             display_preview(&view);
             let answer = input("Activate now? [y/N]: ")?;
@@ -496,7 +496,7 @@ async fn run_inner(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
                 json!([root.join("safeyolo-upgrade"), "--root", root, "rollback"]);
             failure["next_action"]["after_rollback"] = json!(["safeyolo", "--root", root, "start"]);
             failure["next_action"]["limit"] = json!(
-                "rollback restores the retained previous components only; stop the proxy first if running. It does not reverse later user-state changes"
+                "rollback validates the previous host against retained Coord state and can refuse without changing selection; stop the proxy first if running. Run after_rollback only after rollback succeeds. If refused, keep the selected host and retained store; restart the selected host or use a newer compatible bundle. Rollback does not reverse later store or user-state changes"
             );
         }
         println!("{}", serde_json::to_string_pretty(&failure)?);

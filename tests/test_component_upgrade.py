@@ -12,6 +12,7 @@ import os
 import pty
 import shutil
 import socket
+import sqlite3
 import subprocess
 import tarfile
 import tomllib
@@ -207,6 +208,82 @@ def test_bad_retained_stock_runtime_cannot_replace_current_on_rollback(
     assert os.readlink(root / "current") == current
     assert upgrade(native_cli, root, environment, "status") == selected
     assert_preserved(root, saved)
+
+
+@pytest.mark.parametrize("store_state", ["absent", "compatible", "incompatible", "corrupt", "identity"])
+def test_rollback_checks_retained_coord_before_selection(
+        native_cli, stock_installation, registry, tmp_path, store_state):
+    """Run the prior CLI's real Coord contract, independently of package labels."""
+    root, target = stock_installation
+    _contents, requests, _faults, environment = registry
+    prior = Path(os.environ.get("SAFEYOLO_ROLLBACK_PRIOR_CLI", native_cli))
+    environment = {**environment, "PACKAGE_COORD_CLI": str(prior)}
+    # Exercise the configured producer path rather than assuming ROOT/data.
+    data = tmp_path / "retained-data"
+    config = root / "config.toml"
+    config.write_text(f"data_dir = {json.dumps(str(data))}\n" + config.read_text())
+    store = data / "coord/v0.db"
+    if store_state != "absent":
+        produced = command(prior, root, environment, "coord", "room", "list")
+        assert produced.returncode == 0, produced.stderr
+    original = upgrade(native_cli, root, environment, "status")
+    original_receipt = (root / "SHA256SUMS").read_bytes()
+    selected = upgrade(native_cli, root, environment, "--bundle", target)
+    if store_state == "incompatible":
+        advanced = command(native_cli, root, environment, "coord", "room", "list")
+        assert advanced.returncode == 0, advanced.stderr
+    connection = sqlite3.connect(store) if store.exists() else None
+    try:
+        if connection is not None:
+            connection.execute("PRAGMA journal_mode=WAL")
+            # Retained work and schema changes must be copied from the WAL,
+            # including while its writer still has the database open.
+            if store_state == "incompatible" and prior.resolve() == native_cli.resolve():
+                version, = connection.execute("PRAGMA user_version").fetchone()
+                connection.execute(f"PRAGMA user_version={version + 1}")
+            connection.execute("CREATE TABLE rollback_canary(value)")
+            connection.execute("INSERT INTO rollback_canary VALUES ('retained work')")
+            if store_state == "identity":
+                connection.execute("UPDATE instance SET id='another-instance'")
+            connection.commit()
+            if store_state == "corrupt":
+                connection.close()
+                connection = None
+                store.write_bytes(b"unreadable retained store")
+        saved = state_files(root)
+        current = os.readlink(root / "current")
+        receipt = (root / "SHA256SUMS").read_bytes()
+        selection = (root / "share/guest-selection.json").read_bytes()
+        retained = {path.name: path.read_bytes() for path in store.parent.glob("v0.db*")
+                    if path.name != "v0.db-shm"}
+        before_requests = len(requests)
+        result = command(native_cli, root, environment, "upgrade", "rollback")
+        if store_state in ("absent", "compatible"):
+            assert result.returncode == 0, result.stderr
+            assert json.loads(result.stdout) == original
+        else:
+            assert result.returncode != 0
+            assert "rollback refused before changing selection" in result.stderr
+            assert "selected pair and retained state are unchanged" in result.stderr
+            assert "start" in result.stderr and str(root) in result.stderr
+            assert os.readlink(root / "current") == current
+            assert upgrade(native_cli, root, environment, "status") == selected
+            if store_state == "incompatible":
+                assert "expected version" in result.stderr
+            if store_state == "identity":
+                assert "identity differs" in result.stderr
+        assert_preserved(root, saved)
+        assert (root / "share/guest-selection.json").read_bytes() == selection
+        assert (root / "SHA256SUMS").read_bytes() == (
+            original_receipt if store_state in ("absent", "compatible") else receipt
+        )
+        assert {path.name: path.read_bytes() for path in store.parent.glob("v0.db*")
+                if path.name != "v0.db-shm"} == retained
+        assert not list(root.glob("rollback-coord-*"))
+        assert len(requests) == before_requests
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 @pytest.mark.parametrize("stock", [False, True])
@@ -854,6 +931,8 @@ def test_guided_activation_failure_reports_selected_pair_and_retained_rollback(
         assert failure["selected"]["previous"] == original["current"]
         assert failure["observed"]["proxy"]["state"] != "running"
         assert failure["next_action"]["rollback"] == [str(root / "safeyolo-upgrade"), "--root", str(root), "rollback"]
+        assert "can refuse without changing selection" in failure["next_action"]["limit"]
+        assert "only after rollback succeeds" in failure["next_action"]["limit"]
         assert upgrade(native_cli, root, environment, "rollback") == original
         assert_preserved(root, saved)
     finally:

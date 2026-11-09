@@ -517,6 +517,9 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
                               f'puts("{guest_assets}");return 0;')
         guest_command += '}'
     host_command = (
+        'if(argc>5 && strcmp(argv[1],"--root")==0 && strcmp(argv[3],"coord")==0){'
+        'char *coord=getenv("PACKAGE_COORD_CLI");'
+        'if(coord){execv(coord,argv);return 99;}}'
         'if(argc>4 && strcmp(argv[3],"host")==0 && strcmp(argv[4],"prepare")==0){'
         'char *code=getenv("PACKAGE_HOST_EXIT");if(code)return atoi(code);'
         'char *installed="/fixture";char *settings=NULL;'

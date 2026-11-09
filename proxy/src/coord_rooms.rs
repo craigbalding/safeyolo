@@ -40,6 +40,71 @@ fn directory(root: &Path) -> Result<PathBuf, Error> {
         .ok_or("data directory is missing")?
         .join("coord"))
 }
+
+/// Exercise the prior writer on a private snapshot, keeping schema changes
+/// serialized with bootstrap until the caller has changed component selection.
+pub(crate) fn check_rollback_store(root: &Path, prior: &Path) -> Result<fs::File, Error> {
+    let data = directory(root)?;
+    let lock = crate::host_platform::lock_host_state(&data.join("bootstrap.lock"))?;
+    let store = data.join("v0.db");
+    match fs::symlink_metadata(&store) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(lock),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+    let check = || -> Result<(), Error> {
+        let snapshot = tempfile::Builder::new()
+            .prefix("rollback-coord-")
+            .tempdir_in(root)?;
+        let snapshot_data = snapshot.path().join("data/coord");
+        fs::create_dir_all(&snapshot_data)?;
+        // Configuration was already checked by the prior CLI. Give its Coord
+        // command only private default paths; never point it at live state.
+        fs::write(snapshot.path().join("config.toml"), "")?;
+        fs::copy(
+            root.join("data/instance_id"),
+            snapshot.path().join("data/instance_id"),
+        )?;
+        let connection =
+            Connection::open_with_flags(&store, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        // SQLite includes committed WAL contents in this consistent snapshot.
+        // Copying v0.db alone could miss the schema fence or retained work.
+        connection.execute(
+            "VACUUM main INTO ?1",
+            [snapshot_data
+                .join("v0.db")
+                .to_str()
+                .ok_or("Coord snapshot path must be UTF-8")?],
+        )?;
+        let output = std::process::Command::new(prior)
+            .arg("--root")
+            .arg(snapshot.path())
+            .args(["coord", "room", "list"])
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "previous host Coord check failed ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(4096)]),
+            )
+            .into());
+        }
+        let result: Value = serde_json::from_slice(&output.stdout)?;
+        if !result["rooms"].is_array() {
+            return Err("previous host did not return a Coord room list".into());
+        }
+        Ok(())
+    };
+    check().map_err(|error| -> Error {
+        format!(
+            "rollback refused before changing selection for {}: {error}. The selected pair and retained state are unchanged. Keep the selected host and Coord store at {}; if stopped, restart this instance with {} --root {} start, or select a newer compatible host bundle",
+            root.display(), store.display(), root.join("bin/safeyolo").display(), root.display(),
+        ).into()
+    })?;
+    Ok(lock)
+}
+
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

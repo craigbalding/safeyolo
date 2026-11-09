@@ -469,8 +469,16 @@ the reported prerequisite, then repeat the same explicit target with
 does not establish that every agent or managed Coord is ready.
 
 The first component change retains `safeyolo-upgrade` in the instance directory.
-If you choose recovery, stop the proxy and use that executable to restore the
-previous complete pair without a network request. For the default instance:
+Rollback checks whether the previous host can use a private snapshot of the
+retained Coord store before changing selection. If that check fails, the selected
+pair and retained state stay unchanged. Component restoration cannot reverse
+store changes made by a newer host. Keep the selected host or select a newer
+compatible bundle; preserve the Coord store and its retained work.
+
+If you choose rollback, stop the proxy and use the retained executable. Start
+the proxy only after rollback succeeds. If rollback is refused after stopping,
+start the still-selected host or repair it with a compatible bundle. For the
+default instance, run these commands separately and inspect each result:
 
 ```sh
 safeyolo stop
@@ -480,8 +488,9 @@ safeyolo start
 
 For a custom instance, run its `safeyolo-upgrade` with `--root ROOT` before
 `rollback`. Carry the same root into `stop` and `start`. Component rollback
-does not undo subsequent changes to policy, credentials, homes or other user
-state. Running agents retain their inputs until you choose to restart them.
+makes no network request and does not undo subsequent changes to policy,
+credentials, homes or other user state. Running agents retain their inputs
+until you choose to restart them.
 
 Activation changes one directory link after staging the complete pair. Initial
 adoption requires a filesystem with atomic directory exchange, such as the
