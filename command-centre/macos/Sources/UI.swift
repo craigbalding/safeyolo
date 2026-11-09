@@ -458,6 +458,7 @@ struct ConnectionSettingsView: View {
             friendlyName = file.friendlyName
             adminURL = file.adminURL
             eventsURL = file.eventsURL
+            terminalTarget = ""
             transport = file.transport
             token = file.token
             handoffInstanceID = file.instanceID
