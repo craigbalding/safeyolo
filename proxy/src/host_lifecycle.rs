@@ -1828,7 +1828,7 @@ fn configured_guest_command(agent: &Agent, interactive: bool) -> Result<String, 
     }
 }
 
-fn shell_quote(value: &str) -> String {
+pub(crate) fn shell_quote(value: &str) -> String {
     if !value.is_empty()
         && value
             .bytes()

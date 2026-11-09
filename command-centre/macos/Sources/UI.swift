@@ -155,16 +155,16 @@ final class SecurityEventWindowPresenter {
 final class ErrorWindowPresenter {
     private var window: NSWindow?
 
-    func show(_ details: String, dismissFeedGap: (() -> Void)? = nil, diagnostics: (() -> String)? = nil) {
+    func show(_ details: String, heading: String = "Error details", dismissFeedGap: (() -> Void)? = nil, diagnostics: (() -> String)? = nil) {
         let window = self.window ?? NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 580, height: 340),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered, defer: false
         )
-        window.title = "SafeYolo Error Details"
+        window.title = "SafeYolo — " + heading
         window.isReleasedWhenClosed = false
         window.contentViewController = NSHostingController(rootView: ErrorDetailsView(
-            details: details, dismissFeedGap: dismissFeedGap, diagnostics: diagnostics,
+            details: details, dismissFeedGap: dismissFeedGap, diagnostics: diagnostics, heading: heading,
             close: { [weak window] in window?.close() }
         ))
         if self.window == nil { window.center() }
@@ -178,11 +178,12 @@ struct ErrorDetailsView: View {
     let details: String
     let dismissFeedGap: (() -> Void)?
     let diagnostics: (() -> String)?
+    var heading: String = "Error details"
     let close: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Error details").font(.headline)
+            Text(heading).font(.headline)
             ScrollView {
                 Text(details)
                     .textSelection(.enabled)
@@ -424,6 +425,7 @@ struct ApprovalView: View {
     @State private var busy = false
     @State private var error: String?
     @State private var selectedOption: String?
+    @State private var desktopHandoffNotice: String?
 
     var currentEvent: ApprovalEvent {
         client.approvals.first { $0.id == event.id } ?? event
@@ -470,7 +472,7 @@ struct ApprovalView: View {
                     .accessibilityLabel("Deny")
                     .accessibilityIdentifier("deny-button")
                 Spacer()
-                Button("Cancel") { close() }
+                Button(approvalOutcome?.terminal == true || desktopHandoffNotice != nil ? "Close" : "Cancel") { close() }
                     .disabled(busy)
                     .keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("cancel-button")
@@ -516,6 +518,45 @@ struct ApprovalView: View {
                 if let url = currentEvent.details?.browserURL { row("Guest browser URL (agent-selected data)", quotedRequesterText(url)) }
             }
 
+            if let options = currentEvent.options {
+                ForEach(options) { option in
+                    Text(verbatim: approvalDisplayText("\(option.id) (\(option.status ?? "available")): \(option.effect)"))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let parameters = option.parameters {
+                        Text(verbatim: parameters.evidenceDescription).textSelection(.enabled)
+                    }
+                }
+            }
+            if let status = approvalOutcome?.status ?? currentEvent.status { row("Status", status) }
+            if let created = currentEvent.createdAt {
+                row("Requested", Date(timeIntervalSince1970: created).formatted())
+            }
+            if let expiry = currentEvent.authority?.expiresAt {
+                row("Request deadline", Date(timeIntervalSince1970: expiry).formatted())
+            }
+            if let assessment = approvalOutcome?.assessment ?? currentEvent.assessment {
+                Text("SafeYolo assessment (includes request data)").font(.headline)
+                if let enables = assessment["enables"] {
+                    row("Effects enabled by the proposed scope", enables.description)
+                }
+                if let policy = assessment["risk_policy"] {
+                    assessmentField("Risk policy", policy)
+                }
+                assessmentCaveats(assessment)
+                DisclosureGroup("Assessment, scoped effects and alternatives") {
+                    Text(verbatim: assessment.evidenceDescription).textSelection(.enabled)
+                }
+            }
+            if let guidance = approvalOutcome?.guidance ?? currentEvent.guidance {
+                Text("Policy and reviewed guidance").font(.headline)
+                Text(verbatim: approvalGuidance(guidance, assessment: approvalOutcome?.assessment ?? currentEvent.assessment).evidenceDescription).textSelection(.enabled)
+            }
+            if let changed = approvalOutcome?.assessmentChanged ?? currentEvent.assessmentChanged, changed {
+                Text("Assessment changed since this request. Read current evidence before deciding.")
+            }
+            if let option = approvalOutcome?.option { row("Selected option", option) }
+
             if let history = approvalOutcome?.requestHistory ?? currentEvent.requestHistory {
                 Text(verbatim: history.display).textSelection(.enabled)
             }
@@ -523,13 +564,6 @@ struct ApprovalView: View {
                 Text(verbatim: "Operator attention: \(delivery.status)").foregroundStyle(.secondary)
             }
 
-            if let options = currentEvent.options, options.count > 1 {
-                ForEach(options) { option in
-                    Text(verbatim: approvalDisplayText("\(option.id): \(option.effect)"))
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
 
             if let reason = quotedUntrustedReason {
                 Text("Agent-provided reason (untrusted)").foregroundStyle(.secondary)
@@ -549,6 +583,15 @@ struct ApprovalView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            if let desktopHandoffNotice {
+                Text(verbatim: desktopHandoffNotice).textSelection(.enabled)
+            }
+            if let outcome = approvalOutcome?.result {
+                DisclosureGroup("Recorded outcome details") {
+                    Text(verbatim: outcome.evidence.evidenceDescription).textSelection(.enabled)
+                }
+            }
+
             if let error {
                 Text(error)
                     .foregroundStyle(.red)
@@ -562,6 +605,24 @@ struct ApprovalView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func assessmentCaveats(_ assessment: JSONValue) -> some View {
+        if let unresolved = assessment["unresolved_conditions"] { assessmentField("Unresolved conditions", unresolved) }
+        if let limitations = assessment["limitations"] { assessmentField("Assessment limits", limitations) }
+        if let rules = assessment["model"]?["rules"] {
+            assessmentField("Combined effects and unverified prerequisites", rules)
+        }
+    }
+
+    private func assessmentField(_ label: String, _ value: JSONValue) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).foregroundStyle(.secondary)
+            Text(verbatim: value.evidenceDescription)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -581,12 +642,21 @@ struct ApprovalView: View {
         client.resolve(currentEvent, allow: allow, option: allow ? selectedOption : nil) { result in
             switch result {
             case .success(.desktop(let presentation)):
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(presentation.unlockCode, forType: .string)
-                if let url = URL(string: presentation.url) {
-                    NSWorkspace.shared.open(url)
+                busy = false
+                do {
+                    try presentation.open(copyCode: { code in
+                        NSPasteboard.general.clearContents()
+                        return NSPasteboard.general.setString(code, forType: .string)
+                    }, openBrowser: { NSWorkspace.shared.open($0) })
+                    desktopHandoffNotice = "\(client.expectedInstanceID) — \(presentation.handoffNotice)"
+                } catch {
+                    let arguments = "approvals show " + shellQuoted(currentEvent.approvalID ?? currentEvent.requestID ?? currentEvent.id)
+                        + (currentEvent.agent.map { " --agent " + shellQuoted($0) } ?? "")
+                    let recovery: String
+                    do { recovery = "Read this approval without replay or a lifetime extension:\n" + (try client.recoveryCommand(arguments)) }
+                    catch { recovery = "Recovery command unavailable: " + error.localizedDescription }
+                    self.error = "\(client.expectedInstanceID) — \(presentation.agent): \(error.localizedDescription)\n\(recovery)"
                 }
-                close()
             case .success(.decided):
                 if let outcome = approvalOutcome, let status = outcome.result?.status, status != "started", status != "denied" {
                     busy = false
@@ -652,9 +722,9 @@ struct InstanceMenu: View {
                 }
             }
             Divider()
-            if client.approvals.isEmpty {
-                Text("No pending approvals")
-            } else {
+            Text(verbatim: approvalDisplayText(client.approvalObservation.summary("Pending approvals", count: client.approvals.count)))
+            Button("Refresh Approvals") { Task { _ = await client.refreshApprovals(verifyInstance: true) } }
+            if !client.approvals.isEmpty {
                 Text("Approvals (\(client.approvals.count))")
                 ForEach(client.approvals) { approval in
                     Button(approval.title) {
@@ -675,13 +745,10 @@ struct InstanceMenu: View {
                 Text("Approval evidence unavailable: \(id). Direct policy controls remain available.")
             }
             Divider()
-            if client.agents.isEmpty {
-                Text("No configured agents")
-            } else {
+            Text(verbatim: approvalDisplayText(client.agentObservation.summary("Configured agents", count: client.agents.count)))
+            Button("Refresh Agent Status") { Task { _ = await client.refreshAgents(verifyInstance: true) } }
+            if !client.agents.isEmpty {
                 Text("Agents")
-                Button("Refresh Agent Status") {
-                    Task { _ = await client.refreshAgents() }
-                }
                 ForEach(client.agents) { agent in
                     Menu {
                         Text("Agent: \(agent.agentState)")
@@ -823,10 +890,17 @@ struct InstanceMenu: View {
         client.presentDesktop(for: agent) { result in
             switch result {
             case .success(let presentation):
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(presentation.unlockCode, forType: .string)
-                if let url = URL(string: presentation.url) {
-                    NSWorkspace.shared.open(url)
+                do {
+                    try presentation.open(copyCode: { code in
+                        NSPasteboard.general.clearContents()
+                        return NSPasteboard.general.setString(code, forType: .string)
+                    }, openBrowser: { NSWorkspace.shared.open($0) })
+                    errorPresenter.show("\(instanceLabel) — \(presentation.handoffNotice)", heading: "Desktop ready")
+                } catch {
+                    let recovery: String
+                    do { recovery = "Recover this agent's current presentation:\n" + (try client.recoveryCommand("agent present " + shellQuoted(agent.name))) }
+                    catch { recovery = "Recovery command unavailable: " + error.localizedDescription }
+                    errorPresenter.show("\(instanceLabel) — Present desktop for \(agent.name):\n\(error.localizedDescription)\n\(recovery)")
                 }
             case .failure(let error):
                 errorPresenter.show("\(instanceLabel) — Present desktop for \(agent.name):\n\(error.localizedDescription)")

@@ -29,6 +29,8 @@ final class SafeYoloClient: ObservableObject {
     @Published private(set) var approvalOutcomes: [String: ApprovalResolution] = [:]
     @Published private(set) var unavailableApprovalOutcomes = Set<String>()
     @Published private(set) var agents: [AgentInfo] = []
+    @Published private(set) var approvalObservation = ListObservation()
+    @Published private(set) var agentObservation = ListObservation()
     @Published private(set) var securityEvents: [SecurityObservation] = []
     @Published private(set) var busyAgentIDs = Set<String>()
     @Published private(set) var pendingTerminalIDs = Set<String>()
@@ -53,27 +55,41 @@ final class SafeYoloClient: ObservableObject {
 
     var connectionGuidance: String? {
         guard adminConnected, connectionState != .connected, connectionState != .stopped else { return nil }
-        let host = isLocalConnection ? "this Mac" : "the connected SafeYolo host"
-        if eventEndpoint?.enabled == false {
-            return """
-            Admin API connected. Live events are disabled in the running SafeYolo host.
-            On \(host), set enabled = true in the [command_centre] table of the connected instance's TOML configuration, then run its installed CLI:
-            safeyolo stop
-            safeyolo start
+        do {
+            if eventEndpoint?.enabled == false {
+                let configuration = hostConfigPath ?? hostRoot.map { $0 + "/config.toml" }
+                guard let configuration else { throw ConnectionError.missingNativeInstallation }
+                return """
+                Instance \(instanceID): Admin API connected. Live events are disabled.
+                On the selected host, set enabled = true in [command_centre] in \(configuration).
+                Restart that instance to apply the change:
+                \(try recoveryCommand("stop"))
+                \(try recoveryCommand("start"))
 
-            If you already enabled live events, restart SafeYolo to apply the change.
-            Restarting briefly interrupts agent networking and Coord. Agents stay running.
-            """
-        }
-        if requestErrors["Live events"] != nil {
-            return """
-            Admin API connected, but the live-event connection failed.
-            On \(host), run the connected instance's installed CLI: safeyolo doctor.
-            Check [command_centre] in its TOML configuration, the event port, and any SSH tunnel or Tailnet forwarding.
-            Copy Diagnostics includes the connection failure and retry history.
-            """
+                Restarting briefly interrupts agent networking and Coord. Agents stay running.
+                """
+            }
+            if requestErrors["Live events"] != nil {
+                return """
+                Instance \(instanceID): Admin API connected, but the live-event connection failed.
+                \(try recoveryCommand("doctor"))
+                Doctor probes this instance's configuration, listeners and host prerequisites; it does not prove agent readiness.
+                Check [command_centre], the event port, and the selected SSH tunnel or Tailnet forwarding.
+                Copy Diagnostics includes the connection failure and retry history.
+                """
+            }
+        } catch {
+            return "Instance \(instanceID): recovery command unavailable. \(error.localizedDescription) Open Connection Settings to supply the missing remote context, or inspect the selected host's installation."
         }
         return nil
+    }
+
+    // Callers construct command words and shell quote any target values.
+    func recoveryCommand(_ arguments: String) throws -> String {
+        try installedHostCommand(arguments: arguments, remote: usesRemoteTerminal,
+            terminalTarget: terminalTarget, adminURL: adminURL.absoluteString, hostUser: hostUser,
+            hostExecutable: hostExecutable, hostRoot: hostRoot, hostConfigPath: hostConfigPath,
+            transport: transport)
     }
 
     var diagnosticReport: String {
@@ -87,8 +103,8 @@ final class SafeYoloClient: ObservableObject {
         State: \(connectionSummary)
         Admin API authenticated: \(adminConnected)
         Host event listener: \(endpointState)
-        Agents in snapshot: \(agents.count)
-        Pending approvals in snapshot: \(approvals.count)
+        \(agentObservation.summary("Configured agents", count: agents.count))
+        \(approvalObservation.summary("Pending approvals", count: approvals.count))
         Current failed operations: \(requestErrors.keys.sorted().joined(separator: ", "))
         Feed gap: \(eventFeedGap ?? "None")
         Guidance: \(connectionGuidance ?? "None")
@@ -111,6 +127,9 @@ final class SafeYoloClient: ObservableObject {
     let expectedInstanceID: String
     private let session: URLSession
     private let isLocalConnection: Bool
+    private let terminalTarget: String?
+    private let transport: RemoteTransport
+    private let usesRemoteTerminal: Bool
     private let makeEventSocket: (URLRequest) -> any EventSocket
     private let retryPause: @MainActor () async throws -> Void
     private var diagnostics = ConnectionDiagnostics()
@@ -128,6 +147,9 @@ final class SafeYoloClient: ObservableObject {
         expectedInstanceID: String,
         session: URLSession = .shared,
         isLocalConnection: Bool = false,
+        terminalTarget: String? = nil,
+        transport: RemoteTransport = .tailnet,
+        usesRemoteTerminal: Bool? = nil,
         makeEventSocket: ((URLRequest) -> any EventSocket)? = nil,
         retryPause: @escaping @MainActor () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }
     ) throws {
@@ -143,6 +165,9 @@ final class SafeYoloClient: ObservableObject {
         self.expectedInstanceID = expectedInstanceID
         self.session = session
         self.isLocalConnection = isLocalConnection
+        self.terminalTarget = terminalTarget
+        self.transport = transport
+        self.usesRemoteTerminal = usesRemoteTerminal ?? !["127.0.0.1", "localhost", "::1", "[::1]"].contains(parsedAdminURL.host ?? "")
         self.makeEventSocket = makeEventSocket ?? { session.webSocketTask(with: $0) }
         self.retryPause = retryPause
     }
@@ -203,6 +228,10 @@ final class SafeYoloClient: ObservableObject {
         guard connectionState != state else { return }
         diagnostics.record("State: \(state.rawValue)")
         connectionState = state
+        if state == .reconnecting || state == .stopped {
+            approvalObservation.interrupted()
+            agentObservation.interrupted()
+        }
     }
 
     private func setRequestError(_ operation: String, _ error: Error?) {
@@ -410,7 +439,11 @@ final class SafeYoloClient: ObservableObject {
     }
 
     @discardableResult
-    func refreshApprovals() async -> Bool {
+    func refreshApprovals(verifyInstance: Bool = false) async -> Bool {
+        if verifyInstance, !(await refreshInstance()) {
+            approvalObservation.failed("Selected instance could not be verified; this list was not refreshed.")
+            return false
+        }
         do {
             let data = try await request(path: "/admin/approvals")
             let fresh = try JSONDecoder().decode(PendingApprovals.self, from: data).approvals
@@ -430,6 +463,7 @@ final class SafeYoloClient: ObservableObject {
                 }
             }
             if approvals != fresh { approvals = fresh }
+            approvalObservation.succeeded()
             let newApprovals = fresh.filter { !knownApprovalIDs.contains($0.id) }
             knownApprovalIDs = Set(fresh.map(\.id))
             for approval in newApprovals {
@@ -449,6 +483,7 @@ final class SafeYoloClient: ObservableObject {
         } catch {
             guard !Task.isCancelled else { return false }
             unavailableApprovalOutcomes.formUnion(approvalOutcomes.keys)
+            approvalObservation.failed(error.localizedDescription)
             setRequestError("Pending approvals", error)
             return false
         }
@@ -460,16 +495,22 @@ final class SafeYoloClient: ObservableObject {
     }
 
     @discardableResult
-    func refreshAgents() async -> Bool {
+    func refreshAgents(verifyInstance: Bool = false) async -> Bool {
+        if verifyInstance, !(await refreshInstance()) {
+            agentObservation.failed("Selected instance could not be verified; this list was not refreshed.")
+            return false
+        }
         do {
             let data = try await request(path: "/admin/agents")
             let fresh = try JSONDecoder().decode(AgentInventory.self, from: data).agents
             if agents != fresh { agents = fresh }
+            agentObservation.succeeded()
             finishPendingTerminals(agents, completeInventory: true)
             setRequestError("Agent status", nil)
             return true
         } catch {
             guard !Task.isCancelled else { return false }
+            agentObservation.failed(error.localizedDescription)
             setRequestError("Agent status", error)
             return false
         }

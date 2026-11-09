@@ -129,6 +129,8 @@ pub(crate) fn explain(
         "Room content and participants' intent are not established by an approval. Retained history can contain untrusted peer text."
     } else if kind == "service_authorize" {
         "The requested resource scope is supplied by the guest. It is not proof of an upstream request, intent or payload effects."
+    } else if kind == "gateway_route" && action["route_exception"] == true {
+        "The canonical method and literal path define the offered route scope. Query/body values and upstream state are not established; the grant does not bind the exact attempted payload."
     } else {
         "The target resource cannot be established from safe retained metadata. Raw request paths, queries and contract values are omitted because they can contain secrets."
     }];
@@ -312,10 +314,26 @@ pub(crate) fn explain(
     let selection = selected
         .and_then(|selected| options.iter().find(|option| option["id"] == selected.id))
         .cloned();
+    let mut outcome = view["result"].clone();
+    if let Some(fields) = outcome.as_object_mut() {
+        // Issued authority can contain raw contract values. Retain outcome facts
+        // without widening this explanation's existing safe metadata boundary.
+        fields.remove("issued_access");
+    }
+    let scope = if kind == "gateway_route" && action["route_exception"] == true {
+        json!({"kind":kind,"route_exception":true,"method":method,
+            "path":action["path"],"host":action["host"],"port":action["port"],
+            "scheme":action["scheme"],"service":action["service"],"capability":action["capability"]})
+    } else {
+        json!({"kind":kind})
+    };
     let mut result = json!({"approval_id":record.approval_id,"request_id":record.request_id,
         "request_history":view["request_history"],"attention":view["attention"],
         "authority_digest":record.authority_digest,"status":view["status"],
         "observed":facts,"why_stopped":stopped,
+        "action":scope,"assessment":view["assessment"],"guidance":view["guidance"],
+        "assessment_changed":view["assessment_changed"],"created_at":view["created_at"],
+        "option":view["option"],"result":outcome,"effect":view["effect"],"expires_at":record.authority.expires_at,
         "current_policy":"The recorded request still requires a decision under the current saved and active policy. Each option shows its current availability. A later decision checks the policy and credentials again.",
         "selected_option":selection,"options":options,"non_grants":non_grants,"unknowns":unknowns,
         "interpretation":"The effects describe the offered approval, not a recommendation to approve. An explanation grants no permission and does not establish the agent's intent.",

@@ -13,7 +13,9 @@ use serde_json::Value;
 use crate::{Error, host_agents, host_boot, host_commands, host_lifecycle, host_platform};
 
 pub(crate) const HELP: &str = "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude|codex] [--launcher LAUNCHER] [--dangerously-allow-unowned]
-WORKSPACE defaults to the current directory. The harness defaults to Claude.
+WORKSPACE reuses the named agent’s saved folder, or defaults to the current directory. An omitted harness reuses the saved
+workspace/name binding. New agents default to Claude. Use --name to select between
+multiple saved agents; --harness explicitly selects Claude or Codex.
 Launch asks before host setup, workspace sharing and optional authentication copying,
 then starts the installed services and opens the agent terminal. For a stopped Codex
 agent, select a trusted subscription login to authorize before startup, or keep normal
@@ -105,22 +107,24 @@ fn default_name(workspace: &Path) -> String {
     )
 }
 
-fn matches(agent: &host_agents::Agent, workspace: &Path, script: &Path) -> bool {
+fn matches(agent: &host_agents::Agent, workspace: &Path, script: Option<&Path>) -> bool {
     agent
         .folder
         .as_ref()
         .is_some_and(|folder| Path::new(folder) == workspace)
-        && agent.host_script.as_ref().is_some_and(|path| {
-            Path::new(path)
-                .canonicalize()
-                .is_ok_and(|path| path == script)
+        && script.is_none_or(|script| {
+            agent.host_script.as_ref().is_some_and(|path| {
+                Path::new(path)
+                    .canonicalize()
+                    .is_ok_and(|path| path == script)
+            })
         })
 }
 
 fn select(
     options: &Options,
     workspace: &Path,
-    script: &Path,
+    script: Option<&Path>,
 ) -> Result<(String, Option<host_agents::Agent>), Error> {
     let agents = host_agents::list()?;
     let name = if let Some(name) = &options.name {
@@ -133,7 +137,21 @@ fn select(
         match matching.as_slice() {
             [agent] => agent.name.clone(),
             [] => default_name(workspace),
-            _ => return Err("more than one matching agent; choose one with --name NAME".into()),
+            _ => {
+                let choices = matching
+                    .iter()
+                    .map(|agent| agent.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                    return Err(format!("more than one matching agent ({choices}); repeat agent launch with --name NAME to select a saved binding").into());
+                }
+                println!("Saved agents for this workspace: {choices}");
+                let answer = input("Agent name (Enter to leave unchanged): ")?.unwrap_or_default();
+                matching.iter().find(|agent| agent.name == answer)
+                    .ok_or_else(|| format!("no saved agent selected; repeat agent launch with --name NAME ({choices})"))?
+                    .name.clone()
+            }
         }
     };
     let current = agents.iter().find(|agent| agent.name == name);
@@ -295,14 +313,8 @@ async fn codex_login(agent: &host_agents::Agent) -> Result<CodexLogin, Error> {
     }
 }
 
-pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
-    if args == ["--help"] {
-        println!("{HELP}");
-        return Ok(0);
-    }
-    let options = Options::parse(args)?;
-    let harness = options.harness.as_deref().unwrap_or("claude");
-    let (script_name, client) = match harness {
+fn harness_setup(root: &Path, harness: &str) -> Result<(PathBuf, &'static str), Error> {
+    let (script, client) = match harness {
         "claude" => ("claude-host-setup.sh", "Claude"),
         "codex" => ("codex-host-setup.sh", "Codex"),
         _ => {
@@ -312,17 +324,67 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
             .into());
         }
     };
-    let root = host_platform::config_dir();
-    let script = root
+    let path = root
         .join("assets/contrib")
-        .join(script_name)
+        .join(script)
         .canonicalize()
         .map_err(|error| phase("shipped harness setup", error))?;
+    Ok((path, client))
+}
+
+pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
+    if args == ["--help"] {
+        println!("{HELP}");
+        return Ok(0);
+    }
+    let options = Options::parse(args)?;
+    let root = host_platform::config_dir();
+    let requested_script = options
+        .harness
+        .as_deref()
+        .map(|harness| harness_setup(&root, harness).map(|(script, _)| script))
+        .transpose()?;
+    let saved_workspace = if options.workspace.is_none() {
+        options
+            .name
+            .as_deref()
+            .map(|name| {
+                host_agents::list().map(|agents| {
+                    agents
+                        .into_iter()
+                        .find(|agent| agent.name == name)
+                        .and_then(|agent| agent.folder)
+                        .map(PathBuf::from)
+                })
+            })
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
     let workspace = host_boot::workspace(
-        options.workspace.as_deref().unwrap_or(Path::new(".")),
+        options
+            .workspace
+            .as_deref()
+            .or(saved_workspace.as_deref())
+            .unwrap_or(Path::new(".")),
         options.allow_unowned,
     )?;
-    let (name, existing) = select(&options, &workspace, &script)?;
+    let (name, existing) = select(&options, &workspace, requested_script.as_deref())?;
+    let harness = if let Some(harness) = options.harness.as_deref() {
+        harness
+    } else if let Some(agent) = &existing {
+        let saved = agent
+            .host_script
+            .as_ref()
+            .and_then(|path| Path::new(path).canonicalize().ok());
+        ["claude", "codex"].into_iter().find(|harness| {
+            harness_setup(&root, harness).is_ok_and(|(script, _)| Some(script) == saved)
+        }).ok_or_else(|| format!("agent {name}'s saved harness setup is unavailable or is not a shipped Claude/Codex setup; inspect agent diagnostics {name} and use agent start {name} for its configured command"))?
+    } else {
+        "claude"
+    };
+    let (script, client) = harness_setup(&root, harness)?;
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err("agent launch needs an interactive host terminal for consent, login and approvals; use explicit agent create/start commands for automation".into());
     }
@@ -688,7 +750,7 @@ esac
                 toml_edit::value(script.to_string_lossy().as_ref());
             std::fs::write(&policy, document.to_string()).unwrap();
             let saved = std::fs::read(&policy).unwrap();
-            let (_, selected) = select(&Options::default(), &folder, &script).unwrap();
+            let (_, selected) = select(&Options::default(), &folder, Some(&script)).unwrap();
             let selected = selected.unwrap();
             assert_eq!(selected.id, original.id);
             let explicit = Options {
@@ -701,7 +763,7 @@ esac
                 ..Default::default()
             };
             assert_eq!(
-                select(&effective_default, &folder, &script)
+                select(&effective_default, &folder, Some(&script))
                     .unwrap()
                     .1
                     .unwrap()
@@ -712,8 +774,8 @@ esac
                 launcher: Some("tmux-pane".into()),
                 ..effective_default
             };
-            assert!(select(&different, &folder, &script).is_err());
-            assert!(select(&explicit, temp.path(), &script).is_err());
+            assert!(select(&different, &folder, Some(&script)).is_err());
+            assert!(select(&explicit, temp.path(), Some(&script)).is_err());
             assert_eq!(std::fs::read(&policy).unwrap(), saved);
             document["agents"]["chosen"]["folder"] =
                 toml_edit::value(temp.path().to_string_lossy().as_ref());
@@ -726,9 +788,13 @@ esac
             document["agents"]["other"] = document["agents"]["chosen"].clone();
             document["agents"]["other"]["agent_id"] = toml_edit::value("ag-other");
             std::fs::write(&policy, document.to_string()).unwrap();
-            assert!(select(&Options::default(), &folder, &script).is_err());
+            assert!(select(&Options::default(), &folder, Some(&script)).is_err());
             assert_eq!(
-                select(&explicit, &folder, &script).unwrap().1.unwrap().id,
+                select(&explicit, &folder, Some(&script))
+                    .unwrap()
+                    .1
+                    .unwrap()
+                    .id,
                 original.id
             );
         })

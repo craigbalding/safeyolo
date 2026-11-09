@@ -218,6 +218,72 @@ def _codex_choice(until, master, *, new=True):
     assert b"synthetic-first-launch-refresh" not in output
 
 
+@pytest.mark.parametrize("custom_name", [False, True])
+def test_return_launch_reuses_saved_codex_without_repeating_the_harness(codex_login_launch, custom_name):
+    instance = codex_login_launch
+    workspace = instance.arguments[2]
+    arguments = ["agent", "launch", workspace, "--harness", "codex"]
+    if custom_name:
+        arguments += ["--name", "my-codex"]
+    with terminal(instance, arguments) as (process, master, until):
+        _codex_choice(until, master)
+        os.write(master, b"q\n")
+        assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
+    policy = (instance.root / "policy.toml").read_bytes()
+    name, = tomllib.loads(policy.decode())["agents"]
+    identifier = tomllib.loads(policy.decode())["agents"][name]["agent_id"]
+    # Both workspace lookup and explicit name retain generated/custom names.
+    for selection in ([workspace], [workspace, "--name", name], ["--name", name]):
+        with terminal(instance, ["agent", "launch", *selection]) as (process, master, until):
+            output = until(b"Codex login [a/h/file path")
+            assert f"Reusing agent {name} ({identifier})".encode() in output
+            assert b"Run this setup" not in output
+            os.write(master, b"q\n")
+            assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
+        assert (instance.root / "policy.toml").read_bytes() == policy
+    assert not (instance.root / "data/proxy-process.json").exists()
+
+
+def test_return_launch_resolves_ambiguity_and_respects_explicit_harness(codex_login_launch):
+    instance = codex_login_launch
+    with terminal(instance, instance.arguments) as (process, master, until):
+        _codex_choice(until, master)
+        os.write(master, b"q\n")
+        assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
+    workspace = instance.arguments[2]
+    instance.cli("agent", "create", "other", "--workspace", workspace)
+    scripts = instance.root / "assets/contrib"
+    shutil.copy2(scripts / "codex-host-setup.sh", scripts / "claude-host-setup.sh")
+    policy_path = instance.root / "policy.toml"
+    policy = tomlkit.parse(policy_path.read_text())
+    policy["agents"]["other"]["host_script"] = str(scripts / "claude-host-setup.sh")
+    policy_path.write_text(tomlkit.dumps(policy))
+    saved = policy_path.read_bytes()
+    binary = (instance.root / "bin/safeyolo").resolve()
+    result = subprocess.run([str(binary), "--root", str(instance.root), "agent", "launch", workspace],
+                            env=instance.environment, capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0
+    assert "first" in result.stderr and "other" in result.stderr and "--name NAME" in result.stderr
+    with terminal(instance, ["agent", "launch", workspace]) as (process, master, until):
+        output = until(b"Agent name")
+        assert b"first" in output and b"other" in output
+        os.write(master, b"first\n")
+        until(b"Codex login [a/h/file path")
+        os.write(master, b"q\n")
+        assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
+    # An explicit harness selects the matching saved binding before any default.
+    with terminal(instance, ["agent", "launch", workspace, "--harness", "codex"]) as (process, master, until):
+        output = until(b"Codex login [a/h/file path")
+        assert b"Reusing agent first" in output and b"Agent name" not in output
+        os.write(master, b"q\n")
+        assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
+    conflict = subprocess.run([str(binary), "--root", str(instance.root), "agent", "launch", workspace,
+                               "--harness", "claude", "--name", "first"],
+                              env=instance.environment, capture_output=True, text=True, timeout=10)
+    assert conflict.returncode != 0 and "different workspace, harness or launcher" in conflict.stderr
+    assert policy_path.read_bytes() == saved
+
+
 @pytest.mark.parametrize("selection", ["host", "default_host", "file"])
 def test_codex_launch_authorizes_selected_login_for_created_identity_before_startup(codex_login_launch, selection):
     instance = codex_login_launch
@@ -350,7 +416,9 @@ allow=["gateway-fixture:*", "locked-fixture:*"]
 
         def locked_controls():
             body = credentials.deliver(instance, origin, credential, status=503)
-            assert b"VAULT_UNAVAILABLE" in body
+            assert b"VAULT_LOCKED" in body
+            assert b"credentials unlock" in body
+            assert b"still be starting" not in body
             target = f"http://127.0.0.1:{origin.server_address[1]}/ordinary"
             before = origin.accepts
             status, _, body = request(instance.paths["alice"], target)

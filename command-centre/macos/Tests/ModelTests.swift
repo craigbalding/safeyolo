@@ -100,6 +100,11 @@ struct ModelTests: App {
             print("approval-attention-tests: PASS")
             return
         }
+        if ProcessInfo.processInfo.environment["SAFEYOLO_COMMAND_CENTRE_TEST_FILTER"] == "operator-context" {
+            try await testOperatorContextEvidence()
+            print("operator-context-tests: PASS")
+            return
+        }
         if ProcessInfo.processInfo.environment["SAFEYOLO_COMMAND_CENTRE_TEST_FILTER"] == "operator-recovery" {
             try await testOperatorRecoveryControls()
             return
@@ -115,6 +120,7 @@ struct ModelTests: App {
         }
         try await testApprovalAttentionAndUntrustedRendering()
         try await testOperatorRecoveryControls()
+        try await testOperatorContextEvidence()
         try testMutationPlans()
         try testAgentAndSecurityModels()
         try testHarnessMarks()
