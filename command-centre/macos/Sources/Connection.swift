@@ -3,8 +3,17 @@ import Foundation
 enum RemoteTransport: String, Codable, CaseIterable, Sendable {
     case tailnet
     case sshTunnel = "ssh-tunnel"
+    case loopback
+    case tls
 
-    var label: String { self == .tailnet ? "Tailscale" : "SSH tunnel" }
+    var label: String {
+        switch self {
+        case .tailnet: return "Tailscale"
+        case .sshTunnel: return "SSH tunnel"
+        case .loopback: return "Same host (loopback)"
+        case .tls: return "TLS (system trust)"
+        }
+    }
 }
 
 struct RemoteConnectionProfile: Codable, Equatable, Sendable {
@@ -17,32 +26,36 @@ struct RemoteConnectionProfile: Codable, Equatable, Sendable {
 }
 
 protocol ConnectionProfileStore {
-    func load() throws -> RemoteConnectionProfile?
+    func load() throws -> [RemoteConnectionProfile]
     func save(_ profile: RemoteConnectionProfile) throws
-    func delete() throws
+    func delete(instanceID: String) throws
 }
 
 struct UserDefaultsConnectionProfileStore: ConnectionProfileStore {
     private let defaults: UserDefaults
-    private let key = "remoteConnectionProfile"
+    private let key = "connectionProfiles"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
     }
 
-    func load() throws -> RemoteConnectionProfile? {
+    func load() throws -> [RemoteConnectionProfile] {
         guard let data = defaults.data(forKey: key) else {
-            return nil
+            return []
         }
-        return try JSONDecoder().decode(RemoteConnectionProfile.self, from: data)
+        return try JSONDecoder().decode([RemoteConnectionProfile].self, from: data)
     }
 
     func save(_ profile: RemoteConnectionProfile) throws {
-        defaults.set(try JSONEncoder().encode(profile), forKey: key)
+        var profiles = try load()
+        profiles.removeAll { $0.instanceID == profile.instanceID }
+        profiles.append(profile)
+        defaults.set(try JSONEncoder().encode(profiles), forKey: key)
     }
 
-    func delete() throws {
-        defaults.removeObject(forKey: key)
+    func delete(instanceID: String) throws {
+        let profiles = try load().filter { $0.instanceID != instanceID }
+        defaults.set(try JSONEncoder().encode(profiles), forKey: key)
     }
 }
 
@@ -53,6 +66,23 @@ struct RemoteConnectionInput {
     let token: String
     var terminalTarget: String? = nil
     var transport: RemoteTransport = .tailnet
+    var expectedInstanceID: String? = nil
+}
+
+struct CommandCentreConnectionFile: Decodable {
+    let schema: String
+    let friendlyName: String
+    let adminURL: String
+    let eventsURL: String
+    let instanceID: String
+    let ownerRoot: String
+    let token: String
+    let transport: RemoteTransport
+    enum CodingKeys: String, CodingKey {
+        case schema, token, transport
+        case friendlyName = "friendly_name", adminURL = "admin_url", eventsURL = "events_url"
+        case instanceID = "instance_id", ownerRoot = "owner_root"
+    }
 }
 
 final class RemoteConnectionVerifier {
@@ -92,6 +122,9 @@ final class RemoteConnectionVerifier {
                         let identity = try JSONDecoder().decode(InstanceInfo.self, from: data)
                         guard !identity.safeyoloInstanceID.isEmpty else {
                             throw ClientError.invalidResponse
+                        }
+                        if let expected = input.expectedInstanceID {
+                            _ = try validatePinnedInstanceID(actual: identity.safeyoloInstanceID, expected: expected)
                         }
                         result = .success(
                             RemoteConnectionProfile(
@@ -169,8 +202,11 @@ func agentTerminalCommand(
 
 func validatedRemoteURL(_ value: String, scheme: String, transport: RemoteTransport) throws -> URL {
     let parsed = URL(string: value)
-    let tunnelLoopback = transport == .sshTunnel
+    let tunnelLoopback = (transport == .sshTunnel || transport == .loopback)
         && ["127.0.0.1", "localhost", "::1", "[::1]"].contains(parsed?.host ?? "")
+    if transport == .loopback && !tunnelLoopback {
+        throw ConnectionError.invalidRemoteURL(value, "loopback")
+    }
     let allowedSchemes = tunnelLoopback ? [scheme, scheme == "https" ? "http" : "ws"] : [scheme]
     guard let url = URL(string: value),
           allowedSchemes.contains(url.scheme ?? ""),

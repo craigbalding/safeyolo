@@ -246,6 +246,63 @@ credential and revoking a grant have different effects. The
 [federation reference](coord-reference.md#collaborate-through-a-home-safeyolo)
 retains those explicit controls and structured output.
 
+## Supervise saved instances in Command Centre
+
+Use the installed macOS Command Centre on the operator's Mac. Each selected
+owner needs its running Admin API and live events enabled. For another host,
+retain its existing authenticated administrative channel and explicit Admin
+sharing or SSH forwards. Adding a profile does not publish a listener or grant
+reverse access.
+
+On each owning host, replace `INSTANCE_ROOT` with its selected root and
+`operator-connection.json` with a new private destination file. This export
+contains the full operator Admin credential for that owner. Keep the file
+private and transfer it only through your authenticated administrative channel:
+
+```sh
+safeyolo --root INSTANCE_ROOT configure command-centre operator-connection.json
+```
+
+The command authenticates the running owner and displays its durable identity,
+root and Admin/events endpoints without printing the credential. It refuses a
+running owner that differs from the selected root. An existing destination is
+not overwritten. Configured Tailnet sharing exports its published endpoints;
+local sharing exports loopback endpoints for use on the same Mac. Export changes
+no listener or authority. To display the connection details without exporting a
+credential, omit the destination file.
+
+In **Connection Settings**, select **Import Connection File…**, review the owner,
+root, endpoints and transport, then **Connect**. Import fills the form without
+connecting. Connection verifies the imported durable identity. Credentials are
+saved to Keychain; profile metadata is saved separately. Repeat for at least
+three independent instances. Several roots on the same Mac use separate
+loopback ports and identities. Existing manual URL/credential entry and SSH
+tunnels remain available. A file exported for loopback does not establish a
+remote forwarding route.
+
+Each instance has a separate menu. **Support, Notices and Receipts…** shows the
+selected owner's pending human signals, support activity, grants, observation
+sources and delivery diagnostics. Successful reads show their time. Failed or
+unavailable reads retain old evidence with an explicit warning. Current state
+can change after any read. A source observation, Core connection, notification
+feed and target model progress remain separate claims.
+
+Select a receipt to read the original initiating identity, target/run, action,
+grant at admission, timing, completion verification and canonical audit
+reference. **Read Original Receipt and Current State** reconciles that original
+ID and initiator with current target and grant evidence. It submits no support
+effect. **Read Guest Output** is the explicit private, untrusted result view.
+After a lost reply, use these reads before deciding on any further action.
+
+Notices use the existing event stream. Bursts coalesce into owner refreshes
+while this view is open. Reconnect refreshes current evidence; it does not replay
+missing history or prove model health. No periodic cross-instance support poll
+is added. If evidence is unavailable, inspect the named owner's source and
+local diagnostics. The preceding CLI/inspect recovery path remains available.
+Edit or revoke grants through that owner's named configuration commands; the
+composition report retains its coverage, reviewer-control and remaining paths.
+Removing a saved profile only disconnects this viewer.
+
 ## Return after interruption or certificate changes
 
 Connection setup is a sequence of owner and source changes, not an atomic
@@ -270,9 +327,6 @@ No recreated same-name agent silently receives its predecessor's grant.
 
 The [support](peer-support.md), [approval](delegated-approvals.md) and
 [factory](factories.md#delegate-direction-to-an-operator-agent) references retain the explicit
-file interfaces, error semantics and authority limits. Guided configuration is
-the first delivery slice of [#1465](https://github.com/craigbalding/safeyolo/issues/1465).
-Human CLI verification/recovery uses the same owners and private receipts.
-Installed TLS/Tailscale journeys and ongoing supervision across at least three
-saved Command Centre instances still require their separate acceptance in that
-issue. Source CLI tests do not establish those installed outcomes.
+file interfaces, error semantics and authority limits. The guided CLI and saved
+Command Centre views reuse those owners. Their observations do not establish
+model health or successful guest repair.

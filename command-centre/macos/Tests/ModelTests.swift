@@ -104,11 +104,16 @@ struct ModelTests: App {
             try await testOperatorRecoveryControls()
             return
         }
+        if ProcessInfo.processInfo.environment["SAFEYOLO_COMMAND_CENTRE_TEST_FILTER"] == "saved-support" {
+            try await testSavedInstancesAndSupport()
+            return
+        }
         try testCredentialFileAndReload()
         try testRemoteProfileStorage()
         try await testRemoteConnectionVerification()
         try testPinnedInstanceIdentity()
         try await testCredentialStartup()
+        try await testSavedInstancesAndSupport()
         if ProcessInfo.processInfo.environment["SAFEYOLO_COMMAND_CENTRE_TEST_FILTER"] == "credential-startup" {
             print("credential-startup-tests: PASS")
             return
@@ -819,15 +824,23 @@ struct ModelTests: App {
         )
 
         let initiallyMissing = try store.load()
-        precondition(initiallyMissing == nil)
+        precondition(initiallyMissing.isEmpty)
         try store.save(profile)
         let loaded = try store.load()
-        precondition(loaded == profile)
-        let persisted = defaults.data(forKey: "remoteConnectionProfile")!
+        precondition(loaded == [profile])
+        let second = RemoteConnectionProfile(friendlyName: profile.friendlyName, adminURL: "http://127.0.0.1:29090",
+            eventsURL: "ws://127.0.0.1:29091/admin/events", instanceID: "sy-another-root", transport: .loopback)
+        let third = RemoteConnectionProfile(friendlyName: profile.friendlyName, adminURL: "http://127.0.0.1:39090",
+            eventsURL: "ws://127.0.0.1:39091/admin/events", instanceID: "sy-third-root", transport: .loopback)
+        try store.save(second)
+        try store.save(third)
+        let threeProfiles = try store.load()
+        precondition(threeProfiles.count == 3)
+        let persisted = defaults.data(forKey: "connectionProfiles")!
         precondition(!String(decoding: persisted, as: UTF8.self).contains("token"))
-        try store.delete()
+        try store.delete(instanceID: profile.instanceID)
         let deleted = try store.load()
-        precondition(deleted == nil)
+        precondition(deleted == [second, third])
     }
 
     @MainActor
