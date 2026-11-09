@@ -623,11 +623,11 @@ nodes:
         - path: proxy/tests/native_coord/federation/guided.rs
           sha256: bd75463f2fdf619679cbc036481ea06d69c930d4f445d540a036a00d3ac9e708
         - path: proxy/tests/native_operator_cli/watch.rs
-          sha256: 5964318181e663e228008be7b078d70d5f55f62df65b76fe4c46b8c994cfdf46
+          sha256: 853a300a7ed3968180618d9bb880286be2f146f7f2b928344594d0e48e859013
         - path: proxy/tests/support/operator_pty.rs
           sha256: f63c50dbfa3bc8d44806c84b838ea315b4d62c37a6c9f43af9e29a7d6a832523
         - path: proxy/tests/native_operator_cli.rs
-          sha256: d83fba155500b9591654be1438de700464f6230121d75a140d1d6fa7607f8054
+          sha256: 0adf0985abf27b79967cd3f4bcfa2f9c237b3d5a4af14ea6b07c3eb451691f04
         - path: proxy/tests/native_coord/federation.rs
           sha256: 7bfc83e871c120479782f1e0d027a6346de321b819e823d7f985a4d4509edcb7
         - path: proxy/src/agent_api/coord.rs
@@ -733,7 +733,7 @@ nodes:
         - path: proxy/src/coord_schema.sql
           sha256: 31b24a8423738d0d06fd5c6bbfe9a5d575738e25459cc6b1629899d3dc50f939
         - path: proxy/tests/native_coord/signals.rs
-          sha256: 5d1a43ed711f899c9e4983d95bbbe8e2c9fb327dff3bd044bd7d1eab1fb33b38
+          sha256: 78c892655051c014643212eb07fb3d9fcee9d33ff68453d91ddca0099758d335
         - path: proxy/src/coord_rooms/signals.rs
           sha256: bef138d95aa2d06ee547311728ed78b2a38b6cac96ed176a7c87caf54364ff57
         - path: proxy/src/coord_rooms/signals/tests.rs

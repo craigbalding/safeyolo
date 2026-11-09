@@ -1149,7 +1149,7 @@ async fn pending_network_approval_survives_inspection_and_resolves_through_nativ
     let policy = fixture.source();
     assert_eq!(
         success(fixture.root.path(), &["approvals", "show", id, "--json"]).await,
-        original
+        expected
     );
     assert_eq!(saved(), before, "inspection changed the approval");
     assert_eq!(fixture.source(), policy, "inspection changed policy");

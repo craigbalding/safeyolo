@@ -917,12 +917,20 @@ async fn native_watch_pty_recovers_complete_pending_state_while_a_choice_is_unfi
             "PENDING APPROVALS: 3 (current state refreshed)",
         )
         .await;
-    terminal.send("er\nlist\n");
-    terminal
+    terminal.send("er\n");
+    let unchanged = terminal
         .until(
             disconnected,
-            &format!("#{number} [left pending] agent=alice"),
+            &format!("No decision sent for request #{number}."),
         )
+        .await;
+    terminal
+        .until(unchanged.rfind("No decision sent").unwrap(), "watch> ")
+        .await;
+    let listed = terminal.mark();
+    terminal.send("list\n");
+    terminal
+        .until(listed, &format!("#{number} [left pending] agent=alice"))
         .await;
 
     // Lose the final audit notification and fail its pending read once. With

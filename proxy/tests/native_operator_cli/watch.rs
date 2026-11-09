@@ -95,10 +95,21 @@ async fn native_watch_keeps_selected_input_arrivals_deferral_and_concurrent_outc
     terminal
         .until(deferred, &format!("Request #{helper_number}: approve"))
         .await;
-    terminal.send("later\nlist\n");
-    terminal
+    terminal.send("later\n");
+    let unchanged = terminal
         .until(
             deferred,
+            &format!("No decision sent for request #{helper_number}."),
+        )
+        .await;
+    terminal
+        .until(unchanged.rfind("No decision sent").unwrap(), "watch> ")
+        .await;
+    let listed = terminal.mark();
+    terminal.send("list\n");
+    terminal
+        .until(
+            listed,
             &format!("#{helper_number} [left pending] agent=helper"),
         )
         .await;
