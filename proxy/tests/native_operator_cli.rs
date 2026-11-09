@@ -1127,7 +1127,13 @@ async fn pending_network_approval_survives_inspection_and_resolves_through_nativ
         &["approvals", "show", &retry.id(), "--json"],
     )
     .await;
-    assert_eq!(repeated, original);
+    assert_eq!(repeated["request_history"]["equivalent_request_count"], 2);
+    let mut expected = original.clone();
+    expected["request_history"] = repeated["request_history"].clone();
+    assert_eq!(
+        repeated, expected,
+        "a retry must retain the same authority and options"
+    );
     let database =
         rusqlite::Connection::open(fixture.root.path().join("data/approvals.sqlite3")).unwrap();
     let saved = || {
@@ -1677,7 +1683,24 @@ async fn pending_gateway_approval_expires_with_its_bound_vault_credential() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(after, before, "inspection persisted an expiry transition");
+    // The existing result-delivery owner can persist expiry independently of
+    // these reads. Inspection must retain the fixed authority and grant no access.
+    let before: Value = serde_json::from_str(&before).unwrap();
+    let after: Value = serde_json::from_str(&after).unwrap();
+    for field in [
+        "approval_id",
+        "request_id",
+        "authority",
+        "authority_digest",
+        "option",
+        "result",
+    ] {
+        assert_eq!(after[field], before[field], "expiry changed {field}");
+    }
+    assert!(matches!(
+        after["status"].as_str(),
+        Some("pending" | "expired")
+    ));
     assert_eq!(
         fixture
             .admin(

@@ -842,7 +842,14 @@ async fn native_watch_pty_recovers_complete_pending_state_while_a_choice_is_unfi
     coord_json(root, &["room", "create", "shared"]).await;
     coord_json(root, &["grant", "shared", "alice"]).await;
     let mut proxy = stage0::start_proxy(root).await;
-    pending_network(root, addresses[0], "before-attachment").await;
+    let first_request = pending_network(root, addresses[0], "before-attachment").await;
+    let first: Value = serde_json::from_slice(
+        &host_cli(root, &["approvals", "show", &first_request, "--json"])
+            .await
+            .stdout,
+    )
+    .unwrap();
+    let first_summary = first["summary"].as_str().unwrap();
     let config_path = root.join("config.toml");
     let ready: Value = serde_json::from_slice(
         &fs::read(native_config::read(&config_path).unwrap().readiness_file).unwrap(),
@@ -874,11 +881,11 @@ async fn native_watch_pty_recovers_complete_pending_state_while_a_choice_is_unfi
     terminal
         .until(0, "PENDING APPROVALS: 2 (current state refreshed)")
         .await;
-    let attached = terminal.until(0, &addresses[0].to_string()).await;
+    let attached = terminal.until(0, first_summary).await;
     let number = attached
         .lines()
         .find_map(|line| {
-            if !line.contains(&addresses[0].to_string()) {
+            if !line.contains(first_summary) {
                 return None;
             }
             line.split_once('#')?
@@ -927,7 +934,7 @@ async fn native_watch_pty_recovers_complete_pending_state_while_a_choice_is_unfi
     terminal
         .until(failed_read, "Pending approvals unavailable")
         .await;
-    let recovered = terminal
+    terminal
         .until(
             failed_read,
             "PENDING APPROVALS: 4 (current state refreshed)",
@@ -935,12 +942,6 @@ async fn native_watch_pty_recovers_complete_pending_state_while_a_choice_is_unfi
         .await;
     assert!(timer.elapsed() < Duration::from_secs(5));
     assert!(!failures.load(Ordering::SeqCst));
-    for address in &addresses {
-        assert!(
-            recovered[failed_read..].contains(&address.to_string()),
-            "{recovered}"
-        );
-    }
     let listed: Value = serde_json::from_slice(
         &host_cli(root, &["approvals", "list", "--json"])
             .await
@@ -948,16 +949,12 @@ async fn native_watch_pty_recovers_complete_pending_state_while_a_choice_is_unfi
     )
     .unwrap();
     assert_eq!(listed["approvals"].as_array().unwrap().len(), 4);
-    let id = listed["approvals"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| {
-            item["action"]["host"].as_str() == Some(&addresses[0].ip().to_string())
-                && item["action"]["port"] == json!(addresses[0].port())
-        })
-        .map(|item| item["approval_id"].as_str().unwrap().to_owned())
-        .expect("canonical first approval");
+    for request in listed["approvals"].as_array().unwrap() {
+        terminal
+            .until(failed_read, request["summary"].as_str().unwrap())
+            .await;
+    }
+    let id = first["approval_id"].as_str().unwrap();
     // Select from the terminal's stable number; canonical API state is checked
     // independently of the rendered count and text.
     let review = terminal.mark();
