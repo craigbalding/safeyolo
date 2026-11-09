@@ -21,6 +21,10 @@ use shared_approval_fixture::*;
 
 #[path = "native_operator_cli/observations.rs"]
 mod observations;
+#[path = "support/operator_pty.rs"]
+mod operator_pty;
+#[path = "native_operator_cli/watch.rs"]
+mod watch;
 
 fn configure(fixture: &Fixture) {
     fs::write(fixture.root.path().join("config.toml"), format!(
@@ -1125,7 +1129,13 @@ async fn pending_network_approval_survives_inspection_and_resolves_through_nativ
         &["approvals", "show", &retry.id(), "--json"],
     )
     .await;
-    assert_eq!(repeated, original);
+    assert_eq!(repeated["request_history"]["equivalent_request_count"], 2);
+    let mut expected = original.clone();
+    expected["request_history"] = repeated["request_history"].clone();
+    assert_eq!(
+        repeated, expected,
+        "a retry must retain the same authority and options"
+    );
     let database =
         rusqlite::Connection::open(fixture.root.path().join("data/approvals.sqlite3")).unwrap();
     let saved = || {
@@ -1141,7 +1151,7 @@ async fn pending_network_approval_survives_inspection_and_resolves_through_nativ
     let policy = fixture.source();
     assert_eq!(
         success(fixture.root.path(), &["approvals", "show", id, "--json"]).await,
-        original
+        expected
     );
     assert_eq!(saved(), before, "inspection changed the approval");
     assert_eq!(fixture.source(), policy, "inspection changed policy");
@@ -1675,7 +1685,24 @@ async fn pending_gateway_approval_expires_with_its_bound_vault_credential() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(after, before, "inspection persisted an expiry transition");
+    // The existing result-delivery owner can persist expiry independently of
+    // these reads. Inspection must retain the fixed authority and grant no access.
+    let before: Value = serde_json::from_str(&before).unwrap();
+    let after: Value = serde_json::from_str(&after).unwrap();
+    for field in [
+        "approval_id",
+        "request_id",
+        "authority",
+        "authority_digest",
+        "option",
+        "result",
+    ] {
+        assert_eq!(after[field], before[field], "expiry changed {field}");
+    }
+    assert!(matches!(
+        after["status"].as_str(),
+        Some("pending" | "expired")
+    ));
     assert_eq!(
         fixture
             .admin(
@@ -3167,48 +3194,35 @@ async fn interactive_explain_keeps_the_selected_request_open_for_the_same_decisi
         &["approvals", "show", &blocked.id(), "--json"],
     )
     .await;
-    let root = fixture.root.path().to_owned();
-    let output = tokio::task::spawn_blocking(move || {
-        let (mut master, mut slave) = (-1, -1);
-        assert_eq!(
-            unsafe {
-                libc::openpty(
-                    &mut master,
-                    &mut slave,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                )
-            },
-            0
-        );
-        let mut terminal = unsafe { fs::File::from_raw_fd(master) };
-        let slave = unsafe { fs::File::from_raw_fd(slave) };
-        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root")
-            .arg(root)
-            .args(["approvals", "review", "--agent", "worker"])
-            .stdin(slave.try_clone().unwrap())
-            .stdout(slave.try_clone().unwrap())
-            .stderr(slave)
-            .spawn()
-            .unwrap();
-        terminal.write_all(b"1\na\nc\ne\napprove\n").unwrap();
-        let mut output = Vec::new();
-        loop {
-            let mut buffer = [0; 4096];
-            match terminal.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(count) => output.extend_from_slice(&buffer[..count]),
-                Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
-                Err(error) => panic!("PTY read: {error}"),
-            }
-        }
-        assert!(child.wait().unwrap().success());
-        String::from_utf8(output).unwrap()
-    })
-    .await
-    .unwrap();
+    let mut terminal = operator_pty::Terminal::start(
+        fixture.root.path(),
+        &["approvals", "review", "--agent", "worker"],
+    );
+    terminal
+        .until(
+            0,
+            "Type a displayed request number (for example, 1; Enter returns): ",
+        )
+        .await;
+    terminal.send("1\n");
+    let prompt = "approve persistent / reject / explain";
+    terminal.until(0, prompt).await;
+    assert!(!terminal.output().contains("approve once"));
+    assert_eq!(
+        success(
+            fixture.root.path(),
+            &["approvals", "show", &blocked.id(), "--json"]
+        )
+        .await["status"],
+        "pending"
+    );
+    for answer in ["a\n", "c\n", "e\n"] {
+        let after = terminal.mark();
+        terminal.send(answer);
+        terminal.until(after, prompt).await;
+    }
+    terminal.send("approve persistent\n");
+    let output = terminal.until(0, "Status: approved").await;
     assert!(output.contains("Why was this stopped?"), "{output}");
     assert!(output.contains("Agent-provided context"), "{output}");
     assert!(output.contains("UNTRUSTED"), "{output}");
