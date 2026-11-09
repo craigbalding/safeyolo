@@ -86,11 +86,11 @@ def test_native_staging_preserves_unix_pathname_bytes(tmp_path, component):
     assert result.returncode == 0, result.stderr
     assert json.loads(config.read_text())["agent_name"] == "forge"
     launcher = home / os.fsdecode(b"launcher-" + suffix)
-    launcher.write_text('exec codex "${args[@]}" "$@"\n')
+    launcher.write_text('exec "$HOME/.safeyolo/safeyolo-coord" client-exec codex -- codex "${args[@]}" "$@"\n')
     launcher.chmod(0o700)
     result = subprocess.run([str(COORD_NATIVE_BINARY), "supervised-launcher", str(launcher), "codex"], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert 'safeyolo-coord" supervise "${supervisor_args[@]}" --' in launcher.read_text()
+    assert ' supervise "${supervisor_args[@]}" --' in launcher.read_text()
     assert launcher.stat().st_mode & 0o777 == 0o700
 
 
@@ -1426,8 +1426,8 @@ def test_normal_codex_setup_keeps_interactive_entrypoint(tmp_path: Path) -> None
     _run_setup("codex-host-setup.sh", operator_home, agent_home, tmp_path)
 
     command = (agent_home / ".safeyolo-command").read_text()
-    assert 'exec codex "${args[@]}" "$@"' in command
-    assert '"$HOME/.safeyolo/safeyolo-coord"' not in command
+    assert 'client-exec codex -- codex "${args[@]}" "$@"' in command
+    assert ' supervise ' not in command
     assert not (agent_home / ".safeyolo/coord-supervisor.json").exists()
 
 

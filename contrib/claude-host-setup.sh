@@ -282,7 +282,7 @@ elif [ -f "$HOME/.safeyolo/AGENTS.md" ]; then
     args+=(--append-system-prompt "$(cat "$HOME/.safeyolo/AGENTS.md")")
 fi
 
-exec claude "${args[@]}" "$@"
+exec "$HOME/.safeyolo/safeyolo-coord" client-exec claude -- claude "${args[@]}" "$@"
 EOF
 chmod +x "$AGENT_HOME/.safeyolo-command"
 

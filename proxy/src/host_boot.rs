@@ -192,6 +192,7 @@ pub(crate) async fn setup(
     validate_script_for_agent(agent, script.to_str().ok_or("invalid host script path")?)?;
     let mut command = tokio::process::Command::new(script);
     command
+        .stdout(std::process::Stdio::from(std::io::stderr()))
         .env("SAFEYOLO_AGENT_NAME", &agent.name)
         .env("SAFEYOLO_AGENT_HOME", &home)
         .env(

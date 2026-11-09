@@ -256,7 +256,7 @@ nodes:
         - path: proxy/src/host_platform.rs
           sha256: 6c9471332d9538eeba539dd50aeead3e1bc3ace02a9d53c40d036f5c5cc372de
         - path: proxy/src/host_boot.rs
-          sha256: 48bc68e13f1e653c1bc53aac903b4cadcad06d100781114cbb27b47e469996b5
+          sha256: df26d2abc5c2a753222d789ff577dffe994f9cc3b171ef41aabb739bffa05dae
         - path: guest/build-rootfs.sh
           sha256: 31ab9b5883222b0f43dfff80dfa7ac83ab4908b9b6ff8234d36abf6b0b1b8139
         - path: proxy/src/jobs.rs
@@ -272,7 +272,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: d3b6636cafa6f5da3103fe0e73b40e0081bbdcf4c5ef1419aadaeaa0912df2fc
         - path: proxy/src/lib.rs
-          sha256: 5b665f2a67ed580103465023b547116eabc5ba8bc582b6b2ef277146532694d6
+          sha256: 23a2e5546f3542a4a44cf3be1ddc48364da785e5186c6a968ad52b8d7678aaf9
         - path: proxy/src/bin/safeyolo.rs
           sha256: dddf731e90549c53b4fe839a1412983e94297de399352973dcc50af2f019e3af
         - path: scripts/run_claude_blackbox.py
@@ -337,7 +337,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: d3b6636cafa6f5da3103fe0e73b40e0081bbdcf4c5ef1419aadaeaa0912df2fc
         - path: proxy/src/lib.rs
-          sha256: 5b665f2a67ed580103465023b547116eabc5ba8bc582b6b2ef277146532694d6
+          sha256: 23a2e5546f3542a4a44cf3be1ddc48364da785e5186c6a968ad52b8d7678aaf9
         - path: proxy/src/bin/safeyolo.rs
           sha256: dddf731e90549c53b4fe839a1412983e94297de399352973dcc50af2f019e3af
         - path: proxy/src/jobs/vz-guest-init.sh
@@ -689,7 +689,7 @@ nodes:
         - path: proxy/tests/native_coord/supervision.rs
           sha256: 27f0e9a277b133770b4abc7d4f6c22305ffa2cdaff8bd1b3a8ec109b4487d36d
         - path: proxy/src/coord_supervisor/process.rs
-          sha256: 7295c197b51178e5692bb476f07a495941599898765c1ef82276bd312e273ead
+          sha256: 997276a6f189074545b7567c9bb91f3251b5fab2fbbb5f28bf73434f6012a10d
         - path: proxy/src/coord_supervisor.rs
           sha256: f905424be0214224885658f50588e13bf94f9485f5415777e2209d35c5d74726
         - path: proxy/src/coord_supervisor/native.rs
@@ -784,7 +784,7 @@ nodes:
       obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: cli/tests/test_codex_coord_supervisor.py
-          sha256: d2cb5eae09afaf46227e29c346ee838266b61ee0d4877a6e8fe3170de1a93513
+          sha256: f193c947cbca06b0585c76dd6399eb643b7487cdd7d21fd1da0a340b3bb9ecc3
         - path: cli/tests/test_agent_command_supervisor.py
           sha256: 28d366827ecc041bac7f87f419e1728329beeb8ee93ed9f27d262f8f2bd2d9f2
         - path: tests/proxy_contracts/test_native_factory_cli.py

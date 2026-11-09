@@ -12,6 +12,44 @@ SafeYolo production source `3215530dceadadd98cfe6063bf14490fd983aff7`;
 and source acceptance. These results cover the selected subscriptions and
 client versions. This route does not substitute separately billed API access.
 
+## Choose authentication at launch
+
+On the operator host, use the installed SafeYolo instance and a workspace that
+the selected agent may read and write. For a new agent, `agent launch` asks you
+to choose client-held or host-vault authentication before any optional host
+credential copying. You can select the same choice explicitly. Replace
+`/path/to/workspace` with your workspace before running either example:
+
+```sh
+safeyolo agent launch /path/to/workspace --name alice --harness codex --authentication host-vault
+safeyolo agent launch /path/to/workspace --name alice-claude --harness claude --authentication host-vault
+```
+
+The host guide selects a vault credential account or a file-backed host login.
+For a missing host login, complete the native client's supported login on the
+host, then select its file. The importer does not read a keychain. The guide
+uses the existing import, inference-service authorization and client setup
+operations. It configures the native client and obtains a current scoped token
+at each client launch. You do not need to edit guest TOML, extract a token with
+`jq`, or export a token yourself.
+
+The guide explains host versus guest custody, the selected provider and vault
+account, storage and explicit unlock, and rotating-refresh-token effects before
+the relevant choice. If the guest retains authentication, choose to keep
+client-held authentication or explicitly remove the displayed client inputs.
+The guide does not silently copy, remove or replace retained authentication.
+Unrelated settings and explicit denies remain in place. Removing a guest file
+does not revoke copies the guest already read.
+
+For an existing agent, stop the agent before changing its authentication.
+Return through `safeyolo agent auth alice`, or select **h** from launch's host
+controls. `agent auth alice --json` reads the current configuration, active
+service binding and vault availability separately. It reports provider validity
+as unknown and client use as not observed. Setup success is not a provider
+request result. A normal return with `agent launch --name alice` reuses the
+saved client configuration and current binding without another login import or
+service grant.
+
 ## Authorize on the host
 
 Use an existing agent, named `alice` in these examples, and the selected
@@ -59,67 +97,51 @@ explicit credential deny or an approval requirement.
 
 ## Configure the guest client
 
-Use an agent home without a provider login. Decline host authentication copying
-in `agent launch`; for a directly selected Claude host script, set
-`SAFEYOLO_CLAUDE_COPY_HOST_STATE=0` on the host before preparation. Do not run
-browser/device login in the guest. Retained provider files require a separate
-operator decision; this integration does not remove them.
+The shipped setup owners preserve the selected model, unrelated settings and
+explicit denies. Codex selects the SafeYolo subscription provider with
+`forced_chatgpt_auth = false`, `requires_openai_auth = false`, Responses over
+HTTP, and WebSockets disabled. Its scoped token is passed as
+`SAFEYOLO_CODEX_GATEWAY_TOKEN`. Claude selects its subscription route with
+`CLAUDE_CODE_OAUTH_TOKEN`. Both launchers fetch the current token through the
+agent's authenticated `/gateway/services` endpoint. Tokens stay in process
+memory and the launched client's environment; they are not configuration values
+or displayed results. Provider credentials remain in the host vault.
 
-The commands below run inside Alice's guest with `jq` and the documented
-[`sy_api` helper](../cli/src/safeyolo/agent_context/skills/safeyolo/references/agent-api.md#calling-the-api).
-Stop if token retrieval fails. Keep scoped tokens out of terminal output,
-source files and logs. Fetch the current token again after catalogue activation,
-gateway configuration changes, named-list input changes or proxy restart.
-Gateway configuration includes service bindings, agent identities, host routing
-and contract bindings. An ordinary credential or network approval keeps the token
-when those gateway inputs stay unchanged.
-
-For Codex, merge these settings into the guest's `.codex/config.toml`, retaining
-the selected model and unrelated settings. Before running the shipped Codex
-setup or Model Context Protocol registration again, set `forced_chatgpt_auth = false`. SafeYolo's
-existing setup uses that setting to retain external-provider authentication
-without requiring a guest `auth.json`:
-
-```toml
-forced_chatgpt_auth = false
-model_provider = "safeyolo"
-
-[model_providers.safeyolo]
-name = "SafeYolo ChatGPT subscription"
-base_url = "https://chatgpt.com/backend-api/codex"
-env_key = "SAFEYOLO_CODEX_GATEWAY_TOKEN"
-requires_openai_auth = false
-supports_websockets = false
-wire_api = "responses"
-```
-
-Then retrieve the scoped token and run the client:
+For noninteractive setup, first prepare a stopped agent with its shipped host
+script. In these host examples, `alice` uses Codex and `alice-claude` uses Claude.
+The named vault accounts must already have been imported with the explicit
+commands above:
 
 ```sh
-SAFEYOLO_CODEX_GATEWAY_TOKEN=$(sy_api /gateway/services | jq -er '.authorized.codex.token')
-export SAFEYOLO_CODEX_GATEWAY_TOKEN
-codex exec 'Reply READY without using tools.'
+safeyolo agent auth alice --authentication host-vault --credential codex-account --authorize --json
+safeyolo agent auth alice-claude --authentication host-vault --credential claude-account --authorize --json
 ```
 
-The host supplies the selected `ChatGPT-Account-ID` from the imported login.
-The guest cannot replace that selection. OpenAI documents that
-[`requires_openai_auth = true` ignores `env_key`](https://learn.chatgpt.com/docs/auth#alternative-model-providers);
-this configuration uses the scoped token instead.
+To compose an initial import in the same command, add `--auth-file HOST_FILE`
+and, for a new store, `--storage local` or `--storage passphrase`. Replace
+`HOST_FILE` with the selected host login file outside guest shares. Passphrase
+storage accepts `--passphrase-file FILE` through the same existing import owner.
+Import is storage only. Omitting `--authorize` leaves service access unchanged.
+`--remove-guest-auth` explicitly removes the conflicting client inputs listed
+by `agent auth --json`; omit it to retain them and refuse a conflicting change.
+Host setup diagnostics go to stderr; the final structured result goes to stdout.
 
-For Claude Code:
+Explicit `credentials import-client`, `services authorize`, `credentials unlock`
+and `agent create`/`configure`/`start` remain available. For direct configuration
+through the installed host setup helper, replace `AGENT_HOME` with the stopped
+agent's host home path and choose the client before running:
 
 ```sh
-CLAUDE_CODE_OAUTH_TOKEN=$(sy_api /gateway/services | jq -er '.authorized.claude.token')
-export CLAUDE_CODE_OAUTH_TOKEN
-printf '%s\n' 'Reply READY.' | claude -p --tools ''
+safeyolo-coord client-auth AGENT_HOME codex host-vault
+safeyolo-coord client-auth AGENT_HOME claude host-vault
 ```
 
-Leave `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` unset for this subscription
-route. In the checked client, `CLAUDE_CODE_OAUTH_TOKEN` sends a bearer token and
-the OAuth capability in `anthropic-beta`. The ordinary
-[gateway credential variables](https://code.claude.com/docs/en/llm-gateway)
-select a different authentication path. The successful subscription request
-used `CLAUDE_CODE_OAUTH_TOKEN` with the scoped gateway credential shown above.
+That helper configures authentication only; it imports no login and grants no
+access. Use the matching installed host and Linux guest assets, then reapply the
+shipped host setup. Select `client` instead of `host-vault` to return to
+client-held authentication. Existing service grants are retained until you
+explicitly revoke them. Returning to client-held custody does not copy a host
+login into the guest.
 
 Claude's remote managed-settings fetch uses the same authentication route.
 If startup reports a failure, inspect `Managed settings (remote)` in
@@ -150,11 +172,31 @@ safeyolo approvals approve APPROVAL_ID --option run --json
 ```
 
 Expected result: the selected approval reports `approved` and `grant_active=true`.
-Retry the client request with the same scoped token. If another approval is required,
+Retry the client request. An unchanged gateway retains the scoped token. If another approval is required,
 inspect that request separately. The initial scoped-token approval does not approve
 an injected provider credential or a risky route. Explicit denies still refuse the
-request. If gateway inputs changed in the meantime, retrieve the current scoped
-token again and inspect any resulting approval.
+request. If gateway inputs changed in the meantime, stop/relaunch the client to obtain a current scoped token, then inspect any resulting approval.
+
+## Return after interruption or configuration changes
+
+Read `agent auth NAME --json` for the same selected instance and agent. The
+configuration is saved in the native client settings. Authorization comes from
+the running proxy's accepted binding. Vault availability comes from that
+proxy's credential owner. An unavailable read is not an absent grant or proof
+of an invalid provider login. Complete only the missing import, grant or explicit
+unlock. Do not reimport an original login merely because a launch was interrupted;
+its refresh token may have rotated. Inspect `credentials list` and the current
+binding before choosing another explicit import or authorization.
+
+After catalogue activation, gateway configuration changes, named-list input
+changes or proxy restart, stop/relaunch the coding client to fetch a current
+scoped token. Gateway inputs include service bindings, agent identities, host
+routing and contract bindings. An ordinary credential or network approval keeps
+the token when those inputs stay unchanged. A running client can be interrupted
+by invalidation; continuous token replacement in that client is not provided.
+Check any prior task's effects before retrying it. SafeYolo does not replay model
+requests. A passphrase vault remains locked after proxy restart until an
+explicit `credentials unlock` or the launch guide's explicit unlock choice.
 
 ## Renewal, refusal and limits
 
@@ -167,9 +209,8 @@ a fallback. Other policy refusals retain their existing behavior.
 
 For a controlled renewal check, add `--expires-at 2020-01-01T00:00:00Z` to the
 initial host import, before any request uses that record. This sets the refresh
-deadline in the vault copy without editing the selected file. Fetch the current
-gateway token and make a real client request, which forces host renewal before
-delivery. Make a second real client request using the current gateway token.
+deadline in the vault copy without editing the selected file. Launch the configured client and make a real request, which forces host renewal before
+delivery. Make a second real client request through the same configured path.
 Check the host's renewal result and the guest's files, environment and responses;
 a configuration or model catalogue is insufficient proof. The selected file
 stays unchanged, so reimporting it after a rotating refresh can restore a stale

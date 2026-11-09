@@ -1115,6 +1115,45 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             },
         );
     }
+    if *method == Method::GET && path == "/admin/credentials/status" {
+        let Some(state) = task_state else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"runtime is unavailable"}),
+            ));
+        };
+        let owner = state
+            .read()
+            .map_err(|_| Error::ServiceMutation)?
+            .gateway_vault
+            .clone();
+        let storage = match crate::credentials::storage(&owner.data_dir) {
+            Ok(Some(crate::credentials::Storage::Local)) => "local",
+            Ok(Some(crate::credentials::Storage::Passphrase)) => "passphrase",
+            Ok(None) => "absent",
+            Err(_) => "unavailable",
+        };
+        let mut credentials = Value::Null;
+        let availability = match owner.load_async().await {
+            Ok(Some(loaded)) => match loaded.vault.metadata() {
+                Ok(metadata) => {
+                    credentials = json!(metadata);
+                    "available"
+                }
+                Err(_) => "unavailable",
+            },
+            Ok(None) => match owner.unavailable_reason() {
+                crate::credential_injection::VaultUnavailable::Locked => "locked",
+                crate::credential_injection::VaultUnavailable::Absent => "absent",
+                _ => "unavailable",
+            },
+            Err(_) => "unavailable",
+        };
+        return Ok(response(
+            StatusCode::OK,
+            json!({"storage":storage,"availability":availability,"credentials":credentials,"provider_validity":"unknown"}),
+        ));
+    }
     if matches!(*method, Method::POST | Method::DELETE) && path == "/admin/credentials/unlock" {
         let Some(state) = task_state else {
             return Ok(response(

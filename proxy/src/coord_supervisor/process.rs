@@ -550,6 +550,9 @@ pub(super) async fn invoke(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if !pi {
+        crate::coding_client::authenticate(command.as_std_mut(), "codex").await?;
+    }
     unsafe {
         command.pre_exec(|| {
             if libc::setsid() < 0 {

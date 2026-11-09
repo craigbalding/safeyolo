@@ -284,4 +284,4 @@ if [ -f "$HOME/.safeyolo/AGENTS.md" ]; then
     supervised_args+=(-c "developer_instructions=$(toml_string_from_file "$HOME/.safeyolo/AGENTS.md")")
 fi
 
-exec codex "${args[@]}" "$@"
+exec "$HOME/.safeyolo/safeyolo-coord" client-exec codex -- codex "${args[@]}" "$@"
