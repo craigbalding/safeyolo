@@ -134,6 +134,84 @@ def assert_no_role_launch(instance):
         assert not (directory / "home/.safeyolo/coord-supervisor-state.json").exists()
 
 
+def test_setup_preview_keeps_exact_contract_and_approval_separate(tmp_path, _binary_cache):
+    with prepared(tmp_path, _binary_cache) as (instance, _):
+        source = tmp_path / "contract/factory.toml"
+        pointer = instance.root / "factories/fixture/approved"
+        approved = pointer.read_bytes()
+        original = (source.parent / "role.md").read_text()
+        (source.parent / "role.md").write_text("Changed unapproved role instructions.\n")
+        preview = cli(instance, "factory", "setup", str(source), "--preview", "--yes")
+        value = json.loads(preview.stdout)
+        assert value["root"] == str(instance.root)
+        assert value["source"] == str(source)
+        assert value["approved"] is False
+        assert value["previous_contract"]["roles"]["owner"]["contract_text"] == original
+        assert value["selected_contract"]["roles"]["owner"]["contract_text"] == "Changed unapproved role instructions.\n"
+        refused = instance.cli("factory", "setup", str(source))
+        assert refused.returncode != 0
+        assert '"status": "approval-required"' in refused.stdout
+        assert str(source) in refused.stderr and "approve" in refused.stderr
+        assert pointer.read_bytes() == approved
+        assert_no_role_launch(instance)
+
+
+def test_setup_resumes_prepared_roles_without_reapplying_or_initializing_checkpoints(tmp_path, _binary_cache):
+    with prepared(tmp_path, _binary_cache) as (instance, workspaces):
+        source = tmp_path / "contract/factory.toml"
+        before = roles(instance)
+        entries = list(instance.root.glob("agents/*/home/.safeyolo-command"))
+        staged = {path: (path.stat().st_ino, path.stat().st_mtime_ns) for path in entries}
+        # Returning after preparation needs no repeated workspace selection or
+        # approval. --yes alone never confirms missing checkpoints.
+        for arguments in ((), ("--yes",), tuple(workspaces)):
+            result = instance.cli("factory", "setup", str(source), *arguments)
+            assert result.returncode != 0, result.stdout
+            assert '"status": "checkpoint-required"' in result.stdout, result.stderr
+            assert "--confirm-fresh-identity" in result.stderr
+            assert "setup failed" not in result.stderr
+            assert roles(instance) == before
+            assert {path: (path.stat().st_ino, path.stat().st_mtime_ns) for path in entries} == staged
+            assert_no_role_launch(instance)
+
+
+def test_setup_keeps_valid_checkpoint_and_diagnoses_corrupt_checkpoint(tmp_path, _binary_cache):
+    with prepared(tmp_path, _binary_cache) as (instance, _):
+        source = tmp_path / "contract/factory.toml"
+        state = instance.root / "agents/fixture-relay/home/.safeyolo/coord-supervisor-state.json"
+        executable = instance.root / "bin/safeyolo-coord"
+        checkpoint = json.loads(subprocess.check_output([str(executable), "read-state", str(state)]))
+        checkpoint["safe_cursor"] = 91
+        checkpoint["recent_attention_ids"] = ["attn-" + "c" * 32]
+        subprocess.run([str(executable), "write-state", str(state)], input=json.dumps(checkpoint), text=True, check=True)
+        before = state.read_bytes()
+        result = instance.cli("factory", "setup", str(source))
+        assert result.returncode != 0 and "role owner:" in result.stderr
+        assert state.read_bytes() == before
+        state.write_text("{broken checkpoint")
+        result = instance.cli("factory", "setup", str(source), "--confirm-fresh-identity")
+        assert result.returncode != 0 and "role coordinator:" in result.stderr
+        assert "diagnostics" in result.stderr
+        assert state.read_text() == "{broken checkpoint"
+        assert not (state.parents[3] / "fixture-forge/home/.safeyolo/coord-supervisor-state.json").exists()
+
+
+def test_setup_approval_and_workspace_requirements_do_not_launch_roles(tmp_path):
+    with native_instance(tmp_path, source=None, agent_api=True) as instance:
+        source = contract(tmp_path / "contract")
+        value = json.loads(cli(instance, "factory", "setup", str(source), "--preview").stdout)
+        assert value["previous_contract"] is None and value["approved"] is False
+        assert all(role["runtime"]["runtime_state"] == "missing" for role in value["roles"])
+        assert not (instance.root / "factories/fixture/approved").exists()
+        assert instance.cli("factory", "setup", str(source)).returncode != 0
+        assert not (instance.root / "factories/fixture/approved").exists()
+        result = instance.cli("factory", "setup", str(source), "--yes")
+        assert result.returncode != 0 and '"status": "workspace-required"' in result.stdout
+        assert '"approved": true' in result.stdout
+        assert "coordinator=PATH" in result.stderr
+        assert not tomllib.loads((instance.root / "policy.toml").read_text()).get("agents", {})
+
+
 def test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants(tmp_path, _binary_cache):
     with prepared(tmp_path, _binary_cache) as (instance, workspaces):
         # The shared native bundle retains non-Factory inputs. Factory homes
