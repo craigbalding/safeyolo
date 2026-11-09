@@ -173,7 +173,7 @@ fn review(
                     .deferred
                     .insert(number);
                 println!(
-                    "{} Request #{number} left pending. Use {number} to revisit it.",
+                    "{} No decision sent for request #{number}. Use list or {number} to inspect current pending state.",
                     cue("UNCHANGED", "33", color)
                 );
                 return Ok(true);
