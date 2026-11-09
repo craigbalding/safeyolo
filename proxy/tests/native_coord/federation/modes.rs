@@ -1,4 +1,4 @@
-//! Dedicated certificate renewal and explicit trust rotation through the CLI.
+//! Certificate renewal and credential/trust rotation through the CLI.
 use super::*;
 use rcgen::{BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair};
 
@@ -266,4 +266,107 @@ async fn renewal_and_explicit_rotation_preserve_retained_state_and_report_activa
     println!(
         "leaf renewal and explicit CA rotation retain local credentials, streams, membership and peer generation; activation requires owned restart"
     );
+}
+
+async fn assert_peer_authentication(
+    origin: &str,
+    username: &str,
+    credential: &str,
+    expected: bool,
+) {
+    match async_nats::ConnectOptions::new()
+        .user_and_password(username.to_owned(), credential.trim().to_owned())
+        .connection_timeout(Duration::from_secs(2))
+        .connect(origin)
+        .await
+    {
+        Ok(connection) => {
+            assert!(expected, "broker accepted an inactive peer credential");
+            connection.flush().await.unwrap();
+        }
+        Err(error) => {
+            assert!(!expected, "broker rejected its active peer credential");
+            assert!(matches!(
+                error.kind(),
+                async_nats::ConnectErrorKind::Authentication
+                    | async_nats::ConnectErrorKind::AuthorizationViolation
+            ));
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires pinned NATS; actual same-path credential rotation and activation"]
+async fn same_path_peer_rotation_reports_restart_until_broker_loads_new_credentials() {
+    let nats = std::env::var("SAFEYOLO_COORD_NATS_BINARY").unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    initialize(&home, &nats).await;
+    let _cleanup = NatsCleanup(home.clone());
+    let peer_id = "sy-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let username = support::hash(peer_id);
+    let credential_path = home.join("peer-secret");
+    let path = credential_path.to_str().unwrap();
+    coord_json(&home, &["federation", "credential", path]).await;
+    coord_json(&home, &["federation", "trust", peer_id, path]).await;
+    let original = zeroize::Zeroizing::new(fs::read_to_string(&credential_path).unwrap());
+    let setup = json!({"mode":"loopback","listen":"127.0.0.1",
+        "peers":[{"instance_id":peer_id,"credential_file":credential_path}]});
+    let input = home.join("broker-input.json");
+    fs::write(&input, setup.to_string()).unwrap();
+    apply_broker(&home, false, true).await;
+    coord_json(&home, &["stop"]).await;
+    let ready = coord_json(&home, &["start", "--binary", &nats]).await;
+    let port = ready["client_port"].as_u64().unwrap().to_string();
+    let origin = format!("nats://127.0.0.1:{port}");
+    assert_eq!(apply_broker(&home, false, true).await["active"], true);
+    assert_eq!(
+        coord_json(&home, &["federation", "check"]).await["configuration_active"],
+        true
+    );
+    assert_peer_authentication(&origin, &username, &original, true).await;
+
+    // Change the bytes at the configured path without changing the broker JSON.
+    let rotated_path = home.join("rotated-secret");
+    coord_json(
+        &home,
+        &["federation", "credential", rotated_path.to_str().unwrap()],
+    )
+    .await;
+    fs::copy(&rotated_path, &credential_path).unwrap();
+    let rotated = zeroize::Zeroizing::new(fs::read_to_string(&credential_path).unwrap());
+    assert!(original.as_str() != rotated.as_str());
+    let trusted = coord_json(&home, &["federation", "trust", peer_id, path]).await;
+    assert_eq!(trusted["epoch"], 2);
+
+    let checked = coord_json(
+        &home,
+        &["federation", "broker", "check", input.to_str().unwrap()],
+    )
+    .await;
+    assert_eq!(checked["active"], false);
+    let applied = apply_broker(&home, false, true).await;
+    assert_eq!(applied["active"], false);
+    assert_eq!(applied["restart_required"], true);
+    assert_eq!(
+        coord_json(&home, &["federation", "check"]).await["configuration_active"],
+        false
+    );
+    let reused = coord_json(&home, &["start", "--binary", &nats]).await;
+    assert_eq!(reused["configuration_active"], false);
+    assert_eq!(reused["restart_required"], true);
+    assert_peer_authentication(&origin, &username, &original, true).await;
+    assert_peer_authentication(&origin, &username, &rotated, false).await;
+
+    coord_json(&home, &["stop"]).await;
+    coord_json(&home, &["start", "--binary", &nats, "--client-port", &port]).await;
+    let applied = apply_broker(&home, false, true).await;
+    assert_eq!(applied["active"], true);
+    assert_eq!(applied["restart_required"], false);
+    assert_eq!(
+        coord_json(&home, &["federation", "check"]).await["configuration_active"],
+        true
+    );
+    assert_peer_authentication(&origin, &username, &original, false).await;
+    assert_peer_authentication(&origin, &username, &rotated, true).await;
 }

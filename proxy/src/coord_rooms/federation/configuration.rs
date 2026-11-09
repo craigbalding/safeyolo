@@ -104,11 +104,14 @@ pub(crate) async fn run(root: &Path, arguments: &[String]) -> Result<Option<Valu
             } else {
                 false
             };
-            let active = running
-                && recorded.as_ref().is_some_and(|saved| {
-                    saved["broker_configuration"] == json!(setup)
-                        && saved["protection_check"] == protection
-                });
+            let active = if let Some(saved) = &recorded {
+                running
+                    && saved["broker_configuration"] == json!(setup)
+                    && saved["protection_check"] == protection
+                    && peer_credentials_active(Some(&setup), saved)?
+            } else {
+                false
+            };
             Ok(Some(
                 json!({"instance_id":fs::read_to_string(root.join("data/instance_id"))?.trim(),
                 "configuration_saved":command == "apply","configured":setup,"validated":true,"mode":setup.mode,"protection":protection,
@@ -124,6 +127,20 @@ pub(crate) async fn run(root: &Path, arguments: &[String]) -> Result<Option<Valu
     }
 }
 
+fn peer_credentials_active(setup: Option<&nats::Broker>, saved: &Value) -> Result<bool, Error> {
+    let peers = setup
+        .into_iter()
+        .flat_map(|broker| &broker.peers)
+        .map(|peer| {
+            Ok(nats::TransportPeer {
+                instance_id: peer.instance_id.clone(),
+                credential_hash: hash(token(&peer.credential_file)?.trim().as_bytes()),
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    Ok(json!(peers) == saved["federation_peers"])
+}
+
 pub(crate) fn configuration_active(root: &Path, saved: &Value) -> Result<bool, Error> {
     let setup = nats::broker(root)?;
     let protection = setup
@@ -136,7 +153,8 @@ pub(crate) fn configuration_active(root: &Path, saved: &Value) -> Result<bool, E
     )?;
     Ok(json!(setup) == saved["broker_configuration"]
         && json!(protection) == saved["protection_check"]
-        && endpoint.security()? == saved["protection"])
+        && endpoint.security()? == saved["protection"]
+        && peer_credentials_active(setup.as_ref(), saved)?)
 }
 
 pub(crate) async fn local_check(root: &Path) -> Result<Value, Error> {
