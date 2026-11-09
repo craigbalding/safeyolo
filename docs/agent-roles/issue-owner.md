@@ -121,6 +121,9 @@ Evidence requested as a repository deliverable belongs in the repository.
   to the issue.
 - Implement the change and update authoritative documentation when behaviour,
   interfaces, or contracts change.
+- For changes to operator journeys, apply the
+  [operator interaction contract](../operator-interaction-contract.md) in the
+  candidate and review handoff.
 
 ## Prove the candidate proportionately
 

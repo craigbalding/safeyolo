@@ -51,6 +51,7 @@ user_facing_docs = [
     "docs/federation-setup.md",
     "docs/settings.md",
     "docs/operator-guide.md",
+    "docs/operator-interaction-contract.md",
     "docs/DEVELOPERS.md",
     "docs/SERVICE_DISCOVERY.md",
     "docs/TLS_CERTIFICATE.md",

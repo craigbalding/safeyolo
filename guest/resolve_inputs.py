@@ -9,9 +9,11 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
@@ -291,8 +293,13 @@ def main() -> None:
             print(f"export {key}={shlex.quote(val)}")
     else:
         record = value["tools"][args.tool]
-        download(record if args.tool == "kernel" else record["assets"][args.architecture], args.output,
-                 kernel_signature=args.tool == "kernel")
+        asset = record if args.tool == "kernel" else record["assets"][args.architecture]
+        parsed_url = urllib.parse.urlsplit(asset["url"])
+        public_url = urllib.parse.urlunsplit((parsed_url.scheme, parsed_url.netloc.rsplit("@", 1)[-1],
+                                             parsed_url.path, "", ""))
+        print(f"Preparing {args.tool} {record['version']} for linux/{args.architecture}: {public_url!r}",
+              file=sys.stderr, flush=True)
+        download(asset, args.output, kernel_signature=args.tool == "kernel")
 
 
 if __name__ == "__main__":
