@@ -438,14 +438,14 @@ fn show_decision_evidence(view: &Value) {
         if let Some(value) = view.get(field).filter(|value| !value.is_null()) {
             println!("{label}:");
             let mut value = value.clone();
-            if field == "guidance" {
-                if let Some(fields) = value.as_object_mut() {
-                    if fields.get("assessment") == view.get("assessment") {
-                        fields.remove("assessment");
-                    }
-                    if fields.get("alternatives") == view["assessment"].get("alternatives") {
-                        fields.remove("alternatives");
-                    }
+            if field == "guidance"
+                && let Some(fields) = value.as_object_mut()
+            {
+                if fields.get("assessment") == view.get("assessment") {
+                    fields.remove("assessment");
+                }
+                if fields.get("alternatives") == view["assessment"].get("alternatives") {
+                    fields.remove("alternatives");
                 }
             }
             show_evidence_fields(&value, 2);
