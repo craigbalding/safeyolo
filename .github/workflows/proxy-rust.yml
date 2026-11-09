@@ -266,6 +266,19 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+      - name: Verify production proxy diagnostics
+        if: steps.changes.outputs.rust == 'true'
+        run: |
+          set -euo pipefail
+          proxy=proxy/target/release/safeyolo-proxy
+          [[ "$("$proxy" --version)" == "safeyolo-proxy "*" commit=$SAFEYOLO_BUILD_REVISION profile=production" ]]
+          address=$(nm --defined-only --demangle "$proxy" | awk '$3 == "safeyolo_proxy::main" { print "0x" $1 }')
+          test -n "$address"
+          location=$(addr2line --inlines --exe="$proxy" "$address")
+          [[ "$location" =~ (^|/)src/main\.rs:[1-9][0-9]* ]]
+          printf 'Verified production proxy source line: %s\n' "$location"
+          scripts/cargo_with_space.sh test --release --manifest-path proxy/Cargo.toml --locked --test version
+
       - name: Build the native CLI for recovery and Dispatch checks
         if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'
         run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo
@@ -441,7 +454,6 @@ jobs:
         env:
           SAFEYOLO_NATIVE_CLI: ${{ github.workspace }}/proxy/target/release/safeyolo
         run: |
-          ../scripts/cargo_with_space.sh test --release --locked --test version
           ../scripts/cargo_with_space.sh test --release --locked --test agent_api_audit
           ../scripts/cargo_with_space.sh test --release --locked --test tls existing_rsa_ca_formats_survive_native_import_and_restart -- --exact
           ../scripts/cargo_with_space.sh test --release --locked --test gateway_workflow oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token -- --exact

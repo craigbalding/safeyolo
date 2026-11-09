@@ -229,6 +229,46 @@ def test_linux_input_retention_requires_successful_producers_after_test_failure(
     assert not job.get("continue-on-error")
 
 
+@pytest.mark.parametrize("failure", [None, "identity", "symbol", "line", "lookup", "panic"])
+def test_production_diagnostics_check_the_retained_executable_and_panic(tmp_path, failure):
+    steps = rust_workflow()["jobs"]["focused-pr"]["steps"]
+    check = next(step for step in steps if step.get("name") == "Verify production proxy diagnostics")
+    assert check["if"] == "steps.changes.outputs.rust == 'true'"
+    for name in ("linux-host-amd64-production", "linux-guest-amd64-production"):
+        upload = next(step for step in steps if step.get("with", {}).get("name") == name)
+        assert steps.index(upload) < steps.index(check)
+    for directory in ("proxy/target/release", "scripts", "commands"):
+        (tmp_path / directory).mkdir(parents=True)
+    revision = "a" * 40
+    selected = "b" * 40 if failure == "identity" else revision
+    programs = {
+        "proxy/target/release/safeyolo-proxy":
+            f"printf 'safeyolo-proxy 0.1.0 commit={selected} profile=production\\n'\n",
+        "commands/nm": "printf '00000001 t safeyolo_proxy::" +
+            ("other" if failure == "symbol" else "main") + "\\n'\n",
+        "commands/addr2line": "exit 42\n" if failure == "lookup" else
+            "printf '" + ("??:0" if failure == "line" else "/source/proxy/src/main.rs:11") + "\\n'\n",
+        "scripts/cargo_with_space.sh":
+            'printf "%s\\n" "$*" > cargo-call\n' + ("exit 43\n" if failure == "panic" else ""),
+    }
+    for name, body in programs.items():
+        path = tmp_path / name
+        path.write_text("#!/bin/sh\n" + body)
+        path.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-e", "-c", check["run"]], cwd=tmp_path, capture_output=True, text=True,
+        env=dict(os.environ, PATH=f"{tmp_path / 'commands'}:{os.environ['PATH']}",
+                 SAFEYOLO_BUILD_REVISION=revision, BASH_ENV=os.devnull), timeout=10,
+    )
+    assert (result.returncode == 0) == (failure is None), result.stderr
+    if failure in (None, "panic"):
+        assert (tmp_path / "cargo-call").read_text().strip() == (
+            "test --release --manifest-path proxy/Cargo.toml --locked --test version"
+        )
+    else:
+        assert not (tmp_path / "cargo-call").exists()
+
+
 @pytest.mark.parametrize("failure", [None, "compiler", "missing", "ambiguous", "entry"])
 def test_installed_share_test_staging_refuses_incomplete_compiler_output(tmp_path, failure):
     steps = rust_workflow()["jobs"]["focused-pr"]["steps"]
