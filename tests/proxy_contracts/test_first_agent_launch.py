@@ -61,9 +61,9 @@ headers=["authorization"]
         status, _, _ = request(instance.paths["alice"], target, headers=headers)
         assert status == 428 and origin.accepts == 0
         with terminal(instance, ["approvals", "review", "--agent", "alice"]) as (process, master, until):
-            output = until(b"Request number")
+            output = until(b"Type a displayed request number (for example, 1; Enter returns): ")
             os.write(master, b"1\n")
-            output += until(b"approve / reject")
+            output += until(b"approve persistent / reject")
             if kind == "network":
                 assert b"Allow reusable network access for alice" in output
                 assert b"until explicitly removed" in output
@@ -880,10 +880,10 @@ def test_credential_retry_keeps_the_inspected_action(tmp_path, surface, window, 
             if surface == "inspect":
                 until(b"inspect> ")
                 os.write(master, b"review\n")
-            output = until(b"Request number")
+            output = until(b"Type a displayed request number (for example, 1; Enter returns): ")
             if window == "detail":
                 os.write(master, b"1\n")
-                output += until(b"approve / reject")
+                output += until(b"approve persistent / reject")
             assert request(instance.paths["alice"], target, headers=headers)[0] == 428
             newest = instance.admin("GET", "/admin/approvals")["approvals"][0]
             assert newest["approval_id"] == original
@@ -895,7 +895,7 @@ def test_credential_retry_keeps_the_inspected_action(tmp_path, surface, window, 
             assert view["request_id"] == first["request_id"]
             if window == "list":
                 os.write(master, b"1\n")
-                output += until(b"approve / reject")
+                output += until(b"approve persistent / reject")
             assert b"all agents in this instance, including future agents" in output
             os.write(master, decision.encode() + b"\n")
             output += until(b"No pending requests")
@@ -923,10 +923,10 @@ def test_credential_selection_retains_its_authority_and_rechecks_policy(tmp_path
         identifier = instance.admin("GET", "/admin/approvals")["approvals"][0]["approval_id"]
         view = json.loads(instance.cli("approvals", "show", identifier, "--json").stdout)
         with terminal(instance, ["approvals", "review", "--agent", "alice"]) as (process, master, until):
-            until(b"Request number")
+            until(b"Type a displayed request number (for example, 1; Enter returns): ")
             if window == "detail":
                 os.write(master, b"1\n")
-                until(b"approve / reject")
+                until(b"approve persistent / reject")
             if change == "other_agent":
                 assert request(instance.paths["bob"], target, headers=headers)[0] == 428
             elif change in ("fingerprint", "destination"):
@@ -952,7 +952,7 @@ def test_credential_selection_retains_its_authority_and_rechecks_policy(tmp_path
                 assert len({row["approval_id"] for row in pending}) == 2
                 if window == "list":
                     os.write(master, b"1\n")
-                    until(b"approve / reject")
+                    until(b"approve persistent / reject")
                 os.write(master, b"approve\n")
                 until(b"No pending requests")
                 assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
@@ -967,7 +967,7 @@ def test_credential_selection_retains_its_authority_and_rechecks_policy(tmp_path
                 return
             os.write(master, b"1\n" if window == "list" else b"approve\n")
             output = until(b"No pending requests")
-            assert b"API 404 " not in output and b"approve / reject" not in output
+            assert b"API 404 " not in output and b"approve persistent / reject" not in output
             assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
             assert instance.policy.read_bytes() == before and origin.accepts == 0
             after_events = [row for row in audit.read_text().splitlines() if '"admin.approval_added"' in row or '"admin.denial"' in row]
