@@ -221,7 +221,7 @@ fn event(record: &pending::Record, name: &'static str, summary: &str) -> Event {
         provenance: None,
     });
     let mut result = record.result.clone();
-    if let Some(diagnostic) = result["diagnostic"].as_object_mut() {
+    if let Some(diagnostic) = result.get_mut("diagnostic").and_then(Value::as_object_mut) {
         diagnostic.remove("operator_details");
     }
     event.details =

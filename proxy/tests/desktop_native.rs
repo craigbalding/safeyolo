@@ -747,6 +747,16 @@ async fn check_desktop_readiness_failures() {
         .await;
         assert_eq!(status(&pending), 202, "{fault}: {:?}", body(&pending));
         let id = body(&pending)["approval_id"].as_str().unwrap().to_owned();
+        let pending_read = action_request(
+            root.path(),
+            "GET",
+            &format!("/approvals/{id}"),
+            Value::Null,
+            "alice",
+        )
+        .await;
+        assert_eq!(status(&pending_read), 200);
+        assert_eq!(body(&pending_read)["result"], Value::Null);
         let started = std::time::Instant::now();
         let approved = body(
             &request(
@@ -829,9 +839,13 @@ async fn check_desktop_readiness_failures() {
         );
         let explanation = body(&explanation);
         assert_eq!(explanation["status"], "complete");
-        let result_event = explanation["events"]
-            .as_array()
-            .unwrap()
+        let events = explanation["events"].as_array().unwrap();
+        let request_event = events
+            .iter()
+            .find(|event| event["event"] == "agent.operator_action_requested")
+            .expect("the original action request must remain in retained audit evidence");
+        assert_eq!(request_event["details"]["result"], Value::Null);
+        let result_event = events
             .iter()
             .find(|event| event["event"] == "admin.operator_action_result")
             .expect("the action result must remain in retained audit evidence");
