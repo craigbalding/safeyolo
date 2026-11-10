@@ -1,6 +1,13 @@
 (version 1)
 (deny default)
 
+; A service must not launch a job outside this process tree.
+(deny job-creation)
+(deny lsopen appleevent-send)
+; SMAppService's broker on the tested macOS release. Keep this narrow deny
+; when adapting the optional VZ Mach grants; registration is not VZ startup.
+(deny mach-lookup (global-name "com.apple.xpc.smd"))
+
 ; Parameters are supplied by the root-owned, compiled shell launcher.
 (define agent-home (param "AGENT_HOME"))
 (define toolchain-root (param "TOOLCHAIN_ROOT"))
@@ -29,6 +36,14 @@
     (literal "/Users") (literal "/Library") (literal "/etc") (literal "/var")
     (literal "/private") (literal "/private/var") (literal "/opt"))
 (allow file-read* file-write* (subpath agent-home))
+; launchd reads this directory at later logins. Keep its contents immutable.
+; Setup checks that Library and LaunchAgents are not symlinks. Protect Library
+; from replacement too, so a new alias cannot redirect the consumed path.
+(deny file-write* (subpath (string-append agent-home "/Library/LaunchAgents")))
+(deny file-write-unlink (literal (string-append agent-home "/Library")))
+; macOS cron tabs and at/batch jobs share this spool (/usr/lib/cron is an alias).
+; Keep the denial even when an operator enables atrun or adapts other paths.
+(deny file-write* (subpath "/private/var/at"))
 
 ; Devices for ordinary shell I/O, entropy and PTY-backed tmux panes.
 (allow file-read* (literal "/dev/random") (literal "/dev/urandom")

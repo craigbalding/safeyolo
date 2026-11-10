@@ -5,7 +5,7 @@ set -eu
 fail() { printf 'configure-ssh: %s\n' "$*" >&2; exit 1; }
 usage() {
     cat <<'USAGE'
-Usage: sudo ./configure-ssh [--host HOST] [--port PORT] [--user NAME] [--config FILE] [--check] [--reviewed-sshrc]
+Usage: sudo ./configure-ssh [--host HOST] [--port PORT] [--user NAME] [--config FILE] [--check] [--reviewed-sshrc] [--reviewed-consumers]
 
 Check the installed shell launcher and account, then configure its login shell and SSH.
 Preserve both previous states and restore them on failure (default: sy-agent).
@@ -18,6 +18,10 @@ Existing SSH sessions are left running; no daemon is restarted.
   --check            Run preflight and candidate validation without activation.
   --reviewed-sshrc   Confirm the operator has reviewed /etc/ssh/sshrc and it
                      does not execute or source files controlled by the account.
+  --reviewed-consumers
+                     Confirm the external-consumer review in REFERENCE.md.
+                     Each unsandboxed consumer must use protected inputs or
+                     neutralize executable configuration. Unknowns stay unverified.
   --help             Show this help.
 USAGE
 }
@@ -62,6 +66,7 @@ config=/etc/ssh/sshd_config
 client_host=
 client_port=22
 reviewed_sshrc=no
+reviewed_consumers=no
 check_only=no
 entry=/Library/PrivilegedHelperTools/seatbelt-agent
 while [ "$#" -gt 0 ]; do
@@ -77,6 +82,7 @@ while [ "$#" -gt 0 ]; do
             shift 2 ;;
         --check) check_only=yes; shift ;;
         --reviewed-sshrc) reviewed_sshrc=yes; shift ;;
+        --reviewed-consumers) reviewed_consumers=yes; shift ;;
         --help) usage; exit 0 ;;
         *) fail "Unknown argument: $1. See --help." ;;
     esac
@@ -181,6 +187,55 @@ if [ -f /etc/ssh/sshrc ]; then
     set -- "$@" "$sshrc_dir/sshrc"
 fi
 "$work/check-account" "$account" "$entry/agent-shell-launcher" "$@" || fail 'Account/shell-launcher preflight failed. No login shell or SSH files were changed.'
+
+# A root-side view is necessary: the confined session cannot establish that no
+# external scheduler or consumer exists. Keep command lines and job contents
+# out of diagnostics; show identities and paths for operator inspection.
+account_home=$(/usr/bin/dscl . -read "/Users/$account" NFSHomeDirectory | sed -n 's/^NFSHomeDirectory: //p')
+[ -n "$account_home" ] || fail 'Cannot read the account home for the external-consumer review.'
+if /bin/launchctl print system/com.apple.atrun > "$work/atrun.loaded" 2>&1; then
+    printf 'atrun is loaded. at/batch denial must hold independently of its enabled state.\n'
+else
+    printf 'atrun is not confirmed loaded; this is not proof that scheduling is unavailable.\n'
+fi
+/bin/launchctl print-disabled system > "$work/system.disabled" || fail 'Cannot inspect launchd overrides for atrun.'
+awk '/"com.apple.atrun"/ { print "atrun override: " $0; found=1 } END { if (!found) print "atrun has no explicit launchd override." }' "$work/system.disabled"
+if /usr/bin/plutil -extract Disabled raw -o - /System/Library/LaunchDaemons/com.apple.atrun.plist > "$work/atrun.default" 2> "$work/atrun.error"; then
+    printf 'Stock atrun Disabled value: %s\n' "$(cat "$work/atrun.default")"
+else
+    printf 'Stock atrun default is unverified; inspect its launchd plist.\n'
+fi
+if [ "$reviewed_consumers" = no ]; then
+    printf 'Review external consumers before enabling this account. Current account processes (PID, parent PID, executable):\n' >&2
+    process_status=0
+    /bin/ps -U "$account_uid" -o pid=,ppid=,comm= > "$work/processes" 2> "$work/processes.error" || process_status=$?
+    if [ "$process_status" != 0 ] && { [ "$process_status" != 1 ] || [ -s "$work/processes.error" ]; }; then
+        fail 'Cannot inspect account processes; their consumer state is unverified.'
+    fi
+    cat "$work/processes" >&2
+    for directory in /Library/LaunchAgents /Library/LaunchDaemons "$account_home/Library/LaunchAgents"; do
+        [ -d "$directory" ] || continue
+        for plist in "$directory"/*.plist; do
+            [ -f "$plist" ] || continue
+            if /usr/libexec/PlistBuddy -c Print "$plist" > "$work/job" 2> "$work/job.error"; then
+                if awk -v home="$account_home" -v account="$account" \
+                    'index($0, home) || ($1 == "UserName" && $3 == account) { found=1 } END { exit !found }' "$work/job"; then
+                    printf 'Potential unsandboxed consumer: %s\n' "$plist" >&2
+                fi
+            else
+                printf 'Job inspection is unverified: %s\n' "$plist" >&2
+            fi
+        done
+    done
+    for domain in "user/$account_uid" "gui/$account_uid"; do
+        if /bin/launchctl print "$domain" > "$work/domain" 2>&1; then
+            printf 'Inspect launchd domain %s, including jobs with no plist on disk.\n' "$domain" >&2
+        else
+            printf 'Cannot inspect launchd domain %s; its consumers are unverified.\n' "$domain" >&2
+        fi
+    done
+    fail 'Check account login/background items, schedulers, watchers and host IDE/Git/interpreter/hooks as described in REFERENCE.md#external-consumer-review. Apply a supported correction to each unsafe consumer, then rerun with --reviewed-consumers. No SSH settings were changed.'
+fi
 /usr/bin/codesign --verify --strict "$entry/agent-shell-launcher" || fail 'Shell-launcher signature is invalid. Rebuild using the setup guide.'
 /usr/bin/codesign --display --verbose=2 "$entry/agent-shell-launcher" 2> "$work/signature"
 awk '/^CodeDirectory / && /[(,]runtime[,)]/ { found=1 } END { exit !found }' "$work/signature" || fail 'The shell launcher must be signed with the hardened runtime. Rebuild using the setup guide.'
