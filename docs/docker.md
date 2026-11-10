@@ -24,9 +24,9 @@ The [independent operator walkthrough](../contrib/docker/proof.md#independent-op
 passed public onboarding, coadministration and the seeded host-consumer
 mitigation with the same client and Engine versions. See the
 [observed results and limits](../contrib/docker/proof.md#reuse-the-observed-result).
-Project support under [#1439](https://github.com/craigbalding/safeyolo/issues/1439)
-remains unaccepted; route lists and Compose project names do not establish
-project isolation.
+Lens accepted project support at
+[#1439's recorded candidate and runtime limits](https://github.com/craigbalding/safeyolo/issues/1439#issuecomment-6723464950).
+Route lists and Compose project names alone do not establish project isolation.
 
 ## Choose the execution authority
 
@@ -153,11 +153,10 @@ definition, adoption and service directory remain operator controlled.
 
 ## Select one project
 
-Project mode is implemented, but independent acceptance under
-[#1439](https://github.com/craigbalding/safeyolo/issues/1439) remains pending.
-The following configuration documents its current behavior. Use whole-environment
-workload management for the demonstrated external lifecycle; do not treat this
-configuration as an accepted project-isolation guarantee.
+Lens accepted project mode under
+[#1439](https://github.com/craigbalding/safeyolo/issues/1439#issuecomment-6723464950),
+including the supported lifecycle, cross-project refusals and management metadata.
+The following configuration documents that behavior within the recorded limits.
 
 On the operator host, use the existing authenticated Docker connection to inspect
 resources before adopting the project capability. Select containers and networks
@@ -243,8 +242,8 @@ workloads retain the hosting sandbox's authority. Project membership does not
 impose aggregate limits on processor use, memory or disk space. Resource use and
 network reach still depend on the daemon and workload configuration. The
 [project Engine/Compose witness](../contrib/docker/proof.md#reuse-the-observed-result)
-passed at its recorded revision; independent project acceptance remains pending in
-[#1439](https://github.com/craigbalding/safeyolo/issues/1439).
+has independent acceptance at
+[#1439's recorded revision](https://github.com/craigbalding/safeyolo/issues/1439#issuecomment-6723464950).
 
 ## Agent setup
 

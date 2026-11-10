@@ -682,6 +682,9 @@ fixture containers and both anonymous volumes; the prepared image and shared
 bridge network remain reusable.
 
 The controlled HTTP regression remains focused protocol proof. Its simulated
-origin does not establish real Engine acceptance. The new real Engine case also
-reuses the accepted #1437 internal Docker connection result; it still requires
-independent #1439 acceptance.
+origin does not establish real Engine acceptance. The real Engine case also
+reuses the accepted #1437 internal Docker connection result. Lens accepted all
+eight #1439 criteria in the
+[final project ledger](https://github.com/craigbalding/safeyolo/issues/1439#issuecomment-6723464950),
+including the later interrupted-creation and retained-volume results. Those
+results retain their recorded source, runtime and trusted-administrator limits.

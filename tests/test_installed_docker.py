@@ -25,6 +25,7 @@ import pytest
 
 from tests.blackbox.installed_docker_preflight import (
     gateway_client_failure,
+    gateway_compose_journey,
     gateway_management,
     run,
     verify_gateway_client_failure,
@@ -33,6 +34,140 @@ from tests.blackbox.installed_docker_preflight import (
 )
 
 PROBE = Path(__file__).parent / "blackbox/fixtures/nested-docker/network_probe.py"
+
+
+@pytest.mark.parametrize("interruption", ["gateway-image-pull", "gateway-compose-up"])
+def test_gateway_lifecycle_preserves_failed_effects_and_removes_private_pull_config(tmp_path, interruption):
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    (caller / "docker-compose").write_text("synthetic plugin, never executed\n")
+    config = tmp_path / "client-config"
+    config.mkdir()
+    original = {"HttpHeaders": {"Authorization": "Bearer synthetic-scoped-token", "X-SafeYolo-Docker-Service": "notes"}}
+    (config / "config.json").write_text(json.dumps(original))
+    auth = tmp_path / "approved-auth.json"
+    auth.write_text(json.dumps({"registrytoken": "synthetic-approved-registry-token"}))
+    report = {}
+    steps = []
+
+    def guest(command, label, **_):
+        if label == "gateway-application-ports":
+            return ""
+        state = tmp_path / report["gateway_lifecycle"]["project"]
+        command = command.replace("/home/agent/docker-gateway-client", str(config))
+        command = command.replace("/home/agent/" + state.name, str(state)).replace("/workspace", str(caller))
+        return subprocess.check_output(["bash", "-euc", command], text=True, env=os.environ | {"BASH_ENV": ""})
+
+    def client(command, label, **_):
+        steps.append(label)
+        state = tmp_path / report["gateway_lifecycle"]["project"]
+        if label == "gateway-image-pull":
+            private = state / "pull-config/config.json"
+            captured = json.loads(private.read_text())
+            assert captured["HttpHeaders"] == original["HttpHeaders"]
+            assert captured["auths"]["https://index.docker.io/v1/"]["registrytoken"] == "synthetic-approved-registry-token"
+            assert private.stat().st_mode & 0o777 == 0o600
+            assert "synthetic-approved-registry-token" not in command
+        if label == interruption:
+            raise RuntimeError("response interrupted after dispatch")
+        if label == "gateway-base-image":
+            return json.dumps([{"Id": "sha256:" + "a" * 64}])
+        if label == "gateway-pulled-image":
+            return '[{"Id":"pulled-image"}]'
+        return ""
+
+    args = SimpleNamespace(gateway_registry_auth=str(auth))
+    with pytest.raises(RuntimeError, match="response interrupted after dispatch"):
+        gateway_compose_journey(args, caller, client, guest, report)
+    observation = report["gateway_lifecycle"]
+    assert observation["state"] == "incomplete"
+    assert observation["volume"] == observation["project"] + "_notes"
+    assert observation["image"] == observation["project"] + ":qualification"
+    assert not (tmp_path / observation["project"] / "pull-config").exists()
+    assert json.loads((config / "config.json").read_text()) == original
+    assert auth.is_file()
+    assert steps.count(interruption) == 1
+    assert not any("teardown" in step or step == "gateway-image-remove" for step in steps)
+    assert "synthetic-approved-registry-token" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("failure", [None, "lost-write-response", "lost-data"])
+def test_gateway_lifecycle_application_observer_checks_persistence_without_replaying_writes(tmp_path, failure):
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    report = {}
+    requests = []
+    saved = []
+    recovered = False
+    steps = []
+
+    class Application(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append("GET")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps([] if recovered and failure == "lost-data" else saved).encode())
+
+        def do_POST(self):
+            requests.append("POST")
+            saved.append(json.loads(self.rfile.read(int(self.headers["Content-Length"])))["text"])
+            if failure == "lost-write-response":
+                self.close_connection = True
+                return
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps(saved).encode())
+
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Application)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+
+    def client(command, label, **_):
+        nonlocal recovered
+        steps.append(label)
+        if label in {"gateway-compose-containers", "gateway-compose-recreated"}:
+            return "new-api\nnew-store\n" if recovered else "api\nstore\n"
+        if label == "gateway-base-image":
+            return json.dumps([{"Id": "sha256:" + "a" * 64}])
+        if label == "gateway-pulled-image":
+            return "[]"
+        if label == "gateway-compose-inspect":
+            return json.dumps([{"Id": name, "State": {"Running": True}, "HostConfig": {"NetworkMode": "host"},
+                                "Config": {"Labels": {"com.docker.compose.service": name}}} for name in ("api", "store")])
+        if label.startswith("gateway-notes-"):
+            program = shlex.split(command)[-1].replace('"127.0.0.1", 8088', f'"127.0.0.1", {server.server_port}')
+            return subprocess.check_output(["python3", "-c", program], text=True, stderr=subprocess.PIPE)
+        if label == "gateway-compose-exec":
+            return "gateway-exec"
+        if label == "gateway-compose-logs":
+            return '"role": "api"\n"role": "store"'
+        if label == "gateway-lifecycle-attach":
+            return "attach:gateway-attach"
+        if label in {"gateway-volume-before", "gateway-volume-after"}:
+            return '[{"CreatedAt":"same-creation"}]'
+        if label == "gateway-compose-recreate":
+            recovered = True
+        return ""
+
+    try:
+        args = SimpleNamespace(gateway_registry_auth="/private/synthetic-auth.json")
+        if failure:
+            with pytest.raises(subprocess.CalledProcessError):
+                gateway_compose_journey(args, caller, client, lambda *_args, **_kwargs: "", report)
+            assert report["gateway_lifecycle"]["state"] == "incomplete"
+            assert "gateway-compose-teardown" not in steps
+        else:
+            gateway_compose_journey(args, caller, client, lambda *_args, **_kwargs: "", report)
+            assert report["gateway_lifecycle"]["state"] == "passed"
+            assert "gateway-compose-teardown" in steps
+        assert requests.count("POST") == 1
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
 
 
 @pytest.mark.parametrize("exit_code,diagnostic,valid", [
