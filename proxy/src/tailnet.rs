@@ -50,10 +50,13 @@ fn mapping_ready(status: &Value, port: u16, target: &str) -> bool {
     })
 }
 
-async fn tailscale_json(args: &[&str]) -> Result<Value, Error> {
+pub(crate) async fn tailscale_json(args: &[&str]) -> Result<Value, Error> {
     let output = tokio::time::timeout(
         Duration::from_secs(8),
-        Command::new("tailscale").args(args).output(),
+        Command::new("tailscale")
+            .args(args)
+            .kill_on_drop(true)
+            .output(),
     )
     .await
     .map_err(|_| format!("tailscale {} timed out", args.join(" ")))??;

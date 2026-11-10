@@ -9,6 +9,34 @@
 # phrases over generic ones ("2048 MiB" beats "MiB").
 
 [[assertion]]
+name = "support-authority-owner-budget"
+source = "proxy/src/peer_support/authority.rs"
+pattern = 'MAX_OWNERS: usize = (?P<owners>\d+)'
+docs = ["docs/peer-support.md"]
+must_contain = "at most {owners} selected owners"
+
+[[assertion]]
+name = "support-authority-page-budget"
+source = "proxy/src/peer_support/authority.rs"
+pattern = 'PAGE_FACTS: usize = (?P<facts>\d+)'
+docs = ["docs/peer-support.md"]
+must_contain = "{facts} facts per"
+
+[[assertion]]
+name = "support-authority-report-budget"
+source = "proxy/src/peer_support/authority.rs"
+pattern = 'MAX_REPORT_BYTES: usize = (?P<kib>\d+) \* 1024'
+docs = ["docs/peer-support.md"]
+must_contain = "{kib} KiB report"
+
+[[assertion]]
+name = "docker-engine-api-version"
+source = "proxy/src/services/docker.rs"
+pattern = 'API_PREFIX: &str = "/v(?P<version>[0-9.]+)"'
+docs = ["docs/docker.md"]
+must_contain = "(API) {version}"
+
+[[assertion]]
 name = "connect-route-wait-seconds"
 source = "proxy/src/tunnels.rs"
 pattern = 'ROUTE_WAIT: Duration = Duration::from_secs\((?P<seconds>\d+)\)'
@@ -153,14 +181,14 @@ must_contain = "{marker}"
 [[assertion]]
 name = "mise-stable-resolution"
 source = "guest/build-rootfs.sh"
-pattern = 'guest_inputs "\$DEB_ARCH"'
+pattern = 'guest_rootfs_inputs "\$DEB_ARCH"'
 docs = ["guest/README.md"]
 must_contain = "mise"
 
 [[assertion]]
 name = "gh-stable-resolution"
 source = "guest/build-rootfs.sh"
-pattern = 'guest_inputs "\$DEB_ARCH"'
+pattern = 'guest_rootfs_inputs "\$DEB_ARCH"'
 docs = ["guest/README.md"]
 must_contain = "gh"
 
@@ -233,6 +261,13 @@ pattern = 'root\.join\("share/(?P<subdir>rootfs-tree)"\)'
 docs = ["docs/security-verification.md"]
 must_contain = "{subdir}"
 forbidden = ["rootfs-base.erofs"]
+
+[[assertion]]
+name = "nested-docker-default"
+source = "proxy/src/host_agents.rs"
+pattern = 'nested_docker:\s*table\s*\.get\("nested_docker"\)\s*\.and_then\(Item::as_bool\)\s*\.unwrap_or\((?P<disabled>false)\)'
+docs = ["docs/nested-docker.md"]
+must_contain = 'The default setting is `{disabled}`'
 
 [[assertion]]
 name = "guest-archive-uid-base"
@@ -325,3 +360,17 @@ source = "proxy/src/coord_rooms/room_status.rs"
 pattern = 'const WORK_TEXT_BYTES: usize = (?P<bytes>\d+);'
 docs = ["docs/coord-operations.md"]
 must_contain = "at most {bytes} UTF-8 bytes each"
+
+[[assertion]]
+name = "coord-federation-cached-connections"
+source = "proxy/src/agent_api/coord/federation.rs"
+pattern = 'const MAX_CONNECTIONS: usize = (?P<count>\d+);'
+docs = ["docs/coord-reference.md"]
+must_contain = "caches up to {count} connections"
+
+[[assertion]]
+name = "coord-federation-wait-consumers"
+source = "proxy/src/coord_rooms/federation/nats.rs"
+pattern = 'const MAX_WAIT_CONSUMERS: i32 = (?P<count>\d+);'
+docs = ["docs/coord-reference.md"]
+must_contain = "at most {count} wait consumers"

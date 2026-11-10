@@ -98,6 +98,9 @@ pub(crate) fn agent_result(result: &Value) -> Value {
     let mut view = json!({"status":result["status"],"presentation":result["presentation"],
         "preview_active":result["preview_active"],"reused":result["reused"],
         "expires_at":expires_at,"diagnostic":result["diagnostic"]});
+    if let Some(diagnostic) = view["diagnostic"].as_object_mut() {
+        diagnostic.remove("operator_details");
+    }
     if result["status"] == "started"
         && expires_at
             .as_str()
@@ -217,9 +220,13 @@ fn event(record: &pending::Record, name: &'static str, summary: &str) -> Event {
         status: Some(crate::audit::AttributionStatus::Resolved),
         provenance: None,
     });
+    let mut result = record.result.clone();
+    if let Some(diagnostic) = result.get_mut("diagnostic").and_then(Value::as_object_mut) {
+        diagnostic.remove("operator_details");
+    }
     event.details =
         json!({"approval_id":record.approval_id,"authority_digest":record.authority_digest,
-        "action_id":DESKTOP_PRESENT,"status":record.status,"result":record.result})
+        "action_id":DESKTOP_PRESENT,"status":record.status,"result":result})
         .into();
     event
 }
@@ -233,7 +240,7 @@ pub(crate) fn resolve(
     id: &str,
     decision: Decision,
     option: Option<&str>,
-    reviewer: Option<(&crate::host_runs::AgentRun, &str)>,
+    reviewer: Option<(&crate::peer_support::Caller, &str)>,
 ) -> Result<(u16, Value)> {
     let path = config_path(state)?;
     let mut execute = false;
@@ -249,6 +256,10 @@ pub(crate) fn resolve(
                 .ok_or_else(|| invalid("policy unavailable"))?;
             let delegated = reviewer.map(|(run, name)| pending::delegation::authorize(&policy, record, run, name, option.unwrap_or("once"))).transpose()?;
             if record.status != "pending" { return Ok(()); }
+            if let Some((run, name)) = reviewer {
+                let saved = pending::saved_policy(state, &policy)?;
+                pending::delegation::authorize(&saved, record, run, name, option.unwrap_or("once"))?;
+            }
             let current = pending::current_view(writer, &policy, record, Some(state))?;
             if current["status"] != "pending" {
                 record.status = current["status"].as_str().unwrap_or("superseded").into();
@@ -342,7 +353,7 @@ pub(crate) fn resolve(
                 result
             }
             Err(error) => {
-                json!({"status":"failed","diagnostic":error.json(),"issued_access":issued})
+                json!({"status":"failed","diagnostic":error.operator_json(),"issued_access":issued})
             }
         };
         let record = writer

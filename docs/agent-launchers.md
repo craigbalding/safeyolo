@@ -7,26 +7,43 @@ same observations. A successful launch script does not, by itself, prove the
 coding agent is running. Install the [host commands](installation.md)
 before following this reference.
 
+For ordinary project return, run `safeyolo agent launch` from the saved workspace.
+An omitted harness reuses an unambiguous saved Claude or Codex binding, including
+custom agent names. With `--name NAME` and no workspace argument, launch reuses
+that agent’s saved workspace. When several agents match, an interactive terminal asks for
+a name; a noninteractive call lists the choices and requires `--name NAME`.
+`--harness` selects the matching saved harness explicitly. Conflicting named
+configuration is retained and reported. Only a new agent defaults to Claude.
+Launch still needs an interactive terminal for setup, login and approvals;
+explicit `agent create` and `agent start` remain available for automation.
+
 Recorded launch transitions refresh Command Centre through the existing event
 stream. Opening its menu also requests current status; Refresh Agent Status
 lets the operator recheck after host/session-manager failure, which cannot
 reliably emit its own final event. These are observations, not a heartbeat or
 a new recovery manager.
 
-The macOS Command Centre connects to local SafeYolo and its saved remote
-instance together. Each instance has its own menu, connection status, agents,
-approvals and diagnostics. Approval windows show the instance name and ID.
+The macOS Command Centre connects to local SafeYolo and multiple saved instances
+together, including separate roots on one host. Each instance has its own menu,
+connection status, agents, approvals, support receipts and diagnostics. Approval windows show the instance name and ID.
 Local connections use loopback; adding a remote connection does not publish
 the local instance or change its shell transport. Saved Admin credentials remain
 in Keychain.
-If one instance is unavailable, the other remains usable.
+If one instance is unavailable, the other instances remain usable. Failed reads
+retain their last snapshot with an unavailable indication.
 
-In **Connection Settings**, **Connect Local SafeYolo** reconnects the local
-instance while keeping the remote connection. **Remove Saved Remote** removes
-the remote profile and disconnects that instance. Existing saved remote profiles
-remain usable when SafeYolo is not installed locally. When both `--admin-url`
-and `--events-url` are passed to the Command Centre executable, launch connects
-only to those endpoints instead of restoring the saved remote profile.
+In **Connection Settings**, select **Add an instance…** or an existing profile.
+Each saved profile is pinned to the authenticated owner's durable identity.
+Editing an existing profile cannot adopt a recreated same-name instance. Select
+a new profile deliberately for that owner. **Remove Selected Profile** disconnects
+only that instance. It does not revoke its credential, grants or peer trust.
+**Connect Local SafeYolo** reconnects the default local instance and keeps the
+saved connections. Saved profiles remain usable without a local installation.
+When both `--admin-url` and `--events-url` are passed to the app executable,
+launch connects only to those endpoints.
+
+For connection-file import, ongoing notices and original receipt recovery, use
+[the complete support journey](federation-setup.md#supervise-saved-instances-in-command-centre).
 
 Agent rows keep the status icon on the left and show a harness mark beside the
 name: `>_` for Codex, `π` for Pi, and `✳` for Claude Code. The configured bundled

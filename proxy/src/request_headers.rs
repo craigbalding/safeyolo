@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 const INTERNAL_AND_HOP: &[&[u8]] = &[
     b"x-safeyolo-request-id",
     b"x-safeyolo-trace",
+    b"x-safeyolo-docker-service",
     b"connection",
     b"keep-alive",
     b"proxy-authenticate",
@@ -58,6 +59,9 @@ pub(crate) struct Hygiene {
     pub(crate) trace_requested: bool,
     /// Source RequestIdGenerator's header predicate, not complete WS validation.
     pub(crate) websocket: bool,
+    /// Docker's raw exec/attach switch. Authorization belongs to the gateway.
+    pub(crate) docker_stream: bool,
+    pub(crate) upgrade_requested: bool,
 }
 
 impl RequestHeaders {
@@ -203,18 +207,30 @@ impl RequestHeaders {
     /// and transport map. Surviving map values, body, and framing are untouched.
     /// Request IDs/timing and response correlation remain the caller's concern.
     pub(crate) fn apply_hygiene(&mut self, headers: &mut HeaderMap) -> Hygiene {
+        self.apply_hygiene_for_docker(headers, false)
+    }
+
+    pub(crate) fn apply_hygiene_for_docker(
+        &mut self,
+        headers: &mut HeaderMap,
+        docker: bool,
+    ) -> Hygiene {
         let connection = self.get(b"connection");
         let facts = Hygiene {
             trace_requested: !self.get(b"x-safeyolo-trace").is_empty(),
             websocket: lower_equals_ascii(self.get(b"upgrade"), b"websocket", false)
                 && connection_nominates(connection, b"upgrade"),
+            docker_stream: docker
+                && lower_equals_ascii(self.get(b"upgrade"), b"tcp", false)
+                && connection_nominates(connection, b"upgrade"),
+            upgrade_requested: !self.get(b"upgrade").is_empty(),
         };
         let remove: Vec<bool> = self
             .fields
             .iter()
             .map(|field| {
                 let name = field.name.as_bytes();
-                let preserve = facts.websocket
+                let preserve = (facts.websocket || facts.docker_stream)
                     && (name.eq_ignore_ascii_case(b"connection")
                         || name.eq_ignore_ascii_case(b"upgrade"));
                 !preserve

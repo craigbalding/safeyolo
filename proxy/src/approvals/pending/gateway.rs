@@ -76,7 +76,7 @@ pub(super) fn option_current(runtime: &Runtime, option: &OptionScope) -> Result<
     Ok(true)
 }
 
-fn credential_bindings(
+pub(super) fn credential_bindings(
     runtime: &Runtime,
     names: &[String],
 ) -> Result<(BTreeMap<String, String>, Option<String>)> {
@@ -141,11 +141,12 @@ pub(crate) async fn bind_risky(
         .evidence_agent_id(agent)
         .ok_or_else(|| invalid("requester identity unavailable"))?;
     let path = request.path.split('?').next().unwrap_or("/");
-    let action = json!({"kind":"gateway_route","agent":agent,"agent_id":agent_id,
+    let mut action = json!({"kind":"gateway_route","agent":agent,"agent_id":agent_id,
         "service":selection.service,"capability":selection.capability,"credential":selection.vault_token,
         "account":selection.account,"host":request.host,"method":request.method,"path":path,
-        "run":run,"binding_id":selection.binding_id,
+        "scheme":scheme,"port":request.port,"run":run,"binding_id":selection.binding_id,
         "irreversible":selection.risky_route.as_ref().is_some_and(|route| route.irreversible)});
+    action["prepared_assessment"] = super::route_challenge::assessment(runtime, policy, &action)?;
     let ttl = runtime
         .gateway_grants
         .as_ref()
@@ -349,6 +350,19 @@ pub(crate) async fn bind_agent_request(
         ));
         option.parameters = json!({"credential":name,"credential_binding":action["credential_binding"],"expires_at":expires_at});
         options.push(option);
+    }
+    if let Some(endpoint) = &definition.docker
+        && let Some(access) = definition
+            .capabilities
+            .get(capability)
+            .and_then(|capability| capability.docker_access.as_ref())
+    {
+        let bounds = access.authority(endpoint.execution_boundary);
+        for option in &mut options {
+            option
+                .effect
+                .push_str(&format!(" Docker authority: {bounds}"));
+        }
     }
     let authority = Authority {
         revision: revision(policy, &action)

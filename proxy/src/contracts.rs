@@ -1,5 +1,5 @@
-//! Request-only service contracts. State capture/enforcement and response validators
-//! remain declarations. Callers must apply compiled route permissions before these checks.
+//! Request contracts, including nested JSON checks. Generic state enforcement and
+//! response validators remain unsupported. Callers apply route permissions first.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -150,6 +150,9 @@ impl ContractTemplate {
             }
         }
         for operation in &self.operations {
+            for constraint in operation.constraints() {
+                constraint.validate()?;
+            }
             if !operation.requires_enforcement.is_empty()
                 && !TIERS.contains(&operation.requires_enforcement.as_str())
             {
@@ -157,6 +160,18 @@ impl ContractTemplate {
             }
             if let Some(transport) = &operation.request.transport {
                 transport.validate()?;
+                if transport.body_format == BodyFormat::Opaque
+                    && (!operation.request.body.allow.is_empty()
+                        || operation.request.body.values.is_some())
+                {
+                    return Err("opaque request bodies cannot have JSON field constraints".into());
+                }
+                if transport.body_format == BodyFormat::Opaque
+                    && !["POST", "PUT", "PATCH"]
+                        .contains(&operation.request.method.to_uppercase().as_str())
+                {
+                    return Err("opaque request bodies require POST, PUT or PATCH".into());
+                }
             }
         }
         Ok(())
@@ -228,6 +243,7 @@ pub struct ContractOperation {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OperationRequest {
     #[serde(default = "get_method")]
     pub method: String,
@@ -256,6 +272,7 @@ impl Default for OperationRequest {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransportConstraint {
     #[serde(default)]
     pub require_no_body: bool,
@@ -264,6 +281,19 @@ pub struct TransportConstraint {
     pub allow_headers: Option<Value>,
     #[serde(default)]
     pub deny_ambiguous_encoding: bool,
+    /// Opaque bodies have no JSON field view. Only explicit media types can stream.
+    #[serde(default)]
+    pub body_format: BodyFormat,
+    #[serde(default)]
+    pub content_types: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BodyFormat {
+    #[default]
+    JsonObject,
+    Opaque,
 }
 fn present_value<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
@@ -272,6 +302,24 @@ fn present_value<'de, D: serde::Deserializer<'de>>(
 }
 impl TransportConstraint {
     fn validate(&self) -> Result<(), Error> {
+        if self.body_format == BodyFormat::Opaque
+            && (self.require_no_body || self.content_types.is_empty())
+        {
+            return Err(
+                "opaque request bodies need content_types and cannot require_no_body".into(),
+            );
+        }
+        if self.content_types.iter().any(|value| {
+            value.is_empty()
+                || value != &value.to_ascii_lowercase()
+                || !value.contains('/')
+                || value.contains([';', ',', ' ', '\r', '\n'])
+        }) {
+            return Err(
+                "transport.content_types must contain lowercase media types without parameters"
+                    .into(),
+            );
+        }
         if let Some(value) = &self.allow_headers
             && !value
                 .as_array()
@@ -284,22 +332,27 @@ impl TransportConstraint {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Constraints {
     #[serde(default)]
     pub allow: BTreeMap<String, Constraint>,
     #[serde(default = "yes")]
     pub deny_unknown: bool,
+    #[serde(default)]
+    pub values: Option<Box<Constraint>>,
 }
 impl Default for Constraints {
     fn default() -> Self {
         Self {
             allow: BTreeMap::new(),
             deny_unknown: true,
+            values: None,
         }
     }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Constraint {
     #[serde(default)]
     pub equals_var: String,
@@ -309,6 +362,64 @@ pub struct Constraint {
     pub kind: String,
     #[serde(default)]
     pub in_state_set: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub nullable: bool,
+    /// Validation uses the upstream default; the original request is not rewritten.
+    #[serde(default, deserialize_with = "present_value")]
+    pub default: Option<Value>,
+    #[serde(default, rename = "enum")]
+    pub choices: Vec<Value>,
+    #[serde(default)]
+    pub object: Option<Constraints>,
+    #[serde(default)]
+    pub items: Option<Box<Constraint>>,
+}
+
+impl Constraint {
+    fn validate(&self) -> Result<(), Error> {
+        if ![
+            "",
+            "string",
+            "integer",
+            "number",
+            "boolean",
+            "object",
+            "array",
+            "string_or_array",
+        ]
+        .contains(&self.kind.as_str())
+        {
+            return Err(format!("Unsupported constraint type '{}'", self.kind).into());
+        }
+        if !self.integer_range.is_empty()
+            && (self.integer_range.len() != 2 || self.integer_range[0] > self.integer_range[1])
+        {
+            return Err("integer_range needs an ordered pair of integers".into());
+        }
+        if self.object.is_some() && !["", "object"].contains(&self.kind.as_str())
+            || self.items.is_some() && !["", "array"].contains(&self.kind.as_str())
+        {
+            return Err("nested constraint does not match its type".into());
+        }
+        Ok(())
+    }
+
+    fn collect<'a>(&'a self, result: &mut Vec<&'a Constraint>) {
+        result.push(self);
+        if let Some(object) = &self.object {
+            for constraint in object.allow.values() {
+                constraint.collect(result);
+            }
+            if let Some(values) = &object.values {
+                values.collect(result);
+            }
+        }
+        if let Some(items) = &self.items {
+            items.collect(result);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -327,23 +438,32 @@ pub struct ContractBinding {
 }
 
 impl ContractOperation {
-    pub fn bound_value_references(&self) -> BTreeSet<&str> {
-        self.request
+    fn constraints(&self) -> Vec<&Constraint> {
+        let mut result = Vec::new();
+        for constraint in self
+            .request
             .path_params
             .values()
             .chain(self.request.query.allow.values())
             .chain(self.request.body.allow.values())
+            .chain(self.request.query.values.as_deref())
+            .chain(self.request.body.values.as_deref())
+        {
+            constraint.collect(&mut result);
+        }
+        result
+    }
+    pub fn bound_value_references(&self) -> BTreeSet<&str> {
+        self.constraints()
+            .into_iter()
             .filter_map(|constraint| {
                 (!constraint.equals_var.is_empty()).then_some(constraint.equals_var.as_str())
             })
             .collect()
     }
     pub fn has_state_reference(&self) -> bool {
-        self.request
-            .path_params
-            .values()
-            .chain(self.request.query.allow.values())
-            .chain(self.request.body.allow.values())
+        self.constraints()
+            .into_iter()
             .any(|constraint| !constraint.in_state_set.is_empty())
     }
     pub fn unsupported_grant_reason(&self) -> Option<&'static str> {
@@ -353,6 +473,7 @@ impl ContractOperation {
             match self.requires_enforcement.as_str() {
                 "state_capture" => Some("runtime state capture is not supported"),
                 "state_enforcement" => Some("runtime state enforcement is not supported"),
+                "response_validators" => Some("runtime response validators are not supported"),
                 _ => None,
             }
         }
@@ -533,7 +654,7 @@ fn percent_problem(value: &str, path: bool) -> bool {
     false
 }
 
-fn query_params(query: &str) -> Result<Map<String, Value>, ContractDenial> {
+pub(crate) fn query_params(query: &str) -> Result<Map<String, Value>, ContractDenial> {
     let mut parsed = Map::new();
     for item in query.split('&').filter(|item| !item.is_empty()) {
         let (key, value) = item.split_once('=').unwrap_or((item, ""));
@@ -632,7 +753,24 @@ pub(crate) fn enforce_request_with_timestamps(
         .to_lowercase();
     let mut body = None;
     let writes = ["POST", "PUT", "PATCH"].contains(&request.method);
-    if writes && !request.body.is_empty() {
+    let opaque = operation
+        .request
+        .transport
+        .as_ref()
+        .is_some_and(|transport| transport.body_format == BodyFormat::Opaque);
+    if writes
+        && operation
+            .request
+            .transport
+            .as_ref()
+            .is_some_and(|transport| {
+                !transport.content_types.is_empty()
+                    && !transport.content_types.contains(&content_type)
+            })
+    {
+        return Err(deny(TransportContentType, None));
+    }
+    if writes && !opaque && !request.body.is_empty() {
         if content_type != "application/json" {
             return Err(deny(TransportContentType, None));
         }
@@ -707,7 +845,12 @@ pub(crate) fn enforce_request_with_timestamps(
         }
     }
     for (name, value) in &parsed_query {
-        let Some(constraint) = operation.request.query.allow.get(name) else {
+        let Some(constraint) = operation.request.query.allow.get(name).or(operation
+            .request
+            .query
+            .values
+            .as_deref())
+        else {
             if operation.request.query.deny_unknown {
                 return Err(deny(ContractViolation, Some(name)));
             }
@@ -739,31 +882,28 @@ pub(crate) fn enforce_request_with_timestamps(
                 return Err(deny(ContractViolation, Some(name)));
             }
         }
+        check_wire_value(
+            constraint,
+            value.as_str().unwrap(),
+            name,
+            bound_values,
+            &types,
+        )?;
     }
-    if let Some(body) = &body {
-        for (name, value) in body {
-            let Some(constraint) = operation.request.body.allow.get(name) else {
-                if operation.request.body.deny_unknown {
-                    return Err(deny(ContractViolation, Some(name)));
-                }
-                continue;
-            };
-            let empty = Value::String(String::new());
-            if !constraint.equals_var.is_empty() && !types.mapping_available {
-                return Err(deny(ValueCompatibility, Some(name)));
-            }
-            if !constraint.equals_var.is_empty()
-                && (timestamps.has_under(&[&constraint.equals_var])
-                    || !python_equal(
-                        value,
-                        bound_values
-                            .get(&constraint.equals_var)
-                            .filter(|_| timestamps.key_at(&[&constraint.equals_var]).is_none())
-                            .unwrap_or(&empty),
-                    ))
-            {
-                return Err(deny(ContractViolation, Some(name)));
-            }
+    // Visit absent fields too: required fields and authored upstream defaults
+    // must not disappear merely because the requester omitted the key/body.
+    if !opaque {
+        check_object(
+            &operation.request.body,
+            body.as_ref().unwrap_or(&empty),
+            "",
+            bound_values,
+            &types,
+        )?;
+    }
+    for (name, constraint) in &operation.request.query.allow {
+        if !parsed_query.contains_key(name) {
+            check_value(constraint, None, name, bound_values, &types)?;
         }
     }
     if !operation.request.path_params.is_empty() {
@@ -777,6 +917,9 @@ pub(crate) fn enforce_request_with_timestamps(
                 .strip_prefix('{')
                 .and_then(|value| value.strip_suffix('}'))
             {
+                if let Some(constraint) = operation.request.path_params.get(name) {
+                    check_wire_value(constraint, actual, name, bound_values, &types)?;
+                }
                 if let Some(constraint) = operation.request.path_params.get(name)
                     && !constraint.equals_var.is_empty()
                 {
@@ -814,6 +957,186 @@ pub(crate) fn enforce_request_with_timestamps(
         content_type,
         headers,
     })
+}
+
+fn check_wire_value(
+    rule: &Constraint,
+    wire: &str,
+    name: &str,
+    bindings: &Map<String, Value>,
+    types: &BoundValueTypes<'_>,
+) -> Result<(), ContractDenial> {
+    let invalid = || deny(ContractCode::ContractViolation, Some(name));
+    let value = if rule.kind == "integer" || !rule.integer_range.is_empty() {
+        Value::from(
+            i64::try_from(python_integer(wire).ok_or_else(invalid)?).map_err(|_| invalid())?,
+        )
+    } else {
+        match rule.kind.as_str() {
+            "boolean" => match wire {
+                "true" | "1" => Value::Bool(true),
+                "false" | "0" => Value::Bool(false),
+                _ => return Err(invalid()),
+            },
+            "number" => serde_json::from_str::<Value>(wire)
+                .ok()
+                .filter(Value::is_number)
+                .ok_or_else(invalid)?,
+            _ => Value::String(wire.into()),
+        }
+    };
+    let mut scalar = rule.clone();
+    // Each location retains its existing binding equality/rendering semantics.
+    scalar.equals_var.clear();
+    check_value(&scalar, Some(&value), name, bindings, types)
+}
+
+fn check_object(
+    rules: &Constraints,
+    object: &Map<String, Value>,
+    prefix: &str,
+    bindings: &Map<String, Value>,
+    types: &BoundValueTypes<'_>,
+) -> Result<(), ContractDenial> {
+    if rules.deny_unknown {
+        for name in object.keys() {
+            if !rules.allow.contains_key(name) {
+                return Err(deny(
+                    ContractCode::ContractViolation,
+                    Some(&format!("{prefix}{name}")),
+                ));
+            }
+        }
+    }
+    for (name, constraint) in &rules.allow {
+        check_value(
+            constraint,
+            object.get(name),
+            &format!("{prefix}{name}"),
+            bindings,
+            types,
+        )?;
+    }
+    if let Some(values) = &rules.values {
+        for (name, value) in object {
+            check_value(
+                values,
+                Some(value),
+                &format!("{prefix}{name}"),
+                bindings,
+                types,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn check_json_shape(
+    rules: &Constraints,
+    value: &Map<String, Value>,
+) -> Result<(), ContractDenial> {
+    check_object(
+        rules,
+        value,
+        "",
+        &Map::new(),
+        &BoundValueTypes {
+            timestamps: &crate::policy::TimestampPaths::default(),
+            mapping_available: true,
+        },
+    )
+}
+
+pub(crate) fn strict_json(bytes: &[u8]) -> Result<Value, Error> {
+    Ok(serde_json::from_slice::<StrictJson>(bytes)?.0)
+}
+
+fn check_value(
+    rule: &Constraint,
+    value: Option<&Value>,
+    field: &str,
+    bindings: &Map<String, Value>,
+    types: &BoundValueTypes<'_>,
+) -> Result<(), ContractDenial> {
+    use ContractCode::*;
+    if rule.required && value.is_none() {
+        return Err(deny(ContractViolation, Some(field)));
+    }
+    let Some(value) = value.or(rule.default.as_ref()) else {
+        return Ok(());
+    };
+    if value.is_null() && rule.nullable {
+        return Ok(());
+    }
+    let typed = match rule.kind.as_str() {
+        "string" => value.is_string(),
+        "integer" => value.is_i64() || value.is_u64(),
+        "number" => value.is_number(),
+        "boolean" => value.is_boolean(),
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string_or_array" => {
+            value.is_string()
+                || value
+                    .as_array()
+                    .is_some_and(|items| items.iter().all(Value::is_string))
+        }
+        _ => true,
+    };
+    if !typed
+        || !rule.choices.is_empty() && !rule.choices.contains(value)
+        || !rule.integer_range.is_empty()
+            && value
+                .as_i64()
+                .is_none_or(|n| n < rule.integer_range[0] || n > rule.integer_range[1])
+    {
+        return Err(deny(ContractViolation, Some(field)));
+    }
+    if !rule.equals_var.is_empty() {
+        if !types.mapping_available {
+            return Err(deny(ValueCompatibility, Some(field)));
+        }
+        let empty = Value::String(String::new());
+        if types.timestamps.has_under(&[&rule.equals_var])
+            || !python_equal(
+                value,
+                bindings
+                    .get(&rule.equals_var)
+                    .filter(|_| types.timestamps.key_at(&[&rule.equals_var]).is_none())
+                    .unwrap_or(&empty),
+            )
+        {
+            return Err(deny(ContractViolation, Some(field)));
+        }
+    }
+    if let Some(object) = &rule.object {
+        check_object(
+            object,
+            value
+                .as_object()
+                .ok_or_else(|| deny(ContractViolation, Some(field)))?,
+            &format!("{field}."),
+            bindings,
+            types,
+        )?;
+    }
+    if let Some(items) = &rule.items {
+        for (index, item) in value
+            .as_array()
+            .ok_or_else(|| deny(ContractViolation, Some(field)))?
+            .iter()
+            .enumerate()
+        {
+            check_value(
+                items,
+                Some(item),
+                &format!("{field}[{index}]"),
+                bindings,
+                types,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn python_integer(value: &str) -> Option<i128> {

@@ -1,5 +1,56 @@
 # macOS Seatbelt acceptance records
 
+## Execution-boundary acceptance (2026-11-08)
+
+Lens independently accepted all 12 criteria in
+[issue #622](https://github.com/craigbalding/safeyolo/issues/622#issuecomment-6726896131).
+The reviewed source was [PR #1159 at fb669cdca5ef2fe9d6e0715dad18e4df46ea37e8](https://github.com/craigbalding/safeyolo/pull/1159/commits/fb669cdca5ef2fe9d6e0715dad18e4df46ea37e8).
+Its reference profile was unchanged from `4472ce34bd53d0546c772f15f65b6fab377b8e12`.
+The [native/account disposition](https://github.com/craigbalding/safeyolo/issues/622#issuecomment-6304513652)
+establishes the execution denials and account checks. The
+[developer/test disposition](https://github.com/craigbalding/safeyolo/issues/622#issuecomment-6304665613)
+adds seven maintained SafeYolo test cases under that policy, with no skips or
+failures. These results retain their recorded source, runtime and platform limits.
+
+The final physical Virtualization.framework (VZ) observation used Bristol's
+dedicated account through fresh Secure Shell (SSH) sessions as user ID (UID)
+502. The fixed shell launcher selected the root-owned, mode 0644 profile at
+`/Library/PrivilegedHelperTools/seatbelt-agent/agent-dev.sb`. That installed
+profile contains the six denial forms from this PR: job creation,
+LaunchServices/AppleEvents, the ServiceManagement broker, LaunchAgents writes,
+Library replacement, and cron/at spool writes.
+
+The installed profile also contains local VZ, VirtioFS, toolchain/cache and
+loopback allowances, plus a separate same-sandbox signal restriction. It is
+not byte-identical to the reference template. The VZ grants remain optional
+and disabled in the reference profile.
+
+| Physical witness input | SHA-256 |
+| --- | --- |
+| Installed profile | `2fd3165f583c6a9e734c09c5ed066e015c183b2eda47e9a1d7c1868b805d1780` |
+| Retained VM helper | `a851f70365bf17aba2f83e11ca1fb4bd7d3fd7a7327ec9efc99c05c7449f6328` |
+| `/evidence/operator/622/bristol-profile-proof-20261108.json` | `27d2aae4830f44ea5e3b8fe224ab2fa05564aafae4c1e307fdce7d25eabe7bc0` |
+
+Both the original and replacement profiles reached VM ready and produced a
+fresh, nonempty guest startup marker through the status share. Both used the
+same helper and prepared boot inputs, with a separate cloned root filesystem,
+home, status and workspace for each run. Each VM had 2 CPUs and 1024 MiB memory.
+Exit 124 followed the declared 90-second runner deadline and exact-child reap;
+it did not indicate a failure to reach readiness. The recorded elapsed times
+were 95.44 and 95.45 seconds. Profile hashes remained unchanged during each run.
+
+This establishes compatibility of the six denials with that explicitly permitted
+VM workload. It does not qualify a whole PR build, current default-branch or
+installed source, model execution, every platform, or the wider VZ security
+assessment in [#616](https://github.com/craigbalding/safeyolo/issues/616).
+The separate signal and supplementary Tart controls do not expand that scope.
+
+Craig selected the tested installed profile as Bristol's ongoing daily baseline
+on 8 November. The original backup remains available for regression recovery.
+No restoration or physical witness replay is pending. Factory work has no
+authority to obtain root on Bristol or change that installed policy. The
+accepted evidence does not require a personal-account fixture.
+
 ## Account fixture inputs and noncreating observer, 2026-10-20
 
 The first account attempt stopped before allocation because
@@ -73,8 +124,10 @@ sudoers file and lab were removed. The created parent was empty and removed.
 The original full script remains a failed run. Its passed sections, the client
 continuation and the independent cleanup are distinct observations. No new
 account run or client continuation is needed for this fixture correction.
-Lens still owns criterion acceptance. Physical Bristol VZ remains unverified
-under the separate [VZ procedure](VZ-WITNESS.md).
+Lens's [native/account disposition](https://github.com/craigbalding/safeyolo/issues/622#issuecomment-6304513652)
+accepted these observations. The
+[physical VZ result](#execution-boundary-acceptance-2026-11-08) supplies the
+separate VM workload evidence.
 
 ## Existing LaunchAgents aliases, 2026-10-20
 
@@ -107,7 +160,8 @@ not invoke the root account/scheduler/SSH entrypoint. Linux passed the existing
 three tests with 27 cases and skipped the six Mac-only tests. Sylab later
 observed the reserved root fixture's writable-hardlink refusal,
 protected-hardlink acceptance and unaliased controls at b48c, as recorded above.
-The physical VZ witness remains unverified.
+The [physical VZ result](#execution-boundary-acceptance-2026-11-08) has its own
+installed-profile and helper identities.
 
 ## Disposable fixture safety correction, 2026-10-20
 
@@ -143,15 +197,9 @@ The running SSH daemon was never reloaded. On cleanup uncertainty, the fixture
 must still return nonzero and retain the printed lab path with its root SSH log
 and pending marker intact.
 
-The [physical VZ witness procedure](VZ-WITNESS.md) supplies the missing boot,
-SSH banner, guest command, bidirectional VirtioFS share markers and owned
-teardown commands. It binds the retained #587 package/helper at `7d4b812b` and
-its guest images to the installed profile plus the six committed denials.
-The prepared fixture uses separate disposable config, home, status and marker
-shares with an explicit tmpfs upper layer. It does not restart the retained
-agent or replay accepted negative controls. The protected profile copy and
-UID-502 launch still require a trusted Bristol terminal. This is preparation,
-not a physical execution result or criterion 12 acceptance.
+The [completed physical VZ observation](#execution-boundary-acceptance-2026-11-08)
+is separate from these account-fixture controls. Its actual boot and guest
+startup/share results define the accepted scope.
 
 ## Execution-boundary hardening, 2026-10-20
 
@@ -203,16 +251,10 @@ The profile bytes remained unchanged; that fixture was removed.
 The changed native account checker compiles with `-Wall -Wextra -Werror -O2` on
 this guest. At that scoped-process test, the new account/consumer cases and real
 SSH were unverified. The later operator observations above cover those account
-operations at b48c. Physical VZ under the changed profile remains unverified.
-Existing dated results below retain their original source and scope.
-
-The approved Bristol SSH route confirmed macOS 26.6.2/25G83 and UID 502. Its
-installed profile and grants were left unchanged. A separate candidate copy,
-formed by appending only the new denials to that installed profile, failed to
-attach inside the existing confined SSH session: `sandbox_apply: Operation not
-permitted`, exit 71, before `/usr/bin/true` ran. A trusted host process outside
-that entry must launch the scoped physical witness. This refusal is not a VZ
-result or evidence that the host has no external consumers.
+operations at b48c. The later
+[physical VZ observation](#execution-boundary-acceptance-2026-11-08) used the
+installed profile with all six denials. Existing dated results below retain
+their original source and scope.
 
 ## Earlier accepted workloads
 
@@ -330,6 +372,91 @@ new grants. Their effects on host resources, unrelated workloads and potential
 sandbox escape remain under [issue #616](https://github.com/craigbalding/safeyolo/issues/616).
 The [optional VZ setup](REFERENCE.md#optional-vz-workloads) preserves that
 distinction and keeps the grants disabled by default.
+
+## Public VZ export comparison (2026-11-06)
+
+On physical Apple Silicon with macOS 26.6.2 (25G83), the confined `sy-agent`
+account (UID 502) exercised nine direct-startup Virtualization.framework (VZ)
+exports using disposable, nonsecret canaries. The installed profile permitted
+both read and read-write file-extension issuance throughout `/Users/sy-agent`.
+It also permitted the generic Fuse extension and the named VM-service lookup.
+Ordinary host file access covered the home and the account's per-user temporary
+directory. This profile differed from the selected-root examples shipped in
+[agent-dev.sb](agent-dev.sb); those examples remain commented out.
+
+The following identities bind the observation:
+
+| Input | Tested value |
+| --- | --- |
+| Helper | `safeyolo-vm` 0.3.1, production arm64, clean source `e23f055957ec55d80b2b6c03f544b901773f8c8e` |
+| Helper SHA-256 | `2dee6808cd4c9042a8478e51ad1e5d734113b5da351af2aa939d0d159c49e0fa` |
+| Signature | Ad-hoc, hardened runtime, strict verification passed; only `com.apple.security.virtualization`; `get_task_allow=false` |
+| Installed profile SHA-256 | `ec39eca32a8ac8ba2ceea9dcb4f587523bfbe2fdb8f2948b0386527ab9c32d80` |
+| Profile parameters | `AGENT_HOME=/Users/sy-agent`, `TOOLCHAIN_ROOT=/opt/homebrew` |
+| Guest | Linux 6.12.17; SSH user `agent` (UID 1000), data operations as guest root |
+
+The helper's startup and share-construction sources matched assigned SafeYolo
+source `e85bea5eec2182bc6ad1b1b414baa896087a22c2`. The only intervening Swift
+changes were snapshot-restore diagnostics and their tests; snapshots were not
+exercised. The existing read-only base disk and SSH initramfs supplied a fresh
+tmpfs overlay for each VM. The retained `overlay.img` was not used.
+
+Before export, the confined host driver directly read the canary and wrote and
+reread a separate control file in each root and its descendant. These successful
+operations established same-UID host access independently of guest I/O. The
+directories were owned by UID 502 with mode 0777; canary files had mode 0666.
+The outside-home fixture was a newly created directory under the account's
+`/private/var/folders/.../T` directory. No other account's data was used.
+
+Each VM requested one explicit `--share PATH:probe:ro` or `:rw` at startup,
+then mounted `probe` as VirtioFS at `/probe`. The helper also constructed its
+empty extra-share device. No live share update was used. All nine VMs booted
+and mounted the requested export successfully. Each row covers reads of
+`canary` and `descendant/canary`, and creation of `guest-write` at both levels:
+
+| Requested export | Guest reads | Guest writes and independent host observation |
+| --- | --- | --- |
+| Selected root, read-only | Exact canary bytes | Exit 1; both host outputs absent |
+| Selected root, writable | Exact canary bytes | Exit 0; both host outputs matched the written bytes |
+| Unlisted home sibling, read-only | Exact canary bytes | Exit 1; both host outputs absent |
+| Unlisted home sibling, writable | Exact canary bytes | Exit 0; both host outputs matched the written bytes |
+| Symlink alias to selected writable root | Exact canary bytes | Exit 0; both host outputs matched the written bytes |
+| Outside-home root, read-only | Exit 1 | Exit 1; both host outputs absent |
+| Outside-home root, writable | Exit 1 | Exit 1; both host outputs absent |
+| Selected descendant symlink to outside-home root, exported read-only | Exit 1 | Exit 1; both host outputs absent |
+| Same descendant symlink, exported writable | Exit 1 | Exit 1; both host outputs absent |
+
+The refused I/O returned `Operation not permitted` after a successful mount.
+This is an observed public export/guest I/O result; the responsible private
+issuance or service check was not identified. Access to the unlisted home
+sibling is consistent with home-wide issuance and does not prove selected-root
+confinement. Traversing the absolute outside-home symlink *within* the mounted
+selected share returned `No such file or directory`; that guest path-resolution
+failure does not establish service-side canonicalization. No tested outside-home
+canary access succeeded. Cross-workload effects were not assessed.
+
+A separate attempt to apply a nested sandbox before `/usr/bin/true` returned
+71 with `sandbox-exec: sandbox_apply: Operation not permitted`. Both the
+permissive nested profile and the profile denying the two file-issuance classes
+failed before the command ran. Consequently, the selected-root-only profile
+and file-grants-omitted export comparison remain unverified. This refusal is
+not a guest denial, and the current-profile run does not replace those controls.
+
+The driver and all nine recorded helper PIDs were independently absent after
+the run. Runner exit 143 followed requested shutdown. After result transfer,
+only the two new trial/canary directories were removed. The retained images,
+original overlay, installed profile and login keychain were preserved.
+
+The retained result `result.json` has SHA-256
+`d4763242f593da42c258d23cb9128611e520351c3339f9517723676b4e4d39d0`.
+It records the complete installed profile, commands, host controls, helper
+status and guest output. The result, driver, helper/serial logs and independent
+cleanup observations are retained under `/evidence/operator/616` for review.
+[Issue #616](https://github.com/craigbalding/safeyolo/issues/616) remains open.
+The private VZ recipient PID, UID and effective policy, raw-token transfer/reuse,
+private requests, lifetime/revocation, broader cross-VM effects and other OS
+versions remain unverified. These results do not establish complete containment
+or change the optional policy or account-local snapshot-keychain instructions.
 
 ## Original boundary-run source hashes
 

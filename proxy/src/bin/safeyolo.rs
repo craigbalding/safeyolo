@@ -3,7 +3,7 @@
 use std::{
     ffi::OsString,
     io::Write,
-    os::unix::fs::OpenOptionsExt,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -80,6 +80,12 @@ fn initialize(root: &Path, config: &Path) -> Result<(), Error> {
     let (private, public) = safeyolo_proxy::tls::CertificateAuthority::create()?;
     write_new("certs/mitmproxy-ca.pem", &private)?;
     write_new("certs/mitmproxy-ca-cert.pem", &public)?;
+    // The public certificate is mounted into guest trust and read by users
+    // such as _apt. Set its mode explicitly even under a restrictive umask.
+    std::fs::set_permissions(
+        root.join("certs/mitmproxy-ca-cert.pem"),
+        std::fs::Permissions::from_mode(0o644),
+    )?;
     write_new(
         config
             .file_name()
@@ -417,7 +423,7 @@ async fn run() -> Result<(), Error> {
             println!("{}", safeyolo_proxy::dispatch::HELP);
             println!("{}", safeyolo_proxy::mattermost::HELP);
             println!(
-                "safeyolo [--root ROOT | --config FILE] init\nsafeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nsafeyolo [--root ROOT] mount --help\nsafeyolo [--root ROOT] coord start [--binary PATH]|stop|status\nsafeyolo [--root ROOT] coord room create NAME|list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send receive page_operator]|revoke ROOM AGENT\nsafeyolo [--root ROOT] coord signal --help\nsafeyolo [--root ROOT] watch [--once] [--json] [--jsonl FILE]\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status and doctor inspect each runtime and control dimension without changing state."
+                "safeyolo [--root ROOT | --config FILE] init\nsafeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nsafeyolo [--root ROOT] mount --help\nsafeyolo [--root ROOT] coord start [--binary PATH]|stop|status\nsafeyolo [--root ROOT] coord room create NAME|list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send receive page_operator]|revoke ROOM AGENT\nsafeyolo [--root ROOT] coord signal --help\nsafeyolo [--root ROOT] watch [--once] [--json] [--jsonl FILE] [--no-interactive] [--no-color]\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status reads current runtime/control dimensions. doctor also probes host prerequisites and the active policy pipeline; it does not prove coding-agent readiness. For a selected agent, use agent diagnostics NAME for runtime/control/terminal probes and its next_action. Use diagnose [--agent NAME] for policy, audit and Admin availability without test traffic."
             );
             println!(
                 "safeyolo [--root ROOT] agent recover NAME [--timeout SECONDS]\nsafeyolo guest-command stage HOME SHARE ASSETS CONTEXT_JSON\nRecovery requires an already booted guest with idle command supervision. Staging is for a stopped guest; the caller supplies this run's context."

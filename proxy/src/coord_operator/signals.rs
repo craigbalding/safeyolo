@@ -4,10 +4,34 @@ use hyper::Method;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    io::{BufRead, Write},
+    io::{BufRead, IsTerminal, Write},
     path::Path,
     time::Duration,
 };
+
+pub(crate) enum WatchUpdate {
+    Display(String),
+    Approvals {
+        current: BTreeMap<String, Value>,
+        changes: String,
+    },
+    Stale(String),
+    Notice(String),
+}
+
+fn print_update(update: WatchUpdate) -> Result<(), Error> {
+    match update {
+        WatchUpdate::Display(output)
+        | WatchUpdate::Approvals {
+            changes: output, ..
+        } => {
+            print!("{output}");
+            std::io::stdout().flush()?;
+        }
+        WatchUpdate::Stale(notice) | WatchUpdate::Notice(notice) => eprintln!("{notice}"),
+    }
+    Ok(())
+}
 
 fn metadata(signal: &Value, hash: &Value) -> Value {
     json!({"signal_id":signal["signal_id"],"room_id":signal["room_id"],"revision":signal["revision"],"kind":signal["kind"],"author":signal["author"],"basis":signal["basis"],"state":signal["state"],"needs_operator":signal["needs_operator"],"content_hash":hash})
@@ -110,22 +134,26 @@ pub(super) async fn audit_revision(
 pub(super) async fn watch(config: &Path, args: &[String]) -> Result<(), Error> {
     if args == ["--help"] {
         println!(
-            "safeyolo [--root ROOT] watch [--once] [--json] [--jsonl FILE]\n\nWatch current pending Coord signals and approval requests through the authenticated Admin stream and canonical APIs. Attachment and reconnect refresh current work. Changes and removals print once; unchanged work stays quiet. The host repairs missed state notifications within five seconds while state and connections are healthy. --once reads the current pending set. Feed gaps and unavailable state are reported; a refresh is not historical replay. --jsonl reads existing audit metadata and fetches its exact immutable revisions; FILE may be - for stdin. Terminal controls are escaped and markup remains text. Resolve with coord signal resolve; use coord signal --help for permissions, bounds and rate limits. Ctrl-C detaches without changing canonical truth."
+            "safeyolo [--root ROOT] watch [--once] [--json] [--jsonl FILE] [--no-interactive] [--no-color]\n\nIn a terminal, review current approvals by stable request number. Use list to revisit pending requests, then approve [OPTION], reject, explain [OPTION], ask, context or later. Enter leaves a selected request pending. New arrivals keep their own numbers while you type. q or Ctrl-C detaches. Decisions use current canonical state and the existing resolver; no request is automatically approved or retried.\n\nWatch also displays pending Coord signals. Attachment and reconnect refresh current work. The host repairs missed state notifications within five seconds while state and connections are healthy. Unavailable or stale state and recovery are reported. A refresh restores current actionable work, not historical replay. --once reads the current pending set without prompting. --json and --no-interactive keep the streaming observer; redirected input or output also disables prompts. --no-color disables colour cues. --jsonl reads existing audit metadata and fetches its exact immutable revisions; FILE may be - for stdin. Terminal controls are escaped and markup remains text. Resolve signals with coord signal resolve; use coord signal --help for permissions, bounds and rate limits."
         );
         return Ok(());
     }
     let mut once = false;
     let mut json = false;
     let mut source = None;
+    let mut no_interactive = false;
+    let mut no_color = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--once" if !once => once = true,
             "--json" if !json => json = true,
+            "--no-interactive" if !no_interactive => no_interactive = true,
+            "--no-color" if !no_color => no_color = true,
             "--jsonl" if source.is_none() => {
                 source = Some(args.next().ok_or("--jsonl requires FILE")?.clone())
             }
-            _ => return Err("usage: safeyolo watch [--once] [--json] [--jsonl FILE]".into()),
+            _ => return Err("usage: safeyolo watch [--once] [--json] [--jsonl FILE] [--no-interactive] [--no-color]".into()),
         }
     }
     if let Some(source) = source {
@@ -157,76 +185,91 @@ pub(super) async fn watch(config: &Path, args: &[String]) -> Result<(), Error> {
         }
         return Ok(());
     }
-    let mut seen = BTreeMap::new();
-    let mut approvals = BTreeMap::new();
-    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     if once {
-        let signals = refresh_signals(config, json, &mut seen).await;
-        let approvals = refresh_approvals(config, json, &mut approvals).await;
+        let signals = refresh_signals(config, json, &mut BTreeMap::new(), &mut print_update).await;
+        let approvals =
+            refresh_approvals(config, json, &mut BTreeMap::new(), &mut print_update).await;
         std::io::stdout().flush()?;
         signals?;
         return approvals;
     }
+    if !json && !no_interactive && std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+    {
+        return crate::operator_commands::watch_approvals(config, no_color).await;
+    }
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    tokio::select! {
+        _ = interrupt.recv() => Ok(()),
+        result = follow(config, json, print_update) => result,
+    }
+}
+
+/// The same subscriber and canonical reconciliation serve both human and JSON views.
+/// The terminal editor runs separately, so input never holds this receive loop.
+pub(crate) async fn follow(
+    config: &Path,
+    json: bool,
+    mut emit: impl FnMut(WatchUpdate) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let mut seen = BTreeMap::new();
+    let mut approvals = BTreeMap::new();
     loop {
-        let connection = tokio::select! {
-            _ = interrupt.recv() => return Ok(()),
-            result = native_client::operator_events(config) => result,
-        };
+        let connection = native_client::operator_events(config).await;
         let mut subscription = match connection {
             Ok(connection) => connection,
             Err(error) => {
-                eprintln!("Operator stream unavailable; pending view may be stale: {error}");
-                tokio::select! {_ = interrupt.recv() => return Ok(()), _ = tokio::time::sleep(Duration::from_secs(1)) => {}}
+                emit(WatchUpdate::Stale(format!(
+                    "Operator stream unavailable; pending view may be stale: {}",
+                    visible(&error.to_string())
+                )))?;
+                tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
         };
         // Subscribe before both snapshots. Mutations during attachment either
         // enter the snapshots or the registered stream; shared host recovery
         // also detects changes whose final audit notification was lost.
-        if refresh_current(config, json, &mut seen, &mut approvals)
+        if refresh_current(config, json, &mut seen, &mut approvals, &mut emit)
             .await
             .is_err()
         {
-            tokio::select! {_ = interrupt.recv() => return Ok(()), _ = tokio::time::sleep(Duration::from_secs(1)) => {}}
+            tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
         }
         loop {
-            let event = tokio::select! {
-                _ = interrupt.recv() => return Ok(()),
-                result = subscription.next() => result,
-            };
+            let event = subscription.next().await;
             let mut event = match event {
                 Ok(event) => event,
                 Err(error) => {
-                    eprintln!(
-                        "Operator stream interrupted; history may be missing; reconnecting: {error}"
-                    );
+                    emit(WatchUpdate::Stale(format!(
+                        "Operator stream interrupted; history may be missing; reconnecting: {}",
+                        visible(&error.to_string())
+                    )))?;
                     break;
                 }
             };
             if event["type"] == "operator_state" {
                 if event["log"] == "unavailable" {
-                    eprintln!(
-                        "Recorded event feed unavailable; current pending state is independent of JSONL delivery."
-                    );
+                    emit(WatchUpdate::Notice("Recorded event feed unavailable; current pending state is independent of JSONL delivery.".into()))?;
                 }
                 if let Some(gap) = event["history_gap"].as_str() {
-                    eprintln!(
-                        "Recorded event history gap: {gap}. Current-state refresh does not replay history."
-                    );
+                    emit(WatchUpdate::Notice(format!(
+                        "Recorded event history gap: {}. Current-state refresh does not replay history.",
+                        visible(gap)
+                    )))?;
                 }
             }
             let refresh = crate::operator_events::refreshes_pending(&event);
             crate::credentials::wipe_json(&mut event);
             if refresh
-                && refresh_current(config, json, &mut seen, &mut approvals)
+                && refresh_current(config, json, &mut seen, &mut approvals, &mut emit)
                     .await
                     .is_err()
             {
                 break;
             }
         }
-        tokio::select! {_ = interrupt.recv() => return Ok(()), _ = tokio::time::sleep(Duration::from_secs(1)) => {}}
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -235,14 +278,21 @@ async fn refresh_current(
     json: bool,
     signals: &mut BTreeMap<String, u64>,
     approvals: &mut BTreeMap<String, Value>,
+    emit: &mut impl FnMut(WatchUpdate) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    let signals = refresh_signals(config, json, signals).await;
+    let signals = refresh_signals(config, json, signals, emit).await;
     if let Err(error) = &signals {
-        eprintln!("Pending signals unavailable; previous view is stale: {error}");
+        emit(WatchUpdate::Notice(format!(
+            "Pending signals unavailable; previous signal view is stale: {}",
+            visible(&error.to_string())
+        )))?;
     }
-    let approvals = refresh_approvals(config, json, approvals).await;
+    let approvals = refresh_approvals(config, json, approvals, emit).await;
     if let Err(error) = &approvals {
-        eprintln!("Pending approvals unavailable; previous view is stale: {error}");
+        emit(WatchUpdate::Stale(format!(
+            "Pending approvals unavailable; previous view is stale: {}",
+            visible(&error.to_string())
+        )))?;
     }
     let _ = std::io::stdout().flush();
     // A failed read can consume the final invalidation while host state stays
@@ -254,6 +304,7 @@ async fn refresh_signals(
     config: &Path,
     json: bool,
     seen: &mut BTreeMap<String, u64>,
+    emit: &mut impl FnMut(WatchUpdate) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let mut current = BTreeMap::new();
     let mut output = String::new();
@@ -300,7 +351,7 @@ async fn refresh_signals(
             format!("CLEARED needs-operator {id} (attributed claim cleared)\n")
         });
     }
-    print!("{output}");
+    emit(WatchUpdate::Display(output))?;
     *seen = current;
     Ok(())
 }
@@ -309,6 +360,7 @@ async fn refresh_approvals(
     config: &Path,
     json: bool,
     seen: &mut BTreeMap<String, Value>,
+    emit: &mut impl FnMut(WatchUpdate) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let page = native_client::admin(
         config,
@@ -348,7 +400,10 @@ async fn refresh_approvals(
             format!("CLEARED needs-approval {id}\n")
         });
     }
-    print!("{output}");
+    emit(WatchUpdate::Approvals {
+        current: current.clone(),
+        changes: output,
+    })?;
     *seen = current;
     Ok(())
 }

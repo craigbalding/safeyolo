@@ -1,12 +1,22 @@
-//! Two owned native SafeYolos, real Agent API/NATS and a separate TLS relay.
+//! Two owned native SafeYolos, real Agent API and scoped TLS NATS.
+#![cfg(target_os = "linux")]
 use super::*;
+#[path = "federation/guided.rs"]
+mod guided;
+#[path = "federation/modes.rs"]
+mod modes;
+#[path = "federation/operator.rs"]
+mod operator;
+#[path = "federation/reliability.rs"]
+mod reliability;
+#[path = "federation/support.rs"]
+mod support;
 use hyper::Method;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
     net::{TcpListener, TcpStream},
     sync::Notify,
 };
@@ -41,34 +51,23 @@ fn client(root: &Path, agent: &str, home: bool) -> Client {
     }
 }
 
-async fn relay(root: &Path) -> (tokio::process::Child, String) {
-    let mut command = host_command(
-        root,
-        &[
-            "coord",
-            "federation",
-            "serve",
-            "127.0.0.1:0",
-            root.join("peer.pem").to_str().unwrap(),
-            root.join("peer.key").to_str().unwrap(),
-        ],
-    );
-    command.stderr(Stdio::from(
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(root.join("relay-private.log"))
-            .unwrap(),
-    ));
-    let mut process = command.spawn().unwrap();
-    let mut reader = BufReader::new(process.stdout.take().unwrap());
-    let mut line = String::new();
-    tokio::time::timeout(Duration::from_secs(10), reader.read_line(&mut line))
-        .await
-        .unwrap()
-        .unwrap();
-    let ready: Value = serde_json::from_str(&line).expect("federation readiness");
-    (process, ready["federation_listen"].as_str().unwrap().into())
+async fn broker(root: &Path, peer: &Path, peer_id: &str, nats: &str) -> String {
+    broker_mode(root, peer, peer_id, nats, "tls").await
+}
+
+async fn broker_mode(root: &Path, peer: &Path, peer_id: &str, nats: &str, mode: &str) -> String {
+    coord_json(root, &["stop"]).await;
+    fs::copy(peer.join("federation-secret"), root.join("peer-secret")).unwrap();
+    let mut setup = json!({"mode":mode,"listen":"127.0.0.1","peers":[{"instance_id":peer_id,"credential_file":root.join("peer-secret")}]});
+    if mode == "tls" {
+        setup["cert_file"] = json!(root.join("peer.pem"));
+        setup["key_file"] = json!(root.join("peer.key"));
+        setup["ca_file"] = json!(root.join("peer.pem"));
+        setup["local_server_name"] = json!("127.0.0.1");
+    }
+    fs::write(root.join("coord-federation.json"), setup.to_string()).unwrap();
+    let ready = host_json(root, &["coord", "start", "--binary", nats]).await;
+    format!("127.0.0.1:{}", ready["client_port"])
 }
 
 /// This is a TCP fault injector, never a peer or claim authority. Normal
@@ -77,6 +76,7 @@ struct Link {
     endpoint: String,
     partitioned: Arc<AtomicBool>,
     accepted: Arc<Notify>,
+    changed: Arc<Notify>,
     task: tokio::task::JoinHandle<()>,
 }
 impl Drop for Link {
@@ -85,12 +85,19 @@ impl Drop for Link {
     }
 }
 impl Link {
+    fn partition(&self, value: bool) {
+        self.partitioned.store(value, Ordering::SeqCst);
+        if value {
+            self.changed.notify_waiters();
+        }
+    }
     async fn new(home: String) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = listener.local_addr().unwrap().to_string();
         let partitioned = Arc::new(AtomicBool::new(false));
         let accepted = Arc::new(Notify::new());
-        let (cut, seen) = (partitioned.clone(), accepted.clone());
+        let changed = Arc::new(Notify::new());
+        let (cut, seen, changes) = (partitioned.clone(), accepted.clone(), changed.clone());
         let task = tokio::spawn(async move {
             let mut connections = tokio::task::JoinSet::new();
             loop {
@@ -104,10 +111,17 @@ impl Link {
                             drop(source);
                             continue;
                         }
-                        let home=home.clone();
+                        let (home,changes,cut)=(home.clone(),changes.clone(),cut.clone());
                         connections.spawn(async move {
+                            let changed=changes.notified();
+                            tokio::pin!(changed);
+                            changed.as_mut().enable();
+                            if cut.load(Ordering::SeqCst){return;}
                             let Ok(mut destination)=TcpStream::connect(home).await else { return; };
-                            let _=tokio::io::copy_bidirectional(&mut source,&mut destination).await;
+                            tokio::select! {
+                                _=tokio::io::copy_bidirectional(&mut source,&mut destination)=>{},
+                                _=changed=>{},
+                            }
                         });
                     }
                     _=connections.join_next(),if !connections.is_empty()=>{}
@@ -118,25 +132,73 @@ impl Link {
             endpoint,
             partitioned,
             accepted,
+            changed,
             task,
         }
     }
 }
 
+async fn await_remote_connection(root: &Path, instance: &str) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let state = safeyolo_proxy::native_client::admin(
+                &root.join("config.toml"),
+                "/admin/coord/diagnostics",
+                Method::GET,
+                Value::Null,
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+            if state["federation"]["connections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|connection| {
+                    connection["instance_id"] == instance && connection["state"] == "Connected"
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the cached peer connection did not recover");
+}
+
 async fn configure_home(home: &Path, peer: &Path, home_id: &str, endpoint: &str) {
-    coord_json(
-        peer,
-        &[
-            "federation",
-            "home",
-            "primary",
-            home_id,
-            &format!("https://{endpoint}"),
-            home.join("peer.pem").to_str().unwrap(),
-            peer.join("federation-secret").to_str().unwrap(),
-        ],
-    )
-    .await;
+    let setup: Value =
+        serde_json::from_slice(&fs::read(home.join("coord-federation.json")).unwrap()).unwrap();
+    if setup["mode"] == "loopback" {
+        coord_json(
+            peer,
+            &[
+                "federation",
+                "home",
+                "primary",
+                home_id,
+                "loopback",
+                &format!("nats://{endpoint}"),
+                peer.join("federation-secret").to_str().unwrap(),
+            ],
+        )
+        .await;
+    } else {
+        coord_json(
+            peer,
+            &[
+                "federation",
+                "home",
+                "primary",
+                home_id,
+                &format!("tls://{endpoint}"),
+                home.join("peer.pem").to_str().unwrap(),
+                peer.join("federation-secret").to_str().unwrap(),
+            ],
+        )
+        .await;
+    }
 }
 
 fn count(root: &Path, sql: &str) -> i64 {
@@ -146,19 +208,39 @@ fn count(root: &Path, sql: &str) -> i64 {
         .unwrap()
 }
 
-async fn owned_stream(root: &Path) -> async_nats::jetstream::stream::Stream {
-    let record: Value =
-        serde_json::from_slice(&fs::read(root.join("data/coord/nats/process.json")).unwrap())
-            .unwrap();
+fn mutable_work(mut value: Value) -> Value {
+    assert_eq!(value["acceptance_status"]["state"], "not_selected");
+    value
+        .as_object_mut()
+        .unwrap()
+        .shift_remove("acceptance_status");
+    value
+}
+
+async fn local_nats(root: &Path) -> async_nats::Client {
     let password =
         zeroize::Zeroizing::new(fs::read_to_string(root.join("data/coord/nats/creds")).unwrap());
-    let connection = async_nats::ConnectOptions::new()
+    let endpoint: Value = serde_json::from_slice(
+        &fs::read(root.join("data/coord/nats/local-endpoint.json")).unwrap(),
+    )
+    .unwrap();
+    let mut options = async_nats::ConnectOptions::new();
+    if endpoint["mode"] == "tls" {
+        options = options
+            .require_tls(true)
+            .add_root_certificates(root.join("peer.pem"));
+    }
+    options
         .user_and_password("safeyolo".into(), password.trim().into())
         .connection_timeout(Duration::from_secs(2))
         .request_timeout(Some(Duration::from_secs(2)))
-        .connect(format!("nats://127.0.0.1:{}", record["client_port"]))
+        .connect(endpoint["url"].as_str().unwrap())
         .await
-        .unwrap();
+        .unwrap()
+}
+
+async fn owned_stream(root: &Path) -> async_nats::jetstream::stream::Stream {
+    let connection = local_nats(root).await;
     let room: String = rusqlite::Connection::open(root.join("data/coord/v0.db"))
         .unwrap()
         .query_row("SELECT room_id FROM rooms WHERE name='shared'", [], |r| {
@@ -187,12 +269,22 @@ async fn armed(stream: &mut async_nats::jetstream::stream::Stream, baseline: usi
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires pinned NATS; two real owned native SafeYolo instances"]
 async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_revocation() {
+    authority_journey("tls").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires pinned NATS; two owned instances over explicit loopback"]
+async fn loopback_preserves_authority_retained_notifications_and_recovery() {
+    authority_journey("loopback").await;
+}
+
+async fn authority_journey(mode: &str) {
     use std::os::unix::fs::PermissionsExt;
     let started = std::time::Instant::now();
     let nats = std::env::var("SAFEYOLO_COORD_NATS_BINARY").expect("set pinned NATS binary");
     let retained = tempfile::Builder::new()
         .prefix("coord-federation-")
-        .tempdir_in(std::env::current_dir().unwrap())
+        .tempdir()
         .unwrap()
         .keep();
     fs::set_permissions(&retained, fs::Permissions::from_mode(0o700)).unwrap();
@@ -252,11 +344,20 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
         certificate.signing_key.serialize_pem(),
     )
     .unwrap();
-    let (mut relay_process, endpoint) = relay(&home).await;
+    let endpoint = broker_mode(&home, &peer, &peer_id, &nats, mode).await;
+    coord_json(&home, &["room", "create", "after-mode-selection"]).await;
     let link = Link::new(endpoint).await;
     configure_home(&home, &peer, &home_id, &link.endpoint).await;
     let mut home_proxy = stage0::start_proxy(&home).await;
     let mut peer_proxy = stage0::start_proxy(&peer).await;
+    let _bob_run =
+        super::controlled_runs::agent_run(&peer, "bob", BOB, "0123456789abcdef0123456789abcdef");
+    let _carol_run = super::controlled_runs::agent_run(
+        &peer,
+        "carol",
+        CAROL,
+        "0123456789abcdef0123456789abcdef",
+    );
     let (alice, bob, carol) = (
         client(&home, "alice", false),
         client(&peer, "bob", true),
@@ -302,6 +403,19 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
             .unwrap()
     );
     assert_eq!(state["origin_instance_id"], home_id);
+    let check = coord_json(&peer, &["federation", "check", "primary"]).await;
+    assert_eq!(check["broker_authentication"], "authenticated");
+    assert_eq!(check["owner"]["identity_verified"], true);
+    assert_eq!(check["operation_permission"], "not_checked");
+    let local = coord_json(&home, &["federation", "check"]).await;
+    assert_eq!(local["broker_authentication"], "authenticated");
+    assert_eq!(local["owner"], "reachable");
+    assert_eq!(local["configuration_active"], true);
+    assert_eq!(local["runtime"]["local_endpoint"]["mode"], mode);
+    assert_eq!(
+        local["runtime"]["local_endpoint"],
+        local["runtime"]["owner_federation_endpoint"]
+    );
     let remote_bob = state["members"]
         .as_array()
         .unwrap()
@@ -349,6 +463,12 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
         .await
         .unwrap_err()
         .to_string();
+    let denied_check = coord_json(&peer, &["federation", "check", "primary"]).await;
+    assert_eq!(
+        denied_check["broker_authentication"], "denied",
+        "{denied_check}"
+    );
+    assert_eq!(denied_check["protection"]["verified"], true);
     fs::write(peer.join("federation-secret"), credential.as_slice()).unwrap();
     assert!(denied.contains("403"));
     assert!(!denied.contains("different-credential"));
@@ -360,7 +480,20 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
         bob.call("claim_work", &claim)
     );
     assert_ne!(local_result.is_ok(), remote_result.is_ok());
-    let winner = local_result.as_ref().or(remote_result.as_ref()).unwrap()["work"].clone();
+    let claimed = local_result.as_ref().or(remote_result.as_ref()).unwrap()["work"].clone();
+    let winner = alice
+        .call(
+            "read_work",
+            &json!({"room_name":"shared","work_id":work["work_id"]}),
+        )
+        .await
+        .unwrap();
+    let mut mutable = winner.clone();
+    mutable
+        .as_object_mut()
+        .unwrap()
+        .shift_remove("acceptance_status");
+    assert_eq!(claimed, mutable);
     assert_eq!(winner["claim_generation"], 1);
     assert_eq!(
         winner,
@@ -390,7 +523,7 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
         .await
         .unwrap()["work"]
         .clone();
-    link.partitioned.store(true, Ordering::SeqCst);
+    link.partition(true);
     let partition_claim = json!({"room_name":"shared","work_id":open["work_id"],"expected_version":1,"expected_generation":0,"operation_id":"partition-claim"});
     let failed = bob.call("claim_work", &partition_claim);
     let (failure, _) = tokio::join!(failed, async {
@@ -401,14 +534,17 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
     assert!(failure.unwrap_err().to_string().contains("503"));
     let claimed=alice.call("claim_work",&json!({"room_name":"shared","work_id":open["work_id"],"expected_version":1,"expected_generation":0,"operation_id":"home-during-partition"})).await.unwrap()["work"].clone();
     assert_eq!(count(&peer, "SELECT count(*) FROM coord_work"), 0);
-    link.partitioned.store(false, Ordering::SeqCst);
+    link.partition(false);
+    await_remote_connection(&peer, &home_id).await;
     assert_eq!(
-        bob.call(
-            "read_work",
-            &json!({"room_name":"shared","work_id":open["work_id"]})
-        )
-        .await
-        .unwrap(),
+        mutable_work(
+            bob.call(
+                "read_work",
+                &json!({"room_name":"shared","work_id":open["work_id"]})
+            )
+            .await
+            .unwrap()
+        ),
         claimed
     );
     // Import remains home-owned; GitHub access remains on each caller's own
@@ -455,7 +591,7 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
     };
     let bob_cursor = feed(bob.clone()).await["next_cursor"].as_u64().unwrap();
     let carol_cursor = feed(carol.clone()).await["next_cursor"].as_u64().unwrap();
-    let notice=alice.call("send",&json!({"room_name":"shared","body":"Remote intended recipient","notify":["remote-bob"]})).await.unwrap();
+    let notice=alice.call("send",&json!({"room_name":"shared","body":"Remote intended recipient","notify":["remote-bob"]})).await.unwrap_or_else(|error|panic!("local notification send failed: {error}; inspect {}",home.display()));
     let attention = bob
         .call(
             "wait_for_coord",
@@ -464,6 +600,8 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
         .await
         .unwrap();
     assert_eq!(attention["objects"].as_array().unwrap().len(), 1);
+    let check = coord_json(&peer, &["federation", "check", "primary"]).await;
+    assert_eq!(check["notifications"]["stream"], "available", "{check}");
     assert_eq!(
         attention["objects"][0]["object"]["body"],
         "Remote intended recipient"
@@ -542,13 +680,11 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
     drop(raw);
     stage0::crash(peer_proxy).await;
     stage0::crash(home_proxy).await;
-    stage0::crash(relay_process).await;
     coord_json(&home, &["stop"]).await;
-    host_json(&home, &["coord", "start", "--binary", &nats]).await;
+    let restarted = host_json(&home, &["coord", "start", "--binary", &nats]).await;
     // The old link's destination was the crashed endpoint. Select the new
     // listener explicitly; no remote state or claim history is merged.
-    let (restarted, actual_endpoint) = relay(&home).await;
-    relay_process = restarted;
+    let actual_endpoint = format!("127.0.0.1:{}", restarted["client_port"]);
     configure_home(&home, &peer, &home_id, &actual_endpoint).await;
     home_proxy = stage0::start_proxy(&home).await;
     peer_proxy = stage0::start_proxy(&peer).await;
@@ -735,7 +871,7 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
     }
     let old_work = json!({"room_name":"shared","work_id":remote_import["work"]["work_id"]});
     assert_eq!(
-        carol.call("read_work", &old_work).await.unwrap(),
+        mutable_work(carol.call("read_work", &old_work).await.unwrap()),
         remote_import["work"]
     );
     assert_eq!(
@@ -806,7 +942,7 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
     .await;
     assert_eq!(replacement_after_trust["agent_id"], remote_bob);
     assert_eq!(
-        bob.call("read_work", &old_work).await.unwrap(),
+        mutable_work(bob.call("read_work", &old_work).await.unwrap()),
         remote_import["work"]
     );
     assert_eq!(coord_json(&home, &replacement_args).await, replacement);
@@ -840,7 +976,7 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
         .await
         .unwrap();
     assert!(local_after.to_string().contains("Private local history"));
-    let report = json!({"home_instance_id":home_id,"peer_instance_id":peer_id,"remote_principal_id":remote_bob,"contested_winner":winner,"partition_home_claim":claimed,"replayed_creation":replay["work"],"retained_message":retained_message,"local_only_message_id":local_message["envelope"]["msg_id"],"brief_revisions":[brief["revision"].clone(),update["revision"].clone()],"targeted_attention":attention,"github":remote_external,"name_reuse":{"after_unmember":replacement,"after_peer_retrust":replacement_after_trust},"peer_work_rows":count(&peer,"SELECT count(*) FROM coord_work"),"seconds":started.elapsed().as_secs_f64(),"limits":"Two independent native roots, proxy processes, NATS processes and a real TLS home relay on one owned host. TCP link interruption during a source mutation; discarded response after observed durable commit. No second physical host, real WAN performance, GitHub external access or model participation is inferred by this test."});
+    let report = json!({"mode":mode,"home_instance_id":home_id,"peer_instance_id":peer_id,"remote_principal_id":remote_bob,"contested_winner":winner,"partition_home_claim":claimed,"replayed_creation":replay["work"],"retained_message":retained_message,"local_only_message_id":local_message["envelope"]["msg_id"],"brief_revisions":[brief["revision"].clone(),update["revision"].clone()],"targeted_attention":attention,"github":remote_external,"name_reuse":{"after_unmember":replacement,"after_peer_retrust":replacement_after_trust},"peer_work_rows":count(&peer,"SELECT count(*) FROM coord_work"),"seconds":started.elapsed().as_secs_f64(),"limits":"Two independent native roots, proxy processes, NATS processes and scoped NATS on one owned host. TCP link interruption during a source mutation; discarded response after observed durable commit. No second physical host, real WAN performance, GitHub external access or model participation is inferred by this test."});
     fs::write(
         retained.join("observations.json"),
         serde_json::to_vec_pretty(&report).unwrap(),
@@ -849,5 +985,4 @@ async fn two_safeyolos_share_only_home_authority_across_partition_restart_and_re
     println!("two-instance observations: {}", report);
     stage0::crash(peer_proxy).await;
     stage0::crash(home_proxy).await;
-    stage0::crash(relay_process).await;
 }

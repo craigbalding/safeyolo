@@ -100,6 +100,44 @@ range, assumptions, and uncertainty. If capacity looks tight, offer smaller
 topology, fewer simultaneous agents, reused mounted sources, or shorter
 evidence retention without pushing one choice.
 
+## Prove native work delivery
+
+For an approved Factory with `[work]`, or an explicitly native-work-enabled
+standalone supervisor, use the native
+Work ID and current versions in `native_in_flight`. Assigned checks, challenge
+responses and dispositions, and selected acceptance decisions carry their
+existing native authority. Do not copy that lifecycle into writable message
+`TASK` or review records. Message assignments retain their configured protocol.
+
+Read current Work before a mutation. Retain immutable artifacts before output
+publication. Delivery receipts are separate from claims and domain outcomes.
+A model turn or final text does not complete an actionable native delivery.
+After a restart, inspect canonical state and retained artifacts before repeating
+an uncertain effect; retry a known native operation with its original ID.
+
+Use the source example `proxy/tests/native_coord/supervision.rs` for a real
+supervised model response and a focused restart control. It uses an owned
+native NATS/proxy instance and authenticated participants. Actual model verdicts
+are distinct from its deterministic event seam. Its private login prerequisites
+and process-boundary limits are in `docs/coord-operations.md`.
+
+Factory policy selects creator and amendment authority roles, acceptance
+deciders, independence and per-output required checks. Create native Work with
+the currently approved `{name,snapshot_id}` reference. The server retains that
+policy and resolves durable participant IDs. Publication and its exact-subject
+required checks commit atomically. Operation replay recovers their IDs.
+Later Factory approval does not alter existing Work. A selected authority or
+the operator can explicitly amend requirements; ownership alone cannot.
+Optional challenges become required only through that explicit selection.
+
+Use `proxy/tests/native_coord/factory.rs` and its interactive client driver for
+the approved-policy/public-API controls and an actual interactive producer
+sharing native work with a supervised reviewer. The producer remains outside
+the Factory's supervised roles and uses its own authenticated client. Keep one
+controller per participant. These source proofs do not authorize changing a
+running Factory's control or approved policy; stage changes only at its planned
+stopped boundary.
+
 ## Teardown and handoff
 
 Restore injected faults, stop only the nested resources created for the run,

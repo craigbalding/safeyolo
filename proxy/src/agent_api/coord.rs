@@ -33,7 +33,7 @@ const MAX_DECLARATION_REQUEST_BYTES: usize = 32 * 1024;
 const MAX_PAGE: usize = 200;
 const ROOM_MAX_BYTES: usize = 4 * 1024 * 1024;
 const NATS_USER: &str = "safeyolo";
-const CURRENT_SCHEMA_VERSION: i64 = 5;
+const CURRENT_SCHEMA_VERSION: i64 = crate::coord_rooms::SCHEMA_VERSION as i64;
 const MAX_DECLARATIONS_PER_AGENT: usize = 32;
 const MAX_DECLARATION_TTL_SECONDS: i64 = 3600;
 const PROJECTION_PAGE: u64 = 200;
@@ -41,6 +41,7 @@ const RECOVERY_INTERVAL: Duration = Duration::from_millis(250);
 mod approval_results;
 pub(crate) mod federation;
 pub(crate) mod inventory;
+mod operational;
 pub(crate) mod outbox;
 pub(crate) mod signals;
 mod work;
@@ -49,6 +50,7 @@ mod work;
 enum CoordError {
     NotFound,
     Forbidden,
+    ObservationRequired,
     Invalid,
     Unavailable,
     Data,
@@ -84,7 +86,12 @@ impl CoordCleanup {
         let task = handle.spawn(async move {
             let _ = stream.delete_consumer(&name).await;
         });
+        self.track(task);
+    }
+
+    fn track(&self, task: tokio::task::JoinHandle<()>) {
         if let Ok(mut pending) = self.pending.lock() {
+            pending.retain(|task| !task.is_finished());
             pending.push(task);
         } else {
             task.abort();
@@ -111,6 +118,10 @@ pub(crate) struct CoordOwner {
     data_dir: PathBuf,
     explicit_directory: bool,
     nats: tokio::sync::Mutex<Option<async_nats::Client>>,
+    federation_nats: tokio::sync::Mutex<Option<async_nats::Client>>,
+    local_endpoint: StdMutex<Option<crate::coord_rooms::federation::endpoint::Endpoint>>,
+    owner_federation_endpoint: StdMutex<Option<crate::coord_rooms::federation::endpoint::Endpoint>>,
+    federation: federation::Connections,
     cleanup: Arc<CoordCleanup>,
     snapshot_reads: Arc<inventory::SnapshotReads>,
     collaboration_scanner: Option<crate::inspection::Scanner>,
@@ -137,6 +148,10 @@ impl CoordOwner {
             data_dir,
             explicit_directory,
             nats: tokio::sync::Mutex::new(None),
+            federation_nats: tokio::sync::Mutex::new(None),
+            local_endpoint: StdMutex::new(None),
+            owner_federation_endpoint: StdMutex::new(None),
+            federation: federation::Connections::default(),
             cleanup: Arc::new(CoordCleanup::new()),
             snapshot_reads: Arc::new(inventory::SnapshotReads::default()),
             collaboration_scanner,
@@ -144,17 +159,27 @@ impl CoordOwner {
     }
 }
 
+enum SourceRun {
+    Local {
+        run: crate::host_runs::AgentRun,
+        root: PathBuf,
+    },
+    Remote {
+        run: crate::host_runs::AgentRun,
+    },
+}
+
 /// Runtime-scoped policy facade over process-owned coordination state.
-/// Rejected reload candidates are dropped with this facade and leave the
-/// previously active policy path untouched.
+/// Rejected reload candidates leave the active policy path untouched.
 #[derive(Clone)]
 pub struct CoordClient {
     owner: Arc<CoordOwner>,
     policy_file: Option<PathBuf>,
     provider_directory: Option<PathBuf>,
+    instance_root: Option<PathBuf>,
     remote: Option<crate::coord_rooms::federation::RemoteAgent>,
     relay_config: Option<PathBuf>,
-    request_run: Option<Arc<(crate::host_runs::AgentRun, PathBuf)>>,
+    request_run: Option<Arc<SourceRun>>,
     collaboration_config: crate::config::CollaborationConfig,
 }
 
@@ -172,6 +197,7 @@ impl CoordClient {
             owner,
             policy_file,
             provider_directory,
+            instance_root: None,
             remote: None,
             relay_config: None,
             request_run: None,
@@ -192,8 +218,26 @@ impl CoordClient {
     }
 
     fn bound_current(&self) -> Result<(), CoordError> {
-        let Some((run, root)) = self.request_run.as_deref() else {
+        let Some(source) = self.request_run.as_deref() else {
             return Ok(());
+        };
+        let (run, root) = match source {
+            SourceRun::Local { run, root } => (run, root),
+            SourceRun::Remote { run } => {
+                // The source authenticated admission. Already-admitted input
+                // retains that run through a source restart or partition;
+                // this owner rechecks current peer and destination grants.
+                let remote = self
+                    .remote
+                    .as_ref()
+                    .filter(|remote| remote.agent_id == run.agent_id)
+                    .ok_or(CoordError::Forbidden)?;
+                return crate::coord_rooms::federation::authorize(
+                    &open_db(&self.owner.data_dir.join("v0.db"), false)?,
+                    remote,
+                )
+                .map_err(|_| CoordError::Forbidden);
+            }
         };
         let path = self.policy_file.as_deref().ok_or(CoordError::Unavailable)?;
         let mut policy =
@@ -205,11 +249,81 @@ impl CoordClient {
         Ok(())
     }
 
-    pub(crate) fn with_provider_directory(mut self, root: Option<&Path>) -> Self {
+    pub(crate) fn with_instance_root(mut self, root: Option<&Path>) -> Self {
         if let Some(root) = root {
+            self.instance_root = Some(root.to_path_buf());
             self.provider_directory = Some(root.join("coord-providers"));
         }
         self
+    }
+
+    pub(crate) async fn send_factory_direction(
+        &self,
+        caller: &crate::peer_support::Caller,
+        input: &crate::peer_support::Request,
+        revision: &str,
+    ) -> Result<Value, OperatorCoordError> {
+        let crate::peer_support::operations::Action::FactoryDirection {
+            factory,
+            snapshot_id,
+            kind,
+            text,
+        } = &input.operation
+        else {
+            return Err(OperatorCoordError::display_error(
+                "typed factory direction required".into(),
+            ));
+        };
+        let root = self.instance_root.as_ref().ok_or_else(|| {
+            OperatorCoordError::display_error("owning instance unavailable".into())
+        })?;
+        let snapshot = crate::factory::direction_binding(root, factory, snapshot_id, Some(kind))
+            .map_err(|_| {
+                OperatorCoordError::display_error("approved factory direction changed".into())
+            })?;
+        let room = &snapshot.room;
+        let recipient = snapshot.operator_agent();
+        let body = format!("{kind}\n\n{text}");
+        let mut scoped = self.clone();
+        scoped.remote = caller.remote.clone();
+        scoped.request_run = Some(Arc::new(if caller.remote.is_some() {
+            SourceRun::Remote {
+                run: caller.run.clone(),
+            }
+        } else {
+            SourceRun::Local {
+                run: caller.run.clone(),
+                root: self.instance_root.clone().ok_or_else(|| {
+                    OperatorCoordError::display_error("owning instance unavailable".into())
+                })?,
+            }
+        }));
+        let name = caller
+            .remote
+            .as_ref()
+            .map_or(caller.run.agent.as_str(), |remote| {
+                remote.display_name.as_str()
+            });
+        let sender = Sender::Direction {
+            id: caller.principal(),
+            name,
+            caller,
+            input,
+            revision,
+        };
+        let payload =
+            json!({"body":body,"notify":[recipient],"declared_content_type":"text/plain"})
+                .to_string();
+        let value = operator_result(prepare_send(&scoped, room, sender, payload.as_bytes()).await)?;
+        let mut prepared: PreparedMessage = serde_json::from_value(value["prepared"].clone())
+            .map_err(|_| {
+                OperatorCoordError::display_error("direction preparation unavailable".into())
+            })?;
+        prepared.envelope["factory_direction"] = json!({"factory":factory,"snapshot_id":snapshot_id,"type":kind,
+            "grant":input.grant,"grant_revision":revision,"operation_id":input.operation_id,"initiator":caller});
+        operator_result(
+            publish_prepared(&scoped, local_operator_request(), room, sender, &prepared).await,
+        )
     }
 
     /// Only the host approval path calls this operation. Use the existing
@@ -254,49 +368,87 @@ impl CoordClient {
         )
     }
 
+    pub(crate) async fn diagnostics(&self) -> Result<Value, crate::Error> {
+        let mut diagnostics = outbox::diagnostics(&self.owner.data_dir.join("v0.db"))?;
+        diagnostics["federation"] = self.owner.federation.diagnostics().await;
+        diagnostics["local_connection"] = json!(
+            self.owner
+                .nats
+                .lock()
+                .await
+                .as_ref()
+                .map(|client| format!("{:?}", client.connection_state()))
+        );
+        diagnostics["owner_federation_connection"] = json!(
+            self.owner
+                .federation_nats
+                .lock()
+                .await
+                .as_ref()
+                .map(|client| format!("{:?}", client.connection_state()))
+        );
+        diagnostics["local_endpoint"] = self
+            .owner
+            .local_endpoint
+            .lock()
+            .map(|endpoint| json!(*endpoint))
+            .unwrap_or(Value::Null);
+        diagnostics["owner_federation_endpoint"] = self
+            .owner
+            .owner_federation_endpoint
+            .lock()
+            .map(|endpoint| json!(*endpoint))
+            .unwrap_or(Value::Null);
+        Ok(diagnostics)
+    }
+
     pub(crate) async fn shutdown(&self) {
         self.owner.cleanup.drain().await;
     }
 
     async fn client(&self) -> Result<async_nats::Client, CoordError> {
         let mut current = self.owner.nats.lock().await;
-        if let Some(client) = current.as_ref()
-            && matches!(
-                client.connection_state(),
-                async_nats::connection::State::Connected
-            )
-        {
-            return Ok(client.clone());
+        if let Some(client) = current.as_ref() {
+            return if client.connection_state() == async_nats::connection::State::Connected {
+                Ok(client.clone())
+            } else {
+                Err(CoordError::Unavailable)
+            };
         }
         let client = self
-            .connect_nats(async_nats::ConnectOptions::new())
+            .connect_nats()
             .await
             .map_err(|_| CoordError::Unavailable)?;
         *current = Some(client.clone());
         Ok(client)
     }
 
-    pub(crate) async fn connect_nats(
-        &self,
-        options: async_nats::ConnectOptions,
-    ) -> Result<async_nats::Client, crate::Error> {
+    pub(crate) async fn connect_nats(&self) -> Result<async_nats::Client, crate::Error> {
         let url = self.nats_url();
-        let password = std::fs::read(self.owner.data_dir.join("nats/creds"))
-            .map_err(|_| "NATS credentials unavailable")?;
-        let password = std::str::from_utf8(&password)
-            .map_err(|_| "NATS credentials unavailable")?
-            .trim()
-            .to_owned();
-        if password.is_empty() {
-            return Err("NATS credentials unavailable".into());
-        }
-        let client = options
-            .user_and_password(NATS_USER.to_owned(), password)
-            .connection_timeout(Duration::from_secs(2))
+        let (url, options) = crate::coord_rooms::federation::nats::local_options(
+            &self.owner.data_dir,
+            url,
+            NATS_USER.to_owned(),
+            self.owner.data_dir.join("nats/creds"),
+        )
+        .await?;
+        let endpoint = crate::coord_rooms::federation::nats::local_endpoint(
+            &self.owner.data_dir,
+            url.clone(),
+        )?;
+        let client = self
+            .owner
+            .federation
+            .options("local".into(), options)
             .request_timeout(Some(Duration::from_secs(2)))
             .connect(url)
             .await
             .map_err(|_| "NATS connection unavailable")?;
+        *self
+            .owner
+            .local_endpoint
+            .lock()
+            .map_err(|_| "local NATS state unavailable")? = Some(endpoint);
         Ok(client)
     }
 
@@ -381,6 +533,50 @@ impl CoordClient {
     ) -> Result<RoomAccess, CoordError> {
         self.check_remote().await?;
         match sender {
+            Sender::Direction {
+                caller,
+                input,
+                revision,
+                ..
+            } => {
+                self.bound_current()?;
+                let root = self.instance_root.as_ref().ok_or(CoordError::Unavailable)?;
+                let path = self.policy_file.as_ref().ok_or(CoordError::Unavailable)?;
+                let mut policy = crate::policy::Policy::from_native_path(path)
+                    .map_err(|_| CoordError::Unavailable)?;
+                policy.set_identity_root(root.clone());
+                let (grant, _) = crate::peer_support::operations::authorize(&policy, caller, input)
+                    .map_err(|_| CoordError::Forbidden)?;
+                let crate::peer_support::operations::Action::FactoryDirection {
+                    factory,
+                    snapshot_id,
+                    kind,
+                    ..
+                } = &input.operation
+                else {
+                    return Err(CoordError::Forbidden);
+                };
+                let snapshot =
+                    crate::factory::direction_binding(root, factory, snapshot_id, Some(kind))
+                        .map_err(|_| CoordError::Forbidden)?;
+                if snapshot.room != room || grant.revision() != revision {
+                    return Err(CoordError::Forbidden);
+                }
+                let db = self.owner.data_dir.join("v0.db");
+                let room = room.to_owned();
+                let mut access = tokio::task::spawn_blocking(move || {
+                    read_access_as(&db, &room, "operator", "operator")
+                })
+                .await
+                .map_err(|_| CoordError::Unavailable)??;
+                // This path exposes only the selected direction publication.
+                // It does not grant the caller room or native-work privileges.
+                access.permissions = vec!["send".into()];
+                if let Some(remote) = &caller.remote {
+                    access.instance_id = remote.instance_id.clone();
+                }
+                Ok(access)
+            }
             Sender::Agent { id, .. } => {
                 let mut access = self.access(room, id).await?;
                 if let Some(remote) = &self.remote {
@@ -558,9 +754,16 @@ impl CoordClient {
                 .map_err(|_| CoordError::Unavailable)??;
         let mut visible = Vec::new();
         for edge in page.edges {
-            if edge.kind != "approval_result"
-                || approval_results::authorized(runtime, &edge, &principal_for_results).await?
-            {
+            let authorized = match edge.kind.as_str() {
+                "approval_result" | "approval_review" => {
+                    approval_results::authorized(runtime, &edge, &principal_for_results).await?
+                }
+                "operational_event" => {
+                    operational::authorized(runtime, &edge, &principal_for_results).await?
+                }
+                _ => true,
+            };
+            if authorized {
                 visible.push(edge);
             }
         }
@@ -727,6 +930,54 @@ impl CoordClient {
                 }
             }
         }
+    }
+
+    // The owner repairs each room independently. Remote waiters need no
+    // periodic network reads to discover an accepted, unprojected manifest.
+    async fn repair_projections(&self, after: &mut String) -> Result<(), CoordError> {
+        let db = self.owner.data_dir.join("v0.db");
+        let rooms = {
+            let conn = open_db(&db, false)?;
+            conn.prepare("SELECT room_id FROM rooms WHERE room_id>?1 ORDER BY room_id LIMIT 8")
+                .map_err(|_| CoordError::Data)?
+                .query_map([after.as_str()], |row| row.get::<_, String>(0))
+                .map_err(|_| CoordError::Data)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| CoordError::Data)?
+        };
+        if rooms.is_empty() {
+            after.clear();
+            return Ok(());
+        }
+        *after = rooms.last().expect("nonempty rooms").clone();
+        let connection = self.client().await?;
+        let jetstream = jetstream::new(connection);
+        use futures_util::stream;
+        stream::iter(rooms)
+            .map(|room| {
+                let jetstream = jetstream.clone();
+                async move {
+                    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+                        let mut stream = jetstream
+                            .get_stream(room_stream(&room))
+                            .await
+                            .map_err(|_| CoordError::Unavailable)?;
+                        self.ensure_room_projection(&room, &mut stream).await?;
+                        let through = stream
+                            .info()
+                            .await
+                            .map_err(|_| CoordError::Unavailable)?
+                            .state
+                            .last_sequence;
+                        self.project_room_through(&room, &mut stream, through).await
+                    })
+                    .await;
+                }
+            })
+            .buffer_unordered(4)
+            .collect::<Vec<_>>()
+            .await;
+        Ok(())
     }
 
     async fn recover_attention(&self, principal: &str) -> Result<(), CoordError> {
@@ -905,8 +1156,11 @@ impl CoordClient {
         })
         .await
         .map_err(|_| CoordError::Unavailable)??;
-        if edge.kind == "approval_result" {
+        if matches!(edge.kind.as_str(), "approval_result" | "approval_review") {
             return approval_results::read(self, runtime, principal, &edge).await;
+        }
+        if edge.kind == "operational_event" {
+            return operational::read(self, runtime, principal, &edge).await;
         }
         if edge.kind == "work_changed" {
             let db = self.owner.data_dir.join("v0.db");
@@ -1367,7 +1621,10 @@ fn read_attention_feed(
         let (edge, generation) = row.map_err(|_| CoordError::Data)?;
         let permitted = match edge.room_id.as_deref() {
             Some(room) => attention_member(&conn, room, principal, generation)?,
-            None => edge.kind == "approval_result",
+            None => matches!(
+                edge.kind.as_str(),
+                "approval_result" | "approval_review" | "operational_event"
+            ),
         };
         if permitted {
             edges.push(edge);
@@ -1425,7 +1682,10 @@ fn read_attention_edge(
         .optional()
         .map_err(|_| CoordError::Data)?
         .ok_or(CoordError::NotFound)?;
-    if !(edge.kind == "approval_result" && edge.room_id.is_none()
+    if !(matches!(
+        edge.kind.as_str(),
+        "approval_result" | "approval_review" | "operational_event"
+    ) && edge.room_id.is_none()
         || attention_member(
             &conn,
             edge.room_id.as_deref().ok_or(CoordError::Data)?,
@@ -2369,7 +2629,10 @@ async fn respond_payload(
         let Some(root) = root else {
             return error_response(CoordError::Unavailable);
         };
-        scoped.request_run = Some(Arc::new((run.clone(), root)));
+        scoped.request_run = Some(Arc::new(SourceRun::Local {
+            run: run.clone(),
+            root,
+        }));
     }
     if let Err(error) = scoped.bound_current() {
         return error_response(error);
@@ -2479,6 +2742,19 @@ async fn respond_as(
     principal: &str,
     agent_name: &str,
 ) -> Outcome<'static> {
+    if let Ok(Some(selected)) = query_parameter(request.path_and_query, "instance_id") {
+        let actual = std::fs::read_to_string(context.client.owner.data_dir.join("instance_id"));
+        if actual
+            .as_ref()
+            .map(|actual| actual.trim() != selected)
+            .unwrap_or(true)
+        {
+            return response(
+                409,
+                json!({"error":"attention position belongs to another owning instance"}),
+            );
+        }
+    }
     if attention_wait_route(request) {
         if request.method != "GET" {
             return response(
@@ -2521,6 +2797,7 @@ async fn respond_as(
                         "revision_or_sequence": edge.revision_or_sequence,
                     })).collect::<Vec<_>>(),
                     "next_cursor": page.next_cursor,
+                    "instance_id":std::fs::read_to_string(context.client.owner.data_dir.join("instance_id")).ok().map(|id|id.trim().to_owned()),
                 }),
             ),
             Err(error) => error_response(error),
@@ -2823,6 +3100,10 @@ fn error_response(error: CoordError) -> Outcome<'static> {
     match error {
         CoordError::NotFound => response(404, json!({"error":"room not found or not accessible"})),
         CoordError::Forbidden => response(403, json!({"error":"coordination permission denied"})),
+        CoordError::ObservationRequired => response(
+            403,
+            json!({"error":"operational reference requires a current support observation grant for this instance and durable target; material signals also require the selected signal_rooms disclosure. Ask the operator to inspect or preview the grant."}),
+        ),
         CoordError::Invalid => response(400, json!({"error":"invalid coordination request"})),
         CoordError::Unavailable => {
             response(503, json!({"error":"coordination substrate unavailable"}))
@@ -2888,7 +3169,7 @@ async fn publish_unknown_response(client: &CoordClient, request: Request<'_>) ->
     outcome
 }
 
-fn query_parameter(path_and_query: &str, wanted: &str) -> Result<Option<String>, ()> {
+pub(super) fn query_parameter(path_and_query: &str, wanted: &str) -> Result<Option<String>, ()> {
     let Some(query) = path_and_query.split_once('?').map(|(_, query)| query) else {
         return Ok(None);
     };
@@ -2965,7 +3246,17 @@ fn query_bool(path_and_query: &str, wanted: &str, default: bool) -> Result<bool,
 // constructs Agent from its reconciled listener; payload fields cannot select it.
 #[derive(Clone, Copy)]
 enum Sender<'a> {
-    Agent { id: &'a str, name: &'a str },
+    Agent {
+        id: &'a str,
+        name: &'a str,
+    },
+    Direction {
+        id: &'a str,
+        name: &'a str,
+        caller: &'a crate::peer_support::Caller,
+        input: &'a crate::peer_support::Request,
+        revision: &'a str,
+    },
     Operator,
 }
 
@@ -3058,7 +3349,7 @@ impl OperatorCoord {
                 config.policy_file.clone(),
                 config.data_dir.map(|dir| dir.join("coord")),
             )
-            .with_provider_directory(config.native_config_dir.as_deref())
+            .with_instance_root(config.native_config_dir.as_deref())
             .with_collaboration_config(config.collaboration.clone()),
         })
     }
@@ -3380,7 +3671,7 @@ fn inspect_collaboration(
         addon: "agent-api",
         summary: error.into(),
         agent: match sender {
-            Sender::Agent { name, .. } => Some(name.into()),
+            Sender::Agent { name, .. } | Sender::Direction { name, .. } => Some(name.into()),
             Sender::Operator => None,
         },
         request_id: None,
@@ -3398,7 +3689,9 @@ async fn prepare_send(
     payload: &[u8],
 ) -> Outcome<'static> {
     let (principal, agent_name, sender_kind) = match sender {
-        Sender::Agent { id, name } => (id, Some(name), "agent"),
+        Sender::Agent { id, name } | Sender::Direction { id, name, .. } => {
+            (id, Some(name), "agent")
+        }
         Sender::Operator => ("operator", None, "operator"),
     };
     let Ok(document) = serde_json::from_slice::<Value>(payload) else {
@@ -3659,7 +3952,9 @@ fn validate_prepared(
     let envelope = &prepared.envelope;
     let (kind, id, name) = match sender {
         Sender::Operator => ("operator", Value::Null, Value::Null),
-        Sender::Agent { id, name } => ("agent", json!(id), json!(name)),
+        Sender::Agent { id, name } | Sender::Direction { id, name, .. } => {
+            ("agent", json!(id), json!(name))
+        }
     };
     let msg_id = envelope["msg_id"].as_str().ok_or(CoordError::Data)?;
     if prepared.room_id != access.room_id
@@ -3850,7 +4145,7 @@ async fn publish_prepared(
             addon: "agent-api",
             summary: "Collaboration message inspected and accepted".into(),
             agent: match sender {
-                Sender::Agent { name, .. } => Some(name.into()),
+                Sender::Agent { name, .. } | Sender::Direction { name, .. } => Some(name.into()),
                 Sender::Operator => None,
             },
             request_id: Some(request.request_id.into()),
@@ -4008,7 +4303,7 @@ async fn read_messages_with_timeout(
     mut cancellation: tokio::sync::watch::Receiver<bool>,
 ) -> Outcome<'static> {
     let principal = match sender {
-        Sender::Agent { id, .. } => id,
+        Sender::Agent { id, .. } | Sender::Direction { id, .. } => id,
         Sender::Operator => "operator",
     };
     let connection = match client.client().await {
@@ -4364,42 +4659,28 @@ mod tests {
         }
     }
 
+    fn current_coord_db(directory: &tempfile::TempDir) -> PathBuf {
+        std::fs::create_dir(directory.path().join("data")).unwrap();
+        std::fs::write(directory.path().join("data/instance_id"), "instance").unwrap();
+        std::fs::write(directory.path().join("config.toml"), "admin_port=0\n").unwrap();
+        crate::coord_rooms::bootstrap(directory.path()).unwrap();
+        directory.path().join("data/coord/v0.db")
+    }
+
     fn coord_client_with_receive_access(directory: &tempfile::TempDir) -> CoordClient {
         let policy_file = directory.path().join("policy.toml");
         std::fs::write(&policy_file, "[agents.alice]\nagent_id = 'ag-alice'\n").unwrap();
-        let db = directory.path().join("v0.db");
-        let conn = Connection::open(&db).unwrap();
+        let db = current_coord_db(directory);
+        let conn = open_db(&db, true).unwrap();
         conn.execute_batch(
-            "PRAGMA user_version=5;
-             CREATE TABLE rooms(room_id TEXT PRIMARY KEY, name TEXT NOT NULL);
-             CREATE TABLE memberships(
-                 room_id TEXT NOT NULL,
-                 principal_kind TEXT NOT NULL,
-                 principal_id TEXT NOT NULL,
-                 permissions TEXT NOT NULL,
-                 granted_at INTEGER NOT NULL,
-                 revoked_at INTEGER,
-                 PRIMARY KEY(room_id, principal_kind, principal_id, granted_at)
-             );
-             CREATE TABLE instance(id TEXT PRIMARY KEY);
-             CREATE TABLE coord_briefs(
-                 room_id TEXT PRIMARY KEY,
-                 revision INTEGER NOT NULL,
-                 markdown TEXT NOT NULL,
-                 content_hash TEXT NOT NULL,
-                 updated_at INTEGER NOT NULL
-             );
-             INSERT INTO rooms(room_id, name) VALUES ('rm-shared', 'shared');
-             INSERT INTO instance(id) VALUES ('instance');
+            "INSERT INTO rooms(room_id, name, created_at) VALUES ('rm-shared', 'shared', 0);
              INSERT INTO memberships
                  (room_id, principal_kind, principal_id, permissions, granted_at)
                  VALUES ('rm-shared', 'agent', 'ag-alice', 'receive', 7);",
         )
         .unwrap();
-        conn.execute_batch(include_str!("../coord_membership_grants.sql"))
-            .unwrap();
         CoordClient::with_owner(
-            Arc::new(CoordOwner::new(Some(directory.path().to_owned()))),
+            Arc::new(CoordOwner::new(Some(directory.path().join("data/coord")))),
             Some(policy_file),
         )
     }
@@ -4642,24 +4923,17 @@ mod tests {
 
     #[test]
     fn brief_attention_object_reads_created_at_as_public_updated_at() {
-        let directory = tempfile::tempdir().unwrap();
-        let db = directory.path().join("v0.db");
-        let conn = Connection::open(&db).unwrap();
+        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let db = current_coord_db(&directory);
+        let conn = open_db(&db, true).unwrap();
         conn.execute_batch(
-            "PRAGMA user_version=5;
-             CREATE TABLE coord_brief_revisions(
-                 room_id TEXT NOT NULL,
-                 revision INTEGER NOT NULL,
-                 markdown TEXT NOT NULL,
-                 content_hash TEXT NOT NULL,
-                 created_at INTEGER NOT NULL,
-                 PRIMARY KEY(room_id, revision)
-             );
+            "INSERT INTO rooms(room_id, name, created_at) VALUES ('rm-shared', 'shared', 0);
              INSERT INTO coord_brief_revisions
-                 (room_id, revision, markdown, content_hash, created_at)
+                 (room_id, revision, markdown, content_hash, actor_kind, actor_id,
+                  operation_id, created_at)
                  VALUES ('rm-shared', 3, '# brief',
                          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-                         1234);",
+                         'operator', 'operator', 'brief-revision', 1234);",
         )
         .unwrap();
         drop(conn);
@@ -4784,8 +5058,10 @@ mod tests {
 
     #[tokio::test]
     async fn room_wait_route_normalizes_nan_timeout_before_duration_conversion() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let client = coord_client_with_receive_access(&directory);
+        let access = client.access("shared", "ag-alice").await.unwrap();
+        assert_eq!(access.permissions, vec!["receive"]);
         let (_, cancellation) = tokio::sync::watch::channel(false);
         let outcome = respond_payload(
             test_coord_request(
@@ -4847,31 +5123,11 @@ mod tests {
 
     #[test]
     fn access_snapshot_keeps_only_newest_active_generation() {
-        let directory = tempfile::tempdir().unwrap();
-        let db = directory.path().join("v0.db");
-        let conn = Connection::open(&db).unwrap();
+        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let db = current_coord_db(&directory);
+        let conn = open_db(&db, true).unwrap();
         conn.execute_batch(
-            "PRAGMA user_version=5;
-             CREATE TABLE rooms(room_id TEXT PRIMARY KEY, name TEXT NOT NULL);
-             CREATE TABLE memberships(
-                 room_id TEXT NOT NULL,
-                 principal_kind TEXT NOT NULL,
-                 principal_id TEXT NOT NULL,
-                 permissions TEXT NOT NULL,
-                 granted_at INTEGER NOT NULL,
-                 revoked_at INTEGER,
-                 PRIMARY KEY(room_id, principal_kind, principal_id, granted_at)
-             );
-             CREATE TABLE instance(id TEXT PRIMARY KEY);
-             CREATE TABLE coord_briefs(
-                 room_id TEXT PRIMARY KEY,
-                 revision INTEGER NOT NULL,
-                 markdown TEXT NOT NULL,
-                 content_hash TEXT NOT NULL,
-                 updated_at INTEGER NOT NULL
-             );
-             INSERT INTO rooms(room_id, name) VALUES ('rm-shared', 'shared');
-             INSERT INTO instance(id) VALUES ('instance');
+            "INSERT INTO rooms(room_id, name, created_at) VALUES ('rm-shared', 'shared', 0);
              INSERT INTO memberships
                  (room_id, principal_kind, principal_id, permissions, granted_at)
                  VALUES ('rm-shared', 'agent', 'ag-alice', 'receive', 7);
@@ -4880,8 +5136,6 @@ mod tests {
                  VALUES ('rm-shared', 'agent', 'ag-alice', 'send', 8);",
         )
         .unwrap();
-        conn.execute_batch(include_str!("../coord_membership_grants.sql"))
-            .unwrap();
         drop(conn);
 
         let access = read_access(&db, "shared", "ag-alice").unwrap();
@@ -4892,16 +5146,11 @@ mod tests {
 
     #[test]
     fn projection_advances_across_manifestless_messages() {
-        let directory = tempfile::tempdir().unwrap();
-        let db = directory.path().join("v0.db");
-        let conn = Connection::open(&db).unwrap();
+        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let db = current_coord_db(&directory);
+        let conn = open_db(&db, true).unwrap();
         conn.execute_batch(
-            "PRAGMA user_version=5;
-             CREATE TABLE coord_message_attention_projection(
-                 room_id TEXT PRIMARY KEY,
-                 last_sequence INTEGER NOT NULL,
-                 updated_at INTEGER NOT NULL
-             );
+            "INSERT INTO rooms(room_id, name, created_at) VALUES ('rm-shared', 'shared', 0);
              INSERT INTO coord_message_attention_projection
                  (room_id, last_sequence, updated_at) VALUES ('rm-shared', 0, 0);",
         )
@@ -4934,13 +5183,11 @@ mod tests {
 
     #[test]
     fn retention_gap_stages_a_current_audit_record_with_the_recorded_loss() {
-        let directory = tempfile::tempdir().unwrap();
-        let db = directory.path().join("v0.db");
-        let conn = Connection::open(&db).unwrap();
-        conn.execute_batch(include_str!("../coord_schema.sql"))
-            .unwrap();
+        let directory = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let db = current_coord_db(&directory);
+        let conn = open_db(&db, true).unwrap();
         conn.execute_batch(
-            "PRAGMA user_version=5; INSERT INTO rooms VALUES('rm-owned','owned',0);
+            "INSERT INTO rooms VALUES('rm-owned','owned',0);
             INSERT INTO coord_message_attention_projection VALUES('rm-owned',0,0);",
         )
         .unwrap();

@@ -1,6 +1,6 @@
 ---
 name: safeyolo
-description: Diagnose and resolve SafeYolo boundary failures and operate advanced SafeYolo facilities when the task explicitly concerns them. Use for proxy/TLS failures; policy or credential blocks; HTTP 403/428/429/503/508 or X-Blocked-By responses; surprising guest package, sudo, setpriv, apt, apk, pip, or mise behavior; debugger/profiler denials; operator recovery shells; desktop preview; Agent API policy, flow, budget, circuit-breaker, or service-gateway operations; approvals; collaboration rooms; and sandbox introspection. Do not invoke merely because the product or repository is SafeYolo, or for ordinary commands in a healthy sandbox, routine factory handoffs, or normal GitHub App Connector work already specified by injected instructions.
+description: Diagnose and resolve SafeYolo boundary failures and operate advanced SafeYolo facilities when the task explicitly concerns them. Use for proxy/TLS failures; non-HTTP client transports, UDP media, relays or gateways; policy or credential blocks; HTTP 403/428/429/503/508 or X-Blocked-By responses; surprising guest package, sudo, setpriv, apt, apk, pip, or mise behavior; debugger/profiler denials; operator recovery shells; desktop preview; Agent API policy, flow, budget, circuit-breaker, or service-gateway operations; approvals; collaboration rooms; and sandbox introspection. Do not invoke merely because the product or repository is SafeYolo, or for ordinary commands in a healthy sandbox, routine factory handoffs, or normal GitHub App Connector work already specified by injected instructions.
 ---
 
 # Operate inside SafeYolo
@@ -59,6 +59,9 @@ do not reload Coord or GitHub references already supplied by the role contract.
 - Read [Troubleshooting and escalation](references/troubleshooting.md) for
   blocked responses, proxy/TLS failures, logs, request correlation, and exact
   host commands to ask the operator to run.
+- Read [Non-HTTP clients](references/non-http-clients.md) for protocol-specific
+  transports, UDP media, external relays, loopback adapters, and verification
+  inside agent sandboxes. It includes a baresip/TURN example and an agent runbook.
 - For a client-selected destination IP, read [Select a target IP](references/troubleshooting.md#select-a-target-ip).
   It covers ordinary curl syntax, the CONNECT response ID and linked evidence
   after a TLS failure. Address acquisition is separate from target selection.

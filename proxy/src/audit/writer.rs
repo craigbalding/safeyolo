@@ -16,6 +16,9 @@ use zeroize::Zeroizing;
 use super::{Error, ErrorKind, Event, Result, envelope::Record};
 use crate::circuits::CircuitValue;
 
+mod durability;
+use durability::sync_coord_append;
+
 #[derive(Clone)]
 pub struct Settings {
     pub max_queue: BigInt,
@@ -160,6 +163,7 @@ pub struct Writer {
     approvals_enabled: bool,
     named_controls: bool,
     path: PathBuf,
+    instance_directory: Option<PathBuf>,
     settings: Settings,
     queue: Arc<Queue>,
     worker: Mutex<Worker>,
@@ -195,6 +199,7 @@ impl Writer {
             approvals_enabled: false,
             named_controls: false,
             path,
+            instance_directory: None,
             queue: Arc::new(Queue {
                 pending: Mutex::new(Pending::default()),
                 changed: Condvar::new(),
@@ -207,6 +212,11 @@ impl Writer {
 
     pub(crate) fn log_source(&self) -> (PathBuf, Settings) {
         (self.path.clone(), self.settings.clone())
+    }
+
+    pub(crate) fn with_instance_directory(mut self, directory: Option<PathBuf>) -> Self {
+        self.instance_directory = directory;
+        self
     }
 
     pub(crate) fn with_named_controls(mut self, enabled: bool) -> Self {
@@ -307,6 +317,7 @@ impl Writer {
             let queue = self.queue.clone();
             let path = self.path.clone();
             let settings = self.settings.clone();
+            let instance_directory = self.instance_directory.clone();
             let (send, done) = mpsc::channel();
             let task = std::thread::Builder::new()
                 .name("safeyolo-audit-writer".into())
@@ -315,7 +326,13 @@ impl Writer {
                     while let Some((batch, receipts, stop)) = queue.next() {
                         let reservation = ActiveBatch(&queue, batch.len());
                         let durable = receipts.iter().any(|receipt| receipt.durable);
-                        let write = flush_batch(&path, &settings, &batch, durable);
+                        let write = flush_batch(
+                            &path,
+                            &settings,
+                            &batch,
+                            durable,
+                            instance_directory.as_deref(),
+                        );
                         for receipt in receipts {
                             let _ = receipt.send.send(matches!(write, Ok(true)));
                         }
@@ -518,9 +535,15 @@ pub(crate) fn backup(path: &Path, index: &BigInt) -> PathBuf {
 }
 #[cfg(test)]
 fn append(path: &Path, settings: &Settings, batch: &[Record]) -> Result<()> {
-    append_batch(path, settings, batch, false)
+    append_batch(path, settings, batch, false, None)
 }
-fn append_batch(path: &Path, settings: &Settings, batch: &[Record], durable: bool) -> Result<()> {
+fn append_batch(
+    path: &Path,
+    settings: &Settings,
+    batch: &[Record],
+    durable: bool,
+    instance_directory: Option<&Path>,
+) -> Result<()> {
     if batch.is_empty() {
         return Ok(());
     }
@@ -552,7 +575,8 @@ fn append_batch(path: &Path, settings: &Settings, batch: &[Record], durable: boo
         .write_all(lines.as_bytes())
         .map_err(|_| Error(ErrorKind::Io));
     let synced = if durable {
-        sync_coord_append(&file, path, fs::File::sync_all).map_err(|_| Error(ErrorKind::Io))
+        sync_coord_append(&file, path, instance_directory, fs::File::sync_all)
+            .map_err(|_| Error(ErrorKind::Io))
     } else {
         Ok(())
     };
@@ -603,23 +627,6 @@ fn recover_incomplete_tail(path: &Path) -> Result<()> {
     recovered.map_err(|_| Error(ErrorKind::Io))
 }
 
-fn sync_coord_append(
-    file: &fs::File,
-    path: &Path,
-    mut sync: impl FnMut(&fs::File) -> io::Result<()>,
-) -> io::Result<()> {
-    sync(file)?;
-    // Sync ancestors on retries too: a previous failed sync may have left
-    // an existing directory whose entry is not yet durable.
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    for directory in fs::canonicalize(parent)?.ancestors() {
-        sync(&fs::File::open(directory)?)?;
-    }
-    Ok(())
-}
 #[cfg(unix)]
 pub(super) fn close(file: std::fs::File) -> Result<()> {
     use std::os::fd::IntoRawFd;
@@ -630,8 +637,14 @@ pub(super) fn close(file: std::fs::File) -> Result<()> {
         Err(Error(ErrorKind::Io))
     }
 }
-fn flush_batch(path: &Path, settings: &Settings, batch: &[Record], durable: bool) -> Result<bool> {
-    if let Err(error) = append_batch(path, settings, batch, durable) {
+fn flush_batch(
+    path: &Path,
+    settings: &Settings,
+    batch: &[Record],
+    durable: bool,
+    instance_directory: Option<&Path>,
+) -> Result<bool> {
+    if let Err(error) = append_batch(path, settings, batch, durable, instance_directory) {
         writeln!(
             io::stderr().lock(),
             "[safeyolo] audit writer flush failed ({} entries): {error}",

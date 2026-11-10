@@ -94,7 +94,10 @@ if [[ $platform == linux-* ]]; then
     # Remove source-level debug data only from packaging copies. Keep the
     # original upstream cache and debug bundles intact for debugging.
     while IFS= read -r binary; do
-      objcopy --remove-section='.debug*' --remove-section='.zdebug*' "$directory/libexec/$binary"
+      # Bazel outputs can be read-only. Replace our copy after stripping it.
+      objcopy --remove-section='.debug*' --remove-section='.zdebug*' \
+        "$directory/libexec/$binary" "$directory/libexec/$binary.stripped"
+      mv -- "$directory/libexec/$binary.stripped" "$directory/libexec/$binary"
     done < <(runsc_files)
   fi
 fi
@@ -203,7 +206,7 @@ fi
 printf 'source_commit=%s\nprofile=%s\nplatform=%s\nminimum_runtime=%s\nguest_compatibility=v1\nguest_repository=ghcr.io/craigbalding/safeyolo-guest\nguest_discovery_tag=compat-v1\n' "$revision" "$profile" "$platform" "$minimum" > "$directory/package-info"
 if [[ $libc == musl ]]; then printf 'libc=musl\n' >> "$directory/package-info"; fi
 if [[ $platform == linux-* ]]; then
-  printf 'runsc_version=release-20261005.0\nrunsc_source=https://github.com/google/gvisor/releases/tag/release-20261005.0\nrunsc_origin=bundled\n' >> "$directory/package-info"
+  printf 'runsc_version=release-20261005.0-safeyolo.1\nrunsc_source=https://github.com/google/gvisor/commit/97e8e896904cb364319cd9758241d3f0bd27a6f4\nrunsc_origin=bundled\n' >> "$directory/package-info"
 fi
 (cd "$directory"; find . -type f ! -name SHA256SUMS -print | LC_ALL=C sort | while IFS= read -r file; do printf '%s  %s\n' "$(file_sha256 "$file")" "$file"; done > SHA256SUMS)
 verify_native_package "$directory"

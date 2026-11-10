@@ -87,6 +87,48 @@ fn initialize(root: &Path) {
 }
 
 #[test]
+fn initialization_makes_only_the_public_ca_world_readable() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("instance");
+    let initialized = Command::new("sh")
+        .args(["-c", "umask 077; exec \"$@\"", "init-test"])
+        .arg(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--root")
+        .arg(&root)
+        .arg("init")
+        .output()
+        .unwrap();
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let certificate = root.join("certs/mitmproxy-ca-cert.pem");
+    assert_eq!(
+        fs::metadata(&certificate).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+    let public = fs::read_to_string(certificate).unwrap();
+    assert!(public.contains("BEGIN CERTIFICATE"));
+    assert!(!public.contains("PRIVATE KEY"));
+    for secret in [
+        "certs/mitmproxy-ca.pem",
+        "data/admin_token",
+        "data/agent_token",
+    ] {
+        assert_eq!(
+            fs::metadata(root.join(secret))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+            "{secret} must remain private"
+        );
+    }
+}
+
+#[test]
 fn host_subscription_import_keeps_provider_files_outside_agent_state() {
     let directory = tempfile::tempdir().unwrap();
     let passphrase_file = directory.path().join("storage-passphrase");
@@ -806,28 +848,158 @@ esac
         );
         assert_eq!(status["runtime_state"], "running");
         assert_eq!(status["agent_state"], "stopped");
-        struct Calls(Vec<std::process::Child>);
-        impl Drop for Calls {
+        struct Calls<'a> {
+            children: Vec<std::process::Child>,
+            completed: Vec<Output>,
+            root: &'a Path,
+            pause: &'a str,
+        }
+        impl Calls<'_> {
+            fn read_diagnostic(label: &str, reader: &mut impl Read) -> Vec<u8> {
+                let mut bytes = Vec::new();
+                let result = reader.take(16 * 1024).read_to_end(&mut bytes);
+                eprintln!(
+                    "{label} (at most 16384 bytes, read={result:?}):\n{}",
+                    String::from_utf8_lossy(&bytes)
+                );
+                bytes
+            }
+
+            fn pipe_diagnostic(label: &str, pipe: &mut (impl Read + std::os::fd::AsRawFd)) {
+                // A live CLI or an inherited pipe can remain open at a failed gate.
+                // Read only the bytes available now; never wait for EOF in cleanup.
+                let fd = pipe.as_raw_fd();
+                let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+                if flags < 0
+                    || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+                {
+                    eprintln!("{label}: {}", std::io::Error::last_os_error());
+                    return;
+                }
+                Self::read_diagnostic(label, pipe);
+            }
+
+            fn child_diagnostic(label: &str, child: &mut std::process::Child) {
+                eprintln!("{label}: pid={} status={:?}", child.id(), child.try_wait());
+                if let Some(stdout) = child.stdout.as_mut() {
+                    Self::pipe_diagnostic(&format!("{label} stdout"), stdout);
+                }
+                if let Some(stderr) = child.stderr.as_mut() {
+                    Self::pipe_diagnostic(&format!("{label} stderr"), stderr);
+                }
+            }
+
+            fn diagnostics(&mut self) {
+                eprintln!("{}: fixture diagnostics before cleanup", self.pause);
+                for marker in ["launcher-ready", "entrypoint-ready", "starts", "observed"] {
+                    eprintln!("{marker}={}", self.root.join(marker).exists());
+                }
+                let mut launch_pid_is_u64 = false;
+                for name in [
+                    "agents/alice/current-launch.json",
+                    "target.json",
+                    "hooks",
+                    "starts",
+                ] {
+                    match fs::File::open(self.root.join(name)) {
+                        Ok(mut file) => {
+                            let bytes = Self::read_diagnostic(name, &mut file);
+                            if name.ends_with("current-launch.json") {
+                                let record: Value =
+                                    serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+                                launch_pid_is_u64 = record["pid"].is_u64();
+                            }
+                        }
+                        Err(error) => eprintln!("{name}: {error}"),
+                    }
+                }
+                eprintln!("launch_pid_is_u64={launch_pid_is_u64}");
+                for (index, child) in self.children.iter_mut().enumerate() {
+                    Self::child_diagnostic(&format!("start child {index} before kill"), child);
+                }
+                for (index, output) in self.completed.iter().enumerate() {
+                    eprintln!("completed start child {index}: status={}", output.status);
+                    Self::read_diagnostic(
+                        &format!("completed start child {index} stdout"),
+                        &mut output.stdout.as_slice(),
+                    );
+                    Self::read_diagnostic(
+                        &format!("completed start child {index} stderr"),
+                        &mut output.stderr.as_slice(),
+                    );
+                }
+                // Query only this fixture's private server. Each command has its own
+                // short diagnostic budget, independent of the unchanged gate timeout.
+                for args in [
+                    vec![
+                        "list-panes",
+                        "-a",
+                        "-F",
+                        "#{pane_id} pid=#{pane_pid} dead=#{pane_dead} status=#{pane_dead_status} launch=#{@safeyolo_launch_id} command=#{pane_current_command}",
+                    ],
+                    vec!["capture-pane", "-p", "-S", "-80"],
+                ] {
+                    let label = format!("tmux {}", args[0]);
+                    match Command::new(self.root.join("bin/tmux"))
+                        .arg("-S")
+                        .arg(self.root.join("data/tmux.sock"))
+                        .args(args)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                    {
+                        Ok(mut child) => {
+                            let deadline = std::time::Instant::now() + Duration::from_secs(1);
+                            loop {
+                                match child.try_wait() {
+                                    Ok(None) if std::time::Instant::now() < deadline => {
+                                        std::thread::sleep(Duration::from_millis(10));
+                                    }
+                                    result => {
+                                        eprintln!("{label}: completion={result:?}");
+                                        break;
+                                    }
+                                }
+                            }
+                            Self::child_diagnostic(&label, &mut child);
+                            let _ = child.kill();
+                            let _ = child.wait();
+                        }
+                        Err(error) => eprintln!("{label}: {error}"),
+                    }
+                }
+            }
+        }
+        impl Drop for Calls<'_> {
             fn drop(&mut self) {
-                for child in &mut self.0 {
+                if std::thread::panicking() {
+                    self.diagnostics();
+                }
+                for child in &mut self.children {
                     let _ = child.kill();
                     let _ = child.wait();
                 }
             }
         }
-        let mut calls = Calls(vec![
-            selected_cli(&["agent", "start", "alice"])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .unwrap(),
-        ]);
-        let wait_for = |check: &dyn Fn() -> bool| {
+        let mut calls = Calls {
+            children: vec![
+                selected_cli(&["agent", "start", "alice"])
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            ],
+            completed: Vec::new(),
+            root: &root,
+            pause,
+        };
+        let wait_for = |gate: &str, check: &dyn Fn() -> bool| {
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             while !check() {
                 assert!(
                     std::time::Instant::now() < deadline,
-                    "{pause}: fixture gate not reached"
+                    "{pause}: fixture gate not reached: {gate}"
                 );
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -835,16 +1007,23 @@ esac
         let launch_path = root.join("agents/alice/current-launch.json");
         let launch =
             || -> Value { serde_json::from_slice(&fs::read(&launch_path).unwrap()).unwrap() };
-        wait_for(&|| {
-            root.join("launcher-ready").exists()
-                && if entrypoint_paused {
-                    root.join("entrypoint-ready").exists()
-                } else {
-                    root.join("starts").exists() && launch()["pid"].is_u64()
-                }
-        });
-        assert!(calls.0[0].try_wait().unwrap().is_none());
-        calls.0.push(
+        wait_for(
+            if entrypoint_paused {
+                "launcher-ready and entrypoint-ready"
+            } else {
+                "launcher-ready and starts and launch PID"
+            },
+            &|| {
+                root.join("launcher-ready").exists()
+                    && if entrypoint_paused {
+                        root.join("entrypoint-ready").exists()
+                    } else {
+                        root.join("starts").exists() && launch()["pid"].is_u64()
+                    }
+            },
+        );
+        assert!(calls.children[0].try_wait().unwrap().is_none());
+        calls.children.push(
             selected_cli(&["agent", "start", "alice"])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -858,11 +1037,15 @@ esac
             .write_all(b"release\n")
             .unwrap();
         let mut results = Vec::new();
-        for child in calls.0.drain(..) {
-            let output = child.wait_with_output().unwrap();
+        while !calls.children.is_empty() {
+            let child = calls.children.remove(0);
+            calls.completed.push(child.wait_with_output().unwrap());
+            let output = calls.completed.last().unwrap();
             assert!(
                 output.status.success(),
-                "{pause}: {}",
+                "{pause}: status={} stdout={} stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
             results.push(serde_json::from_slice::<Value>(&output.stdout).unwrap());
@@ -999,11 +1182,11 @@ esac
                 .write_all(b"release\n")
                 .unwrap();
         }
-        wait_for(&|| root.join("starts").exists());
+        wait_for("starts", &|| root.join("starts").exists());
         // The child can start before the parent publishes its PID and birth token.
         // This launch's post_launch hook follows that publication.
         let post_launch_line = format!("{} post_launch", results[0]["launch_id"].as_str().unwrap());
-        wait_for(&|| {
+        wait_for("post_launch hook", &|| {
             fs::read_to_string(root.join("hooks"))
                 .is_ok_and(|hooks| hooks.lines().any(|line| line == post_launch_line))
         });
@@ -1013,7 +1196,7 @@ esac
             .unwrap()
             .write_all(b"release\n")
             .unwrap();
-        wait_for(&|| root.join("observed").exists());
+        wait_for("observed", &|| root.join("observed").exists());
         // Observe the first confirmation through Admin, before the CLI can
         // mask a stale projection with its preliminary runtime observation.
         let (code, running) = admin_post(

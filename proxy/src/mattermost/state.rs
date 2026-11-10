@@ -74,8 +74,8 @@ fn fd_identity(fd: i32) -> Option<(u64, u64)> {
     Some((device, metadata.st_ino))
 }
 
-// Prefix of unixFile in the existing bundled SQLite 3.53.2 (public domain),
-// sqlite3.c in libsqlite3-sys 0.38.2. Keep this prefix aligned with that source
+// Prefix of unixFile in the existing bundled SQLite 3.54.1 (public domain),
+// sqlite3.c in libsqlite3-sys 0.39.1. Keep this prefix aligned with that source
 // when updating SQLite. FILE_POINTER names this connection's actual writer;
 // process-wide descriptor snapshots cannot identify it across FD reuse.
 #[repr(C)]
@@ -292,11 +292,7 @@ impl State {
     pub fn query(&self, sql: &str, parameters: impl rusqlite::Params) -> Result<Vec<Value>, Error> {
         self.validate()?;
         let mut statement = self.db.prepare(sql)?;
-        let names: Vec<_> = statement
-            .column_names()
-            .iter()
-            .map(|v| (*v).to_owned())
-            .collect();
+        let names: Vec<_> = statement.column_names().map(str::to_owned).collect();
         let rows = statement
             .query_map(parameters, |row| {
                 let mut value = serde_json::Map::new();

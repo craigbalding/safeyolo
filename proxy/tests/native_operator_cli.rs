@@ -21,6 +21,10 @@ use shared_approval_fixture::*;
 
 #[path = "native_operator_cli/observations.rs"]
 mod observations;
+#[path = "support/operator_pty.rs"]
+mod operator_pty;
+#[path = "native_operator_cli/watch.rs"]
+mod watch;
 
 fn configure(fixture: &Fixture) {
     fs::write(fixture.root.path().join("config.toml"), format!(
@@ -704,6 +708,69 @@ risky_routes:
 "#;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn docker_file_access_approval_shows_the_enforced_source_and_write_bounds() {
+    // The origin is a controlled approval fixture. No Engine is contacted.
+    let mut fixture = Fixture::new().await;
+    configure(&fixture);
+    let definition = json!({"schema_version":1,"name":"docker_files","default_host":fixture.address.ip().to_string(),
+        "docker":{"endpoint":format!("http://{}",fixture.address),"execution_boundary":"external"},
+        "capabilities":{"workloads":{"docker_access":{"mode":"workloads","bind_mounts":[{"source":"/srv/project-data","read_only":true}]},
+            "routes":[{"methods":["GET","POST"],"path":"/v1.45/**"}]}}});
+    fs::write(
+        fixture.root.path().join("services/docker.yaml"),
+        definition.to_string(),
+    )
+    .unwrap();
+    assert!(fixture.proxy.reload_services_if_changed().await.unwrap());
+    fixture
+        .apply(&format!(
+            "{}\n[hosts.'{}']\nservice='docker_files'\n",
+            fixture
+                .source()
+                .replace("egress='prompt'", "egress='allow'"),
+            fixture.address.ip()
+        ))
+        .await;
+    let request=fixture.agent("worker","POST","/gateway/request-access",Some(json!({"service":"docker_files","capability":"workloads","reason":"operate project files"}))).await;
+    assert_eq!(request.status, 202, "{}", request.json());
+    let view = success(
+        fixture.root.path(),
+        &["approvals", "show", &request.id(), "--json"],
+    )
+    .await;
+    for option in view["options"].as_array().unwrap() {
+        let (_, bounds) = option["effect"]
+            .as_str()
+            .unwrap()
+            .split_once("Docker authority: ")
+            .expect("operator sees Docker authority");
+        let bounds: Value = serde_json::from_str(bounds).unwrap();
+        assert_eq!(bounds["execution_boundary"], "external");
+        assert_eq!(
+            bounds["enforced_access"]["bind_mounts"],
+            json!([{"source":"/srv/project-data","read_only":true}])
+        );
+        assert!(
+            bounds["approval_bounds"]
+                .as_str()
+                .unwrap()
+                .contains("not tied to the attempted payload")
+        );
+    }
+    let id = view["approval_id"].as_str().unwrap();
+    assert_eq!(
+        success(fixture.root.path(), &["approvals", "approve", id, "--json"]).await["status"],
+        "approved"
+    );
+    let authorized = success(fixture.root.path(), &["services", "authorized", "worker"]).await;
+    assert_eq!(
+        authorized["services"]["docker_files"]["capability"],
+        "workloads"
+    );
+    fixture.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pending_gateway_approval_uses_existing_grants_and_survives_restart_without_replay() {
     let mut fixture = Fixture::new().await;
     configure(&fixture);
@@ -1062,7 +1129,13 @@ async fn pending_network_approval_survives_inspection_and_resolves_through_nativ
         &["approvals", "show", &retry.id(), "--json"],
     )
     .await;
-    assert_eq!(repeated, original);
+    assert_eq!(repeated["request_history"]["equivalent_request_count"], 2);
+    let mut expected = original.clone();
+    expected["request_history"] = repeated["request_history"].clone();
+    assert_eq!(
+        repeated, expected,
+        "a retry must retain the same authority and options"
+    );
     let database =
         rusqlite::Connection::open(fixture.root.path().join("data/approvals.sqlite3")).unwrap();
     let saved = || {
@@ -1078,7 +1151,7 @@ async fn pending_network_approval_survives_inspection_and_resolves_through_nativ
     let policy = fixture.source();
     assert_eq!(
         success(fixture.root.path(), &["approvals", "show", id, "--json"]).await,
-        original
+        expected
     );
     assert_eq!(saved(), before, "inspection changed the approval");
     assert_eq!(fixture.source(), policy, "inspection changed policy");
@@ -1156,6 +1229,83 @@ async fn pending_network_approval_survives_inspection_and_resolves_through_nativ
             "missing correlation for {name}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guided_credential_scope_selects_the_canonical_pending_request() {
+    let fixture = Fixture::new().await;
+    configure(&fixture);
+    fixture
+        .apply(
+            &fixture
+                .source()
+                .replace("egress='prompt'", "egress='allow'")
+                .replace("enabled=false", "enabled=true"),
+        )
+        .await;
+    let blocked = fixture
+        .request(
+            "worker",
+            fixture.address,
+            "GET",
+            "/guided-credential",
+            "Authorization: Bearer synthetic-guided-credential-1465\r\n",
+        )
+        .await;
+    assert_eq!(blocked.status, 428);
+    let before = success(
+        fixture.root.path(),
+        &["approvals", "show", &blocked.id(), "--json"],
+    )
+    .await;
+    assert_eq!(before["action"]["kind"], "credential_allow");
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--root")
+        .arg(fixture.root.path())
+        .args(["configure", "approvals", "credential-review"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            format!(
+                "{}\nyes\nhelper\nworker\ncredential\n1\nno\nstanding\nrun\nyes\nyes\n",
+                fixture.root.path().display()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let output = timeout(Duration::from_secs(30), child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let saved = success(fixture.root.path(), &["approvals", "delegations", "--json"]).await;
+    assert_eq!(
+        saved["delegations"][0]["delegation"]["scopes"],
+        json!([{
+            "type":"credential", "host":before["action"]["host"], "fingerprints":before["action"]["credentials"]
+        }])
+    );
+    let after = success(
+        fixture.root.path(),
+        &["approvals", "show", &blocked.id(), "--json"],
+    )
+    .await;
+    assert_eq!(after["status"], "pending");
+    assert_eq!(after["action"], before["action"]);
+    assert!(after["result"].is_null());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1535,7 +1685,24 @@ async fn pending_gateway_approval_expires_with_its_bound_vault_credential() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(after, before, "inspection persisted an expiry transition");
+    // The existing result-delivery owner can persist expiry independently of
+    // these reads. Inspection must retain the fixed authority and grant no access.
+    let before: Value = serde_json::from_str(&before).unwrap();
+    let after: Value = serde_json::from_str(&after).unwrap();
+    for field in [
+        "approval_id",
+        "request_id",
+        "authority",
+        "authority_digest",
+        "option",
+        "result",
+    ] {
+        assert_eq!(after[field], before[field], "expiry changed {field}");
+    }
+    assert!(matches!(
+        after["status"].as_str(),
+        Some("pending" | "expired")
+    ));
     assert_eq!(
         fixture
             .admin(
@@ -3027,48 +3194,35 @@ async fn interactive_explain_keeps_the_selected_request_open_for_the_same_decisi
         &["approvals", "show", &blocked.id(), "--json"],
     )
     .await;
-    let root = fixture.root.path().to_owned();
-    let output = tokio::task::spawn_blocking(move || {
-        let (mut master, mut slave) = (-1, -1);
-        assert_eq!(
-            unsafe {
-                libc::openpty(
-                    &mut master,
-                    &mut slave,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                )
-            },
-            0
-        );
-        let mut terminal = unsafe { fs::File::from_raw_fd(master) };
-        let slave = unsafe { fs::File::from_raw_fd(slave) };
-        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root")
-            .arg(root)
-            .args(["approvals", "review", "--agent", "worker"])
-            .stdin(slave.try_clone().unwrap())
-            .stdout(slave.try_clone().unwrap())
-            .stderr(slave)
-            .spawn()
-            .unwrap();
-        terminal.write_all(b"1\na\nc\ne\napprove\n").unwrap();
-        let mut output = Vec::new();
-        loop {
-            let mut buffer = [0; 4096];
-            match terminal.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(count) => output.extend_from_slice(&buffer[..count]),
-                Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
-                Err(error) => panic!("PTY read: {error}"),
-            }
-        }
-        assert!(child.wait().unwrap().success());
-        String::from_utf8(output).unwrap()
-    })
-    .await
-    .unwrap();
+    let mut terminal = operator_pty::Terminal::start(
+        fixture.root.path(),
+        &["approvals", "review", "--agent", "worker"],
+    );
+    terminal
+        .until(
+            0,
+            "Type a displayed request number (for example, 1; Enter returns): ",
+        )
+        .await;
+    terminal.send("1\n");
+    let prompt = "approve persistent / reject / explain";
+    terminal.until(0, prompt).await;
+    assert!(!terminal.output().contains("approve once"));
+    assert_eq!(
+        success(
+            fixture.root.path(),
+            &["approvals", "show", &blocked.id(), "--json"]
+        )
+        .await["status"],
+        "pending"
+    );
+    for answer in ["a\n", "c\n", "e\n"] {
+        let after = terminal.mark();
+        terminal.send(answer);
+        terminal.until(after, prompt).await;
+    }
+    terminal.send("approve persistent\n");
+    let output = terminal.until(0, "Status: approved").await;
     assert!(output.contains("Why was this stopped?"), "{output}");
     assert!(output.contains("Agent-provided context"), "{output}");
     assert!(output.contains("UNTRUSTED"), "{output}");

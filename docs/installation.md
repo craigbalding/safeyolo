@@ -351,43 +351,88 @@ leave incomplete files; the next invocation reports them and preserves them.
 
 ## Upgrade host and guest components
 
-Use a host release that contains `safeyolo upgrade`. For an older installed
-host, download and unpack a release that provides this command. Set `BUNDLE`
-to its absolute bundle directory and `ROOT` to the existing instance directory.
-Then run the new command against that instance:
+In your host terminal, run the guided upgrade for the installed instance.
+The default instance is `$HOME/.safeyolo`. For a custom instance, put
+`--root ROOT` before `upgrade`, with its absolute directory in place of `ROOT`.
 
 ```sh
-"$BUNDLE/bin/safeyolo" --root "$ROOT" upgrade --bundle "$BUNDLE"
+safeyolo upgrade
 ```
 
-The command selects the new host and retains the installed guest if compatible.
-Do not run the fresh-instance installer to replace an existing host.
+Choose a published production host package from the displayed release list.
+SafeYolo acquires and verifies the target through the existing package checks.
+It keeps your selected guest when compatible. If the target requires another
+guest compatibility identifier, SafeYolo discovers that host's compatible
+published guest and pins its immutable Open Container Initiative (OCI) index.
+The preview shows the proposed pair before you choose activation.
 
-In your host terminal, inspect the selected host and guest before choosing a
-target. The following commands use the default instance. For another instance,
-put `--root ROOT` before `upgrade` and replace `ROOT` with its directory.
+The preview identifies the instance directory, selected host and guest,
+observed proxy and agent runtimes, and proposed components. Unknown observations
+remain unknown. Agent input paths are the paths recorded for the observed run;
+a mutable path alone cannot prove which component bytes that run uses.
+Acquiring and previewing a target does not change the selected pair or stop
+running work. Verified downloads and staged inputs remain available for reuse.
+
+Choose when to activate. Activation stops this instance's proxy and managed
+Coord, selects the verified pair and starts the proxy through the existing
+lifecycle operations. Proxy traffic and Coord are interrupted during activation.
+The command verifies that the running proxy uses the selected host. A retry
+reuses an already running proxy when its host matches the target. Policy,
+credentials, audit/log data, agent homes and unrelated instances remain in place.
+
+Running agents retain their inputs. At activation, you can name the agents to
+stop and start; an empty choice leaves all agents running. A successful
+stop/start command does not by itself prove client readiness. Inspect the
+reported current-run observations or use `safeyolo agent status NAME` for a
+selected agent. You can restart another agent later with its ordinary
+`agent stop NAME` and `agent start NAME` commands.
+
+For automation or a separate preview, these commands return JSON. With no
+explicit target, `--preview` and `--activate` choose the newest supported host
+in the latest 100 GitHub release records. `releases` lists published production
+packages for the current host platform and C library. Release listing is
+advisory; acquisition still verifies the selected package and guest.
+
+```sh
+safeyolo upgrade releases
+safeyolo upgrade --preview
+```
+
+The preview's `release` field names its exact target. To activate that target
+later, set `RELEASE` to the field's value. This avoids selecting a newer release
+that appeared after the preview. `--activate` runs without a confirmation
+prompt. Add `--restart-agent NAME` for each agent you choose to stop and start.
+
+```sh
+safeyolo upgrade --release "$RELEASE" --activate
+```
+
+If discovery is unavailable, or no compatible choice can be verified, the
+command reports that state and retains explicit selection. The expert paths
+below remain available. No background updater checks or activates releases.
+
+### Explicit targets and selected state
+
+Use `upgrade status` to inspect the selected host/guest pair and its retained
+previous pair. This command describes selection, not running processes.
+The host fields include source, build profile and package checksum identity.
+The guest fields include version, compatibility identifier, OCI index,
+child-manifest and archive digests.
 
 ```sh
 safeyolo upgrade status
 ```
 
-The result shows the host source, build profile and package checksum identity.
-It also shows the guest version, compatibility identifier and separate Open
-Container Initiative (OCI) index, child-manifest and archive digests. A retained
-previous pair appears after the first component change.
+For an exact published host, use `--release host-COMMIT`, with the release's full
+40-character commit in place of `COMMIT`. For an unpacked verified host bundle,
+use `--bundle UNPACKED_DIRECTORY`, with its absolute directory in place of
+`UNPACKED_DIRECTORY`. Add `--guest-index sha256:DIGEST` to select an exact guest
+index, with its full digest in place of `DIGEST`. Bundle and digest controls
+also work with `--preview` and `--activate`.
 
-For a host-only upgrade, choose an official `host-COMMIT` release from the
-[release list](https://github.com/craigbalding/safeyolo/releases). Replace
-`COMMIT` below with that release's full 40-character commit. The command
-downloads the changed host package. It retains the selected guest if the target
-host is compatible. It does not discover, download or extract another guest.
-The host package includes its own guest-side command helpers. Those helpers
-must match the target host's source and profile, independently of guest-base
-compatibility.
-
-Use a maintenance window to stop the proxy, change the selected host and start
-the proxy. Running agents keep their existing guest inputs. Stop and start an
-agent when you want that agent to use the new selection.
+Without `--preview` or `--activate`, these explicit commands retain their
+selection-only behavior. They do not stop or start the proxy or agents. Use a
+maintenance window to compose the lifecycle yourself:
 
 ```sh
 safeyolo stop
@@ -396,44 +441,70 @@ safeyolo start
 safeyolo upgrade status
 ```
 
-To select a host and guest together, add `--guest-index sha256:DIGEST` to the
-upgrade command. Replace `DIGEST` with the complete immutable guest index
-digest. The target index must declare the compatibility identifier required by
-the target host. A host that requires another identifier is refused unless you
-explicitly select its compatible guest. Guest-only upgrades retain their
-existing [guest upgrade and rollback commands](guest-oci.md).
+A selection-only host change keeps the selected guest if compatible. An
+incompatible target requires an explicit compatible `--guest-index`. Guest-only
+changes retain their [guest upgrade and rollback commands](guest-oci.md).
+The host package includes its own guest-side command helpers. Those helpers
+must match the target host's source and profile, independently of guest-base
+compatibility. Complete package hashes, source/profile identities, platform
+requirements, guest compatibility and configuration checks remain with the
+existing verification owners. Repeating a target reuses verified host archives
+and guest inputs.
 
-For an already unpacked target, use `upgrade --bundle UNPACKED_DIRECTORY`
-instead of `--release`. Replace `UNPACKED_DIRECTORY` with the verified host
-bundle directory. Both paths check complete package hashes, source/profile
-identities, platform requirements, guest compatibility and the existing
-configuration before activation. Repeating the same target retains the current
-selection and reuses verified cached host archives and guest inputs.
+Installed Linux packages can retain the bundled stock gVisor
+`release-20261005.0` pin or the patched `release-20261005.0-safeyolo.1` pin.
+Upgrade validates the installed package against its exact runtime pin and source.
+A newly selected bundle must use the patched pin. Rollback validates the
+retained previous package against its own pin before selecting the complete
+prior pair. Both pins require the complete checksummed runtime payload.
 
-The first host upgrade retains a separate `safeyolo-upgrade` executable in the
-instance directory. It keeps recovery available after selecting an older host
-that has no `upgrade` command. If the new host cannot start, use this executable
-to restore the previous complete host/guest pair, then start the proxy. For the
-default instance:
+### Recover after an interrupted or failed upgrade
+
+A guided failure reports the actual selected pair and current runtime
+observations. A failed acquisition leaves the prior pair selected. If selection
+succeeded but proxy startup failed, the new pair remains selected; the command
+reports incomplete activation. Inspect that instance before retrying. Repair
+the reported prerequisite, then repeat the same explicit target with
+`--activate`. Completed verified inputs are reused. A successful proxy start
+does not establish that every agent or managed Coord is ready.
+
+The first component change retains `safeyolo-upgrade` in the instance directory.
+Use a current CLI for the retained-state check below. A retained upgrader keeps
+the behavior of the CLI that saved it. If it predates this check, use a current
+verified bundle's `bin/safeyolo --root ROOT upgrade rollback`, with the existing
+instance directory in place of `ROOT`.
+
+Rollback checks whether the previous host can use retained Coord state before
+changing selection. If that check fails, the selected pair and retained state
+stay unchanged. Component restoration cannot reverse
+store changes made by a newer host. Keep the selected host or select a newer
+compatible bundle; preserve the Coord store and its retained work.
+
+If you choose rollback, stop the proxy and use the retained executable. Inspect
+its result before starting the proxy: success selects the previous pair. If
+rollback is refused, start the still-selected host or repair it with a compatible
+bundle. For the default instance, run these commands separately and inspect each
+result:
 
 ```sh
+safeyolo stop
 "$HOME/.safeyolo/safeyolo-upgrade" rollback
 safeyolo start
 ```
 
 For a custom instance, run its `safeyolo-upgrade` with `--root ROOT` before
-`rollback`. Rollback makes no network request. Configuration, policy,
-credentials, audit/log data and agent homes stay in the instance throughout
-upgrade and rollback. Rollback does not undo user-state changes made while the
-new pair was selected.
+`rollback`. Carry the same root into `stop` and `start`. Component rollback
+makes no network request and does not undo subsequent changes to policy,
+credentials, homes or other user state. Running agents retain their inputs
+until you choose to restart them.
 
-Activation changes one directory link after staging the complete pair. The
-initial adoption requires a filesystem with atomic directory exchange, such as
-the supported native Linux and macOS filesystems. A failed check, interrupted
-download or unsupported exchange leaves the prior pair selected. Retry the same
-upgrade command to finish interrupted staging or adoption. Keep the instance's
-`versions`, `host-packages` and `upgrade-tools` directories and the persistent
-guest store: current and rollback selections use their files.
+Activation changes one directory link after staging the complete pair. Initial
+adoption requires a filesystem with atomic directory exchange, such as the
+supported native Linux and macOS filesystems. A failed check, interrupted
+download or unsupported exchange leaves the prior pair selected. Repeat the
+same explicit target to resume interrupted staging or adoption. Keep the
+instance's `versions`, `host-packages` and `upgrade-tools` directories and the
+persistent guest store: current and rollback selections use their files.
 
 ## Other installation paths
 
@@ -588,14 +659,25 @@ Alpine host qualification is separate from the accepted Alpine guest images.
 
 ## Linux host preparation in new source bundles
 
-The tested newer Linux release and current source bundles include the required
-gVisor `release-20261005.0` payload for the bundle's architecture.
+The Linux host-package producer selects the required patched
+gVisor `release-20261005.0-safeyolo.1` payload for the bundle's architecture.
 The installer checks the required files' checksums, architecture, executable
 permissions and runtime version. It uses that private runtime;
 it does not replace a system `runsc` or add a package repository.
-The earlier `host-7a38` manual alternative still needs its manual prerequisites.
 
-The host-package producer downloads and verifies the pinned upstream runtime.
+The host-package producer builds the patched runtime from pinned upstream source.
+The patches repair final-directory symlink refusal with `O_DIRECTORY | O_NOFOLLOW`
+while retaining trailing-slash traversal, and preserve reverse port-forward
+output after orderly input closure. Copy errors and shutdown still cancel both
+directions. The build uses Bazel 8.3.1, Go 1.26.3
+and the upstream opt profile. Source builders need the upstream C/C++ cross
+compilers, Clang with BPF target support, and `libbpf` development headers.
+The producer caches the complete four-file runtime. To reuse a prepared runtime,
+set `SAFEYOLO_RUNSC_ARTIFACTS` to its directory before building the host package.
+That directory must contain `runsc` and its three `gvisor-bin` companions from
+the same patched build. The producer checks all four executable headers and
+`runsc`'s version. Sandbox creation preserves upstream's companion version checks.
+Use this prepared-input path if the pinned Bazel cannot run on your build host.
 The public installer downloads the host archive with that runtime already
 inside it. Selecting the bundled runtime needs no separate gVisor download.
 

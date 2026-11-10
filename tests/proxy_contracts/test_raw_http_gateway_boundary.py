@@ -45,6 +45,7 @@ POLICY = f'''budget = 12000
 [hosts."{ALLOWED}"]
 service = "redirect"
 egress = "allow"
+credentials = ["raw-http-fixture:*"]
 [hosts."{FORBIDDEN}"]
 egress = "deny"
 [hosts."*"]
@@ -54,6 +55,11 @@ egress = "deny"
 capability = "reader"
 token = "{VAULT_NAME}"
 [agents.bob]
+[[credential_rules]]
+name = "raw-http-fixture"
+patterns = ["^{VAULT_CREDENTIAL}$"]
+allowed_hosts = ["{ALLOWED}"]
+header_names = ["authorization"]
 '''
 
 
@@ -295,18 +301,18 @@ def test_raw_headers_framing_and_gateway_route_agree_with_forwarded_bytes(proxy_
                 assert status >= 400, (name, status)
                 assert (parent.accepts, allowed.accepts, forbidden.accepts) == before
 
-            # Short nonsecret values exercise ordinary repeated forwarding
-            # without asking the credential guard to approve a credential.
+            # A noncredential scheme exercises ordinary repeated forwarding.
+            # Bearer values require credential approval even when short.
             before = (parent.accepts, allowed.accepts, forbidden.accepts)
             ordinary_auth = _send(path, b"/ordinary", [
                 (b"Host", ALLOWED.encode()),
-                (b"Authorization", b"Bearer one"),
-                (b"authorization", b"Bearer two"),
+                (b"Authorization", b"Fixture one"),
+                (b"authorization", b"Fixture two"),
             ])
             assert ordinary_auth[0] == 200 and ordinary_auth[2] == b"allowed", ordinary_auth
             assert (parent.accepts, allowed.accepts, forbidden.accepts) == (
                 before[0] + 1, before[1] + 1, before[2])
-            assert _authorization(allowed.requests[-1]["head"]) == [b"Bearer one", b"Bearer two"]
+            assert _authorization(allowed.requests[-1]["head"]) == [b"Fixture one", b"Fixture two"]
             assert token not in allowed.requests[-1]["head"]
             assert VAULT_CREDENTIAL.encode() not in allowed.requests[-1]["head"]
 

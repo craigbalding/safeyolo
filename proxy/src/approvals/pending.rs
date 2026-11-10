@@ -22,6 +22,7 @@ pub(crate) mod delegation;
 mod explanation;
 mod gateway;
 pub(crate) mod results;
+pub(crate) mod route_challenge;
 pub(crate) use explanation::explain;
 pub(crate) use gateway::{bind_agent_request, bind_risky};
 
@@ -49,8 +50,8 @@ pub(crate) struct Authority {
     pub(crate) method: String,
     pub(crate) scheme: String,
     pub(crate) port: Option<u16>,
-    /// Includes the complete request target, without storing its query or any
-    /// bearer value. The host's action separately states the actual grant scope.
+    /// Traffic or action correlation, without raw query or bearer values.
+    /// The host's action separately states the actual permission scope.
     pub(crate) resource_digest: String,
     pub(crate) options: Vec<OptionScope>,
     pub(crate) expires_at: Option<String>,
@@ -254,9 +255,19 @@ impl Store {
 
     pub(crate) fn submit(
         &self,
+        authority: Authority,
+        request_id: &str,
+        policy: &Policy,
+    ) -> Result<Record> {
+        self.submit_status(authority, request_id, policy, "pending")
+    }
+
+    pub(super) fn submit_status(
+        &self,
         mut authority: Authority,
         request_id: &str,
         policy: &Policy,
+        initial_status: &str,
     ) -> Result<Record> {
         let mut connection = self.connect()?;
         let transaction = connection
@@ -278,7 +289,7 @@ impl Store {
         }
         let authority_digest = digest(&authority.material());
         let mut statement = transaction
-            .prepare("SELECT record FROM approvals WHERE authority_digest=?1 AND status='pending'")
+            .prepare("SELECT record FROM approvals WHERE authority_digest=?1 ORDER BY rowid DESC")
             .map_err(unavailable)?;
         let records = statement
             .query_map([&authority_digest], |row| row.get::<_, String>(0))
@@ -287,7 +298,9 @@ impl Store {
         for record in records {
             let record = decode_record(&record.map_err(unavailable)?)?;
             if record.authority.material() == authority.material()
-                && record.current_status(policy)? == "pending"
+                && (record.current_status(policy)? == "pending"
+                    || (initial_status == "challenged"
+                        && record.current_status(policy)? == "challenged"))
             {
                 selected = Some(record);
                 break;
@@ -300,7 +313,7 @@ impl Store {
             authority,
             authority_digest,
             created_at: time::OffsetDateTime::now_utc().unix_timestamp(),
-            status: "pending".into(),
+            status: initial_status.into(),
             option: None,
             result: Value::Null,
             untrusted_reason_text: None,
@@ -465,7 +478,7 @@ impl Record {
     }
 
     pub(crate) fn current_status(&self, policy: &Policy) -> Result<String> {
-        if self.status != "pending" {
+        if !matches!(self.status.as_str(), "pending" | "challenged") {
             return Ok(self.status.clone());
         }
         if self.committed(policy)?.is_some() {
@@ -488,7 +501,7 @@ impl Record {
                 return Ok("superseded".into());
             }
         }
-        Ok("pending".into())
+        Ok(self.status.clone())
     }
 
     pub(crate) fn committed(&self, policy: &Policy) -> Result<Option<Value>> {
@@ -560,6 +573,14 @@ impl Record {
             "option":receipt.as_ref().map(|value| &value["option"]).unwrap_or(&json!(self.option)),
             "result":receipt.as_ref().map(|value| &value["result"]).unwrap_or(&self.result)});
         view["reviewer_delivery"] = json!(self.reviewer_delivery);
+        if route_challenge::is_exception(self) {
+            view["event"] = json!("gateway.route_escalated");
+            view["approval"]["approval_type"] = json!("gateway_route");
+            view["guidance"] = route_challenge::guidance(policy, self);
+        }
+        if !self.authority.action["prepared_assessment"].is_null() {
+            view["assessment"] = self.authority.action["prepared_assessment"].clone();
+        }
         if let Some(reason) = &self.untrusted_reason_text {
             view["untrusted_reason_text"] = json!(reason);
         }
@@ -608,11 +629,17 @@ pub(crate) fn revision(policy: &Policy, action: &Value) -> Option<String> {
     } else if action["kind"] == "network_allow" {
         policy.network_action_revision(action["agent"].as_str()?)
     } else {
-        policy.approval_revision(
+        let revision = policy.approval_revision(
             action["agent"].as_str()?,
             action["kind"].as_str()?,
             action["service"].as_str(),
-        )
+        )?;
+        if action["route_exception"] == true {
+            Some(digest(&json!({"policy":revision,
+                "destination_service":policy.gateway()?.canonical_gateway()["host_map"][action["host"].as_str()?]})))
+        } else {
+            Some(revision)
+        }
     }
 }
 
@@ -819,11 +846,13 @@ pub(crate) fn current_view(
     state: Option<&crate::RuntimeState>,
 ) -> Result<Value> {
     let mut view = record.view(policy)?;
-    if record.status == "pending"
+    if matches!(record.status.as_str(), "pending" | "challenged")
         && let Some(state) = state
     {
         let saved = record.view(&saved_policy(state, policy)?)?;
-        if saved["status"] == "approved" || view["status"] == "pending" {
+        if saved["status"] == "approved"
+            || matches!(view["status"].as_str(), Some("pending" | "challenged"))
+        {
             view = saved;
         }
     }
@@ -846,7 +875,7 @@ pub(crate) fn current_view(
                 .map_err(|_| invalid("runtime unavailable"))
         })
         .transpose()?;
-    if view["status"] == "pending"
+    if matches!(view["status"].as_str(), Some("pending" | "challenged"))
         && let Some(runtime) = runtime.as_deref()
         && !gateway::credentials_current(runtime, record)?
     {
@@ -901,16 +930,44 @@ pub(crate) fn current_view(
     let gateway_grants = runtime
         .as_deref()
         .and_then(|runtime| runtime.gateway_grants.clone());
-    let service_credentials_current =
-        if view["status"] == "approved" && record.authority.action["kind"] == "service_authorize" {
-            runtime
-                .as_deref()
-                .map(|runtime| gateway::credentials_current(runtime, record))
-                .transpose()?
-                .unwrap_or(false)
-        } else {
-            true
-        };
+    let service_credentials_current = if view["status"] == "approved"
+        && (record.authority.action["kind"] == "service_authorize"
+            || route_challenge::is_exception(record))
+    {
+        runtime
+            .as_deref()
+            .map(|runtime| gateway::credentials_current(runtime, record))
+            .transpose()?
+            .unwrap_or(false)
+    } else {
+        true
+    };
+    if record.authority.action["prepared_assessment"].is_object()
+        && let Some(runtime) = runtime.as_deref()
+    {
+        let selected = state.map(|state| saved_policy(state, policy)).transpose()?;
+        let current = route_challenge::assessment(
+            runtime,
+            selected.as_ref().unwrap_or(policy),
+            &record.authority.action,
+        )?;
+        view["assessment_changed"] = json!(
+            current["input_revision"]
+                != record.authority.action["prepared_assessment"]["input_revision"]
+        );
+        view["assessment"] = current.clone();
+        if route_challenge::is_exception(record) {
+            if current["model"].is_object() {
+                view["guidance"]["alternatives"] = current["alternatives"].clone();
+            }
+            view["guidance"]["assessment"] = current;
+        }
+        if matches!(view["status"].as_str(), Some("pending" | "challenged"))
+            && view["assessment_changed"] == true
+        {
+            view["status"] = json!("superseded");
+        }
+    }
     drop(runtime);
     if view["status"] == "approved" && view["result"].get("issued_access").is_some() {
         let issued: crate::policy::delegation::IssuedAccess =
@@ -1052,7 +1109,7 @@ fn active_policy(state: &crate::RuntimeState) -> Result<std::sync::Arc<Policy>> 
         .ok_or_else(|| invalid("active policy unavailable"))
 }
 
-fn saved_policy(state: &crate::RuntimeState, policy: &Policy) -> Result<Policy> {
+pub(crate) fn saved_policy(state: &crate::RuntimeState, policy: &Policy) -> Result<Policy> {
     let path = state
         .read()
         .map_err(|_| invalid("runtime unavailable"))?
@@ -1070,6 +1127,32 @@ pub(crate) fn check_saved(
     state: &crate::RuntimeState,
     source: &str,
     record: &Record,
+) -> Result<bool> {
+    let grants = if record.authority.action["prepared_assessment"].is_object() {
+        let store = state
+            .read()
+            .map_err(|_| invalid("runtime unavailable"))?
+            .gateway_grants
+            .clone()
+            .ok_or_else(|| invalid("gateway grant store unavailable"))?;
+        store
+            .list_grants(time::OffsetDateTime::now_utc())?
+            .into_iter()
+            .map(|entry| entry.grant)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    check_saved_grants(state, source, record, &grants)
+}
+
+/// Grant transactions already own the grant mutex. Use their canonical state
+/// instead of recursively locking the store during the final approval check.
+pub(crate) fn check_saved_grants(
+    state: &crate::RuntimeState,
+    source: &str,
+    record: &Record,
+    grants: &[crate::grants::Grant],
 ) -> Result<bool> {
     let runtime = state
         .read()
@@ -1094,9 +1177,15 @@ pub(crate) fn check_saved(
             return Ok(false);
         }
     }
-    Ok(record.current_status(policy)? == "pending"
-        && record.current_status(&saved)? == "pending"
-        && gateway::credentials_current(&runtime, record)?)
+    Ok(matches!(
+        record.current_status(policy)?.as_str(),
+        "pending" | "challenged"
+    ) && matches!(
+        record.current_status(&saved)?.as_str(),
+        "pending" | "challenged"
+    ) && gateway::credentials_current(&runtime, record)?
+        && route_challenge::assessment_current(policy, record, grants)?
+        && route_challenge::assessment_current(&saved, record, grants)?)
 }
 
 pub(crate) fn resolve(
@@ -1115,7 +1204,7 @@ pub(crate) fn resolve_as(
     id: &str,
     decision: super::network_action::Decision,
     option: Option<&str>,
-    reviewer: Option<(&crate::host_runs::AgentRun, &str)>,
+    reviewer: Option<(&crate::peer_support::Caller, &str)>,
 ) -> Result<Option<(u16, Value)>> {
     match lookup(writer, id)? {
         Some(record) if record.authority.action["kind"] == "operator_action" => {
@@ -1134,6 +1223,9 @@ pub(crate) fn resolve_as(
         let delegated = reviewer.map(|(reviewer, name)| delegation::authorize(&policy, record, reviewer, name, option.unwrap_or("run"))).transpose()?;
         if record.status != "pending" { return Ok(()); }
         let saved = saved_policy(state, &policy)?;
+        if let Some((reviewer, name)) = reviewer {
+            delegation::authorize(&saved, record, reviewer, name, option.unwrap_or("run"))?;
+        }
         if let Some(receipt) = record.committed(&policy)?.or(record.committed(&saved)?) {
             record.status = "approved".into();
             record.option = receipt["option"].as_str().map(str::to_owned);
@@ -1145,8 +1237,14 @@ pub(crate) fn resolve_as(
         if record.status != "pending" { return Ok(()); }
         let runtime = state.read().map_err(|_| invalid("runtime unavailable"))?.clone();
         let credentials_current = gateway::credentials_current(&runtime, record)?;
+        let assessment_current = if record.authority.action["prepared_assessment"].is_object() {
+            let current = route_challenge::assessment(&runtime,&policy,&record.authority.action)?;
+            let current_saved = route_challenge::assessment(&runtime,&saved,&record.authority.action)?;
+            current["input_revision"] == record.authority.action["prepared_assessment"]["input_revision"]
+                && current_saved["input_revision"] == current["input_revision"]
+        } else { true };
         drop(runtime);
-        if !credentials_current {
+        if !credentials_current || !assessment_current {
             record.status = "superseded".into();
             return Ok(());
         }
@@ -1322,7 +1420,8 @@ pub(crate) fn resolve_as(
         event.request_id = Some(selected.request_id.clone());
         event.details =
             json!({"approval_id":selected.approval_id,"authority_digest":selected.authority_digest,
-            "status":selected.status,"option":selected.option,"result":selected.result})
+            "status":selected.status,"option":selected.option,"result":selected.result,
+            "decider":match reviewer { Some((caller,name))=>json!({"kind":"agent","initiator":caller,"delegation":name}),None=>json!({"kind":"operator"}) }})
             .into();
         if tokio::runtime::Handle::current()
             .block_on(writer.emit_confirmed(event))

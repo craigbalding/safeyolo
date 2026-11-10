@@ -15,6 +15,7 @@ fn now() -> OffsetDateTime {
 }
 fn selection(kind: Option<&str>) -> CredentialSelection {
     CredentialSelection {
+        missing_route_allow: false,
         authorization_binding: None,
         binding_id: None,
         agent: "alice".into(),
@@ -59,6 +60,56 @@ fn headers() -> HeaderMap {
     headers.insert("after", HeaderValue::from_static("two"));
     headers
 }
+
+#[test]
+fn unavailable_storage_distinguishes_unlock_from_absence_and_unknown_state() {
+    for (reason, code, guidance) in [
+        (
+            VaultUnavailable::Locked,
+            "VAULT_LOCKED",
+            "credentials unlock",
+        ),
+        (VaultUnavailable::Absent, "VAULT_ABSENT", "credentials add"),
+        (
+            VaultUnavailable::Unavailable,
+            "VAULT_UNAVAILABLE",
+            "unlock state is unknown",
+        ),
+    ] {
+        let url = Secret::new("https://api.example/status");
+        let Start::Blocked(blocked) = prepare(
+            selection(Some("bearer")),
+            Err(reason),
+            RequestInfo {
+                authorization_guard: None,
+                method: "GET",
+                host: "api.example",
+                path: "/status",
+                scheme: "https",
+                full_url: &url,
+                request_id: Some("req-vault-state"),
+            },
+            now(),
+        )
+        .unwrap() else {
+            panic!("unavailable storage must not inject a credential")
+        };
+        assert_eq!(blocked.response.status, 503);
+        assert_eq!(blocked.response.body["reason_codes"], json!([code]));
+        assert!(
+            blocked.response.body["reflection"]
+                .as_str()
+                .unwrap()
+                .contains(guidance)
+        );
+        assert!(
+            !blocked.response.body["reflection"]
+                .as_str()
+                .unwrap()
+                .contains("still be starting")
+        );
+    }
+}
 fn start(
     selection: CredentialSelection,
     vault: Option<&Vault>,
@@ -69,7 +120,7 @@ fn start(
     ));
     prepare(
         selection,
-        vault,
+        vault.ok_or(VaultUnavailable::Unavailable),
         RequestInfo {
             authorization_guard: None,
             method: "GET",

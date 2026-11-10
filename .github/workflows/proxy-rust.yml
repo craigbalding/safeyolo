@@ -183,6 +183,85 @@ jobs:
           sudo -n rm -rf -- /usr/local/lib/android
           df -Pk .
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.8"
+          prune-cache: true
+
+      - name: Install the native CLI test environment
+        run: |
+          uv python install 3.12
+          uv sync --frozen --group dev --python 3.12
+
+      - name: Install preview test system dependency
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends socat tmux uidmap zstd
+          getsubids "$USER"
+          getsubids -g "$USER"
+
+      - name: Install patched runtime build dependencies
+        if: steps.changes.outputs.rust == 'true'
+        run: |
+          df -Pk "$RUNNER_TEMP"
+          test "$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')" -ge 10485760
+          sudo -n apt-get install -y -qq --no-install-recommends crossbuild-essential-arm64 clang libbpf-dev
+
+      - name: Prepare the pinned NATS test binary
+        if: steps.changes.outputs.rust == 'true'
+        env:
+          SAFEYOLO_NATS_TEST_INSTANCE: quick-inputs
+          SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/nats-inputs
+        run: |
+          PYTHONPATH=tests/reference uv run --frozen python - <<'PYTHON'
+          import os
+          from safeyolo.coord.nats_runtime import ensure_binary
+
+          binary = ensure_binary()
+          with open(os.environ['GITHUB_ENV'], 'a') as environment:
+              environment.write(f'SAFEYOLO_COORD_NATS_BINARY={binary}\n')
+          PYTHON
+
+      - name: Install the pinned Codex execpolicy test consumer
+        if: steps.changes.outputs.rust == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/codex-execpolicy"
+          cp tools/codex-execpolicy/package{,-lock}.json "$RUNNER_TEMP/codex-execpolicy/"
+          npm ci --prefix "$RUNNER_TEMP/codex-execpolicy"
+          # npm can omit a corrupt optional package. Refuse global module fallback.
+          node - "$RUNNER_TEMP/codex-execpolicy" <<'JS'
+          const path = require('node:path');
+          const { createRequire } = require('node:module');
+          const modules = path.resolve(process.argv[2], 'node_modules');
+          const wrapper = path.join(modules, '@openai/codex/package.json');
+          const platform = `@openai/codex-${process.platform}-${process.arch}/package.json`;
+          if (createRequire(wrapper).resolve(platform) !== path.join(modules, platform)) {
+            throw new Error('Codex must use the locked local platform package');
+          }
+          JS
+          test "$("$RUNNER_TEMP/codex-execpolicy/node_modules/.bin/codex" --version)" = 'codex-cli 0.159.1'
+          printf '%s\n' "$RUNNER_TEMP/codex-execpolicy/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Prepare the complete patched gVisor runtime
+        id: runsc_inputs
+        if: steps.changes.outputs.rust == 'true'
+        shell: bash
+        run: |
+          export PATH="/usr/bin:$PATH"
+          scripts/acquire_runsc.sh "$RUNNER_TEMP/gvisor-runtime" 2>&1 | tee "$RUNNER_TEMP/gvisor-preparation.log"
+          (cd "$RUNNER_TEMP/gvisor-runtime"; sha256sum runsc gvisor-bin/* > SHA256SUMS)
+          printf 'SAFEYOLO_RUNSC_ARTIFACTS=%s/gvisor-runtime\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Retain the complete patched gVisor runtime
+        if: ${{ !cancelled() && steps.runsc_inputs.outcome == 'success' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: runsc-linux-amd64
+          path: ${{ runner.temp }}/gvisor-runtime
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Install the pinned Rust toolchain
         if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'
         working-directory: proxy
@@ -202,6 +281,13 @@ jobs:
           cache-bin: false
           cache-on-failure: true
 
+      - name: Install Linux guest build tools
+        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'
+        run: |
+          sudo -n apt-get update -qq
+          sudo -n apt-get install -y -qq --no-install-recommends musl-tools
+          rustup target add "$(uname -m)-unknown-linux-musl"
+
       - name: Check Rust formatting and lint
         if: steps.changes.outputs.rust == 'true'
         working-directory: proxy
@@ -209,13 +295,6 @@ jobs:
           df -Pk .
           ../scripts/cargo_with_space.sh fmt --all -- --check
           ../scripts/cargo_with_space.sh clippy --release --locked --all-targets -- -D warnings
-
-      - name: Install Linux guest build tools
-        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'
-        run: |
-          sudo -n apt-get update -qq
-          sudo -n apt-get install -y -qq --no-install-recommends musl-tools
-          rustup target add "$(uname -m)-unknown-linux-musl"
 
       # Native Cargo tests write the default release binary. Run them before
       # staging musl helpers and their checksums for the native installer.
@@ -266,6 +345,19 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+      - name: Verify production proxy diagnostics
+        if: steps.changes.outputs.rust == 'true'
+        run: |
+          set -euo pipefail
+          proxy=proxy/target/release/safeyolo-proxy
+          [[ "$("$proxy" --version)" == "safeyolo-proxy "*" commit=$SAFEYOLO_BUILD_REVISION profile=production" ]]
+          address=$(nm --defined-only --demangle "$proxy" | awk '$3 == "safeyolo_proxy::main" { print "0x" $1 }')
+          test -n "$address"
+          location=$(addr2line --inlines --exe="$proxy" "$address")
+          [[ "$location" =~ (^|/)src/main\.rs:[1-9][0-9]* ]]
+          printf 'Verified production proxy source line: %s\n' "$location"
+          scripts/cargo_with_space.sh test --release --manifest-path proxy/Cargo.toml --locked --test version
+
       - name: Build the native CLI for recovery and Dispatch checks
         if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'
         run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo
@@ -273,24 +365,6 @@ jobs:
       - name: Validate the Dispatch publication tree
         if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.dispatch == 'true'
         run: proxy/target/release/safeyolo dispatch check-site
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          version: "0.12.8"
-          prune-cache: true
-
-      - name: Install the native CLI test environment
-        run: |
-          uv python install 3.12
-          uv sync --frozen --group dev --python 3.12
-
-      - name: Install preview test system dependency
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends socat tmux uidmap zstd
-          getsubids "$USER"
-          getsubids -g "$USER"
 
       - name: Test workflow, fixture, deletion, and blackbox runner boundaries
         run: |
@@ -319,6 +393,31 @@ jobs:
         run: |
           uv run --frozen pytest -q cli/tests/test_agent_command_supervisor.py \
             cli/tests/test_vm_recovery_recipe.py
+
+      - name: Test installed native policy commands
+        if: steps.changes.outputs.rust == 'true'
+        run: |
+          scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy
+          uv run --frozen pytest -v tests/proxy_contracts/test_native_policy_cli.py \
+            tests/proxy_contracts/test_first_agent_launch.py \
+            cli/tests/test_host_setup_scripts.py::test_claude_host_state_choice_controls_auth_preferences_and_extensions \
+            cli/tests/test_host_setup_scripts.py::test_claude_setup_does_not_write_through_guest_created_host_links \
+            --basetemp "$RUNNER_TEMP/native-policy" --junitxml "$RUNNER_TEMP/native-policy.xml"
+          uv run --frozen pytest -q tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_requires_confirmation_before_any_role_starts \
+            tests/proxy_contracts/test_native_factory_cli.py::test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants \
+            --basetemp "$RUNNER_TEMP/native-factory"
+          uv run --frozen pytest -q tests/test_guest_acquisition.py tests/test_guest_upgrade.py tests/test_component_upgrade.py tests/test_linux_host.py --basetemp "$RUNNER_TEMP/guest-selection"
+
+      - name: Retain runtime preparation and installed policy diagnostics
+        if: always() && steps.changes.outputs.rust == 'true'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: native-policy-diagnostics
+          path: |
+            ${{ runner.temp }}/gvisor-preparation.log
+            ${{ runner.temp }}/native-policy.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Test native desktop presentation and host entry
         if: steps.changes.outputs.rust == 'true'
@@ -369,7 +468,6 @@ jobs:
         env:
           SAFEYOLO_NATIVE_CLI: ${{ github.workspace }}/proxy/target/release/safeyolo
         run: |
-          ../scripts/cargo_with_space.sh test --release --locked --test version
           ../scripts/cargo_with_space.sh test --release --locked --test agent_api_audit
           ../scripts/cargo_with_space.sh test --release --locked --test tls existing_rsa_ca_formats_survive_native_import_and_restart -- --exact
           ../scripts/cargo_with_space.sh test --release --locked --test gateway_workflow oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token -- --exact
@@ -378,41 +476,6 @@ jobs:
           ../scripts/cargo_with_space.sh test --release --locked --lib guest_acquisition::tests
           ../scripts/cargo_with_space.sh test --release --locked --lib boot_
           ../scripts/cargo_with_space.sh test --release --locked --test command_centre_lifecycle
-
-      - name: Install the pinned Codex execpolicy test consumer
-        if: steps.changes.outputs.rust == 'true'
-        run: |
-          mkdir -p "$RUNNER_TEMP/codex-execpolicy"
-          cp tools/codex-execpolicy/package{,-lock}.json "$RUNNER_TEMP/codex-execpolicy/"
-          npm ci --prefix "$RUNNER_TEMP/codex-execpolicy"
-          # npm can omit a corrupt optional package. Refuse global module fallback.
-          node - "$RUNNER_TEMP/codex-execpolicy" <<'JS'
-          const path = require('node:path');
-          const { createRequire } = require('node:module');
-          const modules = path.resolve(process.argv[2], 'node_modules');
-          const wrapper = path.join(modules, '@openai/codex/package.json');
-          const platform = `@openai/codex-${process.platform}-${process.arch}/package.json`;
-          if (createRequire(wrapper).resolve(platform) !== path.join(modules, platform)) {
-            throw new Error('Codex must use the locked local platform package');
-          }
-          JS
-          test "$("$RUNNER_TEMP/codex-execpolicy/node_modules/.bin/codex" --version)" = 'codex-cli 0.159.1'
-          printf '%s\n' "$RUNNER_TEMP/codex-execpolicy/node_modules/.bin" >> "$GITHUB_PATH"
-
-
-      - name: Test installed native policy commands
-        if: steps.changes.outputs.rust == 'true'
-        run: |
-          scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy
-          uv run --frozen pytest -q tests/proxy_contracts/test_native_policy_cli.py \
-            tests/proxy_contracts/test_first_agent_launch.py \
-            cli/tests/test_host_setup_scripts.py::test_claude_host_state_choice_controls_auth_preferences_and_extensions \
-            cli/tests/test_host_setup_scripts.py::test_claude_setup_does_not_write_through_guest_created_host_links \
-            --basetemp "$RUNNER_TEMP/native-policy"
-          uv run --frozen pytest -q tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_requires_confirmation_before_any_role_starts \
-            tests/proxy_contracts/test_native_factory_cli.py::test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants \
-            --basetemp "$RUNNER_TEMP/native-factory"
-          uv run --frozen pytest -q tests/test_guest_acquisition.py tests/test_guest_upgrade.py tests/test_component_upgrade.py tests/test_linux_host.py --basetemp "$RUNNER_TEMP/guest-selection"
 
       - name: Build and save master debug release runtimes
         if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.changes.outputs.rust == 'true'
@@ -698,6 +761,23 @@ jobs:
         run: |
           chmod +x "$RUNNER_TEMP/native-contract-vm/vsock-term"
           make -C vm PROFILE=production install-helper INSTALL_DIR="$RUNNER_TEMP/native-contract-vm"
+
+      - name: Download the complete patched gVisor runtime
+        if: runner.os == 'Linux'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: runsc-linux-${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
+          path: ${{ runner.temp }}/gvisor-runtime
+
+      - name: Validate the prepared patched gVisor runtime
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          chmod +x "$RUNNER_TEMP/gvisor-runtime/runsc" "$RUNNER_TEMP/gvisor-runtime/gvisor-bin/"*
+          (cd "$RUNNER_TEMP/gvisor-runtime"; sha256sum --check --strict SHA256SUMS)
+          source scripts/native_package.sh
+          verify_runsc_payload "$RUNNER_TEMP/gvisor-runtime" "$(host_platform)"
+          printf 'SAFEYOLO_RUNSC_ARTIFACTS=%s/gvisor-runtime\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
       - name: Run native proxy component contracts
         shell: bash

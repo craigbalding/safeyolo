@@ -1,0 +1,33 @@
+schema_version: 1
+name: route-challenge-fixture
+default_host: 127.0.0.1
+description: >-
+  Controlled local sink. Read status to diagnose availability. Synthetic execution
+  records an operation; synthetic deletion is a separate operation. The example
+  paths illustrate operator boundaries and do not describe verified Rundeck APIs.
+auth:
+  type: bearer
+  header: Authorization
+  scheme: Bearer
+  allow_http: true
+capabilities:
+  operator:
+    description: Read status without changing state. Execution needs a temporary route approval.
+    routes:
+      - methods: [GET]
+        path: /status
+  diagnostics:
+    description: Additional diagnostic detail needs separate access and may need upstream configuration that is not verified here.
+    routes:
+      - methods: [GET]
+        path: /diagnostics
+risky_routes:
+  - methods: [POST]
+    path: /api/59/executions/
+    tactics: [impact]
+    description: Synthetic execution records an operation at the local sink. Arguments are unrestricted by this fixture.
+  - methods: [POST]
+    path: /api/delete
+    tactics: [impact]
+    irreversible: true
+    description: Synthetic deletion is outside the execution approval. Expiry cannot undo a deletion.

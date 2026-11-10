@@ -80,8 +80,9 @@ When Claude opens, send:
 ## Everyday commands
 
 Follow the displayed terminal controls to return to your host. From the same
-project directory, run `safeyolo agent launch` to return to Claude.
-SafeYolo reuses the matching agent and its persistent home. Launching
+project directory, run `safeyolo agent launch` to return to the saved Claude
+or Codex agent and its persistent home. If several agents match, select the
+listed name. New agents default to Claude; `--harness codex` selects Codex. Launching
 again does not upgrade it or resubmit a task. If a task fails, inspect its
 effects before submitting it again.
 
@@ -92,13 +93,14 @@ use the default installation. For another instance, use the
 
 | Task | Command |
 | --- | --- |
-| Start or return to Claude in this project | `safeyolo agent launch` |
+| Start or return to this project’s agent | `safeyolo agent launch` |
 | Read proxy and agent state | `safeyolo status` |
 | Reconnect to a running agent terminal | `safeyolo agent attach NAME` |
 | Open a separate shell | `safeyolo agent shell NAME` |
 | Open the running desktop | `safeyolo agent present NAME` |
 | Stop the agent | `safeyolo agent stop NAME` |
-| Diagnose runtime state | `safeyolo doctor` |
+| Diagnose this agent’s runtime, control and terminal | `safeyolo agent diagnostics NAME` |
+| Probe host prerequisites and the active policy pipeline | `safeyolo doctor` |
 | Stop the proxy and its Coord runtime | `safeyolo stop` |
 
 Stopping the proxy leaves agents running. Stop each disposable agent separately.
@@ -114,8 +116,10 @@ command family to its current operating instructions.
 | --- | --- |
 | Manual installation, custom roots, builds or recovery | [Installation reference](docs/installation.md) |
 | Try a useful task and decide its access | [Demo](docs/demo.md) |
+| Run a non-HTTP client with protocol-specific networking needs | [Client transports, relays and agent runbook](cli/src/safeyolo/agent_context/skills/safeyolo/references/non-http-clients.md) |
 | Controlled experiments | [The Lab](cli/README.md#lab) and [agent debugging](docs/agent-debugging.md) |
 | Claim shared work or coordinate agents | [Work claims](docs/coord-operations.md#claim-durable-work), [Factories](docs/factories.md), [Coord](docs/coord-operations.md), [Mattermost](docs/coord-mattermost.md) |
+| Connect instances and delegate scoped support | [Guided federation and authority setup](docs/federation-setup.md) |
 | A different agent or setup | [Host scripts](contrib/HOST_SCRIPT_GUIDE.md) |
 | Kali, Alpine or another rootfs | [Custom rootfs preparation](contrib/ROOTFS_SCRIPT_GUIDE.md) |
 | Contained physical Mac access | [Seatbelt SSH account](contrib/macos-seatbelt-agent/README.md) |

@@ -16,7 +16,10 @@ use serde_json::{Value, json};
 
 use super::*;
 
-pub(super) const HELP: &str = "safeyolo [--root ROOT] upgrade status\nsafeyolo [--root ROOT] upgrade --release host-COMMIT [--guest-index sha256:DIGEST]\nsafeyolo [--root ROOT] upgrade --bundle UNPACKED_DIRECTORY [--guest-index sha256:DIGEST]\nsafeyolo [--root ROOT] upgrade rollback\nSelect an explicit host release or verified local bundle. Keep the installed guest unless --guest-index selects another OCI index.\nValidate and stage the complete compatible pair before activation. Existing processes keep running; restart the proxy and agents to use the selected components.\nRollback restores the previous host/guest pair without a download. Configuration, credentials, logs and agent homes stay in ROOT.\nGuest-only changes remain available through guest upgrade and guest rollback.\nFor an older host without this command, run a new bundle's bin/safeyolo --root ROOT upgrade --bundle UNPACKED_DIRECTORY.\nThe first upgrade retains ROOT/safeyolo-upgrade. Use ROOT/safeyolo-upgrade status, --release, --bundle or rollback even after selecting an older host.\nKeep ROOT/versions, ROOT/host-packages and ROOT/upgrade-tools: active, rollback and upgrade commands use them.";
+#[path = "guided.rs"]
+mod guided;
+
+pub(super) const HELP: &str = "safeyolo [--root ROOT] upgrade\nsafeyolo [--root ROOT] upgrade releases\nsafeyolo [--root ROOT] upgrade [--release host-COMMIT | --bundle DIRECTORY] [--guest-index sha256:DIGEST] --preview\nsafeyolo [--root ROOT] upgrade [--release host-COMMIT | --bundle DIRECTORY] [--guest-index sha256:DIGEST] --activate [--restart-agent NAME]...\nWithout options, choose a published production host in a terminal, inspect its impact, then choose when to activate and which agents to restart.\n--preview acquires and verifies inputs without changing selection or interrupting processes. --activate performs the displayed stop/select/start operations without a prompt. Without an explicit target these options choose the newest supported published host.\nThe guided path retains a compatible guest or resolves the target host compatibility tag once and pins its OCI index. Unknown discovery retains the explicit selection path.\nsafeyolo [--root ROOT] upgrade status\nsafeyolo [--root ROOT] upgrade --release host-COMMIT [--guest-index sha256:DIGEST]\nsafeyolo [--root ROOT] upgrade --bundle UNPACKED_DIRECTORY [--guest-index sha256:DIGEST]\nsafeyolo [--root ROOT] upgrade rollback\nSelect an explicit host release or verified local bundle. Keep the installed guest unless --guest-index selects another OCI index.\nValidate and stage the complete compatible pair before activation. Existing processes keep running; restart the proxy and agents to use the selected components.\nRollback validates the previous host against retained Coord state before restoring the host/guest pair without a download. An incompatible or unavailable store check leaves selection unchanged; keep the selected host or use a newer compatible bundle. Component rollback does not reverse later store or user-state changes. Configuration, credentials, logs and agent homes stay in ROOT.\nGuest-only changes remain available through guest upgrade and guest rollback.\nFor an older host without this command, run a new bundle's bin/safeyolo --root ROOT upgrade --bundle UNPACKED_DIRECTORY.\nThe first upgrade retains ROOT/safeyolo-upgrade. Use ROOT/safeyolo-upgrade status, --release, --bundle or rollback even after selecting an older host.\nKeep ROOT/versions, ROOT/host-packages and ROOT/upgrade-tools: active, rollback and upgrade commands use them.";
 
 // These are the host payload paths produced by build_host_packages.sh.
 const HOST_PATHS: &[&str] = &[
@@ -113,7 +116,7 @@ fn payload_files(
 }
 
 fn verify_package(package: &Path, installed: bool) -> Result<PackageGuest, Error> {
-    let metadata = PackageGuest::read(&package.join("package-info"))?;
+    let metadata = PackageGuest::read(&package.join("package-info"), installed)?;
     let legacy_installed = installed && legacy_installer_omissions(package);
     let mut checked = BTreeSet::new();
     for line in fs::read_to_string(package.join("SHA256SUMS"))?.lines() {
@@ -418,21 +421,24 @@ fn stage_share(
     sync_directory(destination)
 }
 
-fn describe(host: &Path, share: &Path) -> Result<Value, Error> {
-    PackageGuest::read(&host.join("package-info"))?;
+fn describe_host(host: &Path) -> Result<Value, Error> {
+    PackageGuest::read(&host.join("package-info"), true)?;
     let fields = fs::read_to_string(host.join("package-info"))?;
     let fields = fields
         .lines()
         .map(|line| line.split_once('=').ok_or("invalid package-info field"))
         .collect::<Result<BTreeMap<_, _>, _>>()?;
-    let guest = if share.join("guest-selection.json").try_exists()? {
+    Ok(json!({"host":fields, "host_checksums_sha256":hash_file(&host.join("SHA256SUMS"))?}))
+}
+
+fn describe(host: &Path, share: &Path) -> Result<Value, Error> {
+    let mut pair = describe_host(host)?;
+    pair["guest"] = if share.join("guest-selection.json").try_exists()? {
         serde_json::from_slice::<Value>(&fs::read(share.join("guest-selection.json"))?)?
     } else {
         Value::Null
     };
-    Ok(
-        json!({"host":fields, "host_checksums_sha256":hash_file(&host.join("SHA256SUMS"))?, "guest":guest}),
-    )
+    Ok(pair)
 }
 
 fn status(root: &Path) -> Result<Value, Error> {
@@ -457,20 +463,7 @@ async fn prepare_guest(
     current: Option<&GuestSelection>,
     index: &str,
 ) -> Result<GuestSelection, Error> {
-    let store = if let Some(current) = current {
-        current
-            .assets
-            .ancestors()
-            .nth(3)
-            .ok_or("installed guest store path is missing")?
-            .to_path_buf()
-    } else {
-        PathBuf::from(
-            std::env::var_os("HOME")
-                .ok_or("HOME is required for the persistent guest directory")?,
-        )
-        .join(".local/share/safeyolo/guests")
-    };
+    let store = component_guest_store(current)?;
     fs::create_dir_all(&store)?;
     let store = store.canonicalize()?;
     let _store_lock = crate::host_platform::lock_host_state(&store.join("acquire.lock"))?;
@@ -506,6 +499,20 @@ async fn prepare_guest(
     Ok(selected)
 }
 
+fn component_guest_store(current: Option<&GuestSelection>) -> Result<PathBuf, Error> {
+    let retained = current
+        .map(|current| {
+            current
+                .assets
+                .ancestors()
+                .nth(3)
+                .map(Path::to_path_buf)
+                .ok_or("installed guest store path is missing")
+        })
+        .transpose()?;
+    guest_store_directory(retained)
+}
+
 fn retain_upgrader(root: &Path) -> Result<(), Error> {
     let entry = root.join("safeyolo-upgrade");
     if fs::symlink_metadata(&entry).is_ok()
@@ -537,6 +544,9 @@ fn retain_upgrader(root: &Path) -> Result<(), Error> {
 }
 
 pub(super) async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
+    if guided::handles(arguments) {
+        return guided::run(root, arguments).await;
+    }
     if matches!(arguments, [help] if help == "--help") {
         println!("{HELP}");
         return Ok(());
@@ -591,24 +601,46 @@ pub(super) async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error
                 guest.validate(&package)?;
                 guest.validate_inputs(&root, package.platform)?;
             }
+            let _coord_lock = crate::coord_rooms::check_rollback_store(
+                &root,
+                &previous.join("host/bin/safeyolo"),
+            )?;
             replace_link(&root, "current", &previous)?;
         }
         println!("{}", serde_json::to_string_pretty(&status(&root)?)?);
         return Ok(());
     }
-    if current_set(&root)?.as_deref() == Some(root.join("versions/initial").as_path()) {
-        // Until import finishes, the top-level aliases and original paths
-        // together still form the complete original package.
-        verify_package(&root, true)?;
-        import_installation(&root)?;
-    }
-    let current = current_set(&root)?;
-    let current_host = host_path(&root, current.as_deref());
+    let prepared = prepare(&root, bundle.as_deref(), release, index, None).await?;
+    select(&root, &prepared)?;
+    println!("{}", serde_json::to_string_pretty(&status(&root)?)?);
+    Ok(())
+}
+
+struct Prepared {
+    before: Value,
+    host: PathBuf,
+    guest: Option<GuestSelection>,
+    same: bool,
+    host_installed: bool,
+}
+
+/// Acquire and verify through the existing owners without changing selection.
+async fn prepare(
+    root: &Path,
+    bundle: Option<&Path>,
+    release: Option<&str>,
+    index: Option<&str>,
+    discovered_index: Option<&mut Option<String>>,
+) -> Result<Prepared, Error> {
+    let before = status(root)?;
+    let current = current_set(root)?;
+    let current_host = host_path(root, current.as_deref());
     let old_package = verify_package(&current_host, true)?;
-    let old_guest = installed(&root, &old_package)?;
+    let old_guest = installed(root, &old_package)?;
     let downloads = tempfile::Builder::new()
         .prefix("upgrade-")
-        .tempdir_in(&root)?;
+        .tempdir_in(root)?;
+    let mut bundle = bundle.map(Path::to_path_buf);
     if let Some(release) = release {
         let bootstrap = downloads.path().join("acquire.sh");
         fs::write(&bootstrap, include_str!("../../../install.sh"))?;
@@ -623,8 +655,21 @@ pub(super) async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error
     }
     let target = bundle.as_deref().unwrap_or(&current_host);
     let package = verify_package(target, bundle.is_none())?;
+    let discovered;
+    let index = if discovered_index.is_some()
+        && index.is_none()
+        && (old_package.compatibility != package.compatibility || old_guest.is_none())
+    {
+        discovered = guided::discover_guest(&package, old_guest.as_ref()).await?;
+        if let Some(pinned) = discovered_index {
+            *pinned = Some(discovered.clone());
+        }
+        Some(discovered.as_str())
+    } else {
+        index
+    };
     let selected = if let Some(index) = index {
-        Some(prepare_guest(&root, &package, old_guest.as_ref(), index).await?)
+        Some(prepare_guest(root, &package, old_guest.as_ref(), index).await?)
     } else {
         if let Some(guest) = &old_guest {
             guest.validate(&package)?;
@@ -637,35 +682,79 @@ pub(super) async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error
     let same_host =
         fs::read(target.join("SHA256SUMS"))? == fs::read(current_host.join("SHA256SUMS"))?;
     let same_guest = serde_json::to_value(&selected)? == serde_json::to_value(&old_guest)?;
-    if same_host && same_guest {
-        println!("{}", serde_json::to_string_pretty(&status(&root)?)?);
+    if !same_host || !same_guest {
+        verify_configuration(root, target)?;
+    }
+    let host = if same_host {
+        current_host.canonicalize()?
+    } else {
+        stage_host(root, target)?
+    };
+    Ok(Prepared {
+        before,
+        host,
+        guest: selected,
+        same: same_host && same_guest,
+        host_installed: same_host,
+    })
+}
+
+fn check_prepared(root: &Path, prepared: &Prepared) -> Result<(), Error> {
+    if status(root)? != prepared.before {
+        return Err("selected components changed during the preview; run upgrade again to inspect the current pair".into());
+    }
+    let package = verify_package(&prepared.host, prepared.host_installed)?;
+    if !prepared.same {
+        verify_configuration(root, &prepared.host)?;
+    }
+    if let Some(guest) = &prepared.guest {
+        guest.validate(&package)?;
+        guest.validate_inputs(root, package.platform)?;
+    }
+    Ok(())
+}
+
+fn select(root: &Path, prepared: &Prepared) -> Result<(), Error> {
+    if status(root)? != prepared.before {
+        return Err("selected components changed before selection; inspect upgrade status and preview again".into());
+    }
+    if prepared.same {
+        if current_set(root)?.as_deref() == Some(root.join("versions/initial").as_path()) {
+            verify_package(root, true)?;
+            import_installation(root)?;
+        }
         return Ok(());
     }
-    verify_configuration(&root, target)?;
-    let staged_host = if same_host {
-        None
-    } else {
-        Some(stage_host(&root, target)?)
-    };
-    retain_upgrader(&root)?;
+    retain_upgrader(root)?;
+    if current_set(root)?.as_deref() == Some(root.join("versions/initial").as_path()) {
+        // Resume the existing adoption owner after an interrupted exchange.
+        verify_package(root, true)?;
+        import_installation(root)?;
+    }
+    let current = current_set(root)?;
     let current = match current {
         Some(set) if set != root.join("versions/initial") => set,
-        _ => import_installation(&root)?,
+        _ => import_installation(root)?,
     };
-    let host = staged_host.unwrap_or(current.join("host").canonicalize()?);
+    // Initial adoption moved the original host. Resolve that retained path
+    // rather than making a link through ROOT's newly selected aliases.
+    let host = if prepared.host == root {
+        current.join("host").canonicalize()?
+    } else {
+        prepared.host.clone()
+    };
     let parent = root.join("versions");
     let stage = tempfile::Builder::new()
         .prefix("stage-")
         .tempdir_in(&parent)?;
     symlink(host, stage.path().join("host"))?;
     symlink(&current, stage.path().join("previous"))?;
-    stage_share(&root, &stage.path().join("share"), selected.as_ref())?;
+    stage_share(root, &stage.path().join("share"), prepared.guest.as_ref())?;
     fs::set_permissions(stage.path(), fs::Permissions::from_mode(0o755))?;
     sync_directory(stage.path())?;
     let destination = parent.join(uuid::Uuid::new_v4().simple().to_string());
     fs::rename(stage.path(), &destination)?;
     sync_directory(&parent)?;
-    replace_link(&root, "current", &destination)?;
-    println!("{}", serde_json::to_string_pretty(&status(&root)?)?);
+    replace_link(root, "current", &destination)?;
     Ok(())
 }

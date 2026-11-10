@@ -48,6 +48,10 @@ pub(crate) fn write_json_with_mode(path: &Path, value: &Value, mode: u32) -> Res
 }
 
 pub fn read_state(path: &Path) -> Result<Option<Value>, Error> {
+    read_state_bounded(path, 128 * 1024)
+}
+
+pub(crate) fn read_state_bounded(path: &Path, limit: u64) -> Result<Option<Value>, Error> {
     let file = match fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -61,8 +65,8 @@ pub fn read_state(path: &Path) -> Result<Option<Value>, Error> {
         return Err("command state must be a regular file; completion is unverified".into());
     }
     let mut source = Vec::new();
-    file.take(128 * 1024 + 1).read_to_end(&mut source)?;
-    if source.len() > 128 * 1024 {
+    file.take(limit + 1).read_to_end(&mut source)?;
+    if source.len() as u64 > limit {
         return Err("command state exceeds the diagnostic limit".into());
     }
     Ok(Some(serde_json::from_slice(&source)?))

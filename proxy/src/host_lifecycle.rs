@@ -42,6 +42,20 @@ pub(crate) struct SetupLock {
 }
 
 impl SetupLock {
+    pub(crate) async fn acquire_in_async(directory: &std::path::Path) -> Result<Self, Error> {
+        let file = Self::open_in(directory)?;
+        loop {
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(Self { _file: file });
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::WouldBlock {
+                return Err(error.into());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     pub(crate) fn acquire_in(
         directory: &std::path::Path,
         deadline: Option<std::time::Instant>,
@@ -166,6 +180,16 @@ pub(crate) fn recover_guest_probe(
     name: &str,
     timeout: std::time::Duration,
 ) -> Result<Value, Error> {
+    recover_guest_probe_authorized(root, name, timeout, None, &|| Ok(()))
+}
+
+pub(crate) fn recover_guest_probe_authorized(
+    root: &std::path::Path,
+    name: &str,
+    timeout: std::time::Duration,
+    setup_lock: Option<SetupLock>,
+    check: &dyn Fn() -> Result<(), Error>,
+) -> Result<Value, Error> {
     if !crate::host_platform::valid_agent_name(name) || timeout.is_zero() {
         return Err("recovery needs a valid agent name and positive deadline".into());
     }
@@ -176,9 +200,14 @@ pub(crate) fn recover_guest_probe(
     if !home.is_dir() || !share.join("safeyolo-guest").is_file() {
         return Err("required guest helper/home is missing; stage the installed guest assets and boot this agent first".into());
     }
-    let _setup = SetupLock::acquire_in(&directory, Some(deadline))?;
+    let _setup = match setup_lock {
+        Some(lock) => lock,
+        None => SetupLock::acquire_in(&directory, Some(deadline))?,
+    };
     let _launch = LaunchLock::acquire_in(&directory, Some(deadline))?;
-    if let Some(launch) = crate::guest_commands::read_state(&directory.join("current-launch.json"))?
+    let launch_path = directory.join("current-launch.json");
+    let launch = crate::guest_commands::read_state(&launch_path)?;
+    if let Some(launch) = &launch
         && matches!(
             launch["state"].as_str(),
             Some("starting" | "launching" | "stopping" | "finishing")
@@ -192,11 +221,39 @@ pub(crate) fn recover_guest_probe(
         .as_str()
         .filter(|generation| !generation.is_empty())
         .ok_or("current-run generation is missing")?;
+    let state_path = home.join(".safeyolo-command-supervisor.json");
+    let previous = crate::guest_commands::read_state(&state_path)?;
+    if previous
+        .as_ref()
+        .is_some_and(|state| state["generation"] != generation)
+    {
+        return Err("command supervisor belongs to another run; its state was left intact".into());
+    }
+    if let Some(launch) = &launch {
+        let agent_id = context["agent_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or("host launch agent identity is missing")?;
+        if launch["name"] != name || launch["agent_id"] != agent_id {
+            return Err("host launch belongs to another agent; its state was left intact".into());
+        }
+        if launch["launcher"]["kind"] == "supervisor" {
+            validate_supervisor_observation(
+                name,
+                agent_id,
+                launch,
+                &context["generation"],
+                previous
+                    .as_ref()
+                    .ok_or("recorded harness supervision is missing")?,
+            )?;
+        }
+    }
     let id = uuid::Uuid::new_v4().simple().to_string();
     let command = format!("exec {} probe {}", crate::guest_commands::HELPER, id);
+    check()?;
     crate::guest_commands::publish(&home, &share, name, &command, &id, generation)?;
-    let state_path = home.join(".safeyolo-command-supervisor.json");
-    let result = (|| {
+    let result: Result<Value, Error> = (|| {
         loop {
             let state = crate::guest_commands::read_state(&state_path)?
                 .ok_or("supervisor ownership disappeared; completion is unverified")?;
@@ -241,10 +298,30 @@ pub(crate) fn recover_guest_probe(
     // replacement command or signal a host PID copied from guest-writable state.
     if let Some(current) = crate::guest_commands::read_state(&state_path)?
         && current["supervision_id"] == id
+        && current["generation"] == generation
+        && current["command"] == command
     {
         crate::guest_commands::request_stop(&home, &share, &id)?;
     }
-    result
+    let result = result?;
+    // The probe borrowed an idle supervisor slot. Return the prior terminal
+    // observation, not its command: publishing that command would replay it.
+    // Keep a failed/uncertain probe visible instead of fabricating harness exit.
+    check()?;
+    if crate::guest_commands::read_state(&share.join("host-launch-context.json"))? != Some(context)
+        || crate::guest_commands::read_state(&launch_path)? != launch
+    {
+        return Err("agent run or launch changed during the probe; its state was preserved".into());
+    }
+    let current = crate::guest_commands::read_state(&state_path)?
+        .ok_or("probe supervision disappeared; completion is unverified")?;
+    if current != result["state"] {
+        return Err("probe supervision changed; replacement state was left intact".into());
+    }
+    if let Some(previous) = previous {
+        crate::guest_commands::write_json(&state_path, &previous)?;
+    }
+    Ok(result)
 }
 
 impl Drop for LaunchLock {
@@ -1038,20 +1115,21 @@ fn supervisor_state(name: &str) -> Result<Option<Value>, Error> {
 }
 
 fn validate_supervisor_observation(
-    agent: &Agent,
+    name: &str,
+    agent_id: &str,
     record: &Value,
     run_id: &Value,
     supervisor: &Value,
 ) -> Result<(), Error> {
     if run_id.as_str().is_none_or(str::is_empty)
-        || record["agent_id"] != agent.id
-        || record["name"] != agent.name
+        || record["agent_id"] != agent_id
+        || record["name"] != name
         || record["launch_id"].as_str().is_none_or(str::is_empty)
         || record["command"]
             .as_str()
             .is_none_or(|command| command.trim().is_empty())
         || supervisor["schema_version"] != 1
-        || supervisor["name"] != agent.name
+        || supervisor["name"] != name
         || supervisor["generation"] != *run_id
         || supervisor["supervision_id"] != record["launch_id"]
         || supervisor["command"] != record["command"]
@@ -1083,7 +1161,7 @@ async fn checked_supervisor_state(
         );
     }
     let supervisor: Value = serde_json::from_slice(&output.stdout)?;
-    validate_supervisor_observation(agent, record, run_id, &supervisor)?;
+    validate_supervisor_observation(&agent.name, &agent.id, record, run_id, &supervisor)?;
     let current = read_json(&launch_path(&agent.name))?
         .ok_or("host launch disappeared during the guest check; command state is unknown")?;
     for key in [
@@ -1448,6 +1526,25 @@ pub(crate) async fn start(
     arguments: Option<&[String]>,
     allow_unowned: bool,
 ) -> Result<Value, Error> {
+    start_authorized(
+        agent,
+        operation,
+        setup_lock,
+        arguments,
+        allow_unowned,
+        &|| Ok(()),
+    )
+    .await
+}
+
+pub(crate) async fn start_authorized(
+    agent: &Agent,
+    operation: &str,
+    setup_lock: Option<SetupLock>,
+    arguments: Option<&[String]>,
+    allow_unowned: bool,
+    check: &(dyn Fn() -> Result<(), Error> + Send + Sync),
+) -> Result<Value, Error> {
     let interactive = operation == "start-interactive";
     let foreground = operation == "start-foreground";
     crate::host_agents::refresh(agent)?;
@@ -1467,6 +1564,8 @@ pub(crate) async fn start(
     current.dangerously_allow_unowned |= allow_unowned;
     let agent = &current;
     let observed = runtime(agent).await?;
+    check()?;
+    let result: Result<Value, Error> = async {
     let state = observed
         .get("agent_state")
         .and_then(Value::as_str)
@@ -1563,8 +1662,12 @@ pub(crate) async fn start(
     }
     stop_supervisor(&agent.name).await?;
     let debug_command = interactive && agent.launcher.as_deref() == Some("supervisor");
-    let command = configured_guest_command(agent, debug_command)?;
     let launch_id = format!("launch-{}", uuid::Uuid::new_v4().simple());
+    let command = format!(
+        "export SAFEYOLO_GUEST_LAUNCH_ID={}; {}",
+        shell_quote(&launch_id),
+        configured_guest_command(agent, debug_command)?
+    );
     let timestamp =
         time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339)?;
     let session = tmux_session()?;
@@ -1577,6 +1680,7 @@ pub(crate) async fn start(
     });
     {
         let _launch_lock = LaunchLock::acquire(&agent.name)?;
+        check()?;
         write_json(&launch_path(&agent.name), &record)?;
     }
     if foreground {
@@ -1603,6 +1707,43 @@ pub(crate) async fn start(
         json!({}),
     );
     runtime(agent).await
+    }.await;
+    if !result.as_ref().is_ok_and(|value| {
+        value["status_code"]
+            .as_u64()
+            .is_none_or(|status| status < 400)
+    }) {
+        // The lifecycle lock still binds the failed attempt to these source
+        // operands. Keep the fact even if audit or notification is unavailable.
+        let run = crate::host_runs::read(&agent.name).ok().flatten();
+        let launch = read_json(&launch_path(&agent.name)).ok().flatten();
+        let failure = json!({"event_id":format!("evt-{}",uuid::Uuid::new_v4().simple()),
+            "name":agent.name,"agent_id":agent.id,"run_id":run.as_ref().map(|run| &run["run_id"]),
+            "launch_id":launch.as_ref().map(|launch| &launch["launch_id"]),
+            "operation":operation,"at":time::OffsetDateTime::now_utc().unix_timestamp(),
+            "source":"host_start","reason":"The host start request failed; inspect current runtime and operator diagnostics before retrying."});
+        if let Err(error) = write_json(
+            &agent_dir(&agent.name).join("last-start-failure.json"),
+            &failure,
+        ) {
+            eprintln!("Failed start could not retain its operational reference: {error}");
+        }
+    } else if let Ok(Some(mut failure)) =
+        read_json(&agent_dir(&agent.name).join("last-start-failure.json"))
+        && failure["agent_id"] == agent.id
+        && failure["recovery"].is_null()
+    {
+        let value = result.as_ref().expect("successful start");
+        failure["recovery"] = json!({"at":time::OffsetDateTime::now_utc().unix_timestamp(),
+            "run_id":value["run_id"],"launch_id":value["launch_id"]});
+        if let Err(error) = write_json(
+            &agent_dir(&agent.name).join("last-start-failure.json"),
+            &failure,
+        ) {
+            eprintln!("Successful start could not retain its recovery reference: {error}");
+        }
+    }
+    result
 }
 
 // The setup lock is held, and no backend process was spawned for this record.
@@ -1687,7 +1828,7 @@ fn configured_guest_command(agent: &Agent, interactive: bool) -> Result<String, 
     }
 }
 
-fn shell_quote(value: &str) -> String {
+pub(crate) fn shell_quote(value: &str) -> String {
     if !value.is_empty()
         && value
             .bytes()
@@ -2116,6 +2257,14 @@ async fn launch_script(agent: &Agent, record: &Value) -> Result<(), Error> {
 }
 
 pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result<Value, Error> {
+    stop_authorized(agent, setup_lock, &|| Ok(())).await
+}
+
+pub(crate) async fn stop_authorized(
+    agent: &Agent,
+    setup_lock: Option<SetupLock>,
+    check: &(dyn Fn() -> Result<(), Error> + Send + Sync),
+) -> Result<Value, Error> {
     crate::host_agents::refresh(agent)?;
     let directory = agent_dir(&agent.name);
     let _lock = match setup_lock {
@@ -2130,6 +2279,7 @@ pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result
     if observed["runtime_state"] != "stopped" || observed["backend"].is_object() {
         crate::host_platform::check_stop_sandbox(&agent.name).await?;
     }
+    check()?;
     if let Some(mut run) = crate::host_runs::read(&agent.name)?
         && run["agent_id"] == agent.id
         && matches!(run["state"].as_str(), Some("starting" | "running"))
@@ -2166,6 +2316,70 @@ pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result
         result["command_stop_warning"] = warning.into();
     }
     Ok(result)
+}
+
+/// Restart the saved coding harness while preserving its sandbox generation.
+/// A launch that cannot be proved stopped is never replaced speculatively.
+pub(crate) async fn restart_harness(
+    agent: &Agent,
+    setup_lock: SetupLock,
+    check: impl Fn() -> Result<(), Error> + Send + Sync,
+) -> Result<Value, Error> {
+    let current = crate::host_agents::refresh(agent)?;
+    let record = read_json(&launch_path(&agent.name))?.ok_or("no recorded harness to restart")?;
+    let sandbox = crate::host_runs::observe(&agent.name).await;
+    if record["agent_id"] != current.id || sandbox["exec"] != true {
+        return Err("harness or guest ownership is unverified".into());
+    }
+    check()?;
+    if record["launcher"]["kind"] == "supervisor" {
+        stop_supervisor(&agent.name).await?;
+    } else {
+        let generation = sandbox["run_id"]
+            .as_str()
+            .ok_or("sandbox generation unavailable")?;
+        let launch = record["launch_id"]
+            .as_str()
+            .ok_or("launch identity unavailable")?;
+        let command = format!(
+            "/safeyolo/safeyolo-guest observe stop {} {}",
+            shell_quote(generation),
+            shell_quote(launch)
+        );
+        let output = crate::host_platform::guest_command_output_authorized(
+            &agent.name,
+            &command,
+            std::time::Duration::from_secs(15),
+            &mut || check(),
+        )
+        .await?;
+        if !output.status.success() || output.stdout != b"stopped\n" {
+            return Err(
+                "guest harness termination is unverified; sandbox and launch were preserved".into(),
+            );
+        }
+    }
+    check()?;
+    // A terminal wrapper may need time to reap the guest command and run its
+    // saved exit hooks. Do not replace a live or changed launch record.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let observed = runtime(&current).await?;
+        if observed["run_id"] != sandbox["run_id"] || observed["launch_id"] != record["launch_id"] {
+            return Err("harness or sandbox changed during restart".into());
+        }
+        if matches!(
+            observed["agent_state"].as_str(),
+            Some("stopped" | "exited" | "failed")
+        ) {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("harness exit is unverified; no replacement was started".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    start_authorized(&current, "start", Some(setup_lock), None, false, &check).await
 }
 
 fn clear_stopped_command_state(name: &str) -> Result<(), Error> {
@@ -2562,7 +2776,14 @@ mod tests {
             for heartbeat in [100.0, 10_000_000_000.0] {
                 checked["heartbeat_at"] = json!(heartbeat);
                 assert!(
-                    validate_supervisor_observation(&agent, &record, &run_id, &checked).is_ok()
+                    validate_supervisor_observation(
+                        &agent.name,
+                        &agent.id,
+                        &record,
+                        &run_id,
+                        &checked
+                    )
+                    .is_ok()
                 );
                 assert!(reuses_current_launch(
                     &json!({"agent_state":checked["state"]})
@@ -2580,7 +2801,14 @@ mod tests {
                 let mut wrong = checked.clone();
                 wrong[key] = value;
                 assert!(
-                    validate_supervisor_observation(&agent, &record, &run_id, &wrong).is_err(),
+                    validate_supervisor_observation(
+                        &agent.name,
+                        &agent.id,
+                        &record,
+                        &run_id,
+                        &wrong
+                    )
+                    .is_err(),
                     "{wrong}"
                 );
             }
@@ -2597,7 +2825,14 @@ mod tests {
                     let mut wrong = checked.clone();
                     wrong[key] = value;
                     assert!(
-                        validate_supervisor_observation(&agent, &record, &run_id, &wrong).is_err(),
+                        validate_supervisor_observation(
+                            &agent.name,
+                            &agent.id,
+                            &record,
+                            &run_id,
+                            &wrong
+                        )
+                        .is_err(),
                         "{wrong}"
                     );
                 }
@@ -2606,7 +2841,14 @@ mod tests {
                 let mut wrong = record.clone();
                 wrong[key] = Value::Null;
                 assert!(
-                    validate_supervisor_observation(&agent, &wrong, &run_id, &checked).is_err()
+                    validate_supervisor_observation(
+                        &agent.name,
+                        &agent.id,
+                        &wrong,
+                        &run_id,
+                        &checked
+                    )
+                    .is_err()
                 );
             }
             // The actual common transport must refuse an unavailable sandbox;
@@ -2628,7 +2870,14 @@ mod tests {
                 let mut terminal = read_json(&supervisor_path(&agent.name)).unwrap().unwrap();
                 terminal["state"] = json!(label);
                 assert!(
-                    validate_supervisor_observation(&agent, &record, &run_id, &terminal).is_ok()
+                    validate_supervisor_observation(
+                        &agent.name,
+                        &agent.id,
+                        &record,
+                        &run_id,
+                        &terminal
+                    )
+                    .is_ok()
                 );
             }
         })

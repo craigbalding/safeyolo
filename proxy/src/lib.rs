@@ -103,6 +103,7 @@ mod operator_actions;
 pub mod operator_commands;
 mod operator_events;
 mod operator_stats;
+mod peer_support;
 pub mod policy;
 mod policy_runtime;
 mod prompt_injection;
@@ -445,6 +446,9 @@ pub(crate) struct Runtime {
     /// One process-owned store for contract bindings and risky grants. Clones
     /// share reservations; reloads reconcile its durable view before publish.
     gateway_grants: Option<grants::Store>,
+    /// Serialize project admission through durable effect recording. This is
+    /// process-local; Docker's other administrators retain their own access.
+    docker_projects: Arc<tokio::sync::Mutex<()>>,
     credential_guard: Option<credential_guard::CredentialGuard>,
     credential_key_empty: bool,
     tasks: tasks::Registry,
@@ -547,6 +551,7 @@ impl Runtime {
                         None => audit::Settings::from_env()?,
                     },
                 )
+                .with_instance_directory(config.native_config_dir.clone())
                 .with_named_controls(config.native_product)
                 .with_approvals(config.data_dir().join("approvals.sqlite3")),
             ),
@@ -734,7 +739,7 @@ impl Runtime {
                             runtime.coord.owner(),
                             config.policy_file.clone(),
                         )
-                        .with_provider_directory(config.native_config_dir.as_deref())
+                        .with_instance_root(config.native_config_dir.as_deref())
                         .with_collaboration_config(config.collaboration.clone()),
                     )
                 })
@@ -747,7 +752,7 @@ impl Runtime {
                                 .as_ref()
                                 .map(|_| config.data_dir().join("coord")),
                         )
-                        .with_provider_directory(config.native_config_dir.as_deref())
+                        .with_instance_root(config.native_config_dir.as_deref())
                         .with_collaboration_config(config.collaboration.clone()),
                     )
                 });
@@ -845,6 +850,9 @@ impl Runtime {
                 credential_activation,
                 operator_modes,
                 gateway_grants,
+                docker_projects: previous
+                    .map(|runtime| runtime.docker_projects.clone())
+                    .unwrap_or_default(),
                 credential_guard,
                 credential_key_empty,
                 tasks,
@@ -1481,6 +1489,29 @@ impl GatewayVault {
         Ok(())
     }
 
+    // This is a diagnostic after an unsuccessful load, never authority to use a key.
+    fn unavailable_reason(&self) -> credential_injection::VaultUnavailable {
+        use credential_injection::VaultUnavailable;
+        match std::fs::metadata(self.data_dir.join("credentials.enc")) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => VaultUnavailable::Absent,
+            Ok(metadata) if metadata.is_file() => match credentials::storage(&self.data_dir) {
+                Ok(Some(credentials::Storage::Passphrase)) => VaultUnavailable::Locked,
+                _ => VaultUnavailable::Unavailable,
+            },
+            _ => VaultUnavailable::Unavailable,
+        }
+    }
+
+    async fn load_for_injection(
+        &self,
+    ) -> Result<Result<LoadedGatewayVault, credential_injection::VaultUnavailable>, Error> {
+        let owner = self.clone();
+        tokio::task::spawn_blocking(move || {
+            Ok::<_, Error>(owner.load()?.ok_or_else(|| owner.unavailable_reason()))
+        })
+        .await?
+    }
+
     async fn load_async(&self) -> Result<Option<LoadedGatewayVault>, Error> {
         let owner = self.clone();
         tokio::task::spawn_blocking(move || owner.load()).await?
@@ -1956,6 +1987,7 @@ pub struct Proxy {
     readiness_file: PathBuf,
     circuit_snapshots: Option<circuit_runtime::Snapshots>,
     coord_delivery: Option<agent_api::coord::outbox::Delivery>,
+    coord_federation: Option<agent_api::coord::federation::Running>,
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     heap_release: Option<heap_release::HeapRelease>,
     service_files: Option<services::CatalogMetadata>,
@@ -2018,6 +2050,7 @@ impl Proxy {
             readiness_file: config.readiness_file.clone(),
             circuit_snapshots: None,
             coord_delivery: None,
+            coord_federation: None,
             #[cfg(all(target_os = "linux", target_env = "gnu"))]
             heap_release: None,
             service_check_at: service_files.as_ref().map(|_| tokio::time::Instant::now()),
@@ -2063,6 +2096,8 @@ impl Proxy {
                 Some(circuit_runtime::Snapshots::start(proxy.runtime.clone())?);
         }
         startup.record("listeners_readiness");
+        proxy.coord_federation =
+            agent_api::coord::federation::Running::start(proxy.runtime.clone());
         {
             let runtime = proxy
                 .runtime
@@ -2441,6 +2476,7 @@ impl Proxy {
             .service_mutations
             .clone();
         service_mutations.stop_admission().await;
+        self.coord_federation.take();
         if let Some(share) = self.command_centre_share.take() {
             share.stop().await;
         }

@@ -18,5 +18,8 @@ CREATE TABLE IF NOT EXISTS coord_federation_homes (
     url TEXT NOT NULL,
     ca_file TEXT NOT NULL,
     token_file TEXT NOT NULL,
-    revision TEXT NOT NULL
+    revision TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'tls',
+    tailscale_node TEXT,
+    trust_hash TEXT
 );

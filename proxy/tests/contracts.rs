@@ -2,7 +2,7 @@ use safeyolo_proxy::{contracts::*, services::ServiceDefinition};
 use serde_json::{Value, json};
 
 fn contract_document(transport: Value) -> Value {
-    let mut request = json!({"method":"POST","path":"/items","query":{"allow":{"limit":{"integer_range":[1,100]},"name":{"equals_var":"approved"},"page":{"type":"string"}},"deny_unknown":true},"body":{"allow":{"name":{"equals_var":"approved"},"metadata":{"type":"string"}},"deny_unknown":true}});
+    let mut request = json!({"method":"POST","path":"/items","query":{"allow":{"limit":{"integer_range":[1,100]},"name":{"equals_var":"approved"},"page":{"type":"string"}},"deny_unknown":true},"body":{"allow":{"name":{"equals_var":"approved"},"metadata":{}},"deny_unknown":true}});
     if !transport.is_null() {
         request["transport"] = transport;
     }
@@ -47,6 +47,170 @@ fn result_code(result: Result<CanonicalRequest, ContractDenial>) -> Value {
     match result {
         Ok(value) => json!({"allowed":true,"operation":value.operation}),
         Err(error) => json!({"allowed":false,"code":error.code}),
+    }
+}
+
+#[test]
+fn opaque_bodies_keep_request_constraints_without_claiming_json_inspection() {
+    let mut document =
+        contract_document(json!({"body_format":"opaque","content_types":["application/x-tar"]}));
+    document["capabilities"]["test"]["contract"]["operations"][0]["request"]["body"] = json!({});
+    let good = case(
+        "POST",
+        "/items?limit=1",
+        json!([["Content-Type", "application/x-tar; charset=binary"]]),
+        "binary tar bytes",
+    );
+    let accepted = enforce(&document, &good, true).unwrap();
+    assert!(accepted.body.is_none());
+    assert_eq!(accepted.operation, "write");
+    let bad_query = case(
+        "POST",
+        "/items?limit=200",
+        json!([["Content-Type", "application/x-tar"]]),
+        "binary tar bytes",
+    );
+    assert_eq!(
+        enforce(&document, &bad_query, true).unwrap_err().code,
+        ContractCode::ContractViolation
+    );
+    let wrong_type = case(
+        "POST",
+        "/items",
+        json!([["Content-Type", "application/json"]]),
+        "{}",
+    );
+    assert_eq!(
+        enforce(&document, &wrong_type, true).unwrap_err().code,
+        ContractCode::TransportContentType
+    );
+    for body in [
+        json!({"allow":{"name":{"equals_var":"approved"}}}),
+        json!({"deny_unknown":false,"values":{"type":"string","enum":["busybox"]}}),
+        json!({"values":{}}),
+    ] {
+        document["capabilities"]["test"]["contract"]["operations"][0]["request"]["body"] =
+            body.clone();
+        let error = ServiceDefinition::from_value(document.clone())
+            .err()
+            .unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("opaque request bodies cannot have JSON field constraints"),
+            "{body}: {error}"
+        );
+    }
+    let missing_types = contract_document(json!({"body_format":"opaque"}));
+    assert!(ServiceDefinition::from_value(missing_types).is_err());
+}
+
+#[test]
+fn nested_rules_check_missing_defaults_required_types_ranges_and_every_array_item() {
+    let mut document = contract_document(Value::Null);
+    document["capabilities"]["test"]["contract"]["operations"][0]["request"]["body"] = json!({"allow":{
+        "settings":{"required":true,"type":"object","object":{"allow":{
+            "privileged":{"type":"boolean","default":false,"enum":[false]},
+            "mounts":{"type":"array","items":{"type":"object","object":{"allow":{
+                "size":{"required":true,"type":"integer","integer_range":[1,16]},
+                "source":{"type":"string","equals_var":"approved"}
+            }}}}
+        }}}
+    }});
+    for (body, accepted) in [
+        (json!({}), false),
+        (json!({"settings":{}}), true),
+        (json!({"settings":{"privileged":0}}), false),
+        (json!({"settings":{"privileged":true}}), false),
+        (
+            json!({"settings":{"mounts":[{"size":1,"source":"chosen"},{"size":16}]}}),
+            true,
+        ),
+        (
+            json!({"settings":{"mounts":[{"size":1},{"size":17}]}}),
+            false,
+        ),
+        (json!({"settings":{"mounts":[{}]}}), false),
+        (
+            json!({"settings":{"mounts":[{"size":1,"source":"other"}]}}),
+            false,
+        ),
+        (json!({"settings":{"unexpected":true}}), false),
+    ] {
+        let result = enforce(
+            &document,
+            &case(
+                "POST",
+                "/items",
+                json!([["Content-Type", "application/json"]]),
+                &body.to_string(),
+            ),
+            true,
+        );
+        assert_eq!(result.is_ok(), accepted, "{body}: {result:?}");
+    }
+    document["capabilities"]["test"]["contract"]["operations"][0]["request"]["body"]["allow"]["settings"]
+        ["object"]["allow"]["privileged"]["default"] = json!(true);
+    assert!(
+        enforce(
+            &document,
+            &case(
+                "POST",
+                "/items",
+                json!([["Content-Type", "application/json"]]),
+                r#"{"settings":{}}"#
+            ),
+            true
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn unsupported_response_and_nested_state_requirements_never_become_grantable() {
+    let mut document = contract_document(Value::Null);
+    let template = &mut document["capabilities"]["test"]["contract"];
+    template["enforcement"]["response_validators"] = json!("enforced");
+    template["operations"].as_array_mut().unwrap().push(json!({"name":"validate_response","requires_enforcement":"response_validators","request":{"method":"POST","path":"/mutate"}}));
+    template["operations"].as_array_mut().unwrap().push(json!({"name":"nested_state","request":{"method":"POST","path":"/nested","body":{"allow":{"items":{"items":{"in_state_set":"ids"}}}}}}));
+    let service = ServiceDefinition::from_value(document).unwrap();
+    let contract = service.capabilities["test"].contract.as_ref().unwrap();
+    let granted: Vec<_> = contract
+        .grantable_operations()
+        .map(|op| op.name.as_str())
+        .collect();
+    assert_eq!(granted, vec!["write", "discover"]);
+    assert!(
+        contract
+            .validate_grant_operations(&["validate_response".into()])
+            .is_err()
+    );
+}
+
+#[test]
+fn scalar_wire_types_ranges_and_required_query_fields_are_enforced() {
+    let mut document = contract_document(Value::Null);
+    document["capabilities"]["test"]["contract"]["operations"][0]["request"]["query"] = json!({"allow":{
+        "enabled":{"type":"boolean","enum":[true],"required":true},
+        "count":{"type":"integer","integer_range":[1,3]},
+        "weight":{"type":"number"}
+    }});
+    for (query, allowed) in [
+        ("enabled=true", true),
+        ("enabled=1&count=2&weight=1.5", true),
+        ("enabled=false", false),
+        ("enabled=0", false),
+        ("enabled=1&count=4", false),
+        ("enabled=1&count=word", false),
+        ("enabled=1&weight=NaN", false),
+        ("count=2", false),
+    ] {
+        let result = enforce(
+            &document,
+            &case("POST", &format!("/items?{query}"), json!([]), ""),
+            true,
+        );
+        assert_eq!(result.is_ok(), allowed, "{query}: {result:?}");
     }
 }
 
@@ -285,9 +449,9 @@ fn state_constraints_are_not_executable_even_with_enforced_markers() {
 }
 
 #[test]
-fn types_are_declared_and_missing_fields_are_not_made_required() {
+fn unconstrained_values_stay_available_and_optional_fields_may_be_omitted() {
     let document = contract_document(Value::Null);
-    // Python only validates supplied values and equals_var/range constraints.
+    // Fields remain optional unless the adopted rule marks them required.
     assert!(
         enforce(
             &document,

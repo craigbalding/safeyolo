@@ -228,3 +228,101 @@ async fn native_coord_reads_only_the_connected_instances_store_and_token() {
     assert_eq!(coord_brief(&b, token_b.trim()).await, brief_b);
     proxy_b.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn command_centre_handoffs_export_three_pinned_owners_without_printing_credentials() {
+    use std::os::unix::fs::PermissionsExt;
+    let roots = [
+        install_configuration(),
+        install_configuration(),
+        install_configuration(),
+    ];
+    let mut proxies = Vec::new();
+    let mut identities = std::collections::BTreeSet::new();
+    for directory in &roots {
+        proxies.push(
+            Proxy::start(native_config::read(&directory.path().join("config.toml")).unwrap())
+                .await
+                .unwrap(),
+        );
+        let destination = directory.path().join("operator-connection.json");
+        let run = || {
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+                .arg("--root")
+                .arg(directory.path())
+                .args(["configure", "command-centre"])
+                .arg(&destination)
+                .output()
+        };
+        let output = run().await.unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let bytes = fs::read(&destination).unwrap();
+        let profile: Value = serde_json::from_slice(&bytes).unwrap();
+        let owner = identity(directory).await;
+        assert_eq!(profile["instance_id"], owner["safeyolo_instance_id"]);
+        assert_eq!(profile["owner_root"], owner["host_root"]);
+        assert_eq!(profile["schema"], "safeyolo.command-centre-connection/v1");
+        assert_eq!(profile["transport"], "loopback");
+        assert_eq!(
+            profile["token"],
+            fs::read_to_string(directory.path().join("data/admin_token"))
+                .unwrap()
+                .trim()
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains(profile["token"].as_str().unwrap())
+        );
+        assert!(
+            profile["admin_url"]
+                .as_str()
+                .unwrap()
+                .starts_with("http://127.0.0.1:")
+        );
+        assert_eq!(
+            fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(
+            !run().await.unwrap().status.success(),
+            "Existing private handoffs must not be overwritten"
+        );
+        assert_eq!(fs::read(&destination).unwrap(), bytes);
+        identities.insert(profile["instance_id"].as_str().unwrap().to_owned());
+    }
+    assert_eq!(identities.len(), 3);
+    // Point the first root at another owner's authenticated endpoint. Its local
+    // durable identity still has to match before any credential can be exported.
+    let target = &roots[1];
+    let source = &roots[0];
+    let ready: Value =
+        serde_json::from_slice(&fs::read(target.path().join("data/ready.json")).unwrap()).unwrap();
+    let config_path = source.path().join("config.toml");
+    let config = fs::read_to_string(&config_path).unwrap().replace(
+        "admin_port = 0",
+        &format!("admin_port = {}", ready["admin_port"]),
+    );
+    fs::write(&config_path, config).unwrap();
+    fs::copy(
+        target.path().join("data/admin_token"),
+        source.path().join("data/admin_token"),
+    )
+    .unwrap();
+    let refused_file = source.path().join("wrong-owner.json");
+    let refused = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--root")
+        .arg(source.path())
+        .args(["configure", "command-centre"])
+        .arg(&refused_file)
+        .output()
+        .await
+        .unwrap();
+    assert!(!refused.status.success() && !refused_file.exists());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("differs from this root"));
+    for proxy in proxies {
+        proxy.shutdown().await;
+    }
+}

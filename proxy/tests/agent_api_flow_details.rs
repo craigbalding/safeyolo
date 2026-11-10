@@ -178,11 +178,15 @@ async fn actual_source_diff_tag_status_types_state_and_order() {
                     row["status"].as_u64().unwrap(),
                     "{name}"
                 );
-                // The pinned Python oracle predates the current approval routes.
-                // Update that historical 404 inventory; keep all other error bytes.
+                // Adjust the captured endpoint inventory for current routes.
+                // Keep every other error byte and the exact response ordering.
                 let mut expected = row["text"].as_str().unwrap().replace(
                     "\"/explain\", \"/trace\"",
-                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals\", \"/approvals/{approval_id}/resolve (POST)\", \"/api/coord/request-access (POST)\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
+                    "\"/explain\", \"/approvals/{request_id}\", \"/approvals\", \"/approvals/{approval_id}/resolve (POST)\", \"/api/coord/request-access (POST)\", \"/api/coord/request-collaboration (POST)\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
+                );
+                expected = expected.replace(
+                    "\"/gateway/request-access\",",
+                    "\"/gateway/request-access\", \"/gateway/challenges/{challenge_id}\", \"/gateway/challenges/{challenge_id}/escalate (POST)\",",
                 );
                 expected = expected.replace("\"/desktop/present\",", "\"/desktop/present\", \"/operator-actions\", \"/operator-actions/{action_request_id}\",");
                 if name == "detail_after_tag" {

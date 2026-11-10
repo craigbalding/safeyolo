@@ -147,18 +147,18 @@ def authorize_access(api: AdminAPI, cli: str, agent: str, platform: str, marker:
             "challenge_after_binding": contract["contract_challenge"]}
 
 
-def setup_coord(cli: str, root: Path, primary: str, peer: str) -> dict:
+def setup_coord(cli: str, root: Path, primary: str, peer: str, *, room: str = ROOM) -> dict:
     """Provision the real native Coord owner rather than the Python reference."""
     prefix = [cli, "--root", str(root), "coord"]
     status = json.loads(checked([*prefix, "status"]).stdout)
     assert status["state"] == "running", "owned native NATS is not running"
-    room = json.loads(checked([*prefix, "room", "create", ROOM]).stdout)
+    created = json.loads(checked([*prefix, "room", "create", room]).stdout)
     identities = {}
     for name in (primary, peer):
-        granted = json.loads(checked([*prefix, "grant", ROOM, name]).stdout)
+        granted = json.loads(checked([*prefix, "grant", room, name]).stdout)
         identities[name] = granted
     return {"instance_id": (root / "data/instance_id").read_text().strip(),
-            "room_id": room["room_id"], "agents": identities}
+            "room_id": created["room_id"], "agents": identities}
 
 
 def run_coord(cli: str, primary: str, platform: str, marker: str) -> dict:
@@ -205,6 +205,22 @@ def run_coord(cli: str, primary: str, platform: str, marker: str) -> dict:
                 process.communicate(timeout=5)
 
 
+def wait_for_approval_event(websocket, identifier: str, *, timeout: float = 7) -> dict:
+    """Match the approval within a deadline, allowing intervening state controls."""
+    deadline = time.monotonic() + timeout
+    observed = []
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            candidate = json.loads(websocket.recv(timeout=remaining))
+        except TimeoutError:
+            break
+        observed.append({key: candidate.get(key) for key in ("type", "revision", "event", "approval")})
+        if candidate.get("approval", {}).get("key") == identifier:
+            print(json.dumps({"phase": "approval_event", "approval_id": identifier, "frames": observed}), flush=True)
+            return candidate
+    raise AssertionError(f"authenticated operator stream missed collaboration approval {identifier}; frames={observed}")
+
+
 def run_collaboration_and_event(
     api: AdminAPI, cli: str, config_dir: Path, primary: str, platform: str, marker: str, operator_token: str
 ) -> dict:
@@ -217,13 +233,8 @@ def run_collaboration_and_event(
     ) as websocket:
         requested = guest(cli, primary, platform, marker, "collaboration-request", peer=PEER)
         identifier, room = requested["approval_id"], requested["room_name"]
-        event = None
-        for _ in range(5):
-            candidate = json.loads(websocket.recv(timeout=5))
-            if candidate.get("approval", {}).get("key") == identifier:
-                event = candidate
-                break
-        assert event is not None and event.get("approval", {}).get("approval_type") == "coord_room", (
+        event = wait_for_approval_event(websocket, identifier)
+        assert event.get("approval", {}).get("approval_type") == "coord_room", (
             "authenticated operator stream missed the collaboration approval"
         )
         assert any(row["approval_id"] == identifier for row in api.pending_approvals())

@@ -354,6 +354,30 @@ impl Events {
             for id in completed {
                 supervisor.state.complete(&id);
             }
+            let completed: Vec<_> = supervisor
+                .state
+                .approval_notifications
+                .iter()
+                .map(approval_notification_id)
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter(|id| invoked.contains(*id))
+                .map(str::to_owned)
+                .collect();
+            self.consumed_information |= !completed.is_empty();
+            supervisor
+                .state
+                .approval_notifications
+                .retain(|p| !completed.iter().any(|id| p["edge"]["attention_id"] == *id));
+            for id in completed {
+                supervisor.state.remember(&id);
+            }
+            let before = supervisor.state.native_in_flight.len();
+            supervisor
+                .state
+                .native_in_flight
+                .retain(|d| d.action.requires_action || !invoked.contains(&d.action.key));
+            self.consumed_information |= before != supervisor.state.native_in_flight.len();
             supervisor.state.save(&supervisor.state_path)?;
         } else if !pi && kind == "turn.failed" {
             self.failed = true;
@@ -513,7 +537,7 @@ pub(super) async fn invoke(
     } else {
         command.args(&args).arg("exec");
         if let Some(id) = &supervisor.state.thread_id {
-            command.args(["resume", "--json", id, "-"]);
+            command.args(["resume", "--json", "--skip-git-repo-check", id, "-"]);
         } else {
             command
                 .args(["--json", "--cd"])
@@ -540,6 +564,20 @@ pub(super) async fn invoke(
         .objects()
         .iter()
         .map(|p| p.attention_id.clone())
+        .chain(
+            supervisor
+                .state
+                .approval_notifications
+                .iter()
+                .map(|p| p["edge"]["attention_id"].as_str().unwrap().to_owned()),
+        )
+        .chain(
+            supervisor
+                .state
+                .native_in_flight
+                .iter()
+                .map(|d| d.action.key.clone()),
+        )
         .collect();
     let began = tokio::time::Instant::now();
     let mut deadline = began + Duration::from_secs(supervisor.config.startup_timeout_seconds);
@@ -647,6 +685,12 @@ pub(super) async fn invoke(
         .iter()
         .filter(|p| p.requires_terminal)
         .count();
+    let native_before: BTreeSet<_> = supervisor
+        .state
+        .native_in_flight
+        .iter()
+        .map(|d| d.action.key.clone())
+        .collect();
     supervisor.reconcile().await?;
     let recovered_terminal = supervisor
         .state
@@ -655,10 +699,18 @@ pub(super) async fn invoke(
         .filter(|p| p.requires_terminal)
         .count()
         < terminals_before;
+    let native_settled = supervisor
+        .state
+        .native_in_flight
+        .iter()
+        .filter(|d| native_before.contains(&d.action.key))
+        .count()
+        < native_before.len();
     let success = recovered_terminal
-        || ((!events.unresolved_send || supervisor.state.in_flight.is_empty())
+        || native_settled
+        || ((!events.unresolved_send || supervisor.state.pending_count() == 0)
             && (events.canonical
-                || ((supervisor.state.in_flight.is_empty()
+                || ((supervisor.state.pending_count() == 0
                     || (events.consumed_information
                         && !recovering_uncertainty
                         && !supervisor.state.has_ready_work()))
@@ -666,7 +718,7 @@ pub(super) async fn invoke(
                     && !events.failed
                     && !events.harness_failed
                     && exit_success)));
-    if supervisor.state.in_flight.is_empty() {
+    if supervisor.state.pending_count() == 0 {
         supervisor.state.phase = "idle".into();
     } else if success {
         supervisor.state.phase = "accepted".into();

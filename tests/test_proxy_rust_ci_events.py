@@ -20,6 +20,64 @@ def rust_workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
+def test_quick_acquisition_finishes_before_any_cargo_compilation():
+    steps = rust_workflow()["jobs"]["focused-pr"]["steps"]
+    first_compile = next(index for index, step in enumerate(steps)
+                         if "cargo_with_space.sh" in step.get("run", ""))
+    for name in (
+        "Install uv", "Install the native CLI test environment", "Install preview test system dependency",
+        "Install patched runtime build dependencies", "Prepare the pinned NATS test binary",
+        "Install the pinned Codex execpolicy test consumer", "Prepare the complete patched gVisor runtime",
+        "Install Linux guest build tools",
+    ):
+        step = next(step for step in steps if step.get("name") == name)
+        assert steps.index(step) < first_compile, name
+        assert not step.get("continue-on-error")
+    nats = next(step for step in steps if step.get("name") == "Prepare the pinned NATS test binary")
+    consumer = next(step for step in steps if step.get("name") == "Test current native Coord fixture boundaries")
+    assert nats["if"] == consumer["if"] == "steps.changes.outputs.rust == 'true'"
+    assert "from safeyolo.coord.nats_runtime import ensure_binary" in nats["run"]
+    assert "binary = ensure_binary()" in nats["run"]
+    assert "SAFEYOLO_COORD_NATS_BINARY={binary}" in nats["run"]
+    assert "GITHUB_ENV" in nats["run"]
+    assert "SAFEYOLO_COORD_NATS_BINARY" not in consumer["env"]
+    assert nats["env"] == {
+        "SAFEYOLO_NATS_TEST_INSTANCE": "quick-inputs",
+        "SAFEYOLO_COORD_DATA_DIR": "${{ runner.temp }}/nats-inputs",
+    }
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_quick_runtime_acquisition_preserves_pipeline_failure_before_compilation(tmp_path, failure):
+    steps = rust_workflow()["jobs"]["focused-pr"]["steps"]
+    prepare = next(step for step in steps if step.get("id") == "runsc_inputs")
+    assert prepare["shell"] == "bash"
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    acquire = scripts / "acquire_runsc.sh"
+    acquire.write_text('#!/bin/bash\necho "runtime acquisition diagnostic" >&2\n'
+                       'if [[ $ACQUIRE_FAIL == 1 ]]; then exit 23; fi\n'
+                       'mkdir -p "$1/gvisor-bin"\nprintf runsc > "$1/runsc"\n'
+                       'printf companion > "$1/gvisor-bin/gvisor_sentry"\n')
+    acquire.chmod(0o755)
+    environment = tmp_path / "github-env"
+    compiled = tmp_path / "compiled"
+    # Explicit Actions bash uses -e -o pipefail; its default bash uses -e.
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c",
+         prepare["run"] + '\ntouch "$COMPILED"'],
+        cwd=tmp_path, capture_output=True, text=True,
+        env=dict(os.environ, BASH_ENV=os.devnull, RUNNER_TEMP=str(tmp_path), GITHUB_ENV=str(environment),
+                 ACQUIRE_FAIL="1" if failure else "0", COMPILED=str(compiled)),
+    )
+    assert result.returncode == (23 if failure else 0), result.stderr
+    assert "runtime acquisition diagnostic" in (tmp_path / "gvisor-preparation.log").read_text()
+    assert compiled.exists() == (not failure)
+    assert environment.exists() == (not failure)
+    if not failure:
+        assert environment.read_text() == f"SAFEYOLO_RUNSC_ARTIFACTS={tmp_path}/gvisor-runtime\n"
+
+
 def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_workflow() -> None:
     workflow = rust_workflow()
     # PyYAML's YAML 1.1 loader parses the Actions key `on` as boolean True.
@@ -229,6 +287,46 @@ def test_linux_input_retention_requires_successful_producers_after_test_failure(
     assert not job.get("continue-on-error")
 
 
+@pytest.mark.parametrize("failure", [None, "identity", "symbol", "line", "lookup", "panic"])
+def test_production_diagnostics_check_the_retained_executable_and_panic(tmp_path, failure):
+    steps = rust_workflow()["jobs"]["focused-pr"]["steps"]
+    check = next(step for step in steps if step.get("name") == "Verify production proxy diagnostics")
+    assert check["if"] == "steps.changes.outputs.rust == 'true'"
+    for name in ("linux-host-amd64-production", "linux-guest-amd64-production"):
+        upload = next(step for step in steps if step.get("with", {}).get("name") == name)
+        assert steps.index(upload) < steps.index(check)
+    for directory in ("proxy/target/release", "scripts", "commands"):
+        (tmp_path / directory).mkdir(parents=True)
+    revision = "a" * 40
+    selected = "b" * 40 if failure == "identity" else revision
+    programs = {
+        "proxy/target/release/safeyolo-proxy":
+            f"printf 'safeyolo-proxy 0.1.0 commit={selected} profile=production\\n'\n",
+        "commands/nm": "printf '00000001 t safeyolo_proxy::" +
+            ("other" if failure == "symbol" else "main") + "\\n'\n",
+        "commands/addr2line": "exit 42\n" if failure == "lookup" else
+            "printf '" + ("??:0" if failure == "line" else "/source/proxy/src/main.rs:11") + "\\n'\n",
+        "scripts/cargo_with_space.sh":
+            'printf "%s\\n" "$*" > cargo-call\n' + ("exit 43\n" if failure == "panic" else ""),
+    }
+    for name, body in programs.items():
+        path = tmp_path / name
+        path.write_text("#!/bin/sh\n" + body)
+        path.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-e", "-c", check["run"]], cwd=tmp_path, capture_output=True, text=True,
+        env=dict(os.environ, PATH=f"{tmp_path / 'commands'}:{os.environ['PATH']}",
+                 SAFEYOLO_BUILD_REVISION=revision, BASH_ENV=os.devnull), timeout=10,
+    )
+    assert (result.returncode == 0) == (failure is None), result.stderr
+    if failure in (None, "panic"):
+        assert (tmp_path / "cargo-call").read_text().strip() == (
+            "test --release --manifest-path proxy/Cargo.toml --locked --test version"
+        )
+    else:
+        assert not (tmp_path / "cargo-call").exists()
+
+
 @pytest.mark.parametrize("failure", [None, "compiler", "missing", "ambiguous", "entry"])
 def test_installed_share_test_staging_refuses_incomplete_compiler_output(tmp_path, failure):
     steps = rust_workflow()["jobs"]["focused-pr"]["steps"]
@@ -291,6 +389,9 @@ def test_installed_linux_tests_keep_their_failure_after_build_separation(tmp_pat
     build = next(step for step in steps if step.get("id") == "linux_host_inputs")
     tests = next(step for step in steps if step.get("name") == "Test installed native policy commands")
     assert steps.index(build) < steps.index(tests)
+    diagnostics = next(step for step in steps if step.get("name") == "Retain runtime preparation and installed policy diagnostics")
+    native_tests = next(step for step in steps if step.get("name") == "Test native desktop presentation and host entry")
+    assert steps.index(tests) < steps.index(diagnostics) < steps.index(native_tests)
     assert not tests.get("continue-on-error")
     commands = tmp_path / "commands"
     commands.mkdir()
@@ -321,11 +422,11 @@ def test_installed_linux_tests_keep_their_failure_after_build_separation(tmp_pat
     else:
         assert result.returncode == 23, result.stderr
         assert calls.read_text().splitlines() == [
-            "run --frozen pytest -q tests/proxy_contracts/test_native_policy_cli.py "
+            "run --frozen pytest -v tests/proxy_contracts/test_native_policy_cli.py "
             "tests/proxy_contracts/test_first_agent_launch.py "
             "cli/tests/test_host_setup_scripts.py::test_claude_host_state_choice_controls_auth_preferences_and_extensions "
             "cli/tests/test_host_setup_scripts.py::test_claude_setup_does_not_write_through_guest_created_host_links "
-            f"--basetemp {tmp_path}/native-policy"
+            f"--basetemp {tmp_path}/native-policy --junitxml {tmp_path}/native-policy.xml"
         ]
 
 
@@ -443,7 +544,7 @@ def test_linux_input_callers_pin_the_supported_ubuntu_runtime_baseline(workflow_
     steps = {step.get("name"): step for step in build["steps"]}
     package = steps["Retain complete Linux production bundle"]["run"]
     # Acquire tmux on the same baseline as the host build and package assembly.
-    assert "sudo -n apt-get install -y -qq --no-install-recommends tmux" in package
+    assert "sudo -n apt-get install -y -qq --no-install-recommends tmux" in steps["Install patched runtime build dependencies"]["run"]
     assert '--artifacts proxy/target/release --guest-artifacts guest/command/target/release' in package
     assert '--runtime-artifacts "$(dirname "$(command -v tmux)")" --profile production' in package
 
@@ -904,6 +1005,7 @@ def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, e
         "Build the native guest command artifact", "Build Linux production inputs",
         "Build the native CLI for recovery and Dispatch checks", "Install uv",
         "Install the native CLI test environment", "Install preview test system dependency",
+        "Install patched runtime build dependencies", "Prepare the complete patched gVisor runtime",
         "Install the pinned Codex execpolicy test consumer", installed["name"],
     ):
         prerequisite = next(step for step in steps if step.get("name") == name)

@@ -483,6 +483,35 @@ impl Store {
             })
             .collect())
     }
+
+    /// Reporting reads current persisted permissions with this owner's live
+    /// sessions. It never saves, activates or reserves a permission.
+    pub(crate) fn current_grants_for_report(
+        &self,
+        now: OffsetDateTime,
+    ) -> Result<Vec<ListedGrant>> {
+        use std::io::Read;
+        let mut source = String::new();
+        std::fs::File::open(&self.path)?
+            .take(4 * 1024 * 1024 + 1)
+            .read_to_string(&mut source)?;
+        if source.len() > 4 * 1024 * 1024 {
+            return Err(invalid("gateway metadata read budget reached"));
+        }
+        let (document, context) = crate::policy::parse_toml_for_edit(&source)
+            .map_err(|error| invalid(error.to_string()))?;
+        let previous = self.lock()?;
+        let snapshot = Snapshot::from_document(&document, now, Some(&previous), &context)?;
+        Ok(snapshot
+            .grants
+            .into_iter()
+            .take(crate::peer_support::authority::MAX_FACTS + 1)
+            .map(|grant| ListedGrant {
+                expired: grant.is_expired(now),
+                grant,
+            })
+            .collect())
+    }
     pub fn binding_for_agent(
         &self,
         agent: &str,
@@ -637,7 +666,7 @@ impl Store {
             |document, state, context| {
                 let mut approval = approval;
                 if let Some((runtime, record)) = &mut approval
-                    && !crate::approvals::pending::check_saved(runtime, &document.to_string(), record)? {
+                    && !crate::approvals::pending::check_saved_grants(runtime, &document.to_string(), record, &state.grants)? {
                     record.status = "superseded".into();
                     return Err(invalid("approval is superseded; make a new request"));
                 }
@@ -883,6 +912,22 @@ impl Store {
         )>,
         activate: impl FnMut(&str) -> std::result::Result<(), String>,
     ) -> Result<Option<GrantLease>> {
+        self.check_grant_matching(scope, now, authority, |_| true, activate)
+    }
+
+    pub(crate) fn check_grant_matching(
+        &self,
+        scope: RequestScope<'_>,
+        now: OffsetDateTime,
+        authority: Option<(
+            &crate::policy::Policy,
+            &crate::host_runs::AgentRun,
+            &str,
+            Option<&str>,
+        )>,
+        matches_authority: impl Fn(&Grant) -> bool,
+        activate: impl FnMut(&str) -> std::result::Result<(), String>,
+    ) -> Result<Option<GrantLease>> {
         let expired: Vec<_> = {
             let state = self.lock()?;
             state
@@ -926,6 +971,7 @@ impl Store {
                     .iter()
                     .find(|grant| {
                         grant.matches(scope, now)
+                            && matches_authority(grant)
                             && match grant.delegated.as_deref() {
                                 None => true,
                                 Some(encoded) => {
@@ -975,7 +1021,7 @@ impl Store {
         activate: impl FnMut(&str) -> std::result::Result<(), String>,
     ) -> Result<ResponseOutcome> {
         let consume = lease.grant.scope == GrantScope::Once
-            && status.is_some_and(|status| (200..300).contains(&status));
+            && status.is_some_and(|status| status == 101 || (200..300).contains(&status));
         // A successful origin action must never regain its once grant because
         // persistence or activation failed. Keep that reservation fail-closed.
         // This quarantine is process-local: a failed durable write plus restart

@@ -15,6 +15,8 @@ mod collaboration;
 mod contract_binding;
 #[path = "delegated_approvals/coord_room.rs"]
 mod coord_room;
+#[path = "delegated_approvals/current_authority.rs"]
+mod current_authority;
 #[path = "support/operator_nats.rs"]
 mod operator_nats;
 #[path = "delegated_approvals/service_authorization.rs"]
@@ -46,7 +48,14 @@ fn runs(fixture: &Fixture) -> std::process::Child {
 }
 fn bound_runs(fixture: &Fixture, generation: &str, agents: &[(&str, &str)]) -> std::process::Child {
     use std::os::unix::process::CommandExt;
-    let mut command = std::process::Command::new("python3");
+    // Resolve the installed runtime before selecting the synthetic backend name.
+    let selected = std::process::Command::new("python3")
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()
+        .unwrap();
+    assert!(selected.status.success());
+    let python = std::str::from_utf8(&selected.stdout).unwrap().trim();
+    let mut command = std::process::Command::new(python);
     command
         .arg0("runsc-sandbox")
         .args([
@@ -104,6 +113,7 @@ async fn delegate(fixture: &Fixture, mut input: Value) -> (Value, String) {
     let revision = preview.json()["revision"].as_str().unwrap().to_owned();
     input["delegation"] = preview.json()["after"].clone();
     input["delegation"]["acknowledgment"] = json!(revision);
+    input["authority"] = preview.json()["authority"].clone();
     let applied = fixture
         .admin(
             "POST",
@@ -113,6 +123,45 @@ async fn delegate(fixture: &Fixture, mut input: Value) -> (Value, String) {
         .await;
     assert_eq!(applied.status, 200, "{}", applied.json());
     (input, revision)
+}
+
+#[tokio::test]
+async fn approval_preview_shows_scoped_deciding_effects_without_inventing_guest_control() {
+    let f = Fixture::new().await;
+    let _backend = Backend(runs(&f));
+    let preview = f
+        .admin(
+            "POST",
+            "/admin/approval-delegations/local/preview",
+            Some(proposal(&f)),
+        )
+        .await
+        .json();
+    let report = &preview["authority"]["considered"];
+    let proposed = report["proposed_facts"].as_array().unwrap();
+    assert!(
+        report["after"]["effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|effect| proposed
+                .iter()
+                .any(|fact| fact["fact_id"] == effect["fact_id"]
+                    && fact["capability"]["type"] == "approval_decision"
+                    && fact["capability"]["scopes"][0]["ports"] == json!([f.address.port()])))
+    );
+    assert!(
+        report["after"]["common_control"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        proposed
+            .iter()
+            .all(|fact| fact["capability"]["type"] != "guest_admin")
+    );
+    f.stop().await;
 }
 async fn decide(f: &Fixture, reviewer: &str, id: &str, decision: &str, option: &str) -> Reply {
     f.agent(
@@ -341,6 +390,7 @@ async fn reciprocal_warning_changes_require_a_new_acknowledgment() {
     let mut stale = forward.clone();
     stale["delegation"] = preview["after"].clone();
     stale["delegation"]["acknowledgment"] = preview["revision"].clone();
+    stale["authority"] = preview["authority"].clone();
 
     let mut reverse = proposal(&f);
     reverse["delegation"]["reviewers"] = forward["delegation"]["beneficiaries"].clone();
@@ -357,6 +407,7 @@ async fn reciprocal_warning_changes_require_a_new_acknowledgment() {
     assert!(!checked["warnings"].to_string().contains("reciprocal"));
     reverse["delegation"] = checked["after"].clone();
     reverse["delegation"]["acknowledgment"] = checked["revision"].clone();
+    reverse["authority"] = checked["authority"].clone();
     assert_eq!(
         f.admin(
             "POST",
@@ -415,6 +466,7 @@ async fn reciprocal_warning_changes_require_a_new_acknowledgment() {
     assert_eq!(checked.status, 200, "{}", checked.json());
     reverse["delegation"] = checked.json()["after"].clone();
     reverse["delegation"]["acknowledgment"] = checked.json()["revision"].clone();
+    reverse["authority"] = checked.json()["authority"].clone();
     assert_eq!(
         f.admin(
             "POST",
@@ -837,6 +889,28 @@ async fn delegated_gateway_once_reserves_consumes_and_keeps_service_authorizatio
         200
     );
     let approved = assert_grant_readback(&f, &id, "delegated_once", true).await;
+    let inspected = f
+        .admin(
+            "POST",
+            "/admin/approval-delegations/inspection/preview",
+            Some(proposal(&f)),
+        )
+        .await;
+    assert_eq!(inspected.status, 200, "{}", inspected.json());
+    let report = inspected.json();
+    assert!(
+        report["authority"]["considered"]["snapshots"][0]["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|fact| fact["source_type"] == "gateway_grant"
+                && fact["current"] == true
+                && fact["capability"]["permission"]["service"] == "fixture"
+                && fact["capability"]["permission"]["method"] == "POST"
+                && fact["capability"]["permission"]["path"] == "/write"
+                && fact["holder"]["agent_id"] == WORKER_ID)
+    );
+    assert!(!report.to_string().contains(token));
     // Read the current service view before retrying the approved route.
     let current = f
         .agent("worker", "GET", "/gateway/services", None)
@@ -1225,6 +1299,7 @@ async fn network_decision_cannot_union_two_partial_delegations() {
         .json();
     two["delegation"] = preview["after"].clone();
     two["delegation"]["acknowledgment"] = preview["revision"].clone();
+    two["authority"] = preview["authority"].clone();
     assert_eq!(
         f.admin("POST", "/admin/approval-delegations/other/apply", Some(two))
             .await
@@ -1282,7 +1357,8 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
         "schema_version: 1\nname: subscription\ndefault_host: {host}\nauth:\n  type: bearer\n  allow_http: true\n  refresh_on_401: true\ncapabilities:\n  inference:\n    routes:\n      - methods: [GET]\n        path: /marker\n")).unwrap();
     assert!(f.proxy.reload_services_if_changed().await.unwrap());
     // Keep ordinary bearer detection enabled. The synthetic provider has a
-    // detection rule; neither its value nor the minted sgw token is preapproved.
+    // detection rule. The internal sgw token is consumed by gateway selection;
+    // the refreshed provider value must still obtain credential approval.
     let source = format!(
         "{}\n[credential.fixture-provider]\nmatch=['synthetic-subscription-[a-z]+']\nheaders=['authorization']\nallowed_hosts=['{host}']\n",
         f.source()
@@ -1343,59 +1419,12 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
         .unwrap();
     assert!(token.starts_with("sgw_"));
     let header = format!("Authorization: Bearer {token}\r\nChatGPT-Account-ID: guest-account\r\n");
-    let blocked = f
-        .request("worker", f.address, "GET", "/marker", &header)
-        .await;
-    assert_eq!(blocked.status, 428, "{}", blocked.json());
-    let pending = f
-        .admin("GET", &format!("/admin/approvals/{}", blocked.id()), None)
-        .await
-        .json();
-    assert_eq!(pending["action"]["kind"], "credential_allow");
-    assert!(
-        pending["action"]["credentials"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|value| value.as_str().unwrap().starts_with("hmac:"))
-    );
-    no_origin(&f).await;
-    assert!(
-        timeout(Duration::from_millis(30), refresh.accept())
-            .await
-            .is_err()
-    );
-    let approved = native(
-        &f,
-        &[
-            "approvals",
-            "approve",
-            &blocked.id(),
-            "--option",
-            "run",
-            "--json",
-        ],
-    )
-    .await;
-    assert!(
-        approved.status.success(),
-        "{}",
-        String::from_utf8_lossy(&approved.stderr)
-    );
-    let approved: Value = serde_json::from_slice(&approved.stdout).unwrap();
-    assert_eq!(approved["status"], "approved");
-    assert_eq!(approved["grant_active"], true);
-    assert_eq!(approved["result"]["permission_changed"], true);
-    let current = f
-        .agent("worker", "GET", "/gateway/services", None)
-        .await
-        .json();
-    assert!(
-        current["authorized"]["subscription"]["token"].as_str() == Some(token),
-        "credential approval replaced its own gateway fingerprint"
-    );
+    // Start serving before the first request can reach the refresh listener.
     let refresh_task = tokio::spawn(async move {
-        let (mut stream, _) = timeout(LIMIT, refresh.accept()).await.unwrap().unwrap();
+        let (mut stream, _) = timeout(LIMIT, refresh.accept())
+            .await
+            .expect("subscription refresh: provider accept timed out")
+            .unwrap();
         let mut head = Vec::new();
         while !head.ends_with(b"\r\n\r\n") {
             head.push(stream.read_u8().await.unwrap());
@@ -1421,6 +1450,7 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
         );
         let payload = r#"{"access_token":"synthetic-subscription-renewed","refresh_token":"synthetic-subscription-rotated","expires_in":3600}"#;
         stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}", payload.len()).as_bytes()).await.unwrap();
+        refresh
     });
     let provider_pending = f
         .request("worker", f.address, "GET", "/marker", &header)
@@ -1435,13 +1465,38 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
         .await
         .json();
     assert_eq!(provider["action"]["kind"], "credential_allow");
-    assert_ne!(
-        provider["action"]["credentials"],
-        pending["action"]["credentials"],
-        "retry repeated the scoped-token approval: {}",
-        provider_pending.json()
+    assert_eq!(provider["action"]["agent"], "worker");
+    assert_eq!(provider["action"]["agent_id"], WORKER_ID);
+    assert_eq!(
+        provider["action"]["run"],
+        json!({"agent":"worker", "agent_id":WORKER_ID, "run_id":"0123456789abcdef0123456789abcdef"})
     );
-    refresh_task.await.unwrap();
+    assert_eq!(provider["action"]["host"], host);
+    let key = std::env::var("CREDGUARD_HMAC_SECRET")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            fs::read_to_string(f.root.path().join("data/hmac_secret"))
+                .unwrap()
+                .trim()
+                .to_owned()
+        });
+    let guard = safeyolo_proxy::credential_guard::CredentialGuard::new(key.as_bytes());
+    guard.load_sensor_config(&json!({})).unwrap();
+    let findings = guard
+        .classify_headers(&[safeyolo_proxy::credential_guard::Header {
+            name: "Authorization",
+            value: &Secret::new("Bearer synthetic-subscription-renewed"),
+        }])
+        .unwrap();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(
+        provider["action"]["credentials"],
+        json!([format!("hmac:{}", findings[0].fingerprint)])
+    );
+    let refresh = refresh_task
+        .await
+        .expect("subscription refresh: provider task failed");
     no_origin(&f).await;
     let approved = native(
         &f,
@@ -1461,7 +1516,9 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
         String::from_utf8_lossy(&approved.stderr)
     );
     let approved: Value = serde_json::from_slice(&approved.stdout).unwrap();
+    assert_eq!(approved["status"], "approved");
     assert_eq!(approved["grant_active"], true);
+    assert_eq!(approved["result"]["permission_changed"], true);
     let current = f
         .agent("worker", "GET", "/gateway/services", None)
         .await
@@ -1509,12 +1566,11 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
             .expose_secret()
             == "synthetic-subscription-rotated"
     );
-    assert_eq!(
-        f.request("peer", f.address, "GET", "/marker", &header)
-            .await
-            .status,
-        428
-    );
+    let peer = f
+        .request("peer", f.address, "GET", "/marker", &header)
+        .await;
+    assert_eq!(peer.status, 403);
+    assert_eq!(peer.json()["error"], "AGENT_MISMATCH");
     assert_eq!(
         f.request("worker", f.address, "DELETE", "/marker", &header)
             .await
@@ -1532,7 +1588,7 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
     // A rule publication must still enforce a deny against the retained token.
     let source = f.source();
     let mut denied: toml_edit::DocumentMut = source.parse().unwrap();
-    let rule: toml_edit::DocumentMut = format!("rules=[{{action='credential:use',resource='{host}/*',effect='deny',condition={{credential='unknown:*'}}}}]").parse().unwrap();
+    let rule: toml_edit::DocumentMut = format!("rules=[{{action='credential:use',resource='{host}/*',effect='deny',condition={{credential='fixture-provider:*'}}}}]").parse().unwrap();
     denied["hosts"][&host]["rules"] = rule["rules"].clone();
     f.apply(&denied.to_string()).await;
     let denied = f
@@ -1540,14 +1596,18 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
         .await
         .json();
     assert!(denied["authorized"]["subscription"]["token"].as_str() == Some(token));
-    assert_eq!(
-        f.request("worker", f.address, "GET", "/marker", &header)
-            .await
-            .status,
-        403
+    let denied = f
+        .request("worker", f.address, "GET", "/marker", &header)
+        .await;
+    assert_eq!(denied.status, 403);
+    assert!(
+        denied
+            .head
+            .to_ascii_lowercase()
+            .contains("x-blocked-by: credential-guard")
     );
     f.apply(&source).await;
-    // Retaining the service token does not extend either run-scoped approval.
+    // Retaining the service token does not extend its run-scoped approval.
     let path = f.root.path().join("agents/worker/runtime.json");
     let mut run: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     run["state"] = json!("stopped");
@@ -1580,6 +1640,12 @@ async fn host_gateway_credential_approval_keeps_its_token_and_reaches_subscripti
         403
     );
     no_origin(&f).await;
+    assert!(
+        timeout(Duration::from_millis(30), refresh.accept())
+            .await
+            .is_err(),
+        "subscription refresh: unexpected second provider request"
+    );
     assert!(!f.source().contains(token));
     f.proxy.shutdown().await;
     let audit = fs::read_to_string(f.root.path().join("audit.jsonl")).unwrap();
@@ -1657,6 +1723,7 @@ async fn native_operator_and_reviewer_clients_use_the_canonical_resolver() {
     );
     input["delegation"] = preview["after"].clone();
     input["delegation"]["acknowledgment"] = preview["revision"].clone();
+    input["authority"] = preview["authority"].clone();
     fs::write(&proposal_file, input.to_string()).unwrap();
     assert!(
         native(

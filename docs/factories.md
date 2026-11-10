@@ -1,12 +1,13 @@
 # Supervised factories
 
 For GitHub release planning, use the [issue-planning guide](issue-planning.md).
-Factory checkpoints still identify active assignments.
+Native Work records identify native assignments; supervisor checkpoints retain
+delivery and session recovery state.
 
 SafeYolo factory files are small, explicit bindings for existing supervised
 agents. Markdown remains the role contract; TOML says which approved agent has
-each role, which one coord room the factory uses, and which exact handoffs may
-wake each worker. Factory v1 does not interpret role prose at runtime and has
+each role, which one Coord room the factory uses, and which message handoffs
+or native work policy apply. Factory v1 does not interpret role prose at runtime and has
 no scripts, conditions, regex routes, hooks, discovery, inference, or live
 reload.
 
@@ -84,9 +85,9 @@ bounded natural-language messages only when the canonical sender kind is
 `operator`, routes them only to the named role, and never treats them as agent
 handoffs. The declared types are optional operator shorthand rather than a
 natural-language parser; they cannot overlap a handoff request or response.
-`factory check`, `approve`, and `run` reject a graph in which any role is
-unreachable from that operator edge; old source-only v1 snapshots therefore
-fail closed instead of starting an inert factory.
+For a message-only Factory, `factory check`, `approve`, and `run` reject a graph
+in which any role is unreachable from that operator edge. A Factory with
+`[work]` can receive native assignments without a message route to every role.
 
 The operator entry targets the coordinator selected by this approved
 Factory. Use `factory send NAME TEXT` for natural-language direction and
@@ -118,10 +119,112 @@ to read or replace that context with an explicit expected revision.
 
 ## Authority and intake
 
+Use native work claims for durable ownership and `publish_work_output` for the
+holder's exact output and attributed execution outcome. The producer retains
+the external artifact first. Reassignment and cancellation fence uncommitted
+publication attempts; an operation-ID retry recovers a previously committed
+receipt. See [work publication and recovery](coord-reference.md#claims-outputs-and-attestations).
+These operations are also available to an operator-directed interactive worker
+through that worker's authenticated Coord client.
+
+Native output publication does not send a message handoff. With `[work]`, the
+approved snapshot enables [native work delivery](codex-coord-supervisor.md#native-work-delivery)
+for its supervised roles and selects the policy described below. Native Work
+mutations settle that lifecycle; no parallel `TASK` or `REVIEW_READY` record is
+required. A Factory without `[work]` retains its declared message protocol.
+An explicitly configured message assignment still requires its declared reply.
+
+Native checks and peer challenges retain the selected participants and enforce
+independence from the actual producer. The [public review loop](coord-reference.md#assigned-checks-and-peer-challenges)
+also supports work created outside a Factory with explicitly selected
+[requirements and deciding participants](coord-reference.md#select-requirements-and-decide-output-acceptance).
+Direct callers use the same authority. Execution completion, challenge
+resolution and attestation counts do not substitute for an eligible acceptance
+decision about the current output.
+
+### Select native work policy
+
+For a new or stopped Factory, add `[work]` to its operator-authored TOML before
+approval. The following complete example supervises only Bob as reviewer.
+Alice is an ordinary interactive agent with send/receive access to the same
+room. Alice has no Factory supervisor. Supply `reviewer.md` beside this file
+with instructions to inspect exact artifacts, answer assigned checks, dispose
+of challenges explicitly and decide acceptance from current native evidence.
+
+```toml
+schema = "safeyolo.factory/v1"
+name = "reports"
+room = "reports"
+
+[roles.reviewer]
+agent = "bob"
+contract = "reviewer.md"
+
+[operator_input]
+to = "reviewer"
+types = ["DIRECTION"]
+
+[work]
+authorities = ["reviewer"]
+deciders = ["reviewer"]
+independent = true
+
+[[work.checks]]
+reviewer = "reviewer"
+criterion = "Verify the exact report against the requested result"
+independent = true
+```
+
+`creators`, `authorities` and `deciders` name declared roles, not supplied actor
+IDs. The server resolves them from the instance's configured durable agent
+identities. Omitted `creators` allows only the operator to create work with this
+selection. Omitted `authorities` reserves amendments to the operator. At least
+one `decider` is required. Both independence flags default to `false`; each
+check selects its own independence separately from output acceptance.
+`handoffs` can be omitted when all assignments use native work.
+Selected policy and generated requirements use the existing 32 KiB serialized
+review-record limit. An oversized mutation is refused atomically; retained
+external artifacts remain available.
+
+After approval, use the exact selected snapshot hash with `create_work`:
+`factory={"name":"reports","snapshot_id":"HASH"}`. On the owning host, use
+`coord work create ROOM TITLE --factory JSON --assignee JSON`. Obtain the hash
+from `ROOT/factories/reports/approved` and Alice's durable ID from her grant
+receipt. The operator can create from the owning host. An agent needs room send
+and receive access and one selected creator role. A stale snapshot or wrong room
+is refused.
+Omitting `factory` creates generic work; it does not modify an existing selected
+work item or satisfy an application's selected Work ID.
+
+Creation retains the snapshot reference, resolved participants, check templates
+and versioned acceptance requirements in native Work. Each output publication
+atomically creates and selects an exact-output check for every template. The
+publication receipt includes those IDs in `factory.current_checks`. Retrying
+the same operation returns that receipt without creating more checks. A
+replacement output creates new checks and replaces only the previous generated
+requirements. Earlier checks and all explicitly selected challenges remain
+recorded. Additional explicitly selected checks remain required.
+
+Existing selected authorities or the operator can amend requirements with a
+reason, including explicit delegation to a worker. Ownership alone grants no
+amendment authority. An amendment affects current acceptance; the next output
+publication applies the retained check templates again. Approving a new Factory
+snapshot does not silently change existing Work policy. Optional checks and
+advisory challenges remain optional until an authorized requirements amendment
+selects them. There is no universal objection veto.
+
+Publication can retain a correction even when a configured reviewer is
+unavailable or is its actual producer. The independent check remains pending
+and cannot be answered by that producer. The operator can reassign review work
+or recover selected authority through the existing native commands. Read
+`acceptance_status` for the unmet obligation. An interactive worker uses its
+own authenticated client while the reviewer uses its one supervisor; assignment
+never starts a second controller. See the [executable interactive example](coord-operations.md#share-work-with-an-interactive-producer).
+
 An approved factory retains the following state:
 
 - The approved immutable snapshot binds the room, operator edge, role and agent
-  bindings, handoffs, context routes, repair policy, and exact bytes and SHA-256 of every Markdown
+  bindings, handoffs, native work policy, context routes, repair policy, and exact bytes and SHA-256 of every Markdown
   role contract. Approval selects the snapshot that the next `factory run`
   will use; it does not alter running agents.
 - Each running role uses the exact snapshot last staged into that agent by
@@ -272,6 +375,170 @@ messages. It leaves the instance proxy, Coord transport and unrelated agents
 running. Restart uses those same records; completed work is not a new task.
 This is continuity within fresh state. Old Python state is not imported
 or converted.
+
+### Delegate direction to an operator agent
+
+A host operator can separately grant an agent permission to send selected
+directions to an approved factory. The agent remains the canonical sender.
+Room membership, a factory role and peer repair permission grant no direction
+authority. The destination instance owns the grant and factory state.
+
+For an operator agent on instance A and a factory on instance B, first
+[configure scoped NATS connectivity](coord-reference.md#collaborate-through-a-home-safeyolo).
+On B, approve the factory and obtain its snapshot ID from
+`ROOT_B/factories/NAME/approved`. Obtain the operator-input agent's durable ID
+from B's `agent status` command. In a [support proposal](peer-support.md), select
+that agent as a target. Add this separate field to the proposal's `grant`.
+Replace the factory name, snapshot ID and direction types with B's approved
+selection:
+
+```json
+"factory_directions": [{
+  "factory": "selected",
+  "snapshot_id": "FULL_APPROVED_SNAPSHOT_ID",
+  "types": ["DIRECTION"]
+}]
+```
+
+Use B's `support preview` and `support apply` commands. A remote manager uses
+the proposal's `support_instance_id` and its own durable agent ID. The preview
+binds B's current peer trust epoch. An unrelated factory, changed snapshot or
+unselected direction type is refused. Reapproving a changed factory requires
+a new grant preview. Grant expiry and revocation use the existing support
+commands.
+
+Inside A's designated operator agent, call `support_grants(home="primary")`.
+Use the returned B instance ID, target ID and grant name. Inspect the target's
+current run with an ordinary support inspection. Submit the following typed
+operation with `support_operation`, using that run as `expected_run`:
+
+```json
+{
+  "action": "factory_direction",
+  "factory": "selected",
+  "snapshot_id": "FULL_APPROVED_SNAPSHOT_ID",
+  "kind": "DIRECTION",
+  "text": "Progress the original assignment and preserve its required checks."
+}
+```
+
+Select `operation_id` before submission. After a lost reply, read the original
+receipt with `read_support_operation` and the same home. A duplicate operation
+does not publish another direction. An unconfirmed publication is not replayed.
+The canonical envelope retains the initiating instance, agent, run, support
+grant and approved snapshot. The supervisor admits that direction only for its
+selected snapshot and operator-input role. It does not relabel the agent as a
+human operator or require a protocol terminal reply for the direction.
+
+The `factory_state` action takes the same `factory` and `snapshot_id` fields.
+It reports the selected factory's role identities and observed runtime states.
+Read inbound work and current assignments through separately authorized Coord
+room access. Use the existing native work, check, challenge and acceptance
+operations. Factory direction grants none of their actor privileges.
+
+Approval decisions require a separate
+[deciding delegation on B](delegated-approvals.md#remote-reviewers).
+The existing [private attention interface](peer-support.md) can retain selected
+operational and approval references from B alongside A's attention. Persist each
+instance's verified cursor. After a manager restart, reconcile B's pending
+approvals and original work ownership before another action. A missing source
+is unavailable; it is not evidence that its worker stopped.
+
+Guest administration can exercise a managed worker's own Coord and deciding
+permissions. Administration of both producer and reviewer is common
+administrative control. Keep any required independently controlled acceptance
+decider outside the manager's administration. Exchange files through authorized
+guest-file operations, a selected artifact mechanism or an explicitly shared
+project directory. Do not share host administration state or an operator home.
+
+Use the existing owners throughout the task:
+
+1. Inspect inbound work, the current assignment and the factory state. Claim
+   and progress work through the existing native Work operations. Preserve
+   current ownership and configured actor checks.
+2. Send a selected direction under the operator agent's own identity. Read and
+   decide eligible approvals through B's separate deciding delegation. Keep
+   exceptions available to B's human operator without making unrelated human
+   exceptions a prerequisite of authorized work.
+3. Receive selected operational events through the private attention path.
+   Inspect an interruption through common support operations, repair its cause
+   and verify the worker's current run and progress. Reconcile the original
+   assignment before another action.
+4. After restart or reconnect, retain the original task, operation IDs and
+   verified per-instance cursors. Read uncertain operation receipts and current
+   effects before any further mutation. An observation timeout leaves coverage
+   unverified; it does not establish a product failure or justify repeating an
+   effect.
+5. Exchange the selected files, publish the result once and preserve required
+   checks, challenges and acceptance decisions. Give the human a concise update
+   from canonical state and attributable operation results. Keep sensitive
+   worker output out of shared status messages.
+
+### Tested operator journey
+
+The 8 November 2026 installed journey used an actual native Codex 0.163.0
+operator on A and factory `operator1449` with producer and reviewer agents
+owned by B:
+
+| Instance | Linux VM | Durable instance ID | Roles |
+| --- | --- | --- | --- |
+| A | `sy-1050-connected-8029-amd64` | `sy-1e6e5f245167414590a022a1e48bdd01` | `support1452` operator |
+| B | `sy-239-clean-6728` | `sy-c0e0c53812754bb4b6a75b9bae0c6c9f` | `producer1449`, `reviewer1449` |
+
+These were two distinct AMD64 Linux OS VMs on one Devstack physical hypervisor.
+The instances used native TLS NATS request/reply and events, and gVisor systrap
+guests. The journey reuses the accepted multi-instance transport and backend
+proof for [#1452](https://github.com/craigbalding/safeyolo/issues/1452).
+This observation does not establish two physical hosts, full factory nesting
+or an additional macOS backend run.
+
+The actual installed inputs were mixed source/debug fragments:
+
+| Consumer | Source commit | Profile |
+| --- | --- | --- |
+| A and B host CLI/proxy; A MCP client | `e340a9340b3203219eccf4b01ccbaa6c751998c1` | debug |
+| B producer and reviewer supervisor/MCP consumers | `a8f6c2dfe2d29c35e6185b915206a24b4ff76b93` | debug |
+| Guest helper | `4ca3cafa995e47598d7bf39a2d64d786b81aceba` | debug |
+
+The B consumer repair delivers private roomless approval references through
+the existing supervisor checkpoint. The approval, support and native Work
+owners are unchanged between the first two source revisions. These results
+establish the exercised source behavior, not a complete shipping package.
+
+A sent an attributed selected direction, decided B's artifact-access approval
+and progressed the original Work. B's surviving operational observer delivered
+the controlled supervisor failure to A through attention. A diagnosed and
+restored the truncated configuration, then resumed the same producer sandbox
+run. Independent B observation verified the restored configuration, live
+consumer and subsequent output. The first 45-second collection expired before
+the real five-retry terminal at 130.815 seconds; retained results supplied that
+observation without another fault injection. Uncertain restart receipts stayed
+`outcome_unknown` despite the separately observed recovery.
+
+The fixture owner then restarted A's operator sandbox. A resumed the same
+native model session with its original Work, claim and per-instance positions.
+Input `[17,25,-6]` produced the 11-byte answer `{"sum":36}` followed by a newline.
+The original
+Work completed at version 5, claim generation 1 and output generation 1, with
+one publication. The B reviewer read and hashed the actual input and output
+through its read-only `/task` mount, computed the sum and supplied the current
+required check and acceptance decision. A's grants excluded that reviewer
+from direct and indirect administration; independence here is from A, not
+from the human fixture owner.
+
+Focused controls refused an ungranted agent, an unrelated factory, an
+unselected direction type, a changed snapshot and out-of-scope approval
+access. Post-revocation reads and operations were also refused. An out-of-scope
+approval read returned HTTP 404; its valid decision request returned the
+deliberate generic HTTP 409 without an effect. See the
+[remote approval refusal behavior](delegated-approvals.md#remote-reviewers).
+
+A published an attributable human update. Both test human exceptions remained
+pending during the journey; B's owner rejected them during cleanup. Cleanup
+revoked the two test scopes, removed the two added A memberships, stopped the
+four owned test roles, and removed imported per-run credentials and three
+copied role login files. Original logins, services, other grants, task bytes
+and retained proof were preserved.
 
 ## Direct diagnosis and recovery
 

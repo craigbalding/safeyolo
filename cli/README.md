@@ -34,12 +34,20 @@ safeyolo doctor
 
 Start returns after the proxy publishes readiness. Status/doctor emit JSON
 and distinguish proxy, sandbox, coding command, terminal and control state.
+Doctor also sends diagnostic requests through the configured policy pipelines;
+`diagnose --agent NAME` reads policy/audit availability without test traffic.
+For an agent or shell failure, use `agent diagnostics NAME` and its `next_action`.
+See [diagnostic selection](../docs/agent-debugging.md).
 An occupied endpoint or missing artifact fails visibly; inspect the named
 error and `logs/proxy.log` before retrying. Version reports source and profile.
 
 ## Agents
 
-Create an agent with an existing owned workspace and a trusted host script.
+For normal project return, use `safeyolo agent launch` in the workspace. An omitted
+harness reuses the saved Claude or Codex choice; only a new agent defaults to
+Claude. Use `--name NAME` to select an ambiguous saved binding.
+
+For explicit setup, create an agent with an existing owned workspace and a trusted host script.
 Installed scripts are under `ROOT/assets/contrib`. Relative saved paths are
 resolved by the configuration owner, not by the later shell's directory.
 
@@ -104,6 +112,11 @@ exports are raw, raw_request, raw_response, curl, httpie, har and zhar.
 Commander provides the Mac GUI with the same owners.
 
 ## Coord and factories
+
+[Guided federation and authority setup](../docs/federation-setup.md) uses
+`safeyolo configure` to connect selected instances and configure support,
+notices, approval delegation and approved factory directions. It retains the
+explicit file interfaces for automation.
 
 [Coord operations](../docs/coord-operations.md) covers room setup, scripted
 send, chat, canonical history and event observation. The installed

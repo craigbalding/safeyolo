@@ -1,16 +1,22 @@
 # Delegate approval decisions
 
-A host operator can let named local reviewer agents decide network, credential,
-service authorization, contract binding, gateway route, existing local Coord
-room access and desktop presentation requests for named workers. Any one eligible reviewer can
-decide. This does not give the reviewer policy administration, a worker's
+For guided reviewer, beneficiary and scope selection without proposal files,
+use [the configuration journey](federation-setup.md#configure-approval-reviewers-separately).
+The explicit interfaces below retain structured output and the full scope model.
+
+A host operator can let named local or qualified remote reviewer agents decide
+network, credential, service authorization, contract binding, gateway route,
+existing local Coord room access and desktop presentation requests for named
+workers. Any one eligible reviewer can decide. This does not give the reviewer policy administration, a worker's
 credentials, or the permissions that it can issue.
 
 Use the native host CLI and Agent API. The requesting and deciding agents must
 have a current native sandbox generation with a matching durable identity and
 live backend. Names are display and configuration handles. Headers, JSON
 identity fields and possession of an Agent API bearer cannot select an agent.
-An unverified run cannot receive or exercise a delegated permission.
+An unverified run cannot receive or exercise a delegated permission. A remote
+reviewer's instance authenticates its current run at admission. The worker,
+canonical approval and issued permission remain owned by the destination.
 
 ## Configure and preview
 
@@ -64,6 +70,16 @@ Unknown effects remain explicit. Port 443, GET and a capability name do not
 establish business safety. Known worker write paths into reviewer startup files
 are warnings. A shared source workspace alone does not imply such a path.
 
+The `authority.considered` report uses the same owner-backed calculation as
+[support previews](peer-support.md#inspect-upstream-and-downstream-authority).
+Select an explicit `authority.owners` inventory to inspect other owners through
+their authenticated NATS routes and destination-approved disclosure. Omission
+selects local coverage. The report shows typed deciding effects, supporting
+paths, common controllers and unknown boundaries. Partial coverage cannot
+establish reviewer independence. Apply recollects the evidence; a changed report
+returns HTTP 409 for inspection and acknowledgment. The report does not become
+a permanent condition on the delegation or its runtime permissions.
+
 After inspecting these findings, create the apply input from the host's `after`
 projection. This keeps its definition revisions and acknowledges this specific
 proposal. The following command changes only the local proposal file:
@@ -76,6 +92,7 @@ original = json.loads(Path('proposal.json').read_text())
 preview = json.loads(Path('preview.json').read_text())
 original['delegation'] = preview['after']
 original['delegation']['acknowledgment'] = preview['acknowledgment']
+original['authority'] = preview['authority']
 Path('proposal.json').write_text(json.dumps(original, indent=2) + '\n')
 PY
 safeyolo --root ROOT approvals delegation apply local --file proposal.json --json
@@ -87,6 +104,64 @@ self-benefit and unsupported bounds fail before mutation. Policy reloads also
 validate the stored delegation and permission records. The host stores named
 delegations in `approval_delegations` in `policy.toml`; use the preview and
 apply commands to produce their encoded records.
+
+## Remote reviewers
+
+For a reviewer on instance A and workers owned by instance B, configure
+[scoped NATS connectivity and trust](coord-reference.md#collaborate-through-a-home-safeyolo).
+On B, use the same delegation preview and apply workflow. In `reviewers`, add
+A's durable `instance_id` to the selected reviewer's own durable `agent_id`:
+
+```json
+{"name": "remote-reviewer", "agent_id": "ag-22222222222222222222222222222222", "instance_id": "INSTANCE_A_ID"}
+```
+
+The name is B's display handle. Choose a handle distinct from B's local agents.
+The preview fills `peer_epoch` from B's current trust. Apply registers this
+qualified reviewer without creating a room. Keep the complete `after`
+projection when acknowledging the preview. Beneficiaries remain local to B.
+Trust, room membership, factory direction and peer repair grants do not grant
+approval reads or decisions.
+
+Inside A's selected reviewer, use `list_approvals(home="primary")`,
+`read_approval(home="primary", approval_id=ID)` and
+`resolve_approval(home="primary", approval_id=ID, delegation=NAME,
+option=OFFERED_OPTION, decision="approve")`. The equivalent API routes accept
+`?home=primary`. Identity and current source run come from A's authenticated
+ingress. B rechecks its delegation, peer trust, worker run and complete option.
+The request and any resulting permissions stay in B's canonical approval store.
+No human credential or worker token is sent to the reviewer.
+
+B's existing private attention feed carries `approval_review` references for
+eligible remote reviewers. Select B in `wait_for_coord` using its durable
+instance ID and verified cursor. References contain no worker traffic or
+request reason. Read details through B's approval API. The references use the
+existing NATS subscription and retained notification path. They do not require
+a shared room or another polling loop. On restart or reconnect, reconcile
+B's canonical pending list as well as its attention cursor.
+Broker reference retention does not change a canonical pending request's
+deadline. B resolves its pending review references under current deciding
+authority even after the corresponding broker reference is gone.
+
+If a request is outside every current deciding delegation, the remote read or
+decision is refused. The request remains available to B's human operator.
+Ask that operator to inspect the canonical request and choose an exception or
+change the delegation after preview. An unrelated human exception does not
+block independently authorized work. Keep required approvals for that work
+intact.
+
+For an otherwise authorized remote identity, an out-of-scope approval read
+returns HTTP 404. A valid decision request that fails the deciding-authority
+check returns the generic HTTP 409 response, `decision unavailable or authority
+changed`. This refusal does not change the approval or issue permission.
+An identity without the required peer authorization is refused earlier with
+HTTP 403. Preserve the actual response; a decision refusal need not use the
+same status as a read refusal.
+
+After a lost decision reply, read the canonical request before another
+decision. Revoking peer trust ends its remote
+deciding authority and derived permissions. Re-trusting A does not reactivate
+the old delegation; preview a new trust epoch.
 
 ## Select scope
 
@@ -524,6 +599,13 @@ expiry can expire a pending service or gateway request while its requester is
 offline. New collaboration requests carry their fixed request deadline.
 Denials have status `rejected`. This delivery path does not add an expiry to
 requests that have no existing approval expiry.
+
+Before a delegated decision changes the canonical request, the deciding
+delegation must authorize the choice in both active and saved policy. This check
+includes rejection and typed operator actions. Deferral also checks current
+saved authority and leaves the request unchanged. A direct policy-file revocation
+or narrowing takes effect at this boundary before watcher activation. A later
+response refusal does not undo a decision already admitted by the owner.
 
 A result reports the approval decision. It does not establish current grant
 activation or successful action execution. Read the canonical approval and

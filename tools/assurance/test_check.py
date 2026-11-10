@@ -253,16 +253,62 @@ impl View {
         self.write(self.candidate, "tools/assurance/rules.yml", "rules: []\n")
         self.write(self.candidate, "tools/assurance/check.py", "def check(): return 'clean'\n")
         self.write(self.candidate, "tools/assurance/accepted.json", "{}\n")
+        self.write(self.candidate, "docs/assurance-map.toml", MAP + "\n# proposed map\n")
         self.write(self.candidate, ".github/workflows/proxy-assurance.yml", "name: suppressed\n")
+        self.write(self.candidate, "tools/acceptance/uv.lock", "unapproved tool lock\n")
         self.write(self.candidate, ".semgrepignore", "proxy/src/**\n")
         report = self.report()
         self.assertEqual(report["status"], "drift")
         self.assertIn("tools/assurance/rules.yml", report["control_changes"])
         self.assertIn("tools/assurance/check.py", report["control_changes"])
         self.assertIn("tools/assurance/accepted.json", report["control_changes"])
+        self.assertIn("docs/assurance-map.toml", report["control_changes"])
         self.assertIn(".github/workflows/proxy-assurance.yml", report["control_changes"])
+        self.assertIn("tools/acceptance/uv.lock", report["control_changes"])
         self.assertIn(".semgrepignore", report["control_changes"])
         self.assertTrue(report["operations_added"])
+
+    def test_control_pin_correction_preserves_product_baseline(self) -> None:
+        self.write(self.candidate, "proxy/src/lib.rs", BASE_RUST.replace("if allowed", "if !allowed"))
+        original = self.report()
+        controls = {
+            "map_sha256": ("docs/assurance-map.toml", MAP + "\n# accepted map update\n"),
+            "workflow_sha256": (".github/workflows/proxy-assurance.yml", "accepted workflow\n"),
+            "tool_lock_sha256": ("tools/acceptance/uv.lock", "accepted tool lock\n"),
+        }
+        for name, content in controls.values():
+            for root in (self.trusted, self.candidate):
+                self.write(root, name, content)
+        run, stale = self.run_check()
+        self.assertEqual(run.returncode, 1)
+        self.assertEqual(stale["status"], "error")
+        self.assertEqual(set(stale["errors"]), {
+            f"accepted {key} does not match the trusted checker" for key in controls
+        })
+
+        current = analyze(self.trusted, self.candidate)
+        # Only independently accepted control pins change; retain product extraction.
+        corrected = {**self.accepted, **{key: current[key] for key in controls}}
+        for root in (self.trusted, self.candidate):
+            self.write(root, "tools/assurance/accepted.json", json.dumps(corrected))
+        run, report = self.run_check()
+        self.assertEqual(run.returncode, 1)
+        self.assertEqual(report, original)
+        self.assertTrue(report["mapped_decisions_changed"])
+
+        self.write(self.candidate, "proxy/src/lib.rs", BASE_RUST)
+        run, report = self.run_check()
+        self.assertEqual(run.returncode, 0)
+        self.assertEqual(report["status"], "clean")
+        for name, content in controls.values():
+            with self.subTest(unaccepted_control=name):
+                self.write(self.candidate, name, content + "# unaccepted change\n")
+                run, report = self.run_check()
+                self.assertEqual(run.returncode, 1)
+                self.assertEqual(report["status"], "drift")
+                self.assertEqual(report["errors"], [])
+                self.assertEqual(report["control_changes"], [name])
+                self.write(self.candidate, name, content)
 
     def test_legitimate_trusted_snapshot_evolution(self) -> None:
         self.write(self.candidate, "proxy/src/lib.rs", BASE_RUST.replace("if allowed", "if !allowed"))
@@ -288,8 +334,8 @@ impl View {
         self.assertEqual(report["status"], "error")
         self.assertIn("Semgrep 1.179.0 required; got '1.176.0'", report["errors"][0])
 
-    def test_unapproved_tool_binding_fails_comparison(self) -> None:
-        for key in ("semgrep_version", "checker_sha256", "tool_lock_sha256"):
+    def test_unapproved_control_binding_fails_comparison(self) -> None:
+        for key in ("semgrep_version", "checker_sha256", "map_sha256", "workflow_sha256", "tool_lock_sha256"):
             with self.subTest(binding=key):
                 accepted = {**self.accepted, key: "unapproved"}
                 for root in (self.trusted, self.candidate):

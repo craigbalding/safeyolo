@@ -128,6 +128,9 @@ where
         Ok(scope) => scope,
         Err(outcome) => return Ok(outcome),
     };
+    if route(request).starts_with("/support/") {
+        return support::respond(request, state, controls.audit, body).await;
+    }
     // Reconciliation is the single request-boundary owner decision. A true
     // source conflict rejects scoped routes before reading a body or invoking
     // a provider, so a stale legacy agent field cannot re-open ownership.
@@ -187,6 +190,12 @@ where
     }
     if route(request) == "/gateway/services" {
         return Ok(gateway::respond(request, controls.gateway));
+    }
+    if route(request).starts_with("/gateway/challenges/") {
+        let PolicyState::Ready(policy) = &policy else {
+            return Ok(response(503, json!({"error":"policy unavailable"})));
+        };
+        return route_challenges::respond(request, policy, state, body).await;
     }
     if route(request) == "/gateway/request-access" {
         let content = read_content(body).await?;

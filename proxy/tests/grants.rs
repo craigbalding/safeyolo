@@ -120,7 +120,16 @@ fn unsupported_binding_selection_does_not_replace_saved_or_live_binding() {
                 })
                 .unwrap_err();
             assert_eq!(error.kind, ErrorKind::Invalid);
-            assert!(error.message.contains("stateful") && error.message.contains("in_state_set"));
+            let reason = if unsupported_first {
+                "in_state_set"
+            } else {
+                "response validators"
+            };
+            assert!(
+                error.message.contains("stateful") && error.message.contains(reason),
+                "{}",
+                error.message
+            );
             assert!(!activated);
             assert_eq!(fs::read(&path).unwrap(), source);
             assert_eq!(
@@ -396,6 +405,30 @@ fn configured_ttl_and_matching_preserve_current_method_and_path_rules() {
     assert!(!star.matches(scope("alice"), now()));
     star.expires = "malformed".into();
     assert!(star.is_expired(now()));
+}
+
+#[test]
+fn admitted_protocol_switch_consumes_a_once_grant() {
+    let (_directory, _path, store) = setup(SOURCE);
+    store
+        .add_grant(request("alice", GrantScope::Once), now(), validate)
+        .unwrap();
+    let lease = store
+        .check_grant(scope("alice"), now(), validate)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store
+            .finish_response(lease, Some(101), now(), validate)
+            .unwrap(),
+        ResponseOutcome::Consumed
+    );
+    assert!(
+        store
+            .check_grant(scope("alice"), now(), validate)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]

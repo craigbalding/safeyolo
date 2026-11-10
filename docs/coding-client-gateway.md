@@ -121,6 +121,15 @@ the OAuth capability in `anthropic-beta`. The ordinary
 select a different authentication path. The successful subscription request
 used `CLAUDE_CODE_OAUTH_TOKEN` with the scoped gateway credential shown above.
 
+Claude's remote managed-settings fetch uses the same authentication route.
+If startup reports a failure, inspect `Managed settings (remote)` in
+`claude doctor` or `/status` before changing authentication. A policy-fetch
+failure alone does not establish that inference authentication failed.
+For a SafeYolo refusal, inspect the request's `X-Blocked-By` header and its
+approval through the host workflow below. Claude's
+[server-managed settings documentation](https://code.claude.com/docs/en/server-managed-settings#platform-availability)
+describes which authentication configurations fetch policy.
+
 ## Approve the first request
 
 The first client request can stop for an existing network, credential or risky-route
@@ -166,10 +175,13 @@ a configuration or model catalogue is insufficient proof. The selected file
 stays unchanged, so reimporting it after a rotating refresh can restore a stale
 refresh token.
 
-The shipped capabilities cover Codex response/compaction POSTs on `chatgpt.com`
-and Claude message/token-count POSTs on `api.anthropic.com`. Account management,
-client login, plugin downloads, custom/regional endpoints and Codex WebSockets
-are outside these capabilities. Existing network policy can separately govern
-other client traffic. Revoke access with `services revoke alice codex` or
+The shipped capabilities cover Codex response/compaction POSTs on `chatgpt.com`.
+On `api.anthropic.com`, Claude's inference capability covers message/token-count
+POSTs, startup GETs to `/api/claude_cli/bootstrap`,
+`/api/claude_code/policy_limits` and `/api/claude_code/settings`, and feature-flag
+POSTs to `/api/eval/sdk-*`. Other account management, client login, plugin
+downloads, custom/regional endpoints and Codex WebSockets are outside these
+capabilities. Existing network policy can separately govern other client
+traffic. Revoke access with `services revoke alice codex` or
 `services revoke alice claude`; remove the host copy with `credentials remove`.
 The older `import-codex` flow and its client-held login remain separate.

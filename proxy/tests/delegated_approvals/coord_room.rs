@@ -4,7 +4,11 @@ use safeyolo_proxy::coord_rooms;
 fn room_store(f: &Fixture) {
     let root = f.root.path();
     fs::write(root.join("config.toml"), "admin_port=0\n").unwrap();
-    fs::write(root.join("data/instance_id"), "sy-coord-approval-fixture").unwrap();
+    fs::write(
+        root.join("data/instance_id"),
+        "sy-11111111111111111111111111111111",
+    )
+    .unwrap();
     coord_rooms::bootstrap(root).unwrap();
 }
 

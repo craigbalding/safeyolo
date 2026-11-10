@@ -644,13 +644,19 @@ These steps apply only when the confined Mac account runs Virtualization.framewo
 and installed policy. Build and run the VM helper through the confined SSH
 entry. The [physical-host acceptance record](VALIDATION.md#optional-vz-workload-acceptance-2026-09-14)
 identifies the tested configuration and its limits.
+The later [execution-boundary acceptance](VALIDATION.md#execution-boundary-acceptance-2026-11-08)
+establishes compatibility of the six #622 denials with VM startup under the
+tested locally adapted profile. It does not enable VZ in the reference template.
 
 ### Optional policy grants
 
 [agent-dev.sb](agent-dev.sb) contains the commented VZ grants and lab share
-paths. VM startup needs the service lookup; VirtioFS also needs the Fuse and
-file-extension grants. The config share is read-only; workspace, status and
-home shares are writable.
+paths. The recorded VM workload used the service lookup; its VirtioFS exports
+also used the Fuse and file-extension grants. The config share is read-only;
+workspace, status and home shares are writable. The
+[public export comparison](VALIDATION.md#public-vz-export-comparison-2026-11-06)
+records access under a different installed profile with home-wide file issuance.
+The comparison without file-issuance grants remains unverified.
 
 The Fuse grant allowed startup to proceed after the observed error
 `Failed to issue Fuse sandbox extension`. The rule selects an extension class;

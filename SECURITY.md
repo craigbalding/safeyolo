@@ -35,6 +35,12 @@ describes platform namespaces, UID mappings, storage, and the proxy route.
   process that runs as your user ID. Agent sandboxes cannot read arbitrary host
   files; they see only the host paths mounted into them.
 - **Agent sandboxes** have no direct internet access. Their only route to the outside world is through SafeYolo's policy enforcement.
+- **Peer support** is isolated by default. An explicit operator-owned
+  [local support grant](docs/peer-support.md) permits selected host-observed
+  inspection, guest administration and saved-worker lifecycle actions for
+  durable identities. Guest administration includes the target's credentials,
+  writable mounts and delegations. It grants no host socket or arbitrary host
+  execution.
 - **External services** are reachable only if policy explicitly permits the destination.
 
 ## Core Security Properties

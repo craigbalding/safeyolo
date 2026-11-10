@@ -1,4 +1,4 @@
--- Fresh native Coord store: the existing operational version-5 schema.
+-- Fresh native Coord tables. Bootstrap records the current schema version.
 -- Adapted from cli/src/safeyolo/coord/store.py. No historical-state conversion.
 CREATE TABLE instance (
            id TEXT PRIMARY KEY
@@ -26,6 +26,7 @@ CREATE TABLE coord_outbox (
            created_at INTEGER NOT NULL,
            delivered_at INTEGER,
            attempt_count INTEGER NOT NULL DEFAULT 0,
+           next_attempt_at INTEGER NOT NULL DEFAULT 0,
            last_error_class TEXT
        );
 CREATE INDEX coord_outbox_pending
@@ -139,4 +140,4 @@ CREATE TABLE coord_capability_declarations (
        );
 CREATE INDEX coord_capability_declarations_expiry
        ON coord_capability_declarations(valid_until);
-PRAGMA user_version=5;
+PRAGMA user_version=10;

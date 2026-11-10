@@ -404,6 +404,7 @@ impl Policy {
         let mut fields = authored.as_object().expect("TOML root is a table").clone();
         fields.shift_remove("controls");
         fields.shift_remove("approval_delegations");
+        fields.shift_remove("support_grants");
         // Approval receipts belong to the saved host permission. They are not
         // evaluator fields; keep the authoritative authored copy for outcome
         // reconciliation while compiling only existing egress/rate inputs.
@@ -711,6 +712,8 @@ impl Policy {
 }
 
 fn validate_authoring(document: &Value) -> Result<()> {
+    super::authority::validate(document)?;
+    super::support::parse(document)?;
     super::delegation::parse(document)?;
     super::delegation::validate_grants(document)?;
     let fields = document

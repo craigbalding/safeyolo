@@ -467,28 +467,29 @@ This is where the platform starts becoming genuinely better than a generic colla
 
 ### 4. Minimal work objects and atomic task claims
 
-Now introduce the smallest thing that could reasonably be called task management:
+A native work record contains:
 
 ```text
 work_id
 room_id
 title
 external_ref?
-state = open | claimed | done
+state = open | claimed | done | cancelled
 claim_agent_id?
 claim_generation
 claimed_at?
 claim_expires_at? = NULL  # reserved for a future optional lease mode
 created_by
 short_result?
+target_ref?/target_generation
+output?  # authenticated producer, execution outcome and publication revision
+cancellation?  # actor, reason and time
+check?/challenge?  # assigned subject, participant, answer or disposition
 timestamps/version
 ```
 
-No boards. No subtasks. No arbitrary workflow states. No dependency graph.
-
-Agents and operator may create work. There is no first-class priority in the
-initial model; the sticky operator brief carries priorities until dogfood
-demonstrates a need for machine-orderable work.
+Agents and the operator may create work. The operator brief carries priorities;
+work records do not infer priority from message or document text.
 
 Claims are atomic, durable generation-protected ownership. They do not expire
 or transfer automatically. A claimant may release; the operator may
@@ -497,11 +498,8 @@ force-release or reassign. Every successful claim or reassignment increments
 Agent liveness never renews or releases work: an MCP process being alive does
 not prove that the model is still doing the work.
 
-Status may flag an old claim as potentially stale using age/activity evidence,
-but that is advisory and never changes ownership. If later dogfood proves
-abandoned claims are an operational problem, the reserved nullable
-`claim_expires_at` permits an optional lease mode with explicit claimant
-renewal. Until then, reserve the term **lease** for actual resource ownership.
+`claim_expires_at` remains null. Elapsed time does not change ownership.
+The term **lease** refers to actual resource ownership.
 
 All mutations use the foundation's `operation_id` idempotency contract.
 `operation_id` protects ambiguous retries; `version` and `claim_generation`
@@ -514,15 +512,41 @@ create_work
 claim_work
 release_work
 complete_work
+publish_work_output
+list_work_outputs
+cancel_work
 ```
 
 Native agents use `create_work`, `list_work`, `read_work`, `claim_work`,
-`release_work` and `complete_work` through MCP or the native Coord client.
+`release_work`, `complete_work`, `publish_work_output`, `list_work_outputs` and
+`cancel_work` through MCP or the native Coord client.
 Reads require current room `receive` permission. Mutations require both
 `send` and `receive`, because they read and change canonical work. The
 owning host account uses `coord work` for creation, reads and explicit
 release, completion or reassignment. It can recover a removed or revoked
 holder without granting that holder room access.
+
+Output publication validates the current holder, work version, claim generation
+and target generation together. It atomically selects the exact immutable
+reference and records the authenticated producer's execution outcome. The
+application retains the artifact before publication. An interrupted request
+uses the original operation ID and inputs to recover the committed receipt or
+attempt an uncommitted publication under still-current authority. A stale or
+cancelled assignment cannot select an output. External artifact retention and
+external execution remain application responsibilities.
+
+The retained holder can correct a completed output. Operator reassignment can
+reopen completed or cancelled work for another producer in a new claim
+generation. Neither transition erases earlier output publications or evidence.
+`list_work_outputs` reads original publications from immutable work revisions.
+Changing the output advances `target_generation` and makes earlier attestations
+stale. Publication and generic completion do not establish independent acceptance.
+
+Cancellation is an explicit unfinished-work transition. The current holder,
+creator of open work, or operator can cancel. It clears ownership, advances the
+claim generation, and records the actor and reason. It does not terminate an
+external process or report successful completion. Room state lists cancelled
+work separately from active work and completed work.
 
 Each mutation accepts an optional `operation_id`; omitted IDs are generated
 and returned. Canonical input contains the resolved room ID and typed mutation,
@@ -534,12 +558,35 @@ Lists use bounded pages ordered by `work_id`; pages do not share a snapshot.
 
 The current work projection, immutable version, operation result, metadata
 audit and attention outbox commit in one SQLite transaction. Work changes
-notify current receive-authorized members except the agent actor. Operator
-changes notify every current receive-authorized agent. A `work_changed` edge
+notify current receive-authorized members. The agent actor is also notified
+when a current native action requires that participant; otherwise
+its own edge is omitted. Operator changes notify every current receive-authorized agent. A `work_changed` edge
 resolves its original immutable work version, with current membership-generation
 authorization. Work titles, references and results do not enter audit or wake
 hints. Completion retains the final holder and claim timestamp in state `done`;
 release clears the holder and timestamp and returns the item to `open`.
+
+An optional creation `assignee` selects the agent eligible to claim generic
+execution. Operator reassignment changes that assignment and advances the claim
+generation. This selection is independent of the actual publication producer.
+Unassigned open work does not wake competing native supervisors.
+
+`read_work_actions(room_name, work_id, include_received?)` derives current
+participant actions from that work and its review root. It routes assigned
+execution, named checks and challenge responses, explicit challenge disposition,
+and eligible selected acceptance when required obligations are satisfied.
+Creator/requester result notices remain informational. It reads canonical work;
+it stores no competing task, review or acceptance projection.
+
+`receive_work_action(room_name, work_id, action_key)` commits an immutable
+participant delivery receipt to the existing operation ledger. The canonical
+key is its retry ID. Current room authority is checked even on replay; a new
+stale or substituted participant's action is rejected. A successful receipt
+neither advances Work's version nor claims or completes its action. An old
+receipt remains recoverable after the action settles. Default action reads
+exclude received keys; `include_received=true` supports pending checkpoint
+reconciliation against current native authority. See
+[native supervision](codex-coord-supervisor.md#native-work-delivery).
 
 `external_ref` is deliberately opaque:
 
@@ -757,18 +804,49 @@ At this point the core operator-noise problem is substantially solved.
 
 ### 7. Attestations, not voting
 
-Only after the work model is stable would I add independent review/acceptance semantics.
+Attestations record attributed evidence about an exact output. They do not
+assign a check or settle a peer challenge.
 
-Add a mutable **work target**:
+Native assigned checks and peer challenges reuse ordinary work records and
+claims. A check fixes its subject, criterion, reviewer and independence flag;
+answer and check completion commit together. Corrections retain one effective
+answer and immutable earlier revisions. A challenge fixes its contested subject,
+responder and deciding participants. Response completion leaves the challenge
+unresolved until an authorized explicit disposition. Cancellation and output
+replacement do not erase it. Current work and related-review reads expose these
+facts without interpreting messages. See the authoritative [review operation
+contract](coord-reference.md#assigned-checks-and-peer-challenges) and
+[code/report example](coord-operations.md#run-an-assigned-review-loop).
+
+Reviews remain advisory unless an authorized caller selects them in the native
+versioned acceptance context. The creator selects initial requirements; recorded
+authorities or the operator amend them. Ownership or production alone does not
+grant policy authority. Eligible decisions bind the current
+output/context and an approval's required review basis. Current reads explain
+pending, stale, rejected and conflicting obligations without vote counts.
+See [selected acceptance](coord-reference.md#select-requirements-and-decide-output-acceptance).
+An approved Factory's `[work]` selects creator and policy authority roles,
+acceptance deciders, independence and per-output required checks. Native
+creation binds the exact snapshot and configured durable identities. Output
+publication creates those checks atomically; replay retains their original IDs.
+Stored policy survives later Factory approval changes. Explicit authority
+amendments remain attributable. See [Factory policy](factories.md#select-native-work-policy).
+The selected native supervisor routes current participant actions without a
+duplicate message workflow. Message assignments keep their declared protocol.
+An attributed check conclusion alone does not accept its subject.
+
+A published output selects the current **work target**:
 
 ```text
 target_ref
 target_generation
 ```
 
-Changing the candidate increments `target_generation`.
+Publishing a replacement increments `target_generation`. The output receipt
+retains its transport-derived producer, execution outcome and claim generation.
+An operator or bridge cannot publish on behalf of that producer.
 
-Then agents can attach attestations:
+Authorized agents can attach attestations:
 
 ```text
 kind: review | acceptance | ...
@@ -779,7 +857,8 @@ summary
 evidence_refs[]
 ```
 
-Don't hardwire "2 of 3 wins". Status displays evidence; the operator or higher-level policy decides what it means.
+Status displays attributed evidence without a vote threshold. The approved
+workflow determines which evidence establishes acceptance.
 
 This directly solves one of the best lessons from the dogfood: Bob accepted `654724a`, then CodeQL-driven changes moved the candidate to `79a626c`, making the acceptance stale. The agents noticed manually and reran C.
 
@@ -789,7 +868,7 @@ Key acceptance tests:
 * Claude updates candidate → generation 4.
 * Bob's generation-3 approval remains in history but **does not appear as approval of generation 4**.
 * Status clearly says generation 4 lacks acceptance.
-* Bob reruns and approves generation 4; current status becomes green.
+* Bob reruns and approves generation 4; current status records that approval.
 * Codey cannot forge an attestation authored by Bob.
 * Two independent agents can submit conflicting attestations; both remain visible.
 * No majority result is invented.

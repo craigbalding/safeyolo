@@ -9,11 +9,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
+import ssl
 import stat
 import subprocess
 import tarfile
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -22,6 +26,276 @@ from scripts import build_host_packages as builder
 
 REPO = Path(__file__).resolve().parents[1]
 REVISION = "a" * 40
+
+
+@pytest.fixture
+def prepared_runsc(tmp_path):
+    if os.uname().sysname != "Linux":
+        pytest.skip("gVisor runtime acquisition requires Linux")
+    directory = tmp_path / "prepared-runsc"
+    (directory / "gvisor-bin").mkdir(parents=True)
+    executable(directory / "runsc", "runsc version release-20261005.0-safeyolo.1")
+    for name in ("gvisor_sentry", "gvisor-sentry-prewarmer", "runsc-fd-parking"):
+        shutil.copy2(directory / "runsc", directory / "gvisor-bin" / name)
+    return directory
+
+
+@pytest.mark.parametrize("defect", [None, "missing", "version", "architecture"])
+def test_runsc_acquisition_checks_the_complete_prepared_input(
+    tmp_path, monkeypatch, prepared_runsc, defect,
+):
+    monkeypatch.setenv("SAFEYOLO_RUNSC_ARTIFACTS", str(prepared_runsc))
+    if defect == "missing":
+        (prepared_runsc / "gvisor-bin/runsc-fd-parking").unlink()
+    elif defect == "version":
+        executable(prepared_runsc / "runsc", "runsc version release-20261005.0")
+    elif defect == "architecture":
+        sidecar = prepared_runsc / "gvisor-bin/gvisor_sentry"
+        contents = bytearray(sidecar.read_bytes())
+        contents[18:20] = (62 if os.uname().machine in ("aarch64", "arm64") else 183).to_bytes(2, "little")
+        sidecar.write_bytes(contents)
+    destination = tmp_path / "acquired"
+    result = run("bash", str(REPO / "scripts/acquire_runsc.sh"), str(destination))
+    assert (result.returncode == 0) == (defect is None), result.stderr
+    if defect is not None:
+        assert not destination.exists()
+    else:
+        assert sorted(str(path.relative_to(destination)) for path in destination.rglob("*")
+                      if path.is_file()) == [
+            "gvisor-bin/gvisor-sentry-prewarmer", "gvisor-bin/gvisor_sentry",
+            "gvisor-bin/runsc-fd-parking", "runsc",
+        ]
+        for path in destination.rglob("*"):
+            if path.is_file():
+                assert path.read_bytes() == (prepared_runsc / path.relative_to(destination)).read_bytes()
+
+
+@pytest.fixture
+def runsc_build_inputs(
+    tmp_path, monkeypatch, prepared_runsc,
+):
+    scripts = tmp_path / "scripts"
+    (scripts / "gvisor").mkdir(parents=True)
+    for name in ("native_package.sh", "acquire_runsc.sh"):
+        shutil.copy2(REPO / "scripts" / name, scripts / name)
+    for name in ("nofollow.patch", "portforward.patch"):
+        shutil.copy2(REPO / "scripts/gvisor" / name, scripts / "gvisor" / name)
+    build_calls = tmp_path / "build-calls"
+    (scripts / "build_runsc.sh").write_text(
+        '#!/bin/bash\nset -eu\nprintf "build\\n" >> "$RUNSC_TEST_BUILD_CALLS"\n'
+        'mkdir -p "$2/gvisor-bin"\ncp "$RUNSC_TEST_FIXTURE/runsc" "$2/runsc"\n'
+        'cp "$RUNSC_TEST_FIXTURE/gvisor-bin/"* "$2/gvisor-bin/"\n',
+    )
+    (scripts / "build_runsc.sh").chmod(0o755)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "bazel").write_text('#!/bin/sh\nprintf "bazel 8.3.1\\n"\n')
+    (tools / "git").write_text('#!/bin/sh\nif [ "$1" = init ]; then mkdir "$2"; fi\n')
+    for tool in tools.iterdir():
+        tool.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tools}:{os.environ['PATH']}")
+    monkeypatch.delenv("SAFEYOLO_RUNSC_ARTIFACTS", raising=False)
+    monkeypatch.setenv("RUNSC_TEST_FIXTURE", str(prepared_runsc))
+    monkeypatch.setenv("RUNSC_TEST_BUILD_CALLS", str(build_calls))
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    return scripts, tools, build_calls, cache
+
+
+def test_runsc_acquisition_reuses_its_build_and_refuses_corrupt_cached_companions(
+    tmp_path, runsc_build_inputs,
+):
+    scripts, _, build_calls, cache = runsc_build_inputs
+    for name in ("first", "second"):
+        result = run("bash", str(scripts / "acquire_runsc.sh"), str(tmp_path / name))
+        assert result.returncode == 0, result.stderr
+    assert build_calls.read_text().splitlines() == ["build"]
+
+    companion, = cache.glob("**/runtime/gvisor-bin/gvisor_sentry")
+    with companion.open("ab") as stream:
+        stream.write(b"corruption after the valid ELF header")
+    result = run("bash", str(scripts / "acquire_runsc.sh"), str(tmp_path / "corrupt"))
+    assert result.returncode != 0 and "FAILED" in result.stdout
+    assert not (tmp_path / "corrupt").exists()
+    assert build_calls.read_text().splitlines() == ["build"]
+
+    # A provider repair must not reuse the cached runtime without that patch.
+    patch = scripts / "gvisor/portforward.patch"
+    patch.write_bytes(patch.read_bytes() + b"\n")
+    result = run("bash", str(scripts / "acquire_runsc.sh"), str(tmp_path / "repaired"))
+    assert result.returncode == 0, result.stderr
+    assert build_calls.read_text().splitlines() == ["build", "build"]
+
+
+@pytest.mark.parametrize("outcome", ["transient", "exhausted", "checksum"])
+def test_bazel_acquisition_retries_http_failures_before_building(
+    tmp_path, runsc_build_inputs, outcome,
+):
+    from tests.proxy_contracts.test_http2_contract import origin_certificate
+
+    scripts, tools, build_calls, cache = runsc_build_inputs
+    # Keep the real curl retry and SHA-256 checks; substitute only the owned
+    # HTTPS origin, tiny Bazel bytes and their fixture pin, not their logic.
+    payload = b'#!/bin/sh\nprintf "bazel 8.3.1\\n"\n'
+    acquire = scripts / "acquire_runsc.sh"
+    acquire.write_text(re.sub(r"bazel_sha=[0-9a-f]{64}",
+                              f"bazel_sha={hashlib.sha256(payload).hexdigest()}",
+                              acquire.read_text()))
+    (tools / "bazel").write_text("#!/bin/sh\nexit 1\n")
+    attempts = []
+
+    class BazelDownload(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            attempts.append(self.path)
+            unavailable = outcome == "exhausted" or (outcome == "transient" and len(attempts) == 1)
+            body = b"gateway unavailable" if unavailable else payload
+            if outcome == "checksum":
+                body += b"corrupted download"
+            self.send_response(504 if unavailable else 200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    pem, ca = origin_certificate(tmp_path)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(pem)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), BazelDownload)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    curl = shutil.which("curl")
+    assert curl
+    arguments = tmp_path / "curl-arguments"
+    (tools / "curl").write_text(
+        '#!/bin/bash\nset -eu\n'
+        f'printf "%s\\n" "$@" > {shlex.quote(str(arguments))}\n'
+        'args=("$@")\nfor i in "${!args[@]}"; do\n'
+        '  case "${args[i]}" in https://github.com/bazelbuild/bazel/releases/download/8.3.1/*)\n'
+        f'    args[i]="https://localhost:{server.server_port}/bazel";; esac\ndone\n'
+        f'exec {shlex.quote(curl)} --cacert {shlex.quote(str(ca))} "${{args[@]}}"\n',
+    )
+    (tools / "curl").chmod(0o755)
+    destination = tmp_path / "acquired"
+    try:
+        result = run("bash", str(acquire), str(destination))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+    args = arguments.read_text().splitlines()
+    assert args[args.index("--proto") + 1] == "=https"
+    assert args[args.index("--proto-redir") + 1] == "=https"
+    for option in ("--retry-max-time", "--connect-timeout", "--max-time"):
+        assert int(args[args.index(option) + 1]) > 0
+    architecture = "arm64" if os.uname().machine in ("aarch64", "arm64") else "x86_64"
+    assert f"https://github.com/bazelbuild/bazel/releases/download/8.3.1/bazel-8.3.1-linux-{architecture}" in args
+    if outcome == "transient":
+        assert result.returncode == 0, result.stderr
+        assert len(attempts) == 2 and destination.is_dir()
+        assert build_calls.read_text().splitlines() == ["build"]
+        bazel, = cache.glob("**/tools/bazel")
+        assert bazel.read_bytes() == payload
+        # A later source build must still refuse an altered cached Bazel.
+        bazel.write_bytes(payload + b"corruption")
+        runtime, = cache.glob("**/runtime")
+        shutil.rmtree(runtime)
+        result = run("bash", str(acquire), str(tmp_path / "corrupt-bazel"))
+        assert result.returncode != 0 and "cached Bazel checksum differs" in result.stderr
+        assert build_calls.read_text().splitlines() == ["build"]
+    else:
+        assert result.returncode != 0 and not destination.exists()
+        assert not build_calls.exists() and not list(cache.glob("**/tools/bazel"))
+        if outcome == "exhausted":
+            assert result.returncode == 22, result.stderr
+            assert len(attempts) == 1 + int(args[args.index("--retry") + 1])
+        else:
+            assert "Bazel checksum differs" in result.stderr and len(attempts) == 1
+
+
+@pytest.mark.parametrize("workflow_name,job,consumer", [
+    ("proxy-rust.yml", "focused-pr", "Test installed native policy commands"),
+    ("guest-test-inputs.yml", "build", "Retain complete Linux production bundle"),
+])
+@pytest.mark.parametrize("missing_companion", [False, True])
+def test_workflow_prepares_runtime_before_installation_and_propagates_failure(
+    tmp_path, monkeypatch, prepared_runsc, workflow_name, job, consumer, missing_companion,
+):
+    import yaml
+
+    workflow = yaml.safe_load((REPO / ".github/workflows" / workflow_name).read_text())
+    steps = workflow["jobs"][job]["steps"]
+    preparation = next(s for s in steps if s.get("name") == "Prepare the complete patched gVisor runtime")
+    assert preparation["shell"] == "bash"
+    assert steps.index(preparation) < next(i for i, s in enumerate(steps) if s.get("name") == consumer)
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    for name in ("acquire_runsc.sh", "build_runsc.sh", "native_package.sh"):
+        shutil.copy2(REPO / "scripts" / name, scripts / name)
+    shutil.copytree(REPO / "scripts/gvisor", scripts / "gvisor")
+    if missing_companion:
+        (prepared_runsc / "gvisor-bin/runsc-fd-parking").unlink()
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    environment_file = tmp_path / "github-env"
+    monkeypatch.setenv("RUNNER_TEMP", str(runner))
+    monkeypatch.setenv("GITHUB_ENV", str(environment_file))
+    monkeypatch.setenv("SAFEYOLO_RUNSC_ARTIFACTS", str(prepared_runsc))
+    # Match Actions' explicit Bash shell, including pipefail through tee.
+    result = run("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", preparation["run"], cwd=tmp_path)
+    assert (result.returncode == 0) == (not missing_companion), (result.stdout, result.stderr)
+    assert (runner / "gvisor-preparation.log").is_file()
+    if missing_companion:
+        assert "runsc-fd-parking" in (runner / "gvisor-preparation.log").read_text()
+        assert not environment_file.exists()
+        assert not (runner / "gvisor-runtime").exists()
+    else:
+        assert environment_file.read_text() == f"SAFEYOLO_RUNSC_ARTIFACTS={runner}/gvisor-runtime\n"
+        result = run("sha256sum", "--check", "--strict", "SHA256SUMS", cwd=runner / "gvisor-runtime")
+        assert result.returncode == 0, result.stderr
+        assert len(result.stdout.splitlines()) == 4
+
+
+@pytest.mark.parametrize("defect", [None, "checksum", "missing", "version", "architecture"])
+def test_overnight_consumer_validates_complete_downloaded_runtime(tmp_path, prepared_runsc, defect):
+    import yaml
+
+    runner = tmp_path / "runner"
+    runtime = runner / "gvisor-runtime"
+    shutil.copytree(prepared_runsc, runtime)
+    if defect == "version":
+        executable(runtime / "runsc", "runsc version release-20261005.0")
+    elif defect == "architecture":
+        companion = runtime / "gvisor-bin/gvisor_sentry"
+        contents = bytearray(companion.read_bytes())
+        contents[18:20] = (62 if os.uname().machine in ("aarch64", "arm64") else 183).to_bytes(2, "little")
+        companion.write_bytes(contents)
+    files = sorted(path for path in runtime.rglob("*") if path.is_file())
+    (runtime / "SHA256SUMS").write_text("".join(
+        f"{builder.sha256(path)}  {path.relative_to(runtime)}\n" for path in files
+    ))
+    if defect == "checksum":
+        with (runtime / "gvisor-bin/gvisor_sentry").open("ab") as stream:
+            stream.write(b"damaged download")
+    elif defect == "missing":
+        (runtime / "gvisor-bin/runsc-fd-parking").unlink()
+    # Actions artifacts lose executable permissions; the consumer restores them.
+    for path in files:
+        if path.exists():
+            path.chmod(0o644)
+    environment_file = tmp_path / "github-env"
+    workflow = yaml.safe_load((REPO / ".github/workflows/proxy-rust.yml").read_text())
+    steps = workflow["jobs"]["contracts"]["steps"]
+    validation = next(s for s in steps if s.get("name") == "Validate the prepared patched gVisor runtime")
+    assert validation["if"] == "runner.os == 'Linux'"
+    assert steps.index(validation) < next(i for i, s in enumerate(steps) if s.get("name") == "Run native proxy component contracts")
+    result = run("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", validation["run"], cwd=REPO,
+                 env={**os.environ, "RUNNER_TEMP": str(runner), "GITHUB_ENV": str(environment_file)})
+    assert (result.returncode == 0) == (defect is None), (result.stdout, result.stderr)
+    assert environment_file.exists() == (defect is None)
 
 
 def run(*arguments, **kwargs):
@@ -243,6 +517,9 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
                               f'puts("{guest_assets}");return 0;')
         guest_command += '}'
     host_command = (
+        'if(argc>5 && strcmp(argv[1],"--root")==0 && strcmp(argv[3],"coord")==0){'
+        'char *coord=getenv("PACKAGE_COORD_CLI");'
+        'if(coord){execv(coord,argv);return 99;}}'
         'if(argc>4 && strcmp(argv[3],"host")==0 && strcmp(argv[4],"prepare")==0){'
         'char *code=getenv("PACKAGE_HOST_EXIT");if(code)return atoi(code);'
         'char *installed="/fixture";char *settings=NULL;'
@@ -347,7 +624,7 @@ def package_inputs(tmp_path, request, monkeypatch):
     shutil.copy2(shutil.which("tmux"), runtime / "tmux")
     runsc = tmp_path / "gvisor"
     (runsc / "gvisor-bin").mkdir(parents=True)
-    executable(runsc / "runsc", "runsc version release-20261005.0")
+    executable(runsc / "runsc", "runsc version release-20261005.0-safeyolo.1")
     for name in ("gvisor-bin/checkpointgofer", "gvisor-bin/gvisor-sentry-prewarmer",
                  "gvisor-bin/gvisor_sentry", "gvisor-bin/runsc-fd-parking", "gvisor-bin/runsc-metric-server"):
         shutil.copy2(runsc / "runsc", runsc / name)
@@ -579,8 +856,13 @@ def test_workflow_consumers_validate_prepared_native_inputs(package_inputs, tmp_
 
 
 @pytest.mark.parametrize("package_inputs", ["debug", "production"], indirect=True)
-def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs, tmp_path):
+@pytest.mark.parametrize("read_only_runtime", [False, True])
+def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs, tmp_path, read_only_runtime):
     runtime = Path(os.environ["PACKAGE_RUNSC_FIXTURE"])
+    if read_only_runtime:
+        for path in runtime.rglob("*"):
+            if path.is_file():
+                path.chmod(0o555)
     upstream = {path.relative_to(runtime): path.read_bytes() for path in runtime.rglob("*") if path.is_file()}
     output = tmp_path / "output"
     result = run(*package_inputs[4], "--output", str(output))
@@ -603,6 +885,8 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
         for relative, original in upstream.items():
             member = archive.name.removesuffix(".tar.gz") + "/libexec/" + str(relative)
             assert (runtime / relative).read_bytes() == original
+            if read_only_runtime:
+                assert stat.S_IMODE((runtime / relative).stat().st_mode) == 0o555
             if relative.name in ("checkpointgofer", "runsc-metric-server"):
                 assert member not in names
                 assert f"./libexec/{relative}" not in checksums
@@ -645,7 +929,7 @@ def test_native_bundle_metadata_records_guest_discovery_without_pinning_an_archi
     assert set(fields) == {"source_commit", "profile", "platform", "minimum_runtime",
                            "guest_compatibility", "guest_repository", "guest_discovery_tag",
                            "runsc_version", "runsc_source", "runsc_origin"}
-    assert fields["runsc_version"] == "release-20261005.0"
+    assert fields["runsc_version"] == "release-20261005.0-safeyolo.1"
     assert fields["runsc_origin"] == "bundled"
     assert fields["guest_compatibility"] == "v1"
     assert fields["guest_repository"] == "ghcr.io/craigbalding/safeyolo-guest"

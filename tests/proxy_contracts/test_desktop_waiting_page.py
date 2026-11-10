@@ -79,6 +79,7 @@ def page_origin():
                              "browser_pong_age_ms": 0, "relay_pong_age_ms": 0}
                 else:
                     value = {"observed_at": state["requests"], "access": "valid",
+                             "instance_id": "sy-selected-instance", "agent": "selected-agent", "agent_id": "ag-selected",
                              "runtime": {"state": state["runtime"], "duration_ms": 1,
                                          "disagreement": state["disagreement"]},
                              "guest": {"tcp": state["tcp"], "greeting": state["greeting"],
@@ -133,6 +134,8 @@ def test_silent_listener_recovers_in_same_page_with_live_history(browser):
         assert not page.locator("#diagnostics").get_attribute("open")
         state.update(tcp="accepted", greeting="timeout")
         wait_status(page, "Desktop server is not responding")
+        assert page.title() == "SafeYolo Desktop — sy-selected-instance — selected-agent"
+        assert "sy-selected-instance — selected-agent (ag-selected)" == page.inner_text("#identity")
         assert "guest-local checks" in page.inner_text("#explanation")
         page.click("#diagnostics summary")
         assert "Guest-local VNC greeting: timeout" in page.inner_text("#log")

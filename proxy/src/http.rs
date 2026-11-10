@@ -39,6 +39,7 @@ mod agent_audit_tests;
 mod circuit_audit_tests;
 mod circuit_completion;
 mod codex_routing;
+mod docker;
 #[cfg(test)]
 mod flow_lookup_tests;
 mod flow_recording;
@@ -181,7 +182,7 @@ impl HttpBody for ForwardedRequestBody {
 impl<B> HttpBody for UpstreamBody<B>
 where
     B: HttpBody<Data = Bytes> + Unpin,
-    B::Error: std::error::Error + Send + Sync + 'static,
+    B::Error: Into<Error>,
 {
     type Data = Bytes;
     type Error = Error;
@@ -210,7 +211,7 @@ where
                 "upstream response ended before protocol completion",
             )))));
         }
-        frame.map(|frame| frame.map(|result| result.map_err(|error| -> Error { Box::new(error) })))
+        frame.map(|frame| frame.map(|result| result.map_err(Into::into)))
     }
     fn is_end_stream(&self) -> bool {
         // H2 Incoming maps RST_STREAM(NO_ERROR) to clean EOF. Keep the
@@ -528,6 +529,51 @@ pub(crate) struct Tunnel {
 }
 
 impl Destination {
+    /// Docker's raw dialer does not use HTTP_PROXY. The ordinary client can
+    /// instead connect to the proxy itself and select one fixed service with
+    /// its configured HttpHeaders. All admission still uses the real endpoint.
+    fn docker_request<B>(
+        request: &Request<B>,
+        runtime: &Runtime,
+        in_tunnel: bool,
+    ) -> Result<Option<Self>, Error> {
+        let values = request
+            .headers()
+            .get_all(crate::services::docker::SERVICE_HEADER);
+        let mut values = values.iter();
+        let Some(value) = values.next() else {
+            return Ok(None);
+        };
+        if values.next().is_some() || in_tunnel || request.method() == Method::CONNECT {
+            return Err(docker::RouteError.into());
+        }
+        let service = value
+            .to_str()
+            .ok()
+            .and_then(|name| runtime.policy.as_deref()?.gateway()?.docker_service(name))
+            .ok_or(docker::RouteError)?;
+        let endpoint = service.docker.as_ref().ok_or(docker::RouteError)?;
+        let authority = endpoint
+            .uri
+            .authority()
+            .ok_or(docker::RouteError)?
+            .to_string();
+        Ok(Some(Self {
+            host: endpoint.host.clone(),
+            policy_host: endpoint.host.clone(),
+            port: endpoint.port,
+            authority: authority.clone(),
+            uri_authority: authority,
+            scheme: endpoint.uri.scheme_str().ok_or(docker::RouteError)?.into(),
+            path: request
+                .uri()
+                .path_and_query()
+                .map_or("/", |path| path.as_str())
+                .into(),
+            selected_ip: None,
+        }))
+    }
+
     fn from_request<B>(request: &Request<B>, tunnel: Option<&Destination>) -> Result<Self, Error> {
         if request.headers().get_all(header::HOST).iter().count() > 1 {
             return Err("multiple Host headers are ambiguous".into());
@@ -2585,6 +2631,32 @@ where
     }
     let pipeline_probe = probe::is_host(&destination.host);
     let client_version = request.version();
+    let docker_service = runtime
+        .policy
+        .as_deref()
+        .and_then(crate::policy::Policy::gateway)
+        .and_then(|gateway| gateway.docker_for_endpoint(&destination.host, destination.port));
+    if let Some(service) = docker_service {
+        let endpoint = service.docker.as_ref().expect("Docker endpoint selection");
+        let code = if request.method() == Method::CONNECT {
+            Some("GATEWAY_DOCKER_CONNECT_UNSUPPORTED")
+        } else if destination.scheme != endpoint.uri.scheme_str().unwrap_or_default() {
+            Some("GATEWAY_DOCKER_ENDPOINT_MISMATCH")
+        } else if !crate::services::docker::supported_request(
+            request.method().as_str(),
+            &destination.path,
+        ) {
+            Some("GATEWAY_DOCKER_OPERATION_UNSUPPORTED")
+        } else {
+            None
+        };
+        if let Some(code) = code {
+            return Ok((
+                prior_block(gateway_response(403, code, request_id, None)?),
+                "deny".into(),
+            ));
+        }
+    }
     // CONNECT has no ordinary traffic request hook. Observe its accepted
     // listener at admission, without consulting a second identity source.
     if request.method() == Method::CONNECT
@@ -2711,7 +2783,27 @@ where
     // recording view; the forwarded body still needs these declarations.
     let request_trailer = request.headers().get(header::TRAILER).cloned();
     let mut ordered_headers = crate::request_headers::RequestHeaders::take(&mut request)?;
-    let hygiene = ordered_headers.apply_hygiene(request.headers_mut());
+    let hygiene =
+        ordered_headers.apply_hygiene_for_docker(request.headers_mut(), docker_service.is_some());
+    if hygiene.docker_stream
+        && (docker_service.is_none()
+            || !crate::services::docker::stream_request(
+                request.method().as_str(),
+                &destination.path,
+            )
+            || !allow_upgrades)
+        || docker_service.is_some() && hygiene.upgrade_requested && !hygiene.docker_stream
+    {
+        return Ok((
+            prior_block(gateway_response(
+                403,
+                "GATEWAY_DOCKER_UPGRADE_UNSUPPORTED",
+                request_id,
+                None,
+            )?),
+            "deny".into(),
+        ));
+    }
     if let Some(live) = &live {
         live.request_headers(live_view::pairs(ordered_headers.recording_pairs()));
     }
@@ -3010,7 +3102,8 @@ where
                         "uploaded_bytes": result.uploaded,
                         "downloaded_bytes": result.downloaded,
                         "duration_ms": started.elapsed().as_millis(),
-                        "outcome": result.outcome
+                        "outcome": result.outcome,
+                        "error": result.error
                         }),
                     ))?;
                     return Ok(());
@@ -3156,9 +3249,10 @@ where
     };
     // Credential enforcement is deliberately after network and circuit
     // admission, but before test-context observation or any
-    // outbound connection. The ordered parser view remains alive here so the
-    // guard sees each original field. Combining repeated values can hide a
-    // credential from entropy detection or change its approval fingerprint.
+    // outbound connection. Gateway token fields are consumed or rejected by
+    // gateway selection below, rather than approved as upstream credentials.
+    // The guard still sees every other original field. Combining repeated
+    // values can hide a credential or change its approval fingerprint.
     if let Some(policy) = runtime.policy.as_ref() {
         let guard = runtime.credential_guard.as_ref().ok_or_else(|| {
             if let Some(hook) = trace
@@ -3191,7 +3285,9 @@ where
             Some(request_id),
             &identity.connection_id,
             false,
-            ordered_headers.recording_pairs(),
+            ordered_headers
+                .recording_pairs()
+                .filter(|(_, value)| !crate::services::has_gateway_token(value)),
             crate::credential_guard::Options {
                 block: runtime.operator_modes.credential_block(),
             },
@@ -3446,7 +3542,9 @@ where
     let mut gateway_injected_header = None;
     let mut gateway_recording_header = None;
     let mut gateway_evidence = None;
+    let mut route_challenge_selection = None;
     let mut provider_route = None;
+    let mut docker_inspection = None;
     let gateway_trace = trace
         .as_ref()
         .and_then(|trace| trace.hook("service-gateway", "request"));
@@ -3525,7 +3623,7 @@ where
         };
         match decision {
             crate::services::GatewayDecision::PassThrough => {
-                if provider_name.is_some() {
+                if provider_name.is_some() || docker_service.is_some() {
                     let reply = gateway_response(
                         403,
                         "GATEWAY_AUTH_REQUIRED",
@@ -3551,9 +3649,48 @@ where
                 )?;
                 return Ok((prior_block(reply), "deny".into()));
             }
-            crate::services::GatewayDecision::Selected { credential } => {
+            crate::services::GatewayDecision::Selected { mut credential } => {
+                if docker_service.is_some_and(|service| service.name != credential.service) {
+                    return Ok((
+                        prior_block(gateway_response(
+                            403,
+                            "GATEWAY_DOCKER_ENDPOINT_MISMATCH",
+                            request_id,
+                            gateway_trace.as_ref(),
+                        )?),
+                        "deny".into(),
+                    ));
+                }
                 if let Some(hook) = &gateway_trace {
                     hook.evaluated("selected", None);
+                }
+                if let Some(service) = docker_service {
+                    let access = service
+                        .capabilities
+                        .get(&credential.capability)
+                        .and_then(|capability| capability.docker_access.as_ref())
+                        .ok_or("Docker access configuration unavailable")?;
+                    match access.request(
+                        request.method().as_str(),
+                        &destination.path,
+                        contract_body.as_ref().map_or(&[], |body| body.as_slice()),
+                    ) {
+                        Ok(inspection) => docker_inspection = Some((access, inspection)),
+                        Err(error) => {
+                            runtime.audit.emit(identity.request_event("gateway.docker_denied", crate::audit::Kind::Gateway,
+                                request_id, "Docker request exceeds the adopted capability",
+                                json!({"service":service.name,"reason":error.to_string(),"upstream_mutation_sent":false})))?;
+                            return Ok((
+                                prior_block(gateway_response(
+                                    403,
+                                    "GATEWAY_DOCKER_CONSTRAINT",
+                                    request_id,
+                                    gateway_trace.as_ref(),
+                                )?),
+                                "deny".into(),
+                            ));
+                        }
+                    }
                 }
                 if let Some(provider) = provider_name {
                     let caller = identity.request_agent().expect("selected gateway identity");
@@ -3582,7 +3719,150 @@ where
                     )?;
                     return Ok((prior_block(reply), "deny".into()));
                 }
-                if let Some(risky) = credential.risky_route.as_ref() {
+                if policy
+                    .gateway()
+                    .and_then(|gateway| gateway.registry())
+                    .and_then(|registry| {
+                        registry
+                            .services
+                            .get(&credential.service)
+                            .map(|service| service.effect_model.is_some())
+                    })
+                    .unwrap_or(false)
+                {
+                    let action = json!({"kind":"gateway_route","agent":credential.agent,
+                        "service":credential.service,"capability":credential.capability,"account":credential.account,
+                        "credential":credential.vault_token,"binding_id":credential.binding_id,"run":identity.current_agent_run(),
+                        "host":destination.policy_host,"scheme":destination.scheme,"port":destination.port,
+                        "method":request.method().as_str(),"path":destination.path.split('?').next().unwrap_or("/")});
+                    let assessed = crate::approvals::pending::route_challenge::assessment(
+                        &runtime, policy, &action,
+                    )?;
+                    let risk: crate::policy::Decision =
+                        serde_json::from_value(assessed["risk_policy"].clone())?;
+                    // A configured effect prohibition applies before every grant
+                    // lookup, including a request through another endpoint.
+                    if !matches!(
+                        risk.effect,
+                        crate::policy::Effect::Allow | crate::policy::Effect::Prompt
+                    ) {
+                        let mut event = identity.request_event("gateway.risky_route",crate::audit::Kind::Gateway,request_id,
+                            "Operator policy prohibits modeled service effects",json!({"service":credential.service,"method":request.method().as_str(),"path":action["path"],"assessment":assessed}));
+                        event.decision = Some(crate::audit::Decision::Deny);
+                        event.severity = crate::audit::Severity::High;
+                        runtime.audit.emit(event)?;
+                        let mut reply = gateway_response(
+                            403,
+                            "GATEWAY_RISKY_ROUTE",
+                            request_id,
+                            gateway_trace.as_ref(),
+                        )?;
+                        *reply.body_mut() = full(serde_json::to_vec(
+                            &json!({"error":"GATEWAY_RISKY_ROUTE","assessment":assessed}),
+                        )?);
+                        return Ok((prior_block(reply), "deny".into()));
+                    }
+                    let enables: Vec<String> = serde_json::from_value(assessed["enables"].clone())?;
+                    if credential.risky_route.is_none()
+                        && risk.effect == crate::policy::Effect::Prompt
+                        && risk.matched_resource.is_some()
+                    {
+                        credential.risky_route = Some(crate::services::RiskyRoute {
+                            path: action["path"].as_str().unwrap_or("/").into(),
+                            methods: vec![request.method().as_str().into()],
+                            description:
+                                "Prepared service effects require approval under operator policy."
+                                    .into(),
+                            tactics: Vec::new(),
+                            enables: Vec::new(),
+                            irreversible: false,
+                            group: None,
+                        });
+                    }
+                    if let Some(route) = &mut credential.risky_route {
+                        route.enables.extend(enables);
+                        route.enables.sort();
+                        route.enables.dedup();
+                    }
+                }
+                if credential.missing_route_allow {
+                    let Some(run) = identity
+                        .current_agent_run()
+                        .filter(|run| run.current(policy))
+                    else {
+                        return Ok((
+                            prior_block(gateway_response(
+                                403,
+                                "ROUTE_DENIED",
+                                request_id,
+                                gateway_trace.as_ref(),
+                            )?),
+                            "deny".into(),
+                        ));
+                    };
+                    if let Some(risky) = &credential.risky_route {
+                        let risk = policy.evaluate_risky_route(crate::policy::RiskyRouteRequest {
+                            service: &credential.service,
+                            agent: &run.agent,
+                            account: &credential.account,
+                            tactics: &risky.tactics,
+                            enables: &risky.enables,
+                            irreversible: risky.irreversible,
+                            method: request.method().as_str(),
+                            path: destination.path.split('?').next().unwrap_or("/"),
+                        });
+                        if !matches!(
+                            risk.effect,
+                            crate::policy::Effect::Allow | crate::policy::Effect::Prompt
+                        ) {
+                            return Ok((
+                                prior_block(gateway_response(
+                                    403,
+                                    "GATEWAY_RISKY_ROUTE",
+                                    request_id,
+                                    gateway_trace.as_ref(),
+                                )?),
+                                "deny".into(),
+                            ));
+                        }
+                    }
+                    grant_lease = crate::approvals::pending::route_challenge::grant(
+                        &runtime,
+                        run,
+                        &credential,
+                        crate::policy::NetworkRequest {
+                            agent: Some(&run.agent),
+                            host: &destination.policy_host,
+                            port: Some(destination.port),
+                            method: request.method().as_str(),
+                            path: &destination.path,
+                        },
+                        &destination.scheme,
+                    )?;
+                    if grant_lease.is_none() {
+                        route_challenge_selection = Some(credential.clone());
+                    } else {
+                        runtime.audit.emit(identity.request_event("gateway.route_exception_used", crate::audit::Kind::Gateway, request_id,
+                            "Explicit retry uses a temporary service route permission", json!({"grant_id":grant_lease.as_ref().map(|lease| &lease.grant().grant_id),"method":request.method().as_str(),"path":destination.path.split('?').next().unwrap_or("/")})))?;
+                        credential.authorization_binding = grant_lease
+                            .as_ref()
+                            .and_then(|lease| lease.grant().delegated.as_deref())
+                            .and_then(|encoded| {
+                                serde_json::from_str::<crate::policy::delegation::IssuedAccess>(
+                                    encoded,
+                                )
+                                .ok()
+                            })
+                            .and_then(|issued| {
+                                issued.action["credential_binding"]
+                                    .as_str()
+                                    .map(str::to_owned)
+                            });
+                    }
+                }
+                if !credential.missing_route_allow
+                    && let Some(risky) = credential.risky_route.as_ref()
+                {
                     let risky_path = destination.path.split('?').next().unwrap_or("/");
                     let mut granted = None;
                     if let Some(store) = runtime.gateway_grants.as_ref() {
@@ -3739,12 +4019,15 @@ where
                 // atomic refresh publication still fail closed on a visible
                 // replacement.
                 let loaded = if credential.auth_kind.is_some() {
-                    runtime.gateway_vault.load_async().await?
+                    runtime.gateway_vault.load_for_injection().await?
                 } else {
-                    None
+                    Err(crate::credential_injection::VaultUnavailable::Unavailable)
                 };
-                let vault = loaded.as_ref().map(|loaded| &loaded.vault);
-                if let Some(vault) = vault {
+                let vault = loaded
+                    .as_ref()
+                    .map(|loaded| &loaded.vault)
+                    .map_err(|reason| *reason);
+                if let Ok(vault) = vault {
                     let _ = vault.reload_if_changed();
                 }
                 let selected_model_request = crate::prompt_injection::is_claude_messages(
@@ -3794,7 +4077,7 @@ where
                         crate::credential_injection::Start::Refresh(pending) => {
                             resolve_refresh(
                                 &runtime,
-                                loaded.as_ref().map(|loaded| &loaded.oauth),
+                                loaded.as_ref().ok().map(|loaded| &loaded.oauth),
                                 identity,
                                 request_id,
                                 &upgrades,
@@ -4096,6 +4379,36 @@ where
             return Ok((prior_block(blocked), "deny".into()));
         }
     }
+    if let Some(selection) = route_challenge_selection {
+        if let Some(hook) = &gateway_trace {
+            hook.evaluated("challenged", None);
+        }
+        let run = identity
+            .current_agent_run()
+            .ok_or("current agent run unavailable")?;
+        let challenge = crate::approvals::pending::route_challenge::observe(
+            &runtime,
+            run,
+            &selection,
+            crate::policy::NetworkRequest {
+                agent: Some(&run.agent),
+                host: &destination.policy_host,
+                port: Some(destination.port),
+                method: request.method().as_str(),
+                path: &destination.path,
+            },
+            &destination.scheme,
+            request_id,
+        )
+        .await?;
+        let reply = Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-blocked-by", "service-gateway")
+            .header("x-safeyolo-request-id", request_id)
+            .body(full(challenge.to_string()))?;
+        return Ok((prior_block(reply), "route_challenge".into()));
+    }
     if let Some(evidence) = gateway_evidence {
         publish_gateway_evidence(&runtime, identity, request_id, &evidence)?;
     }
@@ -4221,6 +4534,9 @@ where
         }
         return Ok((reply, decision.decision));
     }
+    let docker_upgrade = hygiene
+        .docker_stream
+        .then(|| hyper::upgrade::on(&mut request));
     let websocket = if hygiene.websocket {
         if !allow_upgrades {
             return Ok((
@@ -4259,6 +4575,13 @@ where
         request
             .headers_mut()
             .insert(header::UPGRADE, "websocket".parse()?);
+    } else if docker_upgrade.is_some() {
+        request
+            .headers_mut()
+            .insert(header::CONNECTION, "Upgrade".parse()?);
+        request
+            .headers_mut()
+            .insert(header::UPGRADE, "tcp".parse()?);
     }
     for name in ["x-safeyolo-request-id", "x-safeyolo-trace"] {
         request.headers_mut().remove(name);
@@ -4294,6 +4617,122 @@ where
         request_id,
     };
     let provider = provider_route.as_ref().map(|(name, _, _)| name.as_str());
+    let mut docker_forward_path = None;
+    let mut docker_project = None;
+    if let Some((access, mut inspection)) = docker_inspection {
+        let endpoint = docker_service
+            .expect("Docker service")
+            .docker
+            .as_ref()
+            .expect("Docker endpoint");
+        let mut project = docker::ProjectRequest::open(
+            &runtime,
+            access,
+            &endpoint.uri.to_string(),
+            request.method().as_str(),
+            &destination.path,
+        )
+        .await?;
+        let result = docker::inspect(
+            &runtime,
+            &allowed,
+            provider,
+            access,
+            &mut inspection,
+            request.headers(),
+        )
+        .await;
+        let result = match result {
+            Ok(()) => {
+                if let Some(project) = project.as_mut() {
+                    project
+                        .prepare(
+                            &runtime,
+                            &allowed,
+                            provider,
+                            request.headers(),
+                            &inspection,
+                            contract_body.as_ref().map_or(&[], |body| body.as_slice()),
+                        )
+                        .await
+                        .map(|(path, body)| {
+                            docker_forward_path = Some(path);
+                            if let Some(body) = body {
+                                request.headers_mut().insert(
+                                    header::CONTENT_LENGTH,
+                                    body.len().to_string().parse().expect("body length"),
+                                );
+                                request.headers_mut().remove(header::TRANSFER_ENCODING);
+                                request.headers_mut().remove(header::TRAILER);
+                                *request.body_mut() = full(Bytes::from(body));
+                            }
+                        })
+                } else {
+                    Ok(())
+                }
+            }
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result {
+            runtime.audit.emit(identity.request_event(
+                "gateway.docker_denied",
+                crate::audit::Kind::Gateway,
+                request_id,
+                "Docker resource inspection refused the operation",
+                json!({"reason":error.to_string(),"upstream_mutation_sent":false}),
+            ))?;
+            return Ok((
+                prior_block(gateway_response(
+                    if project
+                        .as_ref()
+                        .is_some_and(|p| p.membership.state.pending.is_some())
+                    {
+                        503
+                    } else if project.is_some()
+                        || inspection.missing_target(request.method().as_str(), &destination.path)
+                    {
+                        404
+                    } else {
+                        403
+                    },
+                    if project
+                        .as_ref()
+                        .is_some_and(|p| p.membership.state.pending.is_some())
+                    {
+                        "GATEWAY_DOCKER_RECONCILIATION_REQUIRED"
+                    } else if project.is_some() {
+                        "GATEWAY_DOCKER_PROJECT_RESOURCE"
+                    } else if inspection
+                        .missing_target(request.method().as_str(), &destination.path)
+                    {
+                        "GATEWAY_DOCKER_RESOURCE_NOT_FOUND"
+                    } else {
+                        "GATEWAY_DOCKER_RESOURCE_CONSTRAINT"
+                    },
+                    request_id,
+                    gateway_trace.as_ref(),
+                )?),
+                "deny".into(),
+            ));
+        }
+        if docker_forward_path.is_none()
+            && let Some(id) = inspection.container_id
+        {
+            // Resolve the user's existing name, then address that immutable
+            // container. A concurrent rename/recreation cannot swap the target.
+            let path = request.uri().path();
+            let prefix = "/v1.45/containers/";
+            if let Some(rest) = path.strip_prefix(prefix) {
+                let suffix = rest.find('/').map_or("", |index| &rest[index..]);
+                let query = request
+                    .uri()
+                    .query()
+                    .map_or(String::new(), |q| format!("?{q}"));
+                docker_forward_path = Some(format!("{prefix}{id}{suffix}{query}"));
+            }
+        }
+        docker_project = project;
+    }
     let outbound = if client_version == hyper::Version::HTTP_2
         && let Some(tunnel) = tunnel
     {
@@ -4329,11 +4768,15 @@ where
         "associated",
         json!({"upstream": outbound.observation().snapshot()}),
     );
+    let mut forwarding_destination = destination.clone();
+    if let Some(path) = docker_forward_path {
+        forwarding_destination.path = path;
+    }
     *request.uri_mut() = request_uri(
-        destination,
+        &forwarding_destination,
         &format!(
             "{}://{}{}",
-            destination.scheme, destination.uri_authority, destination.path
+            destination.scheme, destination.uri_authority, forwarding_destination.path
         ),
         outbound_http2,
         outbound.h1_request_form(),
@@ -4385,6 +4828,15 @@ where
         None
     };
     request.extensions_mut().insert(recording.clone());
+    if let Some(service) = docker_service {
+        let method = request.method().as_str().to_owned();
+        request.extensions_mut().insert(docker::Operation {
+            service: service.name.clone(),
+            method,
+            path: destination.path.split('?').next().unwrap_or("/").into(),
+        });
+    }
+    let forward_headers = docker_project.as_ref().map(|_| request.headers().clone());
     let completion = circuit_completion::Completion::register(
         &mut request,
         outbound_http2,
@@ -4504,6 +4956,26 @@ where
             .insert("x-safeyolo-evidence-error", "true".parse()?);
     }
     if upstream.status() == StatusCode::SWITCHING_PROTOCOLS {
+        if let Some(client_upgrade) = docker_upgrade {
+            if let Some(project) = docker_project.take() {
+                project.switched(&mut upstream)?;
+            }
+            return docker::upgrade(
+                runtime.clone(),
+                upgrades,
+                identity,
+                request_id,
+                docker_service
+                    .expect("admitted Docker upgrade")
+                    .name
+                    .clone(),
+                destination,
+                upstream,
+                client_upgrade,
+                connection,
+                decision.decision,
+            );
+        }
         let reject_upgrade = |error: Error| {
             if let Some(live) = &live {
                 live.websocket_rejected(&error.to_string());
@@ -4585,6 +5057,33 @@ where
             decision.decision,
         ));
     }
+    let upstream = if let Some(project) = docker_project {
+        match project
+            .response(
+                &runtime,
+                &allowed,
+                provider,
+                forward_headers.as_ref().expect("project headers"),
+                upstream,
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(_) => {
+                return Ok((
+                    gateway_response(
+                        503,
+                        "GATEWAY_DOCKER_OUTCOME_UNKNOWN",
+                        request_id,
+                        gateway_trace.as_ref(),
+                    )?,
+                    "unknown".into(),
+                ));
+            }
+        }
+    } else {
+        upstream.map(|body| body.map_err(|error| Box::new(error) as Error).boxed())
+    };
     let response_scan = match inspection_options(&runtime, identity, &destination.policy_host) {
         Ok(options)
             if runtime
@@ -4931,6 +5430,9 @@ pub(crate) fn serve_request(
     Box::pin(async move {
         let runtime = state.read().expect("runtime read lock").clone();
         let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
+        let docker_selected = request
+            .headers()
+            .contains_key(crate::services::docker::SERVICE_HEADER);
         if identity.request_agent().is_none() {
             let mut event = identity.request_event(
                 "security.agent_identity_unavailable",
@@ -4943,7 +5445,11 @@ pub(crate) fn serve_request(
             event.severity = crate::audit::Severity::Medium;
             event.decision = Some(crate::audit::Decision::Log);
             if runtime.audit.emit(event).is_err() {
-                return Ok(response(StatusCode::BAD_GATEWAY, "Proxy request failed"));
+                let mut reply = response(StatusCode::BAD_GATEWAY, "Proxy request failed");
+                if docker_selected {
+                    docker::client_error(&mut reply).await;
+                }
+                return Ok(reply);
             }
         }
         if let Some(connection) = upgrades.ingress.get() {
@@ -4983,36 +5489,42 @@ pub(crate) fn serve_request(
         );
         recording.observe_connections(&runtime);
         let _pending_recording = recording.pending();
-        let destination =
-            Destination::from_request(&request, tunnel.as_ref().map(|tunnel| &tunnel.destination))
-                .and_then(|mut destination| {
-                    if let Err(error) =
-                        selected_ip::apply_mapping(&mut destination, &runtime, &identity)
-                    {
-                        selected_ip::record(
-                            &runtime,
-                            &identity,
-                            &request_id,
-                            &destination,
-                            "target_selection",
-                            "failed",
-                            json!({"reason": error.to_string(), "outbound": "not_attempted"}),
-                        );
-                        return Err(error);
-                    }
-                    if destination.selected_ip.is_some() {
-                        selected_ip::record(
-                            &runtime,
-                            &identity,
-                            &request_id,
-                            &destination,
-                            "target_selection",
-                            "pending_policy",
-                            json!({"outbound": "not_attempted"}),
-                        );
-                    }
-                    Ok(destination)
-                });
+        let destination = Destination::docker_request(&request, &runtime, tunnel.is_some())
+            .and_then(|selected| match selected {
+                Some(destination) => Ok(destination),
+                None => Destination::from_request(
+                    &request,
+                    tunnel.as_ref().map(|tunnel| &tunnel.destination),
+                ),
+            })
+            .and_then(|mut destination| {
+                if let Err(error) =
+                    selected_ip::apply_mapping(&mut destination, &runtime, &identity)
+                {
+                    selected_ip::record(
+                        &runtime,
+                        &identity,
+                        &request_id,
+                        &destination,
+                        "target_selection",
+                        "failed",
+                        json!({"reason": error.to_string(), "outbound": "not_attempted"}),
+                    );
+                    return Err(error);
+                }
+                if destination.selected_ip.is_some() {
+                    selected_ip::record(
+                        &runtime,
+                        &identity,
+                        &request_id,
+                        &destination,
+                        "target_selection",
+                        "pending_policy",
+                        json!({"outbound": "not_attempted"}),
+                    );
+                }
+                Ok(destination)
+            });
         // A physical connection can carry unrelated requests. Link only the
         // requests parsed inside this selected-IP CONNECT, including refusals.
         let connect_link_failed = tunnel
@@ -5078,6 +5590,17 @@ pub(crate) fn serve_request(
                     destination.port,
                 ))
             });
+        let docker_request = docker_selected
+            || destination.as_ref().is_ok_and(|destination| {
+                runtime
+                    .policy
+                    .as_deref()
+                    .and_then(crate::policy::Policy::gateway)
+                    .and_then(|gateway| {
+                        gateway.docker_for_endpoint(&destination.host, destination.port)
+                    })
+                    .is_some()
+            });
         let result = match &destination {
             Ok(destination) => {
                 forward(
@@ -5095,6 +5618,10 @@ pub(crate) fn serve_request(
                     trace.clone(),
                 )
                 .await
+            }
+            Err(error) if error.is::<docker::RouteError>() => {
+                gateway_response(403, "GATEWAY_DOCKER_SERVICE_INVALID", &request_id, None)
+                    .map(|reply| (prior_block(reply), "deny".into()))
             }
             Err(_) => Ok((
                 response(StatusCode::BAD_REQUEST, "Invalid request authority"),
@@ -5132,6 +5659,9 @@ pub(crate) fn serve_request(
                 "error".into(),
             )
         });
+        if docker_request {
+            docker::client_error(&mut reply).await;
+        }
         // Hyper's HTTP/2 server can send DATA for a HEAD response. Local
         // refusals must end after the headers, while keeping their decision
         // and response metadata. Upstream HEAD completion keeps its own owner.

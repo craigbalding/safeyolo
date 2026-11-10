@@ -10,6 +10,45 @@ design and troubleshooting copilot, not a new controller, runner, queue, or
 workflow engine. The factory TOML, role contracts, approved snapshot, Coord
 state, and supervisors remain authoritative.
 
+For native output publication, the producing worker retains its immutable
+artifact first, then calls `publish_work_output` with current work version,
+claim generation and target generation. Retry an interrupted publication with
+the exact original operation ID and inputs. Read current work separately from
+the recovered receipt. Cancellation and reassignment can reject an uncommitted
+stale publication; they do not remove the external artifact or stop an external
+effect. Producer identity comes from the authenticated route and cannot be
+supplied by a bridge. Native publication does not yet replace the supervisor's
+declared message handoffs or establish acceptance from attestation counts.
+
+`request_check` and `raise_challenge` return ordinary work IDs with exact
+subjects and named participants. The assigned participant claims that work.
+`answer_check` records and settles a check; corrections preserve earlier answers
+on the same work ID. `respond_challenge` completes response work while leaving
+the challenge unresolved. Only named deciding participants or the operator can
+call `resolve_challenge`, subject to the selected independence flag and current
+work/response expectations. Read `list_work_reviews` and immutable `read_work`
+versions for current obligations and history. Checks and challenges remain
+advisory unless selected in native acceptance requirements.
+
+The work creator or operator can select native acceptance context with
+`set_work_requirements`. Later amendments require a recorded authority or the
+operator; ownership and production alone grant no policy authority. An explicit
+authorized delegation can name a worker. Selected checks and challenges govern
+`decide_work_acceptance`.
+Only named deciders may decide, and approval validates the exact current output
+and required review outcomes atomically. Read `acceptance_status` for pending
+obligations, stale approvals and conflicting decisions. Execution completion
+and check conclusions remain separate from output acceptance. An approved
+Factory's `[work]` selects creator and policy authority roles, deciders,
+independence and required check templates. Create Work with its exact approved
+`{name,snapshot_id}` reference. Publication atomically creates exact-output
+checks and selects their requirements. Later Factory approval does not alter
+that retained policy. Native participant actions use the existing supervisor;
+no duplicate message workflow is needed for native assignments. Explicit
+message assignments retain their declared replies. Keep interactive workers
+outside the supervised roles, with their own authenticated client and room
+access. Do not change a running Factory merely to exercise this path.
+
 ## Route the request
 
 - For a new factory or substantial redesign, read

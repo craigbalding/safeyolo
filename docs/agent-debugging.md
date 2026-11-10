@@ -32,6 +32,19 @@ repair that run. Follow the diagnostic's `next_action` and the applicable shell
 hop below. On Linux, shell execution needs the recorded runsc namespaces. On
 macOS, the shell probe checks the host Unix socket and guest SSH banner.
 
+Choose the diagnostic for the question, using the selected instance's executable
+and `--root ROOT` or `--config FILE` before the command:
+
+| Command | What it establishes | Probes and next action |
+| --- | --- | --- |
+| `agent diagnostics NAME` | Independent runtime/control observations, recorded coding-agent launch, terminal and proxy attachment. | Probes runtime/control; on macOS also checks the private control and shell path. Follow this agent's `next_action`. |
+| `doctor` | Runtime dimensions, host prerequisites where applicable, and a controlled request through each configured agent policy pipeline. | Sends diagnostic requests. Repair the named prerequisite or failed control and repeat. It does not prove coding-agent readiness. |
+| `diagnose --agent NAME` | Saved policy validity, current Admin policy availability and saved/active agreement, audit location and last recorded launch. | Reads files and Admin state; sends no test traffic. Repair the reported mismatch or connection, or use local logs when Admin state is unavailable. |
+
+`status`, `diagnose` and `agent diagnostics` include qualified diagnostic commands.
+The normal `inspect` navigation also offers `diagnostics` and `doctor` for the
+selected context. Each command retains its existing structured result and effects.
+
 For a running guest with idle command supervision, use
 `safeyolo --root ROOT agent recover NAME` to check guest health without SSH.
 The [shared-home recovery procedure](#probe-the-guest-through-pid-1-when-ssh-is-unavailable)
@@ -57,13 +70,19 @@ So the default posture is:
    agent's own uid started, regardless of parent relationship. No sudo
    dance, no capability discovery, no operator ticket.
 
-2. **Cross-boundary debugging is out of scope.** The agent cannot address
-   host PIDs, cannot read host `/proc`, cannot enter another agent's
-   sandbox, cannot install a host-side tracer against a guest PID, and
-   should not ask the operator to do any of those things on its behalf.
+2. **Host-boundary debugging is out of scope.** The agent cannot address
+   host PIDs, cannot read host `/proc`, and cannot install a host-side tracer
+   against a guest PID. The agent should not ask the operator to do any of
+   those things on its behalf.
    That last one — "please attach a debugger from the host side" — is
    boundary erosion masquerading as delegation, and SafeYolo exists to
    prevent it.
+
+   Peers remain isolated by default. An operator can explicitly grant
+   [local peer support](peer-support.md) to durable support and target
+   identities. The support agent then uses authenticated, scoped operations
+   that execute inside the target sandbox. This exception grants no host
+   debugger, host socket or arbitrary host execution.
 
 3. **Kernel-observability tooling is not a promise the sandbox makes.**
    `perf record`, `bpftrace`, ftrace, kprobes and uprobes need real
@@ -182,10 +201,10 @@ strace -f -o /tmp/tr.log ./my_worker
 - **Kernel-side observability.** No agent-facing `perf record`, no
   `bpftrace`, no ftrace, no kprobe/uprobe. If the triage requires these,
   reproduce the workload against a real-kernel microVM outside SafeYolo.
-- **Cross-agent debugging.** Each agent's sandbox is opaque to every
-  other agent. There is no "attach to that other agent's Python for me"
-  facility and there will not be one — that is a trust-domain boundary
-  by design.
+- **Undelegated cross-agent debugging.** Peers are isolated by default.
+  Only an explicit operator-owned [support grant](peer-support.md) permits
+  selected inspection, guest administration or lifecycle actions. A shared
+  room or factory membership grants none of that authority.
 - **Host-side debugging on the agent's behalf.** Do not ask the operator
   to attach a debugger from the host, run a host-side tracer against a
   guest PID, or move a target process out of the sandbox. When no
@@ -196,6 +215,52 @@ strace -f -o /tmp/tr.log ./my_worker
   the bounding set and reaches an elevated process only through
   `setpriv --reuid=0`. Weakening this so the agent uid holds it
   directly is not on the roadmap.
+
+## Guest wall time
+
+On macOS, guest init runs the native guest helper's `clock-sync` operation
+before guest schedulers, agent hooks and commands. Static init stages this
+helper and the per-run script in tmpfs before the snapshot gate. The helper
+reads the virtual real-time clock (RTC) at `/sys/class/rtc/rtc0/since_epoch`.
+It checks that the RTC advances
+across two reads before using the sample. The initial check waits 1.1 seconds
+for an RTC tick. A failed check reports the failure and lets startup continue.
+A guest-root child repeats the check, with five seconds between attempts,
+throughout the VZ session. Linux/gVisor keeps its existing host-tracked clock;
+it starts no clock correction child and receives no host clock capability.
+
+The helper steps the guest wall clock forward or backward when the measured
+difference exceeds one second. The RTC reports whole seconds. The helper checks
+the result and reports a failure if the remaining difference exceeds two seconds.
+The tick check detects a frozen RTC. It cannot detect an advancing RTC that
+has a constant offset from the host.
+Host wall time remains the reference; this is not an independent UTC guarantee.
+TLS certificate verification stays enabled. Clock repair uses no external time
+endpoint and does not depend on cron.
+
+Clock corrections, failures and recovery appear in the existing guest boot or
+console log with the prefix `[guest-clock]`. The current result is also available
+in `/run/safeyolo/clock.json` inside the guest. It includes the source, measured
+offset when available, failure reason and last successful correction time.
+A frozen or unavailable RTC and a denied guest clock adjustment are failures.
+The periodic check retries and reports recovery when the source or permission
+returns. Repeated identical failures do not fill the console log. Guest-root
+processes can still alter guest clocks and diagnostic files. Host audit
+timestamps remain authoritative.
+
+Install the updated guest command assets through the normal package and guest
+update path. Stop and start each existing VZ agent to stage the helper and init
+scripts. A running guest does not acquire the new child until restart. The
+default VZ kernel already exposes the RTC, so this change needs no rootfs
+rebuild. A custom kernel must expose `rtc0` through sysfs. Recreate any manually
+managed snapshot made before the update; its saved init script and helper
+remain old. Guest image publication and promotion retain their existing controls.
+
+Forward steps can skip wall-clock deadlines. Backward steps can repeat a
+wall-clock interval. Snapshot restore also rolls back guest state. Guest
+schedulers must define their own handling of these cases; clock correction
+does not promise exactly-once job execution. The combined clock and scheduler
+test remains part of [the guest scheduling issue](https://github.com/craigbalding/safeyolo/issues/774).
 
 ## Failure triage
 

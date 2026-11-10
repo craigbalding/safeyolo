@@ -150,21 +150,22 @@ names supplied proof, or is null when the sections ran in this attempt.
 newest guest or establish automatic selection or installed behavior for another
 source revision. Failed readiness and cleanup remain failed attempts.
 
-For a default-branch merge, use `merge --source-revision FULL_MERGED_SHA` instead
-of `nightly`. The selected host package must match that exact source. If its
-production artifact is unavailable, the attempt fails before provisioning.
+For a default-branch merge, use `merge` with both
+`--source-revision FULL_MERGED_SHA` and `--host-run MATCHING_PRODUCTION_RUN`.
+The selected host package must match that exact source. If its production
+artifact is unavailable, the attempt fails before provisioning.
 The caller never builds a substitute or uses an older source as merge proof.
 Pull-request triggers and other branch refs cannot admit the Claude section.
 
-Deploy this command through the existing Rundeck `acceptance` project API 59
-`run/script` interface and its retained `ssh_exec.sh` wrapper on the owned
-Ubuntu host. Sylab supplies the protected controller, host provisioning helper,
-credential name, private attempt parent and trusted nightly/manual/default-
-branch merge bindings. Preserve the wrapper's decoded guest exit and returned
-standard output. Worker access to Rundeck and provider secrets in GitHub Actions
-are unnecessary. The existing Actions blackbox jobs and PR checks remain
-credential-free. This command is the deployment entry point; source availability
-does not establish that those trigger bindings are installed.
+Use the [event installation and invocation](CLAUDE-EVENTS.md) for the concrete
+Rundeck job, current controller inputs and recovery procedure. The existing
+GitHub nightly/manual controls and successful default-branch push checks emit
+nonsecret requests. The trusted account invokes this caller through
+`ssh_exec.sh`, then returns its original `result.json` through `ssh_fetch.sh`,
+including a completed failing caller. Sylab installs the reviewed entry and
+private host bindings. Source availability does not establish installed triggers
+or an actual automatic run. GitHub Actions and PR checks receive no provider
+credentials or Rundeck access.
 
 The command returns the actual failing command exit, or zero after the smoke
 and its cleanup succeed. Standard output and `result.json` contain the same

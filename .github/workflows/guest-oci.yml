@@ -63,6 +63,7 @@ jobs:
       - id: inputs
         name: Freeze common stable inputs for both architectures
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           python3 guest/resolve_inputs.py resolve --base --output "$RUNNER_TEMP/inputs.json"

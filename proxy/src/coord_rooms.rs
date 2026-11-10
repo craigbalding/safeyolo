@@ -13,6 +13,7 @@ use std::{
 };
 
 const NATS_VERSION: &str = "2.14.5";
+pub(crate) const SCHEMA_VERSION: u32 = 12;
 pub(crate) const COLLABORATION_MAX_ENVELOPE_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) mod brief;
 mod inventory;
@@ -39,6 +40,71 @@ fn directory(root: &Path) -> Result<PathBuf, Error> {
         .ok_or("data directory is missing")?
         .join("coord"))
 }
+
+/// Exercise the prior writer on a private snapshot, keeping schema changes
+/// serialized with bootstrap until the caller has changed component selection.
+pub(crate) fn check_rollback_store(root: &Path, prior: &Path) -> Result<fs::File, Error> {
+    let data = directory(root)?;
+    let lock = crate::host_platform::lock_host_state(&data.join("bootstrap.lock"))?;
+    let store = data.join("v0.db");
+    match fs::symlink_metadata(&store) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(lock),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+    let check = || -> Result<(), Error> {
+        let snapshot = tempfile::Builder::new()
+            .prefix("rollback-coord-")
+            .tempdir_in(root)?;
+        let snapshot_data = snapshot.path().join("data/coord");
+        fs::create_dir_all(&snapshot_data)?;
+        // Configuration was already checked by the prior CLI. Give its Coord
+        // command only private default paths; never point it at live state.
+        fs::write(snapshot.path().join("config.toml"), "")?;
+        fs::copy(
+            root.join("data/instance_id"),
+            snapshot.path().join("data/instance_id"),
+        )?;
+        let connection =
+            Connection::open_with_flags(&store, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        // SQLite includes committed WAL contents in this consistent snapshot.
+        // Copying v0.db alone could miss the schema fence or retained work.
+        connection.execute(
+            "VACUUM main INTO ?1",
+            [snapshot_data
+                .join("v0.db")
+                .to_str()
+                .ok_or("Coord snapshot path must be UTF-8")?],
+        )?;
+        let output = std::process::Command::new(prior)
+            .arg("--root")
+            .arg(snapshot.path())
+            .args(["coord", "room", "list"])
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "previous host Coord check failed ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(4096)]),
+            )
+            .into());
+        }
+        let result: Value = serde_json::from_slice(&output.stdout)?;
+        if !result["rooms"].is_array() {
+            return Err("previous host did not return a Coord room list".into());
+        }
+        Ok(())
+    };
+    check().map_err(|error| -> Error {
+        format!(
+            "rollback refused before changing selection for {}: {error}. The selected pair and retained state are unchanged. Keep the selected host and Coord store at {}; if stopped, restart this instance with {} --root {} start, or select a newer compatible host bundle",
+            root.display(), store.display(), root.join("bin/safeyolo").display(), root.display(),
+        ).into()
+    })?;
+    Ok(lock)
+}
+
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -68,15 +134,55 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
         }
         transaction.execute_batch(include_str!("coord_schema.sql"))?;
         transaction.execute("INSERT INTO instance(id) VALUES (?1)", [id.trim()])?;
-    } else if version != 5 {
-        return Err(
-            format!("Coord schema {version} is not operational; expected version 5").into(),
-        );
+    } else if ![5, 6, 7, 8, 9, 10, 11, SCHEMA_VERSION].contains(&version) {
+        return Err(format!(
+            "Coord schema {version} is not operational; expected version {SCHEMA_VERSION}"
+        )
+        .into());
     }
     transaction.execute_batch(include_str!("coord_work_schema.sql"))?;
+    if version == 5 {
+        transaction.execute_batch(include_str!("coord_work_upgrade_6.sql"))?;
+    }
     transaction.execute_batch(include_str!("coord_signal_schema.sql"))?;
+    transaction.execute_batch(include_str!("coord_operational_schema.sql"))?;
+    if (5..=10).contains(&version) {
+        transaction.execute_batch(
+            "ALTER TABLE coord_outbox ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
     transaction.execute_batch(include_str!("coord_federation_schema.sql"))?;
+    if !transaction
+        .prepare("PRAGMA table_info(coord_federation_homes)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .any(|name| name == "mode")
+    {
+        transaction.execute_batch(
+            "ALTER TABLE coord_federation_homes ADD COLUMN mode TEXT NOT NULL DEFAULT 'tls';
+            ALTER TABLE coord_federation_homes ADD COLUMN tailscale_node TEXT;
+            ALTER TABLE coord_federation_homes ADD COLUMN trust_hash TEXT;",
+        )?;
+        let previous = transaction
+            .prepare("SELECT name,ca_file FROM coord_federation_homes")?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        for (name, ca) in previous {
+            if let Ok(trust_hash) = federation::tls_material::trust_hash(Path::new(&ca)) {
+                transaction.execute(
+                    "UPDATE coord_federation_homes SET trust_hash=?2 WHERE name=?1",
+                    params![name, trust_hash],
+                )?;
+            }
+        }
+    }
     transaction.execute_batch(include_str!("coord_membership_grants.sql"))?;
+    // Earlier writers drop assignment and selected authority on rewrite.
+    // Fence them before accepting work with that authority context.
+    transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     let stored: String = transaction.query_row("SELECT id FROM instance", [], |row| row.get(0))?;
     if stored != id.trim() {
         return Err("Coord identity differs from this SafeYolo instance; preserve the store and select its owning root".into());
@@ -103,7 +209,9 @@ fn open_with_flags(root: &Path, flags: rusqlite::OpenFlags) -> Result<Connection
     let connection = Connection::open_with_flags(directory(root)?.join("v0.db"), flags)?;
     connection.busy_timeout(Duration::from_secs(5))?;
     connection.execute_batch("PRAGMA foreign_keys=ON;")?;
-    if connection.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))? != 5 {
+    if connection.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))?
+        != SCHEMA_VERSION
+    {
         return Err("Coord store is not operational".into());
     }
     Ok(connection)
@@ -277,6 +385,10 @@ fn stop_owned(pid: i32, token: &str) -> Result<(), Error> {
 }
 
 async fn monitor(port: u16) -> Result<Value, Error> {
+    monitor_path(port, "/varz").await
+}
+
+async fn monitor_path(port: u16, path: &str) -> Result<Value, Error> {
     let stream = tokio::time::timeout(
         Duration::from_secs(1),
         tokio::net::TcpStream::connect(("127.0.0.1", port)),
@@ -285,7 +397,7 @@ async fn monitor(port: u16) -> Result<Value, Error> {
     crate::native_client::send_json(
         stream,
         &format!("127.0.0.1:{port}"),
-        "/varz",
+        path,
         "",
         hyper::Method::GET,
         Value::Null,
@@ -383,6 +495,11 @@ pub async fn start(
                 )
                 .into());
             }
+            let mut saved = saved;
+            let active =
+                federation::configuration::configuration_active(root, &saved).unwrap_or(false);
+            saved["configuration_active"] = json!(active);
+            saved["restart_required"] = json!(!active);
             return Ok(saved);
         }
         return Err("a recorded NATS process is live but ownership is unverified; preserve it and inspect coord status before restarting".into());
@@ -409,10 +526,46 @@ pub async fn start(
         return Err("NATS credential file is empty".into());
     }
     let server_name = format!("safeyolo-{}", uuid::Uuid::new_v4().simple());
+    let federation = federation::nats::broker(root)?;
+    if let Some(setup) = &federation {
+        setup.verify_listener().await?;
+    }
+    let protection_check = federation
+        .as_ref()
+        .map(|setup| setup.validate(root))
+        .transpose()?;
+    let owner_credentials = nats.join("federation-creds");
+    if federation.is_some() && !owner_credentials.exists() {
+        atomic_write(
+            &owner_credentials,
+            format!(
+                "{}{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            )
+            .as_bytes(),
+            0o600,
+        )?;
+    }
+    let owner_password = zeroize::Zeroizing::new(if federation.is_some() {
+        fs::read_to_string(&owner_credentials)?
+    } else {
+        String::new()
+    });
+    let instance = fs::read_to_string(root.join("data/instance_id"))?;
+    let (authorization, transport_peers) = federation::nats::server_config(
+        federation.as_ref(),
+        instance.trim(),
+        password.trim(),
+        owner_password.trim(),
+    )?;
+    let listen = federation
+        .as_ref()
+        .map_or_else(|| "127.0.0.1".to_owned(), |setup| setup.listen.to_string());
     let jetstream = nats.join("jetstream");
     fs::create_dir_all(&jetstream)?;
     let config = nats.join("server.conf");
-    atomic_write(&config,format!("host: 127.0.0.1\nport: {selected_client}\nhttp: 127.0.0.1:{selected_monitor}\nserver_name: {server_name}\nmax_payload: {COLLABORATION_MAX_ENVELOPE_BYTES}\nports_file_dir: {}\nauthorization {{ user: safeyolo, password: {} }}\njetstream {{ store_dir: {}, max_file_store: 1073741824 }}\n",serde_json::to_string(&nats.to_string_lossy())?,serde_json::to_string(password.trim())?,serde_json::to_string(&jetstream.to_string_lossy())?).as_bytes(),0o600)?;
+    atomic_write(&config,format!("host: {}\nport: {selected_client}\nhttp: 127.0.0.1:{selected_monitor}\nserver_name: {server_name}\nmax_payload: {COLLABORATION_MAX_ENVELOPE_BYTES}\nports_file_dir: {}\n{authorization}jetstream {{ store_dir: {}, max_file_store: 1073741824 }}\n",serde_json::to_string(&listen)?,serde_json::to_string(&nats.to_string_lossy())?,serde_json::to_string(&jetstream.to_string_lossy())?).as_bytes(),0o600)?;
     let log = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -433,6 +586,7 @@ pub async fn start(
             Ok(())
         });
     }
+    federation::nats::upgrade_local_store(&jetstream)?;
     let mut child = command.spawn()?;
     let pid = child.id().ok_or("NATS has no PID")?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
@@ -444,7 +598,9 @@ pub async fn start(
             if let Ok((client, monitor_port)) = observed_ports(&nats, pid) {
                 let token = crate::host_lifecycle::process_token(i64::from(pid))
                     .ok_or("NATS process identity is unavailable")?;
-                let saved = json!({"pid":pid,"token":token,"server_name":server_name,"client_port":client,"monitor_port":monitor_port});
+                let mut endpoint = federation.as_ref().map(|setup|setup.endpoint(client)).unwrap_or(federation::endpoint::Endpoint { mode:federation::endpoint::Mode::Loopback, url:format!("nats://127.0.0.1:{client}"),ca_file:None,ca_sha256:None,tailscale_node:None });
+                endpoint.ca_sha256 = endpoint.ca_file.as_ref().map(|path|federation::tls_material::trust_hash(path)).transpose()?;
+                let saved = json!({"pid":pid,"token":token,"server_name":server_name,"client_port":client,"monitor_port":monitor_port,"federation_peers":transport_peers,"local_endpoint":endpoint,"broker_configuration":federation,"protection":endpoint.security()?,"protection_check":protection_check});
                 // Use the same process/server/endpoint check as reuse,
                 // status, room clients and stop before publishing endpoints.
                 if verified(root, &saved).await.unwrap_or(false) {
@@ -453,6 +609,9 @@ pub async fn start(
                     {
                         return Err("NATS reported listener ports different from the selected ports".into());
                     }
+                    atomic_write(&nats.join("local-endpoint.json"), &serde_json::to_vec(&endpoint)?, 0o600)?;
+                    let previous = nats.join("local-tls.json");
+                    if previous.try_exists()? { fs::remove_file(previous)?; }
                     atomic_write(&nats.join("process.json"), &serde_json::to_vec(&saved)?, 0o600)?;
                     if dynamic {
                         atomic_write(&nats.join("test-endpoints.json"), &serde_json::to_vec(&saved)?, 0o600)?;
@@ -512,9 +671,32 @@ pub async fn status(root: &Path) -> Result<Value, Error> {
                 Ok(true) if verified(root, &saved).await.unwrap_or(false) => "running",
                 _ => "unknown",
             };
-            Ok(
-                json!({"state":state,"process":saved,"next_action":if state=="unknown"{json!("inspect the owned NATS log and monitor; do not replace an unverified live process")}else{Value::Null}}),
+            let mut status = json!({"state":state,"process":saved,"next_action":if state=="unknown"{json!("inspect the owned NATS log and monitor; do not replace an unverified live process")}else{Value::Null}});
+            if state == "running"
+                && let Some(port) = saved["monitor_port"]
+                    .as_u64()
+                    .and_then(|port| u16::try_from(port).ok())
+            {
+                let varz = monitor(port).await.unwrap_or(Value::Null);
+                let js = monitor_path(port, "/jsz").await.unwrap_or(Value::Null);
+                status["broker"] = json!({"connections":varz["connections"],"total_connections":varz["total_connections"],"subscriptions":varz["subscriptions"],"slow_consumers":varz["slow_consumers"],
+                        "jetstream":{"memory":js["memory"],"storage":js["storage"],"reserved_storage":js["reserved_storage"],"streams":js["streams"],"consumers":js["consumers"],"limits":varz["jetstream"]["config"]}});
+            }
+            status["delivery"] =
+                crate::agent_api::coord::outbox::diagnostics(&directory(root)?.join("v0.db"))
+                    .unwrap_or(json!({"availability":"unavailable"}));
+            if let Ok(runtime) = crate::native_client::admin(
+                &root.join("config.toml"),
+                "/admin/coord/diagnostics",
+                hyper::Method::GET,
+                Value::Null,
+                Duration::from_millis(500),
             )
+            .await
+            {
+                status["runtime"] = runtime;
+            }
+            Ok(status)
         }
     }
 }
@@ -527,13 +709,16 @@ async fn jetstream(root: &Path) -> Result<async_nats::jetstream::Context, Error>
     let port = saved["client_port"]
         .as_u64()
         .ok_or("NATS endpoint is missing")?;
-    let password =
-        zeroize::Zeroizing::new(fs::read_to_string(directory(root)?.join("nats/creds"))?);
-    let client = async_nats::ConnectOptions::new()
-        .user_and_password("safeyolo".into(), password.trim().into())
-        .connection_timeout(Duration::from_secs(2))
+    let (url, options) = federation::nats::local_options(
+        &directory(root)?,
+        format!("nats://127.0.0.1:{port}"),
+        "safeyolo".into(),
+        directory(root)?.join("nats/creds"),
+    )
+    .await?;
+    let client = options
         .request_timeout(Some(Duration::from_secs(2)))
-        .connect(format!("nats://127.0.0.1:{port}"))
+        .connect(url)
         .await?;
     Ok(async_nats::jetstream::new(client))
 }
@@ -597,6 +782,7 @@ pub(crate) async fn create_named_room(
             "INSERT INTO rooms(room_id,name,created_at) VALUES (?1,?2,?3)",
             params![id, name, now()],
         )?;
+        transaction.execute("INSERT INTO coord_message_attention_projection(room_id,last_sequence,updated_at) VALUES(?1,0,?2)", params![id,now()])?;
         membership::change(
             &transaction,
             &id,
@@ -852,7 +1038,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
         }
         [help] if help == "--help" => {
             println!(
-                "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT [--operation-id ID]\nInstance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports bind to 127.0.0.1. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
+                "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT [--operation-id ID]\nInstance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports default to 127.0.0.1. Host-held coord-federation.json explicitly selects TLS, verified Tailscale or loopback protection and the client listener address; monitoring stays loopback-only. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
             );
             println!("{}", crate::coord_operator::HELP);
             println!("{}", crate::coord_operator::BRIEF_HELP);

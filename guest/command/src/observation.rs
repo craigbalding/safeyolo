@@ -60,7 +60,8 @@ pub(super) fn exec(paths: &Paths, arguments: &[OsString]) -> Result<i32, Error> 
     let record = paths.records.join(format!("{pid}.json"));
     write_json(
         &record,
-        &json!({"pid":pid, "token":live_token(pid)?.ok_or("cannot identify observed process")?, "generation":generation(paths)?}),
+        &json!({"pid":pid, "token":live_token(pid)?.ok_or("cannot identify observed process")?, "generation":generation(paths)?,
+            "launch_id":std::env::var("SAFEYOLO_GUEST_LAUNCH_ID").ok()}),
     )?;
     let error = Command::new(&arguments[0]).args(&arguments[1..]).exec();
     let error = if error.raw_os_error() == Some(libc::ENOEXEC) {
@@ -75,4 +76,76 @@ pub(super) fn exec(paths: &Paths, arguments: &[OsString]) -> Result<i32, Error> 
         Path::new(&arguments[0]).display()
     )
     .into())
+}
+
+/// Stop only this run's recorded coding command. The pidfd pins the process
+/// across signal delivery; a reused PID or another launch is never accepted.
+pub(super) fn stop(paths: &Paths, expected_generation: &str, launch: &str) -> Result<i32, Error> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::time::{Duration, Instant};
+
+    if generation(paths)? != expected_generation || launch.is_empty() {
+        return Err("coding-command run or launch identity changed".into());
+    }
+    let mut found = false;
+    let entries = match fs::read_dir(&paths.records) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err("no observation for this launch; harness stop is unverified".into());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let record = read_json(&path, 4096)?;
+        if record["generation"] != expected_generation || record["launch_id"] != launch {
+            continue;
+        }
+        found = true;
+        let pid = record["pid"]
+            .as_i64()
+            .and_then(|pid| i32::try_from(pid).ok())
+            .filter(|pid| *pid > 0)
+            .ok_or("invalid observed command PID")?;
+        if live_token(pid)?.as_deref() != record["token"].as_str() {
+            continue;
+        }
+        let descriptor = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        if descriptor < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let process = unsafe { OwnedFd::from_raw_fd(descriptor as i32) };
+        if generation(paths)? != expected_generation
+            || live_token(pid)?.as_deref() != record["token"].as_str()
+        {
+            return Err("coding-command ownership changed before stop".into());
+        }
+        if unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                process.as_raw_fd(),
+                libc::SIGTERM,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while live_token(pid)?.as_deref() == record["token"].as_str() {
+            if Instant::now() >= deadline {
+                return Err("coding-command stop timed out; completion is unverified".into());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    if !found {
+        return Err("no observation for this launch; harness stop is unverified".into());
+    }
+    println!("stopped");
+    Ok(0)
 }

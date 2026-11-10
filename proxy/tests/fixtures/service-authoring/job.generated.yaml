@@ -1,0 +1,2153 @@
+{
+  "schema_version": 1,
+  "name": "job-authoring-fixture",
+  "description": "Offline controlled job-service model; no upstream API is claimed.",
+  "default_host": "jobs.example.invalid",
+  "auth": {
+    "type": "bearer"
+  },
+  "capabilities": {
+    "replace_job": {
+      "contract": {
+        "template": "job-fixture.v1.replace_definition",
+        "bindings": {
+          "project": {
+            "type": "string"
+          },
+          "job": {
+            "type": "string"
+          }
+        },
+        "enforcement": {
+          "request_shape": "enforced"
+        },
+        "operations": [
+          {
+            "name": "replace_definition",
+            "request": {
+              "path_params": {
+                "project": {
+                  "equals_var": "project"
+                },
+                "job": {
+                  "equals_var": "job"
+                }
+              },
+              "body": {
+                "deny_unknown": true,
+                "allow": {
+                  "steps": {},
+                  "description": {}
+                }
+              },
+              "query": {
+                "deny_unknown": true,
+                "allow": {}
+              },
+              "transport": {
+                "require_no_body": false
+              },
+              "method": "PUT",
+              "path": "/projects/{project}/jobs/{job}/definition"
+            }
+          }
+        ]
+      }
+    },
+    "edit_job": {
+      "contract": {
+        "template": "job-fixture.v1.edit_definition",
+        "bindings": {
+          "project": {
+            "type": "string"
+          },
+          "job": {
+            "type": "string"
+          }
+        },
+        "enforcement": {
+          "request_shape": "enforced"
+        },
+        "operations": [
+          {
+            "name": "edit_definition",
+            "request": {
+              "path_params": {
+                "project": {
+                  "equals_var": "project"
+                },
+                "job": {
+                  "equals_var": "job"
+                }
+              },
+              "body": {
+                "deny_unknown": true,
+                "allow": {
+                  "steps": {},
+                  "description": {}
+                }
+              },
+              "query": {
+                "deny_unknown": true,
+                "allow": {}
+              },
+              "transport": {
+                "require_no_body": false
+              },
+              "method": "PATCH",
+              "path": "/projects/{project}/jobs/{job}/definition"
+            }
+          }
+        ]
+      }
+    },
+    "describe_job": {
+      "contract": {
+        "template": "job-fixture.v1.edit_definition",
+        "bindings": {
+          "project": {
+            "type": "string"
+          },
+          "job": {
+            "type": "string"
+          }
+        },
+        "enforcement": {
+          "request_shape": "enforced"
+        },
+        "operations": [
+          {
+            "name": "edit_definition",
+            "request": {
+              "path_params": {
+                "project": {
+                  "equals_var": "project"
+                },
+                "job": {
+                  "equals_var": "job"
+                }
+              },
+              "body": {
+                "deny_unknown": true,
+                "allow": {
+                  "description": {}
+                }
+              },
+              "query": {
+                "deny_unknown": true,
+                "allow": {}
+              },
+              "transport": {
+                "require_no_body": false
+              },
+              "method": "PATCH",
+              "path": "/projects/{project}/jobs/{job}/definition"
+            }
+          }
+        ]
+      }
+    },
+    "execute_job": {
+      "contract": {
+        "template": "job-fixture.v1.execute_job",
+        "bindings": {
+          "project": {
+            "type": "string"
+          },
+          "job": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "enum",
+            "options": [
+              "execute",
+              "preview"
+            ]
+          }
+        },
+        "enforcement": {
+          "request_shape": "enforced"
+        },
+        "operations": [
+          {
+            "name": "execute_job",
+            "request": {
+              "path_params": {
+                "project": {
+                  "equals_var": "project"
+                },
+                "job": {
+                  "equals_var": "job"
+                }
+              },
+              "body": {
+                "deny_unknown": true,
+                "allow": {}
+              },
+              "query": {
+                "deny_unknown": true,
+                "allow": {
+                  "mode": {
+                    "equals_var": "mode"
+                  }
+                }
+              },
+              "transport": {
+                "require_no_body": true
+              },
+              "method": "POST",
+              "path": "/projects/{project}/jobs/{job}/run"
+            }
+          }
+        ]
+      }
+    },
+    "inspect_job": {
+      "contract": {
+        "template": "job-fixture.v1.inspect_definition",
+        "bindings": {
+          "project": {
+            "type": "string"
+          },
+          "job": {
+            "type": "string"
+          }
+        },
+        "enforcement": {
+          "request_shape": "enforced"
+        },
+        "operations": [
+          {
+            "name": "inspect_definition",
+            "request": {
+              "path_params": {
+                "project": {
+                  "equals_var": "project"
+                },
+                "job": {
+                  "equals_var": "job"
+                }
+              },
+              "body": {
+                "deny_unknown": true,
+                "allow": {}
+              },
+              "query": {
+                "deny_unknown": true,
+                "allow": {}
+              },
+              "transport": {
+                "require_no_body": true
+              },
+              "method": "GET",
+              "path": "/projects/{project}/jobs/{job}/definition"
+            }
+          }
+        ]
+      }
+    },
+    "execute_alias": {
+      "contract": {
+        "template": "job-fixture.v1.execute_alias",
+        "bindings": {
+          "project": {
+            "type": "string"
+          },
+          "alias": {
+            "type": "string"
+          }
+        },
+        "enforcement": {
+          "request_shape": "enforced"
+        },
+        "operations": [
+          {
+            "name": "execute_alias",
+            "request": {
+              "path_params": {
+                "project": {
+                  "equals_var": "project"
+                },
+                "alias": {
+                  "equals_var": "alias"
+                }
+              },
+              "body": {
+                "deny_unknown": true,
+                "allow": {}
+              },
+              "query": {
+                "deny_unknown": true,
+                "allow": {}
+              },
+              "transport": {
+                "require_no_body": true
+              },
+              "method": "POST",
+              "path": "/projects/{project}/aliases/{alias}/run"
+            }
+          }
+        ]
+      }
+    },
+    "route_wide": {
+      "routes": [
+        {
+          "methods": [
+            "GET",
+            "PUT",
+            "PATCH",
+            "POST"
+          ],
+          "path": "/projects/**"
+        }
+      ]
+    }
+  },
+  "effect_model": {
+    "sources": {
+      "spec": {
+        "location": "proxy/tests/fixtures/service-authoring/job.openapi.json",
+        "version": "1.0.0"
+      },
+      "semantics": {
+        "location": "proxy/tests/fixtures/service-authoring/job-semantics.md",
+        "version": "1.0.0"
+      },
+      "enforcement-tests": {
+        "location": "proxy/tests/service_authoring.rs",
+        "version": "job-authoring-fixture-v1"
+      }
+    },
+    "resources": {
+      "job": {
+        "description": "One stored job within a project. Both identity components must overlap.",
+        "identity": [
+          "project",
+          "job"
+        ]
+      }
+    },
+    "effects": {
+      "executable_changed": {
+        "description": "A job executable definition can change. Replacement includes the default steps when steps are omitted.",
+        "persists_after_access": true,
+        "evidence": [
+          "spec",
+          "semantics"
+        ]
+      },
+      "description_changed": {
+        "description": "Stored descriptive text can change without changing executable steps.",
+        "persists_after_access": true,
+        "evidence": [
+          "spec",
+          "semantics"
+        ]
+      },
+      "executed": {
+        "description": "Stored job steps can run with the job runner account. External writes and a launched run can outlive access.",
+        "persists_after_access": true,
+        "evidence": [
+          "spec",
+          "semantics"
+        ]
+      },
+      "previewed": {
+        "description": "A preview can validate stored definition syntax without running steps in this controlled API.",
+        "persists_after_access": false,
+        "evidence": [
+          "spec",
+          "semantics"
+        ]
+      },
+      "inspected": {
+        "description": "Stored definition content can be read; a received copy cannot be revoked by access expiry.",
+        "persists_after_access": true,
+        "evidence": [
+          "spec",
+          "semantics"
+        ]
+      }
+    },
+    "enforcement": {
+      "replace_scoped": {
+        "capability": "replace_job",
+        "operation": "replace_definition"
+      },
+      "edit_scoped": {
+        "capability": "edit_job",
+        "operation": "edit_definition"
+      },
+      "description_only": {
+        "capability": "describe_job",
+        "operation": "edit_definition"
+      },
+      "execute_scoped": {
+        "capability": "execute_job",
+        "operation": "execute_job"
+      },
+      "inspect_scoped": {
+        "capability": "inspect_job",
+        "operation": "inspect_definition"
+      },
+      "alias_scoped": {
+        "capability": "execute_alias",
+        "operation": "execute_alias"
+      }
+    },
+    "rules": {
+      "changed_job_execution": {
+        "when": {
+          "kind": "all_effects_same_scope",
+          "resource": "job",
+          "effects": [
+            "executable_changed",
+            "executed"
+          ]
+        },
+        "prerequisites": [
+          "Both accesses are available to the same actor.",
+          "The chosen steps perform the stated action and the upstream runner can execute them."
+        ],
+        "consequence": "Changed executable steps can run with the configured job runner authority.",
+        "explanation": "Any producer of executable_changed can combine with execution on the same project/job identity. Permission addition order does not remove that possibility.",
+        "evidence": [
+          "spec",
+          "semantics"
+        ],
+        "gaps": [
+          "This rule does not model all job-service state or every possible external consequence."
+        ]
+      }
+    },
+    "alternatives": {
+      "inspect_stored_definition": {
+        "steps": [
+          {
+            "operation": "inspect_definition",
+            "enforcement": "inspect_scoped",
+            "arguments": {
+              "path.project": "demo",
+              "path.job": "alpha"
+            },
+            "expected_effects": [
+              "inspected"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "Use the modeled inspect_job capability with approved project/job path bindings."
+        ],
+        "unverified_prerequisites": [
+          "The upstream job exists and the chosen provider credential can read its definition."
+        ],
+        "limitations": [
+          "Can diagnose stored definition syntax and configuration only; it cannot verify runner connectivity or step execution.",
+          "Definition content is disclosed to the caller and the copy can persist after access expiry.",
+          "This is an offline reviewed alternative for the controlled fixture, not a verified Rundeck API recipe."
+        ],
+        "evidence": [
+          "spec",
+          "semantics"
+        ]
+      }
+    },
+    "regressions": [
+      {
+        "name": "replacement-then-execute-same-job",
+        "grants": [
+          {
+            "operation": "replace_definition",
+            "enforcement": "replace_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha",
+              "body.steps": [
+                "operator-selected-step"
+              ]
+            }
+          },
+          {
+            "operation": "execute_job",
+            "enforcement": "execute_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha",
+              "mode": "execute"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha"
+            }
+          }
+        ],
+        "expected": [
+          {
+            "possible_effects": [
+              "executable_changed",
+              "description_changed"
+            ],
+            "observed_effects": [
+              "executable_changed",
+              "description_changed"
+            ],
+            "excluded_effects": [],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          },
+          {
+            "possible_effects": [
+              "executed"
+            ],
+            "observed_effects": [
+              "executed"
+            ],
+            "excluded_effects": [
+              "previewed"
+            ],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          }
+        ],
+        "rules": {
+          "changed_job_execution": "same"
+        },
+        "evidence": [
+          "spec",
+          "semantics",
+          "enforcement-tests"
+        ]
+      },
+      {
+        "name": "execute-then-replacement-same-job",
+        "grants": [
+          {
+            "operation": "execute_job",
+            "enforcement": "execute_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha",
+              "mode": "execute"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha"
+            }
+          },
+          {
+            "operation": "replace_definition",
+            "enforcement": "replace_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha",
+              "body.steps": [
+                "operator-selected-step"
+              ]
+            }
+          }
+        ],
+        "expected": [
+          {
+            "possible_effects": [
+              "executed"
+            ],
+            "observed_effects": [
+              "executed"
+            ],
+            "excluded_effects": [
+              "previewed"
+            ],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          },
+          {
+            "possible_effects": [
+              "executable_changed",
+              "description_changed"
+            ],
+            "observed_effects": [
+              "executable_changed",
+              "description_changed"
+            ],
+            "excluded_effects": [],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          }
+        ],
+        "rules": {
+          "changed_job_execution": "same"
+        },
+        "evidence": [
+          "spec",
+          "semantics",
+          "enforcement-tests"
+        ]
+      },
+      {
+        "name": "step-edit-then-execute-same-job",
+        "grants": [
+          {
+            "operation": "edit_definition",
+            "enforcement": "edit_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha",
+              "body.steps": [
+                "operator-selected-step"
+              ]
+            }
+          },
+          {
+            "operation": "execute_job",
+            "enforcement": "execute_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha",
+              "mode": "execute"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha"
+            }
+          }
+        ],
+        "expected": [
+          {
+            "possible_effects": [
+              "executable_changed",
+              "description_changed"
+            ],
+            "observed_effects": [
+              "executable_changed"
+            ],
+            "excluded_effects": [],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          },
+          {
+            "possible_effects": [
+              "executed"
+            ],
+            "observed_effects": [
+              "executed"
+            ],
+            "excluded_effects": [
+              "previewed"
+            ],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          }
+        ],
+        "rules": {
+          "changed_job_execution": "same"
+        },
+        "evidence": [
+          "spec",
+          "semantics",
+          "enforcement-tests"
+        ]
+      },
+      {
+        "name": "execute-then-step-edit-same-job",
+        "grants": [
+          {
+            "operation": "execute_job",
+            "enforcement": "execute_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha",
+              "mode": "execute"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha"
+            }
+          },
+          {
+            "operation": "edit_definition",
+            "enforcement": "edit_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha",
+              "body.steps": [
+                "operator-selected-step"
+              ]
+            }
+          }
+        ],
+        "expected": [
+          {
+            "possible_effects": [
+              "executed"
+            ],
+            "observed_effects": [
+              "executed"
+            ],
+            "excluded_effects": [
+              "previewed"
+            ],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          },
+          {
+            "possible_effects": [
+              "executable_changed",
+              "description_changed"
+            ],
+            "observed_effects": [
+              "executable_changed"
+            ],
+            "excluded_effects": [],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          }
+        ],
+        "rules": {
+          "changed_job_execution": "same"
+        },
+        "evidence": [
+          "spec",
+          "semantics",
+          "enforcement-tests"
+        ]
+      },
+      {
+        "name": "disjoint-jobs",
+        "grants": [
+          {
+            "operation": "edit_definition",
+            "enforcement": "edit_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha",
+              "body.steps": [
+                "operator-selected-step"
+              ]
+            }
+          },
+          {
+            "operation": "execute_job",
+            "enforcement": "execute_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "beta",
+              "mode": "execute"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "beta"
+            }
+          }
+        ],
+        "expected": [
+          {
+            "possible_effects": [
+              "executable_changed",
+              "description_changed"
+            ],
+            "observed_effects": [
+              "executable_changed"
+            ],
+            "excluded_effects": [],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          },
+          {
+            "possible_effects": [
+              "executed"
+            ],
+            "observed_effects": [
+              "executed"
+            ],
+            "excluded_effects": [
+              "previewed"
+            ],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "beta"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          }
+        ],
+        "rules": {
+          "changed_job_execution": "disjoint"
+        },
+        "evidence": [
+          "spec",
+          "semantics",
+          "enforcement-tests"
+        ]
+      },
+      {
+        "name": "descriptive-sample-does-not-limit-edit-grant",
+        "grants": [
+          {
+            "operation": "edit_definition",
+            "enforcement": "edit_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha",
+              "body.description": "explain"
+            }
+          },
+          {
+            "operation": "execute_job",
+            "enforcement": "execute_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha",
+              "mode": "execute"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha"
+            }
+          }
+        ],
+        "expected": [
+          {
+            "possible_effects": [
+              "executable_changed",
+              "description_changed"
+            ],
+            "observed_effects": [
+              "description_changed"
+            ],
+            "excluded_effects": [],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          },
+          {
+            "possible_effects": [
+              "executed"
+            ],
+            "observed_effects": [
+              "executed"
+            ],
+            "excluded_effects": [
+              "previewed"
+            ],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          }
+        ],
+        "rules": {
+          "changed_job_execution": "same"
+        },
+        "evidence": [
+          "spec",
+          "semantics",
+          "enforcement-tests"
+        ]
+      },
+      {
+        "name": "enforced-description-only-excludes-executable-edit",
+        "grants": [
+          {
+            "operation": "edit_definition",
+            "enforcement": "description_only",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha",
+              "body.description": "explain"
+            }
+          },
+          {
+            "operation": "execute_job",
+            "enforcement": "execute_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha",
+              "mode": "execute"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha"
+            }
+          }
+        ],
+        "expected": [
+          {
+            "possible_effects": [
+              "description_changed"
+            ],
+            "observed_effects": [
+              "description_changed"
+            ],
+            "excluded_effects": [
+              "executable_changed"
+            ],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          },
+          {
+            "possible_effects": [
+              "executed"
+            ],
+            "observed_effects": [
+              "executed"
+            ],
+            "excluded_effects": [
+              "previewed"
+            ],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          }
+        ],
+        "rules": {
+          "changed_job_execution": "excluded"
+        },
+        "evidence": [
+          "spec",
+          "semantics",
+          "enforcement-tests"
+        ]
+      },
+      {
+        "name": "observed-job-does-not-limit-route-wide-grant",
+        "grants": [
+          {
+            "operation": "edit_definition",
+            "enforcement": null,
+            "bindings": {},
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha",
+              "body.description": "explain"
+            }
+          },
+          {
+            "operation": "execute_job",
+            "enforcement": "execute_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "beta",
+              "mode": "execute"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "beta"
+            }
+          }
+        ],
+        "expected": [
+          {
+            "possible_effects": [
+              "executable_changed",
+              "description_changed"
+            ],
+            "observed_effects": [
+              "description_changed"
+            ],
+            "excluded_effects": [],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "unrestricted"
+                },
+                "job": {
+                  "kind": "unrestricted"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          },
+          {
+            "possible_effects": [
+              "executed"
+            ],
+            "observed_effects": [
+              "executed"
+            ],
+            "excluded_effects": [
+              "previewed"
+            ],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "beta"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          }
+        ],
+        "rules": {
+          "changed_job_execution": "same"
+        },
+        "evidence": [
+          "spec",
+          "semantics",
+          "enforcement-tests"
+        ]
+      },
+      {
+        "name": "unresolved-alias-identity",
+        "grants": [
+          {
+            "operation": "edit_definition",
+            "enforcement": "edit_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha",
+              "body.steps": [
+                "operator-selected-step"
+              ]
+            }
+          },
+          {
+            "operation": "execute_alias",
+            "enforcement": "alias_scoped",
+            "bindings": {
+              "project": "demo",
+              "alias": "nightly"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.alias": "nightly"
+            }
+          }
+        ],
+        "expected": [
+          {
+            "possible_effects": [
+              "executable_changed",
+              "description_changed"
+            ],
+            "observed_effects": [
+              "executable_changed"
+            ],
+            "excluded_effects": [],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          },
+          {
+            "possible_effects": [
+              "executed"
+            ],
+            "observed_effects": [
+              "executed"
+            ],
+            "excluded_effects": [],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "unresolved",
+                  "reason": "Alias resolution is not supplied by the fixture evidence"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          }
+        ],
+        "rules": {
+          "changed_job_execution": "unresolved"
+        },
+        "evidence": [
+          "spec",
+          "semantics",
+          "enforcement-tests"
+        ]
+      },
+      {
+        "name": "replacement-omitted-steps-installs-default",
+        "grants": [
+          {
+            "operation": "replace_definition",
+            "enforcement": "replace_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha"
+            }
+          },
+          {
+            "operation": "execute_job",
+            "enforcement": "execute_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha",
+              "mode": "execute"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha"
+            }
+          }
+        ],
+        "expected": [
+          {
+            "possible_effects": [
+              "executable_changed",
+              "description_changed"
+            ],
+            "observed_effects": [
+              "executable_changed",
+              "description_changed"
+            ],
+            "excluded_effects": [],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          },
+          {
+            "possible_effects": [
+              "executed"
+            ],
+            "observed_effects": [
+              "executed"
+            ],
+            "excluded_effects": [
+              "previewed"
+            ],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          }
+        ],
+        "rules": {
+          "changed_job_execution": "same"
+        },
+        "evidence": [
+          "spec",
+          "semantics",
+          "enforcement-tests"
+        ]
+      },
+      {
+        "name": "partial-edit-omitted-steps-is-unchanged",
+        "grants": [
+          {
+            "operation": "edit_definition",
+            "enforcement": "description_only",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha"
+            }
+          },
+          {
+            "operation": "execute_job",
+            "enforcement": "execute_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha",
+              "mode": "execute"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha"
+            }
+          }
+        ],
+        "expected": [
+          {
+            "possible_effects": [
+              "description_changed"
+            ],
+            "observed_effects": [],
+            "excluded_effects": [
+              "executable_changed"
+            ],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          },
+          {
+            "possible_effects": [
+              "executed"
+            ],
+            "observed_effects": [
+              "executed"
+            ],
+            "excluded_effects": [
+              "previewed"
+            ],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          }
+        ],
+        "rules": {
+          "changed_job_execution": "excluded"
+        },
+        "evidence": [
+          "spec",
+          "semantics",
+          "enforcement-tests"
+        ]
+      },
+      {
+        "name": "preview-value-does-not-enforce-presence",
+        "grants": [
+          {
+            "operation": "edit_definition",
+            "enforcement": "edit_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha",
+              "body.steps": [
+                "operator-selected-step"
+              ]
+            }
+          },
+          {
+            "operation": "execute_job",
+            "enforcement": "execute_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha",
+              "mode": "preview"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha",
+              "query.mode": "preview"
+            }
+          }
+        ],
+        "expected": [
+          {
+            "possible_effects": [
+              "executable_changed",
+              "description_changed"
+            ],
+            "observed_effects": [
+              "executable_changed"
+            ],
+            "excluded_effects": [],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          },
+          {
+            "possible_effects": [
+              "executed",
+              "previewed"
+            ],
+            "observed_effects": [
+              "previewed"
+            ],
+            "excluded_effects": [],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          }
+        ],
+        "rules": {
+          "changed_job_execution": "same"
+        },
+        "evidence": [
+          "spec",
+          "semantics",
+          "enforcement-tests"
+        ]
+      },
+      {
+        "name": "omitted-preview-argument-defaults-to-execution",
+        "grants": [
+          {
+            "operation": "edit_definition",
+            "enforcement": "edit_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha",
+              "body.steps": [
+                "operator-selected-step"
+              ]
+            }
+          },
+          {
+            "operation": "execute_job",
+            "enforcement": "execute_scoped",
+            "bindings": {
+              "project": "demo",
+              "job": "alpha",
+              "mode": "preview"
+            },
+            "observed_arguments": {
+              "path.project": "demo",
+              "path.job": "alpha"
+            }
+          }
+        ],
+        "expected": [
+          {
+            "possible_effects": [
+              "executable_changed",
+              "description_changed"
+            ],
+            "observed_effects": [
+              "executable_changed"
+            ],
+            "excluded_effects": [],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          },
+          {
+            "possible_effects": [
+              "executed",
+              "previewed"
+            ],
+            "observed_effects": [
+              "executed"
+            ],
+            "excluded_effects": [],
+            "scopes": {
+              "job": {
+                "project": {
+                  "kind": "known",
+                  "value": "demo"
+                },
+                "job": {
+                  "kind": "known",
+                  "value": "alpha"
+                }
+              }
+            },
+            "evidence": [
+              "spec",
+              "semantics",
+              "enforcement-tests"
+            ]
+          }
+        ],
+        "rules": {
+          "changed_job_execution": "same"
+        },
+        "evidence": [
+          "spec",
+          "semantics",
+          "enforcement-tests"
+        ]
+      }
+    ],
+    "gaps": [
+      "The supplied operation inventory does not cover undocumented upstream behavior.",
+      "The status operation is uncharacterised.",
+      "Alias resolution, runner credentials, external state and provider permissions are not verified.",
+      "Effects describe possibilities, not execution. Access expiry does not undo stored edits, acquired data or external writes.",
+      "This intentionally partial model and its tests do not establish exhaustive correctness."
+    ],
+    "operations": {
+      "inspect_definition": {
+        "coverage": "modeled",
+        "gaps": [],
+        "resources": {
+          "job": {
+            "project": {
+              "kind": "argument",
+              "argument": "path.project"
+            },
+            "job": {
+              "kind": "argument",
+              "argument": "path.job"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "inspected",
+            "resource": "job",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          }
+        ],
+        "execution_authority": "No code execution; the caller needs upstream job-definition access.",
+        "evidence": [
+          "spec",
+          "semantics"
+        ],
+        "method": "GET",
+        "path": "/projects/{project}/jobs/{job}/definition",
+        "arguments": {
+          "path.project": {
+            "location": "path",
+            "field": "project",
+            "required": true,
+            "omission": {
+              "kind": "invalid"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          },
+          "path.job": {
+            "location": "path",
+            "field": "job",
+            "required": true,
+            "omission": {
+              "kind": "invalid"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          }
+        }
+      },
+      "replace_definition": {
+        "coverage": "modeled",
+        "gaps": [],
+        "resources": {
+          "job": {
+            "project": {
+              "kind": "argument",
+              "argument": "path.project"
+            },
+            "job": {
+              "kind": "argument",
+              "argument": "path.job"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "executable_changed",
+            "resource": "job",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          },
+          {
+            "effect": "description_changed",
+            "resource": "job",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          }
+        ],
+        "execution_authority": "No code execution; the caller needs upstream job-definition access.",
+        "evidence": [
+          "spec",
+          "semantics"
+        ],
+        "method": "PUT",
+        "path": "/projects/{project}/jobs/{job}/definition",
+        "arguments": {
+          "path.project": {
+            "location": "path",
+            "field": "project",
+            "required": true,
+            "omission": {
+              "kind": "invalid"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          },
+          "path.job": {
+            "location": "path",
+            "field": "job",
+            "required": true,
+            "omission": {
+              "kind": "invalid"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          },
+          "body.steps": {
+            "location": "body",
+            "field": "steps",
+            "required": false,
+            "omission": {
+              "kind": "default",
+              "value": [
+                "diagnostic"
+              ]
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          },
+          "body.description": {
+            "location": "body",
+            "field": "description",
+            "required": false,
+            "omission": {
+              "kind": "default",
+              "value": ""
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          }
+        }
+      },
+      "edit_definition": {
+        "coverage": "modeled",
+        "gaps": [],
+        "resources": {
+          "job": {
+            "project": {
+              "kind": "argument",
+              "argument": "path.project"
+            },
+            "job": {
+              "kind": "argument",
+              "argument": "path.job"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "executable_changed",
+            "resource": "job",
+            "when": {
+              "kind": "present",
+              "argument": "body.steps"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          },
+          {
+            "effect": "description_changed",
+            "resource": "job",
+            "when": {
+              "kind": "present",
+              "argument": "body.description"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          }
+        ],
+        "execution_authority": "No code execution; the caller needs upstream job-definition access.",
+        "evidence": [
+          "spec",
+          "semantics"
+        ],
+        "method": "PATCH",
+        "path": "/projects/{project}/jobs/{job}/definition",
+        "arguments": {
+          "path.project": {
+            "location": "path",
+            "field": "project",
+            "required": true,
+            "omission": {
+              "kind": "invalid"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          },
+          "path.job": {
+            "location": "path",
+            "field": "job",
+            "required": true,
+            "omission": {
+              "kind": "invalid"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          },
+          "body.steps": {
+            "location": "body",
+            "field": "steps",
+            "required": false,
+            "omission": {
+              "kind": "unchanged"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          },
+          "body.description": {
+            "location": "body",
+            "field": "description",
+            "required": false,
+            "omission": {
+              "kind": "unchanged"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          }
+        }
+      },
+      "execute_job": {
+        "coverage": "modeled",
+        "gaps": [],
+        "resources": {
+          "job": {
+            "project": {
+              "kind": "argument",
+              "argument": "path.project"
+            },
+            "job": {
+              "kind": "argument",
+              "argument": "path.job"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "executed",
+            "resource": "job",
+            "when": {
+              "kind": "equals",
+              "argument": "query.mode",
+              "value": "execute"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          },
+          {
+            "effect": "previewed",
+            "resource": "job",
+            "when": {
+              "kind": "equals",
+              "argument": "query.mode",
+              "value": "preview"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          }
+        ],
+        "execution_authority": "The configured job runner account executes stored steps, not necessarily the API caller.",
+        "evidence": [
+          "spec",
+          "semantics"
+        ],
+        "method": "POST",
+        "path": "/projects/{project}/jobs/{job}/run",
+        "arguments": {
+          "path.project": {
+            "location": "path",
+            "field": "project",
+            "required": true,
+            "omission": {
+              "kind": "invalid"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          },
+          "path.job": {
+            "location": "path",
+            "field": "job",
+            "required": true,
+            "omission": {
+              "kind": "invalid"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          },
+          "query.mode": {
+            "location": "query",
+            "field": "mode",
+            "required": false,
+            "omission": {
+              "kind": "default",
+              "value": "execute"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          }
+        }
+      },
+      "execute_alias": {
+        "coverage": "modeled",
+        "gaps": [],
+        "resources": {
+          "job": {
+            "project": {
+              "kind": "argument",
+              "argument": "path.project"
+            },
+            "job": {
+              "kind": "unresolved",
+              "reason": "Alias resolution is not supplied by the fixture evidence"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "executed",
+            "resource": "job",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          }
+        ],
+        "execution_authority": "Configured runner account; alias-to-job resolution is unverified.",
+        "evidence": [
+          "spec",
+          "semantics"
+        ],
+        "method": "POST",
+        "path": "/projects/{project}/aliases/{alias}/run",
+        "arguments": {
+          "path.project": {
+            "location": "path",
+            "field": "project",
+            "required": true,
+            "omission": {
+              "kind": "invalid"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          },
+          "path.alias": {
+            "location": "path",
+            "field": "alias",
+            "required": true,
+            "omission": {
+              "kind": "invalid"
+            },
+            "evidence": [
+              "spec",
+              "semantics"
+            ]
+          }
+        }
+      },
+      "status": {
+        "coverage": "uncharacterised",
+        "resources": {},
+        "effects": [],
+        "execution_authority": "Uncharacterised",
+        "evidence": [
+          "spec"
+        ],
+        "gaps": [
+          "Supplied operation has no reviewed effect semantics"
+        ],
+        "method": "GET",
+        "path": "/status",
+        "arguments": {}
+      }
+    }
+  }
+}

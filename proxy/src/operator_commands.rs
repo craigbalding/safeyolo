@@ -13,9 +13,15 @@ use serde_json::{Value, json};
 
 use crate::{Error, host_platform, native_client, native_config, network_guard};
 
+mod configure;
 mod observations;
+mod support;
+mod watch;
+pub(crate) use watch::run as watch_approvals;
 
 pub const HELP: &str = "safeyolo [--root ROOT] inspect [--factory NAME] [--agent NAME]
+safeyolo [--root ROOT] configure connection|support NAME|approvals NAME
+safeyolo [--root ROOT] configure --help
 safeyolo [--root ROOT] traffic list [--agent NAME] [--filter EXPRESSION] [--json]
 safeyolo [--root ROOT] traffic show ID|body ID request|response|websocket ID|message ID NUMBER [--offset BYTES] [--agent NAME] [--json]
 safeyolo [--root ROOT] traffic export ID FORMAT FILE [--agent NAME]
@@ -24,12 +30,22 @@ safeyolo [--root ROOT] approvals show|explain|approve|reject ID [--option ID] [-
 safeyolo [--root ROOT] approvals ask|context ID [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals delegations [--json]\nsafeyolo [--root ROOT] approvals delegation check|preview|apply|revoke NAME --file PROPOSAL.json [--json]\nsafeyolo [--root ROOT] approvals review --agent NAME
 safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
+safeyolo [--root ROOT] support grants [--json]
+safeyolo [--root ROOT] support verify GRANT TARGET --agent SUPPORT [--home HOME] [--json]
+safeyolo [--root ROOT] support notices --agent SUPPORT [--home HOME] [--since CURSOR] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] support result OPERATION_ID --agent SUPPORT [--home HOME] [--output] [--json]
+safeyolo [--root ROOT] support receipts [--agent TARGET] [--lines NUMBER] [--json]
+safeyolo [--root ROOT] support receipt|recover OPERATION_ID [--initiator PRINCIPAL] [--output] [--json]
+safeyolo [--root ROOT] support preview|apply|revoke|report NAME --file PROPOSAL.json [--json]
 safeyolo [--root ROOT] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] logs list [--instance ID] [--runtime ID] [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] logs connection ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] logs request ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]
 safeyolo [--root ROOT] observations [--instance ID] [--runtime ID] [--json]
 safeyolo [--root ROOT] diagnose [--agent NAME] [--json]
+Diagnostics: diagnose reads saved/current policy and audit availability without test traffic.
+agent diagnostics NAME probes the selected runtime/control and reports its next_action.
+doctor probes host prerequisites and each configured policy pipeline; it does not prove coding-agent readiness.
 safeyolo helper show ID|diagnostic ID|prepare ID --reason TEXT [--socket PATH] [--token-file FILE]
 safeyolo helper list\nsafeyolo helper approve|reject|defer ID --delegation NAME --option ID\nsafeyolo helper context|respond ID [--reason TEXT] [--socket PATH] [--token-file FILE]
 
@@ -42,7 +58,7 @@ Each approval shows its fixed permission and options. Inspect leaves it pending.
 Explain shows SafeYolo facts, the selected option's effect, non-grants and unknown scope. It records an audit event and leaves the approval unchanged.
 Ask sends a fixed context question to the requesting agent's existing Coord room. Context reads its untrusted reply separately. Neither changes approval authority. Delivery failure or the 120-second reply deadline leaves approve/reject usable. Repeating ask reads the same exchange while it is open; ask again after a timeout to send a new question.
 Persistent network approval is reusable for the selected agent and host/port. Persistent credential approval changes shared policy. The run option instead binds supported access to the current worker run.
-Gateway route approval defaults to once; --option selects an offered lifetime. Service access can require an offered credential option.
+Gateway risk approval defaults to once; --option selects an offered lifetime. A missing-route challenge offers a finite run-bound exception only after explicit escalation. Service access can require an offered credential option.
 Reject records a refusal without adding a policy deny rule. Terminal decisions cannot grant again.
 Helper uses its Agent API token (default /app/agent_token) and the existing guest proxy route.
 If evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable.
@@ -55,7 +71,15 @@ pub fn handles(args: &[String]) -> bool {
     args.first().is_some_and(|arg| {
         matches!(
             arg.as_str(),
-            "inspect" | "traffic" | "approvals" | "helper" | "logs" | "diagnose" | "observations"
+            "inspect"
+                | "traffic"
+                | "approvals"
+                | "helper"
+                | "logs"
+                | "diagnose"
+                | "observations"
+                | "support"
+                | "configure"
         )
     })
 }
@@ -111,6 +135,10 @@ struct Options {
     delegation: Option<String>,
     files: Vec<PathBuf>,
     capture: Option<PathBuf>,
+    home: Option<String>,
+    initiator: Option<String>,
+    since: u64,
+    output: bool,
     scope: serde_json::Map<String, Value>,
     positional: Vec<String>,
 }
@@ -125,13 +153,15 @@ impl Options {
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--json" => options.json = true,
+                "--output" => options.output = true,
                 "--unattributed" => {
                     options.scope.insert("unattributed".into(), json!(true));
                 }
                 "--agent" | "--factory" | "--helper" | "--filter" | "--lines" | "--offset"
                 | "--socket" | "--token-file" | "--reason" | "--test" | "--intent" | "--role"
                 | "--expect" | "--option" | "--delegation" | "--file" | "--instance"
-                | "--runtime" | "--sandbox-run" | "--capture" => {
+                | "--runtime" | "--sandbox-run" | "--capture" | "--home" | "--since"
+                | "--initiator" => {
                     let value = args
                         .next()
                         .ok_or_else(|| format!("{arg} requires a value"))?;
@@ -152,6 +182,9 @@ impl Options {
                         "--delegation" => options.delegation = Some(value.clone()),
                         "--file" => options.files.push(value.into()),
                         "--capture" => options.capture = Some(value.into()),
+                        "--home" => options.home = Some(value.clone()),
+                        "--since" => options.since = value.parse()?,
+                        "--initiator" => options.initiator = Some(value.clone()),
                         key => {
                             options.scope.insert(
                                 if key == "--test" {
@@ -342,6 +375,86 @@ fn show_context(view: &Value) -> Result<(), Error> {
     Ok(())
 }
 
+// Render canonical decision facts as readable fields, including nested effects,
+// alternatives and uncertainty. Requester prose is rendered separately below.
+fn show_evidence_fields(value: &Value, indent: usize) {
+    let prefix = " ".repeat(indent);
+    match value {
+        Value::Object(fields) => {
+            let priority = [
+                "enables",
+                "risk_policy",
+                "persistent_effects",
+                "execution_authority",
+                "status",
+                "uncertainty",
+                "unverified_prerequisites",
+                "unresolved_conditions",
+                "limitations",
+                "model",
+                "direct",
+                "rules",
+            ];
+            let mut ordered = fields.iter().collect::<Vec<_>>();
+            ordered.sort_by_key(|(key, _)| {
+                priority
+                    .iter()
+                    .position(|name| *name == key.as_str())
+                    .unwrap_or(priority.len())
+            });
+            for (key, value) in ordered {
+                let label = safe(&key.replace('_', " "));
+                if value.is_object() || value.is_array() {
+                    println!("{prefix}{label}:");
+                    show_evidence_fields(value, indent + 2);
+                } else {
+                    println!(
+                        "{prefix}{label}: {}",
+                        safe(value.as_str().unwrap_or(&value.to_string()))
+                    );
+                }
+            }
+        }
+        Value::Array(items) if items.is_empty() => println!("{prefix}None"),
+        Value::Array(items) => {
+            for value in items {
+                println!("{prefix}-");
+                show_evidence_fields(value, indent + 2);
+            }
+        }
+        _ => println!(
+            "{prefix}{}",
+            safe(value.as_str().unwrap_or(&value.to_string()))
+        ),
+    }
+}
+
+fn show_decision_evidence(view: &Value) {
+    for (label, field) in [
+        ("SafeYolo assessment (includes request data)", "assessment"),
+        ("Policy and reviewed guidance", "guidance"),
+        ("Assessment changed since request", "assessment_changed"),
+        ("Recorded outcome", "result"),
+        ("Selected option", "option"),
+    ] {
+        if let Some(value) = view.get(field).filter(|value| !value.is_null()) {
+            println!("{label}:");
+            let mut value = value.clone();
+            if field == "guidance"
+                && let Some(fields) = value.as_object_mut()
+            {
+                if fields.get("assessment") == view.get("assessment") {
+                    fields.remove("assessment");
+                }
+                if fields.get("alternatives") == view["assessment"].get("alternatives") {
+                    fields.remove("alternatives");
+                }
+            }
+            show_evidence_fields(&value, 2);
+        }
+    }
+}
+
 fn show_explanation(view: &Value) -> Result<(), Error> {
     println!(
         "Approval: {} | Status: {}\nObserved by SafeYolo:",
@@ -349,6 +462,11 @@ fn show_explanation(view: &Value) -> Result<(), Error> {
         safe(text(&view["status"]))
     );
     show_request_history(view)?;
+    show_decision_evidence(view);
+    if view["action"]["route_exception"] == true {
+        println!("Host-recorded route scope:");
+        show_evidence_fields(&view["action"], 2);
+    }
     let facts = &view["observed"];
     for (label, key) in [
         ("Agent", "agent"),
@@ -466,6 +584,12 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
         println!("Approval: {}", safe(id));
     }
     show_request_history(view)?;
+    show_decision_evidence(view);
+    if let Some(options) = view.get("options") {
+        println!("Offered options (identity, effects and lifetime):");
+        show_evidence_fields(options, 2);
+    }
+
     if view["action"]["kind"] == "operator_action" {
         if let Some(audit) = view["audit_status"].as_str() {
             println!("Audit: {}", safe(audit));
@@ -555,7 +679,9 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
         // Markdown/HTML headings and all terminal controls.
         println!(
             "{} (untrusted text): {}",
-            if view["action"]["kind"] == "operator_action" {
+            if view["action"]["kind"] == "operator_action"
+                || view["action"]["route_exception"] == true
+            {
                 "Agent-provided reason"
             } else {
                 "Helper reason"
@@ -567,6 +693,15 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
 }
 
 fn show_request_history(view: &Value) -> Result<(), Error> {
+    if let Some(created) = view["created_at"].as_i64() {
+        println!("Requested at: {created} (Unix seconds)");
+    }
+    if let Some(expiry) = view["expires_at"]
+        .as_i64()
+        .or_else(|| view["authority"]["expires_at"].as_i64())
+    {
+        println!("Request expires at: {expiry} (Unix seconds)");
+    }
     if let Some(count) = view["request_history"]["equivalent_request_count"].as_u64() {
         println!(
             "Equivalent requests: {count} | Approvals: {} | First requested: {} | Last requested: {} (Unix seconds)",
@@ -648,10 +783,19 @@ async fn resolve_preview(
         }
     }
     let mut preview = approval(root, id, agent).await?;
-    if preview["action"] != inspected["action"] {
+    if preview["approval_id"] == inspected["approval_id"] && preview["status"] != "pending" {
+        return Ok(preview);
+    }
+    // The authority digest binds fixed option scopes. Their current availability
+    // can change independently; the host resolver checks the selected option.
+    if ["approval_id", "request_id", "authority_digest", "action"]
+        .iter()
+        .any(|field| preview[*field] != inspected[*field])
+    {
         preview["status"] = json!("stale");
-        preview["effect"] =
-            json!("Request scope changed. Inspect the pending requests again before deciding.");
+        preview["effect"] = json!(
+            "Request identity, scope or options changed. Inspect the pending requests again before deciding."
+        );
     }
     if preview["status"] != "pending" {
         return Ok(preview);
@@ -734,6 +878,48 @@ pub(crate) async fn pending(root: &Path, agent: Option<&str>) -> Result<Value, E
     Ok(value)
 }
 
+fn approval_decision_commands(view: &Value) -> String {
+    let mut commands: Vec<_> = view["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|option| option["status"] == "available")
+        .filter_map(|option| option["id"].as_str())
+        .map(|id| format!("approve {}", safe(id)))
+        .collect();
+    commands.push("reject".into());
+    commands.join(" / ")
+}
+
+#[cfg(test)]
+#[test]
+fn decision_commands_show_current_offered_options_including_single_actions() {
+    for (options, commands) in [
+        (
+            json!([{"id":"once","status":"available"}]),
+            "approve once / reject",
+        ),
+        (
+            json!([{"id":"persistent","status":"available"},{"id":"run","status":"available"}]),
+            "approve persistent / approve run / reject",
+        ),
+        (
+            json!([{"id":"persistent","status":"available"},{"id":"run","status":"superseded"},{"id":"session","status":"expired"}]),
+            "approve persistent / reject",
+        ),
+        (json!([]), "reject"),
+    ] {
+        assert_eq!(
+            approval_decision_commands(&json!({"options":options})),
+            commands
+        );
+    }
+    let escaped = approval_decision_commands(
+        &json!({"options":[{"id":"credential-\u{1b}[31m","status":"available"}]}),
+    );
+    assert!(!escaped.contains('\u{1b}'), "{escaped:?}");
+}
+
 /// Select canonical requests without copying a request ID or fingerprint.
 /// The guest terminal has returned before this host-owned interaction begins.
 pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error> {
@@ -758,7 +944,10 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
             );
             show_request_history(entry)?;
         }
-        let Some(answer) = crate::host_launch::input("Request number (Enter returns): ")? else {
+        let Some(answer) = crate::host_launch::input(
+            "Type a displayed request number (for example, 1; Enter returns): ",
+        )?
+        else {
             return Ok(());
         };
         if answer.is_empty() {
@@ -806,10 +995,11 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
         }
         let mut selected_option: Option<String> = None;
         loop {
-            let Some(answer) = crate::host_launch::input(
-                "approve / reject / explain [OPTION] (e) / ask agent (a) / context (c) / Enter to leave unchanged: ",
-            )?
-            else {
+            let prompt = format!(
+                "{} / explain [OPTION] (e) / ask agent (a) / context (c) / Enter to leave unchanged: ",
+                approval_decision_commands(&view)
+            );
+            let Some(answer) = crate::host_launch::input(&prompt)? else {
                 return Ok(());
             };
             let parts: Vec<_> = answer.split_whitespace().collect();
@@ -1295,8 +1485,8 @@ async fn diagnose(root: &Path, options: &Options) -> Result<Value, Error> {
             json!({"available":false,"error":safe(&error.to_string()),"guidance":"Local logs remain available. Restore the Admin API, then read policy show; active state is unverified."})
         }
     };
-    let mut value =
-        json!({"root":root,"local_policy":policy,"admin":active,"audit_log":config.audit_log_path});
+    let mut value = json!({"root":root,"local_policy":policy,"admin":active,"audit_log":config.audit_log_path,
+            "diagnostic_commands":crate::host_commands::diagnostic_commands(options.agent.as_deref())});
     if let Some(name) = &options.agent {
         validate_name(name)?;
         let last = root.join("agents").join(name).join("current-launch.json");
@@ -1481,7 +1671,7 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
             }
         }
         println!(
-            "select NAME | state | traffic [FILTER] | show ID | body ID SIDE | websocket ID | message ID NUMBER [--offset BYTES] | export ID FORMAT FILE | pending | approval ID | explain ID [--option ID] | ask ID | context ID | review | share ID HELPER | approve ID | reject ID | logs | diagnose | attach | back | quit"
+            "select NAME | state | diagnose (policy/audit; no traffic probes) | diagnostics (agent runtime/control probes) | doctor (host/pipeline probes) | traffic [FILTER] | show ID | body ID SIDE | websocket ID | message ID NUMBER [--offset BYTES] | export ID FORMAT FILE | pending | approval ID | explain ID [--option ID] | ask ID | context ID | review | share ID HELPER | approve ID | reject ID | verify GRANT TARGET [HOME] | notices [HOME] | receipts | receipt ID | recover ID | logs | attach | back | quit"
         );
         print!("inspect> ");
         std::io::stdout().flush()?;
@@ -1520,6 +1710,15 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
             };
             match command {
                 "state" => print_json(&state(root, name).await?),
+                "diagnostics" => {
+                    let current = crate::host_agents::list()?;
+                    let agent = current.iter().find(|agent| agent.name == *name).ok_or("selected agent is no longer configured")?;
+                    print_json(&crate::host_commands::diagnostics(agent).await?)
+                }
+                "doctor" => {
+                    let code = Box::pin(crate::host_commands::run(host_platform::config_path(), &["doctor".into()])).await?;
+                    if code == 0 { Ok(()) } else { Err("doctor reported a failed check; follow its findings".into()) }
+                }
                 "traffic" => print_json(
                     &flows(
                         root,
@@ -1567,6 +1766,16 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
                     print_json(&share(root, id, helper.trim(), Some(name)).await?)
                 }
                 "logs" => print_json(&logs(root, &local)?),
+                "receipts" => support::run(root,&Options { positional:vec!["receipts".into()],..local }).await,
+                "receipt" | "recover" => support::run(root,&Options { positional:vec![command.into(),rest.into()],..local }).await,
+                "verify" | "notices" => {
+                    let mut parts: Vec<_> = rest.split_whitespace().map(str::to_owned).collect();
+                    let count = if command=="verify" {2}else{0};
+                    if parts.len() < count || parts.len()>count+1 {return Err("use verify GRANT TARGET [HOME] or notices [HOME] with the selected support agent".into());}
+                    let home = (parts.len()>count).then(|| parts.pop().unwrap());
+                    parts.insert(0,command.into());
+                    support::run(root,&Options {positional:parts,home,..local}).await
+                }
                 "diagnose" => print_json(&diagnose(root, &local).await?),
                 "attach" => attach(root, name).await,
                 _ => Err("unknown inspect action".into()),
@@ -1597,6 +1806,9 @@ pub async fn run(config: &Path, args: &[String]) -> Result<(), Error> {
 }
 
 async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
+    if args[0] == "configure" {
+        return configure::run(root, &args[1..]).await;
+    }
     if args.iter().any(|arg| arg == "--help") {
         println!("{HELP}");
         return Ok(());
@@ -1605,11 +1817,46 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         return observations::run(&args[1..]).await;
     }
     let options = Options::parse(&args[1..])?;
+    if args[0] == "support" && support::handles(&options) {
+        return support::run(root, &options).await;
+    }
     let value = match args[0].as_str() {
         "inspect" => return inspect(root, &options).await,
         "traffic" => traffic(root, &options).await?,
         "logs" => logs(root, &options)?,
         "diagnose" => diagnose(root, &options).await?,
+        "support" => match options
+            .positional
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice()
+        {
+            ["grants"] => admin(root, "/admin/support-grants", Method::GET, Value::Null).await?,
+            [
+                operation @ ("preview" | "apply" | "revoke" | "report"),
+                name,
+            ] => {
+                let input = options
+                    .files
+                    .last()
+                    .ok_or("support grant requires --file PROPOSAL.json")?;
+                let proposal = serde_json::from_slice(&std::fs::read(input)?)?;
+                admin(
+                    root,
+                    &format!("/admin/support-grants/{}/{operation}", encoded(name)),
+                    Method::POST,
+                    proposal,
+                )
+                .await?
+            }
+            _ => {
+                return Err(
+                    "use support grants or support preview|apply|revoke|report NAME --file PROPOSAL.json"
+                        .into(),
+                );
+            }
+        },
         "helper" => helper(&options).await?,
         "approvals" => {
             match options
@@ -1724,7 +1971,12 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         show_explanation(&value)
     } else if !options.json && value.get("acknowledgment").is_some() {
         println!(
-            "Delegation: {}\nRevision / acknowledgment: {}\n{}\nBefore: {}\nAfter: {}",
+            "{}: {}\nRevision / acknowledgment: {}\n{}\nBefore: {}\nAfter: {}",
+            if args[0] == "support" {
+                "Support grant"
+            } else {
+                "Delegation"
+            },
             safe(text(&value["name"])),
             safe(text(&value["revision"])),
             safe(text(&value["effect"])),
@@ -1734,11 +1986,89 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         for warning in value["warnings"].as_array().into_iter().flatten() {
             println!("Acknowledge: {}", safe(text(warning)));
         }
+        if let Some(summary) = value["impact_summary"].as_str() {
+            println!("Authority impact: {}", safe(summary));
+            for effect in value["authority"]["considered"]["added"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .take(8)
+            {
+                println!(
+                    "Added or changed effect for {}:{}: {}",
+                    safe(text(&effect["controller"]["instance_id"])),
+                    safe(text(&effect["controller"]["agent_id"])),
+                    safe(text(&effect["explanation"]))
+                );
+            }
+            println!(
+                "Report: {}. Use --json to inspect owner facts, deciding scopes, coverage and supporting paths.",
+                safe(text(&value["authority"]["considered"]["report_id"]))
+            );
+        }
+        if let Some(remaining) = value.get("independent_access") {
+            println!(
+                "Independent access that remains after revocation: {}",
+                context_json(remaining)?
+            );
+        }
+        if let Some(revocation) = value["revocation"].as_str() {
+            println!("{}", safe(revocation));
+        }
+        Ok(())
+    } else if !options.json && value.get("impact_summary").is_some() {
         println!(
-            "Independent access that remains after revocation: {}",
-            context_json(&value["independent_access"])?
+            "{}\nReport: {}\nUse --json to inspect typed effects, paths, owner revisions and gaps.",
+            safe(text(&value["impact_summary"])),
+            safe(text(&value["authority"]["considered"]["report_id"]))
         );
-        println!("{}", safe(text(&value["revocation"])));
+        Ok(())
+    } else if !options.json && (value.get("grants").is_some() || value.get("delegations").is_some())
+    {
+        let approvals = value.get("delegations").is_some();
+        if let Some(owner) = value["instance_id"].as_str() {
+            println!("Owning instance: {}", safe(owner));
+        }
+        let rows = value[if approvals { "delegations" } else { "grants" }]
+            .as_array()
+            .ok_or("authority list unavailable")?;
+        if rows.is_empty() {
+            println!(
+                "No configured {}.",
+                if approvals {
+                    "approval delegations"
+                } else {
+                    "support grants"
+                }
+            );
+        }
+        for row in rows {
+            println!(
+                "{}: {}",
+                safe(text(&row["name"])),
+                if row["active"] == true {
+                    "active"
+                } else {
+                    "inactive; inspect expiry, durable identities, peer trust and scope dependencies on this owner"
+                }
+            );
+            configure::show_record(
+                &row[if approvals { "delegation" } else { "grant" }],
+                approvals,
+            )?;
+            if let Some(targets) = row.get("target_status") {
+                println!("Current target bindings: {}", context_json(targets)?);
+            }
+            for (label, key) in [
+                ("Authority status", "status"),
+                ("Factory bindings", "factory_status"),
+                ("Next action", "next_action"),
+            ] {
+                if let Some(value) = row.get(key) {
+                    println!("{label}: {}", context_json(value)?);
+                }
+            }
+        }
         Ok(())
     } else if args[0] == "approvals" && !options.json && value.get("action").is_some() {
         show_approval(&value)

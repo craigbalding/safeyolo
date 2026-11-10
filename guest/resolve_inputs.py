@@ -9,7 +9,11 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
+import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,14 +40,39 @@ def now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def fetch(url: str) -> bytes:
+class HTTPSRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject insecure redirect hops before sending the next request."""
+
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        if not new_url.startswith("https://"):
+            raise ValueError("upstream redirect must retain HTTPS")
+        return super().redirect_request(request, response, code, message, headers, new_url)
+
+
+def fetch(url: str, *, github_api: bool = False) -> bytes:
     if not url.startswith("https://"):
         raise ValueError("upstream downloads require HTTPS")
-    request = urllib.request.Request(url, headers={"User-Agent": "safeyolo-guest-builder"})
-    with urllib.request.urlopen(request, timeout=120) as response:
-        if not response.url.startswith("https://"):
-            raise ValueError("upstream redirect must retain HTTPS")
-        return response.read()
+    token = None
+    if github_api:
+        token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        if token and ("\r" in token or "\n" in token):
+            raise ValueError("GitHub API token must not contain line breaks")
+    for attempt in range(3):
+        # Give each attempt its own urllib redirect history.
+        request = urllib.request.Request(url, headers={"User-Agent": "safeyolo-guest-builder"})
+        if token:
+            # urllib omits unredirected headers from every redirected request.
+            request.add_unredirected_header("Authorization", f"Bearer {token}")
+        try:
+            with urllib.request.build_opener(HTTPSRedirectHandler()).open(request, timeout=120) as response:
+                if not response.url.startswith("https://"):
+                    raise ValueError("upstream redirect must retain HTTPS")
+                return response.read()
+        except urllib.error.HTTPError as error:
+            if error.code not in {408, 429, 500, 502, 503, 504} or attempt == 2:
+                raise
+            error.close()
+            time.sleep(attempt + 1)
 
 
 def sha256(data: bytes) -> str:
@@ -87,7 +116,7 @@ def release(tool: str) -> dict:
     explicit = os.environ.get(tool.upper() + "_VERSION")
     endpoint = f"tags/v{explicit}" if explicit else "latest"
     api = f"https://api.github.com/repos/{PROJECTS[tool]}/releases/{endpoint}"
-    data = json.loads(fetch(api))
+    data = json.loads(fetch(api, github_api=True))
     version = data["tag_name"].removeprefix("v")
     if data["draft"] or data["prerelease"] or not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise ValueError(f"{tool} release is not a stable release")
@@ -264,8 +293,13 @@ def main() -> None:
             print(f"export {key}={shlex.quote(val)}")
     else:
         record = value["tools"][args.tool]
-        download(record if args.tool == "kernel" else record["assets"][args.architecture], args.output,
-                 kernel_signature=args.tool == "kernel")
+        asset = record if args.tool == "kernel" else record["assets"][args.architecture]
+        parsed_url = urllib.parse.urlsplit(asset["url"])
+        public_url = urllib.parse.urlunsplit((parsed_url.scheme, parsed_url.netloc.rsplit("@", 1)[-1],
+                                             parsed_url.path, "", ""))
+        print(f"Preparing {args.tool} {record['version']} for linux/{args.architecture}: {public_url!r}",
+              file=sys.stderr, flush=True)
+        download(asset, args.output, kernel_signature=args.tool == "kernel")
 
 
 if __name__ == "__main__":

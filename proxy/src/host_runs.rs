@@ -381,6 +381,7 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
                 Ok::<_, Error>(
                     crate::host_platform::runsc_command(name)?
                         .args(["state", id])
+                        .kill_on_drop(true)
                         .output()
                         .await?,
                 )

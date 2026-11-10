@@ -1,0 +1,28 @@
+name: nested-notes
+services:
+  store:
+    image: nested-notes:qualification
+    build:
+      context: .
+      network: host
+      args:
+        HTTP_PROXY: ${HTTP_PROXY}
+        HTTPS_PROXY: ${HTTPS_PROXY}
+    network_mode: host
+    environment:
+      ROLE: store
+    volumes:
+      - notes:/data
+  api:
+    image: nested-notes:qualification
+    pull_policy: never
+    network_mode: host
+    depends_on:
+      - store
+    environment:
+      ROLE: api
+      HTTP_PROXY: ${HTTP_PROXY}
+      HTTPS_PROXY: ${HTTPS_PROXY}
+      SSL_CERT_FILE: /usr/local/share/ca-certificates/safeyolo.crt
+volumes:
+  notes:

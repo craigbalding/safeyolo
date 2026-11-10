@@ -1,7 +1,10 @@
 """Challenge the shared resolver with official release formats and failed inputs."""
 import hashlib
 import json
+import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -22,7 +25,7 @@ def test_both_architectures_share_stable_release_and_verified_checksums(monkeypa
     release = {"tag_name": "v" + version, "draft": False, "prerelease": False, "html_url": "https://official.invalid/release", "assets": assets}
     responses = {"https://api.github.com/repos/jdx/mise/releases/latest": json.dumps(release).encode(),
                  "https://official.invalid/checksums": ("\n".join(rows) + "\n").encode()}
-    monkeypatch.setattr(inputs, "fetch", responses.__getitem__)
+    monkeypatch.setattr(inputs, "fetch", lambda url, **kwargs: responses[url])
     monkeypatch.setattr(inputs, "signed_checksums", lambda *args: {"signer": "verified fixture"})
     resolved = inputs.resolve(["mise"], False)
     for arch in inputs.ARCHITECTURES:
@@ -43,7 +46,7 @@ def test_resolver_never_falls_back(monkeypatch, fault):
     if fault == "missing-architecture":
         assets.pop(1)
     release = {"tag_name": "v1.2.3", "draft": False, "prerelease": False, "html_url": "https://official.invalid/release", "assets": assets}
-    def fetch(url):
+    def fetch(url, **kwargs):
         if fault == "network":
             raise OSError("offline")
         return json.dumps(release).encode() if "/releases/" in url else "\n".join(
@@ -94,6 +97,56 @@ def test_download_cache_is_identity_checked_and_bad_download_fails(tmp_path, mon
     assert target.read_bytes() == b"corrupted"
 
 
+@pytest.mark.parametrize("architecture", ["amd64", "arm64"])
+@pytest.mark.parametrize("fault", [None, "missing", "corrupt"])
+def test_guest_rootfs_inputs_are_verified_before_kernel_and_reused_by_rootfs(tmp_path, architecture, fault):
+    root = Path(__file__).resolve().parents[1]
+    guest = tmp_path / "guest"
+    guest.mkdir()
+    for name in ("build-all.sh", "input-functions.sh", "resolve_inputs.py"):
+        shutil.copyfile(root / "guest" / name, guest / name)
+    for name in ("build-kernel.sh", "build-initramfs.sh", "build-rootfs.sh"):
+        script = guest / name
+        script.write_text('#!/bin/bash\nset -euo pipefail\n'
+                          'source "$SAFEYOLO_GUEST_SRC_DIR/input-functions.sh"\n'
+                          'guest_rootfs_inputs "$ARCH"\n'
+                          f'echo {name} >> "$OUTPUT_DIR/consumer-calls"\n')
+        script.chmod(0o755)
+    output = tmp_path / "output"
+    cache = output / ".download-cache"
+    cache.mkdir(parents=True)
+    tools = {}
+    for tool in ("mise", "gh"):
+        payload = f"verified {tool} archive".encode()
+        target = cache / f"{tool}-1.2.3-{architecture}.tar.gz"
+        target.write_bytes(payload)
+        # An insecure URL cannot be fetched, even when a corrupt cache exists.
+        tools[tool] = {"version": "1.2.3", "assets": {architecture: {
+            "url": f"http://upstream.invalid/{tool}", "sha256": inputs.sha256(payload)}}}
+    if fault == "missing":
+        (cache / f"gh-1.2.3-{architecture}.tar.gz").unlink()
+    elif fault == "corrupt":
+        (cache / f"gh-1.2.3-{architecture}.tar.gz").write_bytes(b"corrupt archive")
+    frozen = tmp_path / "inputs.json"
+    frozen.write_text(json.dumps({"schema": "safeyolo.guest-inputs/v1", "tools": tools}))
+    result = subprocess.run(
+        ["bash", str(guest / "build-all.sh")], cwd=tmp_path, capture_output=True, text=True,
+        env=dict(os.environ, BASH_ENV=os.devnull, ARCH=architecture, BUILD_KERNEL="1", OUTPUT_DIR=str(output),
+                 GUEST_INPUTS=str(frozen), SAFEYOLO_BUILD_PYTHON=sys.executable), timeout=30,
+    )
+    if fault:
+        assert result.returncode != 0
+        assert "upstream downloads require HTTPS" in result.stderr
+        assert not (output / "consumer-calls").exists()
+        assert not (output / "provenance/build-completed-at.txt").exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert (output / "consumer-calls").read_text().splitlines() == [
+            "build-kernel.sh", "build-initramfs.sh", "build-rootfs.sh",
+        ]
+        assert (output / "provenance/build-completed-at.txt").is_file()
+
+
 def test_kernel_uses_upstream_stable_not_rc_and_no_existing_image_shortcut(monkeypatch):
     monkeypatch.setattr(inputs, "fetch", lambda url: json.dumps({"latest_stable": {"version": "9.8.7"}}).encode()
                         if url.endswith("json") else ("a" * 64 + "  linux-9.8.7.tar.xz\n").encode())
@@ -111,9 +164,6 @@ def test_kernel_uses_upstream_stable_not_rc_and_no_existing_image_shortcut(monke
 
 def test_existing_kernel_image_is_rebuilt_in_fresh_source_tree(tmp_path):
     import io
-    import os
-    import shutil
-    import sys
     import tarfile
 
     root = Path(__file__).resolve().parents[1]
@@ -177,15 +227,11 @@ def test_frozen_input_keys_cannot_inject_shell_assignments():
     ("absolute", "missing"), ("absolute", "directory"), ("absolute", None),
 ])
 def test_macos_builder_uses_selected_output_and_inputs(tmp_path, selection, frozen_input):
-    import os
-    import shutil
-    import sys
-
     root = Path(__file__).resolve().parents[1]
     guest = tmp_path / "guest"
     guest.mkdir()
     shutil.copyfile(root / "guest/build-all.sh", guest / "build-all.sh")
-    (guest / "input-functions.sh").write_text("")
+    (guest / "input-functions.sh").write_text("guest_rootfs_inputs() { :; }\n")
     frozen = (tmp_path if frozen_input in ("external", "symlink") else guest) / "selected 'inputs' $frozen.json"
     frozen_bytes = b'{"identity": "operator-frozen"}\n'
     frozen.write_bytes(frozen_bytes)
@@ -229,7 +275,7 @@ printf fresh > "$OUTPUT_DIR/rootfs-tree/payload"
         chosen.symlink_to(target, target_is_directory=True)
     tools = tmp_path / "tools"
     tools.mkdir()
-    (tools / "uname").write_text("#!/bin/sh\necho Darwin\n")
+    (tools / "uname").write_text('#!/bin/sh\nif [ "${1:-}" = -m ]; then echo arm64; else echo Darwin; fi\n')
     # Emulate Lima's guest mount and remote environment, which does not inherit
     # host variables. Run both real build-all scripts with small image builders.
     (tools / "limactl").write_text(f'#!{sys.executable}\n' + '''import json, os, sys
@@ -243,7 +289,7 @@ elif args[0] == 'shell':
     if command[0] == 'sh':
         sys.exit(0 if command[-1] == '[ -d /build/guest ]' else 1)
     assert command[0] == 'env'
-    environment = {'PATH': os.environ['PATH']}
+    environment = {'PATH': os.environ['PATH'], 'SAFEYOLO_BUILD_PYTHON': sys.executable}
     command = command[1:]
     while command[0] != 'bash':
         key, value = command.pop(0).split('=', 1)

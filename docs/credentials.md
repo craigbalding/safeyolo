@@ -346,6 +346,13 @@ does not fall back to ordinary network delivery. Use `--host` when a definition
 has no default host. A host with a port retains that explicit egress constraint;
 the service mapping uses its hostname.
 
+If an approved service has no allow rule for the requested route, use the
+[temporary route approval flow](service-route-approval.md). The agent first
+reconsiders the host-recorded challenge. Explicit escalation creates a canonical
+operator approval; approving its finite `run` option permits an explicit retry
+with the existing credential. A direct risky-route grant does not override
+missing admission or an explicit denial.
+
 ## Catalogue changes and removals
 
 The installer selects built-in definitions in `assets/services` and

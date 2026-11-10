@@ -34,6 +34,10 @@ you opened. A running proxy alone does not mean that the agent is running.
 
 Keep the operator credential in the instance's `data/admin_token` on the host.
 
+For connections between instances and separately scoped support, notices,
+approval reviewers and factory directions, follow [guided federation and
+authority setup](federation-setup.md). It includes editing and named revocation.
+
 ## Schedule shell work
 
 Inside a running standard Debian guest, use cron for recurring work and at for
@@ -115,8 +119,11 @@ safeyolo agent present work
 ```
 
 The command returns a `url` and an `unlock_code`. Open that URL in your browser
-and enter the code. The Command Centre's approved desktop presentation opens
-the same SafeYolo page. Keep the code private. The existing five-minute,
+and enter the code. Command Centre copies the unlock code and reports whether
+macOS accepted the browser open request. Paste the code into the unlock page.
+A clipboard or browser failure reports the completed steps and the recovery
+action for that agent. The page's header and title identify the instance and
+agent from host metadata. Keep the code private. The existing five-minute,
 single-use unlock rules still apply.
 
 The desktop appears inside this page. Use the page's full-screen, keyboard,
@@ -134,6 +141,16 @@ When the service recovers, the page reconnects without a reload and retains
 its diagnostic history. Browser network events and a return to a visible page
 trigger fresh checks. A browser's offline hint alone does not disable a working
 local preview.
+
+If an approved `desktop.present` action fails its final readiness check, inspect
+the saved approval result. `desktop_not_ready` means the status command exited
+unsuccessfully. `desktop_readiness_timeout` means the check exceeded eight
+seconds. `desktop_readiness_command_failed` means SafeYolo could not complete
+the command. The operator result's diagnostic includes `operator_details` with
+the failed phase, command state and available exit or transport status. It
+retains at most 4096 bytes from each output stream and reports truncation.
+Keep these details private; guest output can contain sensitive data. Agent
+responses omit these details. Inspect current state before requesting again.
 
 The page checks both legs of its existing viewer connection with WebSocket
 Ping/Pong messages. The replies verify the existing browser-to-SafeYolo and
@@ -691,13 +708,51 @@ with `apr-`. Each traffic attempt also has its own `request_id`. Equivalent
 retries share the pending approval. A changed method, destination, resource,
 credential binding or offered scope gets a new approval.
 
-On the host, use your configured agent name in place of `work`. Copy
-`APPROVAL_ID` from the pending list. These commands leave the approval pending:
+On the host, run `safeyolo watch` in a terminal for live review. The heading
+identifies the selected instance configuration. Choose a displayed request
+number to read its agent, action, destination, effects, scope and offered
+options. Use `approve [OPTION]`, `reject`, `explain [OPTION]`, `ask` or `context`
+for that request. Approval keeps the existing default option when the approval
+offers one. A service request with several credential options asks for an
+option ID. The canonical resolver checks current identity, state and options
+before applying a decision.
+
+Use `later` or Enter to leave the selected request pending. Use `list` to see
+all pending requests, then choose the same number to revisit a deferred request.
+Numbers stay assigned to their requests for the session. Resolved numbers are
+never reassigned. Arrivals update the list while you type and preserve your
+selected request and unfinished input. `q` or Ctrl-C detaches; undecided requests
+remain pending. Colour cues have text labels; use `--no-color` to disable colour.
+
+Attachment and reconnect read current canonical pending state. The host repairs
+missed state notifications within five seconds while state and connections are
+healthy. Stream gaps, failed reads and stale views remain visible. A successful
+refresh identifies the recovered current set. Recovery does not replay resolved,
+cancelled or expired historical requests as pending. An uncertain decision is
+reconciled without automatically retrying it. Select the request again to inspect
+its current outcome before deciding again. Unsupported request types stay
+visible with an explicit inspection command; watch does not apply a generic approval.
+
+For a snapshot, use `safeyolo watch --once`. `--json`, `--no-interactive`, or
+redirected input or output keep the observer interface without prompts.
+`--jsonl FILE` reads recorded signal metadata and fetches its exact immutable
+revisions; it does not reconstruct current pending approvals.
+
+The explicit approval commands remain available. Use your configured agent name
+in place of `work`. Copy `APPROVAL_ID` from the pending list. These commands leave
+the approval pending:
 
 ```sh
-safeyolo approvals list --agent work --json
-safeyolo approvals show APPROVAL_ID --agent work --json
+safeyolo approvals list --agent work
+safeyolo approvals show APPROVAL_ID --agent work
+safeyolo approvals explain APPROVAL_ID --agent work
 ```
+
+The normal views retain the applicable SafeYolo assessment, reviewed guidance,
+option IDs, effects, lifetime, uncertainty and recorded outcome. Command Centre
+shows the same canonical decision facts. Agent-provided reasons remain separate,
+untrusted context. Use `--json` for the structured record. Explanation grants
+no permission; a decision still checks current authority.
 
 You can inspect traffic, logs and the approval again before deciding. The
 approval retains its original authority and options. Expect `status: pending`
@@ -797,6 +852,23 @@ a policy deny rule. Reconnect reads the recorded outcome before another decision
 
 ## Recover from a failed operation
 
+Command Centre's agent and approval lists report each read separately. A list
+that has not loaded is unknown. A successful empty read says there are no entries
+and gives its observation time. A failed read retains any last-observed entries
+with a stale qualification and a refresh action. An authenticated Admin API or
+healthy live-event connection does not establish a successful inventory read.
+Recovery guidance keeps the connected executable, root/configuration and remote
+terminal target. If that context is missing, supply it in Connection Settings
+or inspect the selected host's installation before retrying.
+
+If a credential operation reports `VAULT_LOCKED`, use the selected instance's
+installed CLI on the owning host to run `credentials unlock`, then explicitly
+retry that credential operation. Startup and unrelated traffic do not need an
+unlocked vault. `VAULT_ABSENT` requires storing a credential first;
+`VAULT_UNAVAILABLE` means storage could not be loaded and its unlock state is
+unknown. Inspect the reported storage failure; waiting for startup is not a
+repair.
+
 If `inspect` reports `inspect requires a terminal`, open it in an interactive
 host terminal or use direct commands with `--agent` and `--json`. Inspect
 prompt inputs cannot be piped to a noninteractive process.
@@ -835,6 +907,18 @@ endpoint, then use `safeyolo start` and `safeyolo policy show`. For agent runtim
 or shell failures, follow [agent diagnosis and recovery](installation.md#configure-and-use-an-agent).
 Keep the selected root and executable when retrying. Direct human decisions
 remain usable when an optional assistant's model is unavailable.
+
+For Rust panic backtraces, set `RUST_BACKTRACE=1` in the environment of the host
+process that starts the proxy. The setting takes effect at the next proxy start;
+changing a shell environment does not change an already running proxy.
+Production builds retain source-line information for the proxy package while
+keeping release optimization. Dependency frames can lack source lines.
+The native launcher appends proxy stdout and stderr to `logs/proxy.log` under
+the selected instance root. Keep raw backtraces and core dumps private because
+diagnostic data can contain sensitive information. Retain the executable and
+its `--version` source/profile identity with any diagnostic capture.
+`RUST_BACKTRACE=1` does not enable core dumps or produce a backtrace after
+`SIGKILL`. Core capture needs separately configured private storage and limits.
 
 ## Optional: inspect a factory
 

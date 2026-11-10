@@ -38,12 +38,12 @@ impl Reply {
     }
 }
 
-async fn receive(stream: &mut (impl AsyncReadExt + Unpin)) -> Reply {
+async fn receive(stream: &mut (impl AsyncReadExt + Unpin), phase: &str) -> Reply {
     let mut bytes = Vec::new();
     timeout(LIMIT, stream.read_to_end(&mut bytes))
         .await
-        .unwrap()
-        .unwrap();
+        .unwrap_or_else(|_| panic!("{phase}: response timed out"))
+        .unwrap_or_else(|error| panic!("{phase}: response read failed ({:?})", error.kind()));
     let end = bytes
         .windows(4)
         .position(|part| part == b"\r\n\r\n")
@@ -75,6 +75,16 @@ impl Fixture {
         let root = tempfile::tempdir().unwrap();
         let data = root.path().join("data");
         fs::create_dir(&data).unwrap();
+        fs::write(
+            data.join("instance_id"),
+            "sy-11111111111111111111111111111111",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("config.toml"),
+            "policy_file='policy.toml'\n",
+        )
+        .unwrap();
         fs::create_dir(root.path().join("builtin-services")).unwrap();
         fs::create_dir(root.path().join("services")).unwrap();
         fs::write(data.join("agent_token"), "synthetic-agent-token").unwrap();
@@ -141,7 +151,7 @@ impl Fixture {
             .await
             .unwrap();
         stream.write_all(format!("{method} http://_safeyolo.proxy.internal{path} HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer synthetic-agent-token\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
-        receive(&mut stream).await
+        receive(&mut stream, &format!("agent API {agent} {method} {path}")).await
     }
 
     pub(crate) async fn admin(&self, method: &str, path: &str, value: Option<Value>) -> Reply {
@@ -159,7 +169,7 @@ impl Fixture {
         let body = value.map(|value| value.to_string()).unwrap_or_default();
         let mut stream = TcpStream::connect(("127.0.0.1", self.admin)).await.unwrap();
         stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
-        receive(&mut stream).await
+        receive(&mut stream, &format!("admin API {method} {path}")).await
     }
 
     pub(crate) async fn network(&self, agent: &str, address: std::net::SocketAddr) -> Reply {
@@ -178,7 +188,7 @@ impl Fixture {
             .await
             .unwrap();
         stream.write_all(format!("{method} http://{address}{path} HTTP/1.1\r\nHost: {address}\r\n{headers}Content-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
-        receive(&mut stream).await
+        receive(&mut stream, &format!("gateway {agent} {method} {path}")).await
     }
 
     pub(crate) async fn apply(&self, source: &str) {

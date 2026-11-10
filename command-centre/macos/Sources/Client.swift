@@ -4,13 +4,62 @@ import Foundation
 protocol EventSocket: AnyObject {
     var response: URLResponse? { get }
     var closeCode: URLSessionWebSocketTask.CloseCode { get }
-    func resume()
-    func sendPing(pongReceiveHandler: @escaping @Sendable (Error?) -> Void)
+    func open() async throws
     func receive() async throws -> URLSessionWebSocketTask.Message
     func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
 }
 
-extension URLSessionWebSocketTask: EventSocket {}
+private final class EventSocketHandshake: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var cancelled = false
+
+    func open(_ socket: URLSessionWebSocketTask) async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let cancelled = lock.withLock {
+                    if self.cancelled { return true }
+                    self.continuation = continuation
+                    return false
+                }
+                if cancelled { continuation.resume(throwing: CancellationError()) }
+                else {
+                    socket.delegate = self
+                    socket.resume()
+                }
+            }
+        } onCancel: {
+            self.lock.withLock { self.cancelled = true }
+            self.finish(.failure(CancellationError()))
+            socket.cancel(with: .goingAway, reason: nil)
+        }
+    }
+
+    private func finish(_ result: Result<Void, Error>) {
+        let completion = lock.withLock {
+            let current = continuation
+            continuation = nil
+            return current
+        }
+        completion?.resume(with: result)
+    }
+
+    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+        finish(.success(()))
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        finish(.failure(error ?? URLError(.networkConnectionLost)))
+    }
+}
+
+extension URLSessionWebSocketTask: EventSocket {
+    func open() async throws {
+        let handshake = EventSocketHandshake()
+        defer { withExtendedLifetime(handshake) {} }
+        try await handshake.open(self)
+    }
+}
 
 @MainActor
 final class SafeYoloClient: ObservableObject {
@@ -29,6 +78,8 @@ final class SafeYoloClient: ObservableObject {
     @Published private(set) var approvalOutcomes: [String: ApprovalResolution] = [:]
     @Published private(set) var unavailableApprovalOutcomes = Set<String>()
     @Published private(set) var agents: [AgentInfo] = []
+    @Published private(set) var approvalObservation = ListObservation()
+    @Published private(set) var agentObservation = ListObservation()
     @Published private(set) var securityEvents: [SecurityObservation] = []
     @Published private(set) var busyAgentIDs = Set<String>()
     @Published private(set) var pendingTerminalIDs = Set<String>()
@@ -42,6 +93,16 @@ final class SafeYoloClient: ObservableObject {
     @Published private(set) var requestErrors: [String: String] = [:]
     @Published private(set) var eventFeedGap: String?
     @Published private(set) var adminConnected = false
+    @Published private(set) var supportReceipts: [SupportReceipt] = []
+    @Published private(set) var supportReceiptTotal = 0
+    @Published private(set) var supportReceiptOmitted = 0
+    @Published private(set) var supportReadTimes: [String: Date] = [:]
+    @Published private(set) var pendingSignals: [OperatorSignal] = []
+    @Published private(set) var pendingSignalTotal = 0
+    @Published private(set) var pendingSignalNext: String?
+    @Published private(set) var observationDiagnostics: JSONValue?
+    @Published private(set) var supportGrants: [JSONValue] = []
+    @Published private(set) var operationalEvents: [OperatorEventEnvelope] = []
     @Published private(set) var eventEndpoint: InstanceInfo.EventEndpoint?
 
     var connectionSummary: String {
@@ -53,27 +114,41 @@ final class SafeYoloClient: ObservableObject {
 
     var connectionGuidance: String? {
         guard adminConnected, connectionState != .connected, connectionState != .stopped else { return nil }
-        let host = isLocalConnection ? "this Mac" : "the connected SafeYolo host"
-        if eventEndpoint?.enabled == false {
-            return """
-            Admin API connected. Live events are disabled in the running SafeYolo host.
-            On \(host), set enabled = true in the [command_centre] table of the connected instance's TOML configuration, then run its installed CLI:
-            safeyolo stop
-            safeyolo start
+        do {
+            if eventEndpoint?.enabled == false {
+                let configuration = hostConfigPath ?? hostRoot.map { $0 + "/config.toml" }
+                guard let configuration else { throw ConnectionError.missingNativeInstallation }
+                return """
+                Instance \(instanceID): Admin API connected. Live events are disabled.
+                On the selected host, set enabled = true in [command_centre] in \(configuration).
+                Restart that instance to apply the change:
+                \(try recoveryCommand("stop"))
+                \(try recoveryCommand("start"))
 
-            If you already enabled live events, restart SafeYolo to apply the change.
-            Restarting briefly interrupts agent networking and Coord. Agents stay running.
-            """
-        }
-        if requestErrors["Live events"] != nil {
-            return """
-            Admin API connected, but the live-event connection failed.
-            On \(host), run the connected instance's installed CLI: safeyolo doctor.
-            Check [command_centre] in its TOML configuration, the event port, and any SSH tunnel or Tailnet forwarding.
-            Copy Diagnostics includes the connection failure and retry history.
-            """
+                Restarting briefly interrupts agent networking and Coord. Agents stay running.
+                """
+            }
+            if requestErrors["Live events"] != nil {
+                return """
+                Instance \(instanceID): Admin API connected, but the live-event connection failed.
+                \(try recoveryCommand("doctor"))
+                Doctor probes this instance's configuration, listeners and host prerequisites; it does not prove agent readiness.
+                Check [command_centre], the event port, and the selected SSH tunnel or Tailnet forwarding.
+                Copy Diagnostics includes the connection failure and retry history.
+                """
+            }
+        } catch {
+            return "Instance \(instanceID): recovery command unavailable. \(error.localizedDescription) Open Connection Settings to supply the missing remote context, or inspect the selected host's installation."
         }
         return nil
+    }
+
+    // Callers construct command words and shell quote any target values.
+    func recoveryCommand(_ arguments: String) throws -> String {
+        try installedHostCommand(arguments: arguments, remote: usesRemoteTerminal,
+            terminalTarget: terminalTarget, adminURL: adminURL.absoluteString, hostUser: hostUser,
+            hostExecutable: hostExecutable, hostRoot: hostRoot, hostConfigPath: hostConfigPath,
+            transport: transport)
     }
 
     var diagnosticReport: String {
@@ -87,8 +162,8 @@ final class SafeYoloClient: ObservableObject {
         State: \(connectionSummary)
         Admin API authenticated: \(adminConnected)
         Host event listener: \(endpointState)
-        Agents in snapshot: \(agents.count)
-        Pending approvals in snapshot: \(approvals.count)
+        \(agentObservation.summary("Configured agents", count: agents.count))
+        \(approvalObservation.summary("Pending approvals", count: approvals.count))
         Current failed operations: \(requestErrors.keys.sorted().joined(separator: ", "))
         Feed gap: \(eventFeedGap ?? "None")
         Guidance: \(connectionGuidance ?? "None")
@@ -111,14 +186,21 @@ final class SafeYoloClient: ObservableObject {
     let expectedInstanceID: String
     private let session: URLSession
     private let isLocalConnection: Bool
+    private let terminalTarget: String?
+    private let transport: RemoteTransport
+    private let usesRemoteTerminal: Bool
     private let makeEventSocket: (URLRequest) -> any EventSocket
-    private let retryPause: @MainActor () async throws -> Void
+    private let retryPause: (@MainActor () async throws -> Void)?
     private var diagnostics = ConnectionDiagnostics()
     private var webSocket: (any EventSocket)?
     private var connectionTask: Task<Void, Never>?
     private var knownApprovalIDs = Set<String>()
     private var knownSecurityEventIDs = Set<String>()
     private var stopping = false
+    private var retrySeconds = 1
+    private var supportObservers = 0
+    private var supportRefreshTask: Task<Void, Never>?
+    private var supportRefreshRequested = false
     private var pendingTerminals: [String: (Result<AgentInfo, Error>) -> Void] = [:]
 
     init(
@@ -128,8 +210,11 @@ final class SafeYoloClient: ObservableObject {
         expectedInstanceID: String,
         session: URLSession = .shared,
         isLocalConnection: Bool = false,
+        terminalTarget: String? = nil,
+        transport: RemoteTransport = .tailnet,
+        usesRemoteTerminal: Bool? = nil,
         makeEventSocket: ((URLRequest) -> any EventSocket)? = nil,
-        retryPause: @escaping @MainActor () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }
+        retryPause: (@MainActor () async throws -> Void)? = nil
     ) throws {
         guard let parsedAdminURL = URL(string: adminURL) else {
             throw ClientError.invalidURL(adminURL)
@@ -143,18 +228,24 @@ final class SafeYoloClient: ObservableObject {
         self.expectedInstanceID = expectedInstanceID
         self.session = session
         self.isLocalConnection = isLocalConnection
+        self.terminalTarget = terminalTarget
+        self.transport = transport
+        self.usesRemoteTerminal = usesRemoteTerminal ?? !["127.0.0.1", "localhost", "::1", "[::1]"].contains(parsedAdminURL.host ?? "")
         self.makeEventSocket = makeEventSocket ?? { session.webSocketTask(with: $0) }
         self.retryPause = retryPause
     }
 
     func start() {
         stopping = false
+        retrySeconds = 1
         setConnectionState(.connecting)
         reconnectUntilAvailable()
     }
 
     func stop() {
         stopping = true
+        adminConnected = false
+        supportRefreshTask?.cancel()
         let cancelled = pendingTerminals.values
         pendingTerminals.removeAll()
         pendingTerminalIDs.removeAll()
@@ -174,7 +265,9 @@ final class SafeYoloClient: ObservableObject {
             guard let self else { return }
             while !Task.isCancelled, !stopping {
                 diagnostics.attempts += 1
+                let reconcileSupport = !adminConnected
                 if await refreshInstance() {
+                    if reconcileSupport { scheduleSupportRefresh() }
                     let approvalsReady = await refreshApprovals()
                     _ = await refreshAgents()
                     guard !Task.isCancelled, !stopping else { return }
@@ -194,7 +287,11 @@ final class SafeYoloClient: ObservableObject {
                 diagnostics.retries += 1
                 // Every retry, including a successful HTTP snapshot followed by
                 // a failed WebSocket, passes through this cancellable delay.
-                do { try await retryPause() } catch { return }
+                do {
+                    if let retryPause { try await retryPause() }
+                    else { try await Task.sleep(for: .seconds(retrySeconds)) }
+                    retrySeconds = min(retrySeconds * 2, 30)
+                } catch { return }
             }
         }
     }
@@ -203,6 +300,10 @@ final class SafeYoloClient: ObservableObject {
         guard connectionState != state else { return }
         diagnostics.record("State: \(state.rawValue)")
         connectionState = state
+        if state == .reconnecting || state == .stopped {
+            approvalObservation.interrupted()
+            agentObservation.interrupted()
+        }
     }
 
     private func setRequestError(_ operation: String, _ error: Error?) {
@@ -410,7 +511,11 @@ final class SafeYoloClient: ObservableObject {
     }
 
     @discardableResult
-    func refreshApprovals() async -> Bool {
+    func refreshApprovals(verifyInstance: Bool = false) async -> Bool {
+        if verifyInstance, !(await refreshInstance()) {
+            approvalObservation.failed("Selected instance could not be verified; this list was not refreshed.")
+            return false
+        }
         do {
             let data = try await request(path: "/admin/approvals")
             let fresh = try JSONDecoder().decode(PendingApprovals.self, from: data).approvals
@@ -430,6 +535,7 @@ final class SafeYoloClient: ObservableObject {
                 }
             }
             if approvals != fresh { approvals = fresh }
+            approvalObservation.succeeded()
             let newApprovals = fresh.filter { !knownApprovalIDs.contains($0.id) }
             knownApprovalIDs = Set(fresh.map(\.id))
             for approval in newApprovals {
@@ -449,6 +555,7 @@ final class SafeYoloClient: ObservableObject {
         } catch {
             guard !Task.isCancelled else { return false }
             unavailableApprovalOutcomes.formUnion(approvalOutcomes.keys)
+            approvalObservation.failed(error.localizedDescription)
             setRequestError("Pending approvals", error)
             return false
         }
@@ -460,16 +567,22 @@ final class SafeYoloClient: ObservableObject {
     }
 
     @discardableResult
-    func refreshAgents() async -> Bool {
+    func refreshAgents(verifyInstance: Bool = false) async -> Bool {
+        if verifyInstance, !(await refreshInstance()) {
+            agentObservation.failed("Selected instance could not be verified; this list was not refreshed.")
+            return false
+        }
         do {
             let data = try await request(path: "/admin/agents")
             let fresh = try JSONDecoder().decode(AgentInventory.self, from: data).agents
             if agents != fresh { agents = fresh }
+            agentObservation.succeeded()
             finishPendingTerminals(agents, completeInventory: true)
             setRequestError("Agent status", nil)
             return true
         } catch {
             guard !Task.isCancelled else { return false }
+            agentObservation.failed(error.localizedDescription)
             setRequestError("Agent status", error)
             return false
         }
@@ -484,13 +597,14 @@ final class SafeYoloClient: ObservableObject {
         let socket = makeEventSocket(request)
         diagnostics.socketAttempts += 1
         webSocket = socket
-        socket.resume()
         defer {
             socket.cancel(with: .goingAway, reason: nil)
             if webSocket === socket { webSocket = nil }
         }
         do {
-            try await ping(socket)
+            // didOpen confirms the authenticated HTTP upgrade. Waiting for a
+            // pong before receiving can stall Foundation's WebSocket task.
+            try await socket.open()
             guard !stopping, !Task.isCancelled, webSocket === socket else { return }
             diagnostics.lastEventSuccess = Date()
             // The listener registers before the handshake completes. Re-read the
@@ -498,7 +612,9 @@ final class SafeYoloClient: ObservableObject {
             // but before this handshake cannot fall between both channels.
             guard await refreshApprovals() else { throw ClientError.invalidResponse }
             guard !stopping, !Task.isCancelled, webSocket === socket else { return }
+            retrySeconds = 1
             setConnectionState(.connected)
+            scheduleSupportRefresh()
             if eventFeedGap != nil {
                 eventFeedGap = "Live event feed reconnected after a gap; events during the gap may be missing."
             }
@@ -546,23 +662,178 @@ final class SafeYoloClient: ObservableObject {
             } else if eventFeedGap?.hasPrefix("Recorded event feed unavailable.") == true {
                 eventFeedGap = "Recorded event feed recovered. History during the interruption may be missing."
             }
+            scheduleSupportRefresh()
             // The canonical list retains attention claims and suppression.
             // Recovery only reads existing requests; it never resubmits them.
             guard await refreshApprovals() else { throw ClientError.invalidResponse }
             return
         }
         let event = try JSONDecoder().decode(OperatorEventEnvelope.self, from: data)
+        if event.event == "agent.operational" || event.event.hasPrefix("agent.support_operation_") {
+            let owner = event.details?["reference"]?.fields?["instance_id"]?.text ?? event.details?["instance_id"]?.text
+            guard owner == expectedInstanceID else { throw ClientError.invalidResponse }
+        }
         if event.needsApproval || event.event.hasPrefix("admin.") || event.event == "agent.network_action_prepared" {
             guard await refreshApprovals() else {
                 throw ClientError.invalidResponse
             }
         }
-        if event.event.hasPrefix("agent.") {
+        if event.event.hasPrefix("agent.") && event.event != "agent.operational"
+            && !event.event.hasPrefix("agent.support_operation_") {
             _ = await refreshAgents()
+        }
+        if event.event == "agent.operational" || event.event.hasPrefix("agent.support_operation_") {
+            if !operationalEvents.contains(where: { $0.eventID != nil && $0.eventID == event.eventID }) {
+                operationalEvents.insert(event, at: 0)
+                operationalEvents = Array(operationalEvents.prefix(100))
+            }
+        }
+        if event.event == "agent.operational" || event.event.hasPrefix("agent.support_operation_")
+            || event.event.hasPrefix("admin.") || event.event.hasPrefix("coord.signal") {
+            scheduleSupportRefresh()
         }
         if event.isSecurityObservation {
             recordSecurityEvent(event)
         }
+    }
+
+    func beginSupportObservation() {
+        supportObservers += 1
+        scheduleSupportRefresh()
+    }
+
+    func endSupportObservation() {
+        supportObservers = max(0, supportObservers - 1)
+        if supportObservers == 0 {
+            supportRefreshTask?.cancel()
+        }
+    }
+
+    private func scheduleSupportRefresh() {
+        guard supportObservers > 0, !stopping else { return }
+        supportRefreshRequested = true
+        guard supportRefreshTask == nil else { return }
+        supportRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                supportRefreshTask = nil
+                if supportRefreshRequested, supportObservers > 0, !stopping { scheduleSupportRefresh() }
+            }
+            while supportRefreshRequested, !Task.isCancelled, !stopping {
+                supportRefreshRequested = false
+                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                await refreshSupport()
+            }
+        }
+    }
+
+    func refreshSupport() async {
+        guard !stopping, await refreshInstance() else { return }
+        _ = await refreshAgents()
+        await refreshSupportReceipts()
+        await refreshSupportGrants()
+        await refreshPendingSignals()
+        await refreshObservationDiagnostics()
+    }
+
+    func refreshSupportReceipts() async {
+        do {
+            let data = try await request(path: "/admin/support-operations/list", method: "POST", json: ["limit": 100])
+            let page = try JSONDecoder().decode(SupportReceiptPage.self, from: data)
+            _ = try validatePinnedInstanceID(actual: page.instanceID, expected: expectedInstanceID)
+            guard page.receipts.allSatisfy({ $0.instanceID == expectedInstanceID }) else { throw ClientError.invalidResponse }
+            supportReceipts = page.receipts
+            supportReceiptTotal = page.total
+            supportReceiptOmitted = page.omitted
+            supportReadTimes["Support receipts"] = Date()
+            setRequestError("Support receipts", nil)
+        } catch {
+            guard !Task.isCancelled else { return }
+            setRequestError("Support receipts", error)
+        }
+    }
+
+    func refreshSupportGrants() async {
+        do {
+            guard await refreshInstance() else { throw ClientError.connectionUnavailable }
+            let data = try await request(path: "/admin/support-grants")
+            let value = try JSONDecoder().decode(JSONValue.self, from: data)
+            _ = try validatePinnedInstanceID(actual: value.fields?["instance_id"]?.text ?? "", expected: expectedInstanceID)
+            guard let grants = value.fields?["grants"]?.values else { throw ClientError.invalidResponse }
+            supportGrants = grants
+            supportReadTimes["Support grants"] = Date()
+            setRequestError("Support grants", nil)
+        } catch {
+            guard !Task.isCancelled else { return }
+            setRequestError("Support grants", error)
+        }
+    }
+
+    func refreshPendingSignals(after: String? = nil) async {
+        do {
+            guard await refreshInstance() else { throw ClientError.connectionUnavailable }
+            let query = after.flatMap(encodePathComponent).map { "?after=\($0)" } ?? ""
+            let data = try await request(path: "/admin/coord/signals" + query)
+            let page = try JSONDecoder().decode(OperatorSignalPage.self, from: data)
+            if after == nil { pendingSignals = page.items }
+            else {
+                for signal in page.items {
+                    pendingSignals.removeAll { $0.signalID == signal.signalID }
+                    pendingSignals.append(signal)
+                }
+            }
+            pendingSignalTotal = page.total
+            pendingSignalNext = page.nextAfter
+            supportReadTimes["Pending human signals"] = Date()
+            setRequestError("Pending human signals", nil)
+        } catch {
+            guard !Task.isCancelled else { return }
+            setRequestError("Pending human signals", error)
+        }
+    }
+
+    func refreshObservationDiagnostics() async {
+        do {
+            guard await refreshInstance() else { throw ClientError.connectionUnavailable }
+            let data = try await request(path: "/admin/coord/diagnostics")
+            let value = try JSONDecoder().decode(JSONValue.self, from: data)
+            guard value.fields?["observations"]?.values != nil else { throw ClientError.invalidResponse }
+            observationDiagnostics = value
+            supportReadTimes["Observation sources"] = Date()
+            setRequestError("Observation sources", nil)
+        } catch {
+            guard !Task.isCancelled else { return }
+            setRequestError("Observation sources", error)
+        }
+    }
+
+    func readSupportReceipt(_ receipt: SupportReceipt, includeOutput: Bool = false) async throws -> SupportReceiptDetail {
+        guard receipt.instanceID == expectedInstanceID else { throw ClientError.connectionUnavailable }
+        let data = try await request(path: "/admin/support-operations/read", method: "POST", json: [
+            "operation_id": receipt.operationID, "initiator": receipt.initiator,
+            "include_output": includeOutput, "current": true
+        ])
+        let detail = try JSONDecoder().decode(SupportReceiptDetail.self, from: data)
+        guard detail.receipt.id == receipt.id, detail.receipt.targetID == receipt.targetID,
+              detail.outputIncluded == includeOutput else { throw ClientError.invalidResponse }
+        return detail
+    }
+
+    func readOperatorSignal(_ signal: OperatorSignal) async throws -> JSONValue {
+        guard let id = encodePathComponent(signal.signalID), await refreshInstance() else { throw ClientError.connectionUnavailable }
+        let data = try await request(path: "/admin/coord/signals/\(id)?revision=\(signal.revision)")
+        let value = try JSONDecoder().decode(JSONValue.self, from: data)
+        guard let observed = value.fields?["signal"]?.fields,
+              observed["signal_id"]?.text == signal.signalID,
+              observed["room_id"]?.text == signal.roomID,
+              observed["revision"] == .number(Double(signal.revision)) else { throw ClientError.invalidResponse }
+        return value
+    }
+
+    func readSupportAuthority(grant: String) async throws -> JSONValue {
+        guard let name = encodePathComponent(grant) else { throw ClientError.invalidResponse }
+        let data = try await request(path: "/admin/support-grants/\(name)/report", method: "POST", json: [:])
+        return try JSONDecoder().decode(JSONValue.self, from: data)
     }
 
     private func recordSecurityEvent(_ event: OperatorEventEnvelope) {
@@ -579,24 +850,13 @@ final class SafeYoloClient: ObservableObject {
         onNewSecurityEvent?(observation)
     }
 
-    private func ping(_ socket: any EventSocket) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            socket.sendPing { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
-            }
-        }
-    }
-
     private func request(
         path: String,
         method: String = "GET",
         json: [String: Any]? = nil,
         timeout: TimeInterval? = nil
     ) async throws -> Data {
+        try Task.checkCancellation()
         if method == "POST" {
             guard !stopping, await refreshInstance(), !stopping else { throw ClientError.connectionUnavailable }
         }
