@@ -16,6 +16,8 @@ use crate::{Error, host_platform, native_client, native_config, network_guard};
 mod configure;
 mod observations;
 mod support;
+mod watch;
+pub(crate) use watch::run as watch_approvals;
 
 pub const HELP: &str = "safeyolo [--root ROOT] inspect [--factory NAME] [--agent NAME]
 safeyolo [--root ROOT] configure connection|support NAME|approvals NAME
@@ -781,10 +783,19 @@ async fn resolve_preview(
         }
     }
     let mut preview = approval(root, id, agent).await?;
-    if preview["action"] != inspected["action"] {
+    if preview["approval_id"] == inspected["approval_id"] && preview["status"] != "pending" {
+        return Ok(preview);
+    }
+    // The authority digest binds fixed option scopes. Their current availability
+    // can change independently; the host resolver checks the selected option.
+    if ["approval_id", "request_id", "authority_digest", "action"]
+        .iter()
+        .any(|field| preview[*field] != inspected[*field])
+    {
         preview["status"] = json!("stale");
-        preview["effect"] =
-            json!("Request scope changed. Inspect the pending requests again before deciding.");
+        preview["effect"] = json!(
+            "Request identity, scope or options changed. Inspect the pending requests again before deciding."
+        );
     }
     if preview["status"] != "pending" {
         return Ok(preview);
@@ -867,6 +878,48 @@ pub(crate) async fn pending(root: &Path, agent: Option<&str>) -> Result<Value, E
     Ok(value)
 }
 
+fn approval_decision_commands(view: &Value) -> String {
+    let mut commands: Vec<_> = view["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|option| option["status"] == "available")
+        .filter_map(|option| option["id"].as_str())
+        .map(|id| format!("approve {}", safe(id)))
+        .collect();
+    commands.push("reject".into());
+    commands.join(" / ")
+}
+
+#[cfg(test)]
+#[test]
+fn decision_commands_show_current_offered_options_including_single_actions() {
+    for (options, commands) in [
+        (
+            json!([{"id":"once","status":"available"}]),
+            "approve once / reject",
+        ),
+        (
+            json!([{"id":"persistent","status":"available"},{"id":"run","status":"available"}]),
+            "approve persistent / approve run / reject",
+        ),
+        (
+            json!([{"id":"persistent","status":"available"},{"id":"run","status":"superseded"},{"id":"session","status":"expired"}]),
+            "approve persistent / reject",
+        ),
+        (json!([]), "reject"),
+    ] {
+        assert_eq!(
+            approval_decision_commands(&json!({"options":options})),
+            commands
+        );
+    }
+    let escaped = approval_decision_commands(
+        &json!({"options":[{"id":"credential-\u{1b}[31m","status":"available"}]}),
+    );
+    assert!(!escaped.contains('\u{1b}'), "{escaped:?}");
+}
+
 /// Select canonical requests without copying a request ID or fingerprint.
 /// The guest terminal has returned before this host-owned interaction begins.
 pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error> {
@@ -891,7 +944,10 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
             );
             show_request_history(entry)?;
         }
-        let Some(answer) = crate::host_launch::input("Request number (Enter returns): ")? else {
+        let Some(answer) = crate::host_launch::input(
+            "Type a displayed request number (for example, 1; Enter returns): ",
+        )?
+        else {
             return Ok(());
         };
         if answer.is_empty() {
@@ -939,10 +995,11 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
         }
         let mut selected_option: Option<String> = None;
         loop {
-            let Some(answer) = crate::host_launch::input(
-                "approve / reject / explain [OPTION] (e) / ask agent (a) / context (c) / Enter to leave unchanged: ",
-            )?
-            else {
+            let prompt = format!(
+                "{} / explain [OPTION] (e) / ask agent (a) / context (c) / Enter to leave unchanged: ",
+                approval_decision_commands(&view)
+            );
+            let Some(answer) = crate::host_launch::input(&prompt)? else {
                 return Ok(());
             };
             let parts: Vec<_> = answer.split_whitespace().collect();

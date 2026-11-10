@@ -3719,6 +3719,9 @@ where
                     )?;
                     return Ok((prior_block(reply), "deny".into()));
                 }
+                let git = credential.github_git.as_ref();
+                let gateway_method = git.map_or(request.method().as_str(), |_| "POST");
+                let gateway_path = git.map_or(destination.path.as_str(), |git| git.path.as_str());
                 if policy
                     .gateway()
                     .and_then(|gateway| gateway.registry())
@@ -3734,7 +3737,7 @@ where
                         "service":credential.service,"capability":credential.capability,"account":credential.account,
                         "credential":credential.vault_token,"binding_id":credential.binding_id,"run":identity.current_agent_run(),
                         "host":destination.policy_host,"scheme":destination.scheme,"port":destination.port,
-                        "method":request.method().as_str(),"path":destination.path.split('?').next().unwrap_or("/")});
+                        "method":gateway_method,"path":gateway_path.split('?').next().unwrap_or("/")});
                     let assessed = crate::approvals::pending::route_challenge::assessment(
                         &runtime, policy, &action,
                     )?;
@@ -3747,7 +3750,7 @@ where
                         crate::policy::Effect::Allow | crate::policy::Effect::Prompt
                     ) {
                         let mut event = identity.request_event("gateway.risky_route",crate::audit::Kind::Gateway,request_id,
-                            "Operator policy prohibits modeled service effects",json!({"service":credential.service,"method":request.method().as_str(),"path":action["path"],"assessment":assessed}));
+                            "Operator policy prohibits modeled service effects",json!({"service":credential.service,"method":gateway_method,"path":action["path"],"assessment":assessed}));
                         event.decision = Some(crate::audit::Decision::Deny);
                         event.severity = crate::audit::Severity::High;
                         runtime.audit.emit(event)?;
@@ -3769,7 +3772,7 @@ where
                     {
                         credential.risky_route = Some(crate::services::RiskyRoute {
                             path: action["path"].as_str().unwrap_or("/").into(),
-                            methods: vec![request.method().as_str().into()],
+                            methods: vec![gateway_method.into()],
                             description:
                                 "Prepared service effects require approval under operator policy."
                                     .into(),
@@ -3808,8 +3811,8 @@ where
                             tactics: &risky.tactics,
                             enables: &risky.enables,
                             irreversible: risky.irreversible,
-                            method: request.method().as_str(),
-                            path: destination.path.split('?').next().unwrap_or("/"),
+                            method: gateway_method,
+                            path: gateway_path.split('?').next().unwrap_or("/"),
                         });
                         if !matches!(
                             risk.effect,
@@ -3834,8 +3837,8 @@ where
                             agent: Some(&run.agent),
                             host: &destination.policy_host,
                             port: Some(destination.port),
-                            method: request.method().as_str(),
-                            path: &destination.path,
+                            method: gateway_method,
+                            path: gateway_path,
                         },
                         &destination.scheme,
                     )?;
@@ -3843,7 +3846,7 @@ where
                         route_challenge_selection = Some(credential.clone());
                     } else {
                         runtime.audit.emit(identity.request_event("gateway.route_exception_used", crate::audit::Kind::Gateway, request_id,
-                            "Explicit retry uses a temporary service route permission", json!({"grant_id":grant_lease.as_ref().map(|lease| &lease.grant().grant_id),"method":request.method().as_str(),"path":destination.path.split('?').next().unwrap_or("/")})))?;
+                            "Explicit retry uses a temporary service route permission", json!({"grant_id":grant_lease.as_ref().map(|lease| &lease.grant().grant_id),"method":gateway_method,"path":gateway_path.split('?').next().unwrap_or("/")})))?;
                         credential.authorization_binding = grant_lease
                             .as_ref()
                             .and_then(|lease| lease.grant().delegated.as_deref())
@@ -3863,7 +3866,8 @@ where
                 if !credential.missing_route_allow
                     && let Some(risky) = credential.risky_route.as_ref()
                 {
-                    let risky_path = destination.path.split('?').next().unwrap_or("/");
+                    let risky_path = gateway_path.split('?').next().unwrap_or("/");
+                    let risky_method = gateway_method;
                     let mut granted = None;
                     if let Some(store) = runtime.gateway_grants.as_ref() {
                         granted = store
@@ -3873,7 +3877,7 @@ where
                                         .request_agent()
                                         .expect("selected gateway identity"),
                                     service: &credential.service,
-                                    method: request.method().as_str(),
+                                    method: risky_method,
                                     path: risky_path,
                                 },
                                 time::OffsetDateTime::now_utc(),
@@ -3897,7 +3901,7 @@ where
                             tactics: &risky.tactics,
                             enables: &risky.enables,
                             irreversible: risky.irreversible,
-                            method: request.method().as_str(),
+                            method: risky_method,
                             path: risky_path,
                         });
                         if risk.effect != crate::policy::Effect::Allow {
@@ -3908,16 +3912,27 @@ where
                             };
                             let agent =
                                 identity.request_agent().expect("selected gateway identity");
-                            let method = request.method().as_str();
+                            let method = risky_method;
                             let mut audit = crate::audit::Event::new(
                                 "gateway.risky_route",
                                 crate::audit::Kind::Gateway,
                                 crate::audit::Severity::High,
-                                format!(
-                                    "Risky route {} {}{}",
-                                    crate::network_guard::sanitize(method),
-                                    crate::network_guard::sanitize(&credential.service),
-                                    crate::network_guard::sanitize(risky_path),
+                                git.map_or_else(
+                                    || {
+                                        format!(
+                                            "Risky route {} {}{}",
+                                            crate::network_guard::sanitize(method),
+                                            crate::network_guard::sanitize(&credential.service),
+                                            crate::network_guard::sanitize(risky_path),
+                                        )
+                                    },
+                                    |git| {
+                                        format!(
+                                            "{agent} wants to {} to {}",
+                                            git.action(),
+                                            git.repository
+                                        )
+                                    },
                                 ),
                             );
                             audit.addon = Some("service-gateway".into());
@@ -3944,7 +3959,7 @@ where
                                     scope_hint: json!({"method":method,"path":risky_path}).into(),
                                 });
                             }
-                            audit.details = json!({
+                            let mut details = json!({
                                 "service":credential.service,
                                 "capability":credential.capability,
                                 "method":method,
@@ -3957,8 +3972,12 @@ where
                                 "group":risky.group,
                                 "effect":risk.effect,
                                 "connection_id":identity.connection_id,
-                            })
-                            .into();
+                            });
+                            if let Some(git) = git {
+                                details["github_repository"] = git.repository.clone().into();
+                                details["git_operation"] = git.operation.clone().into();
+                            }
+                            audit.details = details.into();
                             let pending = if risk.effect == crate::policy::Effect::Prompt {
                                 let pending = crate::approvals::pending::bind_risky(
                                     &runtime,
@@ -3968,8 +3987,12 @@ where
                                         agent: Some(agent),
                                         host: &destination.policy_host,
                                         port: Some(destination.port),
-                                        method,
-                                        path: &destination.path,
+                                        method: risky_method,
+                                        path: if git.is_some() {
+                                            risky_path
+                                        } else {
+                                            &destination.path
+                                        },
                                     },
                                     &destination.scheme,
                                     &credential,
@@ -4002,10 +4025,15 @@ where
 "outcome": if grant_lease.is_some() { "grant_reserved" } else { "risky_route_allowed" },
 "service": credential.service,
 "capability": credential.capability,
-"method": request.method().as_str(),
+"method": gateway_method,
 "path": risky_path
 ,"grant_id":grant_lease.as_ref().map(|lease| &lease.grant().grant_id)
 })))?;
+                }
+                if git.is_some_and(|git| git.discovery)
+                    && let Some(lease) = grant_lease.as_mut()
+                {
+                    lease.retain_for_git_discovery();
                 }
                 let full_url = crate::credentials::Secret::new(format!(
                     "{}://{}{}",
@@ -4394,8 +4422,14 @@ where
                 agent: Some(&run.agent),
                 host: &destination.policy_host,
                 port: Some(destination.port),
-                method: request.method().as_str(),
-                path: &destination.path,
+                method: selection
+                    .github_git
+                    .as_ref()
+                    .map_or(request.method().as_str(), |_| "POST"),
+                path: selection
+                    .github_git
+                    .as_ref()
+                    .map_or(destination.path.as_str(), |git| git.path.as_str()),
             },
             &destination.scheme,
             request_id,

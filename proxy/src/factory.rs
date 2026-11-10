@@ -270,6 +270,33 @@ pub(crate) fn approved(root: &Path, name: &str) -> Result<(Snapshot, PathBuf), E
     let pointer = String::from_utf8(read(&directory.join("approved"))?)?;
     load_snapshot(root, name, pointer.trim())
 }
+
+pub(crate) fn agent_references(root: &Path, agent: &str) -> Result<Value, Error> {
+    let directory = root.join("factories");
+    let mut references = Vec::new();
+    if directory.try_exists()? {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() || !entry.path().join("approved").try_exists()? {
+                continue;
+            }
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| "invalid factory name")?;
+            let (snapshot, path) = approved(root, &name)?;
+            for (role, definition) in &snapshot.roles {
+                if definition.agent == agent {
+                    references.push(json!({"factory":name,"role":role,"snapshot":path}));
+                }
+            }
+        }
+    }
+    references.sort_by_key(|reference| reference.to_string());
+    Ok(
+        json!({"state":"observed","approved_roles":references,"scope":"Approved local snapshots refer to agent names and remain unchanged."}),
+    )
+}
 fn load_snapshot(root: &Path, name: &str, id: &str) -> Result<(Snapshot, PathBuf), Error> {
     let directory = directory(root, name)?;
     if id.len() != 64

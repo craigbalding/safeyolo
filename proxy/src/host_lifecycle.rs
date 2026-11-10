@@ -2273,6 +2273,13 @@ pub(crate) async fn stop_authorized(
             tokio::task::spawn_blocking(move || SetupLock::acquire_in(&directory, None)).await??
         }
     };
+    stop_locked(agent, check).await
+}
+
+async fn stop_locked(
+    agent: &Agent,
+    check: &(dyn Fn() -> Result<(), Error> + Send + Sync),
+) -> Result<Value, Error> {
     let current = crate::host_agents::refresh(agent)?;
     let agent = &current;
     let observed = crate::host_runs::observe(&agent.name).await;
@@ -2407,7 +2414,14 @@ async fn cleanup(agent: &Agent) -> Result<Value, Error> {
     let _lock =
         tokio::task::spawn_blocking(move || SetupLock::acquire_in(&lock_directory, None)).await??;
     let current = crate::host_agents::refresh(agent)?;
+    cleanup_stopped(&current).await
+}
+
+/// The caller retains the setup lock until cleanup and any saved deletion finish.
+async fn cleanup_stopped(agent: &Agent) -> Result<Value, Error> {
+    let current = crate::host_agents::refresh(agent)?;
     let agent = &current;
+    let directory = agent_dir(&agent.name);
     if crate::host_runs::observe(&agent.name).await["runtime_state"] != "stopped" {
         return Err("backend is not proven stopped; its state was preserved".into());
     }
@@ -2436,6 +2450,72 @@ async fn cleanup(agent: &Agent) -> Result<Value, Error> {
         }
     }
     runtime(agent).await
+}
+
+/// Local operator path; support lifecycle authority does not include retirement.
+pub(crate) async fn retire(selected: &Agent, apply: bool) -> Result<Value, Error> {
+    let directory = agent_dir(&selected.name);
+    let _setup =
+        tokio::task::spawn_blocking(move || SetupLock::acquire_in(&directory, None)).await??;
+    let agent = crate::host_agents::refresh(selected)?;
+    let mut result = json!({"ok":true,"operation":"retire","root":crate::host_platform::config_dir(),
+        "agent":agent.name,"agent_id":agent.id,"retirement_state":"preview",
+        "definition_removed":false,"home_retained":true,"home":agent_dir(&agent.name).join("home"),
+        "workspace_retained":agent.folder,"saved_mount_sources_retained":agent.mounts.iter().map(|spec| spec.split(':').next().unwrap_or(spec)).collect::<Vec<_>>(),
+        "effects":"Stop this agent and its coding harness, clean its runtime records, then remove only its saved agents table. Its home, workspace and extra mount sources remain. Grants, credentials, factory snapshots and Coord records remain unchanged.",
+        "retained_references":crate::host_agents::retained_references(&agent),
+        "apply_command":["safeyolo","--root",crate::host_platform::config_dir().to_string_lossy().as_ref(),"agent","retire",agent.name.as_str(),"--yes"]});
+    // Existing delegation validation can refuse removal. Disclose it before
+    // stopping and revalidate the fresh document after stop/cleanup waits.
+    if let Err(error) = crate::host_agents::remove_definition(&agent, false).await {
+        result["ok"] = false.into();
+        result["error"] = error.to_string().into();
+        result["failed_stage"] = "preflight".into();
+        return Ok(result);
+    }
+    if !apply {
+        return Ok(result);
+    }
+    let stopped = match stop_locked(&agent, &|| Ok(())).await {
+        Ok(stopped) => stopped,
+        Err(error) => return Ok(retirement_failure(result, &agent, "stop", error).await),
+    };
+    result["stop_result"] = stopped;
+    if let Err(error) = cleanup_stopped(&agent).await {
+        return Ok(retirement_failure(result, &agent, "cleanup", error).await);
+    }
+    result["cleanup_completed"] = true.into();
+    if let Err(error) = crate::host_agents::remove_definition(&agent, true).await {
+        return Ok(retirement_failure(result, &agent, "saved_removal", error).await);
+    }
+    result["definition_removed"] = true.into();
+    result["retirement_state"] = "retired".into();
+    result["runtime_state"] = "stopped".into();
+    Ok(result)
+}
+
+async fn retirement_failure(mut result: Value, agent: &Agent, stage: &str, error: Error) -> Value {
+    result["ok"] = false.into();
+    result["retirement_state"] = "incomplete".into();
+    result["failed_stage"] = stage.into();
+    result["error"] = error.to_string().into();
+    result["runtime_state"] = crate::host_runs::observe(&agent.name).await["runtime_state"].clone();
+    // Publication can succeed before a final directory sync fails. Reconcile
+    // the saved definition instead of claiming that every write error retained it.
+    result["saved_definition"] = match crate::host_agents::list() {
+        Ok(agents) => match agents.iter().find(|current| current.name == agent.name) {
+            Some(current) => json!({"state":"present","agent_id":current.id}),
+            None => json!({"state":"absent"}),
+        },
+        Err(error) => json!({"state":"unknown","error":error.to_string()}),
+    };
+    result["definition_removed"] = match result["saved_definition"]["state"].as_str() {
+        Some("absent") => true.into(),
+        Some("present") => false.into(),
+        _ => Value::Null,
+    };
+    result["recovery"] = format!("Inspect agent status {} and the saved definition at this root. Resolve the reported {stage} failure before retrying agent retire {} --yes. If the definition is already absent, do not recreate it merely to retry; verify policy-file durability. The retained home is unchanged.", agent.name, agent.name).into();
+    result
 }
 
 async fn stop_supervisor(name: &str) -> Result<(), Error> {

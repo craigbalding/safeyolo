@@ -314,6 +314,20 @@ pub(crate) fn explain(
     let selection = selected
         .and_then(|selected| options.iter().find(|option| option["id"] == selected.id))
         .cloned();
+    // The routine effect must use the same path omission as the offered
+    // options. The canonical view's effect contains the literal request path.
+    let effect = if kind == "gateway_route" {
+        options
+            .iter()
+            .find(|option| option["id"] == view["option"])
+            .or_else(|| options.first())
+            .map(|option| option["effect"].clone())
+            .unwrap_or_else(|| {
+                json!("Select an offered option for the exact request path; path value omitted.")
+            })
+    } else {
+        view["effect"].clone()
+    };
     let mut outcome = view["result"].clone();
     if let Some(fields) = outcome.as_object_mut() {
         // Issued authority can contain raw contract values. Retain outcome facts
@@ -333,7 +347,7 @@ pub(crate) fn explain(
         "observed":facts,"why_stopped":stopped,
         "action":scope,"assessment":view["assessment"],"guidance":view["guidance"],
         "assessment_changed":view["assessment_changed"],"created_at":view["created_at"],
-        "option":view["option"],"result":outcome,"effect":view["effect"],"expires_at":record.authority.expires_at,
+        "option":view["option"],"result":outcome,"effect":effect,"expires_at":record.authority.expires_at,
         "current_policy":"The recorded request still requires a decision under the current saved and active policy. Each option shows its current availability. A later decision checks the policy and credentials again.",
         "selected_option":selection,"options":options,"non_grants":non_grants,"unknowns":unknowns,
         "interpretation":"The effects describe the offered approval, not a recommendation to approve. An explanation grants no permission and does not establish the agent's intent.",

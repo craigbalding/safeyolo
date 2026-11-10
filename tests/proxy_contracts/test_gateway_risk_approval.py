@@ -156,7 +156,7 @@ def _wait_for(predicate, description):
     raise AssertionError(f"Timed out waiting for {description}")
 
 
-def _gateway_token(proxy):
+def _gateway_token(proxy, service=SERVICE):
     def read():
         status, _, body = request(
             proxy.paths["alice"],
@@ -165,7 +165,7 @@ def _gateway_token(proxy):
         )
         if status != 200:
             return None
-        return json.loads(body).get("authorized", {}).get(SERVICE, {}).get("token")
+        return json.loads(body).get("authorized", {}).get(service, {}).get("token")
 
     token = _wait_for(read, "authorized gateway token")
     assert token.startswith("sgw_")

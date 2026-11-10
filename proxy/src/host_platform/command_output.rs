@@ -3,7 +3,7 @@
 use std::{io, os::unix::process::ExitStatusExt};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(super) async fn wait_guest_command_output_bounded(
+pub(crate) async fn wait_guest_command_output_bounded(
     mut child: tokio::process::Child,
     timeout: std::time::Duration,
     limit: usize,

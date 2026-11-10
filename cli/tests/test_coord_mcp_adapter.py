@@ -89,6 +89,7 @@ def test_discovery_and_rpc_errors(adapter):
         "request_check", "answer_check", "raise_challenge", "respond_challenge", "resolve_challenge", "list_work_reviews",
         "set_work_requirements", "decide_work_acceptance", "read_work_actions", "receive_work_action",
         "import_github_work", "read_github_work",
+        "support_grants", "support_operation", "read_support_operation",
     }
     for name, required in {
         "request_room_access": ["room_name", "permissions", "operation_id"],
@@ -100,7 +101,11 @@ def test_discovery_and_rpc_errors(adapter):
         schema = by_name[name]["inputSchema"]
         assert schema["type"] == "object" and schema["additionalProperties"] is False
         assert schema["required"] == required
-        optional = {"topic", "ttl_seconds"} if name == "request_collaboration" else set()
+        optional = set()
+        if name == "request_collaboration":
+            optional = {"topic", "ttl_seconds"}
+        elif name in {"list_approvals", "read_approval", "resolve_approval"}:
+            optional = {"home"}
         assert set(schema["properties"]) == set(required) | optional
     assert by_name["resolve_approval"]["inputSchema"]["properties"]["decision"]["enum"] == ["approve", "reject", "defer"]
     assert by_name["request_room_access"]["inputSchema"]["properties"] == {
@@ -283,19 +288,28 @@ def test_untrusted_field_types_do_not_reach_transport(value):
 
 def test_whole_page_resolution_and_failure_hide_cursor(adapter):
     call, _, calls, replies, _ = adapter
-    edges = [{"attention_id": id, "object_id": f"msg-{i}"} for i, id in enumerate(IDS)]
-    replies["/api/coord/attention/wait"] = (200, {"edges": edges, "next_cursor": 9})
+    instance = "instance-fixture"
+    edges = [{"attention_id": id, "object_id": f"msg-{i}", "room_id": "rm-backlog",
+              "kind": "message", "revision_or_sequence": i + 8} for i, id in enumerate(IDS)]
+    replies["/api/coord/attention/wait"] = (200, {"edges": edges, "next_cursor": 9, "instance_id": instance})
     for edge in edges:
         replies[f'/api/coord/attention/{edge["attention_id"]}/object'] = (200, {"edge": edge, "object": {"msg_id": edge["object_id"]}})
     result = call("wait_for_coord", {"since_sequence": 7, "limit": 2, "timeout_seconds": 0})
-    assert result["structuredContent"]["next_cursor"] == 9
-    assert len(result["structuredContent"]["objects"]) == 2
+    assert result["structuredContent"] == {
+        "next_cursor": 9, "instance_id": instance,
+        "objects": [{"edge": edge, "object": {"msg_id": edge["object_id"]}, "instance_id": instance} for edge in edges],
+    }
     assert len(calls) == 3
+    for _, path, _, authorization in calls[1:]:
+        assert parse_qs(urlsplit(path).query) == {"instance_id": [instance]}
+        assert authorization == "Bearer fixture-token"
     replies[f"/api/coord/attention/{IDS[1]}/object"] = (403, {"error": "membership revoked"})
     result = call("wait_for_coord", {"since_sequence": 7, "limit": 2, "timeout_seconds": 0})
     assert result["isError"] is True
     assert "structuredContent" not in result
     assert "next_cursor" not in result["content"][0]["text"]
+    assert len(calls) == 6  # One read of each object per call, with no retry.
+    assert all(method == "GET" for method, *_ in calls)  # Resolution creates no receipt.
 
 
 @pytest.mark.parametrize("status,value", [(403, {"error": "unauthorized room"}), (503, {"error": "NATS unavailable"}), (503, {"error": "receipt unavailable", "send_outcome": "unknown"})])

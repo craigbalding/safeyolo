@@ -12,13 +12,25 @@ symbols. After parsing source, the checker resolves those symbols. It qualifies
 same-named Rust methods by their inherent implementation type and reports stale
 or duplicate symbols instead of silently dropping them.
 
-The current map, workflow and acceptance-tool lock differ from the bindings in
-the [checked-in snapshot](../tools/assurance/accepted.json). The map also contains
-symbols for removed Python runtime files. The snapshot's `source_revision`
-identifies its extraction input; it does not track current master. These
-limits prevent treating the retained snapshot as current product acceptance.
-The checker reports binding errors and stale symbols; they must not be waived
-by generating another snapshot. Wider [#837](https://github.com/craigbalding/safeyolo/issues/837)
+The [checked-in snapshot](../tools/assurance/accepted.json) binds the independently
+accepted map, workflow and acceptance-tool lock listed below. Only those three
+control hashes were corrected. The product source revision, extracted functions,
+operations and dependency/build input baseline remain unchanged. The map still
+contains symbols for removed Python runtime files. The snapshot's
+`source_revision` identifies its extraction input; it does not track current
+master. These limits prevent treating the retained snapshot as current product
+acceptance. The checker continues to report source drift and stale symbols;
+they must not be waived by generating another snapshot.
+
+| Corrected control | Exact accepted input and independent acceptance |
+| --- | --- |
+| Map | [PR #1366 at ce6fbf06](https://github.com/craigbalding/safeyolo/pull/1366/commits/ce6fbf06bd47921b87f02637cd4c726937f7c851), [parser repair acceptance](https://github.com/craigbalding/safeyolo/issues/1365#issuecomment-6584281948); the preceding library inventory has [PR #1295 acceptance](https://github.com/craigbalding/safeyolo/issues/856#issuecomment-6497525151) |
+| Workflow | [PR #1078 at 4b0a6a0a](https://github.com/craigbalding/safeyolo/pull/1078/commits/4b0a6a0a76af168cb7036f5c2abb2acbd7164eb2), [artifact action acceptance](https://github.com/craigbalding/safeyolo/issues/1077#issuecomment-6216983788) |
+| Tool lock | [PR #1297 at cc534d1c](https://github.com/craigbalding/safeyolo/pull/1297/commits/cc534d1cfb69a9f67ee7b7d240e56235cddcb763), [filelock repair acceptance](https://github.com/craigbalding/safeyolo/issues/1173#issuecomment-6502998170) |
+
+Each corrected hash identifies the exact file bytes at its accepted commit.
+This control-pin correction does not promote the product baseline. Wider
+[#837](https://github.com/craigbalding/safeyolo/issues/837)
 and [#838](https://github.com/craigbalding/safeyolo/issues/838) work remains deferred.
 
 The following pointers identify current runtime owners, including Transport
@@ -110,9 +122,10 @@ tools/acceptance/.venv/bin/python -I tools/assurance/check.py check \
 Exit 0 means no detected drift against that checkout's snapshot. Exit 1 means
 detected drift or an invalid trusted snapshot binding; the JSON `status` and
 `errors` fields distinguish those results. Exit 2 means analysis failed before
-comparison. After successful extraction, comparison against the current map,
-workflow and tool lock reports their changed bindings as errors. Read the
-actual report for analysis failures and source drift. A local run with both arguments
+comparison. If a trusted control differs from its accepted hash, comparison
+reports a binding error. Corrected control pins do not clear source drift or
+stale symbols. Read the actual report for those findings and analysis failures.
+A local run with both arguments
 pointing at one candidate is only a smoke check.
 
 An operator can generate a proposed snapshot for source review without

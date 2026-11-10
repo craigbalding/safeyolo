@@ -254,9 +254,9 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: ce39f4eb427f5553c95913e8ce95c328ae4f75732a20a4eab662a2f7b8027ab7
         - path: proxy/src/host_platform.rs
-          sha256: 4dd691235f820fdb008e2b5d5295b3675858935af4b6447a65922e73a791ca23
+          sha256: 6c9471332d9538eeba539dd50aeead3e1bc3ace02a9d53c40d036f5c5cc372de
         - path: proxy/src/host_boot.rs
-          sha256: 52b02d5b4f0819e8b3b49a85fcff07364c5058128f8d8a9cf22c6c9d80d2c80a
+          sha256: 48bc68e13f1e653c1bc53aac903b4cadcad06d100781114cbb27b47e469996b5
         - path: guest/build-rootfs.sh
           sha256: 31ab9b5883222b0f43dfff80dfa7ac83ab4908b9b6ff8234d36abf6b0b1b8139
         - path: proxy/src/jobs.rs
@@ -272,9 +272,9 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: d3b6636cafa6f5da3103fe0e73b40e0081bbdcf4c5ef1419aadaeaa0912df2fc
         - path: proxy/src/lib.rs
-          sha256: 8b85e6cb0d4aa32e50c1d46b02321ce0839f311d27d5638a3485df0f0f9836c3
+          sha256: 5b665f2a67ed580103465023b547116eabc5ba8bc582b6b2ef277146532694d6
         - path: proxy/src/bin/safeyolo.rs
-          sha256: dc7d337fcd5d3a5e86739be7b8d47b770345c3b4a31ac7efa6a16e752a776810
+          sha256: dddf731e90549c53b4fe839a1412983e94297de399352973dcc50af2f019e3af
         - path: scripts/run_claude_blackbox.py
           sha256: 218890e4ddaef26d7d86a67784a447d3c40640eda4abe1c16a2243880c7e803b
         - path: tests/blackbox/claude_smoke.py
@@ -321,7 +321,7 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: proxy/src/host_platform.rs
-          sha256: 4dd691235f820fdb008e2b5d5295b3675858935af4b6447a65922e73a791ca23
+          sha256: 6c9471332d9538eeba539dd50aeead3e1bc3ace02a9d53c40d036f5c5cc372de
         - path: proxy/src/jobs.rs
           sha256: bf49088efe6c8f53ee6a07fdddcb5c01335e5ea5894734538ad67ada1c971502
         - path: proxy/src/jobs/input.rs
@@ -337,9 +337,9 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: d3b6636cafa6f5da3103fe0e73b40e0081bbdcf4c5ef1419aadaeaa0912df2fc
         - path: proxy/src/lib.rs
-          sha256: 8b85e6cb0d4aa32e50c1d46b02321ce0839f311d27d5638a3485df0f0f9836c3
+          sha256: 5b665f2a67ed580103465023b547116eabc5ba8bc582b6b2ef277146532694d6
         - path: proxy/src/bin/safeyolo.rs
-          sha256: dc7d337fcd5d3a5e86739be7b8d47b770345c3b4a31ac7efa6a16e752a776810
+          sha256: dddf731e90549c53b4fe839a1412983e94297de399352973dcc50af2f019e3af
         - path: proxy/src/jobs/vz-guest-init.sh
           sha256: 7fc4a7442ccf50eea20dad24b7bb5659f69875f7853f11da2bb96665fc25dc4b
         - path: proxy/src/jobs/vz-exec.sh
@@ -427,6 +427,15 @@ nodes:
       state and reconnect. Its operator
       recovery runs with NATS stopped and the audit destination impaired.
       Current-state controls do not establish audit recording or historical replay.
+      For live terminal recovery, also select
+      signals::native_watch_pty_recovers_complete_pending_state_while_a_choice_is_unfinished
+      with --ignored. Its real pseudo-terminal retains unfinished input across
+      reconnect, catches an offline arrival and recovers all current requests
+      after a failed pending read without another mutation.
+      For selected decisions and deferral, use the native_operator_cli target
+      with the native_watch_keeps_selected_input filter. It checks several
+      requests, an arrival during input, stable numbers, concurrent resolution,
+      canonical pending state and a later explicitly permitted network attempt.
       Also select the two signals::native_watch_clears_ tests with --ignored
       for requests seen only in attachment snapshots during an audit outage.
       Both consume the initial control before resolving the request entirely
@@ -613,8 +622,12 @@ nodes:
           sha256: 8338ae6fad7d2c24b1450e2fefc10a9e3b53e91ff2d16bdb726daee7e4acff44
         - path: proxy/tests/native_coord/federation/guided.rs
           sha256: bd75463f2fdf619679cbc036481ea06d69c930d4f445d540a036a00d3ac9e708
+        - path: proxy/tests/native_operator_cli/watch.rs
+          sha256: 60fb3e183f767b838535ebb31ff2b4d9d6a7591d47abe834e610deb4bcb5009d
+        - path: proxy/tests/support/operator_pty.rs
+          sha256: fb706f9c85db414743e35a6a82c6045c34f66c35724cf9f2c34c421f84ff3d52
         - path: proxy/tests/native_operator_cli.rs
-          sha256: fa2b0c95074f5e66c8b036b7e413573dc1e4f436544fa354e6f403e9e9c76b47
+          sha256: b42c8f57ebc41a0ce22010afbb0914243058126df3a64c068604e120e4aeb6d1
         - path: proxy/tests/native_coord/federation.rs
           sha256: 7bfc83e871c120479782f1e0d027a6346de321b819e823d7f985a4d4509edcb7
         - path: proxy/src/agent_api/coord.rs
@@ -646,7 +659,7 @@ nodes:
         - path: proxy/tests/native_coord/stage0.rs
           sha256: a288d8dd6bbdb84c38aa72ca1c27f6bbc860f5faf9b208e2f5d7d876c7d7ad62
         - path: proxy/src/coord_rooms.rs
-          sha256: 2d5b60dd6012643f1cbdf7ddb90855d35b9e14243ebb72e4aed91847f1cf74c7
+          sha256: 845ba62439b0a930a99082b8dc1c356db67f7a3f87f4d3beb85f7497adb560de
         - path: proxy/tests/native_coord/inventory.rs
           sha256: 1de6227ecdc2bbf2062f0e912c0c4ae7d6e149e2ea61837d75705393891b7276
         - path: proxy/src/agent_api/coord/inventory.rs
@@ -720,7 +733,7 @@ nodes:
         - path: proxy/src/coord_schema.sql
           sha256: 31b24a8423738d0d06fd5c6bbfe9a5d575738e25459cc6b1629899d3dc50f939
         - path: proxy/tests/native_coord/signals.rs
-          sha256: fe7250cebc9206d3bcc04ad36cc62b25663bf30808d4d2f2ab20f795c3daabd2
+          sha256: 78c892655051c014643212eb07fb3d9fcee9d33ff68453d91ddca0099758d335
         - path: proxy/src/coord_rooms/signals.rs
           sha256: bef138d95aa2d06ee547311728ed78b2a38b6cac96ed176a7c87caf54364ff57
         - path: proxy/src/coord_rooms/signals/tests.rs
@@ -734,7 +747,7 @@ nodes:
         - path: proxy/src/admin_api/coord_signals.rs
           sha256: 02a963eef1bf4e390e9c57b9dbb0f95854bbb6c7592f6bb0b461ee2f04f41624
         - path: proxy/src/coord_operator/signals.rs
-          sha256: c9a05a60581829ccfcc26c4d6fae3ad25e1a9674bbe07337498a036dab317778
+          sha256: 90fa9648af1c4c243f776a179142dd267e2a00cc96df9c0b03a2638ec9ec8fee
         - path: proxy/src/coord_tools.rs
           sha256: 4f5cf8b9366e15f2725574e4e34b9506a2e3bc96f32b27b4725e8a6e70950b61
         - path: proxy/src/coord_rooms/room_status.rs
@@ -888,7 +901,7 @@ nodes:
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: proxy/tests/native_host_cli.rs
-          sha256: 2997f1266c63feb1b74334aa714f75846302f8f5c60a7a2d68074ad925f53383
+          sha256: d81117fcfdc529c7d2aa3130b2f08ee570d219698d565d7fe50bd4c980b7497c
       setup: "Use the prepared native proxy/platform lane for system evidence. For an ownership probe, select the affected native_host_cli test with the trusted Cargo toolchain and warm target."
       verify: "sha256sum tests/blackbox/run-tests.sh tests/blackbox/host/uds_transport.py proxy/tests/native_host_cli.rs"
       run:

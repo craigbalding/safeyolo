@@ -108,6 +108,10 @@ fn initialize(root: &Path, config: &Path) -> Result<(), Error> {
             include_str!("../../../cli/src/safeyolo/services/slack.yaml"),
         ),
         (
+            "builtin-services/github-git.yaml",
+            include_str!("../../../cli/src/safeyolo/services/github-git.yaml"),
+        ),
+        (
             "builtin-services/minifuse.yaml",
             include_str!("../../../cli/src/safeyolo/services/minifuse.yaml"),
         ),
@@ -423,7 +427,7 @@ async fn run() -> Result<(), Error> {
             println!("{}", safeyolo_proxy::dispatch::HELP);
             println!("{}", safeyolo_proxy::mattermost::HELP);
             println!(
-                "safeyolo [--root ROOT | --config FILE] init\nsafeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nsafeyolo [--root ROOT] mount --help\nsafeyolo [--root ROOT] coord start [--binary PATH]|stop|status\nsafeyolo [--root ROOT] coord room create NAME|list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send receive page_operator]|revoke ROOM AGENT\nsafeyolo [--root ROOT] coord signal --help\nsafeyolo [--root ROOT] watch [--once] [--json] [--jsonl FILE]\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status reads current runtime/control dimensions. doctor also probes host prerequisites and the active policy pipeline; it does not prove coding-agent readiness. For a selected agent, use agent diagnostics NAME for runtime/control/terminal probes and its next_action. Use diagnose [--agent NAME] for policy, audit and Admin availability without test traffic."
+                "safeyolo [--root ROOT | --config FILE] init\nsafeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nsafeyolo [--root ROOT] mount --help\nsafeyolo [--root ROOT] coord start [--binary PATH]|stop|status\nsafeyolo [--root ROOT] coord room create NAME|list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send receive page_operator]|revoke ROOM AGENT\nsafeyolo [--root ROOT] coord signal --help\nsafeyolo [--root ROOT] watch [--once] [--json] [--jsonl FILE] [--no-interactive] [--no-color]\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status reads current runtime/control dimensions. doctor also probes host prerequisites and the active policy pipeline; it does not prove coding-agent readiness. For a selected agent, use agent diagnostics NAME for runtime/control/terminal probes and its next_action. Use diagnose [--agent NAME] for policy, audit and Admin availability without test traffic."
             );
             println!(
                 "safeyolo [--root ROOT] agent recover NAME [--timeout SECONDS]\nsafeyolo guest-command stage HOME SHARE ASSETS CONTEXT_JSON\nRecovery requires an already booted guest with idle command supervision. Staging is for a stopped guest; the caller supplies this run's context."

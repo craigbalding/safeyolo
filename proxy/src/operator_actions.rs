@@ -98,6 +98,9 @@ pub(crate) fn agent_result(result: &Value) -> Value {
     let mut view = json!({"status":result["status"],"presentation":result["presentation"],
         "preview_active":result["preview_active"],"reused":result["reused"],
         "expires_at":expires_at,"diagnostic":result["diagnostic"]});
+    if let Some(diagnostic) = view["diagnostic"].as_object_mut() {
+        diagnostic.remove("operator_details");
+    }
     if result["status"] == "started"
         && expires_at
             .as_str()
@@ -217,11 +220,20 @@ fn event(record: &pending::Record, name: &'static str, summary: &str) -> Event {
         status: Some(crate::audit::AttributionStatus::Resolved),
         provenance: None,
     });
+    let mut result = record.result.clone();
+    if let Some(diagnostic) = result.get_mut("diagnostic").and_then(Value::as_object_mut) {
+        diagnostic.remove("operator_details");
+    }
     event.details =
         json!({"approval_id":record.approval_id,"authority_digest":record.authority_digest,
-        "action_id":DESKTOP_PRESENT,"status":record.status,"result":record.result})
+        "action_id":DESKTOP_PRESENT,"status":record.status,"result":result})
         .into();
     event
+}
+
+pub(crate) fn mark_execution_interrupted(result: &mut Value) {
+    result["status"] = json!("outcome_unknown");
+    result["diagnostic"] = json!({"code":"preview_execution_interrupted","message":"Inspect the preview and guest before a new request. SafeYolo did not replay the recovered decision.","graph":"triage-desktop-preview"});
 }
 
 /// Called by the existing process-owned approval mutation path. Commit the
@@ -261,8 +273,7 @@ pub(crate) fn resolve(
                     // is recovery evidence, never permission to replay an effect.
                     record.option = current["option"].as_str().map(str::to_owned);
                     record.result = current["result"].clone();
-                    record.result["status"] = json!("outcome_unknown");
-                    record.result["diagnostic"] = json!({"code":"preview_execution_interrupted","message":"Inspect the preview and guest before a new request. SafeYolo did not replay the recovered decision.","graph":"triage-desktop-preview"});
+                    mark_execution_interrupted(&mut record.result);
                 }
                 return Ok(());
             }
@@ -346,7 +357,7 @@ pub(crate) fn resolve(
                 result
             }
             Err(error) => {
-                json!({"status":"failed","diagnostic":error.json(),"issued_access":issued})
+                json!({"status":"failed","diagnostic":error.operator_json(),"issued_access":issued})
             }
         };
         let record = writer

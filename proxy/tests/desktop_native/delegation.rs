@@ -12,7 +12,29 @@ fn delegated_desktop_preserves_independent_sources_and_disconnects_revoked_viewe
         .enable_all()
         .build()
         .unwrap()
-        .block_on(check());
+        .block_on(check(false));
+}
+
+#[test]
+fn delegated_desktop_result_reference_recovers_interrupted_decision() {
+    let _environment = DESKTOP_TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(check(true));
+}
+
+struct RestoreHome(Option<std::ffi::OsString>);
+impl Drop for RestoreHome {
+    fn drop(&mut self) {
+        unsafe {
+            match self.0.take() {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
 }
 
 async fn admin(port: u16, path: &str, input: Value) -> Value {
@@ -81,6 +103,59 @@ async fn inspect(port: u16, id: &str) -> Value {
     admin(port, &format!("/admin/approvals/{id}"), Value::Null).await
 }
 
+fn read_approval(database: &rusqlite::Connection, id: &str) -> Value {
+    let encoded: String = database
+        .query_row(
+            "SELECT record FROM approvals WHERE approval_id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    serde_json::from_str(&encoded).unwrap()
+}
+
+async fn recover_result(
+    root: &Path,
+    database: &rusqlite::Connection,
+    id: &str,
+    reference_reader: bool,
+) -> Result<Value, tokio::time::error::Elapsed> {
+    if reference_reader {
+        let pending = read_approval(database, id);
+        let attention = pending["result_delivery"]["attention_id"].as_str().unwrap();
+        // Seed only the private projection. The real Agent API must recover
+        // the producer's canonical receipt through Store::result before it
+        // attempts the unavailable broker read.
+        let coord = rusqlite::Connection::open(root.join("data/coord/v0.db")).unwrap();
+        coord.execute("INSERT INTO coord_attention_edges(recipient_agent_id,feed_sequence,attention_id,room_id,kind,object_id,revision_or_sequence,membership_granted_at,created_at) SELECT ?1,coalesce(max(feed_sequence),0)+1,?2,NULL,'approval_result',?3,1,0,0 FROM coord_attention_edges WHERE recipient_agent_id=?1", rusqlite::params![ID, attention, id]).unwrap();
+        let reply = action_request(
+            root,
+            "GET",
+            &format!("/api/coord/attention/{attention}/object"),
+            Value::Null,
+            "alice",
+        )
+        .await;
+        let record = read_approval(database, id);
+        assert!(
+            record["result_delivery"]["expires_at"].is_number(),
+            "reference did not reach canonical recovery: {}",
+            String::from_utf8_lossy(&reply)
+        );
+        return Ok(record);
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let record = read_approval(database, id);
+            if record["result_delivery"]["expires_at"].is_number() {
+                break record;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+}
+
 async fn viewer(port: u16, id: &str) -> (Value, TcpStream, String) {
     let view = inspect(port, id).await;
     let preview = &view["operator_preview"];
@@ -114,9 +189,17 @@ async fn viewer(port: u16, id: &str) -> (Value, TcpStream, String) {
     (view, socket, cookie)
 }
 
-async fn check() {
+async fn check(reference_reader: bool) {
     let root = TempDir::new().unwrap();
     fixture(root.path());
+    let _home = reference_reader.then(|| {
+        let saved = RestoreHome(std::env::var_os("HOME"));
+        symlink(".", root.path().join(".safeyolo")).unwrap();
+        unsafe {
+            std::env::set_var("HOME", root.path());
+        }
+        saved
+    });
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let preview_port = listener.local_addr().unwrap().port();
     drop(listener);
@@ -129,7 +212,7 @@ async fn check() {
         ),
         (
             "xdg-open",
-            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$SAFEYOLO_CONFIG_DIR/opened\"\n",
+            "#!/bin/sh\nif [ -p \"$SAFEYOLO_CONFIG_DIR/open-gate\" ]; then read -r proceed < \"$SAFEYOLO_CONFIG_DIR/open-gate\"; fi\nprintf '%s\\n' \"$1\" >> \"$SAFEYOLO_CONFIG_DIR/opened\"\n",
         ),
     ] {
         let path = root.path().join("bin").join(program);
@@ -152,7 +235,9 @@ async fn check() {
     );
     let mut config = config(root.path());
     config.native_product = true;
-    config.native_config_dir = Some(root.path().into());
+    // An isolated HOME fallback keeps the passive reference reader on this
+    // fixture while disabling the ordinary result_page background worker.
+    config.native_config_dir = (!reference_reader).then(|| root.path().into());
     config.native_config_path = Some(root.path().join("config.toml"));
     config.policy_file = Some(root.path().join("policy.toml"));
     config.listeners.push(
@@ -161,6 +246,9 @@ async fn check() {
         )
         .unwrap(),
     );
+    if reference_reader {
+        safeyolo_proxy::coord_rooms::bootstrap(root.path()).unwrap();
+    }
     let proxy = Proxy::start(config).await.unwrap();
     let ready: Value =
         serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();
@@ -403,7 +491,28 @@ async fn check() {
         200
     );
     assert!(!root.path().join("opened").exists());
-    let accepted = decide(root.path(), &id, "approve", "desktop").await;
+    let database = rusqlite::Connection::open(root.path().join("data/approvals.sqlite3")).unwrap();
+    let gate = root.path().join("open-gate");
+    let gate_name = std::ffi::CString::new(gate.to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(gate_name.as_ptr(), 0o600) }, 0);
+    let mut release = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&gate)
+        .unwrap();
+    // Hold the real opener after the canonical decision commits. Scanning a
+    // legitimate in-progress execution must preserve its starting result.
+    let (accepted, starting) =
+        tokio::join!(decide(root.path(), &id, "approve", "desktop"), async {
+            let starting = recover_result(root.path(), &database, &id, reference_reader).await;
+            std::io::Write::write_all(&mut release, b"continue\n").unwrap();
+            starting
+        });
+    fs::remove_file(gate).unwrap();
+    let starting = starting.expect("scanner must observe the committed execution");
+    assert_eq!(starting["status"], "approved");
+    assert_eq!(starting["result"]["status"], "starting");
+    assert!(starting["result"]["diagnostic"].is_null());
     assert_eq!(
         status(&accepted),
         200,
@@ -601,15 +710,43 @@ async fn check() {
     // A real canonical write failure after policy publication leaves an
     // attributable receipt but cannot start or replay an external effect.
     let lost = ask(root.path(), 23, None).await;
-    let database = rusqlite::Connection::open(root.path().join("data/approvals.sqlite3")).unwrap();
-    database.execute_batch("CREATE TRIGGER fail_desktop_save BEFORE UPDATE OF record ON approvals WHEN json_extract(NEW.record,'$.result.status')='starting' BEGIN SELECT RAISE(FAIL,'controlled canonical write failure'); END;").unwrap();
+    database.execute_batch(&format!("CREATE TRIGGER fail_desktop_save BEFORE UPDATE OF record ON approvals WHEN NEW.approval_id='{lost}' BEGIN SELECT RAISE(FAIL,'controlled canonical write failure'); END;")).unwrap();
     let before = fs::read(root.path().join("opened")).unwrap();
     let failed = decide(root.path(), &lost, "approve", "desktop").await;
     assert!(matches!(status(&failed), 409 | 503));
     assert_eq!(fs::read(root.path().join("opened")).unwrap(), before);
+    let pending = read_approval(&database, &lost);
+    assert_eq!(pending["status"], "pending");
+    let policy: toml::Value =
+        toml::from_str(&fs::read_to_string(root.path().join("policy.toml")).unwrap()).unwrap();
+    let receipt: Value =
+        serde_json::from_str(policy["approval_results"][&lost].as_str().unwrap()).unwrap();
+    assert_eq!(receipt["result"]["status"], "starting");
     database
         .execute_batch("DROP TRIGGER fail_desktop_save;")
         .unwrap();
+    // Recover through the selected result reader before any decision
+    // retry. Read SQLite directly: an inspection can project the policy receipt
+    // while the canonical record is still pending.
+    let scanned = recover_result(root.path(), &database, &lost, reference_reader)
+        .await
+        .expect("approval result scanner must recover the canonical decision");
+    assert_eq!(scanned["status"], "approved");
+    assert_eq!(scanned["result"]["status"], "outcome_unknown");
+    assert_eq!(
+        scanned["result"]["diagnostic"]["code"],
+        "preview_execution_interrupted"
+    );
+    assert_eq!(
+        scanned["result"]["issued_access"],
+        receipt["result"]["issued_access"]
+    );
+    assert_eq!(scanned["authority_digest"], pending["authority_digest"]);
+    assert_eq!(
+        scanned["result_delivery"]["attention_id"],
+        pending["result_delivery"]["attention_id"]
+    );
+    assert_eq!(fs::read(root.path().join("opened")).unwrap(), before);
     let recovered = decide(root.path(), &lost, "approve", "desktop").await;
     assert_eq!(
         status(&recovered),
@@ -622,6 +759,10 @@ async fn check() {
     assert_eq!(recovered["result"]["status"], "outcome_unknown");
     assert_eq!(recovered["result"]["issued_access"]["beneficiary"], run);
     assert_eq!(recovered["result"]["preview_active"], false);
+    assert_eq!(
+        recovered["result"]["diagnostic"]["code"],
+        "preview_execution_interrupted"
+    );
     for _ in 0..3 {
         assert_eq!(
             status(&decide(root.path(), &lost, "approve", "desktop").await),

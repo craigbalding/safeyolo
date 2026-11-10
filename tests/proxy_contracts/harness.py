@@ -128,7 +128,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
                  agent_addresses=None, stream_large_bodies=None, credential_head_decision=False,
                  flow_store_enabled=False, via_token=None,
                  test_context_block=None,
-                 gateway_services_dir=None, gateway_builtin_services_dir=None,
+                 gateway_services_dir=None, gateway_builtin_services_dir=None, onepassword_executable=None,
                  agents=("alice", "bob"), services_dir=None,
                  connect_trace_path=None, native_product=False):
     """Start one native process in isolated fixture state."""
@@ -178,6 +178,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
                 config[name] = value
         if upstream_ca:
             config["upstream_ca_file"] = str(upstream_ca)
+        if onepassword_executable is not None:
+            config["onepassword_executable"] = str(onepassword_executable)
         if via_token is not None:
             config["via_token"] = via_token
         if gateway_services_dir is not None:

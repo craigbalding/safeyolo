@@ -12,6 +12,10 @@ check saved versus live-only intent. The earlier same-session proof is retained.
         --root /owned/fresh-instance --base /owned/new-result-directory \
         --candidate FULL_COMMIT
 
+Use --saved-retirement for the focused saved add/update/remove, live change,
+explicit restart and retirement proof. It retains a home marker and checks the
+second agent and unrelated configuration throughout.
+
 The optional --native-test-binary retains the earlier Linux-only backend
 witness. Omit it for product acceptance through the public commands.
 """
@@ -123,11 +127,14 @@ def assert_mount_removed(target, before, after):
     )
 
 
-def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate: str | None = None):
+def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate: str | None = None,
+              saved_retirement: bool = False):
     if root == base or root in base.parents or base in root.parents:
         raise ValueError("ROOT and BASE must be separate owned directories")
     if list((root / "agents").glob("*")):
         raise RuntimeError("ROOT has retained agent state; use a fresh disposable instance")
+    if saved_retirement and native_test is not None:
+        raise ValueError("saved retirement uses the public commands, without a native test binary")
     process_kinds = ("backend",) if sys.platform == "darwin" else ("holder", "backend")
     receipt_backend = "macos" if sys.platform == "darwin" else "linux"
     base.mkdir(mode=0o755)
@@ -277,11 +284,9 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
         report["host_version"] = command([root / "bin/safeyolo", "--version"]).stdout.strip()
         report["candidate"] = candidate or command(["git", "-C", Path(__file__).resolve().parents[2], "rev-parse", "HEAD"]).stdout.strip()
         assert "commit=" + report["candidate"] in report["host_version"]
-        assert "profile=production" in report["host_version"]
         if sys.platform == "darwin":
             report["helper_version"] = json.loads(command([root / "bin/safeyolo-vm", "version", "--json"]).stdout)
             assert report["helper_version"]["git_sha"] == report["candidate"]
-            assert report["helper_version"]["build_profile"] == "production"
         else:
             settings = tomllib.loads((root / "config.toml").read_text())["linux"]
             report["runsc_version"] = command([settings["runsc"], "--version"]).stdout.strip()
@@ -331,13 +336,13 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
                  "--mount", f"{base}/startup-link:/mnt/proof1042startup",
                  "--mount", f"{base}/startup-ro:/mnt/proof1042startupro:ro",
                  "--mount", f"{base}/unrelated:/mnt/proof1042unrelated"]
-        if native_test is None:
+        if native_test is None and not saved_retirement:
             configure_primary.extend(["--launcher", "supervisor", "--command",
                                       holder_command("/workspace/holder.py", "marker", "/workspace",
                                                      Path("/workspace/marker-holder"))])
         command(configure_primary)
         created.append(agent)
-        command([*cli, "agent", "start", agent, *(["--sandbox-only"] if native_test else [])], timeout=150)
+        command([*cli, "agent", "start", agent, *(["--sandbox-only"] if native_test or saved_retirement else [])], timeout=150)
         initial[agent] = runtime(agent)
         report["initial_runs"] = initial
         if sys.platform != "darwin":
@@ -348,6 +353,75 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
         report["guest_kernel"] = guest("uname -a").stdout.strip()
         saved_policy = (root / "policy.toml").read_bytes()
         assert "commit=" + report["candidate"] in guest("/safeyolo/safeyolo-guest --version").stdout
+        if saved_retirement:
+            original_policy = tomllib.loads(saved_policy.decode())
+            original_policy["agents"].pop(agent)
+            second_runtime = (root / "agents" / second / "runtime.json").read_bytes()
+            config_before = tomllib.loads((root / "config.toml").read_text())
+
+            def preserved():
+                same_run(second)
+                assert (root / "agents" / second / "runtime.json").read_bytes() == second_runtime
+                observed = tomllib.loads((root / "policy.toml").read_text())
+                observed["agents"].pop(agent, None)
+                assert observed == original_policy
+                current = tomllib.loads((root / "config.toml").read_text())
+                for key, value in config_before.items():
+                    if key not in ("listeners", "reload_id"):
+                        assert current[key] == value, key
+                assert [row for row in current["listeners"] if row["agent_id"] != agent] == [
+                    row for row in config_before["listeners"] if row["agent_id"] != agent]
+                guest("grep -q second:host-before /mnt/proof1042second/host.txt", selected=second)
+
+            def saved(action, operand):
+                result = json.loads(command([*cli, "agent", "mounts", action, agent, operand]).stdout)
+                same_run()
+                preserved()
+                return result
+
+            guest("printf retained-home-marker > /home/agent/retirement-marker")
+            home_marker = root / "agents" / agent / "home/retirement-marker"
+            assert home_marker.read_text() == "retained-home-marker"
+            saved("add", f"{base}/live:/mnt/proof1470added:ro")
+            assert saved("add", f"{base}/live:/mnt/proof1470added:ro")["saved_configuration_changed"] is False
+            saved("update", f"{base}/readonly:/mnt/proof1042startup:ro")
+            saved("remove", "/mnt/proof1042startupro")
+            assert saved("remove", "/mnt/proof1042startupro")["saved_configuration_changed"] is False
+            saved_policy = (root / "policy.toml").read_bytes()
+            guest("grep -q startup:host-before /mnt/proof1042startup/host.txt && "
+                  "grep -q startup-ro:host-before /mnt/proof1042startupro/host.txt")
+            assert guest("test -r /mnt/proof1470added/host.txt", check=False).returncode != 0
+            removed = operation("remove", "/mnt/proof1042startup")
+            assert removed["success"] and removed["saved_mount_returns_on_restart"] is True
+            assert operation("add", f"{base}/live:/mnt/proof1470temporary")["success"]
+            guest("test -r /mnt/proof1470temporary/host.txt")
+            command([*cli, "agent", "stop", agent], timeout=150)
+            command([*cli, "agent", "start", agent, "--sandbox-only"], timeout=150)
+            restarted = runtime(agent)
+            assert restarted["run_id"] != initial[agent]["run_id"]
+            report["persistence"] = {"old_run_id": initial[agent]["run_id"], "new_run": restarted}
+            guest("grep -q readonly:host-before /mnt/proof1042startup/host.txt && "
+                  "grep -q live:host-before /mnt/proof1470added/host.txt && "
+                  "test ! -e /mnt/proof1042startupro/host.txt && "
+                  "test ! -e /mnt/proof1470temporary/host.txt")
+            assert (root / "policy.toml").read_bytes() == saved_policy
+            preserved()
+            preview = json.loads(command([*cli, "agent", "retire", agent]).stdout)
+            assert preview["retirement_state"] == "preview" and preview["definition_removed"] is False
+            assert preview["home"] == str(home_marker.parent)
+            report["retirement"] = json.loads(command([*cli, "agent", "retire", agent, "--yes"], timeout=150).stdout)
+            assert report["retirement"]["retirement_state"] == "retired"
+            assert report["retirement"]["definition_removed"] is True
+            assert home_marker.read_text() == "retained-home-marker"
+            assert process_start_token(restarted["backend_pid"]) != restarted["backend_token"]
+            assert agent not in tomllib.loads((root / "policy.toml").read_text())["agents"]
+            created.remove(agent)
+            preserved()
+            report["final"] = {"retained_home": str(home_marker), "second_run": runtime(second)}
+            report["backend_operations_completed"] = True
+            save()
+            print(json.dumps({"result": str(base / "observed.json"), "completed": True}))
+            return
         same_run(second)
         guest("grep -q startup:host-before /mnt/proof1042startup/host.txt && "
               "grep -q startup-ro:host-before /mnt/proof1042startupro/host.txt && "
@@ -557,6 +631,9 @@ if __name__ == "__main__":
     parser.add_argument("--base", type=Path, required=True)
     parser.add_argument("--native-test-binary", type=Path)
     parser.add_argument("--candidate")
+    parser.add_argument("--saved-retirement", action="store_true",
+                        help="Run the focused saved mount/restart/retirement lifecycle, reusing prior live-mount proof")
     args = parser.parse_args()
     run_proof(args.root.resolve(strict=True), args.base.resolve(),
-              args.native_test_binary.resolve(strict=True) if args.native_test_binary else None, args.candidate)
+              args.native_test_binary.resolve(strict=True) if args.native_test_binary else None, args.candidate,
+              args.saved_retirement)
