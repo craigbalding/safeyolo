@@ -96,8 +96,8 @@ guest-local filesystem. See the [guest build reference](../guest/README.md)
 for its package floor, including rsync and e2fsprogs.
 
 The maintained host operations select the instance with `--root`.
-Use `agent create`, `agent sandbox-start`, `agent shell` and `agent stop` for
-an owned inner guest. `sandbox-start` boots without starting a coding model.
+Use `agent create`, `agent start --sandbox-only`, `agent shell` and `agent stop`
+for an owned inner guest. `--sandbox-only` boots without starting a coding model.
 `start` and `stop` control the inner proxy separately from the guest. Stop both
 before deleting that instance. Do not delete a retained NATS pidfile or signal
 an unverified process.
@@ -107,7 +107,43 @@ It reports that inner `MemoryMax` and `CPUQuota` controls are unavailable. The
 outer sandbox still bounds the complete experiment. With a usable user manager,
 the existing `systemd-run --user --scope` path remains active.
 
-The broader `tests/nested-linux/acceptance.sh` lane retains the nested guest,
-Agent API, loop and Coord checks. Its Python test/bootstrap tooling is separate
-from the Lab entry and from this finite request experiment. A source
-test or a prepared Lab is not the installed Codex demonstration.
+## Nested worker qualification
+
+A complete factory inside a Linux/gVisor day agent is not qualified. The
+[#1450 investigation](https://github.com/craigbalding/safeyolo/issues/1450)
+reached a concrete worker bootstrap blocker with ARM64 runsc
+`release-20261005.0-safeyolo.1`. The proxy-only Lab and the
+[nested Docker recipe](nested-docker.md) retain their separate scope.
+
+After initializing a private inner instance, native worker creation and host
+preparation succeeded. Guest-local storage preserved the subordinate root
+ownership and required access-control lists. The inner proxy started with
+the outer proxy configured as its parent. Native `agent start --sandbox-only` then failed
+during runsc container creation:
+
+```text
+cannot read client sync file: waiting for sandbox to start: EOF
+```
+
+The gofer, which supplies the guest filesystem, stopped at
+`error setting MS_UNBINDABLE`. The inner runtime uses that mount flag to
+prepare its filesystem root. The
+[pinned gVisor implementation](https://github.com/google/gvisor/blob/97e8e896904cb364319cd9758241d3f0bd27a6f4/pkg/sentry/syscalls/linux/sys_mount.go)
+explicitly rejects the flag. An isolated user and mount namespace with
+`CAP_SYS_ADMIN` could mount tmpfs, but the unbindable operation returned
+`EINVAL`. The existing `nested_docker` setting adds guest capabilities and
+permits namespace operations; it does not implement this missing mount behavior.
+
+The smallest follow-up is to implement and qualify unbindable mount semantics
+in the outer gVisor runtime, then repeat the native worker bootstrap. Preserve
+the gofer's mount isolation; ignoring the error does not supply those semantics.
+This investigation did not replace workers, change outer policy or add host
+privileges.
+
+Inner worker entry, stop/restart after a successful boot, two-layer policy and
+worker isolation, a real factory task, persistence and recovery remain unproved.
+Namespace-holder loss and the separate `NS_GET_USERNS` recovery path were not
+reached. The observed systemd warning confirms direct launch without inner
+`MemoryMax` or `CPUQuota`; no independent inner resource limit was demonstrated.
+The issue retains the exact baseline, failed operation, diagnostic reproduction
+and independent review disposition.

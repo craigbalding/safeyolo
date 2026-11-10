@@ -37,6 +37,24 @@ fn fd_path(file: &fs::File) -> PathBuf {
     PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
 }
 
+fn mount_id(file: &fs::File) -> Option<u64> {
+    let mut stat = std::mem::MaybeUninit::<libc::statx>::zeroed();
+    if unsafe {
+        libc::statx(
+            file.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+            libc::STATX_MNT_ID,
+            stat.as_mut_ptr(),
+        )
+    } != 0
+    {
+        return None;
+    }
+    let stat = unsafe { stat.assume_init() };
+    (stat.stx_mask & libc::STATX_MNT_ID != 0 && stat.stx_mnt_id != 0).then_some(stat.stx_mnt_id)
+}
+
 fn walk(
     file: &fs::File,
     path: &Path,
@@ -232,10 +250,18 @@ fn rewrite_tree(
         )
         .into());
     }
+    let root_mount = mount_id(&root_file);
     let mut records: HashMap<(u64, u64), (fs::Metadata, u64)> = HashMap::new();
     let mut changes = Vec::new();
     walk(&root_file, Path::new(""), &mut |file, metadata, path| {
-        if metadata.dev() != root.dev() {
+        // gVisor overlays can report different devices for directories and
+        // files in one mount. Accept that case only with matching mount IDs
+        // from the pinned descriptors; an unavailable ID cannot grant access.
+        if metadata.dev() != root.dev()
+            && root_mount
+                .zip(mount_id(file))
+                .is_none_or(|(root, child)| root != child)
+        {
             return Err("guest staging tree contains another filesystem".into());
         }
         let uid = shift_id(
