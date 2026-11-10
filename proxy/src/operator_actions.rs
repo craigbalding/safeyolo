@@ -231,6 +231,11 @@ fn event(record: &pending::Record, name: &'static str, summary: &str) -> Event {
     event
 }
 
+pub(crate) fn mark_execution_interrupted(result: &mut Value) {
+    result["status"] = json!("outcome_unknown");
+    result["diagnostic"] = json!({"code":"preview_execution_interrupted","message":"Inspect the preview and guest before a new request. SafeYolo did not replay the recovered decision.","graph":"triage-desktop-preview"});
+}
+
 /// Called by the existing process-owned approval mutation path. Commit the
 /// decision before the side effect. A retry reads the saved outcome and never
 /// replays an effect whose completion was interrupted.
@@ -268,8 +273,7 @@ pub(crate) fn resolve(
                     // is recovery evidence, never permission to replay an effect.
                     record.option = current["option"].as_str().map(str::to_owned);
                     record.result = current["result"].clone();
-                    record.result["status"] = json!("outcome_unknown");
-                    record.result["diagnostic"] = json!({"code":"preview_execution_interrupted","message":"Inspect the preview and guest before a new request. SafeYolo did not replay the recovered decision.","graph":"triage-desktop-preview"});
+                    mark_execution_interrupted(&mut record.result);
                 }
                 return Ok(());
             }
