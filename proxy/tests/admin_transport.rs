@@ -853,8 +853,9 @@ async fn occupied_operator_bind_never_publishes_agent_sockets_or_readiness() {
             .status,
         401
     );
-    assert_private(&config, &[&token]);
+    // Drain the asynchronous audit writer before inspecting privacy evidence.
     assert_shutdown(proxy, &config, address.port()).await;
+    assert_private(&config, &[&token]);
 }
 
 #[tokio::test]
