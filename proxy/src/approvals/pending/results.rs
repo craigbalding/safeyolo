@@ -144,6 +144,13 @@ impl Record {
                         .ok_or_else(|| invalid("approval receipt unavailable"))?;
                     self.option = receipt["option"].as_str().map(str::to_owned);
                     self.result = receipt["result"].clone();
+                    if self.authority.action["kind"] == "operator_action"
+                        && self.result["status"] == "starting"
+                    {
+                        // The canonical decision did not commit. The policy
+                        // receipt cannot establish that execution started.
+                        crate::operator_actions::mark_execution_interrupted(&mut self.result);
+                    }
                 }
                 self.status = status;
                 self.decided_at = Some(if self.status == "expired" {
