@@ -7,6 +7,7 @@ use std::{
     str::FromStr,
 };
 
+use serde_json::{Value, json};
 use toml_edit::{DocumentMut, Item, value};
 
 use crate::Error;
@@ -125,6 +126,164 @@ fn save_document(path: &Path, document: &DocumentMut) -> Result<(), Error> {
     Ok(())
 }
 
+fn validate_document(path: &Path, document: &DocumentMut) -> Result<crate::policy::Policy, Error> {
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(path.parent().ok_or("policy has no parent")?)?;
+    temporary.write_all(document.to_string().as_bytes())?;
+    Ok(crate::policy::Policy::from_native_path(temporary.path())?)
+}
+
+/// Add and update both express desired saved intent at one guest destination.
+fn edit_mounts(item: &mut Item, destination: &str, desired: Option<&str>) -> Result<(), Error> {
+    let mut mounts = match item.get("mounts") {
+        Some(value) => value
+            .as_array()
+            .ok_or("agent mounts must be an array")?
+            .clone(),
+        None => toml_edit::Array::new(),
+    };
+    let mut selected = Vec::new();
+    for (index, entry) in mounts.iter().enumerate() {
+        if crate::host_boot::mount_destination(
+            entry.as_str().ok_or("agent mounts must contain strings")?,
+        )? == destination
+        {
+            selected.push(index);
+        }
+    }
+    if let Some(desired) = desired {
+        if let Some(first) = selected.first().copied() {
+            mounts.replace(first, desired);
+            for index in selected.into_iter().skip(1).rev() {
+                mounts.remove(index);
+            }
+        } else {
+            mounts.push(desired);
+        }
+    } else {
+        for index in selected.into_iter().rev() {
+            mounts.remove(index);
+        }
+    }
+    item["mounts"] = value(mounts);
+    Ok(())
+}
+
+pub(crate) async fn saved_mount(
+    selected: &Agent,
+    operation: &str,
+    operand: &str,
+) -> Result<Value, Error> {
+    let directory = crate::host_platform::config_dir()
+        .join("agents")
+        .join(&selected.name);
+    let _setup = tokio::task::spawn_blocking(move || {
+        crate::host_lifecycle::SetupLock::acquire_in(&directory, None)
+    })
+    .await??;
+    let path = policy_path()?;
+    let lock_path = path.clone();
+    let _policy =
+        tokio::task::spawn_blocking(move || crate::approvals::lock_policy(&lock_path)).await??;
+    let agent = refresh(selected)?;
+    let (destination, desired) = match operation {
+        "add" | "update" => {
+            let (_, destination, _) = crate::host_boot::mount(operand)?;
+            (destination, Some(operand))
+        }
+        "remove" => (crate::host_boot::guest_mount_destination(operand)?, None),
+        _ => return Err(
+            "use agent mounts add|update NAME HOST:GUEST[:ro], or agent mounts remove NAME GUEST"
+                .into(),
+        ),
+    };
+    let mut document = read_document(&path)?;
+    let before = document.to_string();
+    edit_mounts(&mut document["agents"][&agent.name], &destination, desired)?;
+    let saved = Agent::from_item(agent.name.clone(), &document["agents"][&agent.name])?;
+    crate::host_boot::validate(&saved)?;
+    validate_document(&path, &document)?;
+    let changed = before != document.to_string();
+    if changed {
+        save_document(&path, &document)?;
+    }
+    let observed = crate::host_lifecycle::runtime(&saved).await?;
+    Ok(
+        json!({"ok":true,"operation":operation,"root":crate::host_platform::config_dir(),
+        "agent":saved.name,"agent_id":saved.id,"destination":destination,
+        "saved_configuration_changed":changed,"saved_mounts":saved.mounts,
+        "live_mounts":observed["live_mounts"],"runtime_state":observed["runtime_state"],
+        "effective_configuration":observed["effective_configuration"],
+        "next_start_configuration":observed["next_start_configuration"],
+        "scope":"saved configuration only; the current sandbox is unchanged. The next explicit start uses saved mounts."}),
+    )
+}
+
+/// Caller holds the selected agent's setup lock through final publication.
+pub(crate) async fn remove_definition(selected: &Agent, apply: bool) -> Result<(), Error> {
+    let path = policy_path()?;
+    let lock_path = path.clone();
+    let _policy =
+        tokio::task::spawn_blocking(move || crate::approvals::lock_policy(&lock_path)).await??;
+    refresh(selected)?;
+    let mut document = read_document(&path)?;
+    document["agents"]
+        .as_table_like_mut()
+        .ok_or("agents table is missing")?
+        .remove(&selected.name);
+    validate_document(&path, &document).map_err(|error| format!("cannot remove agent {}: {error}. Resolve the reported policy error through its configuration owner before retrying retirement; use configure approvals for named approval dependencies", selected.name))?;
+    if apply {
+        save_document(&path, &document)?;
+    }
+    Ok(())
+}
+
+/// Inventory only the local owners already available to this host command.
+pub(crate) fn retained_references(agent: &Agent) -> Value {
+    let policy = (|| -> Result<Value, Error> {
+        let policy = crate::policy::Policy::from_native_path(&policy_path()?)?;
+        let support = policy
+            .support_grants()
+            .into_iter()
+            .filter_map(|(name, grant)| {
+                ((grant.support_instance_id.is_none() && grant.support.agent_id == agent.id)
+                    || grant
+                        .targets
+                        .iter()
+                        .any(|target| target.agent_id == agent.id))
+                .then_some(name)
+            })
+            .collect::<Vec<_>>();
+        let delegations = policy
+            .delegations()
+            .iter()
+            .filter_map(|(name, delegation)| {
+                (delegation
+                    .reviewers
+                    .iter()
+                    .filter_map(|reviewer| reviewer.local_agent())
+                    .chain(delegation.beneficiaries.iter().cloned())
+                    .any(|entry| entry.agent_id == agent.id))
+                .then_some(name)
+            })
+            .collect::<Vec<_>>();
+        Ok(
+            json!({"state":"observed","support_grants":support,"approval_delegations":delegations,
+            "note":"Support grants remain saved and may become inactive when this identity is removed. Approval dependencies must be changed explicitly before retirement."}),
+        )
+    })();
+    let root = crate::host_platform::config_dir();
+    json!({"policy":reference_result(policy),
+        "factories":reference_result(crate::factory::agent_references(&root, &agent.name)),
+        "coord":reference_result(crate::coord_rooms::agent_references(&root, &agent.id)),
+        "credentials":{"state":"unknown","reason":"Credential metadata is not open in this local command. Retirement does not create or unlock storage. Inspect credential bindings through the existing credentials owner."},
+        "scope":"Local owner observations at preview time; remote references are unknown. These records are retained, not revoked or reassigned by retirement."})
+}
+
+fn reference_result(result: Result<Value, Error>) -> Value {
+    result.unwrap_or_else(|error| json!({"state":"unknown","error":error.to_string()}))
+}
+
 /// Local operator configuration only. Executables and arguments are never
 /// accepted by the remote lifecycle API.
 pub(crate) async fn configure(
@@ -199,14 +358,9 @@ pub(crate) async fn configure_with_host_state(
             }
             "dangerously_allow_unowned" | "nested_docker" => value(text.parse::<bool>()?),
             "mounts" => {
-                crate::host_boot::mount(text)?;
-                let mut array = document["agents"][name]
-                    .get("mounts")
-                    .and_then(Item::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                array.push(text.as_str());
-                value(array)
+                let (_, destination, _) = crate::host_boot::mount(text)?;
+                edit_mounts(&mut document["agents"][name], &destination, Some(text))?;
+                continue;
             }
             "user_default_args" => {
                 let args: Vec<String> = serde_json::from_str(text)?;
@@ -224,10 +378,7 @@ pub(crate) async fn configure_with_host_state(
     crate::host_boot::validate(&agent)?;
     // Validate the complete policy before atomic publication, so rejected
     // configuration leaves the saved document and running policy intact.
-    let mut temporary =
-        tempfile::NamedTempFile::new_in(path.parent().ok_or("policy has no parent")?)?;
-    temporary.write_all(document.to_string().as_bytes())?;
-    crate::policy::Policy::from_native_path(temporary.path())?;
+    validate_document(&path, &document)?;
     if options.iter().any(|(key, _)| key == "host_script") {
         if crate::host_runs::observe(name).await["runtime_state"] != "stopped" {
             return Err("stop the agent before applying a host setup script; saved configuration is unchanged".into());
@@ -498,6 +649,75 @@ pub(crate) fn restore_tailnet_port(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn saved_edits_reject_a_selected_identity_replaced_while_waiting() {
+        let root = tempfile::tempdir().unwrap();
+        crate::host_platform::in_instance(root.path().to_owned(), async {
+            let agent = configure(
+                "alice",
+                &[("folder".into(), root.path().to_string_lossy().into_owned())],
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+            let directory = root.path().join("agents/alice");
+            let lock = crate::host_lifecycle::SetupLock::acquire_in(&directory, None).unwrap();
+            let edit = saved_mount(&agent, "remove", "/mnt/old");
+            let change = async {
+                let path = policy_path().unwrap();
+                let _policy = crate::approvals::lock_policy(&path).unwrap();
+                let mut document = read_document(&path).unwrap();
+                document["agents"]["alice"]["agent_id"] =
+                    value(format!("ag-{}", uuid::Uuid::new_v4().simple()));
+                save_document(&path, &document).unwrap();
+                let replaced = std::fs::read(&path).unwrap();
+                drop(lock);
+                replaced
+            };
+            let (rejected, replaced) = tokio::join!(edit, change);
+            assert!(
+                rejected
+                    .unwrap_err()
+                    .to_string()
+                    .contains("identity changed")
+            );
+            assert_eq!(std::fs::read(policy_path().unwrap()).unwrap(), replaced);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn retirement_preflight_names_existing_approval_dependencies_before_stopping() {
+        let root = tempfile::tempdir().unwrap();
+        crate::host_platform::in_instance(root.path().to_owned(), async {
+            let options = [("folder".into(), root.path().to_string_lossy().into_owned())];
+            let alice = configure("alice", &options, true, None).await.unwrap();
+            let bob = configure("bob", &options, true, None).await.unwrap();
+            let mut delegation: crate::policy::delegation::Delegation = serde_json::from_value(json!({
+                "reviewers":[{"name":bob.name,"agent_id":bob.id}],
+                "beneficiaries":[{"name":alice.name,"agent_id":alice.id}],
+                "scopes":[{"type":"network_egress","host":"example.com","ports":[443],"all_ports":false,"actions":["request"]}],
+                "expires_at":null,"grant_seconds":null,"gateway_once":true,"acknowledgment":null
+            })).unwrap();
+            delegation.acknowledgment = Some(delegation.revision());
+            let path = policy_path().unwrap();
+            let mut document = read_document(&path).unwrap();
+            document["approval_delegations"]["local"] = value(serde_json::to_string(&delegation).unwrap());
+            validate_document(&path, &document).unwrap();
+            save_document(&path, &document).unwrap();
+            let original = std::fs::read(&path).unwrap();
+            let run = root.path().join("agents/alice/runtime.json");
+            std::fs::write(&run, b"unverified runtime must be preserved").unwrap();
+            let result = crate::host_lifecycle::retire(&alice, true).await.unwrap();
+            assert_eq!(result["ok"], false);
+            assert_eq!(result["failed_stage"], "preflight");
+            assert!(result["error"].as_str().unwrap().contains("delegation local"));
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert_eq!(std::fs::read(&run).unwrap(), b"unverified runtime must be preserved");
+        }).await;
+    }
 
     #[test]
     fn nested_docker_is_an_explicit_boolean_operator_setting() {

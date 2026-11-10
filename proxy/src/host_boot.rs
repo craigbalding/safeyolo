@@ -44,11 +44,40 @@ pub(crate) fn warn_broad_shares(agent: &Agent) {
     }
 }
 
-pub(crate) fn mount(spec: &str) -> Result<(PathBuf, String, bool), Error> {
+/// Select a saved mount without accessing its old host source.
+pub(crate) fn mount_destination(spec: &str) -> Result<String, Error> {
     let parts: Vec<_> = spec.split(':').collect();
     if !(parts.len() == 2 || parts.len() == 3 && parts[2] == "ro") {
         return Err("mount requires /host/path:/guest/path[:ro]".into());
     }
+    guest_mount_destination(parts[1])
+}
+
+pub(crate) fn guest_mount_destination(text: &str) -> Result<String, Error> {
+    let guest = Path::new(text);
+    if !guest.is_absolute()
+        || guest
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+        || ["/home/agent", "/workspace"]
+            .iter()
+            .any(|root| Path::new(root).starts_with(guest))
+        || ["/dev", "/proc", "/sys", "/safeyolo", "/safeyolo-status"]
+            .iter()
+            .any(|root| guest.starts_with(root))
+    {
+        return Err("mount destination is invalid or reserved".into());
+    }
+    Ok(guest
+        .components()
+        .collect::<PathBuf>()
+        .to_string_lossy()
+        .into_owned())
+}
+
+pub(crate) fn mount(spec: &str) -> Result<(PathBuf, String, bool), Error> {
+    let guest = mount_destination(spec)?;
+    let parts: Vec<_> = spec.split(':').collect();
     let host = Path::new(parts[0]).canonicalize()?;
     let source_type = host.metadata()?.file_type();
     if !source_type.is_dir() {
@@ -71,20 +100,6 @@ pub(crate) fn mount(spec: &str) -> Result<(PathBuf, String, bool), Error> {
         )
         .into());
     }
-    let guest = Path::new(parts[1]);
-    if !guest.is_absolute()
-        || guest
-            .components()
-            .any(|part| part == std::path::Component::ParentDir)
-        || ["/home/agent", "/workspace"]
-            .iter()
-            .any(|root| Path::new(root).starts_with(guest))
-        || ["/dev", "/proc", "/sys", "/safeyolo", "/safeyolo-status"]
-            .iter()
-            .any(|root| guest.starts_with(root))
-    {
-        return Err("mount destination is invalid or reserved".into());
-    }
     let read_only = parts.len() == 3;
     if !read_only
         && let Some(protected) = crate::native_config::host_settings()?
@@ -97,15 +112,7 @@ pub(crate) fn mount(spec: &str) -> Result<(PathBuf, String, bool), Error> {
             host.display(), protected.display()
         ).into());
     }
-    Ok((
-        host,
-        guest
-            .components()
-            .collect::<PathBuf>()
-            .to_string_lossy()
-            .into_owned(),
-        read_only,
-    ))
+    Ok((host, guest, read_only))
 }
 
 pub(crate) fn validate(agent: &Agent) -> Result<(), Error> {

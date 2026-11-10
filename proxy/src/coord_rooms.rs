@@ -205,6 +205,28 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
 pub(crate) fn open(root: &Path) -> Result<Connection, Error> {
     open_with_flags(root, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
 }
+
+/// Retirement inspects existing records without bootstrapping or mutating Coord.
+pub(crate) fn agent_references(root: &Path, agent_id: &str) -> Result<Value, Error> {
+    let connection = open_with_flags(root, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let rooms = connection
+        .prepare(
+            "SELECT r.name FROM memberships m JOIN rooms r USING(room_id)
+             WHERE m.principal_kind='agent' AND m.principal_id=?1
+             UNION SELECT r.name FROM coord_membership_grants g JOIN rooms r USING(room_id)
+             WHERE g.agent_id=?1
+             UNION SELECT r.name FROM coord_collaboration_grants g JOIN rooms r USING(room_id)
+             WHERE g.agent_id=?1 ORDER BY 1",
+        )?
+        .query_map([agent_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let claims = connection.prepare("SELECT work_id, room_id FROM coord_work WHERE state='claimed' AND json_extract(document_json,'$.claim_agent_id')=?1 ORDER BY work_id")?
+        .query_map([agent_id], |row| Ok(json!({"work_id":row.get::<_, String>(0)?,"room_id":row.get::<_, String>(1)?})))?.collect::<Result<Vec<_>, _>>()?;
+    Ok(
+        json!({"state":"observed","membership_records":rooms,"claimed_work":claims,
+        "scope":"Retained local records, not effective access. Membership, attention, work and history remain; reconcile work through Coord."}),
+    )
+}
 fn open_with_flags(root: &Path, flags: rusqlite::OpenFlags) -> Result<Connection, Error> {
     let connection = Connection::open_with_flags(directory(root)?.join("v0.db"), flags)?;
     connection.busy_timeout(Duration::from_secs(5))?;
@@ -1133,4 +1155,83 @@ pub(crate) fn factory_access(root: &Path, room: &str, agent_id: &str) -> Result<
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+
+    #[test]
+    fn retained_agent_references_include_collaboration_without_changing_the_store() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        fs::create_dir_all(data.join("coord")).unwrap();
+        fs::write(
+            root.path().join("config.toml"),
+            format!("data_dir = {}\n", serde_json::to_string(&data).unwrap()),
+        )
+        .unwrap();
+        let store = data.join("coord/v0.db");
+        let connection = Connection::open(&store).unwrap();
+        for schema in [
+            include_str!("coord_schema.sql"),
+            include_str!("coord_work_schema.sql"),
+            include_str!("coord_membership_grants.sql"),
+        ] {
+            connection.execute_batch(schema).unwrap();
+        }
+        connection
+            .pragma_update(None, "user_version", SCHEMA_VERSION)
+            .unwrap();
+        for room in [
+            "direct-only",
+            "issued-only",
+            "collaboration-only",
+            "shared",
+            "other-only",
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO rooms(room_id,name,created_at) VALUES(?1,?1,1)",
+                    [room],
+                )
+                .unwrap();
+        }
+        for (room, agent) in [
+            ("direct-only", "ag-selected"),
+            ("shared", "ag-selected"),
+            ("other-only", "ag-other"),
+        ] {
+            connection.execute("INSERT INTO memberships(room_id,principal_kind,principal_id,permissions,granted_at) VALUES(?1,'agent',?2,'receive',1)", [room, agent]).unwrap();
+        }
+        for (room, agent) in [
+            ("issued-only", "ag-selected"),
+            ("shared", "ag-selected"),
+            ("other-only", "ag-other"),
+        ] {
+            connection.execute("INSERT INTO coord_membership_grants(approval_id,room_id,agent_id,permissions,granted_at,issued_json,authority_digest,policy_file,identity_root) VALUES(?1,?1,?2,'receive',1,'{}','digest','policy.toml','root')", [room, agent]).unwrap();
+        }
+        for (index, (room, agent)) in [
+            ("collaboration-only", "ag-selected"),
+            ("shared", "ag-selected"),
+            ("shared", "ag-selected"),
+            ("other-only", "ag-other"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // Retirement inventories retained records, including expired or
+            // revoked grants, rather than claiming they still grant access.
+            connection.execute("INSERT INTO coord_collaboration_grants(approval_id,room_id,agent_id,agent_name,granted_at,authority_digest,receipt_json,policy_file,identity_root,expires_at,revoked_at) VALUES(?1,?2,?3,'selected',1,'digest','{}','policy.toml','root','2000-01-01T00:00:00Z',2)", params![format!("collaboration-{index}"), room, agent]).unwrap();
+        }
+        drop(connection);
+        let before = fs::read(&store).unwrap();
+        let references = agent_references(root.path(), "ag-selected").unwrap();
+        assert_eq!(references["state"], "observed");
+        assert_eq!(
+            references["membership_records"],
+            json!(["collaboration-only", "direct-only", "issued-only", "shared"])
+        );
+        assert_eq!(fs::read(&store).unwrap(), before);
+    }
 }
