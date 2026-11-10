@@ -1,8 +1,13 @@
 """Tests for the shared custom-rootfs guest installer."""
 
+import hashlib
+import io
+import json
 import os
 import shlex
 import subprocess
+import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -324,13 +329,83 @@ def test_debian_builders_verify_the_fd_runtime_command() -> None:
     assert "fd --version" in kali
 
 
-def test_default_and_custom_builders_share_current_mise_resolution() -> None:
-    for name in ("build-rootfs.sh", "install-guest-common.sh"):
-        source = (GUEST_DIR / name).read_text()
-        assert "input-functions.sh" in source
-        assert "guest_inputs" in source
-        assert "2026.8.8" not in source
-        assert "MISE_VERSION:-" not in source
+@pytest.mark.parametrize("builder", ("default", "custom"))
+@pytest.mark.parametrize("architecture", ("amd64", "arm64"))
+def test_default_and_custom_builders_share_current_mise_resolution(
+    tmp_path: Path, builder: str, architecture: str,
+) -> None:
+    """Run both consumers with controlled release discovery and real env/download logic."""
+    version = "9.8.7"
+    payload = f"#!/bin/sh\nprintf '%s\\n' '{version} {architecture}'\n".encode()
+    archive = tmp_path / "mise.tar.gz"
+    with tarfile.open(archive, "w:gz") as bundle:
+        entry = tarfile.TarInfo("mise/bin/mise")
+        entry.size, entry.mode = len(payload), 0o755
+        bundle.addfile(entry, io.BytesIO(payload))
+    checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+    frozen = tmp_path / "release.json"
+    frozen.write_text(json.dumps({
+        "schema": "safeyolo.guest-inputs/v1",
+        "tools": {tool: {"version": version, "assets": {architecture: {
+            "url": f"https://release.invalid/{architecture}", "sha256": checksum,
+        }}} for tool in ("mise", "gh")},
+    }))
+    # Only discovery and upstream bytes are controlled. The current resolver
+    # parses arguments, emits assignments and verifies downloaded checksums.
+    python = tmp_path / "build-python"
+    python.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, runpy, sys\n"
+        "from pathlib import Path\n"
+        "resolver = runpy.run_path(sys.argv.pop(1))\n"
+        "def resolve(tools, base):\n"
+        "    Path(os.environ['TEST_CALLS']).write_text(json.dumps([tools, base]))\n"
+        "    return json.loads(Path(os.environ['TEST_RELEASE']).read_text())\n"
+        "def fetch(url):\n"
+        "    assert url == 'https://release.invalid/' + os.environ['DEB_ARCH']\n"
+        "    return Path(os.environ['TEST_ARCHIVE']).read_bytes()\n"
+        "resolver['main'].__globals__.update(resolve=resolve, fetch=fetch)\n"
+        "resolver['main']()\n"
+    )
+    python.chmod(0o755)
+    rootfs = tmp_path / "rootfs"
+    rootfs.mkdir()
+    if builder == "default":
+        # Run the actual input preflight, before Linux-only image construction.
+        source = (GUEST_DIR / "build-rootfs.sh").read_text()
+        command = source[source.index("# Resolve once") : source.index("# --- Helper:")]
+    else:
+        command = (
+            'source "$SAFEYOLO_GUEST_SRC_DIR/install-guest-common.sh"\n'
+            'install_safeyolo_mise "$TEST_ROOTFS" "$DEB_ARCH"\n'
+        )
+    calls, observed = tmp_path / "calls.json", tmp_path / "observed"
+    environment = {
+        **os.environ, "BASH_ENV": os.devnull, "TMPDIR": str(tmp_path),
+        "SCRIPT_DIR": str(GUEST_DIR), "SAFEYOLO_GUEST_SRC_DIR": str(GUEST_DIR),
+        "SAFEYOLO_BUILD_PYTHON": str(python), "DEB_ARCH": architecture,
+        "OUTPUT_DIR": str(tmp_path / "out"), "TEST_ROOTFS": str(rootfs),
+        "TEST_RELEASE": str(frozen), "TEST_ARCHIVE": str(archive),
+        "TEST_CALLS": str(calls), "TEST_OBSERVED": str(observed),
+        "MISE_VERSION": "stale", "MISE_SHA256": "stale",
+    }
+    environment.pop("GUEST_INPUTS", None)
+    result = subprocess.run(
+        ["bash", "-euc", command + '\nprintf "%s\\n" "$MISE_VERSION" "$MISE_SHA256" > "$TEST_OBSERVED"'],
+        env=environment, capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert observed.read_text().splitlines() == [version, checksum]
+    expected_resolution = [["mise", "gh"], True] if builder == "default" else [["mise"], False]
+    assert json.loads(calls.read_text()) == expected_resolution
+    if builder == "default":
+        cached = tmp_path / "out/.download-cache" / f"mise-{version}-{architecture}.tar.gz"
+        assert cached.read_bytes() == archive.read_bytes()
+    else:
+        installed = rootfs / "usr/local/bin/mise"
+        assert installed.read_bytes() == payload
+        assert installed.stat().st_mode & 0o777 == 0o755
+        assert subprocess.check_output([str(installed)], text=True).strip() == f"{version} {architecture}"
 
 
 def test_default_builder_supports_a_host_without_resolv_conf() -> None:

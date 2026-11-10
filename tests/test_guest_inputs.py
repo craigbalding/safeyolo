@@ -129,10 +129,16 @@ def test_guest_rootfs_inputs_are_verified_before_kernel_and_reused_by_rootfs(tmp
         (cache / f"gh-1.2.3-{architecture}.tar.gz").write_bytes(b"corrupt archive")
     frozen = tmp_path / "inputs.json"
     frozen.write_text(json.dumps({"schema": "safeyolo.guest-inputs/v1", "tools": tools}))
+    # These stub builders exercise native Linux orchestration. The Lima
+    # path has separate selected-output/input controls below.
+    uname = tmp_path / "uname"
+    uname.write_text("#!/bin/sh\nprintf 'Linux\\n'\n")
+    uname.chmod(0o755)
     result = subprocess.run(
         ["bash", str(guest / "build-all.sh")], cwd=tmp_path, capture_output=True, text=True,
         env=dict(os.environ, BASH_ENV=os.devnull, ARCH=architecture, BUILD_KERNEL="1", OUTPUT_DIR=str(output),
-                 GUEST_INPUTS=str(frozen), SAFEYOLO_BUILD_PYTHON=sys.executable), timeout=30,
+                 GUEST_INPUTS=str(frozen), SAFEYOLO_BUILD_PYTHON=sys.executable,
+                 PATH=f"{tmp_path}{os.pathsep}{os.environ['PATH']}"), timeout=30,
     )
     if fault:
         assert result.returncode != 0
