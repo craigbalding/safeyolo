@@ -86,6 +86,93 @@ fn initialize(root: &Path) {
     .unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires guest root; run with TMPDIR on the gVisor overlay to cover split device numbers"]
+fn profile_tree_remapping_preserves_ownership_and_outside_files() {
+    use std::os::unix::fs::{MetadataExt, chown};
+
+    assert_eq!(unsafe { libc::geteuid() }, 0);
+    let stage = tempfile::Builder::new()
+        .prefix("extract-")
+        .tempdir()
+        .unwrap();
+    fs::set_permissions(stage.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let tree = stage.path().join("rootfs-tree");
+    fs::create_dir(&tree).unwrap();
+    fs::write(tree.join("root-file"), "root").unwrap();
+    fs::write(tree.join("user-file"), "user").unwrap();
+    chown(tree.join("user-file"), Some(1000), Some(1000)).unwrap();
+    fs::hard_link(tree.join("root-file"), tree.join("second-link")).unwrap();
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    symlink(outside.path(), tree.join("outside-symlink")).unwrap();
+    chown(stage.path(), Some(1000), Some(1000)).unwrap();
+
+    let archived = cli(
+        stage.path(),
+        &[
+            "host",
+            "archive-profile-tree",
+            tree.to_str().unwrap(),
+            "1000",
+        ],
+    );
+    assert!(
+        archived.status.success(),
+        "{}",
+        String::from_utf8_lossy(&archived.stderr)
+    );
+    assert_eq!(fs::metadata(&tree).unwrap().uid(), 100000);
+    assert_eq!(fs::metadata(tree.join("user-file")).unwrap().uid(), 101000);
+    let mapped = cli(
+        stage.path(),
+        &[
+            "host",
+            "remap-rootfs",
+            tree.to_str().unwrap(),
+            "100000",
+            "100000",
+            "1000",
+            "1000",
+        ],
+    );
+    assert!(
+        mapped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&mapped.stderr)
+    );
+    assert_eq!(fs::metadata(tree.join("user-file")).unwrap().uid(), 1000);
+    assert_eq!(fs::metadata(tree.join("root-file")).unwrap().uid(), 100000);
+    assert_eq!(outside.as_file().metadata().unwrap().uid(), 0);
+
+    let escape_stage = tempfile::Builder::new()
+        .prefix("extract-")
+        .tempdir()
+        .unwrap();
+    fs::set_permissions(escape_stage.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let escape_tree = escape_stage.path().join("rootfs-tree");
+    fs::create_dir(&escape_tree).unwrap();
+    fs::hard_link(outside.path(), escape_tree.join("outside-hard-link")).unwrap();
+    chown(escape_stage.path(), Some(1000), Some(1000)).unwrap();
+    let refused = cli(
+        escape_stage.path(),
+        &[
+            "host",
+            "archive-profile-tree",
+            escape_tree.to_str().unwrap(),
+            "1000",
+        ],
+    );
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("hard link outside"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(fs::metadata(&escape_tree).unwrap().uid(), 0);
+    assert_eq!(outside.as_file().metadata().unwrap().uid(), 0);
+}
+
 #[test]
 fn initialization_makes_only_the_public_ca_world_readable() {
     let directory = tempfile::tempdir().unwrap();
