@@ -157,8 +157,11 @@ describes which authentication configurations fetch policy.
 ## Approve the first request
 
 The first client request can stop for an existing network, credential or risky-route
-approval. Service authorization does not grant those approvals. A scoped gateway
-token is still subject to credential detection before the gateway selects a route.
+approval. Service authorization does not grant those approvals. Scoped service-token
+fields go through gateway validation rather than upstream credential approval.
+The credential guard checks other incoming headers and the injected provider
+credential before the proxy connects upstream. A credential approval can therefore
+refer to a host-held provider credential even when the guest sends only a scoped token.
 
 On the host, use `safeyolo approvals list --agent alice --json` to find the pending
 request. Replace `APPROVAL_ID` below with its approval ID. Inspect the destination,
@@ -174,10 +177,11 @@ safeyolo approvals approve APPROVAL_ID --option run --json
 ```
 
 Expected result: the selected approval reports `approved` and `grant_active=true`.
-Retry the client request. An unchanged gateway retains the scoped token. If another approval is required,
-inspect that request separately. The initial scoped-token approval does not approve
-an injected provider credential or a risky route. Explicit denies still refuse the
-request. If gateway inputs changed in the meantime, stop/relaunch the client to obtain a current scoped token, then inspect any resulting approval.
+Retry the client request. An unchanged gateway retains the scoped token. If another
+approval is required, inspect that request separately. Credential approval does not
+approve a risky route. Explicit denies still refuse the request. If gateway inputs
+changed in the meantime, stop/relaunch the client to obtain a current scoped token,
+then inspect any resulting approval.
 
 ## Return after interruption or configuration changes
 
