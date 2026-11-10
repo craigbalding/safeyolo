@@ -30,7 +30,7 @@ pub enum TransportFailure {
     Tls,
     Timeout,
     Protocol,
-    Body,
+    Body { status: u16, timed_out: bool },
     Cancelled,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +76,33 @@ impl FailureCategory {
     }
 }
 impl RefreshError {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Vault(_) => self.category().code(),
+            Self::State => "state",
+            Self::Transport(failure) => match failure {
+                TransportFailure::Connect => "connect",
+                TransportFailure::Tls => "tls",
+                TransportFailure::Timeout => "timeout",
+                TransportFailure::Protocol => "protocol",
+                TransportFailure::Body {
+                    timed_out: true, ..
+                } => "timeout",
+                TransportFailure::Body { .. } => "body",
+                TransportFailure::Cancelled => "cancelled",
+            },
+            Self::HttpStatus(_) => "http_status",
+            Self::JsonEncoding => "json_encoding",
+            Self::Json => "json",
+            Self::ResponseShape => "response_shape",
+            Self::MissingAccessToken => "missing_access_token",
+            Self::AccessTokenType => "access_token_type",
+            Self::RefreshTokenType => "refresh_token_type",
+            Self::ExpiryType => "expiry_type",
+            Self::ExpiryRange => "expiry_range",
+        }
+    }
+
     pub fn category(self) -> FailureCategory {
         match self {
             Self::Vault(error) => match error.kind {
@@ -128,6 +155,41 @@ impl From<VaultError> for RefreshError {
 }
 type Result<T> = std::result::Result<T, RefreshError>;
 
+/// Only fixed codes and a numeric status cross the refresh evidence boundary.
+/// The response body and arbitrary issuer strings never enter this value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RefreshFailure {
+    pub error: RefreshError,
+    http_status: Option<u16>,
+    response_error: &'static str,
+}
+impl From<RefreshError> for RefreshFailure {
+    fn from(error: RefreshError) -> Self {
+        Self {
+            error,
+            http_status: match error {
+                RefreshError::HttpStatus(status) => Some(status),
+                RefreshError::Transport(TransportFailure::Body { status, .. }) => Some(status),
+                _ => None,
+            },
+            response_error: "unknown",
+        }
+    }
+}
+impl RefreshFailure {
+    pub fn http_status(self) -> Option<u16> {
+        self.http_status
+    }
+    pub fn response_error(self) -> &'static str {
+        self.response_error
+    }
+    fn with_response(mut self, response: &RefreshResponse) -> Self {
+        self.http_status = Some(response.status);
+        self.response_error = response_error_category(&response.body);
+        self
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotNeeded {
     MissingCredential,
@@ -139,12 +201,12 @@ pub enum NotNeeded {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RefreshOutcome {
     Refreshed,
-    /// Existing HTTP/JSON failure path: refresh returned false and gateway kept
-    /// the old credential for injection. No retry delay is introduced.
-    Retained(RefreshError),
+    /// Transport/HTTP/JSON failure retains the stored credential. The gateway
+    /// still blocks injection; no retry delay is introduced.
+    Retained(RefreshFailure),
     /// Malformed token/publication failure. Do not turn this into a successful
     /// refresh or an implicit permission to inject an unvalidated replacement.
-    Rejected(RefreshError),
+    Rejected(RefreshFailure),
     /// A store, removal or changed reload superseded the captured revision.
     Superseded,
     Cancelled,
@@ -396,19 +458,22 @@ impl RefreshAttempt {
     ) -> RefreshOutcome {
         let outcome = match response {
             Err(TransportFailure::Cancelled) => RefreshOutcome::Cancelled,
-            Err(error) => RefreshOutcome::Retained(RefreshError::Transport(error)),
-            Ok(response) if !(200..300).contains(&response.status) => {
-                RefreshOutcome::Retained(RefreshError::HttpStatus(response.status))
-            }
+            Err(error) => RefreshOutcome::Retained(RefreshError::Transport(error).into()),
+            Ok(response) if !(200..300).contains(&response.status) => RefreshOutcome::Retained(
+                RefreshFailure::from(RefreshError::HttpStatus(response.status))
+                    .with_response(&response),
+            ),
             Ok(response) => match decode_response(
                 &response.body,
                 now,
                 self.snapshot.credential().subscription_client,
             ) {
                 Err(error @ (RefreshError::Json | RefreshError::JsonEncoding)) => {
-                    RefreshOutcome::Retained(error)
+                    RefreshOutcome::Retained(RefreshFailure::from(error).with_response(&response))
                 }
-                Err(error) => RefreshOutcome::Rejected(error),
+                Err(error) => {
+                    RefreshOutcome::Rejected(RefreshFailure::from(error).with_response(&response))
+                }
                 Ok(update) => {
                     let mut credential = self.snapshot.credential().clone();
                     credential.value = update.access;
@@ -425,7 +490,10 @@ impl RefreshAttempt {
                     ) {
                         Ok(true) => RefreshOutcome::Refreshed,
                         Ok(false) => RefreshOutcome::Superseded,
-                        Err(error) => RefreshOutcome::Rejected(RefreshError::Vault(error)),
+                        Err(error) => RefreshOutcome::Rejected(
+                            RefreshFailure::from(RefreshError::Vault(error))
+                                .with_response(&response),
+                        ),
                     }
                 }
             },
@@ -464,6 +532,67 @@ struct TokenUpdate {
     refresh: Option<Option<Secret>>,
     expiry: Option<String>,
 }
+
+fn response_error_category(body: &[u8]) -> &'static str {
+    // Borrow raw fields and decode only a selected error code into wiping
+    // storage. Response bytes, decoded text and error strings wipe on drop.
+    #[derive(serde::Deserialize)]
+    struct ErrorFields<'a> {
+        #[serde(borrow)]
+        error: Option<&'a serde_json::value::RawValue>,
+        #[serde(borrow)]
+        code: Option<&'a serde_json::value::RawValue>,
+        #[serde(borrow, rename = "type")]
+        kind: Option<&'a serde_json::value::RawValue>,
+    }
+    fn known(value: &serde_json::value::RawValue) -> Option<&'static str> {
+        let text = Zeroizing::new(serde_json::from_str::<String>(value.get()).ok()?);
+        Some(match text.as_str() {
+            "invalid_request" => "invalid_request",
+            "invalid_client" => "invalid_client",
+            "invalid_grant" => "invalid_grant",
+            "unauthorized_client" => "unauthorized_client",
+            "unsupported_grant_type" => "unsupported_grant_type",
+            "invalid_scope" => "invalid_scope",
+            "server_error" => "server_error",
+            "temporarily_unavailable" => "temporarily_unavailable",
+            "refresh_token_expired" => "refresh_token_expired",
+            "refresh_token_reused" => "refresh_token_reused",
+            "refresh_token_invalidated" => "refresh_token_invalidated",
+            "authentication_error" => "authentication_error",
+            "access_denied" => "access_denied",
+            "egress_approval_required" => "egress_approval_required",
+            "requires_approval" => "requires_approval",
+            "rate_limit_exceeded" => "rate_limit_exceeded",
+            _ => return None,
+        })
+    }
+    let Ok(text) = decode_json_text(body) else {
+        return "unknown";
+    };
+    let Ok(fields) = serde_json::from_str::<ErrorFields<'_>>(&text) else {
+        return "unknown";
+    };
+    let nested = fields
+        .error
+        .and_then(|error| serde_json::from_str::<ErrorFields<'_>>(error.get()).ok());
+    fields
+        .error
+        .and_then(known)
+        .or_else(|| {
+            nested
+                .as_ref()
+                .and_then(|fields| fields.code.and_then(known))
+        })
+        .or_else(|| {
+            nested
+                .as_ref()
+                .and_then(|fields| fields.kind.and_then(known))
+        })
+        .or_else(|| fields.kind.and_then(known))
+        .unwrap_or("unknown")
+}
+
 fn decode_response(
     body: &[u8],
     now: OffsetDateTime,

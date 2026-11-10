@@ -2499,12 +2499,9 @@ async fn execute_refresh(
             .await
     })
     .await
-    .map_err(|error| {
-        if is_refresh_phase_timeout(&error) {
-            crate::oauth::TransportFailure::Timeout
-        } else {
-            crate::oauth::TransportFailure::Body
-        }
+    .map_err(|error| crate::oauth::TransportFailure::Body {
+        status,
+        timed_out: is_refresh_phase_timeout(&error),
     })?
     .to_bytes();
     Ok(crate::oauth::RefreshResponse::new(status, bytes.to_vec()))
@@ -2525,7 +2522,7 @@ async fn resolve_refresh(
     let Some(oauth) = oauth else {
         return pending
             .resume_for_gateway(crate::oauth::RefreshOutcome::Rejected(
-                crate::oauth::RefreshError::State,
+                crate::oauth::RefreshError::State.into(),
             ))
             .map_err(Into::into);
     };
@@ -2534,7 +2531,7 @@ async fn resolve_refresh(
         Ok(started) => started,
         Err(error) => {
             return pending
-                .resume_for_gateway(crate::oauth::RefreshOutcome::Rejected(error))
+                .resume_for_gateway(crate::oauth::RefreshOutcome::Rejected(error.into()))
                 .map_err(Into::into);
         }
     };
