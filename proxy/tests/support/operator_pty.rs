@@ -20,7 +20,7 @@ pub(crate) struct Terminal {
 impl Terminal {
     pub(crate) fn start(root: &Path, args: &[&str]) -> Self {
         let (mut master, mut slave) = (-1, -1);
-        let size = libc::winsize {
+        let mut size = libc::winsize {
             ws_row: 40,
             ws_col: 160,
             ws_xpixel: 0,
@@ -32,8 +32,8 @@ impl Terminal {
                     &mut master,
                     &mut slave,
                     std::ptr::null_mut(),
-                    std::ptr::null(),
-                    &size,
+                    std::ptr::null_mut(),
+                    std::ptr::addr_of_mut!(size),
                 )
             },
             0
