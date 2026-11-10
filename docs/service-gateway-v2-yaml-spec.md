@@ -100,13 +100,15 @@ schema_version: 1          # required — integer 1
 name: string              # required — service identifier
 description: string       # optional — human-readable summary
 default_host: string      # optional — defaults to ""
+github_git: bool          # default: false; GitHub smart-HTTP repository operations
 docker:                   # optional — fixed Docker Engine transport
   endpoint: https://docker.example.invalid:2376 # HTTP(S) origin, no credentials or path
 
 auth:                     # optional — omit for credential-free services
-  type: string            # required within auth: bearer or api_key for injection
+  type: string            # required within auth: bearer, api_key or basic for injection
   header: string          # default: Authorization
   scheme: string          # default: Bearer; used only for bearer
+  username: string        # default: x-access-token; used only for basic
   refresh_on_401: bool    # default: false; expiry refresh before injection
   allow_http: bool        # default: false
 
@@ -145,8 +147,18 @@ effect_model: {}          # optional — see the service-authoring workflow
 
 `auth.type: bearer` injects the stored value as `scheme + space + value`.
 `api_key` injects the value directly into `header`; set the provider's header
-explicitly when it is not `Authorization`. Use these two types for authenticated
-services; an arbitrary type string can parse without implementing an injector.
+explicitly when it is not `Authorization`. `basic` injects Base64-encoded
+`username:value` into `header`. Its username must be nonempty and contain no
+colon or newline. Use these three types for authenticated services; an arbitrary
+type string can parse without implementing an injector.
+
+With `github_git: true`, the service accepts GitHub smart-HTTP discovery and
+pack requests only at `github.com`. Policy, risk assessment, route challenges
+and grants use the lowercase repository's canonical POST endpoint for both
+requests. Ref discovery retains a once grant; a successful pack response consumes
+it. See [GitHub Git HTTPS access](credentials.md#github-git-https-access) for
+repository scope, helper setup and operator decisions.
+
 With `allow_http: false`, a selected authenticated Hypertext Transfer Protocol
 (HTTP) request is redirected to secure HTTP (HTTPS) without injecting the
 secret. Setting `allow_http: true` permits

@@ -1,7 +1,7 @@
 """Drive native component selection with checked host fixtures and a TLS registry.
 
-Controlled host executables establish failure controls, not installed release
-acceptance. The real native client performs guest acquisition and activation.
+Controlled host executables establish failure controls. The optional installed
+case uses real bundles for proxy activation and recovery; it does not boot a guest.
 """
 
 import ctypes
@@ -9,9 +9,13 @@ import hashlib
 import io
 import json
 import os
+import pty
 import shutil
+import socket
+import sqlite3
 import subprocess
 import tarfile
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -51,7 +55,12 @@ def checksums(bundle):
 
 
 @pytest.fixture
-def host_pair(package_inputs, tmp_path):
+def host_pair(package_inputs, tmp_path, monkeypatch):
+    # The controlled package identities use the real CLI for Coord validation.
+    # Individual prior-writer controls select a different executable explicitly.
+    monkeypatch.setenv("PACKAGE_COORD_CLI", str(os.environ.get(
+        "SAFEYOLO_NATIVE_CLI", acquisition.REPO / "proxy/target/release/safeyolo",
+    )))
     first = build_bundle(package_inputs, tmp_path)
     second = tmp_path / "target"
     shutil.copytree(first, second, symlinks=True)
@@ -204,6 +213,82 @@ def test_bad_retained_stock_runtime_cannot_replace_current_on_rollback(
     assert os.readlink(root / "current") == current
     assert upgrade(native_cli, root, environment, "status") == selected
     assert_preserved(root, saved)
+
+
+@pytest.mark.parametrize("store_state", ["absent", "compatible", "incompatible", "corrupt", "identity"])
+def test_rollback_checks_retained_coord_before_selection(
+        native_cli, stock_installation, registry, tmp_path, store_state):
+    """Run the prior CLI's real Coord contract, independently of package labels."""
+    root, target = stock_installation
+    _contents, requests, _faults, environment = registry
+    prior = Path(os.environ.get("SAFEYOLO_ROLLBACK_PRIOR_CLI", native_cli))
+    environment = {**environment, "PACKAGE_COORD_CLI": str(prior)}
+    # Exercise the configured producer path rather than assuming ROOT/data.
+    data = tmp_path / "retained-data"
+    config = root / "config.toml"
+    config.write_text(f"data_dir = {json.dumps(str(data))}\n" + config.read_text())
+    store = data / "coord/v0.db"
+    if store_state != "absent":
+        produced = command(prior, root, environment, "coord", "room", "list")
+        assert produced.returncode == 0, produced.stderr
+    original = upgrade(native_cli, root, environment, "status")
+    original_receipt = (root / "SHA256SUMS").read_bytes()
+    selected = upgrade(native_cli, root, environment, "--bundle", target)
+    if store_state == "incompatible":
+        advanced = command(native_cli, root, environment, "coord", "room", "list")
+        assert advanced.returncode == 0, advanced.stderr
+    connection = sqlite3.connect(store) if store.exists() else None
+    try:
+        if connection is not None:
+            connection.execute("PRAGMA journal_mode=WAL")
+            # Retained work and schema changes must be copied from the WAL,
+            # including while its writer still has the database open.
+            if store_state == "incompatible" and prior.resolve() == native_cli.resolve():
+                version, = connection.execute("PRAGMA user_version").fetchone()
+                connection.execute(f"PRAGMA user_version={version + 1}")
+            connection.execute("CREATE TABLE rollback_canary(value)")
+            connection.execute("INSERT INTO rollback_canary VALUES ('retained work')")
+            if store_state == "identity":
+                connection.execute("UPDATE instance SET id='another-instance'")
+            connection.commit()
+            if store_state == "corrupt":
+                connection.close()
+                connection = None
+                store.write_bytes(b"unreadable retained store")
+        saved = state_files(root)
+        current = os.readlink(root / "current")
+        receipt = (root / "SHA256SUMS").read_bytes()
+        selection = (root / "share/guest-selection.json").read_bytes()
+        retained = {path.name: path.read_bytes() for path in store.parent.glob("v0.db*")
+                    if path.name != "v0.db-shm"}
+        before_requests = len(requests)
+        result = command(native_cli, root, environment, "upgrade", "rollback")
+        if store_state in ("absent", "compatible"):
+            assert result.returncode == 0, result.stderr
+            assert json.loads(result.stdout) == original
+        else:
+            assert result.returncode != 0
+            assert "rollback refused before changing selection" in result.stderr
+            assert "selected pair and retained state are unchanged" in result.stderr
+            assert "start" in result.stderr and str(root) in result.stderr
+            assert os.readlink(root / "current") == current
+            assert upgrade(native_cli, root, environment, "status") == selected
+            if store_state == "incompatible":
+                assert "expected version" in result.stderr
+            if store_state == "identity":
+                assert "identity differs" in result.stderr
+        assert_preserved(root, saved)
+        assert (root / "share/guest-selection.json").read_bytes() == selection
+        assert (root / "SHA256SUMS").read_bytes() == (
+            original_receipt if store_state in ("absent", "compatible") else receipt
+        )
+        assert {path.name: path.read_bytes() for path in store.parent.glob("v0.db*")
+                if path.name != "v0.db-shm"} == retained
+        assert not list(root.glob("rollback-coord-*"))
+        assert len(requests) == before_requests
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 @pytest.mark.parametrize("stock", [False, True])
@@ -668,17 +753,9 @@ def test_explicit_host_release_uses_the_existing_bootstrap_and_verified_cache(
     installation(native_cli, root, first, guest_store, environment)
     saved = state_files(root)
     original = upgrade(native_cli, root, environment, "status")
-    name = f"safeyolo-{dict(line.split('=', 1) for line in (second / 'package-info').read_text().splitlines())['platform']}-production"
-    archive = io.BytesIO()
-    with tarfile.open(fileobj=archive, mode="w:gz") as stream:
-        stream.add(second, arcname=name)
-    tag = "host-" + "b" * 40
-    base = "/craigbalding/safeyolo/releases/download/" + tag
-    archive_key = f"{base}/{name}.tar.gz"
-    contents[archive_key] = archive.getvalue()
-    contents[base + "/SHA256SUMS"] = (
-        hashlib.sha256(archive.getvalue()).hexdigest() + f"  {name}.tar.gz\n"
-    ).encode()
+    published, archive_key = publish_host(contents, second)
+    tag = published["tag_name"]
+    archive_bytes = contents[archive_key]
     environment = {**environment, "HOME": str(tmp_path / "consumer"),
                    "CURL_CA_BUNDLE": environment["SSL_CERT_FILE"]}
     if fault:
@@ -689,7 +766,7 @@ def test_explicit_host_release_uses_the_existing_bootstrap_and_verified_cache(
         failed = command(native_cli, root, environment, "upgrade", "--release", tag)
         assert failed.returncode != 0
         assert upgrade(native_cli, root, environment, "status") == original
-        contents[archive_key] = archive.getvalue()
+        contents[archive_key] = archive_bytes
         faults["partial"] = None
     selected = upgrade(native_cli, root, environment, "--release", tag)
     assert selected["current"]["host"]["source_commit"] == "b" * 40
@@ -699,3 +776,344 @@ def test_explicit_host_release_uses_the_existing_bootstrap_and_verified_cache(
     assert archive_key not in requests[before:]
     assert upgrade(native_cli, root, environment, "rollback")["current"]["host"]["source_commit"] != "b" * 40
     assert_preserved(root, saved)
+
+
+def publish_host(contents, bundle):
+    """Expose the producer's host archive/checksum names through the TLS fixture."""
+    metadata = dict(line.split("=", 1) for line in (bundle / "package-info").read_text().splitlines())
+    name = f"safeyolo-{metadata['platform']}-production"
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as stream:
+        stream.add(bundle, arcname=name)
+    tag = "host-" + metadata["source_commit"]
+    base = "/craigbalding/safeyolo/releases/download/" + tag
+    archive_key = f"{base}/{name}.tar.gz"
+    contents[archive_key] = archive.getvalue()
+    contents[base + "/SHA256SUMS"] = (
+        hashlib.sha256(archive.getvalue()).hexdigest() + f"  {name}.tar.gz\n"
+    ).encode()
+    return {"tag_name": tag, "draft": False, "prerelease": False,
+            "published_at": "2026-11-09T12:00:00Z",
+            "assets": [{"name": name + ".tar.gz", "size": len(archive.getvalue())},
+                       {"name": "SHA256SUMS", "size": len(contents[base + "/SHA256SUMS"])}]}, archive_key
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+def test_guided_discovery_preview_and_failed_acquisition_reuse_verified_target(
+        native_cli, host_pair, registry, guest_store, tmp_path):
+    first, target = host_pair
+    contents, requests, faults, environment = registry
+    contents.update(release(compressed_archive()))
+    root = tmp_path / "i"
+    installation(native_cli, root, first, guest_store, environment)
+    original = upgrade(native_cli, root, environment, "status")
+    saved = state_files(root)
+    published, archive_key = publish_host(contents, target)
+    # An input-transfer prerelease and a host for another platform must not be
+    # offered as supported production upgrades for this consumer.
+    contents["/repos/craigbalding/safeyolo/releases"] = json.dumps([
+        {**published, "tag_name": "input-transfer", "prerelease": True},
+        {**published, "assets": [{"name": "safeyolo-darwin-arm64-production.tar.gz", "size": 10}]},
+        published,
+    ]).encode()
+    environment = {**environment, "HOME": str(tmp_path / "consumer"),
+                   "CURL_CA_BUNDLE": environment["SSL_CERT_FILE"]}
+    choices = upgrade(native_cli, root, environment, "releases")
+    assert [choice["release"] for choice in choices["releases"]] == [published["tag_name"]]
+    faults["partial"] = archive_key
+    failed = command(native_cli, root, environment, "upgrade", "--preview")
+    assert failed.returncode != 0
+    failure = json.loads(failed.stdout)
+    assert failure["outcome"] == "incomplete"
+    assert failure["selected"] == original
+    assert failure["root"] == str(root.resolve())
+    assert "inspect" in failure["next_action"]
+    assert "rollback" not in failure["next_action"]
+    faults["partial"] = None
+    view = upgrade(native_cli, root, environment, "--preview")
+    assert view["outcome"] == "preview_only"
+    assert view["selected"] == original
+    assert view["proposed"]["host"]["source_commit"] == "b" * 40
+    assert view["proposed"]["guest"] == original["current"]["guest"]
+    assert view["observed"]["proxy"]["state"] == "unknown"
+    assert not (root / "safeyolo-upgrade").exists()
+    assert upgrade(native_cli, root, environment, "status") == original
+    assert_preserved(root, saved)
+    before = len(requests)
+    view = upgrade(native_cli, root, environment, "--release", published["tag_name"], "--preview")
+    assert view["proposed"]["guest"] == original["current"]["guest"]
+    assert archive_key not in requests[before:]
+    assert all("/v2/" not in path for path in requests[before:])
+    assert upgrade(native_cli, root, environment, "status") == original
+
+
+def test_guided_preview_pins_discovered_compatible_guest_and_reports_unknown_discovery(
+        native_cli, host_pair, registry, guest_store, tmp_path):
+    first, target = host_pair
+    contents, requests, faults, environment = registry
+    contents.update(release(compressed_archive()))
+    root = tmp_path / "i"
+    installation(native_cli, root, first, guest_store, environment)
+    original = upgrade(native_cli, root, environment, "status")
+    saved = state_files(root)
+    metadata = target / "package-info"
+    metadata.write_text(metadata.read_text().replace("guest_compatibility=v1", "guest_compatibility=v2")
+                        .replace("guest_discovery_tag=compat-v1", "guest_discovery_tag=compat-v2"))
+    checksums(target)
+    failed = command(native_cli, root, environment, "upgrade", "--bundle", str(target), "--preview")
+    assert failed.returncode != 0
+    failure = json.loads(failed.stdout)
+    assert "compatible guest discovery unavailable" in failure["error"]
+    assert "--guest-index" in failure["error"]
+    assert failure["selected"] == original
+    archive = compressed_archive(content=b"G2")
+    discovered = release(archive, version="guest-2026-11-09.1", compatibility="v2")
+    index = discovered.pop("manifests/compat-v1")
+    contents.update(discovered)
+    contents["manifests/compat-v2"] = index
+    contents["manifests/" + digest(index)] = index
+    before = len(requests)
+    faults["partial"] = "blobs/" + digest(archive)
+    failed = command(native_cli, root, environment, "upgrade", "--bundle", str(target), "--preview")
+    assert failed.returncode != 0
+    failure = json.loads(failed.stdout)
+    retry = failure["next_action"]["retry_after_inspection"]
+    assert retry[retry.index("--guest-index") + 1] == digest(index)
+    assert failure["selected"] == original
+    faults["partial"] = None
+    assert requests[before:].count(acquisition.PREFIX + "manifests/compat-v2") == 1
+    # Retry the exact pinned target even after discovery disappears.
+    del contents["manifests/compat-v2"]
+    view = upgrade(native_cli, root, environment, "--bundle", target,
+                   "--guest-index", digest(index), "--preview")
+    assert view["proposed"]["guest"]["compatibility"] == "v2"
+    assert view["proposed"]["guest"]["index"]["digest"] == digest(index)
+    assert upgrade(native_cli, root, environment, "status") == original
+    assert_preserved(root, saved)
+
+
+def test_guided_unavailable_host_discovery_retains_explicit_bundle_path(
+        native_cli, host_pair, registry, guest_store, tmp_path):
+    first, target = host_pair
+    contents, _requests, _faults, environment = registry
+    contents.update(release(compressed_archive()))
+    root = tmp_path / "i"
+    installation(native_cli, root, first, guest_store, environment)
+    original = upgrade(native_cli, root, environment, "status")
+    environment = {**environment, "CURL_CA_BUNDLE": environment["SSL_CERT_FILE"]}
+    for response in (None, {}, []):
+        if response is not None:
+            contents["/repos/craigbalding/safeyolo/releases"] = json.dumps(response).encode()
+        failed = command(native_cli, root, environment, "upgrade", "releases")
+        assert failed.returncode != 0
+        unavailable = json.loads(failed.stdout)
+        assert unavailable["state"] == "unavailable"
+        assert unavailable["root"] == str(root)
+        assert "--bundle" in unavailable["explicit_selection"]
+        assert upgrade(native_cli, root, environment, "status") == original
+    preview = upgrade(native_cli, root, environment, "--bundle", target, "--preview")
+    assert preview["selected"] == original
+    assert preview["outcome"] == "preview_only"
+
+
+@pytest.mark.parametrize("coord_state", ["compatible", "incompatible"])
+def test_guided_activation_failure_reports_selected_pair_and_retained_rollback(
+        native_cli, host_pair, registry, guest_store, tmp_path, coord_state):
+    first, target = host_pair
+    contents, _requests, _faults, environment = registry
+    prior = (Path(os.environ.get("SAFEYOLO_ROLLBACK_PRIOR_CLI", native_cli))
+             if coord_state == "incompatible" else native_cli)
+    environment = {**environment, "PACKAGE_COORD_CLI": str(prior)}
+    contents.update(release(compressed_archive()))
+    root = tmp_path / "i"
+    installation(native_cli, root, first, guest_store, environment)
+    original = upgrade(native_cli, root, environment, "status")
+    saved = state_files(root)
+    # This checked target intentionally exits instead of running a proxy.
+    # The failure must describe the new selection without claiming activation.
+    try:
+        failed = command(native_cli, root, environment, "upgrade", "--bundle", str(target), "--activate")
+        assert failed.returncode != 0
+        failure = json.loads(failed.stdout)
+        assert failure["outcome"] == "incomplete"
+        assert failure["selected"]["current"]["host"]["source_commit"] == "b" * 40
+        assert failure["selected"]["previous"] == original["current"]
+        assert failure["observed"]["proxy"]["state"] != "running"
+        assert failure["next_action"]["rollback"] == [str(root / "safeyolo-upgrade"), "--root", str(root), "rollback"]
+        assert "can refuse without changing selection" in failure["next_action"]["limit"]
+        assert "only after rollback succeeds" in failure["next_action"]["limit"]
+        if coord_state == "compatible":
+            assert upgrade(native_cli, root, environment, "rollback") == original
+        else:
+            store = root / "data/coord/v0.db"
+            if prior.resolve() == native_cli.resolve():
+                with sqlite3.connect(store) as connection:
+                    version, = connection.execute("PRAGMA user_version").fetchone()
+                    connection.execute(f"PRAGMA user_version={version + 1}")
+            retained = store.read_bytes()
+            link = os.readlink(root / "current")
+            refused = command(native_cli, root, environment, "upgrade", "rollback")
+            assert refused.returncode != 0
+            assert "rollback refused before changing selection" in refused.stderr
+            assert "expected version" in refused.stderr
+            assert os.readlink(root / "current") == link
+            assert store.read_bytes() == retained
+            assert upgrade(native_cli, root, environment, "status") == failure["selected"]
+        assert_preserved(root, saved)
+    finally:
+        assert command(native_cli, root, environment, "stop").returncode == 0
+
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+def test_terminal_upgrade_can_defer_activation_after_choosing_a_release(
+        native_cli, host_pair, registry, guest_store, tmp_path):
+    first, target = host_pair
+    contents, _requests, _faults, environment = registry
+    contents.update(release(compressed_archive()))
+    root = tmp_path / "i"
+    installation(native_cli, root, first, guest_store, environment)
+    original = upgrade(native_cli, root, environment, "status")
+    saved = state_files(root)
+    published, _archive_key = publish_host(contents, target)
+    contents["/repos/craigbalding/safeyolo/releases"] = json.dumps([published]).encode()
+    environment = {**environment, "HOME": str(tmp_path / "consumer"),
+                   "CURL_CA_BUNDLE": environment["SSL_CERT_FILE"]}
+    terminal, slave = pty.openpty()
+    try:
+        # Choose the displayed default release, then defer activation through
+        # the real terminal interface, without spelling a release identifier.
+        os.write(terminal, b"\nn\n")
+        deferred = subprocess.run([str(native_cli), "--root", str(root), "upgrade"],
+                                  env=environment, stdin=slave, stderr=slave,
+                                  stdout=subprocess.PIPE, text=True, timeout=30)
+        assert deferred.returncode == 0, deferred.stdout
+        assert "Selection is unchanged" in deferred.stdout
+    finally:
+        os.close(slave)
+        os.close(terminal)
+    assert upgrade(native_cli, root, environment, "status") == original
+    assert not (root / "safeyolo-upgrade").exists()
+    assert not (root / "data/proxy-process.json").exists()
+    assert_preserved(root, saved)
+
+
+def test_guided_invalid_agent_choice_does_not_select_or_interrupt(
+        native_cli, host_pair, registry, guest_store, tmp_path):
+    first, target = host_pair
+    contents, _requests, _faults, environment = registry
+    contents.update(release(compressed_archive()))
+    root = tmp_path / "i"
+    installation(native_cli, root, first, guest_store, environment)
+    original = upgrade(native_cli, root, environment, "status")
+    failed = command(native_cli, root, environment, "upgrade", "--bundle", str(target),
+                     "--activate", "--restart-agent", "missing")
+    assert failed.returncode != 0
+    assert "agent not found: missing" in failed.stderr
+    assert upgrade(native_cli, root, environment, "status") == original
+    assert not (root / "safeyolo-upgrade").exists()
+
+
+def test_guided_installed_upgrade_keeps_other_instance_live_and_recovers_failed_start(
+        registry, tmp_path, guest_store):
+    """Use two real packages; this proves proxy activation, not a guest boot."""
+    baseline = os.environ.get("SAFEYOLO_UPGRADE_FROM_BUNDLE")
+    target = os.environ.get("SAFEYOLO_NATIVE_BUNDLE")
+    candidate_cli = os.environ.get("SAFEYOLO_NATIVE_CLI")
+    nats = os.environ.get("SAFEYOLO_COORD_NATS_BINARY")
+    if not all((baseline, target, candidate_cli, nats)):
+        pytest.skip("set both verified bundles, candidate CLI and NATS for the installed upgrade")
+    baseline, target, candidate_cli = Path(baseline), Path(target), Path(candidate_cli)
+    before_metadata = dict(line.split("=", 1) for line in (baseline / "package-info").read_text().splitlines())
+    target_metadata = dict(line.split("=", 1) for line in (target / "package-info").read_text().splitlines())
+    assert before_metadata["source_commit"] != target_metadata["source_commit"]
+    assert before_metadata["profile"] == target_metadata["profile"]
+    assert before_metadata["platform"] == target_metadata["platform"]
+    contents, requests, _faults, environment = registry
+    contents.update(release(compressed_archive()))
+    # Disk-backed roots remain short enough for Unix listener paths.
+    root, unrelated = tmp_path.parent / "u", tmp_path.parent / "v"
+    environment = {**environment, "HOME": str(guest_store.parents[3]),
+                   "SAFEYOLO_NATS_TEST_INSTANCE": "guided-upgrade-installed",
+                   "TERM": "xterm-256color"}
+    for instance in (root, unrelated):
+        installed = subprocess.run([str(baseline / "install.sh"), "--root", str(instance),
+                                    "--command-dir", str(instance / "commands"), "--yes"],
+                                   env=environment, capture_output=True, text=True, timeout=30)
+        assert installed.returncode == 0, installed.stderr
+        config = instance / "config.toml"
+        config.write_text(config.read_text().replace("admin_port = 9090", "admin_port = 0"))
+    try:
+        for instance in (root, unrelated):
+            coord = command(candidate_cli, instance, environment, "coord", "start", "--binary", nats)
+            assert coord.returncode == 0, coord.stderr
+            started = command(candidate_cli, instance, environment, "start")
+            assert started.returncode == 0, started.stderr
+        other_proxy = (unrelated / "data/proxy-process.json").read_bytes()
+        original = upgrade(candidate_cli, root, environment, "status")
+        credential = command(candidate_cli, root, {**environment, "UPGRADE_PROOF_SECRET": "retained"},
+                             "credentials", "add", "kept", "--storage", "local", "--value-env", "UPGRADE_PROOF_SECRET")
+        assert credential.returncode == 0, credential.stderr
+        (root / "agents/retained/home").mkdir(parents=True)
+        (root / "agents/retained/home/keep").write_bytes(b"persistent home")
+        (root / "logs/audit-canary").write_bytes(b"persistent audit")
+        saved = state_files(root)
+        saved.pop("config.toml")  # Startup updates reload_id; check operator values below.
+        configured = tomllib.loads((root / "config.toml").read_text())
+        configured.pop("reload_id", None)
+        before_proxy = (root / "data/proxy-process.json").read_bytes()
+        view = upgrade(candidate_cli, root, environment, "--bundle", target, "--preview")
+        assert view["observed"]["proxy"]["matches_selected_host"] is True
+        assert view["proposed"]["guest"] == original["current"]["guest"]
+        assert (root / "data/proxy-process.json").read_bytes() == before_proxy
+        assert (unrelated / "data/proxy-process.json").read_bytes() == other_proxy
+        # A valid configuration can still fail activation on an occupied port.
+        # Bind the port ourselves; do not change or signal an unrelated runtime.
+        with socket.socket() as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            port = occupied.getsockname()[1]
+            config = root / "config.toml"
+            config.write_text(config.read_text().replace("admin_port = 0", f"admin_port = {port}"))
+            failed = command(candidate_cli, root, environment, "upgrade", "--bundle", str(target), "--activate")
+            assert failed.returncode != 0
+            failure = json.loads(failed.stdout)
+            assert failure["outcome"] == "incomplete"
+            assert failure["selected"]["current"]["host"]["source_commit"] == target_metadata["source_commit"]
+            assert failure["selected"]["previous"] == original["current"]
+            assert failure["observed"]["proxy"]["state"] != "running"
+            assert (unrelated / "data/proxy-process.json").read_bytes() == other_proxy
+        config.write_text(config.read_text().replace(f"admin_port = {port}", "admin_port = 0"))
+        # Remove registry responses: this exact bundle and retained guest must
+        # work without another acquisition, including the retry and rollback.
+        contents.clear()
+        before_requests = len(requests)
+        activated = upgrade(candidate_cli, root, environment, "--bundle", target, "--activate")
+        assert activated["outcome"] == "proxy_activated"
+        assert activated["observed"]["proxy"]["matches_selected_host"] is True
+        assert activated["agent_restart_commands_completed"] == []
+        selected_link = os.readlink(root / "current")
+        current_proxy = (root / "data/proxy-process.json").read_bytes()
+        repeated = upgrade(candidate_cli, root, environment, "--bundle", target, "--activate")
+        assert repeated["outcome"] == "proxy_activated"
+        assert (root / "data/proxy-process.json").read_bytes() == current_proxy
+        assert os.readlink(root / "current") == selected_link
+        assert command(candidate_cli, root, environment, "stop").returncode == 0
+        recovery = command(root / "safeyolo-upgrade", root, environment, "rollback")
+        assert recovery.returncode == 0, recovery.stderr
+        assert json.loads(recovery.stdout)["current"] == original["current"]
+        assert command(candidate_cli, root, environment, "start").returncode == 0
+        restored = upgrade(candidate_cli, root, environment, "--bundle", target, "--preview")
+        assert restored["observed"]["proxy"]["matches_selected_host"] is True
+        assert restored["selected"]["current"] == original["current"]
+        assert len(requests) == before_requests
+        assert_preserved(root, saved)
+        restarted_config = tomllib.loads(config.read_text())
+        restarted_config.pop("reload_id", None)
+        assert restarted_config == configured
+        assert (unrelated / "data/proxy-process.json").read_bytes() == other_proxy
+        assert json.loads(command(candidate_cli, unrelated, environment, "status").stdout)["proxy_state"] == "running"
+    finally:
+        for instance in (root, unrelated):
+            assert command(candidate_cli, instance, environment, "stop").returncode == 0
+            assert command(candidate_cli, instance, environment, "coord", "stop").returncode == 0

@@ -7,28 +7,89 @@ set -eu
     exit 1
 }
 source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+# Check the same selected native transport used by the live client before
+# allocating an account or creating any fixture files.
+"$source_dir/configure-client" --check
 account=sy-seatbelt-test
 entry=/Library/PrivilegedHelperTools/seatbelt-agent
-[ ! -e "$entry" ] || { echo "Entry already exists: $entry" >&2; exit 1; }
-! dscl . -read "/Users/$account" >/dev/null 2>&1 || { echo 'Test account already exists' >&2; exit 1; }
-[ ! -e "/Users/$account" ] || { echo 'Test home already exists' >&2; exit 1; }
-! dscl . -list /Users UniqueID | awk '$2 == 59900 { found=1 } END { exit !found }' || exit 1
-if /usr/bin/pgrep -U 59900 >/dev/null; then
-    echo 'Processes already use the test UID; refusing to reuse it' >&2
+[ ! -e "$entry" ] && [ ! -L "$entry" ] || { echo "Entry already exists: $entry" >&2; exit 1; }
+[ ! -e "/Users/$account" ] && [ ! -L "/Users/$account" ] || { echo 'Test home already exists' >&2; exit 1; }
+[ ! -e /etc/sudoers.d/seatbelt-acceptance-test ] && [ ! -L /etc/sudoers.d/seatbelt-acceptance-test ] || exit 1
+accounts=$(dscl . -list /Users UniqueID) || {
+    echo 'Cannot inspect local accounts and UIDs; refusing allocation' >&2
+    exit 1
+}
+if printf '%s\n' "$accounts" | awk -v account="$account" \
+    '$1 == account || $2 == 59900 { found=1 } END { exit !found }'; then
+    echo 'Test account or UID already exists' >&2
     exit 1
 fi
+process_status=0
+/usr/bin/pgrep -U 59900 >/dev/null || process_status=$?
+[ "$process_status" = 1 ] || {
+    echo 'Cannot establish absence of test-UID processes; refusing allocation' >&2
+    exit 1
+}
 lab=$(mktemp -d /Library/PrivilegedHelperTools/seatbelt-test.XXXXXX)
 chmod 755 "$lab"
 created=no
+test_user_domain_status() {
+    # Directly printing an absent user domain can create it on macOS 26.6.2.
+    # Inspect the system domain's existing subdomains without opening that user.
+    /bin/launchctl print system > "$1" 2> "$1.error" || return 2
+    awk '
+        NR == 1 && $0 == "system = {" { system_domain=1 }
+        $0 == "\tsubdomains = {" {
+            if (domains || complete) invalid=1
+            domains=1
+            next
+        }
+        domains {
+            if ($0 == "\t}") { domains=0; complete=1; next }
+            if (NF != 1 || $1 !~ /^[^[:space:]\/]+\/[0-9]+$/) invalid=1
+            if ($1 == "user/59900") present=1
+        }
+        END {
+            if (!system_domain || !complete || domains || invalid || $0 != "}") exit 2
+            exit (present ? 0 : 1)
+        }
+    ' "$1"
+}
 cleanup() {
     result=$?
     trap - EXIT
     if [ "$created" = yes ]; then
         dseditgroup -o edit -d "$account" -t user admin >/dev/null 2>&1 || true
         rm -f /etc/sudoers.d/seatbelt-acceptance-test
-        if /bin/launchctl print user/59900 >/dev/null 2>&1; then
-            /bin/launchctl bootout user/59900 || result=1
+        umask 077
+        if [ -f "$lab/cron.current" ]; then chmod 600 "$lab/cron.current"; fi
+        # Only this fixture account may have a crontab created by the test.
+        cron_status=0
+        LC_ALL=C /usr/bin/crontab -u "$account" -l > "$lab/cron.current" 2> "$lab/cron.error" || cron_status=$?
+        if [ "$cron_status" = 0 ]; then
+            if [ -f "$lab/owned.crontab" ] && cmp -s "$lab/owned.crontab" "$lab/cron.current"; then
+                /usr/bin/crontab -u "$account" -r || {
+                    printf 'Owned crontab cleanup failed; retain account and %s for inspection.\n' "$lab" >&2
+                    exit 1
+                }
+            else
+                printf 'Unknown crontab; retain account and %s for inspection.\n' "$lab" >&2
+                exit 1
+            fi
+        elif [ "$cron_status" != 1 ] || ! awk -v expected="crontab: no crontab for $account" \
+            '$0 == expected { found=1 } END { exit !found }' "$lab/cron.error"; then
+            printf 'Cannot establish crontab absence; retain account and %s for inspection.\n' "$lab" >&2
+            exit 1
         fi
+        launchd_clean=yes
+        launchd_status=0
+        test_user_domain_status "$lab/launchd.before" || launchd_status=$?
+        if [ "$launchd_status" = 0 ]; then
+            /bin/launchctl bootout user/59900 > "$lab/launchd.bootout" 2>&1 || launchd_clean=no
+            launchd_status=0
+            test_user_domain_status "$lab/launchd.after" || launchd_status=$?
+        fi
+        [ "$launchd_status" = 1 ] || launchd_clean=no
         # All processes of this freshly allocated UID belong to the fixture.
         # Signals may race an exit; success depends on observing absence below.
         /usr/bin/pkill -TERM -U 59900 >/dev/null 2>&1 || true
@@ -46,7 +107,16 @@ cleanup() {
         done
         if [ "$process_status" != 1 ]; then
             echo 'Cleanup failed: could not establish absence of test-UID processes' >&2
-            result=1
+        fi
+        if [ "$launchd_clean" != yes ]; then
+            echo 'Cleanup failed: could not establish test launchd domain removal' >&2
+        fi
+        # The live client's root daemon is outside the test UID. Its marker
+        # remains until its own daemon/session checks and wait have succeeded.
+        if [ "$process_status" != 1 ] || [ "$launchd_clean" != yes ] || \
+            [ -e "$lab/live-sshd.pending" ] || [ -L "$lab/live-sshd.pending" ]; then
+            printf 'Cleanup uncertain; retain account, entry, home and %s for inspection.\n' "$lab" >&2
+            exit 1
         fi
         dscl . -delete "/Users/$account"
         rm -rf "$entry" "/Users/$account"
@@ -60,7 +130,6 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-[ ! -e /etc/sudoers.d/seatbelt-acceptance-test ] || exit 1
 dscl . -create "/Users/$account"
 created=yes
 dscl . -create "/Users/$account" UniqueID 59900
@@ -98,7 +167,7 @@ fixture() {
     cp "$lab/base" "$config"
     fragment="$config.seatbelt-$account.conf"
 }
-run() { /bin/sh "$tool" --user "$account" --config "$config" "$@"; }
+run() { /bin/sh "$tool" --user "$account" --config "$config" --reviewed-consumers "$@"; }
 shell_value() { dscl . -read "/Users/$account" UserShell; }
 rejected() {
     expected=$1
@@ -191,6 +260,62 @@ chmod +a "$account allow read" "$entry/agent-dev.sb"
 run --check
 chmod -N "$entry/agent-dev.sb"
 echo 'PASS: admin, sudo and modifying ACLs rejected; read-only ACL accepted'
+
+fixture external_consumer
+home="/Users/$account"
+mkdir -p "$home/Library/LaunchAgents"
+cat > "$home/Library/LaunchAgents/owned-consumer.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Label</key><string>org.safeyolo.owned-consumer</string>
+<key>ProgramArguments</key><array><string>$home/watcher.sh</string></array></dict></plist>
+PLIST
+if /bin/sh "$tool" --user "$account" --config "$config" --check > "$lab/output" 2>&1; then
+    echo 'Expected external-consumer review before activation' >&2
+    exit 1
+fi
+awk -v path="$home/Library/LaunchAgents/owned-consumer.plist" 'index($0, path) { found=1 } END { exit !found }' "$lab/output"
+awk '/reviewed-consumers/ { found=1 } END { exit !found }' "$lab/output"
+[ ! -e "$fragment" ]
+# Correct the identified consumer to use only a protected system executable
+# before the fixture confirms the external-consumer review.
+sed "s|<string>$home/watcher.sh</string>|<string>/usr/bin/true</string>|" \
+    "$home/Library/LaunchAgents/owned-consumer.plist" > "$lab/corrected-consumer"
+cat "$lab/corrected-consumer" > "$home/Library/LaunchAgents/owned-consumer.plist"
+run --check
+cp "$home/Library/LaunchAgents/owned-consumer.plist" "$lab/consumer.before"
+chown "$account":staff "$home/Library/LaunchAgents/owned-consumer.plist"
+ln "$home/Library/LaunchAgents/owned-consumer.plist" "$home/earlier-hardlink"
+rejected 'LaunchAgents file has writable hardlink aliases'
+awk -v path="$home/Library/LaunchAgents/owned-consumer.plist" \
+    'index($0, path) { found=1 } END { exit !found }' "$lab/output"
+cmp "$lab/consumer.before" "$home/earlier-hardlink"
+cmp "$lab/consumer.before" "$home/Library/LaunchAgents/owned-consumer.plist"
+# The same linked inode is safe when this account cannot modify its data,
+# attributes or permissions. Keep that existing consumer usable.
+chown root:wheel "$home/Library/LaunchAgents/owned-consumer.plist"
+run --check
+rm "$home/earlier-hardlink"
+run --check
+echo 'PASS: writable pre-existing hardlink rejected without changes; protected and unaliased controls accepted'
+rm "$home/Library/LaunchAgents/owned-consumer.plist"
+mv "$home/Library/LaunchAgents" "$home/Library/LaunchAgents.before"
+ln -s "$home/Library/LaunchAgents.before" "$home/Library/LaunchAgents"
+rejected 'LaunchAgents must be absent or a real directory'
+rm "$home/Library/LaunchAgents"
+mv "$home/Library/LaunchAgents.before" "$home/Library/LaunchAgents"
+mv "$home/Library" "$home/Library.before"
+ln -s "$home/Library.before" "$home/Library"
+rejected 'Library must be a real directory'
+rm "$home/Library"
+mv "$home/Library.before" "$home/Library"
+printf '0 0 1 1 * %s/watcher.sh\n' "$home" > "$lab/owned.crontab"
+/usr/bin/crontab -u "$account" "$lab/owned.crontab"
+rejected 'pre-existing crontab'
+/usr/bin/crontab -u "$account" -l > "$lab/cron.current"
+cmp "$lab/owned.crontab" "$lab/cron.current"
+/usr/bin/crontab -u "$account" -r
+echo 'PASS: external consumer identified; aliases and pre-existing crontab rejected without activation'
 
 fixture unsafe_config_directory
 chmod g+w "$(dirname "$config")"

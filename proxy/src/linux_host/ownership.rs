@@ -37,6 +37,48 @@ fn fd_path(file: &fs::File) -> PathBuf {
     PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
 }
 
+// Linux's statx ABI is 256 bytes, with stx_mask at 0 and stx_mnt_id at 0x90.
+// Use the kernel ABI directly: libc's musl targets omit the statx bindings.
+#[repr(C)]
+struct MountStatx {
+    mask: u32,
+    before_mount_id: [u8; 140],
+    mount_id: u64,
+    remaining: [u8; 104],
+}
+
+const STATX_MNT_ID: u32 = 0x1000;
+
+const _: () = {
+    assert!(std::mem::size_of::<MountStatx>() == 256);
+    assert!(std::mem::offset_of!(MountStatx, mount_id) == 0x90);
+};
+
+impl MountStatx {
+    fn mount_id(&self) -> Option<u64> {
+        (self.mask & STATX_MNT_ID != 0 && self.mount_id != 0).then_some(self.mount_id)
+    }
+}
+
+fn mount_id(file: &fs::File) -> Option<u64> {
+    let mut stat = std::mem::MaybeUninit::<MountStatx>::zeroed();
+    if unsafe {
+        libc::syscall(
+            libc::SYS_statx,
+            file.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+            STATX_MNT_ID,
+            stat.as_mut_ptr(),
+        )
+    } != 0
+    {
+        return None;
+    }
+    let stat = unsafe { stat.assume_init() };
+    stat.mount_id()
+}
+
 fn walk(
     file: &fs::File,
     path: &Path,
@@ -232,10 +274,17 @@ fn rewrite_tree(
         )
         .into());
     }
+    let root_mount = mount_id(&root_file);
     let mut records: HashMap<(u64, u64), (fs::Metadata, u64)> = HashMap::new();
     let mut changes = Vec::new();
     walk(&root_file, Path::new(""), &mut |file, metadata, path| {
-        if metadata.dev() != root.dev() {
+        // Device numbers can differ within a gVisor overlay or match across
+        // bind mounts. Require matching mount IDs from the pinned descriptors;
+        // an unavailable ID cannot grant access.
+        if root_mount
+            .zip(mount_id(file))
+            .is_none_or(|(root, child)| root != child)
+        {
             return Err("guest staging tree contains another filesystem".into());
         }
         let uid = shift_id(
@@ -347,6 +396,108 @@ fn rewrite_tree(
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn mount_identity_requires_supported_nonzero_evidence() {
+        let mut stat = unsafe { std::mem::zeroed::<MountStatx>() };
+        assert_eq!(stat.mount_id(), None);
+        stat.mount_id = 42;
+        assert_eq!(stat.mount_id(), None);
+        stat.mask = STATX_MNT_ID;
+        assert_eq!(stat.mount_id(), Some(42));
+        stat.mount_id = 0;
+        assert_eq!(stat.mount_id(), None);
+    }
+
+    #[test]
+    #[cfg(target_env = "gnu")]
+    fn mount_statx_matches_the_gnu_kernel_abi() {
+        assert_eq!(
+            std::mem::size_of::<MountStatx>(),
+            std::mem::size_of::<libc::statx>()
+        );
+        assert_eq!(
+            std::mem::align_of::<MountStatx>(),
+            std::mem::align_of::<libc::statx>()
+        );
+        assert_eq!(
+            std::mem::offset_of!(MountStatx, mask),
+            std::mem::offset_of!(libc::statx, stx_mask)
+        );
+        assert_eq!(
+            std::mem::offset_of!(MountStatx, mount_id),
+            std::mem::offset_of!(libc::statx, stx_mnt_id)
+        );
+        assert_eq!(STATX_MNT_ID, libc::STATX_MNT_ID);
+    }
+
+    #[test]
+    fn mount_identity_uses_the_pinned_descriptor_without_following_links() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("link");
+        symlink("/proc", &path).unwrap();
+        let root = open_entry(libc::AT_FDCWD, directory.path().as_os_str()).unwrap();
+        let link = open_entry(root.as_raw_fd(), std::ffi::OsStr::new("link")).unwrap();
+        let proc = fs::File::open("/proc").unwrap();
+        let root_mount = mount_id(&root).expect("root mount ID");
+        assert_eq!(mount_id(&link), Some(root_mount));
+        assert_ne!(mount_id(&proc).expect("proc mount ID"), root_mount);
+        fs::rename(&path, directory.path().join("moved-link")).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert_eq!(mount_id(&link), Some(root_mount));
+        assert!(link.metadata().unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    #[ignore = "requires guest root and a private bind mount"]
+    fn ownership_refuses_a_same_device_bind_mount_before_changes() {
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        let source = tempfile::tempdir().unwrap();
+        let source_file = source.path().join("outside-file");
+        fs::write(&source_file, "preserved").unwrap();
+        let stage = tempfile::Builder::new()
+            .prefix("extract-")
+            .tempdir()
+            .unwrap();
+        fs::set_permissions(stage.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let tree = stage.path().join("rootfs-tree");
+        let target = tree.join("other-mount");
+        fs::create_dir_all(&target).unwrap();
+        let source_c = CString::new(source.path().as_os_str().as_bytes()).unwrap();
+        let target_c = CString::new(target.as_os_str().as_bytes()).unwrap();
+        assert_eq!(
+            unsafe {
+                libc::mount(
+                    source_c.as_ptr(),
+                    target_c.as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND,
+                    std::ptr::null(),
+                )
+            },
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        struct BindMount(CString);
+        impl Drop for BindMount {
+            fn drop(&mut self) {
+                assert_eq!(unsafe { libc::umount2(self.0.as_ptr(), 0) }, 0);
+            }
+        }
+        let _mount = BindMount(target_c);
+        assert_eq!(
+            fs::metadata(&tree).unwrap().dev(),
+            fs::metadata(&target).unwrap().dev()
+        );
+        let error = archive_profile_tree(&tree, 0).unwrap_err().to_string();
+        assert!(error.contains("another filesystem"), "{error}");
+        for path in [&tree, source.path(), &source_file] {
+            let metadata = fs::metadata(path).unwrap();
+            assert_eq!((metadata.uid(), metadata.gid()), (0, 0));
+        }
+        assert_eq!(fs::read_to_string(source_file).unwrap(), "preserved");
+    }
 
     #[test]
     fn profile_ownership_keeps_guest_users_and_named_acls() {

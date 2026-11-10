@@ -142,6 +142,16 @@ its diagnostic history. Browser network events and a return to a visible page
 trigger fresh checks. A browser's offline hint alone does not disable a working
 local preview.
 
+If an approved `desktop.present` action fails its final readiness check, inspect
+the saved approval result. `desktop_not_ready` means the status command exited
+unsuccessfully. `desktop_readiness_timeout` means the check exceeded eight
+seconds. `desktop_readiness_command_failed` means SafeYolo could not complete
+the command. The operator result's diagnostic includes `operator_details` with
+the failed phase, command state and available exit or transport status. It
+retains at most 4096 bytes from each output stream and reports truncation.
+Keep these details private; guest output can contain sensitive data. Agent
+responses omit these details. Inspect current state before requesting again.
+
 The page checks both legs of its existing viewer connection with WebSocket
 Ping/Pong messages. The replies verify the existing browser-to-SafeYolo and
 SafeYolo-to-guest WebSocket paths. They do not check the relay's existing TCP
@@ -698,8 +708,39 @@ with `apr-`. Each traffic attempt also has its own `request_id`. Equivalent
 retries share the pending approval. A changed method, destination, resource,
 credential binding or offered scope gets a new approval.
 
-On the host, use your configured agent name in place of `work`. Copy
-`APPROVAL_ID` from the pending list. These commands leave the approval pending:
+On the host, run `safeyolo watch` in a terminal for live review. The heading
+identifies the selected instance configuration. Choose a displayed request
+number to read its agent, action, destination, effects, scope and offered
+options. Use `approve [OPTION]`, `reject`, `explain [OPTION]`, `ask` or `context`
+for that request. Approval keeps the existing default option when the approval
+offers one. A service request with several credential options asks for an
+option ID. The canonical resolver checks current identity, state and options
+before applying a decision.
+
+Use `later` or Enter to leave the selected request pending. Use `list` to see
+all pending requests, then choose the same number to revisit a deferred request.
+Numbers stay assigned to their requests for the session. Resolved numbers are
+never reassigned. Arrivals update the list while you type and preserve your
+selected request and unfinished input. `q` or Ctrl-C detaches; undecided requests
+remain pending. Colour cues have text labels; use `--no-color` to disable colour.
+
+Attachment and reconnect read current canonical pending state. The host repairs
+missed state notifications within five seconds while state and connections are
+healthy. Stream gaps, failed reads and stale views remain visible. A successful
+refresh identifies the recovered current set. Recovery does not replay resolved,
+cancelled or expired historical requests as pending. An uncertain decision is
+reconciled without automatically retrying it. Select the request again to inspect
+its current outcome before deciding again. Unsupported request types stay
+visible with an explicit inspection command; watch does not apply a generic approval.
+
+For a snapshot, use `safeyolo watch --once`. `--json`, `--no-interactive`, or
+redirected input or output keep the observer interface without prompts.
+`--jsonl FILE` reads recorded signal metadata and fetches its exact immutable
+revisions; it does not reconstruct current pending approvals.
+
+The explicit approval commands remain available. Use your configured agent name
+in place of `work`. Copy `APPROVAL_ID` from the pending list. These commands leave
+the approval pending:
 
 ```sh
 safeyolo approvals list --agent work
