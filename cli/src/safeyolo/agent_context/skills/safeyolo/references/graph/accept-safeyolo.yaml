@@ -625,7 +625,7 @@ nodes:
         - path: proxy/tests/native_operator_cli/watch.rs
           sha256: 60fb3e183f767b838535ebb31ff2b4d9d6a7591d47abe834e610deb4bcb5009d
         - path: proxy/tests/support/operator_pty.rs
-          sha256: f63c50dbfa3bc8d44806c84b838ea315b4d62c37a6c9f43af9e29a7d6a832523
+          sha256: fb706f9c85db414743e35a6a82c6045c34f66c35724cf9f2c34c421f84ff3d52
         - path: proxy/tests/native_operator_cli.rs
           sha256: b42c8f57ebc41a0ce22010afbb0914243058126df3a64c068604e120e4aeb6d1
         - path: proxy/tests/native_coord/federation.rs
