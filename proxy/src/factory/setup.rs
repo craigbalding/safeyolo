@@ -334,15 +334,15 @@ pub(super) async fn run(root: &Path, file: &Path, options: &[String]) -> Result<
     value["status"] = json!("prepared");
     report(&value)?;
     for (name, role) in &snapshot.roles {
-        if logins.contains(name) {
-            if let Err(error) = login(&snapshot, name).await {
-                return pending(
-                    &mut value,
-                    "authentication-required",
-                    command(root, &["factory", "login", &snapshot.name, name]),
-                    &error.to_string(),
-                );
-            }
+        if logins.contains(name)
+            && let Err(error) = login(&snapshot, name).await
+        {
+            return pending(
+                &mut value,
+                "authentication-required",
+                command(root, &["factory", "login", &snapshot.name, name]),
+                &error.to_string(),
+            );
         }
         // The retained start guard owns checkpoint validity and freshness.
         let state = home(root, role).join(".safeyolo/coord-supervisor-state.json");
