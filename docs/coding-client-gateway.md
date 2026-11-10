@@ -101,7 +101,9 @@ The shipped setup owners preserve the selected model, unrelated settings and
 explicit denies. Codex selects the SafeYolo subscription provider with
 `forced_chatgpt_auth = false`, `requires_openai_auth = false`, Responses over
 HTTP, and WebSockets disabled. Its scoped token is passed as
-`SAFEYOLO_CODEX_GATEWAY_TOKEN`. Claude selects its subscription route with
+`SAFEYOLO_CODEX_GATEWAY_TOKEN`. The host supplies `ChatGPT-Account-ID` from the
+selected imported login; the guest cannot replace that account selection.
+Claude selects its subscription route with
 `CLAUDE_CODE_OAUTH_TOKEN`. Both launchers fetch the current token through the
 agent's authenticated `/gateway/services` endpoint. Tokens stay in process
 memory and the launched client's environment; they are not configuration values
