@@ -653,6 +653,7 @@ def test_factory_run_executes_staged_worker_commands():
         assert result.returncode == 0, (result.stdout, result.stderr)
         assert ('"status": "running"' if source else "Started Factory") in result.stdout
         report = subprocess.run([*command, "doctor", name], capture_output=True, text=True, timeout=180)
+        (root / "setup-doctor.log").write_text(report.stdout + report.stderr)
         assert report.returncode == 0, report.stderr
         observed = json.loads(report.stdout)
         assert observed["status"] == "ready"
@@ -662,13 +663,19 @@ def test_factory_run_executes_staged_worker_commands():
         assert len({item["observation"]["agent_id"] for item in role_checks}) == expected
         assert all(item["observation"]["runtime"]["agent_state"] == "running" for item in role_checks)
         if source:
-            identities = {item["role"]: (item["observation"]["agent_id"], item["observation"]["runtime"]["run_id"])
+            identities = {item["role"]: (item["observation"]["agent_id"], item["observation"]["runtime"]["run_id"],
+                                         item["observation"]["runtime"]["launch_id"])
                           for item in role_checks}
             returned = subprocess.run([*command, "setup", source], capture_output=True, text=True, timeout=180)
             (root / "setup-return.log").write_text(returned.stdout + returned.stderr)
             assert returned.returncode == 0, (returned.stdout, returned.stderr)
-            current = json.loads(subprocess.check_output([*command, "doctor", name], text=True, timeout=180))
-            assert identities == {item["role"]: (item["observation"]["agent_id"], item["observation"]["runtime"]["run_id"])
+            report = subprocess.run([*command, "doctor", name], capture_output=True, text=True, timeout=180)
+            (root / "setup-return-doctor.log").write_text(report.stdout + report.stderr)
+            assert report.returncode == 0, (report.stdout, report.stderr)
+            current = json.loads(report.stdout)
+            assert current["status"] == "ready"
+            assert identities == {item["role"]: (item["observation"]["agent_id"], item["observation"]["runtime"]["run_id"],
+                                                 item["observation"]["runtime"]["launch_id"])
                                   for item in current["checks"] if item["component"] == "role"}
             original = (root / "factories" / name / "approved").read_bytes()
             changed = tomlkit.parse(Path(source).read_text())

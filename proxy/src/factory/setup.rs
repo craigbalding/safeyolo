@@ -99,7 +99,7 @@ async fn authentication(root: &Path, role: &Role) -> Result<(), Error> {
         coord_setup::codex_state(&home(root, role), None, true, None)?;
     }
     let started = host_lifecycle::start(agent, "sandbox-start", None, None, false).await?;
-    if let Some(error) = role_lifecycle_error(&started) {
+    if let Some(error) = role_start_error(&started) {
         return Err(format!("authentication sandbox failed: {error}").into());
     }
     let result = async {

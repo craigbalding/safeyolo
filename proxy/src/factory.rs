@@ -714,10 +714,18 @@ async fn doctor(root: &Path, snapshot: &Snapshot) -> Result<Value, Error> {
     )
 }
 fn role_lifecycle_error(observation: &Value) -> Option<&Value> {
-    // A healthy supervisor reports an empty last_stderr through this field.
     observation
         .get("error")
         .filter(|error| !error.is_null() && error.as_str() != Some(""))
+}
+
+fn role_start_error(observation: &Value) -> Option<&Value> {
+    // A live launch can report ordinary supervisor stderr. Runtime observation
+    // checks its identity; doctor still owns the final readiness decision.
+    if host_lifecycle::reuses_current_launch(observation) {
+        return None;
+    }
+    role_lifecycle_error(observation)
 }
 
 async fn start_roles(
@@ -754,7 +762,7 @@ async fn start_roles(
             args.insert(0, "--confirm-fresh-identity".into());
         }
         let observation = host_lifecycle::start(agent, "start", None, Some(&args), false).await?;
-        if let Some(error) = role_lifecycle_error(&observation) {
+        if let Some(error) = role_start_error(&observation) {
             return Err(
                 format!("role {name} start failed: {error}; existing role state retained").into(),
             );
