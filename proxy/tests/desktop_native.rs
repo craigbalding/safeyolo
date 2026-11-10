@@ -810,6 +810,41 @@ async fn check_desktop_readiness_failures() {
             );
             assert_eq!(body(&response)["result"]["diagnostic"]["code"], code);
         }
+        let explanation = action_request(
+            root.path(),
+            "GET",
+            &format!(
+                "/explain?request_id={}",
+                approved["request_id"].as_str().unwrap()
+            ),
+            Value::Null,
+            "alice",
+        )
+        .await;
+        assert_eq!(status(&explanation), 200);
+        let text = String::from_utf8_lossy(&explanation);
+        assert!(
+            !text.contains("operator_details") && !text.contains("private-readiness"),
+            "{text}"
+        );
+        let explanation = body(&explanation);
+        assert_eq!(explanation["status"], "complete");
+        let result_event = explanation["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["event"] == "admin.operator_action_result")
+            .expect("the action result must remain in retained audit evidence");
+        assert_eq!(result_event["request_id"], approved["request_id"]);
+        assert_eq!(result_event["details"]["approval_id"], id);
+        assert_eq!(
+            result_event["details"]["authority_digest"],
+            approved["authority_digest"]
+        );
+        let result = &result_event["details"]["result"];
+        assert_eq!(result["status"], "failed");
+        assert_eq!(result["diagnostic"]["code"], code);
+        assert_eq!(result["issued_access"], approved["result"]["issued_access"]);
         assert!(!root.path().join("opened").exists());
         assert!(!root.path().join("desktop-start-command").exists());
         assert!(!root.path().join("desktop-stopped").exists());

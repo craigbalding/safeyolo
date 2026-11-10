@@ -220,9 +220,13 @@ fn event(record: &pending::Record, name: &'static str, summary: &str) -> Event {
         status: Some(crate::audit::AttributionStatus::Resolved),
         provenance: None,
     });
+    let mut result = record.result.clone();
+    if let Some(diagnostic) = result["diagnostic"].as_object_mut() {
+        diagnostic.remove("operator_details");
+    }
     event.details =
         json!({"approval_id":record.approval_id,"authority_digest":record.authority_digest,
-        "action_id":DESKTOP_PRESENT,"status":record.status,"result":record.result})
+        "action_id":DESKTOP_PRESENT,"status":record.status,"result":result})
         .into();
     event
 }
