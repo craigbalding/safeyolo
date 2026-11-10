@@ -44,11 +44,13 @@ does not revoke copies the guest already read.
 For an existing agent, stop the agent before changing its authentication.
 Return through `safeyolo agent auth alice`, or select **h** from launch's host
 controls. `agent auth alice --json` reads the current configuration, active
-service binding and vault availability separately. It reports provider validity
-as unknown and client use as not observed. Setup success is not a provider
-request result. A normal return with `agent launch --name alice` reuses the
-saved client configuration and current binding without another login import or
-service grant.
+service binding and vault availability separately. This setup inspection reports
+provider validity as unknown and client use as not observed. It does not make a
+provider request or read earlier client results. Those fields therefore remain
+unchanged after a successful request. Read the actual client result separately,
+as described under [return after interruption](#return-after-interruption-or-configuration-changes).
+A normal return with `agent launch --name alice` reuses the saved client
+configuration and current binding without another login import or service grant.
 
 ## Authorize on the host
 
@@ -193,6 +195,19 @@ of an invalid provider login. Complete only the missing import, grant or explici
 unlock. Do not reimport an original login merely because a launch was interrupted;
 its refresh token may have rotated. Inspect `credentials list` and the current
 binding before choosing another explicit import or authorization.
+
+Read the actual request result in the client terminal or the client's structured
+output. Keep that result separate from setup readiness. On the same operator
+host and selected instance, `safeyolo agent status alice` returns JSON with the
+sandbox `run_id`, command `launch_id`, `runtime_state`, `agent_state` and command
+`exit_code`. An exit code alone does not establish a successful provider request.
+Client errors, interruptions and timeouts remain the reached results even when
+configuration, authorization and vault availability are ready.
+
+A client command can exit while its sandbox remains running. Before deciding
+a run-scoped approval, inspect the current approval and the selected agent's
+current run. Stopping the sandbox ends that run and its run-scoped grants.
+An approval notification alone grants no access and does not retry the request.
 
 After catalogue activation, gateway configuration changes, named-list input
 changes or proxy restart, stop/relaunch the coding client to fetch a current
