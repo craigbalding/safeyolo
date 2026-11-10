@@ -554,6 +554,8 @@ async fn gateway_refresh_response_evidence_reaches_writer_without_secrets() {
     let path = directory.path().join("refresh.jsonl");
     let writer = Writer::new(path.clone(), Settings::default());
     let mut expected = Vec::new();
+    let mut selected = selection(Some("bearer"));
+    selected.refresh_on_401 = true;
     let cases: &[(u16, &[u8], &str, &str)] = &[
         (400, br#"{"error":"invalid_grant","error_description":"private-response-marker"}"#, "http_status", "invalid_grant"),
         (400, br#"{"error":"invalid_\u0067rant","error_description":"private-response-marker"}"#, "http_status", "invalid_grant"),
@@ -610,7 +612,7 @@ async fn gateway_refresh_response_evidence_reaches_writer_without_secrets() {
     for (response, status, kind, response_error) in cases {
         vault.store(self::oauth()).unwrap();
         let original = std::fs::read(directory.path().join("vault.enc")).unwrap();
-        let prepared = pending(start(selection(Some("bearer")), Some(&vault), "https").unwrap());
+        let prepared = pending(start(selected.clone(), Some(&vault), "https").unwrap());
         let RefreshStart::Leader(attempt) = oauth.begin("demo-key", now()).unwrap() else {
             panic!("expected refresh leader")
         };
