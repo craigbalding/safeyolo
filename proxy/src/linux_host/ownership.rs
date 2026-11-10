@@ -37,6 +37,24 @@ fn fd_path(file: &fs::File) -> PathBuf {
     PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
 }
 
+fn mount_id(file: &fs::File) -> Option<u64> {
+    let mut stat = std::mem::MaybeUninit::<libc::statx>::zeroed();
+    if unsafe {
+        libc::statx(
+            file.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+            libc::STATX_MNT_ID,
+            stat.as_mut_ptr(),
+        )
+    } != 0
+    {
+        return None;
+    }
+    let stat = unsafe { stat.assume_init() };
+    (stat.stx_mask & libc::STATX_MNT_ID != 0 && stat.stx_mnt_id != 0).then_some(stat.stx_mnt_id)
+}
+
 fn walk(
     file: &fs::File,
     path: &Path,
@@ -232,10 +250,18 @@ fn rewrite_tree(
         )
         .into());
     }
+    let root_mount = mount_id(&root_file);
     let mut records: HashMap<(u64, u64), (fs::Metadata, u64)> = HashMap::new();
     let mut changes = Vec::new();
     walk(&root_file, Path::new(""), &mut |file, metadata, path| {
-        if metadata.dev() != root.dev() {
+        // gVisor overlays can report different devices for directories and
+        // files in one mount. Accept that case only with matching mount IDs
+        // from the pinned descriptors; an unavailable ID cannot grant access.
+        if metadata.dev() != root.dev()
+            && root_mount
+                .zip(mount_id(file))
+                .is_none_or(|(root, child)| root != child)
+        {
             return Err("guest staging tree contains another filesystem".into());
         }
         let uid = shift_id(
@@ -408,5 +434,58 @@ mod tests {
         assert!(link.metadata().unwrap().file_type().is_symlink());
         assert!(reopen_entry(&root, Path::new("link/file")).is_err());
         assert_eq!(fs::read(outside.path().join("file")).unwrap(), b"preserved");
+    }
+
+    #[test]
+    #[ignore = "requires guest root; run with TMPDIR on the gVisor overlay to cover split device numbers"]
+    fn profile_tree_remapping_preserves_ownership_and_outside_files() {
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        let stage = tempfile::Builder::new()
+            .prefix("extract-")
+            .tempdir()
+            .unwrap();
+        fs::set_permissions(stage.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let tree = stage.path().join("rootfs-tree");
+        fs::create_dir(&tree).unwrap();
+        fs::write(tree.join("root-file"), "root").unwrap();
+        fs::write(tree.join("user-file"), "user").unwrap();
+        std::os::unix::fs::chown(tree.join("user-file"), Some(1000), Some(1000)).unwrap();
+        fs::hard_link(tree.join("root-file"), tree.join("second-link")).unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        symlink(outside.path(), tree.join("outside-symlink")).unwrap();
+        std::os::unix::fs::chown(stage.path(), Some(1000), Some(1000)).unwrap();
+
+        archive_profile_tree(&tree, 1000).unwrap();
+        assert_eq!(fs::metadata(&tree).unwrap().uid(), ARCHIVE_BASE);
+        assert_eq!(fs::metadata(tree.join("user-file")).unwrap().uid(), 101000);
+        remap_tree(
+            &tree,
+            Mapping {
+                uid_base: ARCHIVE_BASE,
+                gid_base: ARCHIVE_BASE,
+                host_uid: 1000,
+                host_gid: 1000,
+            },
+        )
+        .unwrap();
+        assert_eq!(fs::metadata(tree.join("user-file")).unwrap().uid(), 1000);
+        assert_eq!(
+            fs::metadata(tree.join("root-file")).unwrap().uid(),
+            ARCHIVE_BASE
+        );
+        assert_eq!(outside.as_file().metadata().unwrap().uid(), 0);
+
+        let escape_stage = tempfile::Builder::new()
+            .prefix("extract-")
+            .tempdir()
+            .unwrap();
+        let escape_tree = escape_stage.path().join("rootfs-tree");
+        fs::create_dir(&escape_tree).unwrap();
+        fs::hard_link(outside.path(), escape_tree.join("outside-hard-link")).unwrap();
+        std::os::unix::fs::chown(escape_stage.path(), Some(1000), Some(1000)).unwrap();
+        let error = archive_profile_tree(&escape_tree, 1000).unwrap_err();
+        assert!(error.to_string().contains("hard link outside"), "{error}");
+        assert_eq!(fs::metadata(&escape_tree).unwrap().uid(), 0);
+        assert_eq!(outside.as_file().metadata().unwrap().uid(), 0);
     }
 }
