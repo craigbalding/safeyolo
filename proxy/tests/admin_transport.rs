@@ -1253,14 +1253,80 @@ async fn immediate_parent_alias_and_invalid_shield_reload_preserve_live_containm
     peer.stop().await;
 }
 
-// /dev/full is an actual failing output sink. The policy state and both HTTP
-// listeners remain real; no mocked audit callback supplies the result.
+// An owned directory blocks audit appends. A child isolates stderr observation
+// from parallel tests and waits for both reset fallback records before recovery.
+// The policy state and both HTTP listeners remain real.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn reset_commits_when_evidence_fails_and_survives_sink_recovery() {
+    const CHILD: &str = "SAFEYOLO_BUDGET_AUDIT_FAILURE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        use std::process::Stdio;
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "reset_commits_when_evidence_fails_and_survives_sink_recovery",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut resume = child.stdin.take().unwrap();
+        let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
+        let mut diagnostics = String::new();
+        let mut failed_resets = Vec::new();
+        let mut flush_failed = false;
+        let status = tokio::time::timeout(Duration::from_secs(15), async {
+            while let Some(line) = lines.next_line().await.unwrap() {
+                flush_failed |= line.starts_with("[safeyolo] audit writer flush failed (");
+                if let Some(record) = line.strip_prefix("[safeyolo] Event: ") {
+                    let row = safeyolo_proxy::audit::parse_record(record).unwrap();
+                    if let Some(name) = row["event"]
+                        .as_str()
+                        .filter(|name| name.starts_with("admin.budget"))
+                    {
+                        failed_resets.push(name.to_owned());
+                        if failed_resets.len() == 2 {
+                            assert!(flush_failed, "reset fallback must follow a failed append");
+                            resume.write_all(b"r").await.unwrap();
+                        }
+                    }
+                }
+                diagnostics.push_str(&line);
+                diagnostics.push('\n');
+            }
+            child.wait().await.unwrap()
+        })
+        .await
+        .expect("failed reset observation and recovery must finish");
+        for secret in [
+            DETECTABLE_BEARER_TOKEN.to_owned(),
+            DETECTABLE_BEARER_TOKEN
+                .as_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+        ] {
+            assert!(
+                !diagnostics.contains(&secret),
+                "operator secret must stay out of fallback diagnostics"
+            );
+        }
+        assert!(status.success(), "budget reset child failed: {diagnostics}");
+        assert_eq!(failed_resets, ["admin.budget_reset", "admin.budgets_reset"]);
+        return;
+    }
     let directory = TempDir::new().unwrap();
-    let token = synthetic();
+    let token = DETECTABLE_BEARER_TOKEN.to_owned();
     let config = config(directory.path(), &token);
+    let audit_path = config.audit_log_path.as_ref().unwrap();
+    std::fs::create_dir(audit_path).unwrap();
     std::fs::write(
         config.policy_file.as_ref().unwrap(),
         "[[permissions]]\naction = \"network:request\"\nresource = \"*\"\neffect = \"budget\"\nbudget = 1\n",
@@ -1307,7 +1373,20 @@ async fn reset_commits_when_evidence_fails_and_survives_sink_recovery() {
     assert_eq!(after.json()["tracked_keys"], 0);
     assert_eq!(peer.accepts.load(Ordering::SeqCst), 2);
 
-    // A real reload restores the sink while retaining the committed empty map.
+    // The parent acknowledges actual failed reset appends, not queue admission
+    // or drain. Restore the same destination only after both fallback records.
+    let mut resume = [0];
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::io::stdin().read_exact(&mut resume),
+    )
+    .await
+    .expect("parent must observe the failed reset records")
+    .unwrap();
+    assert_eq!(resume, *b"r");
+    assert!(audit_path.is_dir());
+    std::fs::remove_dir(audit_path).unwrap();
+    // Reload retains the writer and the committed empty budget map.
     proxy.reload(config.clone()).await.unwrap();
     assert_eq!(admin_port(&config), port);
     assert_eq!(
@@ -1336,15 +1415,7 @@ async fn reset_commits_when_evidence_fails_and_survives_sink_recovery() {
                 .map(str::to_owned)
         })
         .collect();
-    assert_eq!(
-        audit_names,
-        [
-            "admin.budget_reset",
-            "admin.budgets_reset",
-            "admin.budget_reset",
-            "admin.budgets_reset"
-        ]
-    );
+    assert_eq!(audit_names, ["admin.budget_reset", "admin.budgets_reset"]);
     assert_private(&config, &[&token]);
     peer.stop().await;
 }
