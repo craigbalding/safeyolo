@@ -4,6 +4,7 @@ mod clock;
 mod desktop_bridge;
 mod desktop_probe;
 mod extra_mount;
+mod git_credential;
 mod lab_evidence;
 mod observation;
 mod probe;
@@ -172,13 +173,14 @@ fn run() -> Result<i32, Error> {
     match args.as_slice() {
         [clock] if clock == "clock-sync" => clock::run(false),
         [clock, watch] if clock == "clock-sync" && watch == "watch" => clock::run(true),
+        [git, rest @ ..] if git == "git-credential" => git_credential::run(&paths, rest),
         [version] if version == "--version" => {
             println!("{}", self::version());
             Ok(0)
         }
         [help] if help == "--help" => {
             println!(
-                "safeyolo-guest [--context FILE] [--records DIR] [--state FILE] [--stop FILE] [--workspace DIR] observe check | observe exec -- PROGRAM [ARGS] | observe stop GENERATION LAUNCH_ID | supervise [check | owner-binding | owner-exit BINDING STATUS] | clock-sync [watch] | probe ID [--ssh-port PORT] | desktop-probe | desktop-bridge --web DIRECTORY LOOPBACK:PORT VNC_LOOPBACK:PORT | lab-evidence capture --output DIR [--socket PATH] [--pane ID] [--file PATH] | lab-evidence redact [--check-text FILE | INPUT OUTPUT]\nGuest-only Linux executable. PID 1 launches supervise as the agent user and uses owner-binding/owner-exit to record its reaped owner. The host publishes command state in the shared home."
+                "safeyolo-guest [--context FILE] [--records DIR] [--state FILE] [--stop FILE] [--workspace DIR] git-credential get|store|erase | observe check | observe exec -- PROGRAM [ARGS] | observe stop GENERATION LAUNCH_ID | supervise [check | owner-binding | owner-exit BINDING STATUS] | clock-sync [watch] | probe ID [--ssh-port PORT] | desktop-probe | desktop-bridge --web DIRECTORY LOOPBACK:PORT VNC_LOOPBACK:PORT | lab-evidence capture --output DIR [--socket PATH] [--pane ID] [--file PATH] | lab-evidence redact [--check-text FILE | INPUT OUTPUT]\nGuest-only Linux executable. PID 1 launches supervise as the agent user and uses owner-binding/owner-exit to record its reaped owner. The host publishes command state in the shared home."
             );
             Ok(0)
         }
