@@ -185,6 +185,10 @@ async fn actual_source_diff_tag_status_types_state_and_order() {
                     "\"/explain\", \"/approvals/{request_id}\", \"/approvals\", \"/approvals/{approval_id}/resolve (POST)\", \"/api/coord/request-access (POST)\", \"/api/coord/request-collaboration (POST)\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
                 );
                 expected = expected.replace(
+                    "\"/agents\", \"/circuits\"",
+                    "\"/agents\", \"/support/grants\", \"/support/operations (POST)\", \"/support/operations/{operation_id}\", \"/circuits\"",
+                );
+                expected = expected.replace(
                     "\"/gateway/request-access\",",
                     "\"/gateway/request-access\", \"/gateway/challenges/{challenge_id}\", \"/gateway/challenges/{challenge_id}/escalate (POST)\",",
                 );
