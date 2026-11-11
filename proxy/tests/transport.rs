@@ -2411,6 +2411,7 @@ async fn reserved_and_invalid_requests_stay_local_even_without_the_adapter() {
     )
     .await;
     assert!(invalid.starts_with("HTTP/1.1 400"));
+    proxy.shutdown().await;
     assert!(
         events(&config)
             .iter()
@@ -2421,7 +2422,6 @@ async fn reserved_and_invalid_requests_stay_local_even_without_the_adapter() {
             .unwrap()
             .contains("synthetic")
     );
-    proxy.shutdown().await;
 }
 
 #[tokio::test]
@@ -2506,6 +2506,7 @@ async fn reserved_root_dot_aliases_never_expose_tokens_to_a_parent() {
         invalid_parent.parent_proxy = Some(format!("http://{host}:8080"));
         assert!(invalid_parent.validate().is_err());
     }
+    proxy.shutdown().await;
     assert_eq!(accepted.load(Ordering::SeqCst), 0);
     assert!(
         events(&config)
@@ -2517,7 +2518,6 @@ async fn reserved_root_dot_aliases_never_expose_tokens_to_a_parent() {
             .unwrap()
             .contains("synthetic-local-secret")
     );
-    proxy.shutdown().await;
     parent_task.abort();
 }
 

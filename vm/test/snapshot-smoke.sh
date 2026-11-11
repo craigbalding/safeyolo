@@ -1,233 +1,271 @@
 #!/usr/bin/env bash
+# Physical macOS snapshot probe using a shared read-only base and owned overlay.
 #
-# Snapshot/restore smoke test for the safeyolo-vm helper.
+# Run on an allocated Apple Silicon host, from this checkout, with a signed
+# source-compatible helper, an extracted standard guest (Image,
+# initramfs.cpio.gz, rootfs-base.ext4), and public staged guest assets.
+# RUN_DIR must not exist and must be on disk. Capture needs room for 1 GiB
+# of saved memory and two 256 MiB overlays; full needs two memory images and
+# five overlays. Inputs are read only; all writes stay in RUN_DIR.
 #
-# Validates the PR-1 primitives:
-#   - cold-boot + SIGUSR1 → snapshot file + sidecar
-#   - restore from snapshot → process comes up (alive or graceful exit)
-#   - boundary: wrong --memory → exit 75 (fingerprint mismatch)
-#
-# Runs in vsock-term mode (no --no-terminal). Reason: SIGUSR1 dispatch
-# sources don't fire reliably in --no-terminal mode (a known limitation
-# of the current main-queue setup; see main.swift). PR 4's CLI
-# orchestration uses vsock-term mode so this matches real usage anyway.
-#
-# Caveat: a snapshot taken AFTER the agent CLI has connected to vsock-term
-# captures the live vsock connection state. On restore, the in-guest
-# vsock-term sees its old host disappear, exits, guest-init runs poweroff,
-# VM stops cleanly. That's a SUCCESSFUL restore (proven by exit 0), just
-# with an immediate clean shutdown — fine for mechanism validation.
-#
-# Usage:
-#   bash vm/test/snapshot-smoke.sh <agent-name>
-#
-# The agent must use the byoa template (or have no SAFEYOLO_AGENT_CMD)
-# and have been run once with --sandbox-only so its config-share is populated
-# and SAFEYOLO_DETACH=1 keeps guest-init's `exec sleep infinity` path
-# alive without network. Setup:
-#
-#   mkdir -p ~/tmp/snaptest
-#   safeyolo agent add snaptest byoa ~/tmp/snaptest --no-run
-#   safeyolo agent run --sandbox-only snaptest
-#   sleep 5
-#   safeyolo agent stop snaptest
-#
-# Agents with an auto-launching CLI (claude-code, openai-codex) will fail
-# this test because that CLI exits immediately without network and
-# guest-init then powers off the VM, masking snapshot success.
-#
+# Usage: snapshot-smoke.sh capture-only|full HELPER GUEST_DIR ASSETS_DIR RUN_DIR
+# Set SAFEYOLO_VZ_TEST_RUNNER to the maintained run-vz-test wrapper on Bristol.
+# Wrapped runs need Python 3.10+ and the kernel observers in
+# tests/blackbox/harness at their checkout-relative paths.
+# capture-only saves at the static gate, then observes real cron/at startup
+# and queued jobs after opening that gate. It never attempts memory restore.
+# full additionally restores a COPY of the paired overlay, saves again to prove
+# the restored VM runs, and checks a memory fingerprint refusal (exit 75).
+# A full run needs separate restore authority and a working VZ recipient.
+# Logs, snapshots and failure state remain in RUN_DIR after owned cleanup.
 set -euo pipefail
-set -m
+umask 077
 
-AGENT="${1:-}"
-if [[ -z "$AGENT" ]]; then
-    echo "Usage: $0 <agent-name>" >&2
+if [[ $# != 5 || ( "$1" != capture-only && "$1" != full ) ]]; then
+    echo "Usage: $0 capture-only|full HELPER GUEST_DIR ASSETS_DIR RUN_DIR" >&2
     exit 64
 fi
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-VM_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-HELPER="$VM_DIR/.build/release/safeyolo-vm"
-
-if [[ ! -x "$HELPER" ]]; then
-    cat >&2 <<EOF
-ERROR: $HELPER not found.
-Build first:
-    cd vm
-    swift build -c release
-    codesign --entitlements safeyolo-vm.entitlements --force -s - .build/release/safeyolo-vm
-EOF
-    exit 1
-fi
-
-KERNEL="$HOME/.safeyolo/share/Image"
-INITRD="$HOME/.safeyolo/share/initramfs.cpio.gz"
-ROOTFS="$HOME/.safeyolo/agents/$AGENT/rootfs.ext4"
-SHARE="$HOME/.safeyolo/agents/$AGENT/config-share"
-
-for f in "$KERNEL" "$INITRD" "$ROOTFS"; do
-    [[ -e "$f" ]] || { echo "missing: $f" >&2; exit 1; }
+MODE=$1
+HELPER=$2
+GUEST=$3
+ASSETS=$4
+RUN=$5
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd -P)
+HELPER=$(cd "$(dirname "$HELPER")" && printf '%s/%s' "$PWD" "$(basename "$HELPER")")
+GUEST=$(cd "$GUEST" && pwd -P)
+ASSETS=$(cd "$ASSETS" && pwd -P)
+RUNNER=${SAFEYOLO_VZ_TEST_RUNNER:-}
+TIMEOUT=${SAFEYOLO_SNAPSHOT_TIMEOUT_SECONDS:-120}
+[[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]] || exit 64
+[[ -x "$HELPER" ]] || { echo "Missing executable: $HELPER" >&2; exit 1; }
+for path in "$GUEST/Image" "$GUEST/initramfs.cpio.gz" "$GUEST/rootfs-base.ext4" \
+    "$ASSETS/guest-init" "$ASSETS/guest-init-static" "$ASSETS/guest-init-per-run" "$ASSETS/safeyolo-guest"; do
+    [[ -r "$path" ]] || { echo "Missing input: $path" >&2; exit 1; }
 done
-if [[ ! -d "$SHARE" ]]; then
-    cat >&2 <<EOF
-ERROR: $SHARE not present.
-Run the agent once normally to populate the config-share, then re-run this test:
-    safeyolo agent run --sandbox-only $AGENT
-    safeyolo agent stop $AGENT
-EOF
-    exit 1
-fi
+[[ -z "$RUNNER" || -x "$RUNNER" ]] || { echo "Missing runner: $RUNNER" >&2; exit 1; }
+mkdir -m 700 "$RUN"  # Refuse to overwrite a previous or uncertain attempt.
+RUN=$(cd "$RUN" && pwd -P)
+echo "Retained results: $RUN"
+PROCESS_PID=
+HELPER_PID=
+LOG=
 
-SNAP="/tmp/sytest-${AGENT}.snap"
-HELPER_PID=""
-RESTORE_PID=""
+running() { jobs -pr | grep -qx "$PROCESS_PID"; }
+
+stop_owned() {
+    [[ -n "$PROCESS_PID" ]] || return 0
+    if running; then
+        kill -TERM "$PROCESS_PID"
+        local deadline=$((SECONDS + 12))
+        while running && (( SECONDS < deadline )); do sleep 0.1; done
+        if running; then
+            # The maintained runner normally reaps its child within nine seconds.
+            # Keep the saved inputs if that cleanup contract fails.
+            echo "Owned runner did not finish cleanup: $PROCESS_PID (helper $HELPER_PID)" >&2
+            return 1
+        fi
+    fi
+    local rc=0
+    wait "$PROCESS_PID" || rc=$?
+    printf 'runner=%s helper=%s exit=%s reaped=yes\n' "$PROCESS_PID" "$HELPER_PID" "$rc" >> "$RUN/cleanup.log"
+    PROCESS_PID=
+    HELPER_PID=
+}
 
 cleanup() {
     local rc=$?
-    set +e
-    if [[ -n "$HELPER_PID" ]] && kill -0 "$HELPER_PID" 2>/dev/null; then
-        kill -TERM "$HELPER_PID" 2>/dev/null
-        wait "$HELPER_PID" 2>/dev/null
-    fi
-    if [[ -n "$RESTORE_PID" ]] && kill -0 "$RESTORE_PID" 2>/dev/null; then
-        kill -TERM "$RESTORE_PID" 2>/dev/null
-        wait "$RESTORE_PID" 2>/dev/null
-    fi
-    rm -f "$SNAP" "$SNAP.meta.json" "$SNAP.rootfs"
-    rm -f "${SNAP2:-/dev/null}" "${SNAP2:-/dev/null}.meta.json" "${SNAP2:-/dev/null}.rootfs"
-    if [[ "$rc" -eq 0 ]]; then
-        echo
-        echo "=== ALL PHASES PASSED ==="
-    else
-        echo
-        echo "=== FAILED (exit $rc) ==="
-    fi
-    exit $rc
+    trap - EXIT
+    stop_owned || rc=1
+    printf 'exit=%s\n' "$rc" > "$RUN/exit"
+    echo "Probe exit $rc; inputs and logs retained at $RUN"
+    exit "$rc"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-# Helper invocation as a flat command string we expand inline. We can't
-# wrap it in a function returning $! via command substitution, because
-# command substitution runs in a subshell — the backgrounded helper
-# becomes a grandchild of the parent shell, and `wait` can't reap it.
-# Inline it so $! refers to a direct child.
-HELPER_ARGS=(
-    "$HELPER" run
-    --kernel "$KERNEL"
-    --initrd "$INITRD"
-    --rootfs "$ROOTFS"
-    --memory 4096 --cpus 4
-    --share "$SHARE:config:rw"
-    --no-terminal
-)
-
-# ---------------------------------------------------------------------------
-# Phase 1 — cold-boot + snapshot
-# ---------------------------------------------------------------------------
-echo "=== PHASE 1: cold-boot + snapshot ==="
-rm -f "$SNAP" "$SNAP.meta.json"
-
-"${HELPER_ARGS[@]}" --snapshot-on-signal "$SNAP" </dev/null >/tmp/sytest-helper.log 2>&1 &
-HELPER_PID=$!
-echo "  helper pid: $HELPER_PID"
-echo "  waiting 15s for guest boot..."
-sleep 15
-
-if ! kill -0 "$HELPER_PID" 2>/dev/null; then
-    echo "  FAIL: helper exited during boot. Last 20 lines of helper log:"
-    tail -20 /tmp/sytest-helper.log | sed 's/^/    /'
+fail() {
+    echo "FAIL: $*; inspect $RUN" >&2
+    [[ -z "$LOG" ]] || tail -20 "$LOG" >&2
     exit 1
-fi
+}
 
-echo "  sending SIGUSR1..."
-kill -USR1 "$HELPER_PID"
-sleep 8
+wait_for() {
+    local label=$1
+    shift
+    local deadline=$((SECONDS + TIMEOUT))
+    until "$@"; do
+        [[ ! -f "$RUN/status/probe.failed" ]] || fail "guest scheduling probe failed"
+        running || fail "helper exited while waiting for $label"
+        (( SECONDS < deadline )) || fail "deadline waiting for $label"
+        sleep 0.1
+    done
+}
 
-[[ -f "$SNAP" ]] || { echo "  FAIL: $SNAP not written"; tail -10 /tmp/sytest-helper.log | sed 's/^/    /'; exit 1; }
-[[ -f "$SNAP.meta.json" ]] || { echo "  FAIL: $SNAP.meta.json not written"; exit 1; }
-echo "  PASS: snapshot $(ls -lh "$SNAP" | awk '{print $5}') logical / $(du -h "$SNAP" | awk '{print $1}') physical"
-
-# Force-kill (not graceful) so the guest doesn't fsync/journal-flush
-# the rootfs between snapshot and restore. VZ requires the disk image
-# to be byte-identical to its state at save time, otherwise restore
-# fails with "invalid argument". PR 4 will need to APFS-clone the
-# rootfs at snapshot time to handle this for production use.
-kill -KILL "$HELPER_PID" 2>/dev/null
-wait "$HELPER_PID" 2>/dev/null || true
-HELPER_PID=""
-
-# ---------------------------------------------------------------------------
-# Phase 2 — restore + liveness via second snapshot
-# ---------------------------------------------------------------------------
-echo
-echo "=== PHASE 2: restore + liveness ==="
-
-SNAP2="/tmp/sytest-${AGENT}-2.snap"
-rm -f "$SNAP2" "$SNAP2.meta.json"
-
-# Restore must use the cloned rootfs that was captured at snapshot time
-# (the live $ROOTFS may have been modified by the cold-boot helper before
-# we killed it — VZ requires byte-identical disk state).
-SNAP_ROOTFS="$SNAP.rootfs"
-[[ -f "$SNAP_ROOTFS" ]] || { echo "  FAIL: snapshot rootfs clone $SNAP_ROOTFS missing"; exit 1; }
-
-# Build args with overridden --rootfs pointing at the clone.
-RESTORE_ARGS=(
-    "$HELPER" run
-    --kernel "$KERNEL"
-    --initrd "$INITRD"
-    --rootfs "$SNAP_ROOTFS"
-    --memory 4096 --cpus 4
-    --share "$SHARE:config:rw"
-    --no-terminal
-)
-
-"${RESTORE_ARGS[@]}" --restore-from "$SNAP" --snapshot-on-signal "$SNAP2" </dev/null >/tmp/sytest-helper.log 2>&1 &
-RESTORE_PID=$!
-echo "  restore pid: $RESTORE_PID"
-sleep 5
-
-if ! kill -0 "$RESTORE_PID" 2>/dev/null; then
-    set +e; wait "$RESTORE_PID"; rc=$?; set -e
-    echo "  FAIL: restored helper exited with rc=$rc. Last 20 lines of log:"
-    tail -20 /tmp/sytest-helper.log | sed 's/^/    /'
-    exit 1
-fi
-echo "  PASS: restored helper alive"
-
-# Liveness via second snapshot — only succeeds if the VM is actually .running
-echo "  sending SIGUSR1 for liveness snapshot..."
-kill -USR1 "$RESTORE_PID"
-sleep 8
-
-[[ -f "$SNAP2" ]] || { echo "  FAIL: liveness snapshot not written (restored VM not running?)"; tail -10 /tmp/sytest-helper.log | sed 's/^/    /'; exit 1; }
-[[ -f "$SNAP2.meta.json" ]] || { echo "  FAIL: liveness sidecar missing"; exit 1; }
-echo "  PASS: liveness snapshot $(ls -lh "$SNAP2" | awk '{print $5}') logical / $(du -h "$SNAP2" | awk '{print $1}') physical"
-
-kill -TERM "$RESTORE_PID" 2>/dev/null
-wait "$RESTORE_PID" 2>/dev/null || true
-RESTORE_PID=""
-
-rm -f "$SNAP2" "$SNAP2.meta.json"
-
-# ---------------------------------------------------------------------------
-# Phase 3 — boundary: wrong --memory must reject (exit 75)
-# ---------------------------------------------------------------------------
-echo
-echo "=== PHASE 3: boundary (wrong --memory → exit 75) ==="
-
-set +e
-"$HELPER" run \
-    --kernel "$KERNEL" --initrd "$INITRD" --rootfs "$SNAP_ROOTFS" \
-    --memory 8192 --cpus 4 \
-    --share "$SHARE:config:rw" \
-    --no-terminal \
-    --restore-from "$SNAP" </dev/null 2>&1 | sed 's/^/  /'
-RC=${PIPESTATUS[0]}
+mkdir "$RUN/config" "$RUN/status" "$RUN/home" "$RUN/workspace"
+# These disposable shares must be writable by guest uid 1000 through VirtioFS.
+chmod 0777 "$RUN/status" "$RUN/home" "$RUN/workspace"
+for name in guest-init guest-init-static guest-init-per-run safeyolo-guest \
+    guest-proxy-forwarder guest-shell-bridge guest-sudo guest-desktop; do
+    if [[ -f "$ASSETS/$name" ]]; then
+        cp "$ASSETS/$name" "$RUN/config/$name"
+        chmod 0755 "$RUN/config/$name"
+    fi
+done
+mv "$RUN/config/guest-init-static" "$RUN/config/guest-init-static-original"
+cat > "$RUN/config/guest-init-static" <<'STATIC'
+#!/bin/bash
 set -e
+/safeyolo/guest-init-static-original
+# Test instrumentation only; the normal orchestrator still owns its gate.
+/bin/bash /safeyolo/snapshot-scheduling.sh > /safeyolo-status/probe.log 2>&1 &
+STATIC
+chmod 0755 "$RUN/config/guest-init-static"
+cp "$SCRIPT_DIR/snapshot-scheduling.sh" "$RUN/config/snapshot-scheduling.sh"
+printf 'SAFEYOLO_DETACH=1\nTZ=UTC\n' > "$RUN/config/agent.env"
+printf 'snapshot-smoke\n' > "$RUN/config/agent-name"
+# The initramfs formats this new, sparse upper disk. Never copy a used spool.
+dd if=/dev/zero of="$RUN/overlay.ext4" bs=1 count=0 seek=268435456 2> "$RUN/overlay-create.log"
+shasum -a 256 "$HELPER" "$GUEST/Image" "$GUEST/initramfs.cpio.gz" \
+    "$GUEST/rootfs-base.ext4" "$RUN/config/"* > "$RUN/inputs.sha256"
+"$HELPER" version > "$RUN/helper-version.txt"
+uname -a > "$RUN/host.txt"
+id >> "$RUN/host.txt"
 
-if [[ "$RC" != "75" ]]; then
-    echo "  FAIL: expected exit 75, got $RC"
-    exit 1
+BASE_ARGS=(run --kernel "$GUEST/Image" --initrd "$GUEST/initramfs.cpio.gz"
+    --rootfs "$GUEST/rootfs-base.ext4" --cpus 2
+    --cmdline 'console=hvc0 root=/dev/vda rw quiet')
+for name in config status home workspace; do
+    mode=rw
+    [[ "$name" != config ]] || mode=ro
+    BASE_ARGS+=(--share "$RUN/$name:$name:$mode")
+done
+
+start_helper() {
+    local phase=$1 overlay=$2
+    shift 2
+    LOG="$RUN/$phase-helper.log"
+    local command=("$HELPER" "${BASE_ARGS[@]}" --memory 1024 --overlay "$overlay"
+        --serial-log "$RUN/$phase-serial.log" "$@")
+    printf '%q ' "${command[@]}" > "$RUN/$phase-command.txt"
+    printf '\n' >> "$RUN/$phase-command.txt"
+    if [[ -n "$RUNNER" ]]; then
+        "$RUNNER" --timeout-seconds "$((TIMEOUT * 4))" -- "${command[@]}" </dev/null > "$LOG" 2>&1 &
+    else
+        "${command[@]}" </dev/null > "$LOG" 2>&1 &
+    fi
+    PROCESS_PID=$!
+    HELPER_PID=$PROCESS_PID
+    if [[ -n "$RUNNER" ]]; then
+        wait_for 'owned helper child' find_helper
+    fi
+    printf 'runner=%s helper=%s\n' "$PROCESS_PID" "$HELPER_PID" >> "$RUN/pids.txt"
+}
+
+find_helper() {
+    local child
+    running || return 1
+    # Reuse the kernel observers: confined macOS cannot use pgrep's sysmond.
+    child=$(python3 -B - "$PROCESS_PID" "$HELPER" "$SCRIPT_DIR/../../tests/blackbox/harness" <<'PY'
+import os
+import sys
+
+sys.path.insert(0, sys.argv[3])
+from macos_process_argv import account_pids, process_argv
+from process_identity import _darwin_process_info
+
+parent = int(sys.argv[1])
+helper = os.fsencode(sys.argv[2])
+children = []
+for pid in account_pids(os.getuid()):
+    info = _darwin_process_info(pid)
+    if info is not None and info.pbi_ppid == parent and info.pbi_uid == os.getuid():
+        if helper in process_argv(pid):
+            children.append(pid)
+if len(children) != 1:
+    sys.exit(1)
+print(children[0])
+PY
+    ) || return 1
+    [[ "$child" =~ ^[0-9]+$ ]] || return 1
+    HELPER_PID=$child
+}
+
+saved() {
+    [[ -s "$1" && -s "$1.meta.json" && -s "$1.overlay" ]] &&
+        grep -Fq "Snapshot written to $1 (overlay cloned to $1.overlay)" "$LOG"
+}
+
+snapshot() {
+    # Recheck wrapper ownership immediately before signaling its helper.
+    [[ -z "$RUNNER" ]] || find_helper || fail 'owned helper child missing'
+    kill -USR1 "$HELPER_PID"
+    wait_for 'completed save, sidecar and paired overlay' saved "$1"
+}
+
+quiet_after() {
+    local tick
+    [[ -s "$RUN/status/quiet-ticks" ]] || return 1
+    read -r tick < "$RUN/status/quiet-ticks"
+    [[ "$tick" =~ ^[0-9]+$ ]] && (( tick > $1 ))
+}
+
+release_gate() {
+    [[ ! -e "$RUN/config/per-run-go" && ! -e "$RUN/status/per-run-started" ]] || fail 'per-run began before release'
+    cp "$RUN/status/queued.txt" "$RUN/$1-queued.txt"
+    cp "$RUN/status/quiet-ticks" "$RUN/$1-quiet-ticks"
+    touch "$RUN/config/per-run-go"
+    wait_for 'per-run initialization' test -s "$RUN/status/per-run-started"
+    wait_for 'daemon-fired canaries and guest queue cleanup' test -s "$RUN/status/probe.done"
+    cp "$RUN/status/jobs" "$RUN/$1-jobs.txt"
+    cp "$RUN/status/daemons" "$RUN/$1-daemons.txt"
+    stop_owned || fail 'owned cleanup failed'
+}
+
+SNAP="$RUN/capture.snap"
+start_helper capture "$RUN/overlay.ext4" --snapshot-on-signal "$SNAP"
+wait_for 'static initialization' test -s "$RUN/status/static-init-done"
+wait_for 'queued canaries with schedulers absent' test -s "$RUN/status/probe.ready"
+snapshot "$SNAP"
+# A new guest sample after save completion proves the resumed producer stays quiet.
+read -r before < "$RUN/status/quiet-ticks"
+wait_for 'post-save scheduler observation with gate absent' quiet_after "$before"
+shasum -a 256 "$SNAP.overlay" > "$RUN/paired-overlay.sha256"
+release_gate capture
+echo 'Capture completed; schedulers stayed quiet until gate release, then both jobs ran.'
+
+if [[ "$MODE" = full ]]; then
+    # Every restore receives a fresh copy. The paired overlay is reusable input.
+    cp "$SNAP.overlay" "$RUN/restore.overlay.ext4"
+    rm "$RUN/config/per-run-go" "$RUN/status/per-run-started" "$RUN/status/probe.done" "$RUN/status/jobs"
+    start_helper restore "$RUN/restore.overlay.ext4" --restore-from "$SNAP" --snapshot-on-signal "$RUN/liveness.snap"
+    read -r before < "$RUN/status/quiet-ticks"
+    wait_for 'restored guest sample' quiet_after "$before"
+    snapshot "$RUN/liveness.snap"
+    release_gate restore
+    cp "$SNAP.overlay" "$RUN/boundary.overlay.ext4"
+    command=("$HELPER" "${BASE_ARGS[@]}" --overlay "$RUN/boundary.overlay.ext4"
+        --memory 2048 --restore-from "$SNAP")
+    printf '%q ' "${command[@]}" > "$RUN/fingerprint-command.txt"
+    printf '\n' >> "$RUN/fingerprint-command.txt"
+    if [[ -n "$RUNNER" ]]; then
+        "$RUNNER" --timeout-seconds "$TIMEOUT" -- "${command[@]}" > "$RUN/fingerprint.log" 2>&1 &
+    else
+        "${command[@]}" > "$RUN/fingerprint.log" 2>&1 &
+    fi
+    PROCESS_PID=$!
+    HELPER_PID=
+    deadline=$((SECONDS + TIMEOUT))
+    while running; do
+        (( SECONDS < deadline )) || fail 'deadline waiting for fingerprint refusal'
+        sleep 0.1
+    done
+    rc=0
+    wait "$PROCESS_PID" || rc=$?
+    printf 'runner=%s exit=%s reaped=yes\n' "$PROCESS_PID" "$rc" >> "$RUN/cleanup.log"
+    PROCESS_PID=
+    [[ "$rc" = 75 ]] && grep -Fq 'snapshot/host hardware fingerprint mismatch (memoryMB=' "$RUN/fingerprint.log" || fail 'expected memory fingerprint refusal and exit 75'
+    echo 'Memory restore, second completed save and memory fingerprint refusal passed.'
 fi
-echo "  PASS: rejected with exit 75"
+shasum -a 256 -c "$RUN/paired-overlay.sha256" > "$RUN/paired-overlay-check.txt"
+shasum -a 256 -c "$RUN/inputs.sha256" > "$RUN/inputs-check.txt"

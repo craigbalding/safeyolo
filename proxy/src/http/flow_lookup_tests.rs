@@ -73,6 +73,53 @@ fn response_id(response: &[u8]) -> String {
     values[0].to_owned()
 }
 
+async fn read_audit_snapshot(directory: &Path) -> String {
+    let _lock = crate::host_platform::lock_host_state_async(&directory.join("audit.jsonl.lock"))
+        .await
+        .unwrap();
+    std::fs::read_to_string(directory.join("audit.jsonl")).unwrap()
+}
+
+#[tokio::test]
+async fn audit_snapshot_waits_for_a_complete_append() {
+    use std::io::Write;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("audit.jsonl");
+    let lock =
+        crate::host_platform::lock_host_state(&directory.path().join("audit.jsonl.lock")).unwrap();
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(b"{\"event\":\"security.flow_read_all_lookup\",\"details\":")
+        .unwrap();
+    let partial = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        serde_json::from_str::<Value>(&partial)
+            .unwrap_err()
+            .is_eof()
+    );
+
+    let snapshot = read_audit_snapshot(directory.path());
+    tokio::pin!(snapshot);
+    assert!(
+        timeout(Duration::from_millis(50), &mut snapshot)
+            .await
+            .is_err()
+    );
+    file.write_all(b"{\"lookup_request_id\":\"req-controlled\"}}\n")
+        .unwrap();
+    drop(file);
+    drop(lock);
+    let audit = timeout(LIMIT, snapshot).await.unwrap();
+    assert_eq!(
+        audit,
+        "{\"event\":\"security.flow_read_all_lookup\",\"details\":{\"lookup_request_id\":\"req-controlled\"}}\n"
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&audit).unwrap()["details"]["lookup_request_id"],
+        "req-controlled"
+    );
+}
+
 async fn api(
     directory: &Path,
     agent: &str,
@@ -537,7 +584,9 @@ async fn response_header_lookup_scopes_bodies_search_and_read_all_token() {
 
     // The privileged event is confirmed before the response and carries only
     // the trusted caller and IDs. Rotation takes effect without proxy restart.
-    let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+    // Other requests still emit asynchronously. Share the append lock so the
+    // snapshot cannot end inside a record; keep the producer live for rotation.
+    let audit = read_audit_snapshot(directory.path()).await;
     let lookups: Vec<Value> = audit
         .lines()
         .filter_map(|line| {

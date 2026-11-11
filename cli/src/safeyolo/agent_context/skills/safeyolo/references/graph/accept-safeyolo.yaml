@@ -256,7 +256,7 @@ nodes:
         - path: proxy/src/host_platform.rs
           sha256: 6c9471332d9538eeba539dd50aeead3e1bc3ace02a9d53c40d036f5c5cc372de
         - path: proxy/src/host_boot.rs
-          sha256: 52b02d5b4f0819e8b3b49a85fcff07364c5058128f8d8a9cf22c6c9d80d2c80a
+          sha256: 48bc68e13f1e653c1bc53aac903b4cadcad06d100781114cbb27b47e469996b5
         - path: guest/build-rootfs.sh
           sha256: 31ab9b5883222b0f43dfff80dfa7ac83ab4908b9b6ff8234d36abf6b0b1b8139
         - path: proxy/src/jobs.rs
@@ -270,7 +270,7 @@ nodes:
         - path: proxy/Cargo.toml
           sha256: ececd697e0291c896526f0ad7ab32097a7f599f4190c9f1d50af8129dbae94f0
         - path: proxy/Cargo.lock
-          sha256: d3b6636cafa6f5da3103fe0e73b40e0081bbdcf4c5ef1419aadaeaa0912df2fc
+          sha256: a934ad1faabc8097f06849945d066b4f709901a58620c4b88d5c43bf485b242d
         - path: proxy/src/lib.rs
           sha256: 5b665f2a67ed580103465023b547116eabc5ba8bc582b6b2ef277146532694d6
         - path: proxy/src/bin/safeyolo.rs
@@ -299,10 +299,13 @@ nodes:
     kind: evidence
     label: "Use safeyolo-vm on physical Apple Silicon for VZ isolation and snapshot acceptance"
     detail: |
-      Build the Swift helper from the trusted source on the approved physical
-      Apple Silicon host. The VZ blackbox lane covers the proxy, microVM,
+      Reuse a source-compatible signed Swift helper, or build it from the
+      trusted source on the approved Apple toolchain. The VZ blackbox lane
+      covers the proxy, microVM,
       guest-root, isolation, and lifecycle boundary. The snapshot smoke tool
-      separately exercises save, restore, and fingerprint mismatch behavior.
+      exercises capture with queued scheduler canaries and a closed static
+      gate. Its full mode also exercises memory restore and fingerprint refusal.
+      Capture alone does not establish the restore boundary.
       Hosted macOS cannot establish this boundary.
       Use a disposable agent to create an issue-specific lifecycle or snapshot
       script. For example, write guest state, save and restore the VM, then
@@ -317,7 +320,13 @@ nodes:
         - path: vm/Package.swift
           sha256: cacd73db22ee6e881da5cbbcdd9de7f8d56a920951b6feca6ac65d637bcbc47b
         - path: vm/test/snapshot-smoke.sh
-          sha256: d31fc5882ef185a66a86c634df38077eb1629df324bf03ae2e2068d5d9e7df6e
+          sha256: 21c41d0b8e4873fc95bfcdbcf594cd801be8a2242cd5ac2a146af86c27d5ec8b
+        - path: vm/test/snapshot-scheduling.sh
+          sha256: 52398b3a6d041208e0f5930bfee3c74f6ac7ceb69e28252c05d5c119e73c325c
+        - path: tests/blackbox/harness/macos_process_argv.py
+          sha256: 41f0a08a840d1058b009464197a85d84c6dd45fc70e3073b1c1f8f6b80923c24
+        - path: tests/blackbox/harness/process_identity.py
+          sha256: ed4232be71f5110c307e7a3e4a838d3ae977896cb6aac75b0ec71dba8faeb938
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: proxy/src/host_platform.rs
@@ -335,7 +344,7 @@ nodes:
         - path: proxy/Cargo.toml
           sha256: ececd697e0291c896526f0ad7ab32097a7f599f4190c9f1d50af8129dbae94f0
         - path: proxy/Cargo.lock
-          sha256: d3b6636cafa6f5da3103fe0e73b40e0081bbdcf4c5ef1419aadaeaa0912df2fc
+          sha256: a934ad1faabc8097f06849945d066b4f709901a58620c4b88d5c43bf485b242d
         - path: proxy/src/lib.rs
           sha256: 5b665f2a67ed580103465023b547116eabc5ba8bc582b6b2ef277146532694d6
         - path: proxy/src/bin/safeyolo.rs
@@ -346,14 +355,15 @@ nodes:
           sha256: 72e284a6b8cc9aae65870b97cdf9ab9f4c123dacebc78f3694bd2cb4203ff58a
         - path: tests/fixtures/job-observer-probe.c
           sha256: 0207c5417386d7022d0ffefeb9a6b4b9d162e5017a8684a5225c62533beb0e8b
-      setup: "Use the approved physical Apple Silicon host; make -C vm install; prepare a disposable BYOA agent for snapshot smoke. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance."
-      verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
+      setup: "Use the approved physical Apple Silicon host and a source-compatible signed helper. For snapshot smoke, select an extracted standard Darwin guest, current public staged guest assets and a new disk-backed run directory. Set SAFEYOLO_VZ_TEST_RUNNER to the maintained run-vz-test on Bristol; wrapped discovery uses Python 3.10+ and the two kernel observers listed in sources, at their checkout-relative paths. Full mode requires separate restore authority and a working VZ recipient. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance."
+      verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh vm/test/snapshot-scheduling.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
       run:
         full_vz: "./tests/blackbox/run-lane.sh vz --verbose"
-        snapshot_restore: "bash vm/test/snapshot-smoke.sh <disposable-agent>"
+        snapshot_capture: "bash vm/test/snapshot-smoke.sh capture-only <signed-helper> <standard-guest-dir> <staged-assets-dir> <new-run-dir>"
+        snapshot_restore: "bash vm/test/snapshot-smoke.sh full <signed-helper> <standard-guest-dir> <staged-assets-dir> <new-run-dir>"
         disposable_jobs: "python3 tests/blackbox/host/job_sandbox.py --cli <candidate-cli> --root <prepared-disposable-instance> --scratch <disk-backed-directory> --observer-probe <static-linux-arm64-probe>"
         credentialed_jobs: "python3 tests/blackbox/host/job_network.py --cli <candidate-cli> --proxy <candidate-proxy> --base-root <prepared-instance> --root <fresh-traversable-root> --scratch <empty-disk-backed-directory> --admin-port <authorized-port> --upstream-port <authorized-port>"
-      capture: [trusted base, safeyolo-vm version, physical host identity, VZ assertion, snapshot fingerprint result, exit status]
+      capture: [trusted base, helper and guest input identities, physical host identity, exact argv, completed save and paired overlay, queued canaries and gate observations, daemon and job results, snapshot fingerprint result when selected, owned cleanup, exit status]
 
   - id: ev.accept_coord_lane
     kind: evidence
@@ -625,7 +635,7 @@ nodes:
         - path: proxy/tests/native_operator_cli/watch.rs
           sha256: 60fb3e183f767b838535ebb31ff2b4d9d6a7591d47abe834e610deb4bcb5009d
         - path: proxy/tests/support/operator_pty.rs
-          sha256: f63c50dbfa3bc8d44806c84b838ea315b4d62c37a6c9f43af9e29a7d6a832523
+          sha256: fb706f9c85db414743e35a6a82c6045c34f66c35724cf9f2c34c421f84ff3d52
         - path: proxy/tests/native_operator_cli.rs
           sha256: b42c8f57ebc41a0ce22010afbb0914243058126df3a64c068604e120e4aeb6d1
         - path: proxy/tests/native_coord/federation.rs
@@ -659,7 +669,7 @@ nodes:
         - path: proxy/tests/native_coord/stage0.rs
           sha256: a288d8dd6bbdb84c38aa72ca1c27f6bbc860f5faf9b208e2f5d7d876c7d7ad62
         - path: proxy/src/coord_rooms.rs
-          sha256: 5762c873d0804738eab75078e19235a3da4f17bd3f24aaba12668d24d0ee5b8f
+          sha256: 845ba62439b0a930a99082b8dc1c356db67f7a3f87f4d3beb85f7497adb560de
         - path: proxy/tests/native_coord/inventory.rs
           sha256: 1de6227ecdc2bbf2062f0e912c0c4ae7d6e149e2ea61837d75705393891b7276
         - path: proxy/src/agent_api/coord/inventory.rs
@@ -788,7 +798,7 @@ nodes:
         - path: cli/tests/test_agent_command_supervisor.py
           sha256: 28d366827ecc041bac7f87f419e1728329beeb8ee93ed9f27d262f8f2bd2d9f2
         - path: tests/proxy_contracts/test_native_factory_cli.py
-          sha256: c27a9710f392a2cb15c5026f9f6fd2b7fe5ff586755af144d39db9911833eb4d
+          sha256: 2816c91d5acdc388983cd98db7657bf9a3c44da5769696a12efde30443e934ce
       setup: "Use the trusted base's locked Python test environment and warm native production artifacts. Set SAFEYOLO_GUEST_ARTIFACTS to the verified guest artifact directory. Source fixtures start no guest or model; the optional launch case requires a separately owned installed Ubuntu host."
       verify: "sha256sum cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py tests/proxy_contracts/test_native_factory_cli.py"
       run: "uv run pytest -q cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py tests/proxy_contracts/test_native_factory_cli.py"
@@ -901,7 +911,7 @@ nodes:
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: proxy/tests/native_host_cli.rs
-          sha256: d5a87f52938d6d8fe2f1544780401346c98a92a8cb4c0a9cf73dc7e11805db95
+          sha256: d81117fcfdc529c7d2aa3130b2f08ee570d219698d565d7fe50bd4c980b7497c
       setup: "Use the prepared native proxy/platform lane for system evidence. For an ownership probe, select the affected native_host_cli test with the trusted Cargo toolchain and warm target."
       verify: "sha256sum tests/blackbox/run-tests.sh tests/blackbox/host/uds_transport.py proxy/tests/native_host_cli.rs"
       run:

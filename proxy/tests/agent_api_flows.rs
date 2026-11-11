@@ -225,6 +225,10 @@ async fn actual_source_dispatch_and_body_projection() {
                     "\"/explain\", \"/approvals/{request_id}\", \"/approvals\", \"/approvals/{approval_id}/resolve (POST)\", \"/api/coord/request-access (POST)\", \"/api/coord/request-collaboration (POST)\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
                 );
                 let expected = expected.replace(
+                    "\"/agents\", \"/circuits\"",
+                    "\"/agents\", \"/support/grants\", \"/support/operations (POST)\", \"/support/operations/{operation_id}\", \"/circuits\"",
+                );
+                let expected = expected.replace(
                     "\"/gateway/request-access\",",
                     "\"/gateway/request-access\", \"/gateway/challenges/{challenge_id}\", \"/gateway/challenges/{challenge_id}/escalate (POST)\",",
                 );

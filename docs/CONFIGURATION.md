@@ -512,11 +512,11 @@ To disable the guest mount, run on the SafeYolo host:
 safeyolo agent stop dropbox-trial
 ```
 
-Wait for a successful stop. Remove only the entry whose destination is
-`/dropbox` from this agent's `mounts` array in the selected `policy.toml`.
-Preserve its other entries and `:ro` suffixes. Then start and inspect the agent:
+Wait for a successful stop. Remove the saved mount whose guest destination is
+`/dropbox`, then start and inspect the agent. Other saved mounts remain:
 
 ```sh
+safeyolo agent mounts remove dropbox-trial /dropbox
 safeyolo agent start dropbox-trial --sandbox-only
 safeyolo agent status dropbox-trial
 ```
@@ -525,21 +525,84 @@ The running shares must no longer include the removed source. The host output
 files must still be readable at their original path. A directory left inside
 the guest is not evidence of a remaining host mount.
 
-For removal of a disposable agent, stop it successfully, then run the existing
-cleanup command before removing its configuration:
+## Retire an agent and retain its data
+
+On the host, use the account that owns the selected instance. The examples use
+the default instance and the disposable agent `dropbox-trial`. For another
+instance, put `--root ROOT` before `agent`. Preview retirement first:
 
 ```sh
-safeyolo agent cleanup dropbox-trial
+safeyolo agent retire dropbox-trial
 ```
 
-Remove only that agent's entry from the selected `policy.toml`. Agent
-creation can write an inline entry such as `agents = { dropbox-trial = { ... } }`;
-remove that entry while preserving the other agents. If the file uses
-`[agents.dropbox-trial]` tables instead, remove that table and its child tables.
-Use `safeyolo status` to confirm that the agent is no longer configured.
-Cleanup clears stopped runtime records and retains the persistent home. Keep
-the separate output directory and any retained copies. Deleting those files
-is a separate explicit operator action.
+The structured preview identifies the root, agent name and durable identity.
+It describes stopping the sandbox and coding harness, clearing stopped runtime
+records, and removing only this agent's saved definition. It reports the
+retained home at `ROOT/agents/NAME/home`, workspace and saved mount sources.
+It also reports local support grants, approval delegations, approved factory
+roles, and existing Coord membership and work records when those owners can be
+read. These are observations at preview time, not an exhaustive list of remote
+references or a promise that retained grants stay active. Unavailable facts are
+`unknown`. Retirement does not create or unlock credential storage to inventory
+bindings; inspect those through the existing credentials owner when needed.
+
+If those effects match the intended operation, apply retirement explicitly:
+
+```sh
+safeyolo agent retire dropbox-trial --yes
+safeyolo status
+```
+
+The command retains the lifecycle lock through final saved deletion. It rereads
+and validates current policy before removal. A named local approval delegation
+can prevent removal of its reviewer or beneficiary. Resolve that dependency
+through `safeyolo configure approvals` before retrying. Retirement does not
+remove grants, credential bindings, factory snapshots, Coord work or history as
+hidden cleanup. Support grants may remain saved but inactive after identity
+removal. Reconcile retained work through Coord and any other references through
+their existing owners.
+
+A failed or unverified stop retains the saved definition. If stopping or
+cleanup succeeds but saved removal fails, the structured result names the
+completed steps, failed stage, observed runtime state, and current saved state.
+Resolve that failure at the same root before retrying. If publication completed
+but its final sync failed, inspect the reported saved state and policy-file
+durability before another write. An uncertain read stays unknown.
+
+The agent home, workspace, mount-source data and non-runtime files remain.
+Deleting data is a separate explicit operator decision. Direct TOML editing and
+`agent stop` / `agent cleanup` remain available for expert use; preserve other
+agent entries and settings when editing the policy manually.
+
+## Change saved mounts for the next start
+
+On the owning host account, agent `work` must already be configured. The host
+source directories in these examples must exist. Use `--root ROOT` before
+`agent` to select another instance:
+
+```sh
+safeyolo agent mounts add work /host/reference:/reference:ro
+safeyolo agent mounts update work /host/replacement:/reference:ro
+safeyolo agent mounts remove work /reference
+```
+
+Add and update set the desired saved mount at that normalized guest destination.
+They replace an existing entry instead of appending duplicates. Remove selects
+the guest destination alone, so an old missing or newly protected host source
+does not prevent its removal. Repeating the same desired change is idempotent.
+Other mounts, agents and settings remain. Existing workspace, protected-path,
+host-script and complete-policy validation still apply. Native writers serialize
+through the existing locks; this does not promise conflict detection for an
+arbitrary external editor.
+
+Results identify the selected root, agent identity and destination, whether the
+saved configuration changed, current-run receipts, and the next-start mounts.
+A saved edit leaves the current sandbox unchanged. For a running agent, choose
+an explicit stop/start to apply the saved mounts. For a stopped agent, its next
+explicit start applies them. No command restarts the agent automatically.
+`agent configure work --mount HOST:GUEST[:ro]` uses the same destination-based
+saved addition. Direct editing of the selected policy's `mounts` array remains
+available.
 
 ## Change an extra directory while an agent runs
 
@@ -570,10 +633,10 @@ machine or sandbox, coding process and session. They do not change the saved
 
 After a later stop/start, saved mounts apply again. A live-added mount that
 was not saved disappears. A live-removed startup mount returns. To make an
-addition persistent, also use the existing `agent configure --mount` command.
-To make removal persistent, remove that destination's entry from the agent's
-`mounts` array in the selected `policy.toml`. Preserve other entries and their
-`:ro` suffixes. Ordinary `configure --mount` still changes only the next start.
+addition persistent, use `agent mounts add NAME HOST:GUEST[:ro]`. To make
+removal persistent, use `agent mounts remove NAME GUEST`. A live removal result
+also identifies whether that saved mount returns on restart. Saved and live
+actions are separate; neither implies an atomic change across both owners.
 
 Unmount first removes the ordinary guest mount, then removes that mapping's
 backend export and owned helper, if present. Host files and unrelated shares
@@ -634,8 +697,9 @@ Writable extra mounts of a protected directory or descendant are refused
 before configuration is saved, before guest startup and at live addition.
 The error names the resolved source and protection and gives an explicit `:ro` remedy. Unrelated
 sibling directories keep their requested access. If an agent already has a
-saved writable mount of a newly protected directory, add `:ro` to that entry
-in its `mounts` array in `policy.toml`, or remove the entry, before starting it.
+saved writable mount of a newly protected directory, use
+`agent mounts update NAME HOST:GUEST:ro` or `agent mounts remove NAME GUEST`
+before starting it. Direct TOML editing remains available.
 Rejected mount configuration is not saved.
 
 Protection affects extra mounts. It does not change workspace sharing or

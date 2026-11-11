@@ -923,8 +923,10 @@ its `--version` source/profile identity with any diagnostic capture.
 ## Optional: inspect a factory
 
 A factory runs agents with approved roles and declared handoffs. It is not
-the human operator. To set one up, follow [factory check, approve, prepare,
-login and run](factories.md#fresh-setup-check-approve-and-run).
+the human operator. To set one up, follow [guided factory setup](factories.md#guided-setup).
+It retains the selected instance, contract and role workspaces through approval,
+authentication and supervised start. The [explicit commands and recovery
+reference](factories.md#fresh-setup-check-approve-and-run) remain available.
 
 After setup, use its configured factory name with
 `safeyolo inspect --factory NAME`. For the documented `backlog` example,
