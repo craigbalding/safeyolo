@@ -270,7 +270,7 @@ nodes:
         - path: proxy/Cargo.toml
           sha256: ececd697e0291c896526f0ad7ab32097a7f599f4190c9f1d50af8129dbae94f0
         - path: proxy/Cargo.lock
-          sha256: d3b6636cafa6f5da3103fe0e73b40e0081bbdcf4c5ef1419aadaeaa0912df2fc
+          sha256: a934ad1faabc8097f06849945d066b4f709901a58620c4b88d5c43bf485b242d
         - path: proxy/src/lib.rs
           sha256: 5b665f2a67ed580103465023b547116eabc5ba8bc582b6b2ef277146532694d6
         - path: proxy/src/bin/safeyolo.rs
@@ -344,7 +344,7 @@ nodes:
         - path: proxy/Cargo.toml
           sha256: ececd697e0291c896526f0ad7ab32097a7f599f4190c9f1d50af8129dbae94f0
         - path: proxy/Cargo.lock
-          sha256: d3b6636cafa6f5da3103fe0e73b40e0081bbdcf4c5ef1419aadaeaa0912df2fc
+          sha256: a934ad1faabc8097f06849945d066b4f709901a58620c4b88d5c43bf485b242d
         - path: proxy/src/lib.rs
           sha256: 5b665f2a67ed580103465023b547116eabc5ba8bc582b6b2ef277146532694d6
         - path: proxy/src/bin/safeyolo.rs
