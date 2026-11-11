@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from scripts import diagnose_ci_apt
+
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "proxy-rust.yml"
 
 
@@ -1032,3 +1034,98 @@ def test_general_python_workflow_uses_quick_pr_and_full_overnight_selections():
         assert steps[quick_name]["if"] == "github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'"
         assert "schedule" in job["strategy"]["matrix"][matrix_key]
         assert "install.sh" not in steps[quick_name]["run"]
+
+
+@pytest.mark.parametrize("failure,diagnostic_status", [
+    ("none", 0), ("none", 23), ("none", 124),
+    ("update", 0), ("install", 0), ("install", 23), ("install", 124),
+])
+def test_cli_apt_failure_keeps_original_error_and_status(tmp_path, failure, diagnostic_status):
+    workflow = yaml.safe_load(WORKFLOW.with_name("ci.yml").read_text())
+    step = next(step for step in workflow["jobs"]["test-cli"]["steps"]
+                if step.get("name") == "Install CLI test system dependencies")
+    commands = tmp_path / "bin"
+    commands.mkdir()
+    sudo = commands / "sudo"
+    sudo.write_text(
+        '#!/bin/bash\nprintf "%s\\n" "$*" >> "$APT_CALLS"\n'
+        'if [[ "$2" == "$FAILURE" ]]; then echo "original apt error" >&2; exit 100; fi\n'
+    )
+    diagnostic = commands / "python3"
+    diagnostic.write_text(
+        '#!/bin/bash\nprintf "diagnostic: %s\\n" "$*"\nexit "$DIAGNOSTIC_STATUS"\n'
+    )
+    sudo.chmod(0o755)
+    diagnostic.chmod(0o755)
+    calls = tmp_path / "apt-calls"
+    # Actions' implicit Linux shell is bash -e, without implicit pipefail.
+    result = subprocess.run(
+        ["bash", "-e", "-c", step["run"] + '\nprintf "following step reached\\n"'],
+        cwd=tmp_path, capture_output=True, text=True,
+        env=dict(os.environ, BASH_ENV=os.devnull, PATH=f"{commands}:{os.environ['PATH']}",
+                 APT_CALLS=str(calls), FAILURE=failure, DIAGNOSTIC_STATUS=str(diagnostic_status)),
+        timeout=10,
+    )
+    expected_calls = ["apt-get update -qq"]
+    if failure != "update":
+        expected_calls.append("apt-get install -y -qq --no-install-recommends libegl1 socat tmux")
+    assert calls.read_text().splitlines() == expected_calls
+    assert result.returncode == (0 if failure == "none" else 100)
+    assert ("original apt error" in result.stderr) == (failure != "none")
+    assert "diagnostic: scripts/diagnose_ci_apt.py" in result.stdout
+    assert ("following step reached" in result.stdout) == (failure == "none")
+    assert ("apt diagnostics failed or timed out" in result.stdout) == (diagnostic_status != 0)
+
+
+def test_apt_diagnostic_config_redacts_credentials_and_probes_only_configured_urls(tmp_path, capsys):
+    source = tmp_path / "ubuntu.sources"
+    source.write_text(
+        "# retired mirror: https://retired.example/ubuntu\n"
+        "Types: deb\nURIs: mirror+file:/etc/apt/apt-mirrors.txt\n"
+        "Suites: resolute resolute-security\nSigned-By: /usr/share/keyrings/ubuntu.gpg\n"
+        "URIs: https://user:private-password@mirror.example/ubuntu?token=private-token#fragment\n"
+    )
+    assert diagnose_ci_apt.report_config(source) == ["https://mirror.example/ubuntu"]
+    output = capsys.readouterr().out
+    assert "Suites: resolute resolute-security" in output
+    assert "mirror+file:/etc/apt/apt-mirrors.txt" in output
+    assert "private-password" not in output
+    assert "private-token" not in output
+    assert "user:" not in output
+    assert "fragment" not in output
+    assert "https://retired.example/ubuntu" in output
+
+
+def test_apt_diagnostic_missing_and_large_configs_remain_bounded(tmp_path, capsys):
+    assert diagnose_ci_apt.report_config(tmp_path / "missing.sources") == []
+    assert "unavailable:" in capsys.readouterr().out
+    source = tmp_path / "apt-mirrors.txt"
+    source.write_text("https://configured.example/ubuntu\n" + "x" * 20_000)
+    assert diagnose_ci_apt.report_config(source) == ["https://configured.example/ubuntu"]
+    output = capsys.readouterr().out
+    assert "truncated at 8192 characters" in output
+    assert len(output) < 9000
+
+
+def test_apt_diagnostic_reports_lookup_timeout_and_request_failure(monkeypatch, capsys):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs["timeout"]))
+        if command[0] == "getent":
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return subprocess.CompletedProcess(command, 6, "http_code=000\n", "DNS failure\n" + "x" * 5000)
+
+    monkeypatch.setattr(diagnose_ci_apt.subprocess, "run", run)
+    monkeypatch.setattr(diagnose_ci_apt, "report_config", lambda path: ["https://mirror.example/ubuntu"])
+    diagnose_ci_apt.main()
+    assert len(calls) == 2  # Repeated source URIs produce one probe per configured mirror.
+    assert calls[0] == (["getent", "ahosts", "mirror.example"], 5)
+    assert calls[1][1] == 6
+    assert calls[1][0][-1] == "https://mirror.example/ubuntu"
+    assert "--head" in calls[1][0] and "--max-time" in calls[1][0]
+    assert "--location" not in calls[1][0]
+    output = capsys.readouterr().out
+    assert "timed out after 5s" in output
+    assert "curl: exit 6" in output and "DNS failure" in output
+    assert len(output) < 2500
