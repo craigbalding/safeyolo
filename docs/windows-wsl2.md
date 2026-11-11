@@ -26,10 +26,11 @@ ssh -tt windows-host 'wsl.exe -d Ubuntu-24.04 -u linux-user --exec /bin/bash'
 The command selects the distribution and Linux user, then opens WSL Bash.
 Run the remaining commands in that Bash session. Keep Linux arguments there
 instead of embedding shell expressions or credentials in a Windows command.
-The qualification used the same Windows OpenSSH, PowerShell and WSL Bash path
-with a fixed trusted Linux script. Arbitrary Windows quoting and local Windows
-Terminal entry remain unqualified. No Windows launcher is required by the
-observed path, so this workflow adds none.
+The qualification used Windows OpenSSH and PowerShell to invoke fixed Linux
+Bash scripts and a Python observer in WSL. The observer launched the coding
+client through `agent start` and its staged Bash command.
+Arbitrary Windows quoting and local Windows Terminal entry remain unqualified.
+No Windows launcher is required by the observed path, so this workflow adds none.
 
 ## Prepare the client in WSL
 
@@ -79,15 +80,18 @@ Complete the selected login workflow before submitting model work.
 This uses the complete Linux client
 package; it does not require a Windows Codex installation or Node.js.
 Arguments after `--` belong to this client launch. Bash quoting preserves
-space-containing and empty arguments.
+space-containing and empty arguments. To supply an initial task, pass the task
+as one quoted argument after `--no-alt-screen`.
 
 ```sh
 "$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent start work --foreground -- --no-alt-screen
 ```
 
 The foreground client uses the Windows SSH terminal through WSL. Exit through
-the client's normal controls when finished. After an interrupt, inspect the
-actual client and runtime state before restarting or resubmitting a task.
+the client's normal controls when finished. Codex handled Ctrl-D and Ctrl-C
+with command exit 0 in the qualified runs. An interrupt does not necessarily
+produce exit 130. After an interrupt, inspect the actual client and runtime
+state before restarting or resubmitting a task.
 
 From the same WSL account, use the selected instance to read the result:
 
@@ -121,7 +125,8 @@ Windows terminal programs.
 | --- | --- |
 | Bash setup and consent | 27 focused setup controls and four consent-refusal cases passed inside WSL. Native Codex and Claude setup, reapplication, staged Linux paths and refusal of an agent-writable host script passed. Setup copied no login. |
 | Real terminal delivery | A deterministic guest command received typed input and replied through Windows OpenSSH with a PTY. Space-containing, empty, quoted, literal shell-syntax and Unicode arguments arrived intact. The child exited 7. A separate Ctrl-C reached its interrupt marker and child exit 130. The command and runtime stopped. |
-| Real coding client | Pending: a complete native Codex package is prepared, but a model task, normal client exit, client interruption and final cleanup have not yet been established. The deterministic terminal command does not prove them. |
+| Real coding client | Codex 0.167.0 ran through Windows OpenSSH with a PTY, PowerShell, a WSL Python observer and the staged Bash command. All three standard streams were terminals. One initial task copied an ext4 workspace file; the host independently verified all 38 bytes. Ctrl-D ended that launch with native exit 0. A separate launch with no model task received Ctrl-C and also exited 0. Neither launch reached its timeout. |
+| Runtime stop | The coding commands exited before their sandboxes stopped. The final read found all three fixture agents stopped, no owned live processes and no UNIX listeners. The cleanup helper returned 1 for retained `bbpeer` process ID (PID) and socket paths; those paths did not establish a live process or listener. The helper's nonzero result remains part of the qualification evidence. |
 | Windows-mounted workspace | The Windows profile mount used the Windows drive filesystem (DrvFS) through 9p with UID/GID 0 and no metadata option. Creating a host marker succeeded; changing its mode to `0600` failed with `EPERM` (operation not permitted). The attempt stopped before configuring or starting a guest with that workspace. Guest read/write, case behavior and symlink behavior remain unqualified. |
 
 Use the Linux filesystem for the exercised workflow. The Windows mount result
@@ -134,12 +139,12 @@ The controller source was
 `6db6bd4b3e36c67ea732e7986833c383152605bb`; the installed production package was
 `bf3a7b2fc880f0141f50e42be968e7a13b1623e8`, with prepared guest inputs from
 `27ea8aa6a700b473e35b040f35f89a08b076475b`.
-These identities do not establish current Rustix-generation package equivalence.
+Later production packages remain unqualified by this run.
 The ordinary full package verifier passed preparation. After an intermittent
 `sha256sum` failure, the terminal run selected the unchanged verifier's
 maintained `shasum` support only for its child process. An incorrect digest was
 rejected; complete package and runtime verification passed. The `sha256sum` failure's
 cause remains unknown. No checksum requirement or package bytes were changed.
 
-The four criteria in [#1416](https://github.com/craigbalding/safeyolo/issues/1416)
-still require independent assessment on the complete candidate.
+See [#1416](https://github.com/craigbalding/safeyolo/issues/1416) for independent
+assessment and retained qualification evidence.
