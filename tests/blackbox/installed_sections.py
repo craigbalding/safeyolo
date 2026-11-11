@@ -1,8 +1,8 @@
 """Prepare one installed product and run sections with separate writable state.
 
 Use a disposable host from a clean checkout. systrap runs isolation, workloads,
-access, lifecycle and host continuity. KVM runs isolation, guest ingress and
-workloads. Physical Apple Silicon VZ runs isolation, access, lifecycle and
+access, lifecycle and host continuity, with optional two-agent ingress.
+KVM runs isolation, guest ingress and workloads. Physical Apple Silicon VZ runs isolation, access, lifecycle and
 host continuity. Each section retains its own report and logs. No hosted
 proxy or host-continuity result is an isolation result.
 """
@@ -27,7 +27,7 @@ SECTIONS = {
     "kvm": ("isolation", "ingress", "workloads"),
     "vz": ("isolation", "access", "lifecycle", "continuity"),
 }
-OPTIONAL_SECTIONS = {"systrap": ("claude",), "kvm": (), "vz": ()}
+OPTIONAL_SECTIONS = {"systrap": ("claude", "ingress"), "kvm": (), "vz": ()}
 # run-tests.sh reserves this result for failed cleanup when invoked by this
 # loop. Its ordinary public infrastructure/cleanup exit remains 2.
 INNER_CLEANUP_FAILURE_EXIT = 3
