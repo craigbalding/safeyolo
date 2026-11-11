@@ -14,6 +14,10 @@ installation alternatives, earlier bundles, host preparation, builds and recover
 The [tested scope](#tested-onboarding-scope) separates installed proof from
 current-source capabilities and remaining platform work.
 
+For host setup and coding-client terminals in an already prepared Windows
+Subsystem for Linux 2 (WSL2) distribution, see the
+[WSL workflow and qualification limits](windows-wsl2.md).
+
 On macOS, select a repository or worktree as the workspace, such as
 `safeyolo agent launch ~/proj/my-repo`. A broad parent such as `~/proj` gives
 the agent write access to unrelated projects. Traversing that larger VirtioFS

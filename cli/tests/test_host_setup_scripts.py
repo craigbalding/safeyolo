@@ -4,8 +4,10 @@ import hashlib
 import io
 import json
 import os
+import pty
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -13,6 +15,7 @@ import threading
 import time
 import tomllib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib import import_module
 from pathlib import Path
 
 import pytest
@@ -3544,6 +3547,55 @@ def test_native_clients_install_and_reenter_without_node(tmp_path, harness, entr
     if harness == "codex":
         # The selected client owns the same agent-local configuration directory.
         assert Path(env["TEST_CODEX_HOME_LOG"]).read_text() == str(home / ".codex")
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_staged_native_client_preserves_terminal_arguments_and_exit(tmp_path, harness, interrupt):
+    """Exercise the staged Bash entrypoint with a terminal-reading client fixture."""
+    _, command, env = _stage_native_client(tmp_path, harness)
+    subprocess.run([str(command), "--probe"], env=env, capture_output=True, check=True)
+    binary = Path(env["TEST_NATIVE_ROOT"]) / ("bin/codex" if harness == "codex" else "claude")
+    version = "codex-cli 9.9.9" if harness == "codex" else "9.9.9 (Claude Code)"
+    binary.write_text(f'''#!/bin/bash
+if [[ ${{1:-}} == --version ]]; then printf '%s\\n' '{version}'; exit 0; fi
+printf '%s\\0' "$@" > "$TEST_EXEC_LOG"
+[[ -t 0 && -t 1 && -t 2 ]] || exit 91
+printf 'terminal-ready\\n'
+IFS= read -r input
+printf 'received:%s\\n' "$input"
+exit 7
+''')
+    arguments = ["two words", "", 'quote"', "$(literal)", "café"]
+    terminal = import_module("tests.nested-linux.launcher_acceptance")
+    master, slave = pty.openpty()
+    process = subprocess.Popen([str(command), *arguments], env=env, stdin=slave,
+                               stdout=slave, stderr=slave, start_new_session=True)
+    os.close(slave)
+    screen = bytearray()
+    try:
+        deadline = time.monotonic() + 5
+        while b"terminal-ready" not in screen:
+            assert process.poll() is None, screen
+            assert time.monotonic() < deadline, screen
+            terminal.read_terminal(master, screen)
+        actual = Path(env["TEST_EXEC_LOG"]).read_bytes().split(b"\0")[:-1]
+        assert actual[-len(arguments):] == [value.encode() for value in arguments]
+        if interrupt:
+            os.killpg(process.pid, signal.SIGINT)
+        else:
+            os.write(master, b"interactive input\n")
+        status = terminal.wait_terminal_exit(process, master, screen, timeout=5)
+        if interrupt:
+            assert status in (-signal.SIGINT, 130), screen
+        else:
+            assert status == 7, screen
+            assert b"received:interactive input" in screen
+    finally:
+        os.close(master)
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGHUP)
+        process.wait(timeout=5)
 
 
 @pytest.mark.parametrize(("system", "machine", "target"), [
