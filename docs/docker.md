@@ -17,8 +17,11 @@ interface (API) 1.45 and classic builds. API request shapes derive from Moby
 26.1.5 with the captured current-client defaults described below. That source
 version does not establish external Engine 26.1.x qualification. The nested
 runtime has separate Docker 26.1.5 and Compose 2.26.1 evidence in
-[nested Docker](nested-docker.md). Independent transport and internal management
-acceptance remains tracked in [#1437](https://github.com/craigbalding/safeyolo/issues/1437).
+[nested Docker](nested-docker.md). The
+[nested provider Compose result](../contrib/docker/proof.md#nested-provider-compose-lifecycle)
+records the gateway lifecycle and its continued recovery and teardown.
+Independent transport and internal management acceptance remains tracked in
+[#1437](https://github.com/craigbalding/safeyolo/issues/1437).
 
 The [independent operator walkthrough](../contrib/docker/proof.md#independent-operator-walkthrough)
 passed public onboarding, coadministration and the seeded host-consumer
