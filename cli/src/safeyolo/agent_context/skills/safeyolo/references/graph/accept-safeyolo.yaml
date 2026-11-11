@@ -283,6 +283,8 @@ nodes:
           sha256: 9053d64b7217fefc049b9a266c2187933bb0e8acd7d2ae741987836a45400c55
         - path: tests/blackbox/installed_ingress_pair.py
           sha256: ac820e1fa31b67eda5c9ceb1bf49adf50a9b68fe57b6d7b4ab733b006a7196c9
+        - path: tests/blackbox/installed_storage.py
+          sha256: 4ecae0b89a4d561c33d9af159e4212b6984ba44b318f5a86c311f70d12137c14
         - path: tests/blackbox/isolation/installed_ingress.py
           sha256: 501b133f084764fae135e214ceebce8a939f298715b623aa11c3cdd7b3d31dbe
         - path: tests/blackbox/retained_inputs.py
@@ -296,6 +298,7 @@ nodes:
         gvisor_systrap: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh systrap --verbose"
         gvisor_kvm: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh kvm --verbose"
         disposable_jobs: "python3 tests/blackbox/host/job_sandbox.py --cli <candidate-cli> --root <prepared-disposable-instance> --scratch <disk-backed-directory>"
+        linux_storage: ".venv/bin/python tests/blackbox/installed_storage.py --prepared-config <verified-installed-root> --host-settings <saved-linux-settings.toml> --archive <retained-published-guest.tar.zst> --archive-sha256 <verified-archive-sha256> --index sha256:<published-index-sha256> --install-commit <installed-source-sha> --output <new-disk-backed-directory>"
         credentialed_jobs: "python3 tests/blackbox/host/job_network.py --cli <candidate-cli> --proxy <candidate-proxy> --base-root <prepared-instance> --root <fresh-traversable-root> --scratch <empty-disk-backed-directory> --admin-port <authorized-port> --upstream-port <authorized-port>"
       capture: [trusted base, runsc version, actual platform metadata, uid map, guest-root boundary, lifecycle result, runsc logs, exit status]
 
