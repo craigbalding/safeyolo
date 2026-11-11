@@ -45,33 +45,44 @@ def persistent_files(root: Path, workspace: Path, marker: str) -> dict[str, Path
 
 
 def guest_script(marker: str, *, create: bool, guest_root: bool) -> str:
-    """Use guest stdlib only; a restart must lose the root overlay marker."""
-    return f'''
-import json, os
-from pathlib import Path
-marker = {marker!r}
-create, guest_root = {create!r}, {guest_root!r}
-assert os.getuid() == (0 if guest_root else 1000)
-overlay = Path('/etc') / marker
-assert not overlay.exists(), 'disposable root overlay marker survived'
-rows = {{}}
-for mount in ('/home/agent', '/workspace'):
-    for user in (('root' if guest_root else 'agent',) if create else ('agent', 'root')):
-        path = Path(mount) / (marker + '-' + user)
-        if create:
-            path.write_text(marker)
-            path.chmod(0o644)
-        assert path.read_text() == marker
-        metadata = path.stat()
-        assert metadata.st_uid == (0 if user == 'root' else 1000)
-        assert metadata.st_gid == (0 if user == 'root' else 1000)
-        rows[str(path)] = {{'uid': metadata.st_uid, 'gid': metadata.st_gid,
-                           'mode': metadata.st_mode & 0o777}}
-if create and guest_root:
-    overlay.write_text(marker)
-print('STORAGE_OBSERVATION=' + json.dumps({{'uid': os.getuid(), 'files': rows,
-    'overlay_present': overlay.exists()}}))
+    """Use the published guest's shell tools; require a fresh root overlay."""
+    code = f'''set -eu
+marker={shlex.quote(marker)}
+create={int(create)}
+agent_uid=1000
+agent_gid=1000
+expected_uid={0 if guest_root else 1000}
+uid=$(id -u)
+[ "$uid" -eq "$expected_uid" ]
+overlay=/etc/$marker
+[ ! -e "$overlay" ] || {{ echo 'disposable root overlay marker survived' >&2; exit 1; }}
+printf 'STORAGE_OBSERVATION={{"uid":%s,"files":{{' "$uid"
+comma=
+check_file() {{
+    file=$1 expected_uid=$2 expected_gid=$3 json_path=$4
+    if [ "$create" -eq 1 ]; then
+        printf '%s' "$marker" > "$file"
+        chmod 0644 "$file"
+    fi
+    [ "$(cat "$file")" = "$marker" ]
+    file_uid=$(stat -c %u "$file")
+    file_gid=$(stat -c %g "$file")
+    [ "$file_uid" -eq "$expected_uid" ]
+    [ "$file_gid" -eq "$expected_gid" ]
+    mode=$((0$(stat -c %a "$file")))
+    printf '%s%s:{{"uid":%s,"gid":%s,"mode":%s}}' "$comma" "$json_path" "$file_uid" "$file_gid" "$mode"
+    comma=,
+}}
 '''
+    users = ("root" if guest_root else "agent",) if create else ("agent", "root")
+    for mount in ("/home/agent", "/workspace"):
+        for user in users:
+            path = mount + "/" + marker + "-" + user
+            uid, gid = ("0", "0") if user == "root" else ('"$agent_uid"', '"$agent_gid"')
+            code += "check_file " + " ".join((shlex.quote(path), uid, gid, shlex.quote(json.dumps(path)))) + "\n"
+    if create and guest_root:
+        code += 'printf "%s" "$marker" > "$overlay"\n'
+    return code + "printf '},\"overlay_present\":%s}\\n' " + ("true" if create and guest_root else "false") + "\n"
 
 
 def observation(output: str) -> dict:
@@ -217,7 +228,7 @@ def qualify(args: argparse.Namespace) -> None:
             for guest_root in (False, True):
                 code = guest_script(marker, create=phase == "initial", guest_root=guest_root)
                 result = run(phase + ("-root" if guest_root else "-agent"), guest_command_args(
-                    str(cli), "bbtest", shlex.join(["python3", "-c", code]), guest_root=guest_root, env=env))
+                    str(cli), "bbtest", shlex.join(["/bin/sh", "-c", code]), guest_root=guest_root, env=env))
                 report[phase + ("-root" if guest_root else "-agent")] = observation(result.stdout)
             current = {name: info(path) for name, path in files.items()}
             report[phase + "-host-files"] = current

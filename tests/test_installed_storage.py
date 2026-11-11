@@ -6,7 +6,6 @@ import json
 import os
 import shlex
 import subprocess
-import sys
 
 import pytest
 
@@ -24,12 +23,11 @@ def test_storage_guest_script_requires_persistence_and_disposable_overlay(tmp_pa
         for original, replacement in (("/home/agent", directories["home"]),
                                        ("/workspace", directories["workspace"]), ("/etc", directories["etc"])):
             code = code.replace(original, str(replacement))
-        # The shipped guest uses UID/GID1000. Exercise the same file checks
-        # with the source-control account's actual IDs outside a guest.
-        code = code.replace("metadata.st_gid == (0 if user == 'root' else 1000)",
-                            f"metadata.st_gid == (0 if user == 'root' else {os.getgid()})")
-        code = code.replace("else 1000)", f"else {os.getuid()})")
-        command = (["sudo", "-n"] if guest_root else []) + [sys.executable, "-c", code]
+        # Exercise the real shell workload with this control account's IDs.
+        code = code.replace("agent_uid=1000", f"agent_uid={os.getuid()}")
+        code = code.replace("agent_gid=1000", f"agent_gid={os.getgid()}")
+        code = code.replace("expected_uid=1000", f"expected_uid={os.getuid()}")
+        command = (["sudo", "-n"] if guest_root else []) + ["/bin/sh", "-c", code]
         return subprocess.run(command, capture_output=True, text=True, timeout=10)
 
     for guest_root in (False, True):

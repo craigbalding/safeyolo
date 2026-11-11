@@ -284,7 +284,7 @@ nodes:
         - path: tests/blackbox/installed_ingress_pair.py
           sha256: ac820e1fa31b67eda5c9ceb1bf49adf50a9b68fe57b6d7b4ab733b006a7196c9
         - path: tests/blackbox/installed_storage.py
-          sha256: 01ca04b07120d881e7f15192a889b1d3a415e0a63e293ad88141681b29cdfb3f
+          sha256: 3379b6140df6f4e425bfc309a7483a8364373332d049f005cc1d4a050176de41
         - path: tests/blackbox/isolation/installed_ingress.py
           sha256: 501b133f084764fae135e214ceebce8a939f298715b623aa11c3cdd7b3d31dbe
         - path: tests/blackbox/retained_inputs.py
