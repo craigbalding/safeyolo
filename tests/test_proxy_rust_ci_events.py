@@ -1107,6 +1107,24 @@ def test_apt_diagnostic_missing_and_large_configs_remain_bounded(tmp_path, capsy
     assert len(output) < 9000
 
 
+@pytest.mark.parametrize("preceding_line", [False, True])
+def test_apt_diagnostic_drops_truncated_credentialed_source_line(tmp_path, capsys, preceding_line):
+    source = tmp_path / "ubuntu.list"
+    userinfo = "https://ci-user:synthetic-password"
+    complete = "deb https://retained.example/ubuntu resolute main\n" if preceding_line else ""
+    padding = "#" + "x" * (8192 - len(complete) - len(userinfo) - len("deb ") - 2) + "\n"
+    source.write_text(complete + padding + "deb " + userinfo + "@mirror.invalid/ubuntu resolute main\n")
+
+    mirrors = diagnose_ci_apt.report_config(source)
+    assert mirrors == (["https://retained.example/ubuntu"] if preceding_line else [])
+    output = capsys.readouterr().out
+    assert "ci-user" not in output
+    assert "synthetic-password" not in output
+    assert "mirror.invalid" not in output
+    assert "truncated at 8192 characters" in output
+    assert len(output) < 9000
+
+
 def test_apt_diagnostic_reports_lookup_timeout_and_request_failure(monkeypatch, capsys):
     calls = []
 

@@ -25,7 +25,11 @@ def report_config(path: Path) -> list[str]:
         print(f"unavailable: {error.strerror}", flush=True)
         return []
     truncated = len(content) > 8192
-    content = URL.sub(public_url, content[:8192])
+    content = content[:8192]
+    if truncated:
+        # A cut URL can hide its '@'; report and probe only complete lines.
+        content = content[:content.rfind("\n") + 1]
+    content = URL.sub(public_url, content)
     print(content, flush=True)
     if truncated:
         print("[truncated at 8192 characters]", flush=True)
