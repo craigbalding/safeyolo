@@ -193,6 +193,8 @@ def qualify(args: argparse.Namespace) -> None:
             tracked += owned_processes(root)
             tracked += [{"pid": guest[key + "_pid"], "start_token": guest[key + "_token"]}
                         for key in ("holder", "backend")]
+            report["owned_processes"] = tracked
+            save()
             run_record = root / "agents/bbtest"
             spec = json.loads((run_record / "config.json").read_text())
             assert Path(spec["root"]["path"]).resolve() == tree.resolve()
