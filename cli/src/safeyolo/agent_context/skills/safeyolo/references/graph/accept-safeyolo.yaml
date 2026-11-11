@@ -299,10 +299,13 @@ nodes:
     kind: evidence
     label: "Use safeyolo-vm on physical Apple Silicon for VZ isolation and snapshot acceptance"
     detail: |
-      Build the Swift helper from the trusted source on the approved physical
-      Apple Silicon host. The VZ blackbox lane covers the proxy, microVM,
+      Reuse a source-compatible signed Swift helper, or build it from the
+      trusted source on the approved Apple toolchain. The VZ blackbox lane
+      covers the proxy, microVM,
       guest-root, isolation, and lifecycle boundary. The snapshot smoke tool
-      separately exercises save, restore, and fingerprint mismatch behavior.
+      exercises capture with queued scheduler canaries and a closed static
+      gate. Its full mode also exercises memory restore and fingerprint refusal.
+      Capture alone does not establish the restore boundary.
       Hosted macOS cannot establish this boundary.
       Use a disposable agent to create an issue-specific lifecycle or snapshot
       script. For example, write guest state, save and restore the VM, then
@@ -317,7 +320,9 @@ nodes:
         - path: vm/Package.swift
           sha256: cacd73db22ee6e881da5cbbcdd9de7f8d56a920951b6feca6ac65d637bcbc47b
         - path: vm/test/snapshot-smoke.sh
-          sha256: d31fc5882ef185a66a86c634df38077eb1629df324bf03ae2e2068d5d9e7df6e
+          sha256: 7197c016ff169c7bc3a6dd8f10756712763d2abe6107d7674743775b2fdecb57
+        - path: vm/test/snapshot-scheduling.sh
+          sha256: 52398b3a6d041208e0f5930bfee3c74f6ac7ceb69e28252c05d5c119e73c325c
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: proxy/src/host_platform.rs
@@ -346,14 +351,15 @@ nodes:
           sha256: 72e284a6b8cc9aae65870b97cdf9ab9f4c123dacebc78f3694bd2cb4203ff58a
         - path: tests/fixtures/job-observer-probe.c
           sha256: 0207c5417386d7022d0ffefeb9a6b4b9d162e5017a8684a5225c62533beb0e8b
-      setup: "Use the approved physical Apple Silicon host; make -C vm install; prepare a disposable BYOA agent for snapshot smoke. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance."
-      verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
+      setup: "Use the approved physical Apple Silicon host and a source-compatible signed helper. For snapshot smoke, select an extracted standard Darwin guest, current public staged guest assets and a new disk-backed run directory. Set SAFEYOLO_VZ_TEST_RUNNER to the maintained run-vz-test on Bristol. Full mode requires separate restore authority and a working VZ recipient. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance."
+      verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh vm/test/snapshot-scheduling.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
       run:
         full_vz: "./tests/blackbox/run-lane.sh vz --verbose"
-        snapshot_restore: "bash vm/test/snapshot-smoke.sh <disposable-agent>"
+        snapshot_capture: "bash vm/test/snapshot-smoke.sh capture-only <signed-helper> <standard-guest-dir> <staged-assets-dir> <new-run-dir>"
+        snapshot_restore: "bash vm/test/snapshot-smoke.sh full <signed-helper> <standard-guest-dir> <staged-assets-dir> <new-run-dir>"
         disposable_jobs: "python3 tests/blackbox/host/job_sandbox.py --cli <candidate-cli> --root <prepared-disposable-instance> --scratch <disk-backed-directory> --observer-probe <static-linux-arm64-probe>"
         credentialed_jobs: "python3 tests/blackbox/host/job_network.py --cli <candidate-cli> --proxy <candidate-proxy> --base-root <prepared-instance> --root <fresh-traversable-root> --scratch <empty-disk-backed-directory> --admin-port <authorized-port> --upstream-port <authorized-port>"
-      capture: [trusted base, safeyolo-vm version, physical host identity, VZ assertion, snapshot fingerprint result, exit status]
+      capture: [trusted base, helper and guest input identities, physical host identity, exact argv, completed save and paired overlay, queued canaries and gate observations, daemon and job results, snapshot fingerprint result when selected, owned cleanup, exit status]
 
   - id: ev.accept_coord_lane
     kind: evidence
