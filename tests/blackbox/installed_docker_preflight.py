@@ -15,8 +15,9 @@ pulls or the application lifecycle.
 --gateway-lifecycle adds the missing Compose lifecycle through that same route.
 It seeds an owned loopback registry from the retained nested-notes image, then
 pulls that image through the gateway before building and running the application.
-Registry blobs stay on disk in the provider guest. Failed mutations are retained
-without replay. This does not repair or retry an earlier registry credential.
+The registry uses Python in that same image and stores blobs on provider disk.
+Its container stops before the build. Failed mutations are retained without
+replay. This does not repair or retry an earlier registry credential.
 --gateway-failures-only retains the earlier management proof and runs only the
 daemon, closed-port and stopped-provider failure controls with --gateway.
 --reuse-root continues this probe's stopped disposable instance without
@@ -157,11 +158,20 @@ def gateway_compose_journey(caller, client_command, guest, background, report):
     image_id = observation["base_image"]["Id"]
     assert image_id.startswith("sha256:") and len(image_id) == 71 and all(c in "0123456789abcdef" for c in image_id[7:])
     # Let the real Docker producer encode its own retained image. The fixture
-    # supports its chunked PATCH/Range protocol, without another registry image
-    # or an external supplier. Loopback HTTP is Docker 26's existing default.
+    # uses Python in that image, without a provider Python installation or
+    # another image. Host networking shares provider loopback with the daemon.
     guest(f"mkdir {state}", "gateway-registry-state")
-    registry = background("notes", f"exec python3 /workspace/registry_fixture.py --directory {state}/registry "
-                          f"--ready-file {state}/registry.json --events-file {state}/registry-events.jsonl",
+    local_docker = "set -eu; unset DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH; sudo -n " + DOCKER
+    registry_id = guest(f"{local_docker} create --pull=never --name {name}-registry --network=host "
+                        '--user "$(id -u):$(id -g)" '
+                        "--mount type=bind,source=/workspace/registry_fixture.py,target=/registry_fixture.py,readonly "
+                        f"--mount type=bind,source={state},target=/registry-state --entrypoint python3 {image_id} "
+                        "-I /registry_fixture.py --directory /registry-state/registry "
+                        "--ready-file /registry-state/registry.json --events-file /registry-state/registry-events.jsonl",
+                        "gateway-registry-create").strip().removeprefix("\x1b[2K")
+    observation["registry_container"] = registry_id
+    assert len(registry_id) == 64 and all(c in "0123456789abcdef" for c in registry_id), "invalid registry container ID"
+    registry = background("notes", f"{local_docker} start --attach {registry_id}",
                           "gateway-registry")[0]
     ready = json.loads(guest(f"for ((i=0;i<100;i++)); do if test -s {state}/registry.json; then "
                              f"cat {state}/registry.json; exit 0; fi; sleep 0.1; done; exit 1",
@@ -189,6 +199,13 @@ def gateway_compose_journey(caller, client_command, guest, background, report):
                                       "gateway-pulled-image").strip().removeprefix("\x1b[2K"))[0]
     observation["pulled_image"] = pulled
     assert pulled["Id"] == image_id, "pulled image differs from the retained qualified image"
+    # Release the registry's VFS container copy before the build needs another.
+    # The ready-file PID belongs to the container, never to the provider guest.
+    guest(f"{local_docker} stop --time 20 {registry_id}", "gateway-registry-stop")
+    assert registry.wait(timeout=20) == 0, "owned registry did not stop cleanly"
+    guest(f"{local_docker} rm {registry_id}", "gateway-registry-remove")
+    guest(f"rm -r -- {state}/registry", "gateway-registry-blobs-remove")
+    observation["registry_cleanup"] = "removed"
     # Build from the image just pulled. Reuse its packages and application
     # layers while exercising the gateway's real build stream.
     fixture = caller / name
@@ -289,9 +306,6 @@ print(body.decode())
                              (f"image ls --quiet {image}", "images")):
         remaining = client_command("/workspace/docker-client " + arguments, "gateway-teardown-" + label)
         assert not remaining.strip().removeprefix("\x1b[2K"), f"owned {label} remain after teardown"
-    guest(f"kill -TERM {int(ready['pid'])}", "gateway-registry-stop")
-    assert registry.wait(timeout=20) == 0, "owned registry did not stop cleanly"
-    guest(f"rm -r -- {state}/registry", "gateway-registry-remove")
     observation["state"] = "passed"
 
 

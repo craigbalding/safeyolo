@@ -11,6 +11,7 @@ import json
 import os
 import runpy
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -110,6 +111,8 @@ def test_owned_registry_standalone_guest_script_stops_its_listener(tmp_path):
 
 
 def registry_guest(_command, label, **_):
+    if label == "gateway-registry-create":
+        return "c" * 64
     if label == "gateway-registry-ready":
         return json.dumps({"repository": "127.0.0.1:44444/guest", "pid": 123})
     if label == "gateway-registry-pull-requests":
@@ -121,7 +124,125 @@ def registry_background(*_):
     return (SimpleNamespace(poll=lambda: None, wait=lambda **_: 0),)
 
 
-@pytest.mark.parametrize("interruption", ["gateway-registry-seed", "gateway-image-pull", "gateway-compose-up"])
+def test_gateway_registry_uses_image_python_and_removes_its_container_before_build(tmp_path):
+    """Execute the produced shell arguments and their actual registry helper."""
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    captured = tmp_path / "docker-arguments"
+    container_id = "c" * 64
+    image_id = "sha256:" + "a" * 64
+    # Record Docker arguments through Bash without needing a local daemon.
+    for executable, script in {
+        "sudo": '#!/bin/sh\n[ "$1" = -n ] || exit 1\nshift\nexec "$@"\n',
+        "docker": '#!/bin/sh\nprintf "%s\\0" "$@" > "$CAPTURE"\nprintf "%s\\n" "$CONTAINER_ID"\n',
+    }.items():
+        path = binaries / executable
+        path.write_text(script)
+        path.chmod(0o755)
+    env = os.environ | {"PATH": str(binaries) + ":" + os.environ["PATH"],
+                        "CAPTURE": str(captured), "CONTAINER_ID": container_id}
+    directory = tmp_path / "provider-state"
+    calls = []
+    container_command = []
+    report = {}
+    child = None
+
+    def docker_arguments(command, label):
+        output = subprocess.check_output(["bash", "-c", command], env=env, text=True)
+        arguments = captured.read_bytes().decode().split("\0")[:-1]
+        calls.append((label, arguments))
+        assert arguments.pop(0) == "--host=unix:///run/safeyolo-nested-docker/docker.sock"
+        return output, arguments
+
+    def guest(command, label, **_):
+        if label == "gateway-registry-state":
+            directory.mkdir()
+        if label == "gateway-registry-create":
+            output, arguments = docker_arguments(command, label)
+            assert arguments[:2] == ["create", "--pull=never"]
+            assert arguments[arguments.index("--name") + 1] == report["gateway_lifecycle"]["project"] + "-registry"
+            assert "--network=host" in arguments
+            assert arguments[arguments.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
+            entrypoint = arguments.index("--entrypoint")
+            assert arguments[entrypoint + 1:entrypoint + 3] == ["python3", image_id]
+            container_command.extend([sys.executable, *arguments[entrypoint + 3:]])
+            for index, value in enumerate(arguments):
+                if value != "--mount":
+                    continue
+                mount = dict(part.split("=", 1) if "=" in part else (part, True)
+                             for part in arguments[index + 1].split(","))
+                assert mount["type"] == "bind"
+                if mount["source"] == "/workspace/registry_fixture.py":
+                    assert mount["readonly"]
+                    source = Path(__file__).parent / "blackbox/registry_fixture.py"
+                else:
+                    assert mount["source"] == "/home/agent/" + report["gateway_lifecycle"]["project"]
+                    assert "readonly" not in mount
+                    source = directory
+                container_command[:] = [arg.replace(mount["target"], str(source)) for arg in container_command]
+            return output
+        if label == "gateway-registry-ready":
+            state = "/home/agent/" + report["gateway_lifecycle"]["project"]
+            return subprocess.check_output(["bash", "-c", command.replace(state, str(directory))], text=True)
+        if label == "gateway-registry-seed":
+            registry_request("PUT", "/v2/guest/manifests/qualification", json.dumps({"mediaType": "application/test"}))
+        if label in {"gateway-registry-seed-requests", "gateway-registry-pull-requests"}:
+            return (directory / "registry-events.jsonl").read_text()
+        if label == "gateway-registry-stop":
+            _, arguments = docker_arguments(command, label)
+            assert arguments == ["stop", "--time", "20", container_id]
+            child.terminate()
+            assert child.wait(timeout=5) == 0
+        if label == "gateway-registry-remove":
+            _, arguments = docker_arguments(command, label)
+            assert arguments == ["rm", container_id] and child.poll() == 0
+        if label == "gateway-registry-blobs-remove":
+            shutil.rmtree(directory / "registry")
+        return ""
+
+    def background(_agent, command, label):
+        nonlocal child
+        _, arguments = docker_arguments(command, label)
+        assert arguments == ["start", "--attach", container_id]
+        child = subprocess.Popen(container_command)
+        return (child,)
+
+    def registry_request(method, path, body=None):
+        repository = json.loads((directory / "registry.json").read_text())["repository"]
+        connection = http.client.HTTPConnection(repository.split("/")[0], timeout=5)
+        connection.request(method, path, body)
+        response = connection.getresponse()
+        response.read()
+        connection.close()
+        assert response.status in {200, 201}
+
+    def client(_command, label, **_):
+        if label in {"gateway-base-image", "gateway-pulled-image"}:
+            return json.dumps([{"Id": image_id}])
+        if label == "gateway-image-pull":
+            registry_request("GET", "/v2/guest/manifests/qualification")
+        if label == "gateway-compose-build":
+            assert report["gateway_lifecycle"]["registry_cleanup"] == "removed" and child.poll() == 0
+            assert not (directory / "registry").exists()
+            repository = json.loads((directory / "registry.json").read_text())["repository"]
+            with pytest.raises(ConnectionRefusedError):
+                http.client.HTTPConnection(repository.split("/")[0], timeout=5).connect()
+            raise RuntimeError("build boundary reached")
+        return ""
+
+    try:
+        with pytest.raises(RuntimeError, match="build boundary reached"):
+            gateway_compose_journey(tmp_path, client, guest, background, report)
+        assert [label for label, _ in calls] == ["gateway-registry-create", "gateway-registry",
+                                                "gateway-registry-stop", "gateway-registry-remove"]
+    finally:
+        if child is not None and child.poll() is None:
+            child.terminate()
+            child.wait(timeout=5)
+
+
+@pytest.mark.parametrize("interruption", ["gateway-registry-create", "gateway-registry-seed", "gateway-image-pull",
+                                         "gateway-registry-stop", "gateway-registry-remove", "gateway-compose-up"])
 def test_gateway_lifecycle_preserves_failed_effects_without_repeating_mutations(tmp_path, interruption):
     caller = tmp_path / "caller"
     caller.mkdir()
@@ -148,9 +269,12 @@ def test_gateway_lifecycle_preserves_failed_effects_without_repeating_mutations(
     assert observation["state"] == "incomplete"
     assert observation["volume"] == observation["project"] + "_notes"
     assert observation["image"] == observation["project"] + ":qualification"
-    assert observation["registry_image"].endswith(":" + observation["project"])
+    if interruption != "gateway-registry-create":
+        assert observation["registry_image"].endswith(":" + observation["project"])
     assert steps.count(interruption) == 1
-    assert not any("teardown" in step or step in {"gateway-image-remove", "gateway-registry-remove"} for step in steps)
+    assert not any("teardown" in step or step in {"gateway-image-remove", "gateway-registry-remove",
+                                                 "gateway-registry-blobs-remove"}
+                   for step in steps[steps.index(interruption) + 1:])
 
 
 @pytest.mark.parametrize("failure", ["no-manifest-get", "different-image"])
@@ -159,6 +283,7 @@ def test_gateway_lifecycle_requires_registry_pull_and_matching_image_before_buil
     steps = []
 
     def guest(command, label, **kwargs):
+        steps.append(label)
         if failure == "no-manifest-get" and label == "gateway-registry-pull-requests":
             return ""
         return registry_guest(command, label, **kwargs)
@@ -174,6 +299,7 @@ def test_gateway_lifecycle_requires_registry_pull_and_matching_image_before_buil
         gateway_compose_journey(tmp_path, client, guest, registry_background, report)
     assert report["gateway_lifecycle"]["state"] == "incomplete"
     assert steps.count("gateway-image-pull") == 1 and "gateway-compose-build" not in steps
+    assert "gateway-registry-stop" not in steps and "gateway-registry-remove" not in steps
 
 
 @pytest.mark.parametrize("failure", [None, "lost-write-response", "lost-data"])
