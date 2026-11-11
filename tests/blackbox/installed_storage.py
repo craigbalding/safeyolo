@@ -6,9 +6,6 @@ saved Linux settings, an immutable public guest index and its retained archive.
 The probe creates fresh state, uses native acquisition, boots one systrap agent
 twice, and stops only that instance. It retains the reports and persistent data.
 It does not prepare the host or interrupt WSL or Windows.
-
-With --package-proof, reuse completed package verification from a retained
-report after checking the package metadata and executable bytes again.
 """
 
 from __future__ import annotations
@@ -84,20 +81,6 @@ def observation(output: str) -> dict:
     return json.loads(lines[0])
 
 
-def read_package_proof(path: Path, prepared: Path, package: dict) -> dict:
-    """Reuse completed package checks while metadata and executable bytes match."""
-    prior = json.loads(path.read_text())
-    assert prior["package"] == package, "verified package metadata changed"
-    for label in ("verify-host-package", "runsc-version"):
-        rows = [row for row in prior["actions"] if row["label"] == label]
-        assert len(rows) == 1 and rows[0].get("exit") == 0 and not rows[0].get("timeout"), label
-    executables = {name: sha(prepared / name) for name in (
-        "bin/safeyolo", "bin/safeyolo-proxy", "libexec/runsc")}
-    assert prior["host_executables"] == executables, "verified executable bytes changed"
-    return {"path": str(path.resolve()), "sha256": sha(path),
-            "controller_source": prior["controller_source"], "host_executables": executables}
-
-
 def qualify(args: argparse.Namespace) -> None:
     assert platform.system() == "Linux" and os.getuid() != 0
     prepared, output = args.prepared_config.resolve(), args.output.resolve()
@@ -151,15 +134,11 @@ def qualify(args: argparse.Namespace) -> None:
 
     tracked = []
     try:
-        if args.package_proof:
-            report["package_proof"] = read_package_proof(args.package_proof, prepared, package)
-            report["host_executables"] = report["package_proof"]["host_executables"]
-        else:
-            run("verify-host-package", ["bash", "-c", 'source "$1/native_package.sh"; verify_native_package "$1"',
-                                        "verify", prepared])
-            report["host_executables"] = {name: sha(prepared / name) for name in (
-                "bin/safeyolo", "bin/safeyolo-proxy", "libexec/runsc")}
-            run("runsc-version", [prepared / "libexec/runsc", "--version"])
+        run("verify-host-package", ["bash", "-c", 'source "$1/native_package.sh"; verify_native_package "$1"',
+                                    "verify", prepared])
+        report["host_executables"] = {name: sha(prepared / name) for name in (
+            "bin/safeyolo", "bin/safeyolo-proxy", "libexec/runsc")}
+        run("runsc-version", [prepared / "libexec/runsc", "--version"])
         run("host-filesystem", ["findmnt", "--json", "--target", output])
         username = pwd.getpwuid(os.getuid()).pw_name
         run("subuids", ["getsubids", username])
@@ -285,8 +264,6 @@ def main() -> None:
         parser.add_argument("--" + name, required=True, type=Path)
     for name in ("index", "archive-sha256", "install-commit"):
         parser.add_argument("--" + name, required=True)
-    parser.add_argument("--package-proof", type=Path,
-                        help="Reuse successful package verification from an observed.json with matching executable bytes")
     qualify(parser.parse_args())
 
 

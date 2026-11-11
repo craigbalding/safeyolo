@@ -67,15 +67,14 @@ def test_storage_refuses_retained_attempt_before_product_effects(tmp_path):
     saved.write_text("recover this result")
     args = argparse.Namespace(prepared_config=prepared, output=output, install_commit="a" * 40,
                               host_settings=settings, archive=archive,
-                              archive_sha256=hashlib.sha256(archive.read_bytes()).hexdigest(), package_proof=None)
+                              archive_sha256=hashlib.sha256(archive.read_bytes()).hexdigest())
     with pytest.raises(FileExistsError):
         storage.qualify(args)
     assert list(output.iterdir()) == [saved]
     assert saved.read_text() == "recover this result"
 
 
-@pytest.mark.parametrize("proof", ["fresh", "reuse", "failed-package", "failed-runsc", "timeout", "binary", "metadata"])
-def test_storage_account_lookup_and_package_continuation(tmp_path, monkeypatch, proof):
+def test_storage_queries_subids_by_actual_account_name(tmp_path, monkeypatch):
     prepared = tmp_path / "prepared"
     for name, code in (("bin/safeyolo", "echo controlled-acquisition-boundary >&2; exit 73"),
                        ("bin/safeyolo-proxy", "exit 0"), ("libexec/runsc", "exit 0")):
@@ -90,22 +89,6 @@ def test_storage_account_lookup_and_package_continuation(tmp_path, monkeypatch, 
     archive.write_bytes(b"retained archive control")
     settings = tmp_path / "settings.toml"
     settings.write_text(f"[linux]\nhost_uid={os.getuid()}\nhost_gid={os.getgid()}\n")
-    prior = {"controller_source": "b" * 40, "package": package,
-             "host_executables": {name: storage.sha(prepared / name) for name in (
-                 "bin/safeyolo", "bin/safeyolo-proxy", "libexec/runsc")},
-             "actions": [{"label": label, "exit": 0} for label in ("verify-host-package", "runsc-version")]}
-    if proof in ("failed-package", "failed-runsc"):
-        prior["actions"][1 if proof == "failed-runsc" else 0]["exit"] = 1
-    elif proof == "timeout":
-        prior["actions"][0]["timeout"] = True
-    elif proof == "binary":
-        (prepared / "bin/safeyolo").write_text("#!/bin/sh\nexit 74\n")
-    elif proof == "metadata":
-        prior["package"] = {"source_commit": "c" * 40}
-    proof_path = tmp_path / "original-observed.json"
-    proof_path.write_text(json.dumps(prior))
-    saved_proof = proof_path.read_bytes()
-
     username = subprocess.check_output(["id", "-un"], text=True).strip()
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -119,26 +102,15 @@ def test_storage_account_lookup_and_package_continuation(tmp_path, monkeypatch, 
     monkeypatch.setenv("LOGNAME", "unrelated-account")
     args = argparse.Namespace(prepared_config=prepared, output=tmp_path / "continuation",
                               install_commit=package["source_commit"], host_settings=settings, archive=archive,
-                              archive_sha256=storage.sha(archive), index="sha256:" + "d" * 64,
-                              package_proof=None if proof == "fresh" else proof_path)
-    valid = proof in ("fresh", "reuse")
-    with pytest.raises(RuntimeError if valid else AssertionError):
+                              archive_sha256=storage.sha(archive), index="sha256:" + "d" * 64)
+    with pytest.raises(RuntimeError, match="native-download: exit 73"):
         storage.qualify(args)
     report = json.loads((args.output / "observed.json").read_text())
     assert report["result"] == "incomplete" and report["cleanup_failures"] == []
-    assert proof_path.read_bytes() == saved_proof
-    if valid:
-        actions = {row["label"]: row for row in report["actions"]}
-        assert actions["subuids"]["command"] == ["getsubids", username]
-        assert actions["subgids"]["command"] == ["getsubids", "-g", username]
-        assert actions["subuids"]["exit"] == actions["subgids"]["exit"] == 0
-        assert actions["native-download"]["exit"] == 73
-        assert "controlled-acquisition-boundary" in actions["native-download"]["stderr"]
-        assert ("verify-host-package" in actions) == (proof == "fresh")
-        assert ("runsc-version" in actions) == (proof == "fresh")
-        if proof == "reuse":
-            assert report["package_proof"]["sha256"] == storage.sha(proof_path)
-            assert report["package_proof"]["controller_source"] == "b" * 40
-    else:
-        assert report["actions"] == []
-        assert not (args.output / "guests").exists()
+    actions = {row["label"]: row for row in report["actions"]}
+    assert actions["subuids"]["command"] == ["getsubids", username]
+    assert actions["subgids"]["command"] == ["getsubids", "-g", username]
+    assert actions["subuids"]["exit"] == actions["subgids"]["exit"] == 0
+    assert actions["verify-host-package"]["exit"] == actions["runsc-version"]["exit"] == 0
+    assert actions["native-download"]["exit"] == 73
+    assert "controlled-acquisition-boundary" in actions["native-download"]["stderr"]
