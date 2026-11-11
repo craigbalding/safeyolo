@@ -4,12 +4,16 @@ These exercise the observer's refusal handling. They do not establish the
 installed sandbox's network enforcement.
 """
 
+import hashlib
+import http.client
 import io
 import json
 import os
 import runpy
 import shlex
+import shutil
 import subprocess
+import sys
 import threading
 from copy import deepcopy
 from email.message import Message
@@ -25,14 +29,515 @@ import pytest
 
 from tests.blackbox.installed_docker_preflight import (
     gateway_client_failure,
+    gateway_compose_journey,
+    gateway_compose_resume,
     gateway_management,
+    gateway_notes_command,
+    gateway_recovery_receipt,
     run,
     verify_gateway_client_failure,
     verify_outbound,
     verify_provider_origin,
 )
+from tests.blackbox.installed_provider import wait_file
+from tests.blackbox.registry_fixture import distribution_registry
 
 PROBE = Path(__file__).parent / "blackbox/fixtures/nested-docker/network_probe.py"
+
+
+@pytest.mark.parametrize("disk_backed", [False, True])
+def test_owned_registry_handles_docker_chunked_layers_and_schema2_readback(tmp_path, disk_backed):
+    log = tmp_path / "events.jsonl"
+    directory = tmp_path / "blobs" if disk_backed else None
+    layer = b"docker-layer" * 10000
+    digest = "sha256:" + hashlib.sha256(layer + b"tail").hexdigest()
+    with distribution_registry(directory, log) as (repository, blobs, _, _, _, _):
+        connection = http.client.HTTPConnection(repository.split("/")[0], timeout=5)
+
+        def request(method, path, body=None, **kwargs):
+            connection.request(method, path, body=body, **kwargs)
+            response = connection.getresponse()
+            return response.status, dict(response.getheaders()), response.read()
+
+        assert request("GET", "/v2/")[0] == 200
+        assert request("HEAD", "/v2/guest/blobs/" + digest)[0] == 404
+        status, headers, _ = request("POST", "/v2/guest/blobs/uploads/")
+        assert status == 202
+        location = headers["Location"]
+        status, headers, _ = request("PATCH", location, iter([layer[:3], layer[3:]]), encode_chunked=True)
+        assert status == 202 and headers["Range"] == f"0-{len(layer) - 1}"
+        status, headers, _ = request("PATCH", location, b"tail")
+        assert status == 202 and headers["Range"] == f"0-{len(layer) + 3}"
+        assert request("PUT", location + "?digest=sha256:" + "0" * 64)[0] == 400
+        assert request("GET", "/v2/guest/blobs/" + digest)[0] == 404
+        assert request("PUT", location + "?digest=" + digest)[0] == 201
+        if disk_backed:
+            assert isinstance(blobs[digest], Path)
+        status, headers, body = request("GET", "/v2/guest/blobs/" + digest)
+        assert status == 200 and body == layer + b"tail"
+        assert headers["Docker-Content-Digest"] == digest
+        status, headers, body = request("HEAD", "/v2/guest/blobs/" + digest)
+        assert status == 200 and int(headers["Content-Length"]) == len(layer) + 4 and body == b""
+        manifest = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                               "config": {}, "layers": [{"digest": digest, "size": len(layer) + 4}]}).encode()
+        manifest_digest = "sha256:" + hashlib.sha256(manifest).hexdigest()
+        assert request("PUT", "/v2/guest/manifests/qualification", manifest)[0] == 201
+        for reference in ("qualification", manifest_digest):
+            status, headers, body = request("GET", "/v2/guest/manifests/" + reference)
+            assert status == 200 and body == manifest and headers["Docker-Content-Digest"] == manifest_digest
+        assert request("GET", "/v2/guest/manifests/missing")[0] == 404
+        connection.close()
+    events = [json.loads(line) for line in log.read_text().splitlines()]
+    assert any(row["method"] == "PATCH" and row["status"] == 202 for row in events)
+    assert events[-1]["status"] == 404
+
+
+def test_owned_registry_standalone_guest_script_stops_its_listener(tmp_path):
+    ready = tmp_path / "ready.json"
+    script = Path(__file__).parent / "blackbox/registry_fixture.py"
+    with subprocess.Popen([sys.executable, "-I", str(script), "--directory", str(tmp_path / "blobs"),
+                           "--ready-file", str(ready), "--events-file", str(tmp_path / "events.jsonl")]) as child:
+        try:
+            wait_file(ready, child)
+            state = json.loads(ready.read_text())
+            assert state["pid"] == child.pid and state["repository"].startswith("127.0.0.1:")
+            connection = http.client.HTTPConnection(state["repository"].split("/")[0], timeout=5)
+            connection.request("GET", "/v2/")
+            response = connection.getresponse()
+            assert response.status == 200 and response.read() == b"{}"
+            connection.close()
+        finally:
+            child.terminate()
+            assert child.wait(timeout=5) == 0
+    with pytest.raises(ConnectionRefusedError):
+        http.client.HTTPConnection(state["repository"].split("/")[0], timeout=5).connect()
+
+
+def registry_guest(_command, label, **_):
+    if label == "gateway-registry-create":
+        return "c" * 64
+    if label == "gateway-registry-ready":
+        return json.dumps({"repository": "127.0.0.1:44444/guest", "pid": 123})
+    if label == "gateway-registry-pull-requests":
+        return json.dumps({"method": "GET", "path": "/v2/guest/manifests/qualification", "status": 200})
+    return ""
+
+
+def registry_background(*_):
+    return (SimpleNamespace(poll=lambda: None, wait=lambda **_: 0),)
+
+
+def test_gateway_registry_uses_image_python_and_removes_its_container_before_build(tmp_path):
+    """Execute the produced shell arguments and their actual registry helper."""
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    captured = tmp_path / "docker-arguments"
+    container_id = "c" * 64
+    image_id = "sha256:" + "a" * 64
+    # Record Docker arguments through Bash without needing a local daemon.
+    for executable, script in {
+        "sudo": '#!/bin/sh\n[ "$1" = -n ] || exit 1\nshift\nexec "$@"\n',
+        "docker": '#!/bin/sh\nprintf "%s\\0" "$@" > "$CAPTURE"\nprintf "%s\\n" "$CONTAINER_ID"\n',
+    }.items():
+        path = binaries / executable
+        path.write_text(script)
+        path.chmod(0o755)
+    env = os.environ | {"PATH": str(binaries) + ":" + os.environ["PATH"],
+                        "CAPTURE": str(captured), "CONTAINER_ID": container_id}
+    directory = tmp_path / "provider-state"
+    calls = []
+    container_command = []
+    report = {}
+    child = None
+
+    def docker_arguments(command, label):
+        output = subprocess.check_output(["bash", "-c", command], env=env, text=True)
+        arguments = captured.read_bytes().decode().split("\0")[:-1]
+        calls.append((label, arguments))
+        assert arguments.pop(0) == "--host=unix:///run/safeyolo-nested-docker/docker.sock"
+        return output, arguments
+
+    def guest(command, label, **_):
+        if label == "gateway-registry-state":
+            directory.mkdir()
+        if label == "gateway-registry-create":
+            output, arguments = docker_arguments(command, label)
+            assert arguments[:2] == ["create", "--pull=never"]
+            assert arguments[arguments.index("--name") + 1] == report["gateway_lifecycle"]["project"] + "-registry"
+            assert "--network=host" in arguments
+            assert arguments[arguments.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
+            entrypoint = arguments.index("--entrypoint")
+            assert arguments[entrypoint + 1:entrypoint + 3] == ["python3", image_id]
+            container_command.extend([sys.executable, *arguments[entrypoint + 3:]])
+            for index, value in enumerate(arguments):
+                if value != "--mount":
+                    continue
+                mount = dict(part.split("=", 1) if "=" in part else (part, True)
+                             for part in arguments[index + 1].split(","))
+                assert mount["type"] == "bind"
+                if mount["source"] == "/workspace/registry_fixture.py":
+                    assert mount["readonly"]
+                    source = Path(__file__).parent / "blackbox/registry_fixture.py"
+                else:
+                    assert mount["source"] == "/home/agent/" + report["gateway_lifecycle"]["project"]
+                    assert "readonly" not in mount
+                    source = directory
+                container_command[:] = [arg.replace(mount["target"], str(source)) for arg in container_command]
+            return output
+        if label == "gateway-registry-ready":
+            state = "/home/agent/" + report["gateway_lifecycle"]["project"]
+            return subprocess.check_output(["bash", "-c", command.replace(state, str(directory))], text=True)
+        if label == "gateway-registry-seed":
+            registry_request("PUT", "/v2/guest/manifests/qualification", json.dumps({"mediaType": "application/test"}))
+        if label in {"gateway-registry-seed-requests", "gateway-registry-pull-requests"}:
+            return (directory / "registry-events.jsonl").read_text()
+        if label == "gateway-registry-stop":
+            _, arguments = docker_arguments(command, label)
+            assert arguments == ["stop", "--time", "20", container_id]
+            child.terminate()
+            assert child.wait(timeout=5) == 0
+        if label == "gateway-registry-remove":
+            _, arguments = docker_arguments(command, label)
+            assert arguments == ["rm", container_id] and child.poll() == 0
+        if label == "gateway-registry-blobs-remove":
+            shutil.rmtree(directory / "registry")
+        return ""
+
+    def background(_agent, command, label):
+        nonlocal child
+        _, arguments = docker_arguments(command, label)
+        assert arguments == ["start", "--attach", container_id]
+        child = subprocess.Popen(container_command)
+        return (child,)
+
+    def registry_request(method, path, body=None):
+        repository = json.loads((directory / "registry.json").read_text())["repository"]
+        connection = http.client.HTTPConnection(repository.split("/")[0], timeout=5)
+        connection.request(method, path, body)
+        response = connection.getresponse()
+        response.read()
+        connection.close()
+        assert response.status in {200, 201}
+
+    def client(_command, label, **_):
+        if label in {"gateway-base-image", "gateway-pulled-image"}:
+            return json.dumps([{"Id": image_id}])
+        if label == "gateway-image-pull":
+            registry_request("GET", "/v2/guest/manifests/qualification")
+        if label == "gateway-compose-build":
+            assert report["gateway_lifecycle"]["registry_cleanup"] == "removed" and child.poll() == 0
+            assert not (directory / "registry").exists()
+            repository = json.loads((directory / "registry.json").read_text())["repository"]
+            with pytest.raises(ConnectionRefusedError):
+                http.client.HTTPConnection(repository.split("/")[0], timeout=5).connect()
+            raise RuntimeError("build boundary reached")
+        return ""
+
+    try:
+        with pytest.raises(RuntimeError, match="build boundary reached"):
+            gateway_compose_journey(tmp_path, client, guest, background, report)
+        assert [label for label, _ in calls] == ["gateway-registry-create", "gateway-registry",
+                                                "gateway-registry-stop", "gateway-registry-remove"]
+    finally:
+        if child is not None and child.poll() is None:
+            child.terminate()
+            child.wait(timeout=5)
+
+
+@pytest.mark.parametrize("interruption", ["gateway-registry-create", "gateway-registry-seed", "gateway-image-pull",
+                                         "gateway-registry-stop", "gateway-registry-remove", "gateway-compose-up"])
+def test_gateway_lifecycle_preserves_failed_effects_without_repeating_mutations(tmp_path, interruption):
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    report = {}
+    steps = []
+
+    def guest(command, label, **kwargs):
+        steps.append(label)
+        if label == interruption:
+            raise RuntimeError("response interrupted after dispatch")
+        return registry_guest(command, label, **kwargs)
+
+    def client(command, label, **_):
+        steps.append(label)
+        if label == interruption:
+            raise RuntimeError("response interrupted after dispatch")
+        if label in {"gateway-base-image", "gateway-pulled-image"}:
+            return json.dumps([{"Id": "sha256:" + "a" * 64}])
+        return ""
+
+    with pytest.raises(RuntimeError, match="response interrupted after dispatch"):
+        gateway_compose_journey(caller, client, guest, registry_background, report)
+    observation = report["gateway_lifecycle"]
+    assert observation["state"] == "incomplete"
+    assert observation["volume"] == observation["project"] + "_notes"
+    assert observation["image"] == observation["project"] + ":qualification"
+    if interruption != "gateway-registry-create":
+        assert observation["registry_image"].endswith(":" + observation["project"])
+    assert steps.count(interruption) == 1
+    assert not any("teardown" in step or step in {"gateway-image-remove", "gateway-registry-remove",
+                                                 "gateway-registry-blobs-remove"}
+                   for step in steps[steps.index(interruption) + 1:])
+
+
+@pytest.mark.parametrize("failure", ["no-manifest-get", "different-image"])
+def test_gateway_lifecycle_requires_registry_pull_and_matching_image_before_build(tmp_path, failure):
+    report = {}
+    steps = []
+
+    def guest(command, label, **kwargs):
+        steps.append(label)
+        if failure == "no-manifest-get" and label == "gateway-registry-pull-requests":
+            return ""
+        return registry_guest(command, label, **kwargs)
+
+    def client(_command, label, **_):
+        steps.append(label)
+        if label in {"gateway-base-image", "gateway-pulled-image"}:
+            character = "b" if failure == "different-image" and label == "gateway-pulled-image" else "a"
+            return json.dumps([{"Id": "sha256:" + character * 64}])
+        return ""
+
+    with pytest.raises(AssertionError, match="pull did not fetch|pulled image differs"):
+        gateway_compose_journey(tmp_path, client, guest, registry_background, report)
+    assert report["gateway_lifecycle"]["state"] == "incomplete"
+    assert steps.count("gateway-image-pull") == 1 and "gateway-compose-build" not in steps
+    assert "gateway-registry-stop" not in steps and "gateway-registry-remove" not in steps
+
+
+@pytest.mark.parametrize("failure", [None, "lost-write-response", "lost-data"])
+def test_gateway_lifecycle_application_observer_checks_persistence_without_replaying_writes(tmp_path, failure):
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    report = {}
+    requests = []
+    saved = []
+    recovered = False
+    steps = []
+
+    class Application(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append("GET")
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps([] if recovered and failure == "lost-data" else saved).encode())
+
+        def do_POST(self):
+            requests.append("POST")
+            saved.append(json.loads(self.rfile.read(int(self.headers["Content-Length"])))["text"])
+            if failure == "lost-write-response":
+                self.close_connection = True
+                return
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps(saved).encode())
+
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Application)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+
+    def client(command, label, **_):
+        nonlocal recovered
+        steps.append(label)
+        if label in {"gateway-compose-containers", "gateway-compose-recreated"}:
+            return "new-api\nnew-store\n" if recovered else "api\nstore\n"
+        if label == "gateway-base-image":
+            return json.dumps([{"Id": "sha256:" + "a" * 64}])
+        if label == "gateway-pulled-image":
+            return json.dumps([{"Id": "sha256:" + "a" * 64}])
+        if label == "gateway-compose-inspect":
+            return json.dumps([{"Id": name, "State": {"Running": True}, "HostConfig": {"NetworkMode": "host"},
+                                "Config": {"Labels": {"com.docker.compose.service": name}}} for name in ("api", "store")])
+        if label.startswith("gateway-notes-"):
+            original = report["gateway_lifecycle"].get("recovery_probe", {}).get("command", command)
+            program = shlex.split(original)[-1].replace('"127.0.0.1", 8088', f'"127.0.0.1", {server.server_port}')
+            if label == "gateway-notes-recovered":
+                command = command.replace(original, shlex.join([sys.executable, "-c", program]))
+                command = command.replace("/workspace/" + report["gateway_lifecycle"]["project"],
+                                          str(caller / report["gateway_lifecycle"]["project"]))
+                return subprocess.check_output(["bash", "-c", "set -eu; " + command], text=True, stderr=subprocess.PIPE)
+            return subprocess.check_output(["python3", "-c", program], text=True, stderr=subprocess.PIPE)
+        if label == "gateway-compose-exec":
+            return "gateway-exec"
+        if label == "gateway-compose-logs":
+            return '"role": "api"\n"role": "store"'
+        if label == "gateway-lifecycle-attach":
+            return "attach:gateway-attach"
+        if label in {"gateway-volume-before", "gateway-volume-after"}:
+            return '[{"Name":"original-volume","Mountpoint":"/original/data","CreatedAt":"same-creation"}]'
+        if label == "gateway-compose-recreate":
+            recovered = True
+        return ""
+
+    try:
+        if failure:
+            with pytest.raises(subprocess.CalledProcessError):
+                gateway_compose_journey(caller, client, registry_guest, registry_background, report)
+            assert report["gateway_lifecycle"]["state"] == "incomplete"
+            assert "gateway-compose-teardown" not in steps
+        else:
+            gateway_compose_journey(caller, client, registry_guest, registry_background, report)
+            assert report["gateway_lifecycle"]["state"] == "passed"
+            assert "gateway-compose-teardown" in steps
+        assert requests.count("POST") == 1
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+@pytest.mark.parametrize("failure", [None, "container-changed", "volume-changed", "mount-changed",
+                                     "start-unknown", "client-126", "native-126", "capture-lost"])
+def test_gateway_continuation_reconciles_existing_targets_and_preserves_command_receipts(tmp_path, failure):
+    name = "sycompose" + "a" * 12
+    context = tmp_path / name
+    context.mkdir()
+    (context / "compose.yaml").write_text("retained caller context\n")
+    volume = {"Name": name + "_notes", "Mountpoint": "/retained/volume/_data", "CreatedAt": "original-creation"}
+    observation = {"project": name, "image": name + ":qualification", "volume": volume["Name"],
+                   "registry_image": "127.0.0.1:12345/guest:" + name, "volume_before": [volume],
+                   "containers": ["old-api", "old-store"], "recreated_containers": ["new-api", "new-store"],
+                   "written": '["persist-original"]\n', "state": "incomplete"}
+    inspected = [{"Id": "new-" + service, "State": {"Running": False}, "HostConfig": {"NetworkMode": "host"},
+                  "Config": {"Image": observation["image"], "Labels": {"com.docker.compose.project": name,
+                             "com.docker.compose.service": service}},
+                  "Mounts": [{"Type": "volume", "Name": volume["Name"], "Source": volume["Mountpoint"],
+                              "Destination": "/data"}] if service == "store" else []} for service in ("api", "store")]
+    steps = []
+
+    def client(command, label):
+        steps.append(label)
+        if label == "gateway-resume-containers":
+            return "different-api\nnew-store\n" if failure == "container-changed" else "new-api\nnew-store\n"
+        if label == "gateway-resume-inspect":
+            if failure == "mount-changed":
+                inspected[1]["Mounts"][0]["Source"] = "/different/data"
+            return json.dumps(inspected)
+        if label in {"gateway-resume-volume", "gateway-volume-after"}:
+            return json.dumps([volume | {"CreatedAt": "different"}] if failure == "volume-changed" else [volume])
+        if label == "gateway-resume-start-store" and failure == "start-unknown":
+            raise RuntimeError("unknown start result after dispatch")
+        if label == "gateway-notes-recovered":
+            if failure == "native-126":
+                raise RuntimeError("native shell exited 126 before command capture")
+            original = observation["recovery_probe"]["command"]
+            assert shlex.split(original)[-5:-1] == ["-T", "api", "python3", "-c"]
+            assert "\nif False:\n" in shlex.split(original)[-1], "recovery must not write another note"
+            replacement = "(exit 126)" if failure == "client-126" else "printf '%s\\n' '[\"persist-original\"]'"
+            command = command.replace(original, replacement).replace("/workspace/" + name, str(context))
+            output = subprocess.check_output(["bash", "-c", "set -eu; " + command], text=True, stderr=subprocess.PIPE)
+            if failure == "capture-lost":
+                raise RuntimeError("native output unavailable after command completed")
+            return output
+        return ""
+
+    if failure:
+        with pytest.raises((AssertionError, RuntimeError, subprocess.CalledProcessError)):
+            gateway_compose_resume(tmp_path, observation, client)
+        assert observation["state"] == "incomplete" and "gateway-compose-teardown" not in steps
+        if failure in {"container-changed", "volume-changed", "mount-changed"}:
+            assert not any("start-" in step or step == "gateway-notes-recovered" for step in steps)
+        if failure == "start-unknown":
+            assert steps.count("gateway-resume-start-store") == 1 and "gateway-resume-start-api" not in steps
+        if failure in {"client-126", "native-126", "capture-lost"}:
+            probe = observation["recovery_probe"]
+            assert probe["exit"] == {"client-126": "126\n", "native-126": None, "capture-lost": "0\n"}[failure]
+            assert probe["stdout"] == {"client-126": "", "native-126": None,
+                                       "capture-lost": '["persist-original"]\n'}[failure]
+    else:
+        gateway_compose_resume(tmp_path, observation, client)
+        assert observation["state"] == "passed" and observation["volume_after"] == [volume]
+        assert steps.index("gateway-resume-volume") < steps.index("gateway-resume-start-store") < steps.index("gateway-resume-start-api")
+        assert "gateway-compose-teardown" in steps and observation["recovery_probe"]["exit"] == "0\n"
+    assert not {"gateway-image-pull", "gateway-compose-build", "gateway-compose-up", "gateway-compose-recreate"}.intersection(steps)
+    assert steps.count("gateway-notes-recovered") <= 1
+
+
+@pytest.mark.parametrize("failure", [None, "source", "project", "command", "started", "exit", "stdout", "stderr",
+                                     "container-changed", "mount-changed", "volume-changed", "volume-after-changed",
+                                     "teardown-unknown", "remaining-pull-image"])
+def test_gateway_saved_client_recovery_continues_only_volume_and_owned_teardown(tmp_path, failure):
+    name = "sycompose" + "b" * 12
+    volume = {"Name": name + "_notes", "Mountpoint": "/retained/volume/_data", "CreatedAt": "original-creation"}
+    observation = {"project": name, "image": name + ":qualification", "volume": volume["Name"],
+                   "volume_before": [volume], "containers": ["old-api", "old-store"],
+                   "recreated_containers": ["new-api", "new-store"], "written": '["persist-original"]\n', "state": "incomplete"}
+    previous = {"lifecycle": observation, "gateway_route": {"provider": "notes", "caller": "dockercaller"}}
+    compose = f"/workspace/docker-client compose -p {name} --project-directory /home/agent/{name}/context"
+    probe = {"command": gateway_notes_command(compose, "persist-original", ["persist-original"]),
+             "started": "started\n", "stdout": observation["written"], "stderr": "", "exit": "0\n"}
+    receipt = {field: deepcopy(observation[field]) for field in
+               ("project", "image", "volume", "recreated_containers", "written", "volume_before")}
+    receipt.update(original_containers=observation["containers"], gateway_route=previous["gateway_route"],
+                   prior_receipt_sha256="original-receipt-hash", cleanup="stopped", restoration="complete", survivors=[],
+                   reached_step="gateway-notes-recovered", native_command_exit=1, recovery_probe=probe)
+    if failure == "source":
+        receipt["prior_receipt_sha256"] = "different"
+    elif failure == "project":
+        receipt["project"] = "different"
+    elif failure in {"command", "started", "exit", "stdout", "stderr"}:
+        receipt["recovery_probe"][failure] = {"command": "different", "started": None, "exit": "126\n",
+                                               "stdout": '["different"]\n', "stderr": "failed"}[failure]
+    path = tmp_path / "recovery.json"
+    path.write_text(json.dumps(receipt))
+    report = {}
+    if failure in {"source", "project", "command", "started", "exit", "stdout", "stderr"}:
+        with pytest.raises(AssertionError):
+            gateway_recovery_receipt(path, previous, "original-receipt-hash", report)
+        assert report["gateway_recovery_source"]["receipt"] == receipt
+        return
+    retained = gateway_recovery_receipt(path, previous, "original-receipt-hash", report)
+    observation["registry_image"] = "127.0.0.1:12345/guest:" + name
+    context = tmp_path / name
+    context.mkdir()
+    (context / "compose.yaml").write_text("retained context\n")
+    inspected = [{"Id": "new-" + service, "State": {"Running": False}, "HostConfig": {"NetworkMode": "host"},
+                  "Config": {"Image": observation["image"], "Labels": {"com.docker.compose.project": name,
+                             "com.docker.compose.service": service}},
+                  "Mounts": [{"Type": "volume", "Name": volume["Name"], "Source": volume["Mountpoint"],
+                              "Destination": "/data"}] if service == "store" else []} for service in ("api", "store")]
+    steps = []
+
+    def client(command, label):
+        steps.append(label)
+        if label == "gateway-resume-containers":
+            return "different-api\nnew-store\n" if failure == "container-changed" else "new-api\nnew-store\n"
+        if label == "gateway-resume-inspect":
+            if failure == "mount-changed":
+                inspected[1]["Mounts"][0]["Source"] = "/different/data"
+            return json.dumps(inspected)
+        if label in {"gateway-resume-volume", "gateway-volume-after"}:
+            changed = failure == "volume-changed" or (label == "gateway-volume-after" and failure == "volume-after-changed")
+            return json.dumps([volume | {"CreatedAt": "different"}] if changed else [volume])
+        if label == "gateway-compose-teardown" and failure == "teardown-unknown":
+            raise RuntimeError("teardown reply lost after dispatch")
+        if label == "gateway-teardown-pull-image" and failure == "remaining-pull-image":
+            return "remaining-image\n"
+        return ""
+
+    if failure:
+        with pytest.raises((AssertionError, RuntimeError)):
+            gateway_compose_resume(tmp_path, observation, client, recovery_receipt=retained)
+        assert observation["state"] == "incomplete"
+        if failure in {"container-changed", "mount-changed", "volume-changed", "volume-after-changed"}:
+            assert "gateway-compose-teardown" not in steps
+        if failure == "teardown-unknown":
+            assert steps.count("gateway-compose-teardown") == 1 and "gateway-image-remove" not in steps
+        if failure == "volume-after-changed":
+            assert observation["volume_after"][0]["CreatedAt"] == "different"
+        if failure == "remaining-pull-image":
+            assert observation["teardown_absence"]["pull-image"] == "remaining-image\n"
+    else:
+        gateway_compose_resume(tmp_path, observation, client, recovery_receipt=retained)
+        assert observation["state"] == "passed" and observation["volume_after"] == [volume]
+        assert observation["recovery_probe"] == probe and observation["recovered"] == probe["stdout"]
+        assert steps[-4:] == ["gateway-teardown-" + label for label in ("containers", "volumes", "images", "pull-image")]
+    assert report["gateway_recovery_source"]["receipt"]["native_command_exit"] == 1
+    assert not any("start-" in step or "notes-" in step or "build" in step or "pull" == step for step in steps)
+    assert path.read_text() == json.dumps(receipt)
 
 
 @pytest.mark.parametrize("exit_code,diagnostic,valid", [
