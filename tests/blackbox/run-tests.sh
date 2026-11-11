@@ -21,7 +21,7 @@
 #   ./run-tests.sh --expect-platform systrap|kvm|vz
 #   ./run-tests.sh --proxy --proxy-impl rust
 #   ./run-tests.sh --expect-platform systrap|kvm|vz --proxy-impl rust
-#   ./run-tests.sh --expect-platform kvm --proxy-impl rust --ingress
+#   ./run-tests.sh --expect-platform systrap|kvm --proxy-impl rust --ingress
 #   ./run-tests.sh --expect-platform kvm|systrap --proxy-impl rust --workloads
 #   ./run-tests.sh --expect-platform systrap|vz --proxy-impl rust --access
 #   ./run-tests.sh --expect-platform systrap|vz --proxy-impl rust --lifecycle
@@ -212,10 +212,10 @@ if [ -n "$INSTALL_COMMIT" ] && [ "$INGRESS" != true ] && [ "$WORKLOADS" != true 
     echo "ERROR: --install-commit requires an installed ingress, workloads, access, or lifecycle selection" >&2
     exit 2
 fi
-if [ "$INGRESS" = true ] && { [ "$EXPECTED_PLATFORM" != "kvm" ] || \
+if [ "$INGRESS" = true ] && { { [ "$EXPECTED_PLATFORM" != "kvm" ] && [ "$EXPECTED_PLATFORM" != "systrap" ]; } || \
    [ "$PROXY_IMPL" != "rust" ] || [ "$RUN_PROXY" != true ] || \
    [ "$RUN_ISOLATION" != true ] || [ "${#PYTEST_FORWARD_ARGS[@]}" -ne 0 ]; }; then
-    echo "ERROR: --ingress requires --expect-platform kvm --proxy-impl rust and no suite override" >&2
+    echo "ERROR: --ingress requires --expect-platform systrap|kvm --proxy-impl rust and no suite override" >&2
     exit 2
 fi
 if [ "$WORKLOADS" = true ] && { [ "$INGRESS" = true ] || \
@@ -584,6 +584,7 @@ STARTED_SINKHOLE=false
 STARTED_PARENT=false
 STARTED_PROXY=false
 STARTED_VM=false
+STARTED_INGRESS_PEER=false
 SINKHOLE_PID=""
 SINKHOLE_PID_FILE="$SAFEYOLO_CONFIG_DIR/sinkhole.pid"
 SINKHOLE_ARGV_FILE="$SAFEYOLO_CONFIG_DIR/sinkhole.argv"
@@ -778,6 +779,9 @@ PY_OWNER
     if [ "$STARTED_VM" = true ]; then
         echo "Stopping $AGENT_NAME..."
         safeyolo agent stop "$AGENT_NAME" || cleanup_failed=true
+    fi
+    if [ "${STARTED_INGRESS_PEER:-false}" = true ]; then
+        safeyolo agent stop bbpeer || cleanup_failed=true
     fi
 
     if [ "$STARTED_PROXY" = true ]; then
@@ -1107,6 +1111,13 @@ if [ "$RUN_ISOLATION" = true ]; then
         echo "ERROR: test guest dependencies could not be prepared" >&2
         exit 2
     fi
+    if [ "$INGRESS" = true ] && [ "$EXPECTED_PLATFORM" = systrap ]; then
+        # This focused fixture owns two agents in its disposable instance.
+        safeyolo agent create bbpeer --workspace "$REPO_ROOT"
+        STARTED_INGRESS_PEER=true
+        safeyolo agent start bbpeer --sandbox-only
+        python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" bbpeer --prepare-tests
+    fi
 fi
 
 # Inspect the running backend, not a host prerequisite prediction from doctor.
@@ -1135,6 +1146,14 @@ fi
 
 trap - ERR
 if [ "$INGRESS" = true ]; then
+    if [ "$EXPECTED_PLATFORM" = systrap ]; then
+        python3 "$SCRIPT_DIR/installed_ingress_pair.py" \
+            --config-dir "$SAFEYOLO_CONFIG_DIR" \
+            --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
+            --output "$ARTIFACTS_DIR/installed-ingress-pair.json" \
+            "${INSTALL_COMMIT_ARGS[@]+"${INSTALL_COMMIT_ARGS[@]}"}"
+        exit $?
+    fi
     python3 "$SCRIPT_DIR/installed_ingress.py" \
         --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \
         --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
