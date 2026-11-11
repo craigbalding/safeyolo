@@ -30,6 +30,7 @@ import pytest
 from tests.blackbox.installed_docker_preflight import (
     gateway_client_failure,
     gateway_compose_journey,
+    gateway_compose_resume,
     gateway_management,
     run,
     verify_gateway_client_failure,
@@ -349,7 +350,13 @@ def test_gateway_lifecycle_application_observer_checks_persistence_without_repla
             return json.dumps([{"Id": name, "State": {"Running": True}, "HostConfig": {"NetworkMode": "host"},
                                 "Config": {"Labels": {"com.docker.compose.service": name}}} for name in ("api", "store")])
         if label.startswith("gateway-notes-"):
-            program = shlex.split(command)[-1].replace('"127.0.0.1", 8088', f'"127.0.0.1", {server.server_port}')
+            original = report["gateway_lifecycle"].get("recovery_probe", {}).get("command", command)
+            program = shlex.split(original)[-1].replace('"127.0.0.1", 8088', f'"127.0.0.1", {server.server_port}')
+            if label == "gateway-notes-recovered":
+                command = command.replace(original, shlex.join([sys.executable, "-c", program]))
+                command = command.replace("/workspace/" + report["gateway_lifecycle"]["project"],
+                                          str(caller / report["gateway_lifecycle"]["project"]))
+                return subprocess.check_output(["bash", "-c", "set -eu; " + command], text=True, stderr=subprocess.PIPE)
             return subprocess.check_output(["python3", "-c", program], text=True, stderr=subprocess.PIPE)
         if label == "gateway-compose-exec":
             return "gateway-exec"
@@ -358,7 +365,7 @@ def test_gateway_lifecycle_application_observer_checks_persistence_without_repla
         if label == "gateway-lifecycle-attach":
             return "attach:gateway-attach"
         if label in {"gateway-volume-before", "gateway-volume-after"}:
-            return '[{"CreatedAt":"same-creation"}]'
+            return '[{"Name":"original-volume","Mountpoint":"/original/data","CreatedAt":"same-creation"}]'
         if label == "gateway-compose-recreate":
             recovered = True
         return ""
@@ -378,6 +385,73 @@ def test_gateway_lifecycle_application_observer_checks_persistence_without_repla
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+@pytest.mark.parametrize("failure", [None, "container-changed", "volume-changed", "mount-changed",
+                                     "start-unknown", "client-126", "native-126", "capture-lost"])
+def test_gateway_continuation_reconciles_existing_targets_and_preserves_command_receipts(tmp_path, failure):
+    name = "sycompose" + "a" * 12
+    context = tmp_path / name
+    context.mkdir()
+    (context / "compose.yaml").write_text("retained caller context\n")
+    volume = {"Name": name + "_notes", "Mountpoint": "/retained/volume/_data", "CreatedAt": "original-creation"}
+    observation = {"project": name, "image": name + ":qualification", "volume": volume["Name"],
+                   "registry_image": "127.0.0.1:12345/guest:" + name, "volume_before": [volume],
+                   "containers": ["old-api", "old-store"], "recreated_containers": ["new-api", "new-store"],
+                   "written": '["persist-original"]\n', "state": "incomplete"}
+    inspected = [{"Id": "new-" + service, "State": {"Running": False}, "HostConfig": {"NetworkMode": "host"},
+                  "Config": {"Image": observation["image"], "Labels": {"com.docker.compose.project": name,
+                             "com.docker.compose.service": service}},
+                  "Mounts": [{"Type": "volume", "Name": volume["Name"], "Source": volume["Mountpoint"],
+                              "Destination": "/data"}] if service == "store" else []} for service in ("api", "store")]
+    steps = []
+
+    def client(command, label):
+        steps.append(label)
+        if label == "gateway-resume-containers":
+            return "different-api\nnew-store\n" if failure == "container-changed" else "new-api\nnew-store\n"
+        if label == "gateway-resume-inspect":
+            if failure == "mount-changed":
+                inspected[1]["Mounts"][0]["Source"] = "/different/data"
+            return json.dumps(inspected)
+        if label in {"gateway-resume-volume", "gateway-volume-after"}:
+            return json.dumps([volume | {"CreatedAt": "different"}] if failure == "volume-changed" else [volume])
+        if label == "gateway-resume-start-store" and failure == "start-unknown":
+            raise RuntimeError("unknown start result after dispatch")
+        if label == "gateway-notes-recovered":
+            if failure == "native-126":
+                raise RuntimeError("native shell exited 126 before command capture")
+            original = observation["recovery_probe"]["command"]
+            assert shlex.split(original)[-5:-1] == ["-T", "api", "python3", "-c"]
+            assert "\nif False:\n" in shlex.split(original)[-1], "recovery must not write another note"
+            replacement = "(exit 126)" if failure == "client-126" else "printf '%s\\n' '[\"persist-original\"]'"
+            command = command.replace(original, replacement).replace("/workspace/" + name, str(context))
+            output = subprocess.check_output(["bash", "-c", "set -eu; " + command], text=True, stderr=subprocess.PIPE)
+            if failure == "capture-lost":
+                raise RuntimeError("native output unavailable after command completed")
+            return output
+        return ""
+
+    if failure:
+        with pytest.raises((AssertionError, RuntimeError, subprocess.CalledProcessError)):
+            gateway_compose_resume(tmp_path, observation, client)
+        assert observation["state"] == "incomplete" and "gateway-compose-teardown" not in steps
+        if failure in {"container-changed", "volume-changed", "mount-changed"}:
+            assert not any("start-" in step or step == "gateway-notes-recovered" for step in steps)
+        if failure == "start-unknown":
+            assert steps.count("gateway-resume-start-store") == 1 and "gateway-resume-start-api" not in steps
+        if failure in {"client-126", "native-126", "capture-lost"}:
+            probe = observation["recovery_probe"]
+            assert probe["exit"] == {"client-126": "126\n", "native-126": None, "capture-lost": "0\n"}[failure]
+            assert probe["stdout"] == {"client-126": "", "native-126": None,
+                                       "capture-lost": '["persist-original"]\n'}[failure]
+    else:
+        gateway_compose_resume(tmp_path, observation, client)
+        assert observation["state"] == "passed" and observation["volume_after"] == [volume]
+        assert steps.index("gateway-resume-volume") < steps.index("gateway-resume-start-store") < steps.index("gateway-resume-start-api")
+        assert "gateway-compose-teardown" in steps and observation["recovery_probe"]["exit"] == "0\n"
+    assert not {"gateway-image-pull", "gateway-compose-build", "gateway-compose-up", "gateway-compose-recreate"}.intersection(steps)
+    assert steps.count("gateway-notes-recovered") <= 1
 
 
 @pytest.mark.parametrize("exit_code,diagnostic,valid", [
