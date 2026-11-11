@@ -32,6 +32,8 @@ from tests.blackbox.installed_docker_preflight import (
     gateway_compose_journey,
     gateway_compose_resume,
     gateway_management,
+    gateway_notes_command,
+    gateway_recovery_receipt,
     run,
     verify_gateway_client_failure,
     verify_outbound,
@@ -452,6 +454,90 @@ def test_gateway_continuation_reconciles_existing_targets_and_preserves_command_
         assert "gateway-compose-teardown" in steps and observation["recovery_probe"]["exit"] == "0\n"
     assert not {"gateway-image-pull", "gateway-compose-build", "gateway-compose-up", "gateway-compose-recreate"}.intersection(steps)
     assert steps.count("gateway-notes-recovered") <= 1
+
+
+@pytest.mark.parametrize("failure", [None, "source", "project", "command", "started", "exit", "stdout", "stderr",
+                                     "container-changed", "mount-changed", "volume-changed", "volume-after-changed",
+                                     "teardown-unknown", "remaining-pull-image"])
+def test_gateway_saved_client_recovery_continues_only_volume_and_owned_teardown(tmp_path, failure):
+    name = "sycompose" + "b" * 12
+    volume = {"Name": name + "_notes", "Mountpoint": "/retained/volume/_data", "CreatedAt": "original-creation"}
+    observation = {"project": name, "image": name + ":qualification", "volume": volume["Name"],
+                   "volume_before": [volume], "containers": ["old-api", "old-store"],
+                   "recreated_containers": ["new-api", "new-store"], "written": '["persist-original"]\n', "state": "incomplete"}
+    previous = {"lifecycle": observation, "gateway_route": {"provider": "notes", "caller": "dockercaller"}}
+    compose = f"/workspace/docker-client compose -p {name} --project-directory /home/agent/{name}/context"
+    probe = {"command": gateway_notes_command(compose, "persist-original", ["persist-original"]),
+             "started": "started\n", "stdout": observation["written"], "stderr": "", "exit": "0\n"}
+    receipt = {field: deepcopy(observation[field]) for field in
+               ("project", "image", "volume", "recreated_containers", "written", "volume_before")}
+    receipt.update(original_containers=observation["containers"], gateway_route=previous["gateway_route"],
+                   prior_receipt_sha256="original-receipt-hash", cleanup="stopped", restoration="complete", survivors=[],
+                   reached_step="gateway-notes-recovered", native_command_exit=1, recovery_probe=probe)
+    if failure == "source":
+        receipt["prior_receipt_sha256"] = "different"
+    elif failure == "project":
+        receipt["project"] = "different"
+    elif failure in {"command", "started", "exit", "stdout", "stderr"}:
+        receipt["recovery_probe"][failure] = {"command": "different", "started": None, "exit": "126\n",
+                                               "stdout": '["different"]\n', "stderr": "failed"}[failure]
+    path = tmp_path / "recovery.json"
+    path.write_text(json.dumps(receipt))
+    report = {}
+    if failure in {"source", "project", "command", "started", "exit", "stdout", "stderr"}:
+        with pytest.raises(AssertionError):
+            gateway_recovery_receipt(path, previous, "original-receipt-hash", report)
+        assert report["gateway_recovery_source"]["receipt"] == receipt
+        return
+    retained = gateway_recovery_receipt(path, previous, "original-receipt-hash", report)
+    observation["registry_image"] = "127.0.0.1:12345/guest:" + name
+    context = tmp_path / name
+    context.mkdir()
+    (context / "compose.yaml").write_text("retained context\n")
+    inspected = [{"Id": "new-" + service, "State": {"Running": False}, "HostConfig": {"NetworkMode": "host"},
+                  "Config": {"Image": observation["image"], "Labels": {"com.docker.compose.project": name,
+                             "com.docker.compose.service": service}},
+                  "Mounts": [{"Type": "volume", "Name": volume["Name"], "Source": volume["Mountpoint"],
+                              "Destination": "/data"}] if service == "store" else []} for service in ("api", "store")]
+    steps = []
+
+    def client(command, label):
+        steps.append(label)
+        if label == "gateway-resume-containers":
+            return "different-api\nnew-store\n" if failure == "container-changed" else "new-api\nnew-store\n"
+        if label == "gateway-resume-inspect":
+            if failure == "mount-changed":
+                inspected[1]["Mounts"][0]["Source"] = "/different/data"
+            return json.dumps(inspected)
+        if label in {"gateway-resume-volume", "gateway-volume-after"}:
+            changed = failure == "volume-changed" or (label == "gateway-volume-after" and failure == "volume-after-changed")
+            return json.dumps([volume | {"CreatedAt": "different"}] if changed else [volume])
+        if label == "gateway-compose-teardown" and failure == "teardown-unknown":
+            raise RuntimeError("teardown reply lost after dispatch")
+        if label == "gateway-teardown-pull-image" and failure == "remaining-pull-image":
+            return "remaining-image\n"
+        return ""
+
+    if failure:
+        with pytest.raises((AssertionError, RuntimeError)):
+            gateway_compose_resume(tmp_path, observation, client, recovery_receipt=retained)
+        assert observation["state"] == "incomplete"
+        if failure in {"container-changed", "mount-changed", "volume-changed", "volume-after-changed"}:
+            assert "gateway-compose-teardown" not in steps
+        if failure == "teardown-unknown":
+            assert steps.count("gateway-compose-teardown") == 1 and "gateway-image-remove" not in steps
+        if failure == "volume-after-changed":
+            assert observation["volume_after"][0]["CreatedAt"] == "different"
+        if failure == "remaining-pull-image":
+            assert observation["teardown_absence"]["pull-image"] == "remaining-image\n"
+    else:
+        gateway_compose_resume(tmp_path, observation, client, recovery_receipt=retained)
+        assert observation["state"] == "passed" and observation["volume_after"] == [volume]
+        assert observation["recovery_probe"] == probe and observation["recovered"] == probe["stdout"]
+        assert steps[-4:] == ["gateway-teardown-" + label for label in ("containers", "volumes", "images", "pull-image")]
+    assert report["gateway_recovery_source"]["receipt"]["native_command_exit"] == 1
+    assert not any("start-" in step or "notes-" in step or "build" in step or "pull" == step for step in steps)
+    assert path.read_text() == json.dumps(receipt)
 
 
 @pytest.mark.parametrize("exit_code,diagnostic,valid", [

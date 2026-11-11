@@ -23,6 +23,9 @@ operator receipt for a stopped run that reached gateway-notes-recovered. It insp
 same recreated containers and volume before starting any stopped container.
 It records the recovery command's output and exit in the caller workspace,
 separately from the native shell result. No pull, build or recreation is repeated.
+With --gateway-recovery-receipt RECEIPT, it consumes the retained successful
+client recovery instead of starting workloads or reading the application again.
+The receipt must identify the same source receipt, workloads and saved data.
 --gateway-failures-only retains the earlier management proof and runs only the
 daemon, closed-port and stopped-provider failure controls with --gateway.
 --reuse-root continues this probe's stopped disposable instance without
@@ -207,6 +210,13 @@ def gateway_compose_finish(caller, observation, client_command):
             path = directory / part
             probe[part] = path.read_text() if path.exists() else None
     assert probe["exit"] == "0\n", "missing successful Docker client receipt"
+    gateway_compose_teardown(observation, client_command)
+
+
+def gateway_compose_teardown(observation, client_command):
+    """Record the retained volume, then remove this journey's owned workloads."""
+    name = observation["project"]
+    compose = f"/workspace/docker-client compose -p {shlex.quote(name)} --project-directory /home/agent/{name}/context"
     volume_after = json.loads(client_command(f"/workspace/docker-client volume inspect {shlex.quote(observation['volume'])}",
                                              "gateway-volume-after").strip().removeprefix("\x1b[2K"))
     observation["volume_after"] = volume_after
@@ -215,15 +225,17 @@ def gateway_compose_finish(caller, observation, client_command):
     client_command(f"{compose} down --volumes", "gateway-compose-teardown")
     client_command(f"/workspace/docker-client image rm {shlex.quote(observation['image'])}", "gateway-image-remove")
     client_command(f"/workspace/docker-client image rm {shlex.quote(observation['registry_image'])}", "gateway-pull-image-remove")
+    absence = observation["teardown_absence"] = {}
     for arguments, label in ((f"ps --all --quiet --filter label=com.docker.compose.project={name}", "containers"),
                              (f"volume ls --quiet --filter name={name}_notes", "volumes"),
-                             (f"image ls --quiet {observation['image']}", "images")):
-        remaining = client_command("/workspace/docker-client " + arguments, "gateway-teardown-" + label)
+                             (f"image ls --quiet {observation['image']}", "images"),
+                             (f"image ls --quiet {shlex.quote(observation['registry_image'])}", "pull-image")):
+        remaining = absence[label] = client_command("/workspace/docker-client " + arguments, "gateway-teardown-" + label)
         assert not remaining.strip().removeprefix("\x1b[2K"), f"owned {label} remain after teardown"
     observation["state"] = "passed"
 
 
-def gateway_compose_resume(caller, observation, client_command):
+def gateway_compose_resume(caller, observation, client_command, *, recovery_receipt=None):
     """Reconcile the retained recreated workloads before the remaining steps."""
     name = observation["project"]
     assert name.startswith("sycompose") and len(name) == 21 and all(c in "0123456789abcdef" for c in name[9:])
@@ -254,11 +266,41 @@ def gateway_compose_resume(caller, observation, client_command):
                mount["Source"] == before["Mountpoint"] and mount["Destination"] == "/data"
                for mount in services["store"]["Mounts"]), "store is not bound to the retained data volume"
     observation["resume_logs"] = client_command(f"{compose} logs --no-color --tail 100", "gateway-resume-logs")
+    if recovery_receipt is not None:
+        # The operator retained the client's successful result even though the
+        # native shell failed. Reconcile current bindings without replaying it.
+        observation["recovery_probe"] = recovery_receipt["recovery_probe"]
+        observation["recovered"] = recovery_receipt["recovery_probe"]["stdout"]
+        gateway_compose_teardown(observation, client_command)
+        return
     for service in ("store", "api"):
         container = services[service]
         if not container["State"]["Running"]:
             client_command("/workspace/docker-client start " + shlex.quote(container["Id"]), "gateway-resume-start-" + service)
     gateway_compose_finish(caller, observation, client_command)
+
+
+def gateway_recovery_receipt(path, previous, source_sha256, report):
+    """Bind a retained successful client capture to the original lifecycle."""
+    receipt = json.loads(path.read_text())
+    report["gateway_recovery_source"] = {"path": str(path), "sha256": _sha256(path), "receipt": receipt}
+    assert receipt["prior_receipt_sha256"] == source_sha256, "recovery source receipt changed"
+    assert receipt["cleanup"] == "stopped" and receipt["restoration"] == "complete" and not receipt["survivors"]
+    assert receipt["reached_step"] == "gateway-notes-recovered", "receipt does not identify recovery"
+    lifecycle = previous["lifecycle"]
+    for field in ("project", "image", "volume", "recreated_containers", "written", "volume_before"):
+        assert receipt[field] == lifecycle[field], f"recovery {field} changed"
+    assert receipt["original_containers"] == lifecycle["containers"], "original container IDs changed"
+    assert receipt["gateway_route"] == previous["gateway_route"], "recovery provider route changed"
+    expected = json.loads(lifecycle["written"].strip().removeprefix("\x1b[2K"))
+    assert len(expected) == 1 and isinstance(expected[0], str), "missing original data marker"
+    name = lifecycle["project"]
+    compose = f"/workspace/docker-client compose -p {shlex.quote(name)} --project-directory /home/agent/{name}/context"
+    probe = receipt["recovery_probe"]
+    assert probe["command"] == gateway_notes_command(compose, expected[0], expected), "recovery command changed"
+    assert probe["started"] == "started\n" and probe["exit"] == "0\n", "missing successful Docker client receipt"
+    assert probe["stderr"] == "" and json.loads(probe["stdout"]) == expected, "recovered data differs from saved data"
+    return receipt
 
 
 def gateway_compose_journey(caller, client_command, guest, background, report):
@@ -399,12 +441,16 @@ def gateway_management(args, root, output, native, guest, background, report):
     resume = getattr(args, "gateway_lifecycle_resume", None)
     lifecycle = getattr(args, "gateway_lifecycle", False) or bool(resume)
     previous = None
+    recovery_receipt = None
     if resume:
         previous = json.loads(resume.read_text())
         assert previous["cleanup"] == "stopped" and previous["registry"]["registry_cleanup"] == "removed"
         assert previous["reached_step"] == "gateway-notes-recovered" and previous["lifecycle"]["state"] == "incomplete"
         report["gateway_lifecycle_source"] = {"path": str(resume), "sha256": _sha256(resume),
                                               "revision": previous["source_driver"], "driver_sha256": previous["driver_sha256"]}
+        recovery_path = getattr(args, "gateway_recovery_receipt", None)
+        if recovery_path:
+            recovery_receipt = gateway_recovery_receipt(recovery_path, previous, _sha256(resume), report)
     name = "sygateway" + uuid.uuid4().hex[:12]
     if not lifecycle:
         report["gateway_container"] = name
@@ -486,8 +532,9 @@ printf 'Authorization: Bearer %s\\n' "$agent_token" |
             else:
                 assert report["gateway_route"] == previous["gateway_route"], "retained provider route changed"
                 report["gateway_lifecycle"] = previous["lifecycle"] | {"registry_image": previous["registry"]["registry_image"]}
-                gateway_compose_resume(caller, report["gateway_lifecycle"], client_command)
-            report["gateway_result"] = "multi-service gateway lifecycle passed"
+                gateway_compose_resume(caller, report["gateway_lifecycle"], client_command, recovery_receipt=recovery_receipt)
+            report["gateway_result"] = ("retained recovery, volume identity and owned teardown passed" if recovery_receipt else
+                                        "multi-service gateway lifecycle passed")
             return
         # Keep the accepted single-container and negative-only paths separate
         # from the optional missing-route proof. Both use guest host networking.
@@ -1002,6 +1049,8 @@ def main():
                         help="with --gateway, run the missing Compose lifecycle instead of the retained single-container checks")
     parser.add_argument("--gateway-lifecycle-resume", type=Path, metavar="RECEIPT",
                         help="with --gateway, inspect retained recreated workloads and continue only recovery and teardown")
+    parser.add_argument("--gateway-recovery-receipt", type=Path, metavar="RECEIPT",
+                        help="with --gateway-lifecycle-resume, reuse captured successful recovery and continue only teardown")
     parser.add_argument("--reuse-root", action="store_true")
     parser.add_argument("--docker-data", help="existing guest Docker data root; reuse its qualified image instead of pulling again")
     parser.add_argument("--host-address", help="unapproved real venue host address for the inner network negative control")
@@ -1013,6 +1062,8 @@ def main():
         parser.error("--gateway-lifecycle requires --gateway, without --gateway-failures-only")
     if args.gateway_lifecycle_resume and (not args.gateway or args.gateway_lifecycle or args.gateway_failures_only):
         parser.error("--gateway-lifecycle-resume requires --gateway, without --gateway-lifecycle or --gateway-failures-only")
+    if args.gateway_recovery_receipt and not args.gateway_lifecycle_resume:
+        parser.error("--gateway-recovery-receipt requires --gateway-lifecycle-resume")
     if args.reuse_root and not (args.journey or args.gateway):
         parser.error("--reuse-root requires --journey or --gateway")
     if args.gateway and (not args.reuse_root or not args.nested_docker):
