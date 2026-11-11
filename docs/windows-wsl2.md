@@ -26,6 +26,16 @@ ssh -tt windows-host 'wsl.exe -d Ubuntu-24.04 -u linux-user --exec /bin/bash'
 The command selects the distribution and Linux user, then opens WSL Bash.
 Run the remaining commands in that Bash session. Keep Linux arguments there
 instead of embedding shell expressions or credentials in a Windows command.
+Select gVisor's systrap platform explicitly for this session before starting
+SafeYolo or preparing another installation:
+
+```sh
+export SAFEYOLO_RUNSC_PLATFORM=systrap
+```
+
+This selects the qualified Linux backend. It does not enable a Windows backend
+or require `/dev/kvm`.
+
 The qualification used Windows OpenSSH and PowerShell to invoke fixed Linux
 Bash scripts and a Python observer in WSL. The observer launched the coding
 client through `agent start` and its staged Bash command.
@@ -113,6 +123,52 @@ Stopping retains the agent home and workspace. See
 
 ## Qualification limits
 
+### Packaged first boot
+
+The accepted observations below start with prepared host and guest inputs.
+They do not establish a cold public-bootstrap installation on Windows.
+The remaining [packaged first-boot qualification](https://github.com/craigbalding/safeyolo/issues/1417)
+must join the official bootstrap, package installation, shell readiness and
+authenticated coding-client interaction on the selected WSL setup.
+Installation completion alone is not shell or client readiness.
+
+Keep these boundaries separate when reproducing that qualification:
+
+| Boundary | Required observation |
+| --- | --- |
+| Starting state | Record the Windows edition/build, WSL version/kernel, distribution, ordinary Linux account, effective networking mode, filesystem, existing installation and cached inputs. |
+| Preparation | Record acquisition, host preparation, input verification and any reading or consent before the installation interval. Preserve the host-preparation prompt; `--yes` does not authorize workspace sharing or client authentication. |
+| Installation and first shell | Record the exact bootstrap, host package and guest identities, explicit systrap selection, invocation, start/end points, exit and a successful command in the new guest. Mark prepared or cached inputs explicitly. |
+| Coding client | Record the complete client package, separately authorized authentication, actual terminal interaction and a host-verified workspace result. Keep authentication and approval waits separate from installation and shell readiness. |
+| Recovery and teardown | Inspect the original result before retrying an uncertain command. Stop only the owned agent, proxy and Coord instance. Retain original failures, stopped state and useful inputs. |
+
+There is no new performance target. A fresh instance with prepared host or
+guest bytes is a prepared-input result. It must not be described as a cold
+first boot or a cold public download. Reuse the accepted reboot/recovery,
+ingress, storage and terminal results at their actual source and input bindings;
+do not repeat those journeys solely to collect a new report.
+
+### Installed systrap checks
+
+The maintained [installed-section runner](../tests/blackbox/README.md#run-installed-sections-with-one-preparation)
+can reuse the selected installed package inside WSL. Run it from a clean
+matching test checkout with its prepared Python environment and the selected
+installation's runtime prerequisites. The example assumes that installation
+is `$HOME/.safeyolo`. It creates separate writable test instances and starts
+real guests. Reports and owned cleanup results go to the selected output
+directory; use a new directory for a new attempt.
+
+```sh
+SAFEYOLO_RUNSC_PLATFORM=systrap .venv/bin/python tests/blackbox/installed_sections.py systrap --prepared-config "$HOME/.safeyolo" --section isolation --section lifecycle --artifacts "$HOME/wsl-isolation-lifecycle"
+```
+
+Success requires both sections to report `passed` with no cleanup failures.
+The accepted #1413 run already exercised these sections with the inputs below.
+The KVM-only `installed_ingress.py` selector does not establish systrap ingress;
+use the separately accepted #1414 result for that boundary.
+
+### Tested platform and inputs
+
 The retained 11 November 2026 observations used physical Windows 11 Pro 25H2,
 Windows OpenSSH, PowerShell, WSL2 Ubuntu 24.04.5, a Linux account with user ID
 (UID) and group ID (GID) 1000, network address translation (NAT), and an ext4
@@ -120,6 +176,9 @@ workspace.
 The selected distribution was `SafeYoloTest` and the Linux user was `syop`.
 These observations do not qualify other distributions, networking modes or
 Windows terminal programs.
+The selected Pro edition is an evidence binding, not a WSL2 requirement for
+Pro or Enterprise. No nested Windows Server or Windows guest image was
+qualified by this physical run.
 
 | Boundary | Observed result |
 | --- | --- |
