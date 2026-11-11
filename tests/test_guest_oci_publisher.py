@@ -12,16 +12,14 @@ import sys
 import tarfile
 import tempfile
 import textwrap
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
 
 import certifi
 import pytest
 import yaml
 
 from scripts import prepare_guest_transport_fixture
+from tests.blackbox.registry_fixture import distribution_registry
 
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = "a" * 40
@@ -246,95 +244,8 @@ def artifacts(tmp_path, built):
 
 @pytest.fixture
 def registry():
-    """Disposable Distribution API store: ORAS supplies all OCI objects and transfer."""
-    blobs, manifests, tags, uploads, events = {}, {}, {}, {}, []
-    faults = {"blob": False, "index": False, "upload": False, "promotion": False}
-
-    class Registry(BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.1"
-
-        def log_message(self, *args):
-            return
-
-        def handle(self):
-            try:
-                super().handle()
-            except (ConnectionResetError, BrokenPipeError):
-                # ORAS closes a transfer when a deliberate corrupt readback
-                # fails its digest check; that client disconnect is expected.
-                return
-
-        def reply(self, status, data=b"", **headers):
-            self.send_response(status)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Docker-Distribution-Api-Version", "registry/2.0")
-            for key, value in headers.items():
-                self.send_header(key.replace("_", "-"), value)
-            self.end_headers()
-            if self.command != "HEAD":
-                self.wfile.write(data)
-
-        def dispatch(self):
-            request = urlsplit(self.path)
-            path = request.path
-            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
-            events.append((self.command, path))
-            if path in ("/v2/", "/v2"):
-                return self.reply(200, b"{}")
-            if path.endswith("/tags/list"):
-                return self.reply(200, json.dumps({"name": "guest", "tags": list(tags)}).encode(),
-                                  Content_Type="application/json")
-            if "/blobs/uploads" in path:
-                if self.command == "POST":
-                    token = str(len(uploads))
-                    uploads[token] = body
-                    return self.reply(202, Location=f"/v2/guest/blobs/uploads/{token}", Docker_Upload_UUID=token)
-                token = path.rsplit("/", 1)[1]
-                uploads[token] += body
-                if self.command == "PATCH":
-                    return self.reply(202, Location=path, Docker_Upload_UUID=token)
-                digest = parse_qs(request.query)["digest"][0]
-                assert digest == "sha256:" + hashlib.sha256(uploads[token]).hexdigest()
-                blobs[digest] = uploads[token]
-                return self.reply(201, Location=f"/v2/guest/blobs/{digest}", Docker_Content_Digest=digest)
-            if "/blobs/" in path:
-                digest = path.rsplit("/", 1)[1]
-                if digest not in blobs:
-                    return self.reply(404)
-                data = blobs[digest]
-                if (faults["blob"] is True or faults["blob"] == digest) and self.command == "GET":
-                    data = b"!" + data[1:]
-                return self.reply(200, data, Content_Type="application/octet-stream", Docker_Content_Digest=digest)
-            if "/manifests/" in path:
-                reference = path.rsplit("/", 1)[1]
-                if self.command == "PUT":
-                    if faults["upload"] or (faults["promotion"] and reference == "compat-v1"):
-                        return self.reply(400)
-                    digest = "sha256:" + hashlib.sha256(body).hexdigest()
-                    manifests[digest] = body
-                    if not reference.startswith("sha256:"):
-                        tags[reference] = digest
-                    return self.reply(201, Location=path, Docker_Content_Digest=digest)
-                digest = tags.get(reference, reference)
-                if digest not in manifests:
-                    return self.reply(404)
-                data = manifests[digest]
-                if faults["index"] and self.command == "GET" and "manifests" in json.loads(data):
-                    data = b" " + data
-                return self.reply(200, data, Content_Type=json.loads(data)["mediaType"], Docker_Content_Digest=digest)
-            return self.reply(404)
-
-        do_GET = do_HEAD = do_POST = do_PATCH = do_PUT = dispatch
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Registry)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"127.0.0.1:{server.server_port}/guest", blobs, manifests, tags, events, faults
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
+    with distribution_registry() as registry:
+        yield registry
 
 
 def publish(tmp_path, artifacts, publisher_tools, repository=None, version="guest-2026-10-12.1", compatibility="v1", revision=REVISION, from_layout=False, profile=None):

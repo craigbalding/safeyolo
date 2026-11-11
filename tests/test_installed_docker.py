@@ -4,12 +4,15 @@ These exercise the observer's refusal handling. They do not establish the
 installed sandbox's network enforcement.
 """
 
+import hashlib
+import http.client
 import io
 import json
 import os
 import runpy
 import shlex
 import subprocess
+import sys
 import threading
 from copy import deepcopy
 from email.message import Message
@@ -32,63 +35,145 @@ from tests.blackbox.installed_docker_preflight import (
     verify_outbound,
     verify_provider_origin,
 )
+from tests.blackbox.installed_provider import wait_file
+from tests.blackbox.registry_fixture import distribution_registry
 
 PROBE = Path(__file__).parent / "blackbox/fixtures/nested-docker/network_probe.py"
 
 
-@pytest.mark.parametrize("interruption", ["gateway-image-pull", "gateway-compose-up"])
-def test_gateway_lifecycle_preserves_failed_effects_and_removes_private_pull_config(tmp_path, interruption):
+@pytest.mark.parametrize("disk_backed", [False, True])
+def test_owned_registry_handles_docker_chunked_layers_and_schema2_readback(tmp_path, disk_backed):
+    log = tmp_path / "events.jsonl"
+    directory = tmp_path / "blobs" if disk_backed else None
+    layer = b"docker-layer" * 10000
+    digest = "sha256:" + hashlib.sha256(layer + b"tail").hexdigest()
+    with distribution_registry(directory, log) as (repository, blobs, _, _, _, _):
+        connection = http.client.HTTPConnection(repository.split("/")[0], timeout=5)
+
+        def request(method, path, body=None, **kwargs):
+            connection.request(method, path, body=body, **kwargs)
+            response = connection.getresponse()
+            return response.status, dict(response.getheaders()), response.read()
+
+        assert request("GET", "/v2/")[0] == 200
+        assert request("HEAD", "/v2/guest/blobs/" + digest)[0] == 404
+        status, headers, _ = request("POST", "/v2/guest/blobs/uploads/")
+        assert status == 202
+        location = headers["Location"]
+        status, headers, _ = request("PATCH", location, iter([layer[:3], layer[3:]]), encode_chunked=True)
+        assert status == 202 and headers["Range"] == f"0-{len(layer) - 1}"
+        status, headers, _ = request("PATCH", location, b"tail")
+        assert status == 202 and headers["Range"] == f"0-{len(layer) + 3}"
+        assert request("PUT", location + "?digest=sha256:" + "0" * 64)[0] == 400
+        assert request("GET", "/v2/guest/blobs/" + digest)[0] == 404
+        assert request("PUT", location + "?digest=" + digest)[0] == 201
+        if disk_backed:
+            assert isinstance(blobs[digest], Path)
+        status, headers, body = request("GET", "/v2/guest/blobs/" + digest)
+        assert status == 200 and body == layer + b"tail"
+        assert headers["Docker-Content-Digest"] == digest
+        status, headers, body = request("HEAD", "/v2/guest/blobs/" + digest)
+        assert status == 200 and int(headers["Content-Length"]) == len(layer) + 4 and body == b""
+        manifest = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                               "config": {}, "layers": [{"digest": digest, "size": len(layer) + 4}]}).encode()
+        manifest_digest = "sha256:" + hashlib.sha256(manifest).hexdigest()
+        assert request("PUT", "/v2/guest/manifests/qualification", manifest)[0] == 201
+        for reference in ("qualification", manifest_digest):
+            status, headers, body = request("GET", "/v2/guest/manifests/" + reference)
+            assert status == 200 and body == manifest and headers["Docker-Content-Digest"] == manifest_digest
+        assert request("GET", "/v2/guest/manifests/missing")[0] == 404
+        connection.close()
+    events = [json.loads(line) for line in log.read_text().splitlines()]
+    assert any(row["method"] == "PATCH" and row["status"] == 202 for row in events)
+    assert events[-1]["status"] == 404
+
+
+def test_owned_registry_standalone_guest_script_stops_its_listener(tmp_path):
+    ready = tmp_path / "ready.json"
+    script = Path(__file__).parent / "blackbox/registry_fixture.py"
+    with subprocess.Popen([sys.executable, "-I", str(script), "--directory", str(tmp_path / "blobs"),
+                           "--ready-file", str(ready), "--events-file", str(tmp_path / "events.jsonl")]) as child:
+        try:
+            wait_file(ready, child)
+            state = json.loads(ready.read_text())
+            assert state["pid"] == child.pid and state["repository"].startswith("127.0.0.1:")
+            connection = http.client.HTTPConnection(state["repository"].split("/")[0], timeout=5)
+            connection.request("GET", "/v2/")
+            response = connection.getresponse()
+            assert response.status == 200 and response.read() == b"{}"
+            connection.close()
+        finally:
+            child.terminate()
+            assert child.wait(timeout=5) == 0
+    with pytest.raises(ConnectionRefusedError):
+        http.client.HTTPConnection(state["repository"].split("/")[0], timeout=5).connect()
+
+
+def registry_guest(_command, label, **_):
+    if label == "gateway-registry-ready":
+        return json.dumps({"repository": "127.0.0.1:44444/guest", "pid": 123})
+    if label == "gateway-registry-pull-requests":
+        return json.dumps({"method": "GET", "path": "/v2/guest/manifests/qualification", "status": 200})
+    return ""
+
+
+def registry_background(*_):
+    return (SimpleNamespace(poll=lambda: None, wait=lambda **_: 0),)
+
+
+@pytest.mark.parametrize("interruption", ["gateway-registry-seed", "gateway-image-pull", "gateway-compose-up"])
+def test_gateway_lifecycle_preserves_failed_effects_without_repeating_mutations(tmp_path, interruption):
     caller = tmp_path / "caller"
     caller.mkdir()
-    (caller / "docker-compose").write_text("synthetic plugin, never executed\n")
-    config = tmp_path / "client-config"
-    config.mkdir()
-    original = {"HttpHeaders": {"Authorization": "Bearer synthetic-scoped-token", "X-SafeYolo-Docker-Service": "notes"}}
-    (config / "config.json").write_text(json.dumps(original))
-    auth = tmp_path / "approved-auth.json"
-    auth.write_text(json.dumps({"registrytoken": "synthetic-approved-registry-token"}))
     report = {}
     steps = []
 
-    def guest(command, label, **_):
-        if label == "gateway-application-ports":
-            return ""
-        state = tmp_path / report["gateway_lifecycle"]["project"]
-        command = command.replace("/home/agent/docker-gateway-client", str(config))
-        command = command.replace("/home/agent/" + state.name, str(state)).replace("/workspace", str(caller))
-        return subprocess.check_output(["bash", "-euc", command], text=True, env=os.environ | {"BASH_ENV": ""})
+    def guest(command, label, **kwargs):
+        steps.append(label)
+        if label == interruption:
+            raise RuntimeError("response interrupted after dispatch")
+        return registry_guest(command, label, **kwargs)
 
     def client(command, label, **_):
         steps.append(label)
-        state = tmp_path / report["gateway_lifecycle"]["project"]
-        if label == "gateway-image-pull":
-            private = state / "pull-config/config.json"
-            captured = json.loads(private.read_text())
-            assert captured["HttpHeaders"] == original["HttpHeaders"]
-            assert captured["auths"]["https://index.docker.io/v1/"]["registrytoken"] == "synthetic-approved-registry-token"
-            assert private.stat().st_mode & 0o777 == 0o600
-            assert "synthetic-approved-registry-token" not in command
         if label == interruption:
             raise RuntimeError("response interrupted after dispatch")
-        if label == "gateway-base-image":
+        if label in {"gateway-base-image", "gateway-pulled-image"}:
             return json.dumps([{"Id": "sha256:" + "a" * 64}])
-        if label == "gateway-pulled-image":
-            return '[{"Id":"pulled-image"}]'
         return ""
 
-    args = SimpleNamespace(gateway_registry_auth=str(auth))
     with pytest.raises(RuntimeError, match="response interrupted after dispatch"):
-        gateway_compose_journey(args, caller, client, guest, report)
+        gateway_compose_journey(caller, client, guest, registry_background, report)
     observation = report["gateway_lifecycle"]
     assert observation["state"] == "incomplete"
     assert observation["volume"] == observation["project"] + "_notes"
     assert observation["image"] == observation["project"] + ":qualification"
-    assert not (tmp_path / observation["project"] / "pull-config").exists()
-    assert json.loads((config / "config.json").read_text()) == original
-    assert auth.is_file()
+    assert observation["registry_image"].endswith(":" + observation["project"])
     assert steps.count(interruption) == 1
-    assert not any("teardown" in step or step == "gateway-image-remove" for step in steps)
-    assert "synthetic-approved-registry-token" not in json.dumps(report)
+    assert not any("teardown" in step or step in {"gateway-image-remove", "gateway-registry-remove"} for step in steps)
+
+
+@pytest.mark.parametrize("failure", ["no-manifest-get", "different-image"])
+def test_gateway_lifecycle_requires_registry_pull_and_matching_image_before_build(tmp_path, failure):
+    report = {}
+    steps = []
+
+    def guest(command, label, **kwargs):
+        if failure == "no-manifest-get" and label == "gateway-registry-pull-requests":
+            return ""
+        return registry_guest(command, label, **kwargs)
+
+    def client(_command, label, **_):
+        steps.append(label)
+        if label in {"gateway-base-image", "gateway-pulled-image"}:
+            character = "b" if failure == "different-image" and label == "gateway-pulled-image" else "a"
+            return json.dumps([{"Id": "sha256:" + character * 64}])
+        return ""
+
+    with pytest.raises(AssertionError, match="pull did not fetch|pulled image differs"):
+        gateway_compose_journey(tmp_path, client, guest, registry_background, report)
+    assert report["gateway_lifecycle"]["state"] == "incomplete"
+    assert steps.count("gateway-image-pull") == 1 and "gateway-compose-build" not in steps
 
 
 @pytest.mark.parametrize("failure", [None, "lost-write-response", "lost-data"])
@@ -133,7 +218,7 @@ def test_gateway_lifecycle_application_observer_checks_persistence_without_repla
         if label == "gateway-base-image":
             return json.dumps([{"Id": "sha256:" + "a" * 64}])
         if label == "gateway-pulled-image":
-            return "[]"
+            return json.dumps([{"Id": "sha256:" + "a" * 64}])
         if label == "gateway-compose-inspect":
             return json.dumps([{"Id": name, "State": {"Running": True}, "HostConfig": {"NetworkMode": "host"},
                                 "Config": {"Labels": {"com.docker.compose.service": name}}} for name in ("api", "store")])
@@ -153,14 +238,13 @@ def test_gateway_lifecycle_application_observer_checks_persistence_without_repla
         return ""
 
     try:
-        args = SimpleNamespace(gateway_registry_auth="/private/synthetic-auth.json")
         if failure:
             with pytest.raises(subprocess.CalledProcessError):
-                gateway_compose_journey(args, caller, client, lambda *_args, **_kwargs: "", report)
+                gateway_compose_journey(caller, client, registry_guest, registry_background, report)
             assert report["gateway_lifecycle"]["state"] == "incomplete"
             assert "gateway-compose-teardown" not in steps
         else:
-            gateway_compose_journey(args, caller, client, lambda *_args, **_kwargs: "", report)
+            gateway_compose_journey(caller, client, registry_guest, registry_background, report)
             assert report["gateway_lifecycle"]["state"] == "passed"
             assert "gateway-compose-teardown" in steps
         assert requests.count("POST") == 1

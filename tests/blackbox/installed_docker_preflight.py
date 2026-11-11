@@ -13,15 +13,15 @@ Compose lifecycle, sandbox recovery and application-bound provider controls.
 its provider route. It restores ephemeral guest tools, but does not repeat image
 pulls or the application lifecycle.
 --gateway-lifecycle adds the missing Compose lifecycle through that same route.
-It requires a private, already approved fixed RegistryToken AuthConfig file in
-the caller guest and the retained nested-notes image. It does not obtain or
-approve registry credentials. Failed mutations are retained without replay.
+It seeds an owned loopback registry from the retained nested-notes image, then
+pulls that image through the gateway before building and running the application.
+Registry blobs stay on disk in the provider guest. Failed mutations are retained
+without replay. This does not repair or retry an earlier registry credential.
 --gateway-failures-only retains the earlier management proof and runs only the
 daemon, closed-port and stopped-provider failure controls with --gateway.
 --reuse-root continues this probe's stopped disposable instance without
-replacing its policy, registry approvals or prepared inputs. Run only after
-any retained registry refusal has been resolved; the driver does not approve
-or retry a failed operation. Independent acceptance remains separate.
+replacing its policy, registry approvals or prepared inputs. The driver does not
+approve or retry a failed operation. Independent acceptance remains separate.
 """
 
 from __future__ import annotations
@@ -143,26 +143,59 @@ print(json.dumps({{"exit": int((directory / (label + ".exit")).read_text()),
     return json.loads(client_command(command, label).strip().removeprefix("\x1b[2K"))
 
 
-def gateway_compose_journey(args, caller, client_command, guest, report):
+def gateway_compose_journey(caller, client_command, guest, background, report):
     """Run the missing multi-service lifecycle through the caller's gateway."""
     name = "sycompose" + uuid.uuid4().hex[:12]
     image = name + ":qualification"
     state = "/home/agent/" + name
     marker = "persist-" + uuid.uuid4().hex
-    observation = {"project": name, "image": image, "volume": name + "_notes",
-                   "state": "incomplete", "registry_auth_file": args.gateway_registry_auth}
+    observation = {"project": name, "image": image, "volume": name + "_notes", "state": "incomplete",
+                   "registry_directory": state + "/registry"}
     report["gateway_lifecycle"] = observation
     source = client_command("/workspace/docker-client image inspect nested-notes:qualification", "gateway-base-image")
     observation["base_image"] = json.loads(source.strip().removeprefix("\x1b[2K"))[0]
     image_id = observation["base_image"]["Id"]
     assert image_id.startswith("sha256:") and len(image_id) == 71 and all(c in "0123456789abcdef" for c in image_id[7:])
-    # Reuse the qualified Python/application image. This build exercises the
-    # gateway's build stream without reinstalling packages or changing its tag.
+    # Let the real Docker producer encode its own retained image. The fixture
+    # supports its chunked PATCH/Range protocol, without another registry image
+    # or an external supplier. Loopback HTTP is Docker 26's existing default.
+    guest(f"mkdir {state}", "gateway-registry-state")
+    registry = background("notes", f"exec python3 /workspace/registry_fixture.py --directory {state}/registry "
+                          f"--ready-file {state}/registry.json --events-file {state}/registry-events.jsonl",
+                          "gateway-registry")[0]
+    ready = json.loads(guest(f"for ((i=0;i<100;i++)); do if test -s {state}/registry.json; then "
+                             f"cat {state}/registry.json; exit 0; fi; sleep 0.1; done; exit 1",
+                             "gateway-registry-ready").strip().removeprefix("\x1b[2K"))
+    assert registry.poll() is None, "owned registry exited after readiness"
+    pull_image = ready["repository"] + ":" + name
+    observation["registry_image"] = pull_image
+    guest(f"set -eu; unset DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH; "
+          f"sudo -n {DOCKER} image tag {image_id} {pull_image}; "
+          f"sudo -n {DOCKER} push {pull_image}; sudo -n {DOCKER} image rm {pull_image}",
+          "gateway-registry-seed", timeout=180)
+    assert not client_command(f"/workspace/docker-client image ls --quiet {pull_image}",
+                              "gateway-pull-tag-absent").strip().removeprefix("\x1b[2K")
+    observation["registry_seed_requests"] = [json.loads(line) for line in guest(
+        f"cat {state}/registry-events.jsonl", "gateway-registry-seed-requests").strip().removeprefix("\x1b[2K").splitlines()]
+    try:
+        client_command(f"/workspace/docker-client pull {pull_image} </dev/null", "gateway-image-pull", timeout=180)
+    finally:
+        requests = [json.loads(line) for line in guest(
+            f"cat {state}/registry-events.jsonl", "gateway-registry-pull-requests").strip().removeprefix("\x1b[2K").splitlines()]
+        observation["registry_pull_requests"] = requests[len(observation["registry_seed_requests"]):]
+    assert any(row["method"] == "GET" and "/manifests/" in row["path"] and row["status"] == 200
+               for row in observation["registry_pull_requests"]), "pull did not fetch the owned registry manifest"
+    pulled = json.loads(client_command(f"/workspace/docker-client image inspect {pull_image}",
+                                      "gateway-pulled-image").strip().removeprefix("\x1b[2K"))[0]
+    observation["pulled_image"] = pulled
+    assert pulled["Id"] == image_id, "pulled image differs from the retained qualified image"
+    # Build from the image just pulled. Reuse its packages and application
+    # layers while exercising the gateway's real build stream.
     fixture = caller / name
     fixture.mkdir()
     maintained = Path(__file__).parent / "fixtures/nested-docker"
     shutil.copy2(maintained / "notes.py", fixture / "notes.py")
-    (fixture / "Dockerfile").write_text(f"FROM {image_id}\nCOPY notes.py /app/notes.py\n")
+    (fixture / "Dockerfile").write_text(f"FROM {pull_image}\nCOPY notes.py /app/notes.py\n")
     (fixture / "compose.yaml").write_text((maintained / "compose.yaml").read_text().replace("nested-notes:qualification", image))
     (fixture / "transfer.txt").write_text(marker + "\n")
     guest(f"set -eu; mkdir -p {state}; cp -a /workspace/{name} {state}/context; "
@@ -170,31 +203,6 @@ def gateway_compose_journey(args, caller, client_command, guest, report):
           "install -m 0755 /workspace/docker-compose /home/agent/docker-gateway-client/cli-plugins/docker-compose",
           "gateway-compose-context", agent="dockercaller")
     observation["compose_version"] = client_command("/workspace/docker-client compose version", "gateway-compose-version")
-    # The CLI supports registrytoken in its auths configuration. Keep the fixed
-    # approved bearer separate from the ordinary scoped gateway configuration.
-    prepare_pull = f'''
-import json
-from pathlib import Path
-directory = Path({state!r}) / "pull-config"
-directory.mkdir(mode=0o700)
-auth = json.loads(Path({args.gateway_registry_auth!r}).read_text())
-assert auth.get("registrytoken"), "supply the already approved fixed RegistryToken"
-config = json.loads(Path("/home/agent/docker-gateway-client/config.json").read_text())
-config["auths"] = {{"https://index.docker.io/v1/": {{"registrytoken": auth["registrytoken"]}}}}
-path = directory / "config.json"
-path.touch(mode=0o600, exist_ok=False)
-path.write_text(json.dumps(config))
-'''
-    try:
-        guest("python3 -c " + shlex.quote(prepare_pull), "gateway-pull-config", agent="dockercaller")
-        base_image = (maintained / "Dockerfile").read_text().splitlines()[0].split()[1]
-        client_command(f"DOCKER_CONFIG={state}/pull-config /workspace/docker-client pull {shlex.quote(base_image)} </dev/null",
-                       "gateway-image-pull", timeout=180)
-        observation["pulled_image"] = json.loads(client_command(
-            f"/workspace/docker-client image inspect {shlex.quote(base_image)}", "gateway-pulled-image").strip().removeprefix("\x1b[2K"))
-    finally:
-        guest(f"rm -f -- {state}/pull-config/config.json; rmdir -- {state}/pull-config",
-              "gateway-pull-config-remove", agent="dockercaller")
     compose = f"/workspace/docker-client compose -p {name} --project-directory {state}/context"
     client_command(f"DOCKER_BUILDKIT=0 {compose} build --no-cache store", "gateway-compose-build", timeout=180)
     guest("bash -c " + shlex.quote("if (: </dev/tcp/127.0.0.1/8088) 2>/dev/null || "
@@ -275,11 +283,15 @@ print(body.decode())
     assert volume_after[0]["CreatedAt"] == observation["volume_before"][0]["CreatedAt"]
     client_command(f"{compose} down --volumes", "gateway-compose-teardown")
     client_command(f"/workspace/docker-client image rm {image}", "gateway-image-remove")
+    client_command(f"/workspace/docker-client image rm {pull_image}", "gateway-pull-image-remove")
     for arguments, label in ((f"ps --all --quiet --filter label=com.docker.compose.project={name}", "containers"),
                              (f"volume ls --quiet --filter name={name}_notes", "volumes"),
                              (f"image ls --quiet {image}", "images")):
         remaining = client_command("/workspace/docker-client " + arguments, "gateway-teardown-" + label)
         assert not remaining.strip().removeprefix("\x1b[2K"), f"owned {label} remain after teardown"
+    guest(f"kill -TERM {int(ready['pid'])}", "gateway-registry-stop")
+    assert registry.wait(timeout=20) == 0, "owned registry did not stop cleanly"
+    guest(f"rm -r -- {state}/registry", "gateway-registry-remove")
     observation["state"] = "passed"
 
 
@@ -374,7 +386,7 @@ printf 'Authorization: Bearer %s\\n' "$agent_token" |
                                          for agent in ("notes", "dockercaller")}
             report["gateway_route"] = {"provider": "notes", "caller": "dockercaller", "endpoint": url,
                                        "execution_boundary": "sandbox", "api_version": "1.45"}
-            gateway_compose_journey(args, caller, client_command, guest, report)
+            gateway_compose_journey(caller, client_command, guest, background, report)
             report["gateway_result"] = "multi-service gateway lifecycle passed"
             return
         # Keep the accepted single-container and negative-only paths separate
@@ -773,6 +785,8 @@ def run(args):
                    "--nested-docker", str(args.nested_docker).lower())
         source = Path(__file__).parent / "isolation/docker-preflight.sh"
         shutil.copy2(source, workspace / source.name)
+        if getattr(args, "gateway_lifecycle", False):
+            shutil.copy2(Path(__file__).with_name("registry_fixture.py"), workspace / "registry_fixture.py")
         if args.journey:
             # This is the existing disposable fixture's application binding.
             # Keep registry decisions and unrelated policy entries intact.
@@ -886,8 +900,6 @@ def main():
                         help="with --gateway, retain positive proof and run only the three failure controls")
     parser.add_argument("--gateway-lifecycle", action="store_true",
                         help="with --gateway, run the missing Compose lifecycle instead of the retained single-container checks")
-    parser.add_argument("--gateway-registry-auth",
-                        help="private AuthConfig JSON path in dockercaller with a fixed RegistryToken already approved for registry-1.docker.io")
     parser.add_argument("--reuse-root", action="store_true")
     parser.add_argument("--docker-data", help="existing guest Docker data root; reuse its qualified image instead of pulling again")
     parser.add_argument("--host-address", help="unapproved real venue host address for the inner network negative control")
@@ -895,10 +907,8 @@ def main():
     args = parser.parse_args()
     if args.gateway_failures_only and not args.gateway:
         parser.error("--gateway-failures-only requires --gateway")
-    if args.gateway_lifecycle and (not args.gateway or args.gateway_failures_only or not args.gateway_registry_auth):
-        parser.error("--gateway-lifecycle requires --gateway and --gateway-registry-auth, without --gateway-failures-only")
-    if args.gateway_registry_auth and not args.gateway_lifecycle:
-        parser.error("--gateway-registry-auth requires --gateway-lifecycle")
+    if args.gateway_lifecycle and (not args.gateway or args.gateway_failures_only):
+        parser.error("--gateway-lifecycle requires --gateway, without --gateway-failures-only")
     if args.reuse_root and not (args.journey or args.gateway):
         parser.error("--reuse-root requires --journey or --gateway")
     if args.gateway and (not args.reuse_root or not args.nested_docker):
