@@ -168,8 +168,9 @@ def qualify(args: argparse.Namespace) -> None:
         tree = assets / "rootfs-tree"
         report["mapped_root"] = info(tree)
         assert (tree.stat().st_uid, tree.stat().st_gid) == (settings["uid_base"], settings["gid_base"])
-        assert (tree / "home/agent").stat().st_uid == settings["host_uid"]
-        assert (tree / "home/agent").stat().st_gid == settings["host_gid"]
+        # The published root-owned placeholder is covered by the persistent home bind.
+        assert (tree / "home/agent").stat().st_uid == settings["uid_base"]
+        assert (tree / "home/agent").stat().st_gid == settings["gid_base"]
         run("mapped-root-acls", ["getfacl", "-ncp", tree, tree / "home/agent"])
         prepare_log = output / "prepare.log"
         prepare_log.touch(mode=0o600)
