@@ -1037,8 +1037,8 @@ def test_general_python_workflow_uses_quick_pr_and_full_overnight_selections():
 
 
 @pytest.mark.parametrize("failure,diagnostic_status", [
-    ("none", 0), ("none", 23), ("none", 124),
-    ("update", 0), ("install", 0), ("install", 23), ("install", 124),
+    ("none", 0), ("update", 0), ("update", 23), ("update", 124),
+    ("install", 0), ("install", 23), ("install", 124),
 ])
 def test_cli_apt_failure_keeps_original_error_and_status(tmp_path, failure, diagnostic_status):
     workflow = yaml.safe_load(WORKFLOW.with_name("ci.yml").read_text())
@@ -1053,7 +1053,8 @@ def test_cli_apt_failure_keeps_original_error_and_status(tmp_path, failure, diag
     )
     diagnostic = commands / "python3"
     diagnostic.write_text(
-        '#!/bin/bash\nprintf "diagnostic: %s\\n" "$*"\nexit "$DIAGNOSTIC_STATUS"\n'
+        '#!/bin/bash\necho diagnostic >> "$APT_CALLS"\n'
+        'printf "diagnostic: %s\\n" "$*"\nexit "$DIAGNOSTIC_STATUS"\n'
     )
     sudo.chmod(0o755)
     diagnostic.chmod(0o755)
@@ -1069,10 +1070,12 @@ def test_cli_apt_failure_keeps_original_error_and_status(tmp_path, failure, diag
     expected_calls = ["apt-get update -qq"]
     if failure != "update":
         expected_calls.append("apt-get install -y -qq --no-install-recommends libegl1 socat tmux")
+    if failure != "none":
+        expected_calls.append("diagnostic")
     assert calls.read_text().splitlines() == expected_calls
     assert result.returncode == (0 if failure == "none" else 100)
     assert ("original apt error" in result.stderr) == (failure != "none")
-    assert "diagnostic: scripts/diagnose_ci_apt.py" in result.stdout
+    assert ("diagnostic: scripts/diagnose_ci_apt.py" in result.stdout) == (failure != "none")
     assert ("following step reached" in result.stdout) == (failure == "none")
     assert ("apt diagnostics failed or timed out" in result.stdout) == (diagnostic_status != 0)
 
