@@ -10,6 +10,8 @@
 #
 # Usage: snapshot-smoke.sh capture-only|full HELPER GUEST_DIR ASSETS_DIR RUN_DIR
 # Set SAFEYOLO_VZ_TEST_RUNNER to the maintained run-vz-test wrapper on Bristol.
+# Wrapped runs need Python 3.10+ and the kernel observers in
+# tests/blackbox/harness at their checkout-relative paths.
 # capture-only saves at the static gate, then observes real cron/at startup
 # and queued jobs after opening that gate. It never attempts memory restore.
 # full additionally restores a COPY of the paired overlay, saves again to prove
@@ -162,7 +164,29 @@ start_helper() {
 
 find_helper() {
     local child
-    child=$(pgrep -P "$PROCESS_PID" -x safeyolo-vm) || return 1
+    running || return 1
+    # Reuse the kernel observers: confined macOS cannot use pgrep's sysmond.
+    child=$(python3 -B - "$PROCESS_PID" "$HELPER" "$SCRIPT_DIR/../../tests/blackbox/harness" <<'PY'
+import os
+import sys
+
+sys.path.insert(0, sys.argv[3])
+from macos_process_argv import account_pids, process_argv
+from process_identity import _darwin_process_info
+
+parent = int(sys.argv[1])
+helper = os.fsencode(sys.argv[2])
+children = []
+for pid in account_pids(os.getuid()):
+    info = _darwin_process_info(pid)
+    if info is not None and info.pbi_ppid == parent and info.pbi_uid == os.getuid():
+        if helper in process_argv(pid):
+            children.append(pid)
+if len(children) != 1:
+    sys.exit(1)
+print(children[0])
+PY
+    ) || return 1
     [[ "$child" =~ ^[0-9]+$ ]] || return 1
     HELPER_PID=$child
 }

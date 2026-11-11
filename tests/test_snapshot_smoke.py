@@ -82,6 +82,9 @@ while True:
     dd = binaries / "dd"
     dd.write_text('#!/bin/bash\nfor arg; do case "$arg" in of=*) printf seed > "${arg#of=}";; esac; done\n')
     dd.chmod(0o755)
+    pgrep = binaries / "pgrep"
+    pgrep.write_text('#!/bin/bash\necho "pgrep: Cannot get process list" >&2\nexit 2\n')
+    pgrep.chmod(0o755)
     runner = binaries / "run-vz-test"
     runner.write_text(f"#!{sys.executable}\n" + '''
 import signal, subprocess, sys
@@ -110,9 +113,9 @@ finally:
         output = tmp_path / "run"
         run_env = {**env, "FAKE_SCENARIO": scenario}
         if wrapped:
-            run_env["SAFEYOLO_VZ_TEST_RUNNER"] = str(runner)
+            run_env["SAFEYOLO_VZ_TEST_RUNNER"] = os.environ.get("SAFEYOLO_SNAPSHOT_TEST_RUNNER", str(runner))
         result = subprocess.run(
-            ["bash", str(SCRIPT), mode, str(helper), str(guest), str(assets), str(output)],
+            ["/bin/bash", str(SCRIPT), mode, str(helper), str(guest), str(assets), str(output)],
             env=run_env, capture_output=True, text=True, timeout=15,
         )
         calls = [json.loads(line) for line in argv_log.read_text().splitlines()] if argv_log.exists() else []
@@ -182,11 +185,13 @@ def test_existing_attempt_is_not_overwritten(probe):
     assert (output / "capture-helper.log").read_bytes() == original
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS kernel child discovery")
 def test_runner_owns_helper_but_only_helper_receives_snapshot_signal(probe):
     run, _, _ = probe
     result, output, calls = run(wrapped=True)
     assert result.returncode == 0, result.stdout + result.stderr
     assert len(calls) == 1
+    assert "Cannot get process list" not in result.stderr
     ids = dict(field.split("=") for field in (output / "pids.txt").read_text().split())
     assert ids["runner"] != ids["helper"]
     assert "exit=143 reaped=yes" in (output / "cleanup.log").read_text()
