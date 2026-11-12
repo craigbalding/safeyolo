@@ -1,6 +1,6 @@
 name: CI
 
-# Temporary #911 diagnosis branch; no guest builds or full matrix.
+# Temporary #1525 archive-fixture checks; no guest builds or full matrix.
 on:
   workflow_dispatch:
 
@@ -79,7 +79,7 @@ jobs:
             sudo --version
           } 2>&1 | tee "${{ runner.temp }}/publisher-tool-versions.log"
 
-      - name: One publisher setup diagnosis
+      - name: Focused shared archive fixture callers
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           SAFEYOLO_NATIVE_ARTIFACTS: ${{ github.workspace }}/proxy/target/release
@@ -89,17 +89,17 @@ jobs:
         shell: bash
         run: |
           uv run --frozen pytest tests/ \
-            -k test_archive_preserves_numeric_owners_modes_links_and_cache_paths \
+            -k 'test_archive_contains_finished_mac_files or test_mac_profile_export_aligns_ext4_and_preserves_it_in_archive or test_sparse_map_on_a_filesystem_reporting_holes or test_archive_refuses_missing_required_output' \
             --ignore=tests/blackbox/ --ignore=tests/proxy_contracts/ \
             -vv --tb=long --setup-show --maxfail=1 \
             --timeout=60 --timeout-method=signal -o faulthandler_timeout=30 \
-            2>&1 | tee "${{ runner.temp }}/publisher-probe-original.log"
+            2>&1 | tee "${{ runner.temp }}/publisher-caller-checks.log"
 
       - name: Preserve diagnosis output
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: publisher-ubuntu313-diagnosis
+          name: publisher-ubuntu313-caller-checks
           path: |
             ${{ runner.temp }}/publisher-tool-versions.log
-            ${{ runner.temp }}/publisher-probe-original.log
+            ${{ runner.temp }}/publisher-caller-checks.log
