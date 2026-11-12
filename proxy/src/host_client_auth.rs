@@ -336,15 +336,15 @@ pub(crate) async fn guide(agent: &host_agents::Agent, mode: &str) -> Result<(), 
         }
         true
     };
-    if coding_client::selected(&home(agent), client)? && !remove {
-        if let Ok(row) = binding(agent, client).await
-            && !row.is_null()
-        {
-            println!(
-                "Reusing saved host-vault configuration and the current service binding. No login was reimported and no authorization was repeated."
-            );
-            return Ok(());
-        }
+    if coding_client::selected(&home(agent), client)?
+        && !remove
+        && let Ok(row) = binding(agent, client).await
+        && !row.is_null()
+    {
+        println!(
+            "Reusing saved host-vault configuration and the current service binding. No login was reimported and no authorization was repeated."
+        );
+        return Ok(());
     }
     println!(
         "Select an existing vault credential account by name. To import a file-backed host login, enter a new credential name, then select the host file. For a missing login, run the native client's supported login on the host (Codex: codex login; Claude: claude auth login), then return here. The importer does not read a keychain."

@@ -639,7 +639,9 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
                 }
             }
             Some("h") => {
-                if let Err(error) = crate::host_client_auth::run(&[agent.name.clone()]).await {
+                if let Err(error) =
+                    crate::host_client_auth::run(std::slice::from_ref(&agent.name)).await
+                {
                     eprintln!("{}", phase("authentication", error));
                 }
                 attach = false;
