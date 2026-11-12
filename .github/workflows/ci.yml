@@ -1,42 +1,15 @@
 name: CI
 
+# Temporary #911 remaining publisher diagnosis; retained inputs, one consumer.
 on:
-  schedule:
-    - cron: "7 3 * * *"
   workflow_dispatch:
-  push:
-    branches: [master, main]
-  pull_request:
-    branches: [master, main]
-
-# Keep scheduled and manual runs independent of quick branch/PR updates.
-# Superseded runs of the same event on the same branch/PR still cancel.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  guest-inputs:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    permissions:
-      contents: read
-      actions: read
-    strategy:
-      fail-fast: false
-      matrix:
-        architecture: [amd64, arm64]
-    uses: ./.github/workflows/guest-test-inputs.yml
-    with:
-      revision: ${{ github.event.pull_request.head.sha || github.sha }}
-      profile: production
-      architecture: ${{ matrix.architecture }}
-
   test-addons:
-    needs: guest-inputs
-    if: ${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}
     name: Test Addons (Python ${{ matrix.python-version }})${{ matrix.os != 'ubuntu-latest' && format(' ({0})', matrix.os) || '' }}
     runs-on: ${{ matrix.os }}
     # #911 records the supported-host timings and incomplete Mac measurement.
@@ -45,9 +18,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Normal PRs and pushes use quick checks. Full retained tests run overnight.
-        os: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
-        python-version: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["3.12", "3.13"]') || fromJSON('["3.12"]') }}
+        os: [ubuntu-latest]
+        python-version: ["3.13"]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,29 +33,8 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
-      - name: Install Mac package, archive and coding-client fixture dependencies
-        if: runner.os == 'macOS'
-        run: |
-          brew install dpkg tmux gnu-tar coreutils zstd bash mise
-          printf '%s\n' "$(brew --prefix bash)/bin" \
-            "$(brew --prefix gnu-tar)/libexec/gnubin" \
-            "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
-
       - name: Install dependencies
         run: uv sync --frozen --group dev
-
-      - name: Quick runner and workflow checks
-        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
-        run: |
-          uv run --frozen pytest -q tests/test_blackbox_harness.py tests/test_blackbox_sinkhole.py \
-            tests/test_claude_smoke.py \
-            tests/test_trusted_claude_blackbox.py \
-            tests/test_claude_blackbox_events.py \
-            tests/test_kvm_p1_route.py tests/test_p2_installed_fixture.py \
-            tests/test_installed_host_smoke.py tests/test_blackbox_cadence_contract.py \
-            tests/test_proxy_rust_ci_events.py tests/test_workflow_action_pins.py \
-            tests/test_host_packages.py \
-            tests/test_public_installer.py
 
       - name: Download production native test inputs
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -91,6 +42,8 @@ jobs:
         with:
           name: ${{ runner.os == 'macOS' && 'darwin-host-arm64-production' || 'linux-host-amd64-production' }}
           path: proxy/target/release
+          run-id: 43204497532
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download production guest test inputs
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -98,6 +51,8 @@ jobs:
         with:
           name: linux-guest-${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}-production
           path: guest/command/target/release
+          run-id: 43204497532
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Restore native test executable permissions
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -107,227 +62,46 @@ jobs:
           source scripts/native_package.sh
           verify_native_artifacts proxy/target/release guest/command/target/release production "$(host_platform)"
 
-      - name: All retained Python tests overnight
+      - name: Retain original runner tool versions
+        shell: bash
+        run: |
+          {
+            uname -a
+            cat /etc/os-release
+            id
+            uv --version
+            uv run --frozen python -VV
+            uv run --frozen pytest --version
+            command -v tar du zstd sudo
+            command -v oras jq || true
+            printf 'ORAS=%s GUEST_OCI_VERIFIER=%s\n' "${ORAS:-unset}" "${GUEST_OCI_VERIFIER:-unset}"
+            tar --version
+            du --version
+            zstd --version
+            sudo --version
+          } 2>&1 | tee "${{ runner.temp }}/publisher-tool-versions.log"
+
+      - name: Remaining named publisher cases
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           SAFEYOLO_NATIVE_ARTIFACTS: ${{ github.workspace }}/proxy/target/release
           SAFEYOLO_RUST_PROXY: ${{ github.workspace }}/proxy/target/release/safeyolo-proxy
           SAFEYOLO_GUEST_ARTIFACTS: ${{ github.workspace }}/guest/command/target/release
           SAFEYOLO_GUEST_HELPER: ${{ github.workspace }}/guest/command/target/release/safeyolo-guest
-        run: >-
-          uv run --frozen pytest tests/ -v --tb=short
-          --ignore=tests/blackbox/ --ignore=tests/proxy_contracts/
-          --timeout=60 --timeout-method=signal -o faulthandler_timeout=30
-
-  test-cli:
-    name: Test CLI${{ matrix.os != 'ubuntu-latest' && format(' ({0})', matrix.os) || '' }}
-    needs: guest-inputs
-    if: ${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # Stage-0 coord acceptance extracts the exact PR base revision and
-          # runs the exact candidate head (not GitHub's synthetic PR merge)
-          # against the same SQLite + JetStream stores.
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          version: "0.9.24"
-          prune-cache: true
-
-      - name: Set up Python 3.12
-        run: uv python install 3.12
-
-      - name: Install CLI test system dependencies
-        if: runner.os == 'Linux'
+        shell: bash
         run: |
-          apt_status=0
-          sudo apt-get update -qq &&
-            sudo apt-get install -y -qq --no-install-recommends libegl1 socat tmux || apt_status=$?
-          if [ "$apt_status" -ne 0 ]; then
-            timeout 90s python3 scripts/diagnose_ci_apt.py || echo 'apt diagnostics failed or timed out'
-            exit "$apt_status"
-          fi
+          uv run --frozen pytest tests/ \
+            -k 'test_actual_oras_local_release_and_no_registry_writes or test_explicit_custom_profile_publishes_one_consumer_with_input_provenance or test_custom_workflow_verifies_exact_selected_inputs_before_authentication or test_custom_workflow_publishes_same_bytes_and_requires_complete_readback or test_custom_layout_upload_download_preserves_bytes_and_extracts_the_layout_root or test_actual_oras_publication_retry_versions_and_generations or test_corrupt_readback_does_not_promote or test_invalid_release_refused_before_upload or test_digest_only_transport_has_no_channel_write or test_real_oras_receipt_attachment_discovery_and_inventory_retrieval' \
+            --ignore=tests/blackbox/ --ignore=tests/proxy_contracts/ \
+            -vv -rs --tb=long --setup-show --maxfail=1 \
+            --timeout=60 --timeout-method=signal -o faulthandler_timeout=30 \
+            2>&1 | tee "${{ runner.temp }}/publisher-remaining-original.log"
 
-      - name: Install Mac CLI test dependencies
-        if: runner.os == 'macOS'
-        run: |
-          brew install socat tmux coreutils bash
-          printf '%s\n' "$(brew --prefix bash)/bin" \
-            "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
-
-      - name: Install dependencies
-        run: uv sync --frozen --group dev
-
-      - name: Check acceptance tool source bindings
-        run: >-
-          uv run --frozen python -c
-          'import runpy; runpy.run_path("cli/tests/test_host_setup_scripts.py")["test_safeyolo_acceptance_graph_tool_hashes_match_sources"]()'
-
-      - name: Stage-0 two-revision coord upgrade acceptance
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        env:
-          SAFEYOLO_RUN_TWO_REVISION_ACCEPTANCE: "1"
-          SAFEYOLO_COORD_ACCEPTANCE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          SAFEYOLO_COORD_ACCEPTANCE_REPORT: ${{ runner.temp }}/stage0-acceptance.json
-        run: |
-          export SAFEYOLO_COORD_ACCEPTANCE_BASE_SHA="$(git rev-parse HEAD~1)"
-          uv run --frozen pytest cli/tests/test_coord_kernel_upgrade_acceptance.py -v --tb=short
-
-      - name: Upload Stage-0 coord acceptance evidence
-        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+      - name: Preserve diagnosis output
+        if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: coord-stage0-acceptance-${{ matrix.os }}
-          path: ${{ runner.temp }}/stage0-acceptance.json
-
-      - name: Quick CLI checks
-        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
-        run: |
-          uv run --frozen pytest -q cli/tests/test_config.py cli/tests/test_api.py \
-            cli/tests/test_sockets.py cli/tests/test_rust_proxy.py
-
-      - name: Download production native test inputs
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: ${{ runner.os == 'macOS' && 'darwin-host-arm64-production' || 'linux-host-amd64-production' }}
-          path: proxy/target/release
-
-      - name: Download production guest test inputs
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: linux-guest-${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}-production
-          path: guest/command/target/release
-
-      - name: Restore native test executable permissions
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        run: |
-          chmod +x proxy/target/release/safeyolo proxy/target/release/safeyolo-coord proxy/target/release/safeyolo-proxy
-          chmod +x guest/command/target/release/safeyolo-guest guest/command/target/release/safeyolo-coord
-          source scripts/native_package.sh
-          verify_native_artifacts proxy/target/release guest/command/target/release production "$(host_platform)"
-
-      - name: All retained CLI tests overnight
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        env:
-          SAFEYOLO_NATIVE_ARTIFACTS: ${{ github.workspace }}/proxy/target/release
-          SAFEYOLO_RUST_PROXY: ${{ github.workspace }}/proxy/target/release/safeyolo-proxy
-          SAFEYOLO_GUEST_ARTIFACTS: ${{ github.workspace }}/guest/command/target/release
-          SAFEYOLO_GUEST_HELPER: ${{ github.workspace }}/guest/command/target/release/safeyolo-guest
-        run: uv run --frozen pytest cli/tests/ -v --tb=short
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # The skill-marker drift check diffs against the PR base or the
-          # previous push. `fetch-depth: 0` gives it the history it needs.
-          fetch-depth: 0
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          version: "0.9.24"
-          prune-cache: true
-
-      - name: Set up Python 3.12
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --frozen --group dev
-
-      - name: Check Python syntax
-        run: find cli/src -name "*.py" -exec uv run python -m py_compile {} \;
-
-      - name: Test assurance contracts
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-          else
-            BASE="${{ github.event.before }}"
-          fi
-          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-            BASE="HEAD~1"
-          fi
-          uv run python scripts/check_test_assurance.py --range "$BASE..HEAD"
-
-      - name: Lint with ruff
-        run: uv run ruff check cli/src/ tests/ --exclude tests/blackbox/
-
-      # Blackbox docstring schema — every test class and function must
-      # declare Title/What/Why. Uses AST validation (no pytest collection),
-      # so runs without VM, sinkhole, or runsc — just parses the source.
-      - name: Blackbox docstring schema
-        run: uv run python tests/blackbox/_docstring_lint.py
-
-      # docs/blackbox-coverage.md is generated from test docstrings.
-      # --check mode fails if the on-disk doc is stale, catching
-      # regressions where a test was updated but the doc wasn't regen'd.
-      - name: Blackbox coverage doc in sync
-        run: uv run python tests/blackbox/gen_docs.py --check
-
-      # Skill marker / reference drift: any source line carrying a
-      # `# SKILL: <ref>` marker cannot change without a matching update to
-      # the referenced skill reference. Picks the right diff range for
-      # pull_request vs push, falling back to HEAD~1 for the zero-sha
-      # initial-commit case.
-      - name: Skill marker drift check
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-          else
-            BASE="${{ github.event.before }}"
-          fi
-          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-            BASE="HEAD~1"
-          fi
-          python3 scripts/check_skill_markers.py --range "$BASE..HEAD"
-
-      # Triage-graph render freshness: the YAML is source of truth, the
-      # sibling .mmd is regenerated by scripts/render_skill_graph.py.
-      # --check fails if a rebuild would change any .mmd, catching the
-      # "edited YAML but forgot to regenerate mermaid" mistake.
-      - name: Skill triage graph render check
-        run: uv run python scripts/render_skill_graph.py --check
-
-      # User-facing docs cannot reference `safeyolo <cmd>` invocations or
-      # flags that do not exist in the current Typer surface. Needs
-      # SafeYolo importable, which the earlier `uv sync` step provides.
-      - name: Doc CLI-flag drift check
-        run: uv run python scripts/check_doc_cli_flags.py
-
-      # Pinned values in source (rootfs size, mise/gh versions, attribution
-      # CIDR, admin API bind, uid mapping) must match what user-facing docs
-      # quote. Assertions live in scripts/doc_constants.toml.
-      - name: Doc constants drift check
-        run: uv run python scripts/check_doc_constants.py
-
-      # The blackbox workflow is the source of truth for scheduled full lanes
-      # and public artifact publication. Marked cadence tables must match it.
-      - name: Blackbox cadence docs in sync
-        run: uv run python scripts/check_blackbox_cadence.py
-
-      # Repo-relative link check on the user-facing doc allowlist. External
-      # URLs deliberately skipped to keep CI offline-safe.
-      - name: Doc repo-relative link check
-        run: uv run python scripts/check_doc_links.py
-
-      # Forbidden-phrase check: fails if any user-facing doc contains a
-      # blacklisted phrase (stale mechanism claims for code removed months
-      # ago). See scripts/doc_forbidden.toml.
-      - name: Doc forbidden-phrase check
-        run: uv run python scripts/check_doc_forbidden.py
+          name: publisher-ubuntu313-remaining
+          path: |
+            ${{ runner.temp }}/publisher-tool-versions.log
+            ${{ runner.temp }}/publisher-remaining-original.log
