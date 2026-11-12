@@ -75,6 +75,10 @@ user_facing_docs = [
     "docs/factory-proposals.md",
     "docs/factories.md",
     "docs/factories/backlog-coordinator.md",
+    "docs/factories/backlog-native-adoption.md",
+    "docs/factories/backlog-native/coordinator.md",
+    "docs/factories/backlog-native/owner.md",
+    "docs/factories/backlog-native/reviewer.md",
     "docs/security-verification.md",
     "docs/technical-writing.md",
 ]
