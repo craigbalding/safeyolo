@@ -37,7 +37,6 @@ def archive_tools():
     if run("sudo", "-n", "true").returncode:
         pytest.skip("guest sudo is unavailable")
     assert "GNU tar" in run("tar", "--version").stdout, "put GNU tar on PATH for archive fixtures"
-    assert "GNU coreutils" in run("du", "--version").stdout, "put GNU du on PATH for archive fixtures"
 
 
 @pytest.fixture

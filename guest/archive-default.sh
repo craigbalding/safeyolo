@@ -41,7 +41,7 @@ if [[ -f "$assets/build-inputs.json" ]]; then
     cp -- "$assets/build-inputs.json" "$destination/build-inputs.json"
 fi
 read -r archive_bytes < <(wc -c < "$destination/guest.tar.zst")
-# Keep the selected GNU du when sudo replaces PATH, as with tar above.
+# Keep the selected du when sudo replaces PATH, as with tar above.
 du_command=$(command -v du)
 apparent_sizes=$(sudo -n "$du_command" -sc --apparent-size -B1 -- "${files[@]/#/$assets/}")
 allocated_sizes=$(sudo -n "$du_command" -sc -B1 -- "${files[@]/#/$assets/}")
