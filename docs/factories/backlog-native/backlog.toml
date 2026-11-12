@@ -1,0 +1,38 @@
+# Proposed selection for the existing backlog instance. Approval and staging
+# belong to the operator; see ../backlog-native-adoption.md before applying.
+schema = "safeyolo.factory/v1"
+name = "backlog"
+room = "backlog"
+
+[operator_input]
+to = "coordinator"
+types = ["ACTIVATE", "PAUSE", "RESUME", "PRIORITY", "NEXT", "DIRECTION"]
+
+[roles.coordinator]
+agent = "relay"
+harness = "codex"
+contract = "coordinator.md"
+args = ["--model", "gpt-6.1-sol", "-c", "model_reasoning_effort=medium"]
+
+[roles.owner]
+agent = "forge"
+harness = "codex"
+contract = "owner.md"
+args = ["--model", "gpt-6.1-sol", "-c", "model_reasoning_effort=max"]
+
+[roles.reviewer]
+agent = "lens"
+harness = "codex"
+contract = "reviewer.md"
+args = ["--model", "gpt-6.1-sol", "-c", "model_reasoning_effort=max"]
+
+[work]
+creators = ["coordinator"]
+authorities = ["coordinator"]
+deciders = ["reviewer"]
+independent = true
+
+[[work.checks]]
+reviewer = "reviewer"
+criterion = "Independently review the exact output against its linked assignment and issue criteria; distinguish a complete result from a blocked or partial result."
+independent = true
