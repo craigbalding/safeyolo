@@ -58,6 +58,42 @@ a documentation-only change. The commands below support
 reproduction or qualification of changed behavior; they do not require a replay
 of passed work solely to update documentation or collect omitted observer output.
 
+## Nested provider Compose lifecycle
+
+The nested gateway observations on 11 November 2026 used Docker CLI and Engine
+26.1.5, Compose 2.26.1 and API 1.45. Two communicating services ran inside the
+qualified Linux/gVisor sandbox with `vfs` storage and guest host networking.
+The Docker client ran in the separate approved caller sandbox. Its management
+requests reached the provider through the service gateway.
+
+| Operator execution / driver source | Observed result |
+|---|---|
+| 17387 / [`8171c35b`](https://github.com/craigbalding/safeyolo/commit/8171c35b4fb9b82968177b52a3cd75bb345b8382) | Pulled the retained image from an owned loopback registry, checked the manifest request and image identity, stopped and removed the registry, then completed classic build, two-service startup, data write, logs, stdin exec, attach, archive copy in both directions and recreation with distinct container IDs. The native recovery command exited 126 with no captured output. |
+| 17408 / [`40afceca`](https://github.com/craigbalding/safeyolo/commit/40afceca813d1e8d950cb1518b8d9a3a6e018aeb) | Reconciled the recreated containers and original volume. The retained Docker client receipt records exit 0, empty stderr and the exact saved data marker after recovery. The native command exited 1; its cause remains unknown. |
+| 17417 / [`205ee3df`](https://github.com/craigbalding/safeyolo/commit/205ee3df8c7254a72723cb983f86498bb658af11) | Consumed that unchanged recovery receipt, checked container configuration, store mount and unchanged volume identity, then removed the owned services, volume and both image tags. All four resource-absence reads succeeded with empty output. No application start, request, pull, build or recreation was repeated. |
+
+All three phases retained CLI `90545121`, guest helper `0d3332e6`, proxy
+`69fa02a5` and the qualified four-file runsc set. Runtime cleanup stopped the
+owned processes; the original policy, binary selection and runtime files were
+restored. These combined observations do not establish an uninterrupted
+final-driver run or qualification of a current shipping package. The original
+native failures and fixed-token registry refusal remain separate observations;
+the continuation does not establish their causal repair. Bridge networking,
+other storage drivers, automatic-token CLI pulls and macOS remain unqualified.
+The observed pull reused warm layers. Independent parent acceptance remains in
+[#1435](https://github.com/craigbalding/safeyolo/issues/1435#issuecomment-6758498898).
+
+On an owned test host, the
+[installed driver](../../tests/blackbox/installed_docker_preflight.py) adds
+`--gateway-lifecycle` to `--gateway` for this client/route combination. Reuse the
+stopped qualified fixture and its prepared image/data with `--reuse-root`,
+`--nested-docker` and the actual `--docker-data` path. After an interrupted
+recovery, reconcile the saved result before continuing. The
+`--gateway-lifecycle-resume` option takes the original receipt; adding
+`--gateway-recovery-receipt` consumes a successful retained client recovery and
+continues only reconciliation and owned teardown. The driver stops on uncertain
+effects and preserves their results instead of replaying mutations.
+
 ## Inputs and authority
 
 The existing operator wrapper supplies these private inputs as paths or process
@@ -682,6 +718,9 @@ fixture containers and both anonymous volumes; the prepared image and shared
 bridge network remain reusable.
 
 The controlled HTTP regression remains focused protocol proof. Its simulated
-origin does not establish real Engine acceptance. The new real Engine case also
-reuses the accepted #1437 internal Docker connection result; it still requires
-independent #1439 acceptance.
+origin does not establish real Engine acceptance. The real Engine case also
+reuses the accepted #1437 internal Docker connection result. Lens accepted all
+eight #1439 criteria in the
+[final project ledger](https://github.com/craigbalding/safeyolo/issues/1439#issuecomment-6723464950),
+including the later interrupted-creation and retained-volume results. Those
+results retain their recorded source, runtime and trusted-administrator limits.

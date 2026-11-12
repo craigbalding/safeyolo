@@ -2453,7 +2453,8 @@ def test_install_commit_option_needs_an_installed_selection(tmp_path):
 
 
 @pytest.mark.parametrize("selection", ["default", "matching", "mismatched", "missing_checkout"])
-def test_direct_installed_selection_resolves_current_source_before_setup(tmp_path, selection):
+@pytest.mark.parametrize("section", ["workloads", "ingress"])
+def test_direct_installed_selection_resolves_current_source_before_setup(tmp_path, selection, section):
     checkout = tmp_path / "source"
     checkout.mkdir()
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
@@ -2468,7 +2469,7 @@ def test_direct_installed_selection_resolves_current_source_before_setup(tmp_pat
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "SAFEYOLO_TEST_CONFIG_DIR": str(instance)}
     if selection != "missing_checkout":
         env["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"] = str(checkout)
-    options = ["--expect-platform", "systrap", "--workloads"]
+    options = ["--expect-platform", "systrap", "--" + section]
     if selection != "default":
         options += ["--install-commit", OTHER_REVISION if selection == "mismatched" else revision]
     result = subprocess.run(

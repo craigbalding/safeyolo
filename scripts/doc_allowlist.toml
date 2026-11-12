@@ -40,6 +40,7 @@ user_facing_docs = [
     "docs/CONFIGURATION.md",
     "docs/native-observations.md",
     "docs/installation.md",
+    "docs/windows-wsl2.md",
     "docs/guest-oci.md",
     "docs/credentials.md",
     "docs/docker.md",

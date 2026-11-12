@@ -5,6 +5,10 @@ SafeYolo agent boots. SafeYolo runs them with the operator's user permissions.
 A host script can install an agent harness, copy authentication or settings,
 and define the command that the sandbox executes.
 
+For an existing Windows Subsystem for Linux 2 (WSL2) installation, see the
+[WSL host-setup and terminal workflow](../docs/windows-wsl2.md).
+That reference distinguishes the tested Linux paths from Windows mount limits.
+
 For the host path, first complete the [installation and guest prerequisites](../docs/installation.md#install-and-start)
 in the instance you installed. The commands below use `$HOME/.safeyolo`;
 replace that root if your installation uses another path. Run as your ordinary

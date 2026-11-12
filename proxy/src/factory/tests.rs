@@ -29,6 +29,42 @@ fn role_lifecycle_failures_keep_their_original_diagnostic() {
     }
 }
 
+#[test]
+fn live_role_start_does_not_treat_supervisor_stderr_as_failure() {
+    for state in [
+        "starting",
+        "launching",
+        "running",
+        "managed",
+        "manual",
+        "observed",
+    ] {
+        let observation = json!({"agent_id":"role-agent","run_id":"current-run",
+            "launch_id":"current-launch","runtime_state":"running","agent_state":state,
+            "error":"harness preparation diagnostic\n"});
+        assert!(role_start_error(&observation).is_none(), "{observation}");
+        assert_eq!(role_lifecycle_error(&observation), observation.get("error"));
+    }
+}
+
+#[test]
+fn non_live_role_start_keeps_failure_and_unknown_state_diagnostics() {
+    for state in [
+        "stopped",
+        "exited",
+        "failed",
+        "unknown",
+        "stopping",
+        "finishing",
+    ] {
+        let error = json!("launch or runtime could not be verified");
+        let observation = json!({"agent_state":state,"error":error});
+        assert_eq!(role_start_error(&observation), Some(&error));
+    }
+    let refused = json!({"status_code":409,"error":"Agent cannot start while unknown"});
+    assert_eq!(role_start_error(&refused), refused.get("error"));
+}
+
 fn fixture(root: &Path) -> PathBuf {
     fs::write(
         root.join("role.md"),

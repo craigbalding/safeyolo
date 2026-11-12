@@ -1623,8 +1623,25 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     assert!(std::os::unix::net::UnixStream::connect(&peer_socket).is_ok());
     drop(foreign_listener);
     fs::remove_file(&marker_socket).unwrap();
-    // Restoring the listener allows the same start through to backend entry.
-    // A deliberate backend prerequisite failure must keep its uncertain run.
+    // Restoring the listener lets the same start reach ACL preparation, before
+    // backend creation. Its failure must retire this run and permit retry.
+    // Restricted hosts enter through the wrapper installed by host prepare.
+    // The injected unshare below exits before creating any namespaces.
+    let namespace_entry = root.join("host/namespace-entry");
+    fs::create_dir_all(namespace_entry.parent().unwrap()).unwrap();
+    fs::write(&namespace_entry, b"#!/bin/sh\nexec \"$@\"\n").unwrap();
+    fs::set_permissions(&namespace_entry, fs::Permissions::from_mode(0o755)).unwrap();
+    let namespace_attempt = root.join("namespace-attempted");
+    let unshare = root.join("bin/unshare");
+    fs::write(
+        &unshare,
+        format!(
+            "#!/bin/sh\nprintf attempted > '{}'\nexit 17\n",
+            namespace_attempt.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&unshare, fs::Permissions::from_mode(0o755)).unwrap();
     let acl = root.join("bin/setfacl");
     fs::write(&acl, b"#!/bin/sh\nexit 17\n").unwrap();
     fs::set_permissions(&acl, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1651,20 +1668,21 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
         String::from_utf8_lossy(&retried.stderr)
     );
     assert!(!String::from_utf8_lossy(&retried.stderr).contains("not acknowledged"));
-    assert!(root.join("agents/marker/runtime.json").is_file());
+    assert!(!namespace_attempt.exists());
+    assert!(!root.join("agents/marker/runtime.json").exists());
+    assert!(!marker_socket.exists());
     assert_eq!(
         value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
-        "unknown"
+        "stopped"
     );
     assert_eq!(
         fs::read(root.join("agents/alice/runtime.json")).unwrap(),
         peer_runtime
     );
-    // The backend prerequisite fails after real listener preparation. Faults
-    // challenge rollback and CLI/Admin diagnostics without deleting uncertain
-    // run state. The retired map stays untouched.
+    // Repeat the same agent start without manually removing runtime state.
+    // Listener rollback faults preserve the original ACL error in both CLI and
+    // Admin diagnostics, after retiring only this prebackend run.
     for fault in ["none", "listener", "admin-listener"] {
-        fs::remove_file(root.join("agents/marker/runtime.json")).unwrap();
         let mut script = String::from("#!/bin/sh\n");
         if fault != "none" {
             script.push_str(&format!(
@@ -1692,7 +1710,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
             "{fault}: {error}"
         );
         assert_eq!(
-            error.contains("listener rollback failed"),
+            error.contains("preboot rollback failed"),
             fault != "none",
             "{fault}: {error}"
         );
@@ -1702,7 +1720,13 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
                 "{error}"
             );
         }
-        assert!(root.join("agents/marker/runtime.json").is_file());
+        assert!(!namespace_attempt.exists(), "{fault}");
+        assert!(!root.join("agents/marker/runtime.json").exists(), "{fault}");
+        assert_eq!(
+            value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+            "stopped",
+            "{fault}"
+        );
         assert_eq!(
             std::os::unix::net::UnixStream::connect(&marker_socket).is_ok(),
             fault != "none",
@@ -1722,6 +1746,59 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
             fs::remove_dir(lock).unwrap();
         }
     }
+
+    // After ACL repair, fail at namespace launch instead. Backend entry cannot
+    // prove absence, so preserve the uncertain run and refuse stop and retry.
+    fs::write(&acl, b"#!/bin/sh\nexit 0\n").unwrap();
+    let failed = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .args([
+            "--root",
+            root.to_str().unwrap(),
+            "agent",
+            "start",
+            "marker",
+            "--sandbox-only",
+        ])
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", root.join("bin").display()),
+        )
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains("user namespace holder"),
+        "{}",
+        String::from_utf8_lossy(&failed.stderr)
+    );
+    assert!(namespace_attempt.exists());
+    let uncertain = fs::read(root.join("agents/marker/runtime.json")).unwrap();
+    assert_eq!(
+        value(cli(&root, &["agent", "status", "marker"]))["runtime_state"],
+        "unknown"
+    );
+    assert!(!marker_socket.exists());
+    for operation in ["stop", "start"] {
+        let refused = cli(&root, &["agent", operation, "marker"]);
+        assert!(!refused.status.success(), "{operation}");
+        assert_eq!(
+            fs::read(root.join("agents/marker/runtime.json")).unwrap(),
+            uncertain,
+            "{operation}"
+        );
+    }
+    assert_eq!(fs::read(&map).unwrap(), saved_map);
+    assert_eq!(
+        fs::read(root.join("agents/alice/runtime.json")).unwrap(),
+        peer_runtime
+    );
+    assert_eq!(fs::read(&peer_launch).unwrap(), peer_launch_bytes);
+    assert_eq!(
+        fs::read(root.join("data/proxy-process.json")).unwrap(),
+        proxy_process
+    );
+    assert_eq!(fs::metadata(&peer_socket).unwrap().ino(), peer_inode.ino());
+    assert!(std::os::unix::net::UnixStream::connect(&peer_socket).is_ok());
 }
 
 #[test]

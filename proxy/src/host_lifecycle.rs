@@ -1647,6 +1647,16 @@ pub(crate) async fn start_authorized(
         )
         .await;
         if let Err(error) = boot {
+            #[cfg(target_os = "linux")]
+            let error = match error {
+                crate::host_platform::LinuxStartError::BeforeBackend(error) => {
+                    if let Err(rollback) = rollback_preboot_start(agent, &run).await {
+                        return Err(format!("{error}; preboot rollback failed: {rollback}").into());
+                    }
+                    return Err(error.into());
+                }
+                crate::host_platform::LinuxStartError::Backend(error) => error,
+            };
             let mut failures = Vec::new();
             if let Err(rollback) = sync_agent_listeners(Some((&agent.name, None))).await {
                 failures.push(format!("listener rollback failed: {rollback}"));
@@ -1764,6 +1774,8 @@ async fn rollback_preboot_start(agent: &Agent, run: &Value) -> Result<(), Error>
     {
         return Err("preboot runtime identity changed; saved state was preserved".into());
     }
+    #[cfg(target_os = "linux")]
+    crate::host_runs::require_absent_preboot_controls(&agent.name)?;
     std::fs::remove_file(crate::host_runs::path(&agent.name))?;
     sync_agent_listeners(Some((&agent.name, None))).await
 }
@@ -2718,6 +2730,30 @@ mod tests {
                 assert_eq!(std::fs::read(&config_path).unwrap(), saved_config, "{field}");
                 assert_eq!(std::fs::read(&map).unwrap(), saved_map, "{field}");
             }
+            #[cfg(target_os = "linux")]
+            for path in [
+                agent_dir(&agent.name).join("userns.pid"),
+                agent_dir(&agent.name).join("container.pid"),
+                crate::host_platform::runsc_root().join(format!("safeyolo-{run_id}_sandbox:safeyolo-{run_id}.state")),
+                crate::host_platform::runsc_root().join(format!("safeyolo-{run_id}_sandbox:safeyolo-{run_id}.lock")),
+            ] {
+                write_json(&context, &json!({"generation":run_id})).unwrap();
+                crate::host_runs::save(&agent.name, &run).unwrap();
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                for dangling in [false, true] {
+                    if dangling {
+                        std::os::unix::fs::symlink("absent", &path).unwrap();
+                    } else {
+                        std::fs::write(&path, pid.to_string()).unwrap();
+                    }
+                    assert!(rollback_preboot_start(&agent, &run).await.is_err(), "{}", path.display());
+                    assert_eq!(crate::host_runs::read(&agent.name).unwrap(), Some(run.clone()));
+                    assert_eq!(std::fs::read(&config_path).unwrap(), saved_config);
+                    assert_eq!(std::fs::read(&map).unwrap(), saved_map);
+                    assert!(std::fs::symlink_metadata(&path).is_ok());
+                    std::fs::remove_file(&path).unwrap();
+                }
+            }
             write_json(&context, &json!({"generation":run_id})).unwrap();
             crate::host_runs::save(&agent.name, &run).unwrap();
             // A failed listener update must report failure, but must not leave
@@ -2740,6 +2776,200 @@ mod tests {
             let listeners = crate::native_config::read(&config_path).unwrap().listeners;
             assert_eq!(serde_json::to_value(listeners).unwrap(), json!([peer]));
             assert!(map.is_dir());
+        })
+        .await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_prebackend_failure_allows_retry_but_preserves_uncertain_start() {
+        use std::os::unix::fs::PermissionsExt;
+        const TEST: &str = "host_lifecycle::tests::linux_prebackend_failure_allows_retry_but_preserves_uncertain_start";
+        let Some(root) = std::env::var_os("SAFEYOLO_TEST_PREBACKEND_ROOT") else {
+            // These small staging inputs need a filesystem that represents
+            // subordinate ownership. Keep build outputs on disk separately.
+            let temp = tempfile::Builder::new()
+                .prefix("safeyolo-prebackend-")
+                .tempdir_in("/tmp")
+                .unwrap();
+            std::fs::create_dir(temp.path().join("bin")).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env("SAFEYOLO_TEST_PREBACKEND_ROOT", temp.path())
+                .env("SAFEYOLO_TEST_FAILED_START_LAUNCH", "direct")
+                .env("SAFEYOLO_RUNSC_ROOT", temp.path().join("run"))
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:/usr/local/bin:/usr/bin:/bin",
+                        temp.path().join("bin").display()
+                    ),
+                )
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+        let root = PathBuf::from(root);
+        crate::host_platform::in_instance(root.clone(), async {
+            let agent = crate::host_agents::configure(
+                "retry",
+                &[("folder".into(), root.to_string_lossy().into_owned())],
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+            let directory = agent_dir(&agent.name);
+            let inputs = root.join("share");
+            let tree = inputs.join("rootfs-tree");
+            for path in [
+                "etc",
+                "workspace",
+                "safeyolo",
+                "safeyolo-status",
+                "home/agent",
+                "usr/local/share/ca-certificates",
+            ] {
+                std::fs::create_dir_all(tree.join(path)).unwrap();
+            }
+            std::fs::write(
+                tree.join("usr/local/share/ca-certificates/safeyolo.crt"),
+                "",
+            )
+            .unwrap();
+            let mapping = crate::linux_host::selected_mapping().unwrap();
+            std::fs::set_permissions(&tree, std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert!(
+                std::process::Command::new("sudo")
+                    .args(["-n", "chown"])
+                    .arg(format!("{}:{}", mapping.uid_base, mapping.gid_base))
+                    .arg(&tree)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            std::fs::create_dir_all(root.join("assets/guest")).unwrap();
+            for name in [
+                "guest-init",
+                "guest-init-static",
+                "guest-init-per-run",
+                "guest-proxy-forwarder",
+                "guest-shell-bridge",
+                "guest-desktop",
+                "safeyolo-guest",
+            ] {
+                std::fs::write(
+                    root.join("assets/guest").join(name),
+                    b"\x7fELF0000000000000000",
+                )
+                .unwrap();
+            }
+            std::fs::create_dir_all(root.join("assets/skills/safeyolo")).unwrap();
+            std::fs::write(root.join("assets/skills/safeyolo/SKILL.md"), "fixture").unwrap();
+            std::fs::create_dir_all(root.join("certs")).unwrap();
+            std::fs::write(root.join("certs/mitmproxy-ca-cert.pem"), "fixture CA").unwrap();
+            let peer = json!({"agent_id":"peer", "socket_path":root.join("peer.sock")});
+            std::fs::write(
+                root.join("config.toml"),
+                toml::to_string(&json!({"listeners":[peer.clone()]})).unwrap(),
+            )
+            .unwrap();
+            let script = |name: &str, text: &str| {
+                let path = root.join("bin").join(name);
+                std::fs::write(&path, text).unwrap();
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            };
+            script(
+                "setfacl",
+                "#!/bin/sh\necho 'fixture ACL unsupported' >&2\nexit 17\n",
+            );
+            // This boundary witness creates no guest. After ACL repair it
+            // reaches a controlled namespace-launch failure, which must stay
+            // unknown even though it has no backend/holder token.
+            script(
+                "unshare",
+                &format!(
+                    "#!/bin/sh\nprintf attempted > '{}'\nexit 17\n",
+                    root.join("namespace-attempted").display()
+                ),
+            );
+            std::fs::create_dir_all(directory.join("home")).unwrap();
+            std::fs::write(directory.join("home/keep"), "saved home").unwrap();
+            crate::host_agents::reserve_network_slot(&agent.name).unwrap();
+            let policy = std::fs::read(root.join("policy.toml")).unwrap();
+            let error = start(&agent, "sandbox-start", None, None, false)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("setfacl failed on runsc state directory"),
+                "{error}"
+            );
+            assert!(error.contains("fixture ACL unsupported"), "{error}");
+            assert!(!root.join("namespace-attempted").exists());
+            assert!(crate::host_runs::read(&agent.name).unwrap().is_none());
+            assert_eq!(runtime(&agent).await.unwrap()["runtime_state"], "stopped");
+            assert_eq!(
+                serde_json::to_value(
+                    crate::native_config::read(&crate::host_platform::config_path())
+                        .unwrap()
+                        .listeners
+                )
+                .unwrap(),
+                json!([peer])
+            );
+            let first = read_json(&directory.join("last-start-failure.json"))
+                .unwrap()
+                .unwrap();
+            let first_context = read_json(&directory.join("config-share/host-launch-context.json"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(first_context["agent_id"], agent.id);
+            script("setfacl", "#!/bin/sh\nexit 0\n");
+            let retry = start(&agent, "sandbox-start", None, None, false)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(retry.contains("user namespace holder"), "{retry}");
+            assert!(root.join("namespace-attempted").exists());
+            let uncertain = crate::host_runs::read(&agent.name).unwrap().unwrap();
+            assert_eq!(uncertain["agent_id"], agent.id);
+            assert_ne!(uncertain["run_id"], first_context["generation"]);
+            assert_eq!(uncertain["state"], "starting");
+            assert!(uncertain["backend_token"].is_null());
+            assert!(uncertain["holder_token"].is_null());
+            assert_eq!(runtime(&agent).await.unwrap()["runtime_state"], "unknown");
+            assert!(
+                crate::host_platform::stop_sandbox(&agent.name)
+                    .await
+                    .is_err()
+            );
+            let refused = start(&agent, "sandbox-start", None, None, false)
+                .await
+                .unwrap();
+            assert_eq!(refused["status_code"], 409);
+            assert!(refused["error"].as_str().unwrap().contains("unknown"));
+            assert_eq!(
+                crate::host_runs::read(&agent.name).unwrap(),
+                Some(uncertain)
+            );
+            assert_ne!(
+                read_json(&directory.join("last-start-failure.json"))
+                    .unwrap()
+                    .unwrap()["event_id"],
+                first["event_id"]
+            );
+            assert_eq!(std::fs::read(root.join("policy.toml")).unwrap(), policy);
+            assert_eq!(
+                std::fs::read_to_string(directory.join("home/keep")).unwrap(),
+                "saved home"
+            );
         })
         .await;
     }

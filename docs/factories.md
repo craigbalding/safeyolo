@@ -254,6 +254,85 @@ operator-authorized repositories. `NEXT` and `PRIORITY` can override ordinary
 ordering for eligible work. A trusted brief may refine standing priorities or
 constraints, but the backlog factory does not require one.
 
+## Guided setup
+
+Use `factory setup` on the owning host account with a prepared, installed
+SafeYolo instance. Supply your operator-authored Factory TOML. The entry uses
+the declared agents, harnesses, contracts and room permissions. It does not
+write Factory policy or change the supervision protocol.
+
+The following example runs from the SafeYolo repository root. It selects the
+installation at `$HOME/.safeyolo`, the shipped backlog contract and three owned
+repository directories. Replace `/work/relay`, `/work/forge` and `/work/lens`
+with your selected workspaces. Keep the installation outside those workspaces.
+If you use another instance, change both the executable and `--root` path.
+
+```sh
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" start
+"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory setup docs/factories/backlog.toml --workspace coordinator=/work/relay --workspace owner=/work/forge --workspace reviewer=/work/lens
+```
+
+Setup shows the selected root, exact snapshot, role identities and workspaces.
+Before a new approval, it shows the previous and selected contract content,
+including exact role instructions and harness arguments. The approval selects
+that immutable snapshot. Approval alone does not establish readiness.
+
+In a terminal, setup asks for missing workspaces and the existing snapshot
+approval. It prepares declared roles and room grants through `prepare`, then
+checks the existing checkpoint prerequisite. For missing checkpoints, confirm
+fresh identities only when those identities or memberships have never received
+targeted attention in any configured room. Clearing messages does not reset
+attention. A valid checkpoint needs no fresh-identity confirmation.
+
+Setup checks each role's own installed harness and authentication in a sandbox
+without running a model turn. If a role needs authentication, choose its own
+login, or return and configure its supported external provider. No host or peer
+credentials are copied. A valid supported external-provider configuration is
+reused. Setup then starts supervised roles through `run` and reports `running`
+only after the existing doctor checks observe all roles ready.
+
+Repeat the same setup command after an interruption. Saved workspaces, agent
+identities, homes and valid staging are reused. Setup leaves healthy running
+roles running. If a role's workspace or staging differs, setup uses the existing
+stopped-role preparation checks. It refuses to replace live bindings. Stop the
+affected roles before changing their instructions or workspace.
+
+### Automation and recovery
+
+For a read-only JSON preview, append `--preview` to the setup command. The
+preview includes exact previous and selected contracts and current role
+observations. It does not approve, stage, authenticate or start roles, even if
+action flags are also supplied. Authentication is `unverified` until the
+role's actual preflight succeeds.
+
+For noninteractive setup, supply every missing `--workspace ROLE=PATH`.
+Use `--yes` for explicit snapshot approval. This option does not confirm fresh
+identities. Supply `--confirm-fresh-identity` separately only under the condition
+described above. Use `--login ROLE` to select an explicit role-local login;
+interactive authentication still needs a terminal. Each login stops its
+authentication sandbox afterward. The separate `factory login` commands remain
+available.
+
+Setup reports completed observations and an outstanding prerequisite when it
+cannot continue. Earlier role preparation or starts can remain complete; the
+operation is not an atomic multi-role transaction. Use the reported root and
+source path for recovery:
+
+| Report | Next action |
+|---|---|
+| `approval-required` | Inspect the exact preview and use the existing approval decision. A changed source is not silently selected. |
+| `workspace-required` | Repeat setup with the named role's workspace. |
+| `preparation-incomplete` | Inspect the named staging, identity or runtime difference. Preserve unknown live state and use the existing stop or agent recovery path. Approval can select future instructions while roles run; staging changed instructions still requires the affected roles to stop. |
+| `checkpoint-required` | For a missing checkpoint, satisfy the existing fresh-identity rule. For an invalid retained checkpoint, inspect the named agent; do not delete history to manufacture freshness. |
+| `authentication-required` | Correct the named harness, authentication or Coord preflight failure. Use that role's login or supported provider configuration, then repeat setup. This report does not prove provider access. |
+| `start-incomplete` | Inspect `factory doctor NAME` for the same instance. Preserve started roles and checkpoints, correct the failed prerequisite, then repeat setup. |
+
+If setup reports that the instance proxy is stopped, start that instance and
+repeat setup. A failed observation remains an error, rather than evidence of
+an absent or stopped runtime. Use [agent recovery](operator-guide.md#recover-from-a-failed-operation)
+for the specific agent when needed. The explicit operations below remain
+available for detailed control and diagnosis.
+
 ## Fresh setup, check, approve, and run
 
 Use the [installed product](installation.md#install-and-start) on the

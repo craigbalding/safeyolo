@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send installed ingress controls from inside the real KVM guest."""
+"""Send installed ingress controls from inside a real gVisor guest."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import http.client
 import json
 import os
 import re
+import socket
 import stat
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -106,18 +107,27 @@ def traced_request(
     target: str,
     marker: str,
     token: str,
+    *,
+    claimed_agent: str | None = None,
+    claimed_source: str | None = None,
 ) -> dict:
     authority = urlsplit(target).netloc
+    headers = {
+        "Host": authority,
+        "X-SafeYolo-Trace": "1",
+        "X-SafeYolo-Test-Context": f"run=installed-ingress;agent={claimed_agent or agent}",
+        "X-Probe-Marker": marker,
+    }
+    if claimed_agent is not None:
+        headers["X-SafeYolo-Agent"] = claimed_agent
+    if claimed_source is not None:
+        headers.update({"X-SafeYolo-Source": claimed_source, "X-Forwarded-For": claimed_source,
+                        "Forwarded": f"for={claimed_source}"})
     response = request(
         proxy_host,
         proxy_port,
         target,
-        {
-            "Host": authority,
-            "X-SafeYolo-Trace": "1",
-            "X-SafeYolo-Test-Context": f"run=kvm-p1;agent={agent}",
-            "X-Probe-Marker": marker,
-        },
+        headers,
     )
     identifier = one_header(response, "x-safeyolo-request-id")
     assert REQUEST_ID.fullmatch(identifier), f"invalid request ID: {identifier!r}"
@@ -143,12 +153,57 @@ def traced_request(
     }
 
 
+def peer_boundary(peer_socket: str, peer_state: str, own_state: str, value: str) -> dict:
+    """Require working own mounts before probing the peer's real host paths."""
+    assert Path(own_state).read_text() == value, "own persistent-home positive control failed"
+    with socket.socket(socket.AF_UNIX) as control:
+        control.settimeout(3)
+        control.connect(str(GUEST_SOCKET))
+    refusals = []
+    with socket.socket(socket.AF_UNIX) as other:
+        other.settimeout(3)
+        try:
+            other.connect(peer_socket)
+        except OSError as error:
+            refusals.append({"socket": peer_socket, "errno": error.errno, "error": str(error)})
+        else:
+            raise AssertionError("guest reached the peer's private socket")
+    try:
+        Path(peer_state).read_bytes()
+    except OSError as error:
+        refusals.append({"state": peer_state, "errno": error.errno, "error": str(error)})
+    else:
+        raise AssertionError("guest read the peer's private state")
+    return {"uid": os.geteuid(), "own_socket_connected": True, "own_state_read": True, "refusals": refusals}
+
+
+def stopped_listener() -> dict:
+    """Observe refusal through the same guest forwarder used by successful requests."""
+    try:
+        response = request("127.0.0.1", 8080, f"{AGENT_API}/health", {"Host": "_safeyolo.proxy.internal"})
+    except (ConnectionRefusedError, ConnectionResetError, BrokenPipeError, http.client.RemoteDisconnected) as error:
+        return {"error_type": type(error).__name__, "error": str(error)}
+    raise AssertionError(f"stopped listener returned a response: {response['status']}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--agent", required=True)
     parser.add_argument("--marker", required=True)
+    parser.add_argument("--claimed-agent")
+    parser.add_argument("--claimed-source")
+    parser.add_argument("--phase", choices=("requests", "boundary", "refused"), default="requests")
+    parser.add_argument("--peer-socket")
+    parser.add_argument("--peer-state")
+    parser.add_argument("--own-state")
+    parser.add_argument("--state-value")
     args = parser.parse_args()
     assert re.fullmatch(r"p1-[0-9a-f]{32}", args.marker)
+    if args.phase != "requests":
+        result = (peer_boundary(args.peer_socket, args.peer_state, args.own_state, args.state_value)
+                  if args.phase == "boundary" else stopped_listener())
+        print("P1_OBSERVATION=" + json.dumps(result, sort_keys=True))
+        return
 
     proxy = urlsplit(os.environ["HTTP_PROXY"])
     assert os.environ["HTTP_PROXY"] == GUEST_PROXY
@@ -166,6 +221,8 @@ def main() -> None:
         f"http://httpbin.org/{args.marker}",
         args.marker,
         token,
+        claimed_agent=args.claimed_agent,
+        claimed_source=args.claimed_source,
     )
     denied = traced_request(
         proxy.hostname,
@@ -174,6 +231,8 @@ def main() -> None:
         f"http://evil.com/{args.marker}-denied",
         args.marker,
         token,
+        claimed_agent=args.claimed_agent,
+        claimed_source=args.claimed_source,
     )
     print(
         "P1_OBSERVATION="

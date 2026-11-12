@@ -1091,12 +1091,28 @@ async fn start_userns(name: &str) -> io::Result<u32> {
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub(crate) enum LinuxStartError {
+    BeforeBackend(io::Error),
+    Backend(io::Error),
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxStartError {
+    fn into_error(self) -> io::Error {
+        match self {
+            Self::BeforeBackend(error) | Self::Backend(error) => error,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) async fn start_sandbox(
     name: &str,
     ip: &str,
     memory_mb: u64,
     ephemeral: bool,
-) -> io::Result<()> {
+) -> Result<(), LinuxStartError> {
     start_linux_sandbox(name, ip, memory_mb, ephemeral, false).await
 }
 
@@ -1104,17 +1120,13 @@ pub(crate) async fn start_sandbox(
 pub(crate) async fn start_job_sandbox(name: &str, memory_mb: u64) -> io::Result<()> {
     // Job result interpretation uses the tested runtime's raw wait-status log.
     crate::linux_host::verify_selected_runtime().map_err(io::Error::other)?;
-    start_linux_sandbox(name, "127.0.0.1", memory_mb, true, true).await
+    start_linux_sandbox(name, "127.0.0.1", memory_mb, true, true)
+        .await
+        .map_err(LinuxStartError::into_error)
 }
 
 #[cfg(target_os = "linux")]
-async fn start_linux_sandbox(
-    name: &str,
-    ip: &str,
-    memory_mb: u64,
-    ephemeral: bool,
-    job: bool,
-) -> io::Result<()> {
+async fn prepare_linux_sandbox(name: &str) -> io::Result<crate::linux_host::Mapping> {
     if !valid_agent_name(name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1149,14 +1161,52 @@ async fn start_linux_sandbox(
         .output()
         .await?;
     if !acl.status.success() {
-        return Err(io::Error::other("setfacl failed on runsc state directory"));
+        return Err(io::Error::other(format!(
+            "setfacl failed on runsc state directory {}: {}",
+            root.display(),
+            String::from_utf8_lossy(&acl.stderr).trim()
+        )));
     }
+    Ok(mapping)
+}
+
+#[cfg(target_os = "linux")]
+async fn start_linux_sandbox(
+    name: &str,
+    ip: &str,
+    memory_mb: u64,
+    ephemeral: bool,
+    job: bool,
+) -> Result<(), LinuxStartError> {
+    let mapping = prepare_linux_sandbox(name)
+        .await
+        .map_err(LinuxStartError::BeforeBackend)?;
+    // From namespace creation onward an error alone cannot prove that no
+    // backend/control was created. Preserve the existing cleanup and guards.
+    start_prepared_linux_sandbox(name, ip, memory_mb, ephemeral, job, mapping)
+        .await
+        .map_err(LinuxStartError::Backend)
+}
+
+#[cfg(target_os = "linux")]
+async fn start_prepared_linux_sandbox(
+    name: &str,
+    ip: &str,
+    memory_mb: u64,
+    ephemeral: bool,
+    job: bool,
+    mapping: crate::linux_host::Mapping,
+) -> io::Result<()> {
     if userns_pid(name).is_some() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "existing sandbox control must be reconciled before start",
         ));
     }
+    let directory = config_dir().join("agents").join(name);
+    let bundle = directory.join("config.json");
+    let share = directory.join("config-share");
+    let root = runsc_root();
     let pid = start_userns(name).await?;
     let result = async {
         let mut spec: serde_json::Value = serde_json::from_slice(&std::fs::read(&bundle)?)?;
@@ -3233,7 +3283,8 @@ esac
                 } else {
                     (starting.await, None)
                 };
-                let error = started.unwrap_err();
+                assert!(matches!(started, Err(LinuxStartError::Backend(_))));
+                let error = started.unwrap_err().into_error();
                 eprintln!("failed-start {launch}/{stop}: {error}");
                 let record = std::fs::read(directory.join("fixture-holder.json"))
                     .or_else(|_| std::fs::read(directory.join("runtime.json"))).unwrap();

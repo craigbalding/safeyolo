@@ -99,6 +99,8 @@ def _run_per_run(tmp_path, release, staged, initial_failure, shutdown):
     environment = {
         **os.environ, "TRACE": str(tmp_path / "trace"), "RELEASE": release,
         "INITIAL_FAILURE": str(int(initial_failure)),
+        # Git's --system path is independent of the rewritten shell paths.
+        "GIT_CONFIG_SYSTEM": str(tmp_path / "etc/gitconfig"),
     }
     if shutil.which("setsid") is None:
         # macOS lacks this guest executable. Keep the child PID and session
@@ -135,6 +137,11 @@ def _run_per_run(tmp_path, release, staged, initial_failure, shutdown):
     if console.exists():
         print(console.read_text(), end="")
     assert result.returncode == 0, result.stderr
+    git_config = subprocess.run(
+        ["git", "config", "--system", "--get-all", "credential.https://github.com.helper"],
+        env=environment, capture_output=True, text=True, check=True,
+    )
+    assert git_config.stdout.strip() == f'!{tmp_path / ("staged" if staged else "share") / "safeyolo-guest"} git-credential'
     expected = []
     if release == "vz-test":
         expected.append(str(tmp_path / ("staged" if staged else "share") / "safeyolo-guest"))

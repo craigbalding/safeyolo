@@ -68,7 +68,11 @@ def ledger(tmp_path: Path) -> Path:
         # Delivered audit rows deliberately share the hint outbox table.
         for event in ("coord.attention_projection_lost", "coord.brief_updated"):
             payload = json.dumps({"event": event, "details": {"room_id": "rm-a", "from_sequence": 7, "to_sequence": 9}})
-            db.execute("INSERT INTO coord_outbox VALUES(?,'audit-jsonl',?,?,0,1,0,NULL)", (event, event, payload))
+            db.execute(
+                """INSERT INTO coord_outbox(event_id,destination,event_type,payload_json,created_at,delivered_at)
+                   VALUES(?,'audit-jsonl',?,?,0,1)""",
+                (event, event, payload),
+            )
     return path
 
 

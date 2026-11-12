@@ -289,7 +289,7 @@ package checks exit 2 as failed fixture preparation. With
 package path. This selection prepares test dependencies only; host preparation
 still needs its usual prepared inputs or network access.
 
-| Lane | Independent sections |
+| Lane | Default independent sections |
 |---|---|
 | `systrap` | isolation, workloads, access, lifecycle, host continuity |
 | `kvm` | isolation, ingress, workloads |
@@ -605,7 +605,7 @@ state. It links compatible `share/` and `bin/` inputs, creates fresh writable
 state, verifies actual guest metadata for platform selection, and records the
 installed source/profile, packaged executable, actual process/start identity, authenticated Admin
 runtime identity and per-agent listener before guest assertions. `--workloads`,
-`--access`, `--lifecycle` and KVM `--ingress` select procedures and exit before
+`--access`, `--lifecycle` and Linux `--ingress` select procedures and exit before
 the full pytest phases. `run-lane.sh` supplies their selected source checkout.
 For a direct prepared procedural run, also set
 `SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT` to the checkout that produced the installed
@@ -645,6 +645,21 @@ The KVM **ingress** section binds a real guest's localhost forwarder to its
 mounted per-agent Unix domain socket (UDS), checks actual KVM runsc arguments,
 then correlates an exact allowed marker with the owned origin and a denied
 request with no origin delivery. Local management API boundaries remain checked.
+
+The optional systrap **ingress** section creates two agents in a fresh test
+instance. It checks listener-owned attribution despite forged peer metadata,
+own socket/home access and peer refusal as ordinary guest and guest root,
+then proxy replacement with both guest generations retained. It stops its
+agents and replacement proxy and verifies owned process and listener cleanup.
+On the prepared disposable Linux host, run from this checkout:
+
+```sh
+./tests/blackbox/run-installed.sh systrap --section ingress
+```
+
+Success produces `ingress/installed-ingress-pair.json` with
+`status: ingress_pair_passed`. The report retains request IDs, listener/source
+identities, refusal observations and process births before and after restart.
 
 Linux **workloads** retains package fetch/hash/query/install/payload/purge,
 read-only Git clone/commit/marker, SSE first-event and held control/release
