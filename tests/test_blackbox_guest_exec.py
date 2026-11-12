@@ -66,7 +66,7 @@ def test_guest_dispatcher_does_not_import_an_ambient_package_or_select_path_deco
 def test_runner_readiness_and_both_isolation_invocations_reach_native_shell(tmp_path):
     source = Path('tests/blackbox/run-tests.sh').read_text().splitlines()
     selected = [line.strip() for line in source if '"$SCRIPT_DIR/guest_exec.py"' in line]
-    assert len(selected) == 4
+    assert len(selected) == 5
     cli = tmp_path / 'safeyolo'
     record = tmp_path / 'calls'
     cli.write_text(f'#!{sys.executable}\nimport json,sys\n'
@@ -87,16 +87,19 @@ def test_runner_readiness_and_both_isolation_invocations_reach_native_shell(tmp_
                                 input='runner stdin', capture_output=True, text=True, timeout=10)
         assert result.returncode == 0, result.stderr
         calls.append(json.loads(record.read_text().splitlines()[-1]))
-    prefix = ['--root', str(root), 'agent', 'shell', 'marker', '-c']
-    assert calls[0] == [*prefix, 'true']
-    assert calls[1][:-1] == prefix
-    assert shlex.split(calls[1][-1]) == [
-        'exec', 'sudo', '-n', '/bin/bash', '-lc',
-        'bash /workspace/tests/blackbox/prepare-guest-tests.sh',
-    ]
-    assert calls[2] == [*prefix, 'printf literal']
-    assert calls[3][:-1] == prefix
-    assert shlex.split(calls[3][-1]) == ['exec', 'sudo', '-n', '/bin/bash', '-lc', 'printf literal']
+    readiness, prepare_primary, prepare_peer, ordinary, root_login = calls
+    prefix = ['--root', str(root), 'agent', 'shell']
+    primary = [*prefix, 'marker', '-c']
+    assert readiness == [*primary, 'true']
+    for agent, preparation in (('marker', prepare_primary), ('bbpeer', prepare_peer)):
+        assert preparation[:-1] == [*prefix, agent, '-c']
+        assert shlex.split(preparation[-1]) == [
+            'exec', 'sudo', '-n', '/bin/bash', '-lc',
+            'bash /workspace/tests/blackbox/prepare-guest-tests.sh',
+        ]
+    assert ordinary == [*primary, 'printf literal']
+    assert root_login[:-1] == primary
+    assert shlex.split(root_login[-1]) == ['exec', 'sudo', '-n', '/bin/bash', '-lc', 'printf literal']
 
 
 @pytest.mark.parametrize('mise_present', [False, True])
