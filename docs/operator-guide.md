@@ -38,6 +38,26 @@ For connections between instances and separately scoped support, notices,
 approval reviewers and factory directions, follow [guided federation and
 authority setup](federation-setup.md). It includes editing and named revocation.
 
+## Read allocator accounting
+
+The authenticated operator `GET /stats` endpoint returns the ordinary statistics
+without allocator sampling. To request a GNU/Linux allocator sample, use
+`GET /stats?allocator=true` with the same operator bearer token. The sample runs
+in the existing blocking report worker. It traverses allocator structures and
+locks arenas, so concurrent allocation can be delayed. Request this detail when
+investigating memory use; do not add it to frequent stats polls.
+
+The additional `allocator` result includes process ID, source revision, build
+profile, operating system, architecture, libc name/version, sampling time in
+Unix milliseconds and resident set size (RSS) context. Its `bytes` object has
+the GNU `mallinfo2` counters `arena`, `uordblks`, `fordblks` and `hblkhd`.
+These describe allocator-visible occupied and free storage. They do not identify
+resident or immediately reclaimable pages, per-thread caches, fragmentation
+owners or a leak. RSS is a separate process observation, not a partition of
+these counters. When `mallinfo2` is missing or the build is unsupported,
+`status` is `unavailable`, `reason`
+explains why and `bytes` is null. Unavailable RSS is also explicit and null.
+
 ## Schedule shell work
 
 Inside a running standard Debian guest, use cron for recurring work and at for

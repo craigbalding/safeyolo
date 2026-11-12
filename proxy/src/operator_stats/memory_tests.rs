@@ -67,7 +67,7 @@ fn memory_is_first_in_the_native_lane_and_reports_the_shared_owner() {
         .render_json(false)
         .unwrap();
     for _ in 0..2 {
-        let report = document_with_memory(&runtime, SAMPLE, || 15.9);
+        let report = document_with_memory(&runtime, SAMPLE, || 15.9, false);
         let fields = report.as_object().unwrap();
         assert_eq!(
             fields.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -108,6 +108,7 @@ fn failed_memory_report_is_contained_and_later_owner_reports_remain() {
         &runtime,
         || Err(SampleError::Index),
         || panic!("sample failure must precede clock"),
+        false,
     );
     let fields = report.as_object().unwrap();
     assert_eq!(

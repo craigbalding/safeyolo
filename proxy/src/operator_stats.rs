@@ -4,11 +4,14 @@
 use crate::{Runtime, circuits::CircuitValue, policy::Policy, tasks::Registry};
 use serde_json::json;
 
-pub(crate) fn document(runtime: &Runtime) -> CircuitValue {
+mod allocator;
+
+pub(crate) fn document(runtime: &Runtime, allocator: bool) -> CircuitValue {
     document_with_memory(
         runtime,
         crate::memory_runtime::sample,
         crate::circuit_runtime::now,
+        allocator,
     )
 }
 
@@ -16,6 +19,7 @@ fn document_with_memory(
     runtime: &Runtime,
     sample: fn() -> Result<crate::memory_monitor::MemorySample, crate::memory_monitor::SampleError>,
     now: fn() -> f64,
+    allocator: bool,
 ) -> CircuitValue {
     let mut report: indexmap::IndexMap<String, CircuitValue> =
         indexmap::IndexMap::from([("proxy".into(), json!("safeyolo").into())]);
@@ -121,6 +125,9 @@ fn document_with_memory(
                 )
             })
             .collect();
+    }
+    if allocator {
+        report.insert("allocator".into(), allocator::document().into());
     }
     CircuitValue::Object(report)
 }
@@ -232,7 +239,7 @@ mod tests {
         .unwrap();
         let runtime = Runtime::new(config, "owned", None, None).unwrap();
         assert_eq!(
-            document(&runtime)
+            document(&runtime, false)
                 .as_object()
                 .unwrap()
                 .keys()

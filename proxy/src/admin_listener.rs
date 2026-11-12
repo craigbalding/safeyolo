@@ -471,9 +471,9 @@ async fn serve_connection(
                 .await
                 .map(close_http_response_unless_upgrade);
             }
-            let stats = || {
+            let stats = |allocator| {
                 let runtime = runtime.clone();
-                stats_tasks.spawn(move || crate::operator_stats::document(&runtime))
+                stats_tasks.spawn(move || crate::operator_stats::document(&runtime, allocator))
             };
             let outcome = admin_api::respond_with_context(
                 request,
