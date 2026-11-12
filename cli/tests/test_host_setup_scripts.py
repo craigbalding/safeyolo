@@ -117,7 +117,6 @@ def _run_setup(
     folder: Path,
     *,
     check: bool = True,
-    stage_coord_runtime: bool = True,
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = _setup_env(operator_home, agent_home, folder)
@@ -130,6 +129,18 @@ def _run_setup(
         text=True,
     )
     return result
+
+
+def _host_command(command: Path) -> Path:
+    """Run a fixture launcher on this host without replacing its staged guest helper."""
+    source = command.read_text()
+    guest_coord = '"$HOME/.safeyolo/safeyolo-coord"'
+    if guest_coord not in source:
+        return command
+    host_command = command.with_name(command.name + ".host")
+    host_command.write_text(source.replace(guest_coord, shlex.quote(str(COORD_NATIVE_BINARY))))
+    host_command.chmod(command.stat().st_mode & 0o777)
+    return host_command
 
 
 def _seed_adopted_codex_auth(agent_home: Path) -> None:
@@ -304,14 +315,23 @@ def test_mise_installed_agent_is_immediately_executable_with_context(
     )
 
     generated_command = agent_home / ".safeyolo-command"
+    original_command = generated_command.read_bytes()
+    staged_coord = agent_home / ".safeyolo/safeyolo-coord"
+    staged_metadata = staged_coord.stat()
     result = subprocess.run(
-        [str(generated_command), "--probe"],
+        [str(_host_command(generated_command)), "--probe"],
         env=command_env,
         capture_output=True,
         text=True,
     )
 
     assert result.returncode == 0, result.stderr
+    assert generated_command.read_bytes() == original_command
+    assert staged_coord.read_bytes() == COORD_GUEST_BINARY.read_bytes()
+    current = staged_coord.stat()
+    assert (current.st_ino, current.st_uid, current.st_gid, current.st_mode) == (
+        staged_metadata.st_ino, staged_metadata.st_uid, staged_metadata.st_gid, staged_metadata.st_mode,
+    )
     actual_args = [arg.decode() for arg in exec_log.read_bytes().split(b"\0") if arg]
     for expected in expected_args:
         assert expected in actual_args
@@ -394,7 +414,7 @@ def test_claude_bootstrap_repairs_mise_install_with_skipped_postinstall(
     )
 
     result = subprocess.run(
-        [str(agent_home / ".safeyolo-command"), "--probe"],
+        [str(_host_command(agent_home / ".safeyolo-command")), "--probe"],
         env=command_env,
         capture_output=True,
         text=True,
@@ -762,7 +782,6 @@ def test_bundled_setup_reports_invalid_harness_config(
         agent_home,
         tmp_path,
         check=False,
-        stage_coord_runtime=False,
     )
 
     assert result.returncode != 0
@@ -963,7 +982,7 @@ def test_pi_setup_rejects_new_managed_parent_symlinks(tmp_path: Path, managed_pa
     link.symlink_to(outside, target_is_directory=True)
     result = _run_setup(
         "pi-host-setup.sh", operator_home, agent_home, tmp_path,
-        check=False, stage_coord_runtime=False,
+        check=False,
         extra_env={"SAFEYOLO_PI_COORD_SUPERVISOR": "1"},
     )
     assert result.returncode != 0
@@ -983,7 +1002,7 @@ def test_pi_setup_rejects_writable_managed_parents(tmp_path: Path, managed_path:
     destination.chmod(0o777)
     result = _run_setup(
         "pi-host-setup.sh", operator_home, agent_home, tmp_path,
-        check=False, stage_coord_runtime=False,
+        check=False,
         extra_env={"SAFEYOLO_PI_COORD_SUPERVISOR": "1"},
     )
     assert result.returncode != 0
@@ -1006,7 +1025,6 @@ def test_pi_setup_rejects_agent_pi_parent_symlink(tmp_path: Path) -> None:
         agent_home,
         tmp_path,
         check=False,
-        stage_coord_runtime=False,
     )
 
     assert result.returncode != 0
@@ -1037,7 +1055,6 @@ def test_pi_setup_preserves_unsafe_existing_launcher(tmp_path: Path, unsafe_kind
         agent_home,
         tmp_path,
         check=False,
-        stage_coord_runtime=False,
     )
 
     assert result.returncode != 0
@@ -1287,7 +1304,8 @@ def test_codex_coord_setup_is_explicit_private_and_idempotent(tmp_path: Path) ->
     assert first_command == (agent_home / ".safeyolo-command").read_bytes()
     assert first_interactive_command == (agent_home / ".safeyolo-interactive-command").read_bytes()
     assert first_interactive_command != first_command
-    assert b"safeyolo-coord" not in first_interactive_command
+    assert b'exec "$HOME/.safeyolo/safeyolo-coord" client-exec codex -- codex' in first_interactive_command
+    assert b" supervise " not in first_interactive_command
     assert first_config == config_path.read_bytes()
     assert checkpoint.read_bytes() == first_checkpoint
     assert {key: config[key] for key in ("agent_name", "coordinators", "rooms", "workspace")} == {
@@ -1839,8 +1857,7 @@ def test_codex_context_stages_native_repo_map(tmp_path: Path) -> None:
     command = agent_home / ".safeyolo/repo-map"
     assert command.read_text() == REPO_MAP_COMMAND
     assert (agent_home / ".safeyolo/repo-map.toml").read_bytes() == (REPO_ROOT / "repo-map.toml").read_bytes()
-    # The staged wrapper runs in Linux guests; Darwin uses the host command.
-    argv = [str(COORD_NATIVE_BINARY), "repo-map"] if sys.platform == "darwin" else [str(command)]
+    argv = [str(_host_command(command))]
     result = subprocess.run(
         [*argv, str(REPO_ROOT / "proxy/src/coord_rooms.rs")],
         env={**os.environ, "HOME": str(agent_home)},
@@ -2248,7 +2265,8 @@ def test_lab_runner_reaches_staged_harness_with_multiline_context(tmp_path, sock
     env["TERM"] = "xterm-256color"
     socket = socket_dir / "controller.sock"
     tmux = ["tmux", "-S", str(socket)]
-    runner = [str(LAB_CONTROLLER_SOURCE / "scripts/run-controller.sh"), "--startup-file", str(startup)]
+    runner = [str(LAB_CONTROLLER_SOURCE / "scripts/run-controller.sh"), "--command", str(command),
+              "--startup-file", str(startup)]
     if selected == "claude":
         # On either host, check the real shell hint and pass its harness choice
         # to the runner. The guest launcher itself requires Linux /proc.
@@ -2762,7 +2780,7 @@ def test_codex_bootstrap_repairs_a_wrapper_whose_native_binary_is_gone(
     assert probe.returncode != 0, "fixture wrapper should fail --version"
 
     result = subprocess.run(
-        [str(agent_home / ".safeyolo-command"), "--probe"],
+        [str(_host_command(agent_home / ".safeyolo-command")), "--probe"],
         env=env,
         capture_output=True,
         text=True,
@@ -2807,7 +2825,7 @@ def test_codex_bootstrap_does_not_reinstall_a_healthy_wrapper(
     Path(env["TEST_INSTALLED_STATE"]).write_text("0.130.0")
 
     result = subprocess.run(
-        [str(agent_home / ".safeyolo-command"), "--probe"],
+        [str(_host_command(agent_home / ".safeyolo-command")), "--probe"],
         env=env,
         capture_output=True,
         text=True,
@@ -2847,7 +2865,7 @@ def test_codex_repair_installs_an_explicitly_resolved_remote_version(
     Path(env["TEST_INSTALLED_STATE"]).write_text("0.130.0")  # the stale build
 
     result = subprocess.run(
-        [str(agent_home / ".safeyolo-command"), "--probe"],
+        [str(_host_command(agent_home / ".safeyolo-command")), "--probe"],
         env=env,
         capture_output=True,
         text=True,
@@ -2889,7 +2907,7 @@ def test_codex_repair_preserves_operator_selection(tmp_path, selection, override
         env.pop("SAFEYOLO_CODEX_NPM_PACKAGE")
     env.update({override: ("npm:" if override.endswith("SPEC") else "") + selection,
                 "TEST_REMOTE_VERSION": "0.130.0"})
-    result = subprocess.run([str(home / ".safeyolo-command"), "--probe"], env=env, capture_output=True, text=True)
+    result = subprocess.run([str(_host_command(home / ".safeyolo-command")), "--probe"], env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
     assert f"latest npm:{selection}" in calls
@@ -2918,7 +2936,7 @@ def test_codex_repair_preserves_separate_platform_overrides(tmp_path, alpine):
     env = _codex_command_env(home, tools, tmp_path)
     env.update({"SAFEYOLO_CODEX_NPM_SPEC": "npm:@openai/codex@0.130.0",
                 "SAFEYOLO_CODEX_NPM_PACKAGE": "@example/codex@0.131.0", "TEST_REMOTE_VERSION": version})
-    result = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True)
+    result = subprocess.run([str(_host_command(command)), "--probe"], env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
     assert f"latest npm:{name}@{version}" in calls
@@ -2947,7 +2965,7 @@ def test_codex_refuses_missing_or_wrong_selected_payload(tmp_path, payload, entr
     if lookup_failure:
         env["TEST_REMOTE_VERSION"] = ""
     command = home / (".safeyolo-interactive-command" if entry == "interactive" else ".safeyolo-command")
-    result = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True)
+    result = subprocess.run([str(_host_command(command)), "--probe"], env=env, capture_output=True, text=True)
     assert result.returncode != 0
     assert "package/native payload" in result.stderr
     assert not Path(env["TEST_EXEC_LOG"]).exists()
@@ -3112,7 +3130,7 @@ def test_codex_repair_with_real_registry_installers(tmp_path, platform, failure,
                     "NPM_CONFIG_USERCONFIG": str(tmp_path / "empty-npmrc")})
         if failure == "age-override":
             env["SAFEYOLO_MIN_RELEASE_AGE"] = "1h"
-        invocation = [str(command), "--probe"]
+        invocation = [str(_host_command(command)), "--probe"]
         if rootfs:
             # Only the output sink changes in the staged command. Platform,
             # package selection, installer, and payload checks run unmodified.
@@ -3179,7 +3197,7 @@ def test_codex_reports_but_does_not_take_a_newer_version(tmp_path: Path) -> None
     Path(env["TEST_INSTALLED_STATE"]).write_text("0.130.0")
 
     result = subprocess.run(
-        [str(agent_home / ".safeyolo-command"), "--probe"],
+        [str(_host_command(agent_home / ".safeyolo-command")), "--probe"],
         env=env,
         capture_output=True,
         text=True,
@@ -3212,7 +3230,7 @@ def test_codex_still_launches_when_remote_resolution_fails(tmp_path: Path, node_
     Path(env["TEST_INSTALLED_STATE"]).write_text("0.130.0")
 
     result = subprocess.run(
-        [str(agent_home / ".safeyolo-command"), "--probe"],
+        [str(_host_command(agent_home / ".safeyolo-command")), "--probe"],
         env=env,
         capture_output=True,
         text=True,
@@ -3242,7 +3260,7 @@ def test_codex_fallback_refuses_invalid_selected_manifest(tmp_path, node_modules
     env = _codex_command_env(home, tools, tmp_path)
     env.update({"TEST_REMOTE_VERSION": "", "TEST_NODE_MODULES": node_modules,
                 "TEST_CODEX_MANIFEST": manifest if isinstance(manifest, str) else json.dumps(manifest)})
-    result = subprocess.run([str(home / ".safeyolo-command"), "--probe"], env=env, capture_output=True, text=True)
+    result = subprocess.run([str(_host_command(home / ".safeyolo-command")), "--probe"], env=env, capture_output=True, text=True)
     assert result.returncode != 0
     assert "could not read the selected installed package version" in result.stderr
     assert not Path(env["TEST_EXEC_LOG"]).exists()
@@ -3271,7 +3289,7 @@ def test_codex_warns_when_mise_lacks_min_release_age(tmp_path: Path) -> None:
     Path(env["TEST_INSTALLED_STATE"]).write_text("9.9.9")
 
     unsupported = subprocess.run(
-        [str(agent_home / ".safeyolo-command"), "--probe"],
+        [str(_host_command(agent_home / ".safeyolo-command")), "--probe"],
         env=env,
         capture_output=True,
         text=True,
@@ -3280,7 +3298,7 @@ def test_codex_warns_when_mise_lacks_min_release_age(tmp_path: Path) -> None:
     assert "no delayed-deployment protection" in unsupported.stderr
 
     supported = subprocess.run(
-        [str(agent_home / ".safeyolo-command"), "--probe"],
+        [str(_host_command(agent_home / ".safeyolo-command")), "--probe"],
         env={**env, "TEST_MISE_HAS_MIN_AGE": "1"},
         capture_output=True,
         text=True,
@@ -3483,7 +3501,7 @@ else:
         (tools / name).write_text("#!/bin/sh\nexit 86\n")
         (tools / name).chmod(0o755)
     command = home / (".safeyolo-interactive-command" if entry == "interactive" else ".safeyolo-command")
-    return home, command, env
+    return home, _host_command(command) if entry != "supervised" else command, env
 
 
 @pytest.mark.parametrize("settings_source", ["inline", "file"])
@@ -3906,7 +3924,7 @@ def test_claude_install_or_repair_reuses_its_remote_version_lookup(
         (fake_bin / "claude").unlink()
 
     result = subprocess.run(
-        [str(agent_home / ".safeyolo-command"), "--probe"],
+        [str(_host_command(agent_home / ".safeyolo-command")), "--probe"],
         env=env,
         capture_output=True,
         text=True,
@@ -3932,7 +3950,7 @@ def test_claude_reports_but_does_not_take_a_newer_version(tmp_path: Path) -> Non
     Path(env["TEST_INSTALLED_STATE"]).write_text("2.1.100")
 
     result = subprocess.run(
-        [str(agent_home / ".safeyolo-command"), "--probe"],
+        [str(_host_command(agent_home / ".safeyolo-command")), "--probe"],
         env=env,
         capture_output=True,
         text=True,
@@ -3957,7 +3975,7 @@ def test_claude_overlaps_fresh_acquisition_and_waits_before_repair_or_launch(tmp
     preserved = agent_home / "keep-state"
     preserved.write_bytes(b"existing agent state")
     command = agent_home / ".safeyolo-command"
-    result = subprocess.run([str(command), "--probe", "two words", ""], env=env,
+    result = subprocess.run([str(_host_command(command)), "--probe", "two words", ""], env=env,
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == {"": 0, "node": 37, "claude": 31, "both": 37, "repair": 41}[failure], result.stderr
     for kind in ("node", "claude"):
@@ -3983,7 +4001,7 @@ def test_claude_overlaps_fresh_acquisition_and_waits_before_repair_or_launch(tmp
         config_before = config.read_bytes()
         Path(env["TEST_MISE_LOG"]).write_text("")
         env["TEST_REMOTE_VERSION"] = "10.0.0"
-        repeat = subprocess.run([str(command), "--probe"], env=env, capture_output=True, text=True, timeout=15)
+        repeat = subprocess.run([str(_host_command(command)), "--probe"], env=env, capture_output=True, text=True, timeout=15)
         assert repeat.returncode == 0, repeat.stderr
         assert "10.0.0 is available; not upgrading automatically" in repeat.stderr
         assert config.read_bytes() == config_before
@@ -4011,7 +4029,7 @@ def test_claude_retains_node_first_paths_and_remote_lookup_fallback(tmp_path, ex
             "package-pin": {"SAFEYOLO_CLAUDE_NPM_SPEC": "npm:@anthropic-ai/claude-code@2.1.306"},
             "lookup-failure": {"TEST_REMOTE_VERSION": ""},
         }[existing])
-    result = subprocess.run([str(agent_home / ".safeyolo-command"), "--probe"], env=env,
+    result = subprocess.run([str(_host_command(agent_home / ".safeyolo-command")), "--probe"], env=env,
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr
     calls = Path(env["TEST_MISE_LOG"]).read_text().splitlines()
@@ -4049,8 +4067,7 @@ def test_ordinary_native_setup_and_reapply_do_not_invoke_python(tmp_path, script
         wrapper = agent_home / ".safeyolo/repo-map"
         assert wrapper.read_text() == REPO_MAP_COMMAND
         assert wrapper.stat().st_mode & 0o111
-        # Setup stages a Linux guest command; Darwin executes the verified host command.
-        command = [str(COORD_NATIVE_BINARY), "repo-map"] if sys.platform == "darwin" else [str(wrapper)]
+        command = [str(_host_command(wrapper))]
         result = subprocess.run([*command, str(REPO_ROOT / "proxy/src/repo_map.rs")],
                                 env={**os.environ, **env, "HOME": str(agent_home)}, capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
