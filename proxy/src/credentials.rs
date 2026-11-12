@@ -146,7 +146,7 @@ pub struct Credential {
     pub(crate) codex_tokens: CodexTokens,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubscriptionClient {
     Codex,
@@ -196,6 +196,8 @@ impl Credential {
             expires_at: self.expires_at.clone(),
             reference: self.reference.clone(),
             codex: self.codex.clone(),
+            subscription_client: self.subscription_client,
+            chatgpt_account_id: self.chatgpt_account_id.clone(),
         }
     }
     /// Python treats malformed expiry as expired but raises for valid naive
@@ -232,6 +234,10 @@ pub struct CredentialMetadata {
     pub reference: Option<ExternalReference>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex: Option<CodexAuthorization>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subscription_client: Option<SubscriptionClient>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chatgpt_account_id: Option<String>,
 }
 
 /// Provider selection is stored by the host. Guests select only minted gateway

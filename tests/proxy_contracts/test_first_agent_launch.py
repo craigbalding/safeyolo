@@ -211,6 +211,8 @@ def _codex_choice(until, master, *, new=True):
     if new:
         until(b"Run this setup and share this workspace?")
         os.write(master, b"y\n")
+        until(b"Authentication [host-vault/client")
+        os.write(master, b"client\n")
     output = until(b"Codex login [a/h/file path")
     assert b"Agent files can be changed by the guest" in output
     assert b"Existing credential and network rules still apply" in output
@@ -650,6 +652,8 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
                 with terminal(instance, ["agent", "launch", str(workspace), "--name", "first", "--harness", harness]) as (process, master, until):
                     until(b"Run this setup and share this workspace?")
                     os.write(master, b"y\n")
+                    until(b"Authentication [host-vault/client")
+                    os.write(master, b"client\n")
                     if harness == "claude":
                         until(b"Copy this selected host authentication and settings?")
                         os.write(master, b"n\n")
@@ -662,6 +666,8 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
             with terminal(instance, ["agent", "launch", str(workspace), "--name", "first", *harness_args]) as (process, master, until):
                 until(b"Run this setup and share this workspace?")
                 os.write(master, b"y\n")
+                until(b"Authentication [host-vault/client")
+                os.write(master, b"client\n")
                 if harness == "claude":
                     until(b"Copy this selected host authentication and settings?")
                     os.write(master, b"n\n")
@@ -720,6 +726,8 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
                 output = until(b"Run this setup and share this workspace?")
                 assert b"harness command is missing" in output
                 os.write(master, b"y\n")
+                until(b"Authentication [host-vault/client")
+                os.write(master, b"client\n")
                 if harness == "claude":
                     until(b"Copy this selected host authentication and settings?")
                     os.write(master, b"n\n")
@@ -803,6 +811,8 @@ def test_codex_launch_keeps_selected_authentication_on_setup_refusal(tmp_path, a
         with terminal(instance, ["agent", "launch", str(workspace), "--name", "first", "--harness", "codex"]) as (process, master, until):
             until(b"Run this setup and share this workspace?")
             os.write(master, b"y\n")
+            until(b"Authentication [host-vault/client")
+            os.write(master, b"client\n")
             output = until(b"First-agent host setup failed", timeout=30)
             assert diagnostic in output
             assert original_auth not in output

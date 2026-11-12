@@ -17,6 +17,29 @@ fn input() -> Result<Value, Error> {
 async fn run() -> Result<(), Error> {
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     match arguments.as_slice() {
+        [kind, help] if kind == "client-auth" && help == "--help" => {
+            println!("{}", safeyolo_proxy::coding_client::HELP);
+        }
+        [kind, home, client, mode, rest @ ..] if kind == "client-auth" => {
+            let remove = match rest {
+                [] => false,
+                [flag] if flag == "--remove-guest-auth" => true,
+                _ => return Err("unexpected client-auth option".into()),
+            };
+            safeyolo_proxy::coding_client::configure(
+                &PathBuf::from(home),
+                client.to_str().ok_or("client must be text")?,
+                mode.to_str().ok_or("authentication must be text")?,
+                remove,
+            )?;
+        }
+        [kind, client, separator, command @ ..] if kind == "client-exec" && separator == "--" => {
+            safeyolo_proxy::coding_client::exec(
+                client.to_str().ok_or("client must be text")?,
+                command,
+            )
+            .await?;
+        }
         [kind, rest @ ..] if kind == "codex-attention" => {
             safeyolo_proxy::coord_codex_attention::run(rest).await?;
         }

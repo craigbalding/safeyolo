@@ -165,15 +165,15 @@ fn codex_renewal_without_expires_in_uses_the_new_access_expiry_and_rejects_inval
     vault.store(value).unwrap();
     let path = directory.path().join("vault.enc");
     let original = std::fs::read(&path).unwrap();
-    assert_eq!(
+    assert!(matches!(
         leader(&oauth).complete(
             response(json!({
                 "access_token": "synthetic-not-a-jwt", "refresh_token": "synthetic-invalid-refresh"
             })),
             now()
         ),
-        RefreshOutcome::Rejected(RefreshError::ExpiryType)
-    );
+        RefreshOutcome::Rejected(failure) if failure.error == RefreshError::ExpiryType
+    ));
     assert_eq!(std::fs::read(&path).unwrap(), original);
     assert_eq!(
         leader(&oauth).complete(
@@ -251,7 +251,7 @@ async fn single_flight_completion_cancellation_and_retry_release_all_callers() {
     let failed = leader(&oauth);
     assert_eq!(
         failed.complete(Err(TransportFailure::Timeout), now()),
-        RefreshOutcome::Retained(RefreshError::Transport(TransportFailure::Timeout))
+        RefreshOutcome::Retained(RefreshError::Transport(TransportFailure::Timeout).into())
     );
     drop(leader(&oauth));
     // A different credential can refresh while mail is in flight.
@@ -401,10 +401,10 @@ async fn malformed_publication_and_activation_failures_keep_exact_prior_state() 
             RefreshError::AccessTokenType,
         ),
     ] {
-        assert_eq!(
+        assert!(matches!(
             leader(&oauth).complete(response(value), now()),
-            RefreshOutcome::Rejected(error)
-        );
+            RefreshOutcome::Rejected(failure) if failure.error == error
+        ));
         assert_eq!(
             vault.get("mail").unwrap().unwrap().value.expose_secret(),
             "synthetic-old-access"
@@ -421,11 +421,11 @@ async fn malformed_publication_and_activation_failures_keep_exact_prior_state() 
         );
         assert_eq!(
             result,
-            RefreshOutcome::Retained(RefreshError::HttpStatus(status))
+            RefreshOutcome::Retained(RefreshError::HttpStatus(status).into())
         );
         assert!(!format!("{result:?}").contains("synthetic"));
     }
-    assert_eq!(
+    assert!(matches!(
         leader(&oauth).complete(
             Ok(RefreshResponse::new(
                 200,
@@ -433,8 +433,8 @@ async fn malformed_publication_and_activation_failures_keep_exact_prior_state() 
             )),
             now()
         ),
-        RefreshOutcome::Retained(RefreshError::Json)
-    );
+        RefreshOutcome::Retained(failure) if failure.error == RefreshError::Json
+    ));
     let failed = leader(&oauth);
     let RefreshStart::Follower(mut follower) = oauth.begin("mail", now()).unwrap() else {
         panic!("follower")
@@ -450,7 +450,10 @@ async fn malformed_publication_and_activation_failures_keep_exact_prior_state() 
     );
     assert!(matches!(
         outcome,
-        RefreshOutcome::Rejected(RefreshError::Vault(_))
+        RefreshOutcome::Rejected(RefreshFailure {
+            error: RefreshError::Vault(_),
+            ..
+        })
     ));
     assert_eq!(calls, 2);
     assert_eq!(follower.wait().await, outcome);
@@ -465,7 +468,10 @@ async fn malformed_publication_and_activation_failures_keep_exact_prior_state() 
     std::fs::create_dir(&path).unwrap();
     assert!(matches!(
         leader(&oauth).complete(response(json!({"access_token":"synthetic-new"})), now()),
-        RefreshOutcome::Rejected(RefreshError::Vault(_))
+        RefreshOutcome::Rejected(RefreshFailure {
+            error: RefreshError::Vault(_),
+            ..
+        })
     ));
     assert_eq!(
         vault.get("mail").unwrap().unwrap().value.expose_secret(),

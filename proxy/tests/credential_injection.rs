@@ -407,7 +407,7 @@ fn rejected_cancelled_superseded_and_changed_retained_results_never_inject_old_s
     let mut selected = selection(Some("bearer"));
     selected.refresh_on_401 = true;
     for outcome in [
-        RefreshOutcome::Rejected(RefreshError::MissingAccessToken),
+        RefreshOutcome::Rejected(RefreshError::MissingAccessToken.into()),
         RefreshOutcome::Cancelled,
         RefreshOutcome::Superseded,
     ] {
@@ -415,7 +415,8 @@ fn rejected_cancelled_superseded_and_changed_retained_results_never_inject_old_s
         let prepared = pending(start(selected.clone(), Some(&vault), "https").unwrap());
         assert!(prepared.resume(outcome).is_err());
     }
-    let retained = RefreshOutcome::Retained(RefreshError::Transport(TransportFailure::Timeout));
+    let retained =
+        RefreshOutcome::Retained(RefreshError::Transport(TransportFailure::Timeout).into());
     vault.store(oauth()).unwrap();
     let prepared = pending(start(selected.clone(), Some(&vault), "https").unwrap());
     let Err(error) = prepared.resume(retained) else {
@@ -492,25 +493,31 @@ fn gateway_refresh_failures_are_categorical_secret_free_and_counted_as_blocked()
     selected.refresh_on_401 = true;
     let failures = [
         (
-            RefreshOutcome::Rejected(RefreshError::MissingAccessToken),
+            RefreshOutcome::Rejected(RefreshError::MissingAccessToken.into()),
             "REFRESH_INVALID_RESPONSE",
         ),
         (
-            RefreshOutcome::Rejected(RefreshError::ExpiryType),
+            RefreshOutcome::Rejected(RefreshError::ExpiryType.into()),
             "REFRESH_EXPIRY",
         ),
         (
-            RefreshOutcome::Rejected(RefreshError::Vault(VaultError {
-                kind: VaultErrorKind::Io,
-                io_kind: None,
-            })),
+            RefreshOutcome::Rejected(
+                RefreshError::Vault(VaultError {
+                    kind: VaultErrorKind::Io,
+                    io_kind: None,
+                })
+                .into(),
+            ),
             "REFRESH_SAVE",
         ),
         (
-            RefreshOutcome::Rejected(RefreshError::Vault(VaultError {
-                kind: VaultErrorKind::Activation,
-                io_kind: None,
-            })),
+            RefreshOutcome::Rejected(
+                RefreshError::Vault(VaultError {
+                    kind: VaultErrorKind::Activation,
+                    io_kind: None,
+                })
+                .into(),
+            ),
             "REFRESH_ACTIVATION",
         ),
         (RefreshOutcome::Superseded, "REFRESH_SUPERSEDED"),
@@ -536,6 +543,168 @@ fn gateway_refresh_failures_are_categorical_secret_free_and_counted_as_blocked()
         assert!(!serialized.contains("synthetic-value"));
     }
 }
+
+#[tokio::test]
+async fn gateway_refresh_response_evidence_reaches_writer_without_secrets() {
+    use safeyolo_proxy::audit::{Attribution, Settings, Submission, Writer, parse_record};
+    use std::time::Duration;
+
+    let (directory, vault) = vault();
+    let oauth = OAuthRefresh::new(vault.clone());
+    let path = directory.path().join("refresh.jsonl");
+    let writer = Writer::new(path.clone(), Settings::default());
+    let mut expected = Vec::new();
+    let mut selected = selection(Some("bearer"));
+    selected.refresh_on_401 = true;
+    let cases: &[(u16, &[u8], &str, &str)] = &[
+        (400, br#"{"error":"invalid_grant","error_description":"private-response-marker"}"#, "http_status", "invalid_grant"),
+        (400, br#"{"error":"invalid_\u0067rant","error_description":"private-response-marker"}"#, "http_status", "invalid_grant"),
+        (401, br#"{"error":{"code":"refresh_token_reused","message":"private-response-marker"}}"#, "http_status", "refresh_token_reused"),
+        (401, br#"{"type":"error","error":{"type":"authentication_error","message":"private-response-marker"}}"#, "http_status", "authentication_error"),
+        (403, br#"{"type":"access_denied","error":"private-response-marker"}"#, "http_status", "access_denied"),
+        (428, br#"{"type":"egress_approval_required","reflection":"private-response-marker"}"#, "http_status", "egress_approval_required"),
+        (400, br#"{"error":"private-response-marker","error_description":"invalid_grant"}"#, "http_status", "unknown"),
+        (400, br#"{"error":"private-response-\u006darker","error_description":"invalid_grant"}"#, "http_status", "unknown"),
+        (400, br#"{"error":{"code":42,"message":"private-response-marker"}}"#, "http_status", "unknown"),
+        (400, br#"{"error":["invalid_grant","private-response-marker"]}"#, "http_status", "unknown"),
+        (400, br#"{"error":"invalid_grant","error":"private-response-marker"}"#, "http_status", "unknown"),
+        (502, b"<html>private-response-marker</html>", "http_status", "unknown"),
+        (200, b"private-response-marker", "json", "unknown"),
+        (200, b"\xff private-response-marker", "json_encoding", "unknown"),
+        (201, br#"["private-response-marker"]"#, "response_shape", "unknown"),
+        (200, br#"{"error":"invalid_grant","message":"private-response-marker"}"#, "missing_access_token", "invalid_grant"),
+        (200, br#"{"access_token":{"secret":"private-response-marker"}}"#, "access_token_type", "unknown"),
+        (200, br#"{"access_token":"private-response-marker","refresh_token":42}"#, "refresh_token_type", "unknown"),
+        (200, br#"{"access_token":"private-response-marker","expires_in":"bad"}"#, "expiry_type", "unknown"),
+        (200, br#"{"access_token":"private-response-marker","expires_in":1e99}"#, "expiry_range", "unknown"),
+    ];
+    let cases = cases
+        .iter()
+        .map(|(status, body, kind, response_error)| {
+            (
+                Ok(RefreshResponse::new(*status, body.to_vec())),
+                Some(*status),
+                *kind,
+                *response_error,
+            )
+        })
+        .chain([
+            (Err(TransportFailure::Timeout), None, "timeout", "unknown"),
+            (
+                Err(TransportFailure::Body {
+                    status: 502,
+                    timed_out: false,
+                }),
+                Some(502),
+                "body",
+                "unknown",
+            ),
+            (
+                Err(TransportFailure::Body {
+                    status: 200,
+                    timed_out: true,
+                }),
+                Some(200),
+                "timeout",
+                "unknown",
+            ),
+        ]);
+    for (response, status, kind, response_error) in cases {
+        vault.store(self::oauth()).unwrap();
+        let original = std::fs::read(directory.path().join("vault.enc")).unwrap();
+        let prepared = pending(start(selected.clone(), Some(&vault), "https").unwrap());
+        let RefreshStart::Leader(attempt) = oauth.begin("demo-key", now()).unwrap() else {
+            panic!("expected refresh leader")
+        };
+        let RefreshStart::Follower(mut follower) = oauth.begin("demo-key", now()).unwrap() else {
+            panic!("expected shared refresh")
+        };
+        let outcome = attempt.complete(response, now());
+        assert_eq!(follower.wait().await, outcome);
+        assert_eq!(
+            std::fs::read(directory.path().join("vault.enc")).unwrap(),
+            original
+        );
+        let Start::Blocked(blocked) = prepared.resume_for_gateway(outcome).unwrap() else {
+            panic!("failed renewal must block injection")
+        };
+        let code = if kind.starts_with("expiry_") {
+            "REFRESH_EXPIRY"
+        } else if matches!(kind, "timeout" | "body") {
+            "REFRESH_TRANSPORT"
+        } else {
+            "REFRESH_INVALID_RESPONSE"
+        };
+        assert_eq!(blocked.response.status, 503);
+        assert_eq!(
+            blocked.response.body,
+            json!({
+                "error": "Credential refresh failed", "type": "credential_refresh_failed",
+                "reason_codes": [code], "action": "retry",
+                "reflection": "The credential refresh failed before injection.",
+                "addon": "service-gateway",
+            })
+        );
+        assert_eq!(blocked.evidence.stats, StatsDelta::default());
+        assert_eq!(
+            blocked.evidence.metadata,
+            json!({
+                "blocked_by": "service-gateway",
+                "refresh_failure": code.strip_prefix("REFRESH_").unwrap().to_ascii_lowercase(),
+            })
+        );
+        let details = json!({
+            "reason_code": code, "refresh_failure_kind": kind,
+            "refresh_http_status": status, "refresh_response_error": response_error,
+        });
+        assert_eq!(blocked.evidence.audit.len(), 1);
+        let intent = &blocked.evidence.audit[0];
+        assert_eq!(intent.event, "gateway.refresh_failed");
+        assert_eq!(intent.details, details);
+        assert_eq!(blocked.evidence.trace.as_ref().unwrap().details, details);
+        assert!(
+            !format!(
+                "{outcome:?}{}{}{}",
+                blocked.response.body, blocked.evidence.metadata, details
+            )
+            .contains("private-response-marker")
+        );
+        assert_eq!(
+            writer.emit(intent.event(Attribution::default())).unwrap(),
+            Submission::Queued
+        );
+        expected.push(details);
+    }
+    assert!(writer.shutdown(Duration::from_secs(2)).unwrap());
+    let output = std::fs::read_to_string(path).unwrap();
+    let records: Vec<_> = output
+        .lines()
+        .map(|line| parse_record(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), expected.len());
+    for (record, details) in records.iter().zip(expected) {
+        assert_eq!(record["event"], "gateway.refresh_failed");
+        assert_eq!(record["decision"], "deny");
+        for key in [
+            "reason_code",
+            "refresh_failure_kind",
+            "refresh_http_status",
+            "refresh_response_error",
+        ] {
+            assert_eq!(record["details"][key], details[key]);
+        }
+    }
+    for secret in [
+        "private-response-marker",
+        "synthetic-value",
+        "synthetic-refresh",
+        "synthetic-passphrase",
+        "provider.invalid",
+    ] {
+        assert!(!output.contains(secret));
+    }
+}
+
 #[test]
 fn malformed_header_material_is_rejected_before_gateway_token_removal() {
     let (_directory, vault) = vault();

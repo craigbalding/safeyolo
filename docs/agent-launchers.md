@@ -17,6 +17,15 @@ configuration is retained and reported. Only a new agent defaults to Claude.
 Launch still needs an interactive terminal for setup, login and approvals;
 explicit `agent create` and `agent start` remain available for automation.
 
+For native Codex and Claude, launch offers client-held or host-vault
+[authentication](coding-client-gateway.md#choose-authentication-at-launch).
+`--authentication host-vault` selects the guided host import, selected inference
+service grant and native configuration path. It keeps provider credentials on
+the host and obtains a current scoped token at each client launch. For a stopped
+agent, use `agent auth NAME` to change custody or resume setup. Use
+`agent auth NAME --json` to inspect configuration, authorization and vault
+availability without changing them. First-request approvals remain separate.
+
 Recorded launch transitions refresh Command Centre through the existing event
 stream. Opening its menu also requests current status; Refresh Agent Status
 lets the operator recheck after host/session-manager failure, which cannot

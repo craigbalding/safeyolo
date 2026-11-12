@@ -33,14 +33,14 @@ pub(crate) fn safe(path: &Path, directory: bool, mode: Option<u32>) -> Result<bo
     }
     Ok(true)
 }
-fn directory(path: &Path) -> Result<(), Error> {
+pub(crate) fn directory(path: &Path) -> Result<(), Error> {
     if !safe(path, true, None)? {
         fs::create_dir(path)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     }
     Ok(())
 }
-fn read_text(path: &Path) -> Result<String, Error> {
+pub(crate) fn read_text(path: &Path) -> Result<String, Error> {
     let mut file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -415,6 +415,13 @@ fn stage_claude_state(home: &Path, operator_home: Option<&Path>) -> Result<(), E
     safe(home, true, None)?
         .then_some(())
         .ok_or("agent home is missing")?;
+    // Preserve the existing recovery of malformed settings. Only a known
+    // saved host-vault selection changes the explicit copy owner's behavior.
+    let operator_home = if matches!(crate::coding_client::selected(home, "claude"), Ok(true)) {
+        None
+    } else {
+        operator_home
+    };
     safe(&home.join(".safeyolo-command"), false, None)?;
     let claude = home.join(".claude");
     match fs::symlink_metadata(&claude) {
@@ -783,7 +790,7 @@ pub fn supervised_launcher(path: &Path, harness: &str) -> Result<(), Error> {
 pub(crate) fn supervised_launcher_source(source: &str, harness: &str) -> Result<String, Error> {
     let (anchor, replacement) = match harness {
         "codex" => (
-            "exec codex \"${args[@]}\" \"$@\"\n",
+            "exec \"$HOME/.safeyolo/safeyolo-coord\" client-exec codex -- codex \"${args[@]}\" \"$@\"\n",
             "exec \"$HOME/.safeyolo/safeyolo-coord\" supervise \"${supervisor_args[@]}\" -- \"${supervised_args[@]}\" \"$@\"\n",
         ),
         "pi" => (

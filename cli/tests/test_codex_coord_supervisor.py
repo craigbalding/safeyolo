@@ -313,7 +313,7 @@ def test_staged_launcher_carries_confirmation_without_forwarding_it_to_the_model
     harness_script(harness, binary, capture, pi=harness_name == "pi")
     launcher = home / ".safeyolo-command"
     # Stage the same foreground anchors used by the ordinary host setups.
-    source = ('supervised_args=()\nargs=()\nexec codex "${args[@]}" "$@"\n'
+    source = ('supervised_args=()\nargs=()\nexec "$HOME/.safeyolo/safeyolo-coord" client-exec codex -- codex "${args[@]}" "$@"\n'
               if harness_name == "codex" else
               f'args=(--provider fixture --model fixture)\npi_bin={str(harness)!r}\nexec "$pi_bin" "${{args[@]}}" "$@"\n')
     launcher.write_text("#!/usr/bin/env bash\nset -e\n" + source)

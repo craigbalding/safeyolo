@@ -12,12 +12,12 @@ use serde_json::Value;
 
 use crate::{Error, host_agents, host_boot, host_commands, host_lifecycle, host_platform};
 
-pub(crate) const HELP: &str = "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude|codex] [--launcher LAUNCHER] [--dangerously-allow-unowned]
+pub(crate) const HELP: &str = "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude|codex] [--launcher LAUNCHER] [--authentication client|host-vault] [--dangerously-allow-unowned]
 WORKSPACE reuses the named agent’s saved folder, or defaults to the current directory. An omitted harness reuses the saved
 workspace/name binding. New agents default to Claude. Use --name to select between
 multiple saved agents; --harness explicitly selects Claude or Codex.
 Launch asks before host setup, workspace sharing and optional authentication copying,
-then starts the installed services and opens the agent terminal. For a stopped Codex
+then starts the installed services and opens the agent terminal. Choose host-vault to guide host import, selected service authorization and native configuration without guest token exports. Use agent auth NAME or agent auth NAME --json to return to that choice. Host-vault launches fetch a current scoped token; after invalidation stop/relaunch the client. For client-held authentication in a stopped Codex
 agent, select a trusted subscription login to authorize before startup, or keep normal
 login/approvals. The first import asks for credential storage. Passphrase storage
 requires explicit unlock; installation asks no storage question. If the agent has no login, launch also copies the selected host file.
@@ -32,6 +32,7 @@ struct Options {
     workspace: Option<PathBuf>,
     name: Option<String>,
     harness: Option<String>,
+    authentication: Option<String>,
     launcher: Option<String>,
     allow_unowned: bool,
 }
@@ -42,11 +43,12 @@ impl Options {
         let mut args = args.iter();
         while let Some(arg) = args.next() {
             match arg.as_str() {
-                "--name" | "--harness" | "--launcher" => {
+                "--name" | "--harness" | "--launcher" | "--authentication" => {
                     let value = args.next().ok_or_else(|| format!("{arg} needs a value"))?;
                     let field = match arg.as_str() {
                         "--name" => &mut options.name,
                         "--harness" => &mut options.harness,
+                        "--authentication" => &mut options.authentication,
                         _ => &mut options.launcher,
                     };
                     if field.replace(value.clone()).is_some() {
@@ -72,6 +74,13 @@ impl Options {
             .is_some_and(|name| !host_platform::valid_agent_name(name))
         {
             return Err("invalid agent name".into());
+        }
+        if options
+            .authentication
+            .as_deref()
+            .is_some_and(|mode| !matches!(mode, "client" | "host-vault"))
+        {
+            return Err("authentication must be client or host-vault".into());
         }
         Ok(options)
     }
@@ -313,7 +322,7 @@ async fn codex_login(agent: &host_agents::Agent) -> Result<CodexLogin, Error> {
     }
 }
 
-fn harness_setup(root: &Path, harness: &str) -> Result<(PathBuf, &'static str), Error> {
+pub(crate) fn harness_setup(root: &Path, harness: &str) -> Result<(PathBuf, &'static str), Error> {
     let (script, client) = match harness {
         "claude" => ("claude-host-setup.sh", "Claude"),
         "codex" => ("codex-host-setup.sh", "Codex"),
@@ -392,6 +401,7 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
         crate::network_guard::sanitize_with_limit(&workspace.to_string_lossy(), usize::MAX);
     println!("SafeYolo host — agent {name}, workspace {displayed_workspace}");
     let create = existing.is_none();
+    let mut authentication = options.authentication.clone();
     let command = root
         .join("agents")
         .join(&name)
@@ -425,7 +435,28 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
             println!("Setup declined; saved agents and services are unchanged.");
             return Ok(0);
         }
-        let copy = if harness == "claude" {
+        if authentication.is_none() {
+            println!(
+                "Choose credential custody for {client}. Client-held authentication is readable by the guest. Host-vault authentication keeps the selected {harness} subscription login in the host encrypted store and sends only scoped service tokens to the guest. The first import selects storage; passphrase storage requires explicit unlock. Host renewal can rotate refresh tokens and make another client using the original login require sign-in again. Import grants no service, network, credential or risky-route approval."
+            );
+            let choice =
+                input("Authentication [host-vault/client, Enter: client]: ")?.unwrap_or_default();
+            authentication = Some(
+                match choice.as_str() {
+                    "" | "client" => "client",
+                    "host-vault" => "host-vault",
+                    _ => {
+                        return Err(
+                            "select host-vault or client; saved setup was not changed".into()
+                        );
+                    }
+                }
+                .into(),
+            );
+        }
+        let copy = if authentication.as_deref() == Some("host-vault") {
+            Some(false)
+        } else if harness == "claude" {
             println!(
                 "Optional host state: copy selected identity fields from ~/.claude.json, ~/.claude/.credentials.json, settings.json, plugins, commands, agents and skills (except SafeYolo's reserved skills) into this agent home. Claude and guest commands can read the copied authentication. Sessions and history are excluded. Declining leaves host authentication untouched; use Claude's login in the guest."
             );
@@ -453,7 +484,16 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
             .await
             .map_err(|error| phase("host setup", error))?
     };
-    let login = if harness == "codex" {
+    let saved_gateway = crate::coding_client::selected(
+        &root.join("agents").join(&agent.name).join("home"),
+        harness,
+    )?;
+    let host_vault = authentication.as_deref() == Some("host-vault")
+        || authentication.is_none() && saved_gateway;
+    if authentication.as_deref() == Some("client") && saved_gateway {
+        crate::host_client_auth::guide(&agent, "client").await?;
+    }
+    let login = if harness == "codex" && !host_vault {
         codex_login(&agent)
             .await
             .map_err(|error| phase("Codex login selection", error))?
@@ -488,6 +528,17 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
             "Coord readiness",
             "managed NATS is not healthy; inspect coord status and the owned NATS log",
         ));
+    }
+    if host_vault {
+        crate::host_client_auth::guide(&agent, "host-vault")
+            .await
+            .map_err(|error| phase("host-vault authentication", error))?;
+        crate::host_client_auth::ready(&agent).await?;
+    } else {
+        println!(
+            "Authentication: client-held. Use agent auth {} to inspect or choose host-vault authentication for this agent.",
+            agent.name
+        );
     }
     // An offline import cannot unlock a future process. After readiness, ask
     // explicitly for that process's unlock before starting the selected client.
@@ -556,7 +607,7 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
             }
         }
         println!(
-            "SafeYolo host controls — {} ({})\nEnter: return to agent | a: inspect pending requests | r: retry a stopped harness | q: keep current state and exit",
+            "SafeYolo host controls — {} ({})\nEnter: return to agent | a: inspect pending requests | h: authentication | r: retry a stopped harness | q: keep current state and exit",
             agent.name, agent.id
         );
         match input("SafeYolo host> ")?.as_deref() {
@@ -574,7 +625,12 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
                 println!(
                     "This opens an interactive session only. Check any previous task's effects before giving it again."
                 );
-                match start(&agent).await {
+                let result = async {
+                    crate::host_client_auth::ready(&agent).await?;
+                    start(&agent).await
+                }
+                .await;
+                match result {
                     Ok(()) => attach = true,
                     Err(error) => {
                         eprintln!("{}", phase("sandbox/harness retry", error));
@@ -582,8 +638,16 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
                     }
                 }
             }
+            Some("h") => {
+                if let Err(error) =
+                    crate::host_client_auth::run(std::slice::from_ref(&agent.name)).await
+                {
+                    eprintln!("{}", phase("authentication", error));
+                }
+                attach = false;
+            }
             _ => {
-                println!("Choose Enter, a, r or q.");
+                println!("Choose Enter, a, h, r or q.");
                 attach = false;
             }
         }

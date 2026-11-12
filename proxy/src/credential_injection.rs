@@ -12,7 +12,7 @@
 use crate::{
     credentials::{CredentialSnapshot, Secret, Vault, VaultError},
     network_guard::{AuditDecision, Response, Severity, sanitize},
-    oauth::{FailureCategory, NotNeeded, RefreshError, RefreshOutcome},
+    oauth::{FailureCategory, NotNeeded, RefreshError, RefreshFailure, RefreshOutcome},
     services::CredentialSelection,
 };
 use hyper::header::{HeaderMap, HeaderName, HeaderValue};
@@ -295,9 +295,9 @@ impl PendingInjection {
             }
             RefreshOutcome::Retained(reason) => {
                 self.check_current()?;
-                Err(error(ErrorKind::Refresh(reason), 0))
+                Err(error(ErrorKind::Refresh(reason.error), 0))
             }
-            RefreshOutcome::Rejected(reason) => Err(error(ErrorKind::Refresh(reason), 0)),
+            RefreshOutcome::Rejected(reason) => Err(error(ErrorKind::Refresh(reason.error), 0)),
             RefreshOutcome::Superseded => Err(error(ErrorKind::Superseded, 0)),
             RefreshOutcome::Cancelled => Err(error(ErrorKind::Cancelled, 0)),
         }
@@ -312,7 +312,7 @@ impl PendingInjection {
                 let current = match self.vault.snapshot(self.credential_name()) {
                     Ok(current) => current,
                     Err(_error) => {
-                        return Ok(self.refresh_failed(FailureCategory::Save));
+                        return Ok(self.refresh_failed(FailureCategory::Save, None));
                     }
                 };
                 match current {
@@ -322,14 +322,18 @@ impl PendingInjection {
             }
             RefreshOutcome::Retained(reason) => {
                 let category = match self.check_current() {
-                    Ok(()) => reason.category(),
+                    Ok(()) => reason.error.category(),
                     Err(error) => failure_category(&error),
                 };
-                Ok(self.refresh_failed(category))
+                Ok(self.refresh_failed(category, Some(reason)))
             }
-            RefreshOutcome::Rejected(reason) => Ok(self.refresh_failed(reason.category())),
-            RefreshOutcome::Superseded => Ok(self.refresh_failed(FailureCategory::Superseded)),
-            RefreshOutcome::Cancelled => Ok(self.refresh_failed(FailureCategory::Cancelled)),
+            RefreshOutcome::Rejected(reason) => {
+                Ok(self.refresh_failed(reason.error.category(), Some(reason)))
+            }
+            RefreshOutcome::Superseded => {
+                Ok(self.refresh_failed(FailureCategory::Superseded, None))
+            }
+            RefreshOutcome::Cancelled => Ok(self.refresh_failed(FailureCategory::Cancelled, None)),
         }
     }
     /// A missing refresh field in the unchanged snapshot is ordinary source
@@ -361,7 +365,7 @@ impl PendingInjection {
 
     pub fn not_needed_for_gateway(self, reason: NotNeeded) -> Result<Start> {
         if let Err(error) = self.check_current() {
-            return Ok(self.refresh_failed(failure_category(&error)));
+            return Ok(self.refresh_failed(failure_category(&error), None));
         }
         let credential = self.snapshot.credential();
         let matches = match reason {
@@ -379,29 +383,35 @@ impl PendingInjection {
             _ => false,
         };
         if !matches {
-            return Ok(self.refresh_failed(FailureCategory::Superseded));
+            return Ok(self.refresh_failed(FailureCategory::Superseded, None));
         }
         finish(self.context, Some(self.snapshot), 0)
     }
 
-    fn refresh_failed(self, category: FailureCategory) -> Start {
+    fn refresh_failed(self, category: FailureCategory, failure: Option<RefreshFailure>) -> Start {
         let code = category.code();
         let mut evidence = empty_evidence(0);
         evidence.metadata = json!({
             "blocked_by": "service-gateway",
             "refresh_failure": code,
         });
+        let mut details = json!({"reason_code": format!("REFRESH_{}", code.to_ascii_uppercase())});
+        if let Some(failure) = failure {
+            details["refresh_failure_kind"] = json!(failure.error.code());
+            details["refresh_http_status"] = json!(failure.http_status());
+            details["refresh_response_error"] = json!(failure.response_error());
+        }
         evidence.audit.push(audit(
             &self.context,
             "gateway.refresh_failed",
             AuditDecision::Deny,
             Severity::High,
             format!("Gateway OAuth refresh failed ({code})"),
-            json!({"reason_code": format!("REFRESH_{}", code.to_ascii_uppercase())}),
+            details.clone(),
         ));
         evidence.trace = Some(TraceIntent {
             outcome: "refresh_failed",
-            details: json!({"reason_code": format!("REFRESH_{}", code.to_ascii_uppercase())}),
+            details,
         });
         let response = Response {
             status: 503,

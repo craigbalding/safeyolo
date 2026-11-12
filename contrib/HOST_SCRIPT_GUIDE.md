@@ -92,7 +92,10 @@ the updated settings. No manual settings-file edit is required.
 These permission defaults do not disable remote organisation-policy retrieval.
 For a gateway-backed Claude session, use the existing
 [authentication and approval workflow](../docs/coding-client-gateway.md#configure-the-guest-client).
-The host script does not retrieve a gateway token for the client.
+The foreground launcher obtains a current scoped gateway token when the saved
+client configuration selects host-vault authentication. Known host-vault
+selection also suppresses host Claude state copying on setup reapply. Use
+`agent auth NAME` to configure this choice through the host guide.
 
 With `SAFEYOLO_CLAUDE_COPY_HOST_STATE=0`, the shipped Claude script prepares guest
 defaults and SafeYolo context without reading host Claude state. Existing agent
