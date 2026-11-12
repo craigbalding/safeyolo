@@ -3358,7 +3358,10 @@ def test_archive_caller_retains_both_provider_reads_when_stdout_is_cropped(
         with pytest.raises(AssertionError, match="native_return did not preserve provider-owned lease"):
             continuity.check_provider_lease("native_return", tmp_path / "bob.sock", "synthetic-token",
                                              snapshot, expected, observations, output)
-        return subprocess.CompletedProcess(command, 1, "initial operands\n" + "x" * 7000, "return assertion failed")
+        return subprocess.CompletedProcess(
+            command, 1, "initial operands\n" + "x" * 7000 + "\nstdout tail",
+            "initial error\n" + "y" * 7000 + "\nreturn assertion failed",
+        )
 
     monkeypatch.setattr(acquisition.subprocess, "run", failed_archive)
     caller = tmp_path / "caller"
@@ -3366,7 +3369,12 @@ def test_archive_caller_retains_both_provider_reads_when_stdout_is_cropped(
     with pytest.raises(AssertionError, match="return assertion failed") as failure:
         acquisition.test_host_archive_smoke_runs_normal_native_guest_acquisition(
             ({}, [], {}, {}), caller, tmp_path / "guest-store")
-    assert "initial operands" not in str(failure.value)
+    message = str(failure.value)
+    assert "initial operands" not in message
+    assert "initial error" not in message
+    assert "stdout tail" in message
+    assert message.endswith("return assertion failed")
+    assert len(message) <= 12000
     report = json.loads((caller / "reports/installed-continuity.json").read_text())
     assert [row["stage"] for row in report["provider_checks"]] == ["native_restart", "native_return"]
     assert report["provider_checks"][0]["lease"] == expected["lease"]

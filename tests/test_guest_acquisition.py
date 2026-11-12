@@ -1188,7 +1188,9 @@ def test_host_archive_smoke_runs_normal_native_guest_acquisition(registry, tmp_p
         str(REPO / "tests/blackbox/run-installed-package.sh"), "--package", archive,
         "--sha256", archive_digest,
     ], env=environment, input="yes\n", capture_output=True, text=True, timeout=120)
-    assert result.returncode == 0, result.stdout[-6000:] + result.stderr[-6000:]
+    if result.returncode != 0:
+        # Assertion rewriting would append the uncropped CompletedProcess.
+        raise AssertionError(result.stdout[-6000:] + result.stderr[-6000:])
     smoke = json.loads((reports / "host-package.json").read_text())
     assert smoke["status"] == "host_package_passed" and smoke["cleanup"]["status"] == "stopped"
     assert smoke["cli"]["source"]["root"] is None
