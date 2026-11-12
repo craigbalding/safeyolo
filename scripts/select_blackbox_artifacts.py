@@ -180,6 +180,8 @@ def download_artifact(artifact: dict, directory: Path, names: list[str], *, lega
 def native_input_files(kind: str) -> list[str]:
     if kind == "host":
         return ["safeyolo", "safeyolo-coord", "safeyolo-proxy"]
+    if kind == "guest-oci-verifier":
+        return ["verify_guest_oci"]
     return [name + suffix for name in ("safeyolo-guest", "safeyolo-coord")
             for suffix in ("", ".version", ".sha256")]
 
@@ -560,7 +562,7 @@ def main() -> int:
     parser.add_argument("--host-run", type=int, help="Exact trusted default-branch producer run, instead of newest build")
     parser.add_argument("--guest-index", help="Exact staged index, instead of newest completed compatible staging")
     parser.add_argument("--download-guest-archive", action="store_true", help="Also retain the exact platform archive for offline hardware execution")
-    parser.add_argument("--native-input", choices=("host", "guest"), help="Reuse exact-source CI executables instead of selecting installed blackbox inputs")
+    parser.add_argument("--native-input", choices=("host", "guest", "guest-oci-verifier"), help="Reuse exact-source CI executables instead of selecting installed blackbox inputs")
     parser.add_argument("--save-native-input", action="store_true", help="Record freshly built CI input bytes")
     parser.add_argument("--revision", help="Exact source required for CI input reuse")
     parser.add_argument("--profile", choices=("production", "debug"), default="production")

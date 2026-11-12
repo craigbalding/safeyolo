@@ -15,6 +15,9 @@ on:
       host_inputs:
         default: true
         type: boolean
+      guest_oci_verifier:
+        default: false
+        type: boolean
       retain_packages:
         default: false
         type: boolean
@@ -175,6 +178,51 @@ jobs:
             proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-coord
             proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/safeyolo-proxy
             proxy/target/${{ inputs.profile == 'production' && 'release' || 'debug' }}/native-input.json
+          if-no-files-found: error
+
+      - name: Reuse matching Linux guest OCI verifier
+        id: reuse_verifier
+        if: inputs.guest_oci_verifier
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          INPUT_PLATFORM: linux-${{ inputs.architecture }}
+          REQUIRE_SUCCESSFUL_RUN: ${{ inputs.retain_packages && inputs.profile == 'production' }}
+        run: |
+          qualification=()
+          if [[ "$REQUIRE_SUCCESSFUL_RUN" == true ]]; then qualification+=(--require-successful-run); fi
+          python3 scripts/select_blackbox_artifacts.py --native-input guest-oci-verifier \
+            --platform "$INPUT_PLATFORM" --profile "$SAFEYOLO_BUILD_PROFILE" --revision "$SAFEYOLO_BUILD_REVISION" \
+            --branch "$DEFAULT_BRANCH" --output "$RUNNER_TEMP/guest-oci-verifier" "${qualification[@]}"
+      - name: Build Linux guest OCI verifier
+        if: inputs.guest_oci_verifier && steps.reuse_verifier.outputs.reused != 'true'
+        shell: bash
+        run: |
+          options=()
+          directory=debug
+          if [[ "$SAFEYOLO_BUILD_PROFILE" == production ]]; then options+=(--release); directory=release; fi
+          scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --example verify_guest_oci "${options[@]}"
+          mkdir -p "$RUNNER_TEMP/guest-oci-verifier"
+          install -m 0755 "proxy/target/$directory/examples/verify_guest_oci" "$RUNNER_TEMP/guest-oci-verifier/verify_guest_oci"
+          source scripts/native_package.sh
+          python3 scripts/select_blackbox_artifacts.py --native-input guest-oci-verifier --save-native-input \
+            --platform "$(host_platform)" --profile "$SAFEYOLO_BUILD_PROFILE" --revision "$SAFEYOLO_BUILD_REVISION" \
+            --output "$RUNNER_TEMP/guest-oci-verifier"
+      - name: Check Linux guest OCI verifier executable
+        if: inputs.guest_oci_verifier
+        shell: bash
+        run: |
+          source scripts/native_package.sh
+          native_executable "$RUNNER_TEMP/guest-oci-verifier/verify_guest_oci" "$(host_platform)"
+      - name: Upload Linux guest OCI verifier
+        if: inputs.guest_oci_verifier
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: linux-guest-oci-verifier-${{ inputs.architecture }}-${{ inputs.profile }}
+          path: |
+            ${{ runner.temp }}/guest-oci-verifier/verify_guest_oci
+            ${{ runner.temp }}/guest-oci-verifier/native-input.json
           if-no-files-found: error
 
       - name: Build Linux guest terminal input
