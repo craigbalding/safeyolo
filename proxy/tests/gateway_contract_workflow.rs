@@ -1016,14 +1016,47 @@ async fn unsupported_selected_grants_are_refused_and_retained_names_stay_inert()
     let allowed = gateway_call(&socket, port, &token, "GET", "/v1/write", b"").await;
     status(&allowed, 200);
     assert_eq!(seen.lock().unwrap().len(), 1);
-    for (name, method, target, payload) in [
-        ("path_state", "GET", "/v1/state/42", &b""[..]),
-        ("query_state", "GET", "/v1/query?id=42", &b""[..]),
-        ("body_state", "POST", "/v1/body", &br#"{"id":42}"#[..]),
-        ("capture", "GET", "/v1/capture", &b""[..]),
-        ("enforce", "GET", "/v1/enforce", &b""[..]),
+    let state_reason = "in_state_set requires runtime state enforcement, which is not supported";
+    for (name, method, target, payload, reason) in [
+        ("path_state", "GET", "/v1/state/42", &b""[..], state_reason),
+        (
+            "query_state",
+            "GET",
+            "/v1/query?id=42",
+            &b""[..],
+            state_reason,
+        ),
+        (
+            "body_state",
+            "POST",
+            "/v1/body",
+            &br#"{"id":42}"#[..],
+            state_reason,
+        ),
+        (
+            "capture",
+            "GET",
+            "/v1/capture",
+            &b""[..],
+            "runtime state capture is not supported",
+        ),
+        (
+            "enforce",
+            "GET",
+            "/v1/enforce",
+            &b""[..],
+            "runtime state enforcement is not supported",
+        ),
     ] {
-        for name in [name.to_owned(), format!("{name}_reversed")] {
+        // Validation reports the first unsupported same-named declaration.
+        // Both orders must refuse the grant before policy or origin effects.
+        for (name, reason) in [
+            (name.to_owned(), reason),
+            (
+                format!("{name}_reversed"),
+                "runtime response validators are not supported",
+            ),
+        ] {
             let selected = serde_json::json!({"agent":"alice","service":"contract","capability":"writer","template":"contract.write.v1","bindings":{"project":"alpha","ticket":"T-1"},"grantable_operations":["read",name]});
             let refused = admin(
                 admin_port,
@@ -1036,13 +1069,10 @@ async fn unsupported_selected_grants_are_refused_and_retained_names_stay_inert()
             status(&refused, 400);
             let refusal: Value = serde_json::from_slice(body(&refused)).unwrap();
             let error = refusal["error"].as_str().unwrap();
-            assert!(
-                error.contains(&name) && error.contains("not supported"),
-                "{error}"
+            assert_eq!(
+                error,
+                format!("Operation '{name}' cannot be granted: {reason}")
             );
-            if name.contains("_state") {
-                assert!(error.contains("in_state_set"), "{error}");
-            }
             assert_eq!(fs::read(&policy_path).unwrap(), snapshot);
             let denied = gateway_call(&socket, port, &token, method, target, payload).await;
             status(&denied, 403);

@@ -239,10 +239,14 @@ async fn operator_reply(
     let response_headers = root.join("operator-response-headers");
     std::fs::write(&payload, serde_json::to_vec(body).unwrap()).unwrap();
     let mut command = Command::new("curl");
+    // HTTP protocol controls have no CA file. HTTPS Engine calls still verify
+    // both the configured CA and endpoint name.
+    if inputs.endpoint.starts_with("https://") {
+        command.arg("--cacert").arg(&inputs.ca);
+    }
     command
         .kill_on_drop(true)
-        .args(["--silent", "--show-error", "--cacert"])
-        .arg(&inputs.ca)
+        .args(["--silent", "--show-error"])
         .arg("--output")
         .arg(&response_body)
         .arg("--dump-header")
@@ -445,7 +449,8 @@ async fn interrupted_origin_preserves_docker_http() {
         ("DELETE", "/v1.45/containers/owned", 204, ""),
     ];
     let control = tokio::spawn(async move {
-        for (method, path, status, body) in cases {
+        for (method, path, status, body) in cases.into_iter().chain([("GET", "/_ping", 200, "OK")])
+        {
             let (mut stream, _) = upstream.accept().await.unwrap();
             let mut head = Vec::new();
             while !head.ends_with(b"\r\n\r\n") {
@@ -524,6 +529,12 @@ async fn interrupted_origin_preserves_docker_http() {
             assert!(head.contains(&format!("Content-Length: {}", body.len())));
         }
     }
+    // The operator helper also verifies the HTTPS forwarding endpoint using
+    // its generated CA, then forwards to the HTTP control without a CA file.
+    let operator_root = tempfile::tempdir_in(root.path()).unwrap();
+    let reply = operator_reply(&local, operator_root.path(), "GET", "/_ping", &Value::Null).await;
+    assert_eq!(reply.status, 200);
+    assert_eq!(reply.body, b"OK");
     timeout(Duration::from_secs(10), control)
         .await
         .unwrap()
