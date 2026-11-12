@@ -26,7 +26,7 @@ def run(*args, **kwargs):
     return subprocess.run(args, capture_output=True, text=True, timeout=30, **kwargs)
 
 
-@pytest.fixture(params=["guest", "host"])
+@pytest.fixture(params=["guest", "host", "guest-oci-verifier"])
 def inputs(tmp_path, request):
     if sys.platform != "linux":
         pytest.skip("controlled executable consumer runs on Linux")
@@ -69,6 +69,7 @@ def inputs(tmp_path, request):
                        API_ROUTES=str(tmp_path / "api.json"), ARTIFACT_ZIP=str(tmp_path / "artifact.zip"),
                        API_CALLS=str(tmp_path / "api-calls"), SAFEYOLO_BUILD_REVISION=revision,
                        SAFEYOLO_BUILD_PROFILE="production", DEFAULT_BRANCH="master",
+                       RUNNER_TEMP=str(tmp_path),
                        REQUIRE_SUCCESSFUL_RUN="false",
                        INPUT_PLATFORM=packages.host_platform())
     host, guest = source / "proxy/target/release", source / "guest/command/target/release"
@@ -82,7 +83,10 @@ def inputs(tmp_path, request):
                 (directory / f"{name}.version").write_text(identity + "\n")
                 (directory / f"{name}.sha256").write_text(packages.sha256(directory / name) + "\n")
     kind = request.param
-    directory = guest if kind == "guest" else host
+    directory = {"guest": guest, "host": host, "guest-oci-verifier": tmp_path / "guest-oci-verifier"}[kind]
+    if kind == "guest-oci-verifier":
+        directory.mkdir()
+        executable(directory / "verify_guest_oci", "controlled verifier")
     result = run(sys.executable, "scripts/select_blackbox_artifacts.py", "--native-input", kind,
                  "--save-native-input", "--platform", environment["INPUT_PLATFORM"], "--revision", revision,
                  "--output", str(directory), cwd=source, env=environment)
@@ -95,8 +99,10 @@ def inputs(tmp_path, request):
     upload = next(step for step in steps if step.get("with", {}).get("name") ==
                   "linux-" + kind + "-${{ inputs.architecture }}-${{ inputs.profile }}")
     patterns = upload["with"]["path"].replace("${{ inputs.profile == 'production' && 'release' || 'debug' }}", "release")
+    patterns = patterns.replace("${{ runner.temp }}", str(tmp_path))
     payload = {path.name: path.read_bytes() for pattern in patterns.splitlines()
-               for path in source.glob(pattern) if path.is_file()}
+               for path in (Path(pattern).parent.glob(Path(pattern).name) if Path(pattern).is_absolute()
+                            else source.glob(pattern)) if path.is_file()}
     shutil.rmtree(directory)
     arch = environment["INPUT_PLATFORM"].split("-")[1]
     name = f"linux-{kind}-{arch}-production"
@@ -123,7 +129,8 @@ def inputs(tmp_path, request):
         Path(environment["API_ROUTES"]).write_text(json.dumps(routes))
 
     prepare()
-    step = next(step for step in steps if step.get("id") == f"reuse_{kind}")
+    step_id = "reuse_verifier" if kind == "guest-oci-verifier" else f"reuse_{kind}"
+    step = next(step for step in steps if step.get("id") == step_id)
     return {"source": source, "environment": environment, "kind": kind, "directory": directory, "receipt": receipt,
             "payload": payload, "artifact": artifact, "routes": routes,
             "producer": run_record, "job": job, "prepare": prepare, "step": step}
@@ -185,9 +192,9 @@ def test_native_input_selection_and_actions_caller(inputs, case):
     elif case == "build-time":
         receipt["built_at"] = "2025-01-01T00:00:00Z"
     elif case == "file":
-        data["payload"]["safeyolo-coord"] += b"changed bytes"
+        data["payload"][selection.native_input_files(data["kind"])[0]] += b"changed bytes"
     elif case == "missing-file":
-        del data["payload"]["safeyolo-coord"]
+        del data["payload"][selection.native_input_files(data["kind"])[0]]
     elif case == "api":
         data["environment"]["API_FAILURE"] = "true"
     data["prepare"]()
@@ -214,10 +221,12 @@ def test_native_input_selection_and_actions_caller(inputs, case):
         assert not outputs.exists()
     # Actions adds success() to these if expressions. Run their comparisons
     # under the explicit Actions Bash flags with that same failure condition.
-    build_name = "Build Linux guest executables and receipts" if data["kind"] == "guest" else "Build Linux host test inputs"
+    build_name = {"guest": "Build Linux guest executables and receipts", "host": "Build Linux host test inputs",
+                  "guest-oci-verifier": "Build Linux guest OCI verifier"}[data["kind"]]
     build = next(step for step in WORKFLOW["jobs"]["build"]["steps"] if step.get("name") == build_name)
-    condition = build["if"].replace(f"steps.reuse_{data['kind']}.outputs.reused", shlex.quote(expected))
+    condition = build["if"].replace(f"steps.{data['step']['id']}.outputs.reused", shlex.quote(expected))
     condition = condition.replace("inputs.host_inputs", "true").replace("inputs.architecture", "'amd64'").replace("inputs.retain_packages", "true")
+    condition = condition.replace("inputs.guest_oci_verifier", "true")
     admitted = run("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c",
                    f"[[ {result.returncode} == 0 && ( {condition} ) ]]")
     assert (admitted.returncode == 0) == (case in missing)
@@ -226,7 +235,8 @@ def test_native_input_selection_and_actions_caller(inputs, case):
         assert (data["directory"] / selection.INPUT_RECEIPT).read_bytes() == data["payload"][selection.INPUT_RECEIPT]
         for name, content in data["payload"].items():
             assert (data["directory"] / name).read_bytes() == content
-        check_name = "Check Linux guest input identity" if data["kind"] == "guest" else "Verify reused Linux host test inputs"
+        check_name = {"guest": "Check Linux guest input identity", "host": "Verify reused Linux host test inputs",
+                      "guest-oci-verifier": "Check Linux guest OCI verifier executable"}[data["kind"]]
         check = next(step for step in WORKFLOW["jobs"]["build"]["steps"] if step.get("name") == check_name)
         checked = run("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", check["run"],
                       cwd=data["source"], env=data["environment"])
@@ -254,6 +264,49 @@ def test_guest_input_receipt_records_target_and_c_compiler(monkeypatch, platform
     assert identity["settings"]["environment"][compiler] == "configured-musl-cc"
     monkeypatch.setenv("SAFEYOLO_GUEST_TARGET", target.replace("musl", "gnu"))
     assert selection.native_input_identity("guest", platform, "production", revision) != identity
+
+
+@pytest.mark.parametrize("inputs", ["guest-oci-verifier"], indirect=True)
+@pytest.mark.parametrize("defect", [None, "source_revision", "profile", "platform", "kind", "settings", "bytes", "missing", "architecture", "oras"])
+def test_publisher_preparation_validates_inputs_before_exporting_paths(inputs, defect):
+    data = inputs
+    directory = data["directory"]
+    directory.mkdir()
+    for name, content in data["payload"].items():
+        (directory / name).write_bytes(content)
+    verifier = directory / "verify_guest_oci"
+    if defect in {"source_revision", "profile", "platform", "kind"}:
+        data["receipt"][defect] = "different"
+    elif defect == "settings":
+        data["receipt"]["settings"]["profile"] = "dev"
+    elif defect == "bytes":
+        with verifier.open("ab") as output:
+            output.write(b"changed bytes")
+    elif defect == "missing":
+        verifier.unlink()
+    elif defect == "architecture":
+        content = bytearray(verifier.read_bytes())
+        content[18:20] = (62 if os.uname().machine in ("aarch64", "arm64") else 183).to_bytes(2, "little")
+        verifier.write_bytes(content)
+        data["receipt"]["files"]["verify_guest_oci"] = packages.sha256(verifier)
+    (directory / selection.INPUT_RECEIPT).write_text(json.dumps(data["receipt"]))
+    installer = data["source"] / "scripts/install_oras.sh"
+    installer.write_text("#!/bin/sh\nexit " + ("42" if defect == "oras" else "0") + "\n")
+    installer.chmod(0o755)
+    environment = dict(data["environment"], GITHUB_ENV=str(directory.parent / "consumer-env"))
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    steps = workflow["jobs"]["test-addons"]["steps"]
+    prepare = next(step for step in steps if step.get("name") == "Prepare Linux publisher tools")
+    result = run("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", prepare["run"],
+                 cwd=data["source"], env=environment)
+    exports = Path(environment["GITHUB_ENV"])
+    assert (result.returncode == 0) == (defect is None), result.stderr
+    if defect is None:
+        assert exports.read_text() == (
+            f"ORAS={directory.parent}/test-tools/oras\nGUEST_OCI_VERIFIER={verifier}\n"
+        )
+    else:
+        assert not exports.exists()
 
 
 def test_reuse_keeps_independent_schedules_tests_and_package_assembly():

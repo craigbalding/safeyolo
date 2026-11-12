@@ -33,6 +33,7 @@ jobs:
       revision: ${{ github.event.pull_request.head.sha || github.sha }}
       profile: production
       architecture: ${{ matrix.architecture }}
+      guest_oci_verifier: ${{ matrix.architecture == 'amd64' }}
 
   test-addons:
     needs: guest-inputs
@@ -106,6 +107,32 @@ jobs:
           chmod +x guest/command/target/release/safeyolo-guest guest/command/target/release/safeyolo-coord
           source scripts/native_package.sh
           verify_native_artifacts proxy/target/release guest/command/target/release production "$(host_platform)"
+
+      - name: Download Linux guest OCI verifier
+        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: linux-guest-oci-verifier-amd64-production
+          path: ${{ runner.temp }}/guest-oci-verifier
+
+      - name: Prepare Linux publisher tools
+        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          SAFEYOLO_BUILD_REVISION: ${{ github.sha }}
+        run: |
+          scripts/install_oras.sh "$RUNNER_TEMP/test-tools"
+          verifier="$RUNNER_TEMP/guest-oci-verifier/verify_guest_oci"
+          chmod +x "$verifier"
+          source scripts/native_package.sh
+          native_executable "$verifier" "$(host_platform)"
+          jq -e --arg revision "$SAFEYOLO_BUILD_REVISION" --arg platform "$(host_platform)" \
+            --arg checksum "$(file_sha256 "$verifier")" --arg lock "$(file_sha256 proxy/Cargo.lock)" \
+            '.schema == "safeyolo.native-input/v1" and .source_revision == $revision and
+             .platform == $platform and .profile == "production" and .kind == "guest-oci-verifier" and
+             .settings.profile == "release" and .settings.cargo_lock_sha256 == $lock and
+             .files == {verify_guest_oci: $checksum}' "$RUNNER_TEMP/guest-oci-verifier/native-input.json"
+          cat "$RUNNER_TEMP/guest-oci-verifier/native-input.json"
+          printf 'ORAS=%s/test-tools/oras\nGUEST_OCI_VERIFIER=%s\n' "$RUNNER_TEMP" "$verifier" >> "$GITHUB_ENV"
 
       - name: All retained Python tests overnight
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
