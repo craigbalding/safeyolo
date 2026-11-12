@@ -4363,7 +4363,10 @@ fn retirement_previews_retention_and_preserves_a_concurrent_saved_writer() {
     let preview = value(cli(&root, &["agent", "retire", "alice"]));
     assert_eq!(preview["retirement_state"], "preview");
     assert_eq!(preview["agent_id"], ids[0]);
-    assert_eq!(preview["home"], home.to_str().unwrap());
+    assert_eq!(
+        preview["home"],
+        fs::canonicalize(&home).unwrap().to_str().unwrap()
+    );
     assert_eq!(preview["retained_references"]["coord"]["state"], "unknown");
     assert_eq!(
         preview["retained_references"]["credentials"]["state"],
