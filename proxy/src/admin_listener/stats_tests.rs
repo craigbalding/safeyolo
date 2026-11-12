@@ -82,13 +82,17 @@ async fn exchange(
 }
 
 async fn stats(runtime: &Runtime, authorized: bool) -> (u16, Value) {
+    stats_at(runtime, "/stats", authorized).await
+}
+
+async fn stats_at(runtime: &Runtime, path: &str, authorized: bool) -> (u16, Value) {
     let auth = if authorized {
         format!("Authorization: Bearer {TOKEN}\r\n")
     } else {
         String::new()
     };
     let request =
-        format!("GET /stats HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n{auth}\r\n");
+        format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n{auth}\r\n");
     let (status, body) = exchange(
         TcpStream::connect(runtime.admin_address.unwrap())
             .await
@@ -113,6 +117,83 @@ fn records(directory: &Path) -> Vec<Value> {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+#[tokio::test]
+async fn authenticated_allocator_stats_use_the_real_process_allocator() {
+    let directory = tempfile::tempdir().unwrap();
+    let proxy = Proxy::start(config(directory.path())).await.unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let (status, denied) = stats_at(&runtime, "/stats?allocator=true", false).await;
+    assert_eq!(status, 401);
+    assert!(denied.get("allocator").is_none());
+    for path in ["/stats", "/stats?allocator=false"] {
+        let (status, report) = stats_at(&runtime, path, true).await;
+        assert_eq!(status, 200);
+        assert!(report.get("allocator").is_none());
+        assert!(report.get("memory-monitor").is_some());
+    }
+    let before = crate::policy::current_time_ms();
+    let (status, report) = stats_at(&runtime, "/stats?allocator=true", true).await;
+    assert_eq!(status, 200);
+    let allocator = &report["allocator"];
+    assert_eq!(allocator["pid"], std::process::id());
+    assert!(allocator["sampled_at_unix_ms"].as_f64().unwrap() >= before);
+    assert!(allocator["sampled_at_unix_ms"].as_f64().unwrap() <= crate::policy::current_time_ms());
+    assert_eq!(
+        allocator["build"]["revision"],
+        env!("SAFEYOLO_BUILD_REVISION")
+    );
+    assert_eq!(
+        allocator["build"]["profile"],
+        env!("SAFEYOLO_BUILD_PROFILE")
+    );
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        // SAFETY: this checks the loaded symbol without invoking it.
+        let available =
+            unsafe { !libc::dlsym(libc::RTLD_DEFAULT, c"mallinfo2".as_ptr()).is_null() };
+        assert_eq!(
+            allocator["status"],
+            if available {
+                "available"
+            } else {
+                "unavailable"
+            }
+        );
+        assert_eq!(allocator["libc"]["name"], "glibc");
+        if available {
+            for field in ["arena", "uordblks", "fordblks", "hblkhd"] {
+                assert!(allocator["bytes"][field].is_u64());
+            }
+            assert!(allocator["bytes"]["arena"].as_u64().unwrap() > 0);
+        } else {
+            assert!(allocator["bytes"].is_null());
+            assert!(allocator["reason"].as_str().unwrap().contains("mallinfo2"));
+        }
+        assert_eq!(allocator["rss"]["status"], "available");
+        assert!(allocator["rss"]["bytes"].as_u64().unwrap() > 0);
+    }
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    {
+        assert_eq!(allocator["status"], "unavailable");
+        assert!(allocator["bytes"].is_null());
+        assert!(allocator["reason"].as_str().is_some());
+    }
+    assert!(
+        allocator["interpretation"]
+            .as_str()
+            .unwrap()
+            .contains("per-thread caches")
+    );
+    assert!(
+        allocator["sampling_cost"]
+            .as_str()
+            .unwrap()
+            .contains("locks arenas")
+    );
+    println!("allocator diagnostic: {allocator}");
+    proxy.shutdown().await;
 }
 
 #[tokio::test]

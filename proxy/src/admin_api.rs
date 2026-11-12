@@ -909,7 +909,7 @@ pub(crate) async fn respond_with_stats<B>(
     registry: &Registry,
     policy: Option<&Arc<Policy>>,
     circuits: Option<&crate::circuits::CircuitBreaker>,
-    stats: Option<&(dyn Fn() -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
+    stats: Option<&(dyn Fn(bool) -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
 ) -> Result<Outcome, Error>
 where
     B: Body<Data = Bytes>,
@@ -942,7 +942,7 @@ pub(crate) struct OperatorContext<'a> {
     pub policy: Option<&'a Arc<Policy>>,
     pub circuits: Option<&'a crate::circuits::CircuitBreaker>,
     pub stats:
-        Option<&'a (dyn Fn() -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
+        Option<&'a (dyn Fn(bool) -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
     pub view: Option<&'a std::sync::Arc<crate::traffic_view::TrafficView>>,
     pub policy_path: Option<&'a std::path::Path>,
     pub instance_id: Option<&'a str>,
@@ -967,7 +967,7 @@ pub(crate) async fn respond_with_view<B>(
     registry: &Registry,
     policy: Option<&Arc<Policy>>,
     circuits: Option<&crate::circuits::CircuitBreaker>,
-    stats: Option<&(dyn Fn() -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
+    stats: Option<&(dyn Fn(bool) -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
     view: Option<&std::sync::Arc<crate::traffic_view::TrafficView>>,
 ) -> Result<Outcome, Error>
 where
@@ -2294,7 +2294,11 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         && path == "/stats"
         && let Some(stats) = stats
     {
-        let body = stats()
+        let allocator = request
+            .uri()
+            .query()
+            .is_some_and(|query| query.split('&').any(|field| field == "allocator=true"));
+        let body = stats(allocator)
             .await
             .map_err(|_| Error::StatsReporting)?
             .render_json(true)
@@ -2662,7 +2666,8 @@ mod tests {
             let expected = row["body_text"].as_str().unwrap();
             let document = crate::circuits::CircuitValue::parse_json(expected).unwrap();
             let sampled = std::sync::atomic::AtomicUsize::new(0);
-            let stats = || {
+            let stats = |allocator: bool| {
+                assert!(!allocator);
                 sampled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let document = document.clone();
                 tokio::task::spawn_blocking(move || document)
@@ -2708,7 +2713,8 @@ mod tests {
             timestamps,
         );
         let sampled = std::sync::atomic::AtomicUsize::new(0);
-        let stats = || {
+        let stats = |allocator: bool| {
+            assert!(!allocator);
             sampled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let document = document.clone();
             tokio::task::spawn_blocking(move || document)
@@ -2730,8 +2736,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn allocator_stats_require_explicit_opt_in_after_authentication() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let samples = AtomicUsize::new(0);
+        let stats = |allocator: bool| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            if allocator {
+                samples.fetch_add(1, Ordering::Relaxed);
+            }
+            tokio::task::spawn_blocking(|| json!({}).into())
+        };
+        let registry = Registry::default();
+        for uri in [
+            "/stats",
+            "/stats?allocator=false",
+            "/stats?allocator=true-ish",
+        ] {
+            let outcome = respond_with_stats(
+                request("GET", uri, b""),
+                TOKEN,
+                &registry,
+                None,
+                None,
+                Some(&stats),
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome.response.status(), StatusCode::OK);
+            assert_eq!(samples.load(Ordering::Relaxed), 0);
+        }
+        let mut denied = request("GET", "/stats?allocator=true", b"");
+        denied.headers_mut().remove(header::AUTHORIZATION);
+        let outcome = respond_with_stats(denied, TOKEN, &registry, None, None, Some(&stats))
+            .await
+            .unwrap();
+        assert_eq!(outcome.response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+        assert_eq!(samples.load(Ordering::Relaxed), 0);
+        let outcome = respond_with_stats(
+            request("GET", "/stats?other=1&allocator=true", b""),
+            TOKEN,
+            &registry,
+            None,
+            None,
+            Some(&stats),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.response.status(), StatusCode::OK);
+        assert_eq!(calls.load(Ordering::Relaxed), 4);
+        assert_eq!(samples.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
     async fn stats_task_failure_is_terminal_after_authorized_invocation() {
-        let stats = || tokio::task::spawn_blocking(|| panic!("owned stats worker failure"));
+        let stats = |_| tokio::task::spawn_blocking(|| panic!("owned stats worker failure"));
         let result = respond_with_stats(
             request("GET", "/stats", b""),
             TOKEN,

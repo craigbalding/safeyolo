@@ -125,7 +125,7 @@ async fn operator_statistics_are_read_only_and_authenticate_before_sampling() {
     use hyper::{Request, body::Bytes};
     use std::sync::atomic::{AtomicUsize, Ordering};
     let sampled = AtomicUsize::new(0);
-    let stats = || {
+    let stats = |_| {
         sampled.fetch_add(1, Ordering::Relaxed);
         tokio::task::spawn_blocking(|| {
             json!({"proxy":"safeyolo","flow-recorder":{"recorded":2,"errors":1,"skipped":3,"queue_dropped":4,"write_errors":5}}).into()
