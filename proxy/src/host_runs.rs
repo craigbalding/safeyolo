@@ -130,6 +130,22 @@ fn runsc_metadata_present(root: &std::path::Path, id: &str) -> Result<bool, Erro
     Ok(false)
 }
 
+// Only the owner of a proved pre-backend failure may use this guard. Missing
+// process receipts alone never establish that a failed backend is absent.
+#[cfg(target_os = "linux")]
+pub(crate) fn require_absent_preboot_controls(name: &str) -> Result<(), Error> {
+    let directory = config_dir().join("agents").join(name);
+    for handle in ["userns.pid", "container.pid"] {
+        if backend_path_present(&directory.join(handle))? {
+            return Err("preboot sandbox control exists; saved state was preserved".into());
+        }
+    }
+    if runsc_metadata_present(&crate::host_platform::runsc_root(), &id(name)?)? {
+        return Err("preboot runsc state exists; saved state was preserved".into());
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn remove_runsc_state(root: &std::path::Path, id: &str) -> Result<(), Error> {
     for extension in ["state", "lock"] {
