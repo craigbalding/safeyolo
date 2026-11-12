@@ -225,7 +225,13 @@ Times below use Coordinated Universal Time (UTC) on 12 November.
 | Bootstrap invocation, 00:02:17–00:02:22 | Exit 0. Full package verification passed before and after installation. The enclosing verification/configuration driver ran 00:02:12–00:02:26. |
 | First shell, 00:03:07–00:03:11 | Exit 0. `agent start bbtest --sandbox-only` followed by `agent shell bbtest -c ...` checked guest UID 1000, read the host marker and printed `wsl1417-shell-ready`. The maintained platform assertion observed the owned systrap backend. Agent creation/setup preceded this interval. |
 | Authenticated client, 00:31:01.246076–00:31:28.869392 | One real SSH-PTY launch, all three standard streams were terminals, native exit 0 and normal Ctrl-D completion. The host observed the requested file at 00:31:19.924851. Input and output each contained exactly 24 bytes, `wsl1417-bootstrap-shell` plus a newline, with SHA-256 `cf150fb5524cdca94a1ee44f4982873975348adae37751f9ad53149a3f001abd`. No model retry or timeout occurred. |
-| Owned cleanup, 00:33:23.450616–00:33:23.628412 | Helper exit 1 solely for retained `bbtest/container.pid`. Native stop commands reported no other failure. Before/after reads showed agent, sandbox, control and runtime stopped, command exit 0, no owned processes and no UNIX listeners. Independent readback found process ID (PID) 724 recorded in the file and no `/proc/724`; its process birth was unavailable. The boot identity had changed. The original helper failure remains retained; file presence did not establish a live cleanup failure. |
+| Owned cleanup, 00:33:23.450616–00:33:23.628412 | Helper exit 1 solely for retained `bbtest/container.pid`. Native stop commands reported no other failure. Before/after reads showed agent, sandbox, control and runtime stopped, command exit 0, no owned processes and no UNIX listeners. Independent readback found process ID (PID) 724 recorded in the file and no `/proc/724`; no live process birth was available from that read. The boot identity had changed. The original helper failure remains retained; file presence did not establish a live cleanup failure. |
+
+A later read recovered the retained birth identities for holder PID 688,
+backend/container PID 724 and launcher PID 851. All three births belonged to
+the earlier WSL boot; all three `/proc` paths were absent in the observed new
+boot. Retained runtime state was stopped and the launch had exited with code 0.
+The additional read preserved the original cleanup failure and ownership records.
 
 Input acquisition, prior host preparation/reboots, required reading, consent and
 approval, login provision, package import and protected-app recovery are outside
