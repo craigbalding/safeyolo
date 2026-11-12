@@ -77,13 +77,24 @@ no feature acceptance. Selecting this implementation policy for Lens's output
 would require Lens to check its own work independently. The investigation
 cannot replace the required independent check of Forge's later candidate.
 
-A retained generic item has no automatic Factory checks. After its new output,
-request an exact-output Lens check, then select that check and Lens's independent
-acceptance with current `set_work_requirements` expectations. Do not select an
-empty check list over an old partial output. Binding a retained unassigned item
-to native execution needs the existing operator reassignment; agents cannot
-change assignee or attach Factory policy after creation. Preserve the item and
-evidence rather than creating a duplicate to obtain those fields.
+A retained generic item has no automatic Factory checks. After each new output,
+Relay requests an exact-output Lens check and selects it with current
+`set_work_requirements` expectations. Initially select Relay as amendment
+authority, Lens as decider and independent acceptance. For a correction,
+replace only the previous round's required check; preserve other selected
+obligations and authority. Do not select an empty check list over an old output.
+
+Relay is that check's requester, so its answer wakes Relay, not the completed
+producer. Before a generic correction or changed review input can reach Forge,
+retain the full findings/input in the existing linked assignment and name the
+exact check and output generation. Once that input makes work ready, have Sylab
+use operator same-item reassignment to Forge with the current version and claim
+generation. Its new generation delivers `execute_work`; Forge resumes the same
+branch, publishes and completes that execution, and Relay requests/selects a
+check of the new output. Do not expect a notice to wake Forge before reassignment.
+An unchanged blocked result stays dormant. This operator operation is also
+needed to bind an existing unassigned item; agents cannot change assignee or
+attach Factory policy after creation. Preserve the item and prior evidence.
 
 ## Review and integration
 
@@ -95,12 +106,14 @@ decides acceptance. Use current Work, `list_work_reviews` and
 `acceptance_status`; follow truncation with full reads. A check answer, old
 attestation, vote count or model turn cannot replace Lens's current decision.
 
-On rejection, Forge keeps the feature, branch and PR, consumes every material
-finding and publishes a retained correction. New generated checks replace only
-the previous generated requirements. Historical checks and explicit challenges
-remain recorded; candidate replacement does not settle them. A blocked execution
-or review retains its exact unmet need and resumption input. Keep other approved
-work moving; do not leave native actions pending solely to wait for input.
+On rejection, Forge keeps the feature, branch and PR. For Factory-selected work,
+the generated check's requester is Forge, so `check_answered` delivers the
+findings and permits a correction through its retained producing claim. For
+generic work, use the explicit reassignment and manual review loop above.
+New generated checks replace only previous generated requirements. Historical
+checks and explicit challenges remain recorded; replacement does not settle
+them. A blocked result retains its exact need and resumption input. Keep other
+approved work moving; do not leave native actions pending solely to wait.
 
 After Lens approves the current output, verify that it is still the PR head
 and the required merge rules pass. A changed head needs a new check and decision.

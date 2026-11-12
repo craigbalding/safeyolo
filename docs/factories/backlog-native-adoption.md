@@ -47,7 +47,7 @@ proves the retained message route, not adoption of those later features.
 | Publication | `publish_work_output` binds the authenticated producer, immutable reference, execution outcome and new target generation. | Replace the old `change_work_target` instruction with the actual publication operation. Retain the artifact first. |
 | Required review | Factory publication atomically creates an exact-output check and selects it in versioned requirements. | Replace REVIEW_READY routing and its manual matching acceptance attestation for new native work. Lens claims and answers the generated check. |
 | Acceptance | Only selected deciders act. Approval checks the exact current output, selected obligations and independence atomically. | Lens explicitly calls `decide_work_acceptance`; no majority, check count or execution result establishes acceptance. |
-| Correction | A retained completed producer may publish a new output on the same work. Publication creates new generated checks. | Forge keeps the branch and PR. Historical checks still need their own disposition; a replacement does not cancel them. |
+| Correction | A retained completed producer may publish a new output on the same work. Factory-selected publication creates new generated checks. | Factory check answers reach requester Forge. Generic check answers reach requester Relay, which arranges same-item reassignment to wake Forge, then explicitly requests/selects each corrected output's check. Historical checks remain assigned until settled. |
 | Execution result | `complete_work` settles execution; `answer_check`, `respond_challenge` and `resolve_challenge` settle their own actions. | Remove text terminal responses for native delivery. Preserve blocked and failed results without calling them feature success. |
 | Restart | The supervisor checkpoints native actions before receipt/cursor advancement and reconciles current actions after restart. | Keep existing checkpoints and operation IDs. Turn completion or narration cannot retire native actions. |
 | Integration and policy judgment | Native records neither merge a PR nor judge the meaning of an issue or an untrusted claim. | Relay still checks the actual accepted head and merge rules. Craig still decides material policy. Lens still owns criterion acceptance. |
@@ -105,12 +105,16 @@ flowchart LR
     Relay --> Work
     Work --> Forge[Forge: claim and execute]
     Forge --> Output[Retained immutable output; complete execution]
-    Output --> Check[Generated exact-output check]
+    Output -->|Factory publication| Check[Exact-output Lens check]
+    Output -->|generic publication notice| Relay
+    Relay -->|generic output: request and select check| Check
     Check --> Lens[Lens: answer and decide acceptance]
-    Lens -->|reject: native finding| Forge
+    Lens -->|Factory check_answered: requester Forge| Forge
+    Lens -->|generic check_answered: requester Relay| Relay
     Lens -->|current approval| Merge[Relay: head and merge checks]
     Forge -->|blocked result and exact need| Relay
     Relay -->|specific protected operation only| Sylab
+    Sylab -->|ready generic correction: same-item reassignment| Work
 ```
 
 The complete-contract review enters `sym.review_running_factory`, loads the
@@ -188,15 +192,38 @@ because native delivery is enabled. When a changed input makes one ready,
 Relay can prepare its continuation within that same item. The operator's
 existing `coord work reassign` operation can bind its actual recipient and
 advance the assignment generation; agents cannot set that field themselves.
-For a retained generic item without selected requirements, first publish its
-new continuation output. Relay then requests a Lens check of that exact output
-and selects that check, Lens and independence with `set_work_requirements`,
-using current versions. Never initially select an empty check list while an
-old partial output exists: that would make acceptance actionable prematurely.
-The old item has no Factory check templates, so this explicit check selection
-is necessary. Do not create another
-item merely to attach policy. Do not silently adopt its old candidate or old
-attestation as native acceptance.
+For a retained generic item, the complete continuation and correction loop is:
+
+1. Relay retains the complete ready continuation in the existing linked
+   assignment, with its input references and original findings. Sylab uses
+   operator same-item reassignment to Forge with the current version and claim
+   generation. This advances the generation and delivers `execute_work`.
+2. Forge reads that assignment and the native review records, reuses its branch
+   and prior proof, publishes the new continuation output, and completes this
+   execution. Publication/execution notices reach creator Relay.
+3. Relay requests a Lens check of that exact output. It initially selects that
+   check, Relay as amendment authority, Lens as decider and independence with
+   `set_work_requirements`, using current versions. Never initially select an
+   empty check list over an old partial output; acceptance would become
+   actionable prematurely. On later rounds, replace only this review's old
+   required check and retain all other selected obligations and authority.
+4. Lens answers the check and makes its separate acceptance decision. The
+   `check_answered` notice reaches requester Relay. A completed Forge is not
+   the requester, creator, authority or decider in this generic route; it gets
+   no correction delivery from that result. For rejection or abstention, Relay
+   retains the complete findings and exact check/output identity in the linked
+   assignment. Once the correction or missing input is ready, repeat step 1 on
+   the same item. Do not repeat an unchanged blocked attempt.
+
+The old item has no Factory templates: Relay explicitly requests and selects
+an exact-output check after **every** generic correction publication. Operator
+same-item reassignment supplies the otherwise missing delivery back to Forge;
+it does not transfer engineering diagnosis to Sylab or introduce a new approval
+rule. Factory-selected work instead gives its producer the generated check's
+result notice and generates each corrected output's required checks atomically.
+Keep the old results, work ID, branch, independent authority and replay limits.
+Do not create another item merely to attach policy or silently adopt an old
+candidate or attestation as native acceptance.
 
 For a settled blocked check that receives a genuinely new input, the operator
 can similarly reassign that same check to Lens at its current version and

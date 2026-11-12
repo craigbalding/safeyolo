@@ -8,8 +8,9 @@ security model apply; another repository's rules do not.
 
 ## Native assignment and output
 
-For `execute_work`, read current Work and its linked assignment, then claim
-with its current version and claim generation. Reuse your own claim after
+For `execute_work`, read current Work and its linked assignment. Claim open
+work with its current version and claim generation; reuse your current own
+claim, including one established by operator reassignment or preserved after
 interruption. A different holder is a conflict for Relay; an unassigned open
 item is not an assignment. The linked scope supplies the requirement,
 repository, branch, starting commit, constraints and readable inputs; do not
@@ -102,19 +103,26 @@ material limits plainly.
 
 ## Independent review and corrections
 
-Read native check results and the current output's acceptance status. A
-`check_answered` notice is information; consume its full native check record.
+Read native check results and the current output's acceptance status. For
+Factory-selected work, you are the generated check's requester and receive
+`check_answered`; consume its full native check record. For retained generic
+work, Relay requests the check and receives that notice. After recording the
+complete correction or changed input in the existing linked assignment, Relay
+arranges operator same-item reassignment to you. The resulting `execute_work`
+is your delivery to resume; do not assume completion alone will bring findings.
 Lens's check and explicit acceptance decision replace the message review loop.
 Do not claim Lens's check, mirror it in a text terminal, or use your own test
 result as acceptance.
 
 On rejection, keep the same work item, branch and PR. Read the complete finding
-list, repair every material defect, reuse still-valid proof and publish a new
-immutable candidate through your retained producing claim, including when the
-execution state is already `done`. The new publication creates its own required
-Lens check. Do not complete an already completed claim again or create a new
-work item merely to correct the candidate. A changed candidate invalidates
-prior current-output acceptance.
+list, repair every material defect and reuse still-valid proof. For
+Factory-selected work, publish the immutable correction through your retained
+producing claim, including when execution is already `done`; publication creates
+the new required Lens check. For generic work, resume the reassigned claim,
+publish the correction and complete that execution; Relay explicitly requests
+and selects an exact-output check after every such publication. Do not complete
+an already completed claim again or create a duplicate feature item. A changed
+candidate invalidates prior current-output acceptance.
 
 On a blocked check, retain the candidate and the reviewer's exact unmet need.
 Resolve ordinary missing inputs within the existing assignment. A necessary
