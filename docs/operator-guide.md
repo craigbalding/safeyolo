@@ -908,6 +908,13 @@ or shell failures, follow [agent diagnosis and recovery](installation.md#configu
 Keep the selected root and executable when retrying. Direct human decisions
 remain usable when an optional assistant's model is unavailable.
 
+If a Linux agent start fails before backend creation, SafeYolo removes that
+attempt's run and listener state after checking its identity and the absence of
+sandbox controls. Repair the reported cause, then retry the same start command.
+Saved agent configuration, home and guest selection remain available. If the
+runtime is `unknown` or rollback fails, inspect `agent diagnostics` for that
+agent before retrying. Missing process tokens alone do not authorize cleanup.
+
 For Rust panic backtraces, set `RUST_BACKTRACE=1` in the environment of the host
 process that starts the proxy. The setting takes effect at the next proxy start;
 changing a shell environment does not change an already running proxy.
