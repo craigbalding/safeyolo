@@ -1625,6 +1625,12 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     fs::remove_file(&marker_socket).unwrap();
     // Restoring the listener lets the same start reach ACL preparation, before
     // backend creation. Its failure must retire this run and permit retry.
+    // Restricted hosts enter through the wrapper installed by host prepare.
+    // The injected unshare below exits before creating any namespaces.
+    let namespace_entry = root.join("host/namespace-entry");
+    fs::create_dir_all(namespace_entry.parent().unwrap()).unwrap();
+    fs::write(&namespace_entry, b"#!/bin/sh\nexec \"$@\"\n").unwrap();
+    fs::set_permissions(&namespace_entry, fs::Permissions::from_mode(0o755)).unwrap();
     let namespace_attempt = root.join("namespace-attempted");
     let unshare = root.join("bin/unshare");
     fs::write(
