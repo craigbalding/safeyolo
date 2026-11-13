@@ -1,8 +1,10 @@
-"""#816 uses installed native commands, two trusted listeners and owned origins.
+"""Native policy commands use owned origins and captured evidence.
 
-Only this test driver uses Python. Commands execute from outside the checkout,
-with a PATH containing only the installed native binaries. Existing fixture
-deadlines are 15 seconds for readiness, 5 for HTTP and 4 for watcher publication.
+The #816 cases use installed commands and two trusted listeners. Those commands
+execute outside the checkout with a PATH containing only installed native
+binaries. Candidate evaluation uses the selected native CLI without starting an
+instance. Only the test driver uses Python. Existing fixture deadlines are 15
+seconds for readiness, 5 for HTTP and 4 for watcher publication.
 """
 
 from __future__ import annotations
