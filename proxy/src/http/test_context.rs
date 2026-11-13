@@ -801,6 +801,7 @@ mod tests {
                 self.state.read().unwrap().clone(),
                 ConnectionIdentity {
                     authorization_principal: None,
+                    policy_checks: Vec::new(),
                     ingress_binding: None,
                     run: None,
                     agent_id: "alice".into(),

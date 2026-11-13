@@ -74,7 +74,10 @@ pub(super) async fn enforce(
         return Ok(());
     }
     current(runtime, state, identity)?;
-    let evidence = policy.named_checks().collect(request, stage).await?;
+    let evidence = policy
+        .named_checks()
+        .collect_live(request, stage, runtime, state, &identity.policy_checks)
+        .await?;
     if !policy.named_checks().versions_current(&evidence).await {
         return Err(Denied {action:Action::Unresolved,explanation:json!({"reason":"evidence version changed while the check was pending; retry against the current snapshot"})}.into());
     }
@@ -739,3 +742,6 @@ mod redirect_tests {
         proxy.shutdown().await;
     }
 }
+
+#[cfg(test)]
+mod execution_tests;

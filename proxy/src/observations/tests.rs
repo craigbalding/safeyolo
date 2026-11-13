@@ -10,6 +10,7 @@ const WAIT: Duration = Duration::from_secs(5);
 fn identity() -> crate::ConnectionIdentity {
     crate::ConnectionIdentity {
         authorization_principal: None,
+        policy_checks: Vec::new(),
         ingress_binding: None,
         agent_id: "alice".into(),
         run: None,

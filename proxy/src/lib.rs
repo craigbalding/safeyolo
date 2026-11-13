@@ -318,6 +318,7 @@ impl CredentialActivation {
 pub(crate) struct ConnectionIdentity {
     agent_id: String,
     authorization_principal: Option<String>,
+    policy_checks: Vec<String>,
     run: Option<host_runs::AgentRun>,
     connection_id: String,
     source_id: Option<String>,
@@ -452,6 +453,8 @@ pub(crate) struct Runtime {
     /// Serialize project admission through durable effect recording. This is
     /// process-local; Docker's other administrators retain their own access.
     docker_projects: Arc<tokio::sync::Mutex<()>>,
+    /// Keep cancelled check cleanup joined across policy reload and shutdown.
+    check_tasks: Arc<std::sync::Mutex<tokio::task::JoinSet<()>>>,
     credential_guard: Option<credential_guard::CredentialGuard>,
     credential_key_empty: bool,
     tasks: tasks::Registry,
@@ -853,6 +856,9 @@ impl Runtime {
                 credential_activation,
                 operator_modes,
                 gateway_grants,
+                check_tasks: previous
+                    .map(|runtime| runtime.check_tasks.clone())
+                    .unwrap_or_default(),
                 docker_projects: previous
                     .map(|runtime| runtime.docker_projects.clone())
                     .unwrap_or_default(),
@@ -1752,6 +1758,7 @@ async fn accept_agents(
                         ingress_binding: pending.as_ref().map(|peer| peer.binding.clone()),
                         agent_id: target.agent_id.clone(),
                         authorization_principal: job.as_ref().map(|job| job.principal.clone()),
+                        policy_checks: job.as_ref().map(|job| job.checks.clone()).unwrap_or_default(),
                         run: job.as_ref().map(|job| job.run.clone()).or_else(|| runtime.read().ok().and_then(|runtime| {
                             if external { None } else { runtime.policy.as_ref()?.agent_run(&target.agent_id) }
                         })),
@@ -2501,6 +2508,25 @@ impl Proxy {
         if let Some(capture) = self.capture.take() {
             capture.stop().await;
         }
+        let check_tasks = self
+            .runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .check_tasks
+            .clone();
+        while let Some(result) = std::future::poll_fn(|cx| {
+            check_tasks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .poll_join_next(cx)
+        })
+        .await
+        {
+            if let Err(error) = result {
+                eprintln!("policy check cleanup task failed: {error}");
+            }
+        }
+
         service_mutations.drain().await;
         let coord = self
             .runtime

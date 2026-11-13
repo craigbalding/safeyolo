@@ -338,13 +338,22 @@ impl Policy {
         {
             for (_, check) in checks.iter_mut() {
                 if let Some(source) = check.get_mut("source")
-                    && source.get("kind").and_then(toml_edit::Item::as_str) == Some("recorded")
-                    && let Some(path) = source.get("path").and_then(toml_edit::Item::as_str)
+                    && source
+                        .get("kind")
+                        .and_then(toml_edit::Item::as_str)
+                        .is_some_and(|kind| matches!(kind, "recorded" | "job"))
+                    && let field =
+                        if source.get("kind").and_then(toml_edit::Item::as_str) == Some("job") {
+                            "spec"
+                        } else {
+                            "path"
+                        }
+                    && let Some(path) = source.get(field).and_then(toml_edit::Item::as_str)
                 {
                     let path = Path::new(path);
                     if path.is_relative() {
                         let path = parent.join(path);
-                        source["path"] = toml_edit::value(
+                        source[field] = toml_edit::value(
                             path.to_str()
                                 .ok_or_else(|| invalid("check evidence path must be Unicode"))?,
                         );
