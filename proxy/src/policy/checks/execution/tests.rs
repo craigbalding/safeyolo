@@ -90,3 +90,74 @@ fn typed_results_cannot_supply_host_binding_fields_or_promote_pass_text() {
             .unwrap();
     assert!(matches!(result.finding, Finding::Failure { .. }));
 }
+
+#[test]
+fn rdap_registration_uses_only_exact_domain_creation_and_preserves_unknowns() {
+    let bytes = include_bytes!(
+        "../../../../../cli/src/safeyolo/agent_context/skills/policy-authoring/assets/rdap-synthetic.json"
+    );
+    let subject = Subject::Hostname {
+        hostname: "example.com".into(),
+    };
+    let result = rdap_registration(bytes, &subject).unwrap();
+    assert!(matches!(
+        result.finding,
+        Finding::Timestamp {
+            unix_ms: 808372800000
+        }
+    ));
+    assert!(result.source_observed_at_ms.is_none());
+    assert!(result.source_revision.is_none());
+    let captured: Value = serde_json::from_slice(bytes).unwrap();
+    for action in [
+        "last changed",
+        "transfer",
+        "certificate issued",
+        "reregistration",
+    ] {
+        let mut record = captured.clone();
+        record["events"] = json!([{"eventAction":action,"eventDate":"2026-11-10T00:00:00Z"}]);
+        assert!(rdap_registration(&serde_json::to_vec(&record).unwrap(), &subject).is_err());
+    }
+    for date in [
+        "invalid",
+        "1969-12-31T23:59:59.999999999Z",
+        "2999-01-01T00:00:00Z",
+    ] {
+        let mut record = captured.clone();
+        record["events"][0]["eventDate"] = json!(date);
+        assert!(
+            rdap_registration(&serde_json::to_vec(&record).unwrap(), &subject).is_err(),
+            "{date}"
+        );
+    }
+    let mut ambiguous = captured.clone();
+    ambiguous["events"]
+        .as_array_mut()
+        .unwrap()
+        .push(captured["events"][0].clone());
+    assert!(rdap_registration(&serde_json::to_vec(&ambiguous).unwrap(), &subject).is_err());
+    for name in ["example.co.uk", "tenant.hosted.example.com"] {
+        let subject = Subject::Hostname {
+            hostname: name.into(),
+        };
+        assert!(rdap_registration(bytes, &subject).is_err());
+        let mut exact = captured.clone();
+        exact["ldhName"] = json!(name);
+        assert!(rdap_registration(&serde_json::to_vec(&exact).unwrap(), &subject).is_ok());
+    }
+    for key in ["ldhName", "objectClassName", "events"] {
+        let mut record = captured.clone();
+        record.as_object_mut().unwrap().remove(key);
+        assert!(rdap_registration(&serde_json::to_vec(&record).unwrap(), &subject).is_err());
+    }
+    assert!(
+        rdap_registration(
+            bytes,
+            &Subject::Ip {
+                address: "192.0.2.1".parse().unwrap()
+            }
+        )
+        .is_err()
+    );
+}

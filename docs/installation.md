@@ -95,6 +95,13 @@ Linux terminal helper. This package/install/start path uses no first-party
 Python execution. Remaining helper and workflow dependencies are listed in the
 [entry responsibility map](settings.md#operator-entry-responsibilities).
 
+For host-side policy authoring, load the shipped `policy-authoring` skill from
+`assets/skills` through the
+[cyber research walkthrough](../cli/src/safeyolo/agent_context/skills/policy-authoring/references/recipe.md).
+It uses the instance owner's existing policy authority and keeps administrative
+credentials outside the research workload. Its optional Python/TOMLKit authoring
+helper is separate from the package/install/start path.
+
 Before startup, make curl and tar available and permit the configured network
 route to acquire the pinned NATS runtime. Coord verifies the archive,
 binary and instance ownership. Its existing `coord start --binary PATH` option

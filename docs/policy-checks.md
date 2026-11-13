@@ -156,6 +156,16 @@ failures. Job streams retain at most the specification's `retain_bytes` per
 stream; byte counts and hashes cover complete streams. A truncated or oversized
 result is unavailable evidence.
 
+For a passive Registration Data Access Protocol (RDAP) service, use
+`mapping = "rdap_registration"`. It reads only the exact domain object's
+`registration` event as a timestamp. A parent-domain response, missing or
+ambiguous event, malformed timestamp or future registration remains unavailable.
+Transfer, update, certificate and first-seen dates are not registration age.
+Collection freshness applies; the adapter does not invent a provider revision
+or dataset observation time. The complete installed
+[cyber research recipe](../cli/src/safeyolo/agent_context/skills/policy-authoring/references/recipe.md)
+supplies configurable source/check/service examples and explains their coverage.
+
 For a service source, adopt the service and capability through the existing
 Service Gateway policy for `gate:<gate_id>`. The source also fixes its endpoint,
 HTTP method, path mapping, result mapping and effects. For example, after the
