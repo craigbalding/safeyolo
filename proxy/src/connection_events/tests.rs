@@ -110,6 +110,95 @@ pub(crate) fn assert_pairs(rows: &[Value]) {
 }
 
 #[tokio::test]
+async fn delegated_job_events_keep_gate_and_job_attribution_without_sandbox_authority() {
+    let directory = tempfile::tempdir().unwrap();
+    let writer = Arc::new(audit::Writer::new(
+        directory.path().join("audit.jsonl"),
+        audit::Settings::default(),
+    ));
+    let events = ConnectionEvents::new(
+        &config(directory.path()),
+        "runtime-1",
+        writer.clone(),
+        &crate::metrics::Metrics::new(|| 0.0),
+    )
+    .unwrap();
+    let run = crate::host_runs::AgentRun {
+        agent: format!("job-{}", "a".repeat(32)),
+        agent_id: format!("job-{}", "a".repeat(32)),
+        run_id: "a".repeat(32),
+    };
+    let mut identity = ConnectionIdentity {
+        agent_id: run.agent.clone(),
+        authorization_principal: Some("gate:proof".into()),
+        policy_checks: Vec::new(),
+        run: Some(run.clone()),
+        connection_id: "C1".into(),
+        source_id: None,
+        ingress_binding: None,
+    };
+    for delegated in [true, false] {
+        if !delegated {
+            identity.authorization_principal = None;
+        }
+        let mut flow = audit::Event::new(
+            "traffic.flow",
+            audit::Kind::Traffic,
+            audit::Severity::Low,
+            "Transaction observed",
+        );
+        flow.request_id = Some("F1".into());
+        events.emit(
+            &identity,
+            flow,
+            json!({"client_connection_id":"C1",
+            "server_connection_id":null, "sandbox_run":{"run_id":"claimed"}}),
+        );
+        let mut decision = audit::Event::new(
+            "gateway.allow",
+            audit::Kind::Gateway,
+            audit::Severity::Low,
+            "Service request allowed",
+        );
+        decision.request_id = Some("F1".into());
+        decision.host = Some("origin.invalid".into());
+        decision.addon = Some("service-gateway".into());
+        decision.decision = Some(audit::Decision::Allow);
+        decision.details = json!({"sandbox_run":{"run_id":"claimed"}}).into();
+        events.bind_request(&identity, &mut decision);
+        writer.emit(decision).unwrap();
+    }
+    assert!(writer.wait_for_drain(LIMIT).unwrap());
+    let rows: Vec<_> = std::fs::read_to_string(directory.path().join("audit.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| audit::parse_record(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 4);
+    for (index, row) in rows.iter().enumerate() {
+        assert_ne!(row["event"], "ops.audit_validation_failed");
+        if index < 2 {
+            assert_eq!(row["agent"], "gate:proof");
+            assert!(row["details"].get("sandbox_run").is_none());
+            let attribution = &row["details"]["attribution"];
+            assert_eq!(attribution["trusted_transport_identity"], run.agent);
+            assert_eq!(attribution["attribution_status"], "delegated");
+            assert_eq!(attribution["attribution_provenance"]["job_run"], json!(run));
+            assert_eq!(
+                attribution["attribution_provenance"]["authorization_principal"],
+                "gate:proof"
+            );
+            let mut forged = row.clone();
+            forged["details"]["sandbox_run"] = json!(run);
+            assert!(audit::parse_record(&forged.to_string()).is_err());
+        } else {
+            assert_eq!(row["agent"], run.agent);
+            assert_eq!(row["details"]["sandbox_run"], json!(run));
+        }
+    }
+}
+
+#[tokio::test]
 async fn reused_http1_ingress_quieting_real_peers_and_flow_links() {
     let directory = tempfile::tempdir().unwrap();
     let (origin, address) = crate::test_owned_endpoint::bind().await;

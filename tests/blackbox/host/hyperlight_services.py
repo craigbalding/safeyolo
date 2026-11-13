@@ -15,6 +15,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -208,13 +209,19 @@ def captured(result):
         assert len(result["rootfs"][key]) == 64
     assert len(result["input_sha256"]) == len(result["gate_definition_sha256"]) == 64
     records = result["service_evidence"]
+    identities = set()
     for record in records:
         assert result["started_unix_ms"] <= record["started_at_ms"] <= record["ended_at_ms"] <= result["ended_unix_ms"]
-        assert len(record["configuration_sha256"]) == len(record["policy_hash"]) == 64
+        assert re.fullmatch(r"[0-9a-f]{64}", record["configuration_sha256"]), record
+        # Policy::policy_hash is the established short cache identity. The
+        # runtime configuration has its separate, full SHA-256 digest.
+        assert re.fullmatch(r"sha256:[0-9a-f]{16}", record["policy_hash"]), record
+        identities.add((record["configuration_sha256"], record["policy_hash"]))
         if record["retained_base64"] is not None:
             data = base64.b64decode(record["retained_base64"], validate=True)
             assert len(data) == record["response_bytes"]
             assert hashlib.sha256(data).hexdigest() == record["response_sha256"]
+    assert len(identities) <= 1, "one invocation must retain one delegated configuration and policy"
     return records
 
 

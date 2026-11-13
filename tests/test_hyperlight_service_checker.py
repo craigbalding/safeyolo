@@ -108,3 +108,52 @@ def test_bundle_pins_both_service_checkers_without_changing_offline_examples(tmp
         else:
             assert offline["engine"]["checker"]["path"] == "checker.py"
             assert selected["path"] == "service_checker.py"
+
+
+@pytest.fixture
+def host_driver(monkeypatch):
+    directory = REPO / "tests/blackbox/host"
+    monkeypatch.syspath_prepend(str(directory))
+    spec = importlib.util.spec_from_file_location("hyperlight_services", directory / "hyperlight_services.py")
+    driver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(driver)
+    return driver
+
+
+@pytest.fixture
+def host_capture():
+    # Execution 17663 reached these two distinct host identity formats. No
+    # guest result or source-only control establishes real-engine acceptance.
+    return {"observation_error": None, "outcome": {"kind": "exit", "code": 0},
+            "gate_principal": "gate:hyperlight-service-check",
+            "authorization_principal": "gate:hyperlight-service-check",
+            "runtime_report": {"error": None},
+            "rootfs": {"service_access": "mediated", "runtime_manifest_sha256": "a" * 64,
+                       "artifact_sha256": "b" * 64},
+            "input_sha256": "c" * 64, "gate_definition_sha256": "d" * 64,
+            "started_unix_ms": 1, "ended_unix_ms": 4,
+            "service_evidence": [{"started_at_ms": 2, "ended_at_ms": 3,
+                "configuration_sha256": "d24ad902fecfe5456559a18228fc10c8819c5044e431d4bc5986aada459ec63d",
+                "policy_hash": "sha256:3936e5b89eae7b38", "retained_base64": None}]}
+
+
+def test_host_capture_retains_the_current_policy_and_configuration_identities(host_driver, host_capture):
+    assert host_driver.captured(host_capture) == host_capture["service_evidence"]
+    host_capture["service_evidence"].append(copy.deepcopy(host_capture["service_evidence"][0]))
+    assert len(host_driver.captured(host_capture)) == 2
+    host_capture["service_evidence"][1]["policy_hash"] = "sha256:" + "a" * 16
+    with pytest.raises(AssertionError, match="one delegated configuration and policy"):
+        host_driver.captured(host_capture)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("policy_hash", "a" * 64), ("policy_hash", "sha256:" + "a" * 64),
+    ("policy_hash", "sha256:" + "a" * 15), ("policy_hash", "sha256:" + "g" * 16),
+    ("configuration_sha256", "a" * 63), ("configuration_sha256", "g" * 64),
+    ("configuration_sha256", "sha256:" + "a" * 64), ("started_at_ms", 0),
+    ("ended_at_ms", 5),
+])
+def test_host_capture_rejects_invalid_identity_or_time_binding(host_driver, host_capture, field, value):
+    host_capture["service_evidence"][0][field] = value
+    with pytest.raises(AssertionError):
+        host_driver.captured(host_capture)

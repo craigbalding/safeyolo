@@ -81,11 +81,13 @@ impl ConnectionEvents {
     /// Add scope without submitting: the caller retains its ordinary or
     /// confirmed audit write and pending-approval binding.
     pub(crate) fn bind_request(&self, identity: &ConnectionIdentity, event: &mut audit::Event) {
+        // A delegated job has its own trusted job_run attribution, without
+        // the managed-agent sandbox authority represented by sandbox_run.
         event.bind_request_scope(
             &self.instance_id,
             &self.runtime_id,
             &identity.connection_id,
-            identity.run.as_ref(),
+            identity.current_agent_run(),
         );
         event.agent = identity.request_agent().map(str::to_owned);
         event.attribution = Some(identity.audit_attribution());
@@ -105,7 +107,7 @@ impl ConnectionEvents {
             .as_object_mut()
             .expect("NSM details")
             .remove("sandbox_run");
-        if let Some(run) = &identity.run {
+        if let Some(run) = identity.current_agent_run() {
             details["sandbox_run"] = json!(run);
         }
         event.agent = identity.request_agent().map(str::to_owned);
