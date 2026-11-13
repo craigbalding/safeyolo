@@ -221,6 +221,9 @@ async fn actual_source_dispatch_and_body_projection() {
                 // Adjust the captured endpoint inventory for current routes.
                 // Keep every other error byte and the exact response ordering.
                 let expected = row["text"].as_str().unwrap().replace(
+                    "\"/lookup\", \"/budgets\"",
+                    "\"/lookup\", \"/checks/invoke (POST)\", \"/budgets\"",
+                ).replace(
                     "\"/explain\", \"/trace\"",
                     "\"/explain\", \"/approvals/{request_id}\", \"/approvals\", \"/approvals/{approval_id}/resolve (POST)\", \"/api/coord/request-access (POST)\", \"/api/coord/request-collaboration (POST)\", \"/approvals/{request_id}/prepare (POST)\", \"/trace\"",
                 );
