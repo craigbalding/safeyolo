@@ -85,9 +85,12 @@ class Instance:
         self.command("credentials", "add", "held-secret", "--stdin", "--storage", "local",
                      input=b"synthetic-hyperlight-provider-secret\n")
         self.policy = {"hosts": {"*": {"egress": "deny"},
-                                 "api.github.com": {"egress": "allow", "service": "github"},
-                                 "127.0.0.1": {"service": "held"},
+                                 "api.github.com": {"egress": "allow", "service": "github", "allow": ["github:*"]},
+                                 "127.0.0.1": {"service": "held", "allow": ["hyperlight-fixture:*"]},
                                  f"127.0.0.1:{port}": {"egress": "allow"}},
+                       "credential": {"hyperlight-fixture": {"match": [r"\Asynthetic-hyperlight-provider-secret\Z"],
+                                                             "headers": ["authorization"],
+                                                             "allowed_hosts": ["127.0.0.1"]}},
                        "agents": {"gate:hyperlight-service-check": {"services": {
                            "github": {"capability": "read_work", "token": "live-github"},
                            "held": {"capability": "read_work", "token": "held-secret"}}}},
