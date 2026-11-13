@@ -53,6 +53,32 @@ JSON, with bounded retained output encoded in Base64. Use
 `hyperlight-unikraft.json` to run the equivalent Python workload. These examples
 measure a small offline workload; they are not authoritative policy predicates.
 
+The bundle also includes `hyperlight-service.json`,
+`hyperlight-unikraft-service.json` and `service_checker.py`. These use the same
+bounded GitHub issue-author predicate in the core `ServiceCheck` function and
+Python guest. The selected instance must grant `github` to
+`gate:hyperlight-service-check`. Supply this shape in `request.json`, replacing
+the repository, issue number and expected stable GitHub user ID:
+
+```json
+{"subject":{"kind":"value","value":"1550"},"inputs":{"repository":"craigbalding/safeyolo","expected_author_id":"12345"}}
+```
+
+The checkers fetch the exact issue through the mediated service, read the full
+bounded capture and compare `user.id`. An author mismatch returns a negative
+typed finding. A denied call, oversized response, incomplete JSON or mismatched
+issue identity fails execution. The host retains the capture digest and actual
+upstream metadata; the checker supplies no identity or observation timestamp.
+These job definitions are examples. Adopting a named check also fixes its inputs
+and expected author in the host policy; invocation supplies only its subject.
+
+For integrated runtime verification, `tests/blackbox/host/hyperlight_services.py`
+drives both engines with matching candidate binaries and a bundle built for the
+selected host. Its `--help` lists the required existing GitHub credential and
+owned instance paths. It changes only that disposable instance's test grants
+and retains private results before assertions. It needs real KVM or HVF;
+source tests and bundle preparation do not establish VM behavior.
+
 Discovery checks the selected artifact digests, host architecture, runtime
 versions and hypervisor availability. A missing device, entitlement, artifact
 or incompatible guest fails explicitly. Guest ABI validation also occurs in

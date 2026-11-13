@@ -133,6 +133,38 @@ def copy_licenses(repository: Path, output: Path) -> None:
     (destination / "dependencies.json").write_text(json.dumps(dependencies, indent=2) + "\n", encoding="utf-8")
 
 
+def write_job_definitions(output: Path) -> None:
+    """Pin the offline and mediated examples to the collected bundle bytes."""
+    common = {
+        "gate_id": "hyperlight-example",
+        "argv": ["checker"],
+        "timeout_seconds": 5,
+        "max_input_bytes": 16384,
+        "max_input_entries": 16,
+        "retain_bytes": 16384,
+    }
+    for kind, artifact, memory in [("hyperlight", "core.elf", 16), ("hyperlight-unikraft", "checker.py", 256)]:
+        engine = {"kind": kind, "runtime": {"path": "runtime.json", "sha256": file_digest(output / "runtime.json")}}
+        engine["guest" if kind == "hyperlight" else "checker"] = {
+            "path": artifact,
+            "sha256": file_digest(output / artifact),
+        }
+        if kind == "hyperlight":
+            engine["function"] = "Check"
+        spec = {**common, "memory_mb": memory, "engine": engine}
+        (output / f"{kind}.json").write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
+        service_spec = {**spec, "gate_id": "hyperlight-service-check", "network": False,
+                        "mediated_services": {"services": ["github"], "max_calls": 4,
+                                              "max_request_bytes": 49152, "max_response_bytes": 1048576}}
+        service_spec["engine"] = dict(engine)
+        if kind == "hyperlight":
+            service_spec["engine"]["function"] = "ServiceCheck"
+        else:
+            service_spec["engine"]["checker"] = {"path": "service_checker.py",
+                                               "sha256": file_digest(output / "service_checker.py")}
+        (output / f"{kind}-service.json").write_text(json.dumps(service_spec, indent=2) + "\n", encoding="utf-8")
+
+
 def bundle(repository: Path, output: Path, profile: str) -> None:
     """Build both guest forms and write their portable, pinned job definitions."""
     architecture = platform.machine().lower()
@@ -195,6 +227,7 @@ def bundle(repository: Path, output: Path, profile: str) -> None:
         guest_target / f"{architecture}-hyperlight-none" / cargo_profile / "safeyolo-checker", output / "core.elf"
     )
     shutil.copyfile(repository / "jobs/checker.py", output / "checker.py")
+    shutil.copyfile(repository / "jobs/service_checker.py", output / "service_checker.py")
     source = rootfs(output, architecture)
     copy_licenses(repository, output)
     manifest = {
@@ -208,24 +241,7 @@ def bundle(repository: Path, output: Path, profile: str) -> None:
         }
     )
     (output / "runtime.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    common = {
-        "gate_id": "hyperlight-example",
-        "argv": ["checker"],
-        "timeout_seconds": 5,
-        "max_input_bytes": 16384,
-        "max_input_entries": 16,
-        "retain_bytes": 16384,
-    }
-    for kind, artifact, memory in [("hyperlight", "core.elf", 16), ("hyperlight-unikraft", "checker.py", 256)]:
-        engine = {"kind": kind, "runtime": {"path": "runtime.json", "sha256": file_digest(output / "runtime.json")}}
-        engine["guest" if kind == "hyperlight" else "checker"] = {
-            "path": artifact,
-            "sha256": file_digest(output / artifact),
-        }
-        if kind == "hyperlight":
-            engine["function"] = "Check"
-        spec = {**common, "memory_mb": memory, "engine": engine}
-        (output / f"{kind}.json").write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
+    write_job_definitions(output)
     print(
         json.dumps(
             {
