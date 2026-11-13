@@ -238,7 +238,9 @@ action. It performs no direct or dependency-mediated target contact. Current
 preview has no live provider operation. Already captured scanner evidence can
 be used within its freshness; preview never starts a scan, crawl or visit.
 Credential/service controls may further restrict a live request. Preview does
-not establish that a running instance has activated the candidate.
+not establish that a running instance has activated the candidate. The CLI
+loads a fresh candidate and does not import the running instance's quota usage
+or agent-run authority; its result describes the supplied offline scenario.
 
 Within the operator's existing authorization, use the current
 [check/show/apply workflow](installation.md#check-show-and-apply) to activate

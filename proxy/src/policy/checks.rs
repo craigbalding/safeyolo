@@ -421,7 +421,7 @@ pub struct Request<'a> {
     pub value: Option<&'a str>,
 }
 impl Request<'_> {
-    fn subject(&self, kind: SubjectKind) -> Result<Option<Subject>> {
+    fn subject(&self, kind: SubjectKind, stage: Stage) -> Result<Option<Subject>> {
         let host = hostname(self.host)?;
         Ok(match kind {
             SubjectKind::Hostname => host
@@ -431,7 +431,7 @@ impl Request<'_> {
             SubjectKind::Ip => self.ip.map(|address| Subject::Ip { address }),
             SubjectKind::HttpPath => self
                 .path
-                .filter(|_| !self.method.eq_ignore_ascii_case("CONNECT"))
+                .filter(|_| stage == Stage::Request && !self.method.eq_ignore_ascii_case("CONNECT"))
                 .map(|path| Subject::HttpPath {
                     hostname: host,
                     port: self.port,
@@ -749,7 +749,7 @@ impl Checks {
         let mut evidence = BTreeMap::new();
         for name in names {
             let check = &self.checks[&name];
-            let subject = request.subject(check.subject)?;
+            let subject = request.subject(check.subject, stage)?;
             let input_digest = subject
                 .as_ref()
                 .map(|subject| check.input_digest(subject))
@@ -850,7 +850,7 @@ impl Checks {
                 entry.unavailable = Some("unknown check".into());
                 continue;
             };
-            match request.subject(check.subject) {
+            match request.subject(check.subject, stage) {
                 Ok(Some(subject))
                     if entry.subject.as_ref() == Some(&subject)
                         && check.input_digest(&subject).ok().as_ref()
@@ -1277,7 +1277,10 @@ mod tests {
             .into_iter()
             .map(|(name, finding)| {
                 let check = &checks.checks[name];
-                let subject = request().subject(check.subject).unwrap().unwrap();
+                let subject = request()
+                    .subject(check.subject, Stage::Connect)
+                    .unwrap()
+                    .unwrap();
                 let input_digest = check.input_digest(&subject).unwrap();
                 let result = CheckResult {
                     subject: subject.clone(),
@@ -1689,6 +1692,91 @@ mod tests {
                 .action,
             Action::Allow
         );
+    }
+
+    #[tokio::test]
+    async fn direct_ip_opaque_and_unsupported_stage_use_the_selected_fallback() {
+        let mut host_rule = rule(
+            "hostname",
+            Influence::HardExclusion,
+            finding("host"),
+            Action::Deny,
+        );
+        host_rule["on_unavailable"] = json!("approval");
+        let checks = parse(
+            json!({"host":definition(ResultType::Finding)}),
+            vec![host_rule],
+        )
+        .unwrap();
+        let direct = Request {
+            host: "192.0.2.7",
+            ..request()
+        };
+        let gathered = checks.collect(&direct, Stage::Connect).await.unwrap();
+        assert_eq!(
+            checks
+                .evaluate(&direct, Stage::Connect, gathered, NOW)
+                .action,
+            Action::Approval
+        );
+
+        let mut path_check = definition(ResultType::Finding);
+        path_check["subject"] = json!("http_path");
+        let mut path_rule = rule(
+            "path",
+            Influence::HardExclusion,
+            finding("path"),
+            Action::Deny,
+        );
+        path_rule["stage"] = json!("request");
+        path_rule["on_unavailable"] = json!("deny");
+        let checks = parse(json!({"path":path_check.clone()}), vec![path_rule.clone()]).unwrap();
+        let opaque = Request {
+            method: "CONNECT",
+            path: None,
+            ..request()
+        };
+        let gathered = checks.collect(&opaque, Stage::Request).await.unwrap();
+        let result = checks.evaluate(&opaque, Stage::Request, gathered, NOW);
+        assert_eq!(result.action, Action::Deny);
+        assert_eq!(result.rules[0].truth, Truth::Unavailable);
+
+        path_rule["stage"] = json!("connect");
+        path_rule["required"] = json!(false);
+        let checks = parse(json!({"path":path_check}), vec![path_rule]).unwrap();
+        let gathered = checks.collect(&request(), Stage::Connect).await.unwrap();
+        assert!(
+            gathered["path"].subject.is_none(),
+            "preview cannot see an HTTP path at connect time"
+        );
+        assert_eq!(
+            checks
+                .evaluate(&request(), Stage::Connect, gathered, NOW)
+                .action,
+            Action::Deny
+        );
+    }
+
+    #[test]
+    fn unavailable_boolean_inputs_follow_three_valued_logic() {
+        let checks = parse(
+            json!({"a":definition(ResultType::Finding),"b":definition(ResultType::Finding)}),
+            vec![],
+        )
+        .unwrap();
+        for (positive, operator, expected) in [
+            (false, "all", Truth::False),
+            (true, "all", Truth::Unavailable),
+            (false, "any", Truth::Unavailable),
+            (true, "any", Truth::True),
+        ] {
+            let records = evidence(&checks, vec![("a", Finding::Finding { positive })]);
+            let condition: Condition = serde_json::from_value(
+                json!({"op":operator,"conditions":[finding("a"),finding("b")]}),
+            )
+            .unwrap();
+            assert_eq!(condition_truth(&condition, &records, NOW), expected);
+        }
     }
 
     #[tokio::test]

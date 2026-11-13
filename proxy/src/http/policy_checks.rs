@@ -150,6 +150,23 @@ fn isolated_native_test(name: &str) -> bool {
 }
 
 #[cfg(test)]
+fn test_policy(
+    directory: &std::path::Path,
+    checks: serde_json::Value,
+    rules: Vec<serde_json::Value>,
+) {
+    // Serialize typed numbers: serde_json's arbitrary-precision representation
+    // is a JSON format contract, not a TOML integer representation.
+    let checks: checks::Checks =
+        serde_json::from_value(json!({"checks":checks,"check_rules":rules})).unwrap();
+    let source = format!(
+        "[hosts.'*']\negress='allow'\n[agents.alice.hosts.'*']\negress='allow'\n[controls.network]\nhomoglyph=false\n[controls.circuits]\nenabled=false\n{}",
+        toml::to_string(&checks).unwrap()
+    );
+    std::fs::write(directory.join("policy.toml"), source).unwrap();
+}
+
+#[cfg(test)]
 fn test_configuration(directory: &std::path::Path, source: &str) -> crate::Config {
     for path in ["data", "logs", "services", "builtin-services"] {
         std::fs::create_dir_all(directory.join(path)).unwrap();
@@ -207,14 +224,6 @@ mod tests {
     }
     fn write_records(path: &Path, records: &[CheckResult]) {
         std::fs::write(path, serde_json::to_vec(records).unwrap()).unwrap();
-    }
-    fn policy(directory: &Path, checks: serde_json::Value, rules: Vec<serde_json::Value>) {
-        let policy = json!({"hosts":{"*":{"egress":"allow"}},"agents":{"alice":{"hosts":{"*":{"egress":"allow"}}}},"checks":checks,"check_rules":rules,"controls":{"network":{"homoglyph":false},"circuits":{"enabled":false}}});
-        std::fs::write(
-            directory.join("policy.toml"),
-            toml::to_string(&policy).unwrap(),
-        )
-        .unwrap();
     }
     fn config(directory: &Path, parent: Option<std::net::SocketAddr>) -> crate::Config {
         let mut source =
@@ -308,7 +317,7 @@ mod tests {
                 record(&path_check, path_subject("/blocked"), true),
             ],
         );
-        policy(
+        test_policy(
             root,
             json!({"ip":ip,"path":path_check}),
             vec![
@@ -416,7 +425,7 @@ mod tests {
                 false,
             )],
         );
-        policy(
+        test_policy(
             root,
             json!({"ip":ip}),
             vec![rule("required-endpoint", "connect", "ip", "unresolved")],
@@ -448,7 +457,7 @@ mod tests {
         let name = CString::new(file.to_str().unwrap()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
         let ip = check(&file, "ip");
-        policy(
+        test_policy(
             root,
             json!({"ip":ip}),
             vec![rule("held", "connect", "ip", "unresolved")],
@@ -554,8 +563,13 @@ mod redirect_tests {
             });
         }
         std::fs::write(&file, serde_json::to_vec(&records).unwrap()).unwrap();
-        let policy = json!({"hosts":{"*":{"egress":"allow"}},"checks":{"ip":definition},"check_rules":[{"name":"never","host":"*","stage":"connect","influence":"hard_exclusion","priority":0,"required":true,"when":{"op":"finding","check":"ip"},"on_match":"deny","on_unavailable":"unresolved"}],"controls":{"circuits":{"enabled":false},"network":{"homoglyph":false}}});
-        std::fs::write(root.join("policy.toml"), toml::to_string(&policy).unwrap()).unwrap();
+        test_policy(
+            root,
+            json!({"ip":definition}),
+            vec![
+                json!({"name":"never","host":"*","stage":"connect","influence":"hard_exclusion","priority":0,"required":true,"when":{"op":"finding","check":"ip"},"on_match":"deny","on_unavailable":"unresolved"}),
+            ],
+        );
         let config = test_configuration(
             root,
             "admin_port=0\nflow_store_enabled=false\ncircuit_state_file=''\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n",
