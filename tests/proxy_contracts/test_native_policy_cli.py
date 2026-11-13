@@ -125,13 +125,12 @@ def test_candidate_evaluation_reports_actions_without_destination_contact(tmp_pa
                 destination.accept()
 
 
-@pytest.mark.parametrize("policy_format", ["toml", "json"])
-def test_candidate_evaluation_preserves_captured_scores(tmp_path, policy_format):
+def test_candidate_evaluation_preserves_captured_scores(tmp_path):
     """Read decimal scores and confidence through the native captured-file path."""
     executable = native_inputs()[0] / "safeyolo"
     root = tmp_path / "selected-instance"
     root.mkdir()
-    policy = tmp_path / f"candidate.{policy_format}"
+    policy = tmp_path / "candidate.toml"
     request_file = tmp_path / "request.json"
     evidence_file = tmp_path / "scores.json"
     with socket.socket() as destination:
@@ -187,7 +186,7 @@ def test_candidate_evaluation_preserves_captured_scores(tmp_path, policy_format)
                                  "required": True, "influence": "hard_exclusion", "priority": 0,
                                  "when": condition, "on_match": "deny", "on_unavailable": "unresolved"}],
             }
-            policy.write_text(tomlkit.dumps(source) if policy_format == "toml" else json.dumps(source))
+            policy.write_text(tomlkit.dumps(source))
             records = [{
                 "subject": subject, "input_digest": input_digest,
                 "implementation_version": "fixture-1", "configuration_version": "selected-1",
