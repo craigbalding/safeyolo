@@ -1,0 +1,18 @@
+# Optional adware/tracker and malware hosts. This does not enable a policy rule.
+# Provider documentation and source licenses: https://github.com/StevenBlack/hosts
+[sources.stevenblack]
+endpoint = "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+format = "hosts"
+scope = "hostname"
+metadata = "stevenblack"
+cadence_seconds = 86400
+max_age_seconds = 1209600
+timeout_seconds = 60
+max_bytes = 16777216
+min_entries = 1000
+max_entries = 250000
+max_change_percent = 50
+retry_seconds = 300
+max_retry_seconds = 86400
+on_unavailable = "deny"
+on_stale = "deny"

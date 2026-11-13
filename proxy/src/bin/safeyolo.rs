@@ -22,10 +22,23 @@ use zeroize::Zeroizing;
 #[path = "safeyolo/credential_commands.rs"]
 mod credential_commands;
 
-fn check(path: &Path) -> Result<(), Error> {
+fn policy_directory(config: &Path) -> Result<PathBuf, Error> {
+    if config.exists() {
+        let selected = native_config::read(config)?;
+        if let Some(directory) = selected.policy_file.as_deref().and_then(Path::parent) {
+            return Ok(directory.to_owned());
+        }
+    }
+    Ok(config
+        .parent()
+        .ok_or("configuration has no policy directory")?
+        .to_owned())
+}
+
+fn check(path: &Path, root: &Path) -> Result<(), Error> {
     // The shared loader compiles the policy without evaluating a request or
     // persisting expiry changes. It therefore does not spend a live quota.
-    Policy::from_native_path(path)?;
+    Policy::from_native_candidate(path, root)?;
     println!("Policy is valid: {}", path.display());
     Ok(())
 }
@@ -433,7 +446,7 @@ async fn run() -> Result<(), Error> {
                 "safeyolo [--root ROOT] agent recover NAME [--timeout SECONDS]\nsafeyolo guest-command stage HOME SHARE ASSETS CONTEXT_JSON\nRecovery requires an already booted guest with idle command supervision. Staging is for a stopped guest; the caller supplies this run's context."
             );
             println!(
-                "safeyolo [--root ROOT] policy check FILE\nsafeyolo [--root ROOT] policy show\nsafeyolo [--root ROOT] policy apply FILE\nsafeyolo config check FILE\nsafeyolo test-context --run ID --agent NAME [--role VALUE] [--suite VALUE] [--subject VALUE] [--step VALUE] [--test VALUE] [--intent VALUE] [--expect VALUE] [--field KEY=VALUE] [--header] [--write FILE]\nsafeyolo test-context declare --socket SOCKET --token-file FILE --run ID --agent NAME [--ttl SECONDS]\nsafeyolo test-context current|clear --socket SOCKET --token-file FILE\n\ncheck validates without saving or spending quotas.\nshow reads effective policy and its source from the running process.\napply saves and activates through the operator Admin API.\nROOT contains config.toml and policy.toml. Named controls: network, credentials, patterns, test_context, circuits.\nContext agent is annotation; the trusted listener owns identity. --write atomically replaces a watched file.\n\nsafeyolo --version"
+                "safeyolo [--root ROOT] policy check FILE\nsafeyolo [--root ROOT] policy show\nsafeyolo [--root ROOT] policy apply FILE\nsafeyolo [--root ROOT] policy feeds --help\nsafeyolo config check FILE\nsafeyolo test-context --run ID --agent NAME [--role VALUE] [--suite VALUE] [--subject VALUE] [--step VALUE] [--test VALUE] [--intent VALUE] [--expect VALUE] [--field KEY=VALUE] [--header] [--write FILE]\nsafeyolo test-context declare --socket SOCKET --token-file FILE --run ID --agent NAME [--ttl SECONDS]\nsafeyolo test-context current|clear --socket SOCKET --token-file FILE\n\ncheck validates without saving or spending quotas.\nshow reads effective policy and its source from the running process.\napply saves and activates through the operator Admin API.\nROOT contains config.toml and policy.toml. Named controls: network, credentials, patterns, test_context, circuits.\nContext agent is annotation; the trusted listener owns identity. --write atomically replaces a watched file.\n\nsafeyolo --version"
             );
             Ok(())
         }
@@ -446,8 +459,19 @@ async fn run() -> Result<(), Error> {
             );
             Ok(())
         }
+        [policy, feeds, rest @ ..] if policy == "policy" && feeds == "feeds" => {
+            let directory = if rest
+                .first()
+                .is_some_and(|argument| matches!(argument.as_str(), "--help" | "example"))
+            {
+                config.parent().unwrap_or(Path::new(".")).to_owned()
+            } else {
+                policy_directory(&config)?
+            };
+            safeyolo_proxy::policy_feeds::command(&directory, rest).await
+        }
         [policy, command, path] if policy == "policy" && command == "check" => {
-            check(Path::new(path))
+            check(Path::new(path), &policy_directory(&config)?)
         }
         [config, command, path] if config == "config" && command == "check" => {
             native_config::read(Path::new(path))?;
@@ -490,7 +514,7 @@ async fn run() -> Result<(), Error> {
             Ok(())
         }
         [policy, command, path] if policy == "policy" && command == "apply" => {
-            Policy::from_native_path(Path::new(path))?;
+            Policy::from_native_candidate(Path::new(path), &policy_directory(&config)?)?;
             let source = Policy::read_native_candidate(Path::new(path))?;
             match admin(&config, "/admin/policy/baseline", Method::PUT, json!({"source":source.as_str()}), Duration::from_secs(5)).await {
                 Ok(result) if result["status"] == "active" => {

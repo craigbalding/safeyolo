@@ -338,6 +338,18 @@ impl Policy {
         )))
     }
 
+    /// Compile a candidate for the selected policy directory. Local filenames
+    /// remain relative to the candidate; feed names belong to that directory.
+    pub fn from_native_candidate(path: &Path, directory: &Path) -> Result<Self> {
+        let source = Self::read_native_candidate(path)?;
+        Self::native_source(
+            &source,
+            &directory.join("policy.toml"),
+            None,
+            super::current_time_ms(),
+        )
+    }
+
     /// Read-only checking resolves named list files relative to FILE. Neither
     /// expiry pruning nor a quota evaluation is persisted by this operation.
     pub fn from_native_path(path: &Path) -> Result<Self> {
@@ -692,6 +704,27 @@ impl Policy {
             .iter()
             .map(|(name, list)| {
                 let mut status = json!({"source":list.path});
+                if let Some(managed) = &list.managed {
+                    status["active_snapshot"] = managed.status(super::current_time_ms());
+                    match crate::policy_feeds::load_list(
+                        self.baseline_path
+                            .as_deref()
+                            .and_then(Path::parent)
+                            .unwrap_or(Path::new(".")),
+                        &managed.name,
+                    ) {
+                        Ok(saved) => {
+                            let same = saved == *managed;
+                            status["saved_matches_active"] = json!(same);
+                            status["status"] = json!(if same { "active" } else { "saved_differs" });
+                        }
+                        Err(_) => {
+                            status["saved_matches_active"] = json!(false);
+                            status["status"] = json!("saved_unreadable");
+                        }
+                    }
+                    return (name.clone(), status);
+                }
                 match std::fs::read_to_string(&list.path) {
                     Ok(saved) => {
                         let saved = Zeroizing::new(saved);

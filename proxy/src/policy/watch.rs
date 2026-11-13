@@ -14,6 +14,7 @@ pub(crate) struct PolicyFileTimes {
     baseline: f64,
     addons: f64,
     lists: f64,
+    feeds: f64,
 }
 
 impl PolicyFileTimes {
@@ -59,7 +60,8 @@ impl Policy {
             }
         }
         let lists = lists_max_mtime(path)?;
-        Ok(changed || lists > previous.lists)
+        let feeds = modified(&path.with_file_name("policy-feeds.toml")).unwrap_or(0.);
+        Ok(changed || lists > previous.lists || feeds != previous.feeds)
     }
 
     /// Capture the watermark before reading source content. A later write must
@@ -100,6 +102,7 @@ impl Policy {
             baseline,
             addons,
             lists,
+            feeds: modified(&path.with_file_name("policy-feeds.toml")).unwrap_or(0.),
         })
     }
 
@@ -227,7 +230,17 @@ fn raw_lists_max(path: &Path, raw: &Value, timestamps: &TimestampPaths) -> Resul
         if timestamps.value_at(&["lists", name]).is_some() {
             continue;
         }
-        let Some(value) = value.as_str() else {
+        let managed_path;
+        let value = if let Some(value) = value.as_str() {
+            value
+        } else if let Some(feed) = value.get("feed").and_then(Value::as_str) {
+            managed_path =
+                crate::policy_feeds::snapshot_path(path.parent().unwrap_or(Path::new(".")), feed)
+                    .map_err(|error| invalid(error.to_string()))?;
+            managed_path
+                .to_str()
+                .ok_or_else(|| invalid("managed list path is not Unicode"))?
+        } else {
             continue;
         };
         if value.as_bytes().contains(&0) {

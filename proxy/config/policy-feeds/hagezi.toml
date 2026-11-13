@@ -1,0 +1,18 @@
+# Optional threat-only DNS suffix evidence. This does not enable a policy rule.
+# Provider documentation and licensing: https://github.com/hagezi/dns-blocklists
+[sources.hagezi]
+endpoint = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.mini.txt"
+format = "wildcard"
+scope = "domain_suffix"
+metadata = "hagezi"
+cadence_seconds = 28800
+max_age_seconds = 172800
+timeout_seconds = 60
+max_bytes = 16777216
+min_entries = 1000
+max_entries = 500000
+max_change_percent = 50
+retry_seconds = 300
+max_retry_seconds = 28800
+on_unavailable = "deny"
+on_stale = "deny"

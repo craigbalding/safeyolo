@@ -311,7 +311,9 @@ path. Detection does not establish a token's issuer or grant permission.
 
 Host/agent `exceptions` use `network`, `credentials`, `patterns`, `circuits`, or
 `streaming`, compiled into the existing precedence rules. Named list references
-use a local file in `[lists]` and `$name` in `[hosts]`. Advanced `[[permissions]]`,
+use a local filename or `{ feed = "SOURCE" }` in `[lists]`, with `$name` in
+`[hosts]`. [Maintained policy lists](policy-feeds.md) explains host-side setup,
+automatic refresh, snapshot status and stale/unavailable behavior. Advanced `[[permissions]]`,
 `[[scan_patterns]]`, service bindings, contract bindings and `[[risk]]` retain
 the shared evaluator and parser. Host expiry uses `expires`, evaluated at policy
 load/reload. Context never supplies trusted identity or capture authority.
