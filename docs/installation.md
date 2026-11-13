@@ -952,6 +952,12 @@ Show reports `active` when the saved source matches the active source.
 Activation also prepares the runtime detectors. A policy-model check does not
 guarantee that the running process can activate every detector configuration.
 
+For named evidence checks, `policy evaluate FILE REQUEST_JSON` previews network
+decisions from captured evidence without contacting the destination or spending
+live quotas. This differs from model validation. The
+[named-check reference](policy-checks.md) defines supported composition,
+freshness, visibility and offline-preview limits.
+
 Prepare a separate TOML candidate before applying it. Copy your current policy
 so the candidate retains agent identities, runtime settings and existing grants.
 For example, the following entries allow the configured `work` agent one

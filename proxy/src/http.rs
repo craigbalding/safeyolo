@@ -50,6 +50,7 @@ mod live_view;
 #[cfg(test)]
 mod memory_tests;
 mod network_trace;
+mod policy_checks;
 mod probe;
 mod request_body;
 mod request_context;
@@ -737,6 +738,7 @@ pub(crate) fn validate_hostname(host: &str) -> Result<(), Error> {
 
 /// Constructed only after the configured network guard permits this request.
 struct AllowedRequest<'a> {
+    state: Option<&'a RuntimeState>,
     tasks: &'a UpgradeTasks,
     destination: &'a Destination,
     identity: &'a ConnectionIdentity,
@@ -1181,7 +1183,26 @@ async fn open_egress_for_flow(
                     .map_err(Into::into)
             }
         },
-        |address| async move { TcpStream::connect(address).await.map_err(Into::into) },
+        |address| async move {
+            if let Some(state) = allowed.state {
+                policy_checks::enforce(
+                    runtime,
+                    state,
+                    allowed.identity,
+                    allowed.request_id,
+                    crate::policy::checks::Stage::Connect,
+                    &policy_checks::request(
+                        allowed.identity,
+                        destination,
+                        "CONNECT",
+                        direct.then_some(address.ip()),
+                        false,
+                    ),
+                )
+                .await?;
+            }
+            TcpStream::connect(address).await.map_err(Into::into)
+        },
         |address| {
             // Reload can add an ingress while DNS is pending. Consult the
             // shared endpoint set when checking each resolved address.
@@ -1491,6 +1512,17 @@ async fn open_outbound(
         }
         (Some(connection), None) => connection,
         (None, Some(provider)) => {
+            if let Some(state) = allowed.state {
+                policy_checks::enforce(
+                    runtime,
+                    state,
+                    allowed.identity,
+                    allowed.request_id,
+                    crate::policy::checks::Stage::Connect,
+                    &policy_checks::request(allowed.identity, destination, "CONNECT", None, false),
+                )
+                .await?;
+            }
             let observation = crate::traffic_view::UpstreamConnectionObservation::new(
                 format!("upstream-{}", uuid::Uuid::new_v4().simple()),
                 crate::traffic_view::UpstreamRoute::Provider,
@@ -2402,6 +2434,7 @@ async fn execute_refresh(
     let outbound = open_outbound(
         runtime,
         &AllowedRequest {
+            state: None,
             recording: None,
             tasks,
             destination: &destination,
@@ -2932,6 +2965,7 @@ where
                 open_egress_for_flow(
                     &runtime,
                     &AllowedRequest {
+                        state: Some(&state),
                         recording: Some(recording.as_ref()),
                         tasks: &upgrades,
                         destination,
@@ -3047,13 +3081,18 @@ where
                             .then_some(crate::ignored_host_logger::SelectedDestination { host: &destination.host, port: destination.port });
                         outbound_attempted = true;
                         let Connected { stream, h1_request_form, peer, observation, network } = open_egress_for_flow(
-                            &runtime, &AllowedRequest { recording: Some(recording.as_ref()), tasks: &descendants, destination: &destination, identity: &identity, request_id: &request_id },
+                            &runtime, &AllowedRequest { state: Some(&state), recording: Some(recording.as_ref()), tasks: &descendants, destination: &destination, identity: &identity, request_id: &request_id },
                             true, Some(&passthrough_matcher), ignored, None, None,
                         ).await?;
                         (stream, h1_request_form, peer, observation, network)
                     }
                     _ => unreachable!("CONNECT classification preserves its upstream owner"),
                 };
+                let check_endpoint = (observation.route == crate::traffic_view::UpstreamRoute::Direct)
+                    .then_some(observation.peer).flatten().map(|peer| peer.ip());
+                policy_checks::enforce(&runtime, &state, &identity, &request_id,
+                    crate::policy::checks::Stage::Connect,
+                    &policy_checks::request(&identity, &destination, "CONNECT", check_endpoint, false)).await?;
                 if destination.selected_ip.is_some() {
                     observation.target["logical_host"] = json!(destination.host);
                 }
@@ -3085,6 +3124,9 @@ where
                     protocol
                 };
                 if protocol == Protocol::Opaque {
+                    policy_checks::enforce(&runtime, &state, &identity, &request_id,
+                        crate::policy::checks::Stage::Request,
+                        &policy_checks::request(&identity, &destination, "CONNECT", check_endpoint, false)).await?;
                     let started = std::time::Instant::now();
                     let result = tunnels::relay(client, server, stop).await;
                     runtime.audit.emit(identity.request_event(
@@ -4641,6 +4683,7 @@ where
         return Ok((blocked, "deny".into()));
     }
     let allowed = AllowedRequest {
+        state: Some(&state),
         recording: Some(recording.as_ref()),
         tasks: &upgrades,
         destination,
@@ -4867,6 +4910,41 @@ where
             path: destination.path.split('?').next().unwrap_or("/").into(),
         });
     }
+    let check_peer = if outbound.observation().route == crate::traffic_view::UpstreamRoute::Direct {
+        outbound.observation().peer.map(|peer| peer.ip())
+    } else {
+        None
+    };
+    policy_checks::enforce(
+        &runtime,
+        &state,
+        identity,
+        request_id,
+        crate::policy::checks::Stage::Connect,
+        &policy_checks::request(
+            identity,
+            &forwarding_destination,
+            "CONNECT",
+            check_peer,
+            false,
+        ),
+    )
+    .await?;
+    let named_checks_apply = runtime.policy.as_ref().is_some_and(|policy| {
+        let target = policy_checks::request(
+            identity,
+            &forwarding_destination,
+            request.method().as_str(),
+            check_peer,
+            true,
+        );
+        policy
+            .named_checks()
+            .applies(&target, crate::policy::checks::Stage::Connect)
+            || policy
+                .named_checks()
+                .applies(&target, crate::policy::checks::Stage::Request)
+    });
     let forward_headers = docker_project.as_ref().map(|_| request.headers().clone());
     let completion = circuit_completion::Completion::register(
         &mut request,
@@ -4902,6 +4980,24 @@ where
                 completion: Some(completion.clone()),
                 _session: Some(session),
             };
+            policy_checks::enforce(
+                &runtime,
+                &state,
+                identity,
+                request_id,
+                crate::policy::checks::Stage::Request,
+                &policy_checks::request(
+                    identity,
+                    &forwarding_destination,
+                    request.method().as_str(),
+                    check_peer,
+                    true,
+                ),
+            )
+            .await?;
+            if named_checks_apply {
+                policy_checks::current(&runtime, &state, identity)?;
+            }
             (sender.send_request(request).await?, connection)
         }
         upstream_h2::Selected::Unshared(outbound) => {
@@ -4942,6 +5038,24 @@ where
                 completion: Some(completion.clone()),
                 _session: None,
             };
+            policy_checks::enforce(
+                &runtime,
+                &state,
+                identity,
+                request_id,
+                crate::policy::checks::Stage::Request,
+                &policy_checks::request(
+                    identity,
+                    &forwarding_destination,
+                    request.method().as_str(),
+                    check_peer,
+                    true,
+                ),
+            )
+            .await?;
+            if named_checks_apply {
+                policy_checks::current(&runtime, &state, identity)?;
+            }
             (
                 sender.send_request(request).await.inspect_err(|error| {
                     if let Some(network) = &sender_network {
@@ -5682,6 +5796,9 @@ pub(crate) fn serve_request(
         let (mut reply, decision) = result.unwrap_or_else(|error| {
             if error.is::<AdminPortAccess>() {
                 return (admin_rejection(), "admin_port_access".into());
+            }
+            if let Some(denied) = error.downcast_ref::<policy_checks::Denied>() {
+                return (prior_block(denied.response()), "deny".into());
             }
             // Errors contain no application headers/body. A transport/adapter error never retries another route.
             eprintln!("request {request_id} failed: {error}");

@@ -28,6 +28,7 @@ use serde_json::{Map, Value};
 pub(crate) mod authority;
 mod baseline;
 mod budgets;
+pub mod checks;
 pub(crate) mod circuit_settings;
 pub(crate) mod delegation;
 pub(crate) mod evidence;
@@ -412,6 +413,7 @@ struct Override {
 #[derive(Clone)]
 pub struct Policy {
     native: Option<native::Snapshot>,
+    checks: Arc<checks::Checks>,
     baseline: Option<Arc<Baseline>>,
     baseline_path: Option<PathBuf>,
     file_times: Option<watch::PolicyFileTimes>,
@@ -815,6 +817,7 @@ impl Policy {
             .transpose()?;
         let mut policy = Self {
             native: None,
+            checks: Arc::new(checks::Checks::parse(document, list_base_dir)?),
             baseline: None,
             baseline_path: None,
             file_times: None,
