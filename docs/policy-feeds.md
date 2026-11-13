@@ -160,7 +160,9 @@ Rollback preserves the snapshot's evidence time and refresh schedule. It does
 not make old data fresh or undo other policy edits. Rollback clears conditional
 request validators. A later refresh must acquire and validate the provider's data
 before those validators are reused. The next successful refresh can replace the
-selected snapshot. Accepted and previous snapshots remain in `data/policy-feeds`
+selected snapshot. Without a provider timestamp, reacquiring membership found
+in either retained snapshot for the same source preserves its evidence age.
+Accepted and previous snapshots remain in `data/policy-feeds`
 beside the source file, along with conditional request and retry state. Readers
 load entries and provenance from one atomically replaced file. The compiled
 policy retains that complete version until a replacement is activated. Its

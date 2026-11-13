@@ -344,7 +344,10 @@ fn installed_refresh_after_rollback_recovers_unchanged_provider_membership() {
     );
     let temporary = tempfile::tempdir().unwrap();
     let instance = Instance::new(&temporary.path().join("i"), &origin);
-    successful(&instance.configure(json!({})));
+    successful(&instance.configure(json!({
+        "cadence_seconds": 86400,
+        "max_age_seconds": 8,
+    })));
     let initial = instance.source_status();
     origin.reply(
         ENDPOINT,
@@ -374,6 +377,15 @@ fn installed_refresh_after_rollback_recovers_unchanged_provider_membership() {
             .contains("If-Modified-Since: Fri, 13 Nov 2026 10:00:00 GMT")
     );
     let before_rollback = instance.source_status();
+    instance.json(&["start"]);
+    instance.apply();
+    assert_eq!(instance.request("ordinary.test"), 200);
+    assert_eq!(instance.request("e.test"), 403);
+    instance.wait_for("second snapshot expiry", || {
+        instance.source_status()["stale"] == true
+    });
+    assert_eq!(instance.request("ordinary.test"), 403);
+
     let rolled_back =
         instance.json(&["policy", "feeds", "rollback", "test"])["sources"]["test"].clone();
     assert_eq!(rolled_back["snapshot"], initial["snapshot"]);
@@ -405,6 +417,21 @@ fn installed_refresh_after_rollback_recovers_unchanged_provider_membership() {
     );
     assert!(recovered["last_failure"].is_null());
     assert_eq!(recovered["consecutive_failures"], 0);
+    assert_eq!(
+        recovered["snapshot"]["evidence_first_observed_at"],
+        before_rollback["snapshot"]["evidence_first_observed_at"],
+        "refetch renewed retained membership's evidence age"
+    );
+    assert!(recovered["stale"].as_bool().unwrap());
+    for field in ["acquired_at", "validated_at"] {
+        assert!(
+            recovered["snapshot"][field].as_u64().unwrap()
+                > before_rollback["snapshot"][field].as_u64().unwrap(),
+            "refetch did not update {field}"
+        );
+    }
+    instance.apply();
+    assert_eq!(instance.request("ordinary.test"), 403);
     let request = origin.feed_requests().last().unwrap().clone();
     assert!(!request.contains("If-None-Match:"));
     assert!(!request.contains("If-Modified-Since:"));
@@ -416,6 +443,18 @@ fn installed_refresh_after_rollback_recovers_unchanged_provider_membership() {
     let request = origin.feed_requests().last().unwrap().clone();
     assert!(request.contains("If-None-Match: \"two\""));
     assert!(request.contains("If-Modified-Since: Fri, 13 Nov 2026 10:00:00 GMT"));
+
+    // Previously unseen membership is new evidence and can recover stale policy.
+    origin.feed(b"c.test\nd.test\ne.test\nf.test\n", "\"three\"");
+    let changed = instance.json(&["policy", "feeds", "refresh", "test"])["sources"]["test"].clone();
+    assert_eq!(
+        changed["snapshot"]["evidence_first_observed_at"],
+        changed["snapshot"]["acquired_at"]
+    );
+    assert_eq!(changed["stale"], false);
+    instance.apply();
+    assert_eq!(instance.request("ordinary.test"), 200);
+    assert_eq!(instance.request("f.test"), 403);
 }
 
 #[test]

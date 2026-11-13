@@ -575,6 +575,16 @@ async fn update(root: &Path, name: &str, source: &Source, state: &mut State) -> 
     if provider_observed_at.is_some_and(|time| time > at) {
         return Err("provider evidence timestamp is in the future".into());
     }
+    // Rollback retains the replaced snapshot. Fetching its membership again
+    // cannot renew that evidence merely because another snapshot is selected.
+    let previous = snapshot(root, name, source, "previous.json")?;
+    let evidence_first_observed_at = current
+        .iter()
+        .chain(previous.iter())
+        .filter(|known| known.entries == entries)
+        .map(|known| known.evidence_first_observed_at)
+        .min()
+        .unwrap_or(at);
     let accepted = Snapshot {
         source: name.into(),
         endpoint: source.redacted_endpoint(),
@@ -583,10 +593,7 @@ async fn update(root: &Path, name: &str, source: &Source, state: &mut State) -> 
         version: uuid::Uuid::new_v4().to_string(),
         source_sha256,
         acquired_at: at,
-        evidence_first_observed_at: current
-            .as_ref()
-            .filter(|current| current.entries == entries)
-            .map_or(at, |current| current.evidence_first_observed_at),
+        evidence_first_observed_at,
         validated_at: at,
         provider_observed_at,
         provider_version,
