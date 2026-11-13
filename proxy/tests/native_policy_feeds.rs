@@ -27,6 +27,7 @@ struct Origin {
     requests: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
     held: Arc<AtomicBool>,
+    conditional: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
 impl Origin {
@@ -38,7 +39,9 @@ impl Origin {
         let requests: Arc<Mutex<Vec<String>>> = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
         let held = Arc::new(AtomicBool::new(false));
+        let conditional = Arc::new(AtomicBool::new(false));
         let worker_held = held.clone();
+        let worker_conditional = conditional.clone();
         let (worker_responses, worker_requests, worker_stop) =
             (responses.clone(), requests.clone(), stop.clone());
         let worker = thread::spawn(move || {
@@ -64,11 +67,11 @@ impl Origin {
                 }
                 let request = String::from_utf8_lossy(&request).to_string();
                 let destination = request.split_whitespace().nth(1).unwrap_or("").to_owned();
-                worker_requests.lock().unwrap().push(request);
+                worker_requests.lock().unwrap().push(request.clone());
                 while worker_held.load(Ordering::Acquire) && !worker_stop.load(Ordering::Acquire) {
                     thread::sleep(Duration::from_millis(5));
                 }
-                let response = worker_responses
+                let mut reply = worker_responses
                     .lock()
                     .unwrap()
                     .get(&destination)
@@ -80,7 +83,28 @@ impl Origin {
                             response(200, "text/plain", b"sinkhole\n", "")
                         }
                     });
-                let _ = stream.write_all(&response);
+                if worker_conditional.load(Ordering::Acquire) {
+                    let headers = String::from_utf8_lossy(&reply);
+                    let unchanged = [
+                        ("ETag: ", "If-None-Match: "),
+                        ("Last-Modified: ", "If-Modified-Since: "),
+                    ]
+                    .into_iter()
+                    .any(|(provided, conditional)| {
+                        headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix(provided))
+                            .is_some_and(|value| {
+                                request
+                                    .lines()
+                                    .any(|line| line.strip_prefix(conditional) == Some(value))
+                            })
+                    });
+                    if unchanged {
+                        reply = response(304, "text/plain", b"", "");
+                    }
+                }
+                let _ = stream.write_all(&reply);
             }
         });
         Self {
@@ -89,6 +113,7 @@ impl Origin {
             requests,
             stop,
             held,
+            conditional,
             worker: Some(worker),
         }
     }
@@ -253,6 +278,144 @@ fn successful(output: &Output) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn installed_refresh_preserves_literal_initial_and_redirect_endpoints() {
+    let origin = Origin::new();
+    let temporary = tempfile::tempdir().unwrap();
+    for (index, (endpoint, redirect)) in [
+        ("http://feeds.test/plain", None),
+        ("http://feeds.test/a[1-2]", None),
+        ("http://feeds.test/{one,two}", None),
+        ("http://feeds.test/query?part=[1-2]", None),
+        (
+            "http://feeds.test/start",
+            Some("http://feeds.test/final[1-2]"),
+        ),
+        (
+            "http://feeds.test/start",
+            Some("http://feeds.test/final?part={one,two}"),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let instance = Instance::new(&temporary.path().join(index.to_string()), &origin);
+        let expected = if let Some(target) = redirect {
+            origin.reply(
+                endpoint,
+                response(302, "text/plain", b"", &format!("Location: {target}\r\n")),
+            );
+            origin.reply(target, response(200, "text/plain", FIRST, ""));
+            vec![endpoint, target]
+        } else {
+            origin.reply(endpoint, response(200, "text/plain", FIRST, ""));
+            vec![endpoint]
+        };
+        let before = origin.feed_requests().len();
+        let output = instance.configure(json!({
+            "endpoint":endpoint,
+            "redirect_endpoints":redirect.into_iter().collect::<Vec<_>>()
+        }));
+        let requests = origin.feed_requests();
+        let destinations: Vec<_> = requests[before..]
+            .iter()
+            .map(|request| request.split_whitespace().nth(1).unwrap())
+            .collect();
+        assert_eq!(destinations, expected, "acquisition expanded {endpoint}");
+        successful(&output);
+        assert_eq!(instance.source_status()["snapshot"]["entries"], 4);
+    }
+}
+
+#[test]
+fn installed_refresh_after_rollback_recovers_unchanged_provider_membership() {
+    let origin = Origin::new();
+    origin.conditional.store(true, Ordering::Release);
+    origin.reply(
+        ENDPOINT,
+        response(
+            200,
+            "text/plain",
+            FIRST,
+            "ETag: \"one\"\r\nLast-Modified: Thu, 12 Nov 2026 10:00:00 GMT\r\n",
+        ),
+    );
+    let temporary = tempfile::tempdir().unwrap();
+    let instance = Instance::new(&temporary.path().join("i"), &origin);
+    successful(&instance.configure(json!({})));
+    let initial = instance.source_status();
+    origin.reply(
+        ENDPOINT,
+        response(
+            200,
+            "text/plain",
+            SECOND,
+            "ETag: \"two\"\r\nLast-Modified: Fri, 13 Nov 2026 10:00:00 GMT\r\n",
+        ),
+    );
+    instance.json(&["policy", "feeds", "refresh", "test"]);
+    let second = instance.snapshot();
+    instance.json(&["policy", "feeds", "refresh", "test"]);
+    assert_eq!(instance.snapshot(), second, "304 replaced accepted bytes");
+    assert!(
+        origin
+            .feed_requests()
+            .last()
+            .unwrap()
+            .contains("If-None-Match: \"two\"")
+    );
+    assert!(
+        origin
+            .feed_requests()
+            .last()
+            .unwrap()
+            .contains("If-Modified-Since: Fri, 13 Nov 2026 10:00:00 GMT")
+    );
+    let before_rollback = instance.source_status();
+    let rolled_back =
+        instance.json(&["policy", "feeds", "rollback", "test"])["sources"]["test"].clone();
+    assert_eq!(rolled_back["snapshot"], initial["snapshot"]);
+    for field in [
+        "next_refresh",
+        "last_attempt",
+        "last_success",
+        "last_failure",
+        "consecutive_failures",
+    ] {
+        assert_eq!(
+            rolled_back[field], before_rollback[field],
+            "rollback changed {field}"
+        );
+    }
+
+    // The provider is still on version two. Sending its validators here would
+    // return 304 and leave the rolled-back exclusions in place.
+    let recovered =
+        instance.json(&["policy", "feeds", "refresh", "test"])["sources"]["test"].clone();
+    let recovered_snapshot: Value = serde_json::from_slice(&instance.snapshot()).unwrap();
+    assert_eq!(
+        recovered_snapshot["entries"],
+        json!(["b.test", "c.test", "d.test", "e.test"])
+    );
+    assert_eq!(
+        recovered["snapshot"]["source_sha256"],
+        before_rollback["snapshot"]["source_sha256"]
+    );
+    assert!(recovered["last_failure"].is_null());
+    assert_eq!(recovered["consecutive_failures"], 0);
+    let request = origin.feed_requests().last().unwrap().clone();
+    assert!(!request.contains("If-None-Match:"));
+    assert!(!request.contains("If-Modified-Since:"));
+
+    // Once the selected membership has been fetched, conditional requests work again.
+    let accepted = instance.snapshot();
+    instance.json(&["policy", "feeds", "refresh", "test"]);
+    assert_eq!(instance.snapshot(), accepted);
+    let request = origin.feed_requests().last().unwrap().clone();
+    assert!(request.contains("If-None-Match: \"two\""));
+    assert!(request.contains("If-Modified-Since: Fri, 13 Nov 2026 10:00:00 GMT"));
 }
 
 #[test]

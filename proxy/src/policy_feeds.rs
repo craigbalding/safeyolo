@@ -412,6 +412,13 @@ pub async fn command(root: &Path, args: &[String]) -> Result<(), Error> {
             let previous = snapshot(root, name, source, "previous.json")?
                 .ok_or("no previous accepted snapshot for this source configuration")?;
             let current = snapshot(root, name, source, "accepted.json")?;
+            let mut state = state(root, name, source)?;
+            state.etag = None;
+            state.last_modified = None;
+            state.cache_endpoint = None;
+            // Persist before selecting older data: interruption must not leave
+            // the newer snapshot's validators attached to the rollback.
+            atomic(&dir.join("state.json"), &state)?;
             atomic(&dir.join("accepted.json"), &previous)?;
             if let Some(current) = current {
                 atomic(&dir.join("previous.json"), &current)?;

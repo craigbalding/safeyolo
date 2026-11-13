@@ -1,5 +1,5 @@
 //! Bound curl's existing host proxy/CA transport. Endpoint secrets go through
-//! stdin, never argv; curlrc, automatic redirects and raw diagnostics are off.
+//! stdin, never argv; curlrc, URL globbing, automatic redirects and raw diagnostics are off.
 
 use super::{Source, State, uri};
 use crate::Error;
@@ -106,6 +106,7 @@ async fn request(source: &Source, state: &State, endpoint: &str) -> Result<Reply
     let mut child = tokio::process::Command::new("curl")
         .args([
             "--disable",
+            "--globoff",
             "--config",
             "-",
             "--silent",
