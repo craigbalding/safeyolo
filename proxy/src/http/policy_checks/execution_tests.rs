@@ -575,6 +575,85 @@ on_unavailable='unresolved'
     }
 }
 
+fn job_configuration(linux: Option<&crate::linux_host::Settings>) -> String {
+    let mut configuration = "admin_port=0\nflow_store_enabled=false\nlisteners=[]\n".to_owned();
+    if let Some(linux) = linux {
+        // Serialize the typed settings directly: JSON turns absent options into null.
+        configuration.push_str(&toml::to_string(&BTreeMap::from([("linux", linux)])).unwrap());
+    }
+    configuration
+}
+
+#[test]
+fn native_job_fixture_preserves_selected_optional_linux_settings() {
+    for apparmor_profile in [None, Some("selected-profile".to_owned())] {
+        let root = tempfile::tempdir().unwrap();
+        let linux = crate::linux_host::Settings {
+            host_uid: 1000,
+            host_gid: 1000,
+            uid_base: 100000,
+            gid_base: 200000,
+            runsc: "/selected/bin/runsc".into(),
+            runsc_origin: "system".into(),
+            apparmor_profile,
+        };
+        let config = test_configuration(root.path(), &job_configuration(Some(&linux)));
+        assert_eq!(config.native_settings.unwrap().linux, Some(linux));
+    }
+    let root = tempfile::tempdir().unwrap();
+    let config = test_configuration(root.path(), &job_configuration(None));
+    assert!(config.native_settings.unwrap().linux.is_none());
+}
+
+/// Observe the owned backend before testing cancellation, rather than merely
+/// cancelling an admission that has not started a sandbox.
+async fn running_check_job(root: &Path) -> (std::path::PathBuf, serde_json::Value) {
+    #[cfg(not(target_os = "macos"))]
+    let parent = root.join("data");
+    #[cfg(target_os = "macos")]
+    let parent = std::env::temp_dir();
+    let selected = root.join("config.toml").canonicalize().unwrap();
+    tokio::time::timeout(Duration::from_secs(25), async {
+        loop {
+            for entry in std::fs::read_dir(&parent).unwrap() {
+                let job_root = entry.unwrap().path();
+                if !job_root
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("job-")
+                    || job_root.join("config.toml").canonicalize().ok().as_ref() != Some(&selected)
+                {
+                    continue;
+                }
+                let Ok(agents) = std::fs::read_dir(job_root.join("agents")) else {
+                    continue;
+                };
+                for agent in agents {
+                    let agent = agent.unwrap();
+                    let name = agent.file_name().to_string_lossy().into_owned();
+                    let observed =
+                        crate::host_platform::in_config(job_root.join("config.toml"), async {
+                            let state = crate::host_runs::observe(&name).await;
+                            let record = crate::host_runs::read(&name).unwrap();
+                            (state, record)
+                        })
+                        .await;
+                    if observed.0["runtime_state"] == "running" {
+                        return (
+                            job_root,
+                            observed.1.expect("running backend needs a host record"),
+                        );
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("check did not reach a running owned backend before cancellation")
+}
+
 /// Run explicitly on a prepared native Linux/macOS host. Reuse its immutable
 /// host/guest inputs; the test owns fresh policy, credentials and job state.
 #[tokio::test]
@@ -597,15 +676,13 @@ async fn native_installed_job_check_binds_observed_execution_and_reuses_only_val
     let rule = json!({"name":"exclude","host":"*","agent":"alice","stage":"connect","influence":"hard_exclusion","priority":0,
         "required":true,"when":{"op":"finding","check":"assess"},"on_match":"deny","on_unavailable":"unresolved"});
     test_policy(root, json!({"assess":definition}), vec![rule]);
-    let mut configuration = "admin_port=0\nflow_store_enabled=false\nlisteners=[]\n".to_owned();
     let selected = crate::native_config::read(&prepared.join("config.toml")).unwrap();
-    if let Some(linux) = selected
-        .native_settings
-        .as_ref()
-        .and_then(|settings| settings.linux.as_ref())
-    {
-        configuration.push_str(&toml::to_string(&json!({"linux":linux})).unwrap());
-    }
+    let configuration = job_configuration(
+        selected
+            .native_settings
+            .as_ref()
+            .and_then(|settings| settings.linux.as_ref()),
+    );
     let config = test_configuration(root, &configuration);
     for name in ["bin", "libexec", "host", "package-info", "SHA256SUMS"] {
         std::os::unix::fs::symlink(host.join(name), root.join(name)).unwrap();
@@ -615,7 +692,7 @@ async fn native_installed_job_check_binds_observed_execution_and_reuses_only_val
         "test ! -w /input/request.json || exit 91; cat /input/request.json >&2; printf '%s' '{\"finding\":{\"kind\":\"finding\",\"positive\":false},\"source_revision\":\"owned-job-v1\"}'"],
         "timeout_seconds":30,"max_input_bytes":8192,"max_input_entries":1,"retain_bytes":8192,"memory_mb":512,"network":false});
     std::fs::write(root.join("check.json"), serde_json::to_vec(&spec).unwrap()).unwrap();
-    let proxy = crate::Proxy::start(config).await.unwrap();
+    let mut proxy = crate::Proxy::start(config.clone()).await.unwrap();
     let started = std::time::Instant::now();
     let evidence = collect(&proxy, "example.test").await;
     let entry = &evidence["assess"];
@@ -700,6 +777,49 @@ async fn native_installed_job_check_binds_observed_execution_and_reuses_only_val
         evidence["assess"].execution.as_ref().unwrap()["outcome"],
         json!({"kind":"timeout"})
     );
+    // Keep the job timeout longer than the outer check deadline. This tests
+    // cancellation of the real backend, not the runner's own timeout above.
+    spec["argv"] = json!(["/bin/sleep", "120"]);
+    spec["timeout_seconds"] = json!(120);
+    std::fs::write(root.join("check.json"), serde_json::to_vec(&spec).unwrap()).unwrap();
+    let policy = root.join("policy.toml");
+    let mut checks: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&policy).unwrap()).unwrap();
+    checks["checks"]["assess"]["source"]["limits"]["timeout_ms"] = toml::Value::Integer(30_000);
+    std::fs::write(&policy, toml::to_string(&checks).unwrap()).unwrap();
+    proxy.reload(config).await.unwrap();
+    let proxy = Arc::new(proxy);
+    for cancel_caller in [false, true] {
+        let client = proxy.clone();
+        let pending = tokio::spawn(async move { collect(&client, "cancelled.test").await });
+        let (job_root, record) = running_check_job(root).await;
+        assert!(!crate::host_runs::saved_process_is_dead(&record, "backend"));
+        if cancel_caller {
+            pending.abort();
+            assert!(pending.await.unwrap_err().is_cancelled());
+        } else {
+            let evidence = pending.await.unwrap();
+            assert!(
+                evidence["assess"]
+                    .unavailable
+                    .as_ref()
+                    .unwrap()
+                    .contains("check execution deadline exceeded")
+            );
+            assert!(
+                evidence["assess"].result.is_none(),
+                "late job output gained authority"
+            );
+        }
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while job_root.exists() || !crate::host_runs::saved_process_is_dead(&record, "backend")
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("cancelled job left its backend or owned runtime behind");
+    }
     assert!(!std::fs::read_dir(root.join("data")).unwrap().any(|entry| {
         entry
             .unwrap()
@@ -707,7 +827,20 @@ async fn native_installed_job_check_binds_observed_execution_and_reuses_only_val
             .to_string_lossy()
             .starts_with("job-")
     }));
+    let proxy = Arc::try_unwrap(proxy).ok().unwrap();
     proxy.shutdown().await;
+    let audit = std::fs::read_to_string(root.join("logs/audit.jsonl")).unwrap();
+    assert_eq!(
+        audit
+            .lines()
+            .filter(|line| {
+                let event: serde_json::Value = serde_json::from_str(line).unwrap();
+                event["event"] == "ops.policy_check_cancelled"
+            })
+            .count(),
+        2,
+        "deadline and caller cancellation must remain observable"
+    );
 }
 
 #[tokio::test]
