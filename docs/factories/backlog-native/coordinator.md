@@ -88,12 +88,15 @@ independently. The investigation cannot replace the required independent check
 of the owner's later candidate.
 
 A retained generic item has no automatic Factory checks. After each new
-output, the coordinator requests an exact-output reviewer check and selects it
-with current `set_work_requirements` expectations. Initially select the
+output, the coordinator requests an exact-output reviewer check. Initially use
+`set_work_requirements` with current expectations to select that check, the
 coordinator as amendment authority, the reviewer as decider and independent
-acceptance. For a correction, replace only the previous round's required
-check; preserve other selected obligations and authority. Do not select an
-empty check list over an old output.
+acceptance. For a correction, use `select_work_review` with `review_kind=check`,
+the new check's current `{work_id, version}`, and `replace_work_id` naming the
+previous round's selected check. Supply current work, claim and requirements
+expectations and a reason. The operation preserves other selected entries and
+policy fields. Use full selection for deliberate complete-policy changes;
+do not select an empty check list over an old output.
 
 The coordinator is that check's requester, so its answer wakes the
 coordinator, not the completed producer. Before a generic correction or

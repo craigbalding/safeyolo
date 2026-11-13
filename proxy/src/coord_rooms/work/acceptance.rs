@@ -10,6 +10,13 @@ pub(crate) struct ReviewReference {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReviewKind {
+    Check,
+    Challenge,
+}
+
+#[derive(Serialize, Deserialize)]
 pub(crate) struct RequiredReview {
     pub work_id: String,
     pub selected_version: i64,
@@ -112,20 +119,11 @@ fn producer(work: &Work, actor: &Principal) -> bool {
         .is_some_and(|o| o.producer == json!(actor))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn set_requirements(
-    conn: &Connection,
-    work: &mut Work,
+fn requirements_authority(
+    work: &Work,
     actor: Actor<'_>,
     expected_requirements_version: i64,
-    authorities: Vec<Principal>,
-    deciders: Vec<Principal>,
-    independent: bool,
-    checks: Vec<ReviewReference>,
-    challenges: Vec<ReviewReference>,
-    reason: String,
-    at: i64,
-) -> Result<(), WorkError> {
+) -> Result<Principal, WorkError> {
     let previous = work.acceptance_requirements.as_ref();
     if previous.map_or(0, |r| r.version) != expected_requirements_version {
         return Err(conflict(
@@ -142,6 +140,24 @@ pub(super) fn set_requirements(
             return Err(WorkError(403, "initial requirements require the work creator; amendments require a recorded authority".into()));
         }
     }
+    Ok(principal)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn set_requirements(
+    conn: &Connection,
+    work: &mut Work,
+    actor: Actor<'_>,
+    expected_requirements_version: i64,
+    authorities: Vec<Principal>,
+    deciders: Vec<Principal>,
+    independent: bool,
+    checks: Vec<ReviewReference>,
+    challenges: Vec<ReviewReference>,
+    reason: String,
+    at: i64,
+) -> Result<(), WorkError> {
+    let principal = requirements_authority(work, actor, expected_requirements_version)?;
     subjects::evidence(&reason, &[])?;
     if deciders.is_empty() {
         return Err(invalid(
@@ -184,6 +200,74 @@ pub(super) fn set_requirements(
     work.acceptance_decisions
         .retain(|d| requirements.deciders.contains(&d.author));
     work.acceptance_requirements = Some(requirements);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn select_review(
+    conn: &Connection,
+    work: &mut Work,
+    actor: Actor<'_>,
+    expected_requirements_version: i64,
+    review_kind: ReviewKind,
+    review: ReviewReference,
+    replace_work_id: Option<String>,
+    reason: String,
+    at: i64,
+) -> Result<(), WorkError> {
+    let principal = requirements_authority(work, actor, expected_requirements_version)?;
+    let requirements = work.acceptance_requirements.as_ref().ok_or_else(|| {
+        invalid(
+            "select initial acceptance policy with set_work_requirements before amending a review",
+        )
+    })?;
+    subjects::evidence(&reason, &[])?;
+    let challenge = matches!(review_kind, ReviewKind::Challenge);
+    let selected = if challenge {
+        &requirements.challenges
+    } else {
+        &requirements.checks
+    };
+    let replacement = replace_work_id
+        .map(|id| {
+            selected
+                .iter()
+                .position(|r| r.work_id == id)
+                .ok_or_else(|| {
+                    conflict("replacement target must be a selected review of the same kind")
+                })
+        })
+        .transpose()?;
+    if selected
+        .iter()
+        .enumerate()
+        .any(|(i, r)| r.work_id == review.work_id && Some(i) != replacement)
+    {
+        return Err(invalid("required review IDs must be distinct"));
+    }
+    let review = select(conn, work, vec![review], challenge)?.pop().unwrap();
+    let version = requirements
+        .version
+        .checked_add(1)
+        .ok_or_else(|| conflict("requirements version cannot advance"))?;
+    let requirements = work.acceptance_requirements.as_mut().unwrap();
+    let selected = if challenge {
+        &mut requirements.challenges
+    } else {
+        &mut requirements.checks
+    };
+    if let Some(index) = replacement {
+        selected[index] = review;
+    } else {
+        selected.push(review);
+    }
+    // Retained entries keep their selected revisions and definitions, including
+    // definitions that have since changed and must remain visibly inconsistent.
+    requirements.version = version;
+    requirements.author = principal;
+    requirements.reason = reason;
+    requirements.selected_at = at;
+    subjects::record_bound(requirements)?;
     Ok(())
 }
 

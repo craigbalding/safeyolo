@@ -56,7 +56,20 @@ resulting proposition separately when useful. Do not select a policy that
 requires an investigator to independently check its own report.
 
 The work creator or operator can select native acceptance context with
-`set_work_requirements`. Later amendments require a recorded authority or the
+`set_work_requirements`. Use that operation for initial or deliberate full-policy
+selection. For a routine manual amendment, use `select_work_review` to add one
+existing check/challenge or replace an explicitly named selected review of the
+same kind. Supply current work, claim, requirements and new-review versions,
+`review_kind`, the `review` reference, a reason and an operation ID. Omit
+`replace_work_id` to add, or name the selected review to replace or deliberately
+reselect. The operation preserves unrelated stored selections, authorities,
+deciders and independence. A changed unrelated definition stays inconsistent
+until explicitly reselected. Do not create an empty initial selection to use
+the amendment. For corrected code, replace its implementation check while
+retaining a release/security challenge. For a corrected report, replace its
+report review while retaining an unresolved coverage challenge. See the
+[API examples](https://github.com/craigbalding/safeyolo/blob/master/docs/coord-operations.md#amend-one-required-review).
+Amendments require a recorded authority or the
 operator; ownership and production alone grant no policy authority. An explicit
 authorized delegation can name a worker. Selected checks and challenges govern
 `decide_work_acceptance`.

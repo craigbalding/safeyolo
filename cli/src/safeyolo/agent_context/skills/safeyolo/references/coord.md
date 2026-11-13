@@ -36,6 +36,18 @@ corresponding native action; `complete_work` settles execution only. Read the
 full current Work and its acceptance status before acting. Result notices with
 `requires_action=false` are information.
 
+Use `set_work_requirements` for initial acceptance selection or deliberate
+full-policy changes. Within an existing selection, an amendment authority or
+the operator uses `select_work_review` to add one existing check/challenge or
+replace an explicitly named selected review of the same kind. Supply current
+work, claim, requirements and new-review versions, a reason and an operation
+ID. Unrelated selected versions/definitions and policy fields stay unchanged.
+For example, replace a corrected code output's implementation check while
+retaining its security challenge, or a corrected report's review while
+retaining its coverage challenge. Review creation remains advisory until
+selected. See the
+[code and report examples](https://github.com/craigbalding/safeyolo/blob/master/docs/coord-operations.md#amend-one-required-review).
+
 For a selected further attempt on completed assigned execution or an answered
 check, use `continue_work` with current version/claim generation, a reason,
 recoverable findings/input references and a chosen operation ID. Ordinary work

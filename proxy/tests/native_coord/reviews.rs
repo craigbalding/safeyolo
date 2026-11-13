@@ -55,6 +55,43 @@ pub(super) fn requirements(
         "challenges":challenges.iter().map(|w|json!({"work_id":w["work_id"],"version":w["version"]})).collect::<Vec<_>>(),
         "reason":"Select the independent review obligations for this retained output","operation_id":op})
 }
+fn selection(work: &Value, review: &Value, kind: &str, replace: Option<&Value>, op: &str) -> Value {
+    let mut input = json!({"room_name":"shared","work_id":work["work_id"],"expected_version":work["version"],
+        "expected_generation":work["claim_generation"],"expected_requirements_version":work["acceptance_requirements"]["version"],
+        "review_kind":kind,"review":{"work_id":review["work_id"],"version":review["version"]},
+        "reason":"Amend one required review while retaining the remaining policy","operation_id":op});
+    if let Some(replace) = replace {
+        input["replace_work_id"] = replace["work_id"].clone();
+    }
+    input
+}
+
+async fn commit_without_reply(root: &Path, input: &Value, action: &str) {
+    let mut body = input.clone();
+    body.as_object_mut().unwrap().remove("room_name");
+    body["action"] = json!(action);
+    let body = body.to_string();
+    let mut socket = tokio::net::UnixStream::connect(root.join("bob.sock"))
+        .await
+        .unwrap();
+    let token = fs::read_to_string(root.join("data/agent_token")).unwrap();
+    socket.write_all(format!("POST /api/coord/rooms/shared/work HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",token.trim(),body.len()).as_bytes()).await.unwrap();
+    stage0::until(|| {
+        Connection::open(root.join("data/coord/v0.db"))
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM coord_operations WHERE operation_id=?1",
+                [input["operation_id"].as_str().unwrap()],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+            == 1
+    })
+    .await;
+    // Deliberately lose the committed HTTP response. Recovery must use the
+    // original operation ID and inputs after the caller restarts the proxy.
+    drop(socket);
+}
 pub(super) fn acceptance(work: &Value, verdict: &str, op: &str) -> Value {
     json!({"room_name":"shared","work_id":work["work_id"],"expected_version":work["version"],
         "expected_generation":work["claim_generation"],"expected_requirements_version":work["acceptance_requirements"]["version"],
@@ -113,25 +150,17 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
         fs::write(&corrected, correction).unwrap();
         let first_hash = hash(&fs::read(&first).unwrap());
         let created=alice.call("create_work",&json!({"room_name":"shared","title":kind,"external_ref":format!("opaque:run-{kind}"),"operation_id":format!("create-{kind}")})).await.unwrap()["work"].clone();
-        let created = alice
-            .call(
-                "set_work_requirements",
-                &requirements(&created, &[], &[], &format!("select-{kind}")),
-            )
-            .await
-            .unwrap()["work"]
-            .clone();
         let owned = claim(&alice, &created, &format!("claim-{kind}")).await;
         let mut output = publish(&alice, &owned, &first, &format!("publish-{kind}")).await;
         let requested = request(&alice, &output, &format!("request-{kind}")).await;
-        output = bob
+        output = alice
             .call(
                 "set_work_requirements",
                 &requirements(
                     &output,
                     std::slice::from_ref(&requested),
                     &[],
-                    &format!("require-check-{kind}"),
+                    &format!("select-initial-policy-{kind}"),
                 ),
             )
             .await
@@ -140,8 +169,14 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
         assert!(
             alice
                 .call(
-                    "set_work_requirements",
-                    &requirements(&output, &[], &[], &format!("worker-relax-{kind}"))
+                    "select_work_review",
+                    &selection(
+                        &output,
+                        &requested,
+                        "check",
+                        Some(&requested),
+                        &format!("worker-relax-{kind}")
+                    )
                 )
                 .await
                 .unwrap_err()
@@ -197,11 +232,12 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
             "evidence_refs":[format!("sha256:{first_hash}")],"responder":principal(ALICE),"deciders":[principal(BOB)],"independent":true,"operation_id":format!("raise-{kind}")})).await.unwrap()["work"].clone();
         output = bob
             .call(
-                "set_work_requirements",
-                &requirements(
+                "select_work_review",
+                &selection(
                     &output,
-                    std::slice::from_ref(&rejected["work"]),
-                    std::slice::from_ref(&raised),
+                    &raised,
+                    "challenge",
+                    None,
                     &format!("require-challenge-{kind}"),
                 ),
             )
@@ -261,19 +297,50 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
         );
         assert_eq!(bob.call("answer_check", &reject).await.unwrap(), rejected);
         let next_check = request(&alice, &replacement, &format!("next-check-{kind}")).await;
-        replacement = bob
-            .call(
-                "set_work_requirements",
-                &requirements(
-                    &replacement,
-                    std::slice::from_ref(&next_check),
-                    std::slice::from_ref(&disposed["work"]),
-                    &format!("require-corrected-check-{kind}"),
-                ),
-            )
-            .await
-            .unwrap()["work"]
-            .clone();
+        let retained_policy = replacement["acceptance_requirements"].clone();
+        let select = selection(
+            &replacement,
+            &next_check,
+            "check",
+            Some(&requested),
+            &format!("require-corrected-check-{kind}"),
+        );
+        if kind == "code" {
+            let lock = Connection::open(root.join("data/coord/v0.db")).unwrap();
+            lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+            let pending = {
+                let bob = bob.clone();
+                let input = select.clone();
+                tokio::spawn(async move {
+                    bob.call("select_work_review", &input)
+                        .await
+                        .map_err(|e| e.to_string())
+                })
+            };
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            stage0::crash(proxy).await;
+            lock.execute_batch("ROLLBACK").unwrap();
+            assert!(pending.await.unwrap().is_err());
+            proxy = stage0::start_proxy(&root).await;
+            assert_eq!(
+                read(&bob, &replacement).await["acceptance_requirements"],
+                retained_policy
+            );
+            commit_without_reply(&root, &select, "select_review").await;
+            stage0::crash(proxy).await;
+            proxy = stage0::start_proxy(&root).await;
+        }
+        replacement = bob.call("select_work_review", &select).await.unwrap()["work"].clone();
+        assert_eq!(
+            bob.call("select_work_review", &select).await.unwrap()["work"],
+            replacement
+        );
+        for field in ["challenges", "authorities", "deciders", "independent"] {
+            assert_eq!(
+                replacement["acceptance_requirements"][field],
+                retained_policy[field]
+            );
+        }
         let next_claim = claim(&bob, &next_check, &format!("next-claim-{kind}")).await;
         let approved = bob
             .call(
@@ -289,30 +356,7 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
         );
         let accept = acceptance(&replacement, "approve", &format!("accept-{kind}"));
         if kind == "code" {
-            // Intentionally discard a committed response, then recover its
-            // original receipt after process restart through the public API.
-            let mut body = accept.clone();
-            body.as_object_mut().unwrap().remove("room_name");
-            body["action"] = json!("decide_acceptance");
-            let body = body.to_string();
-            let mut socket = tokio::net::UnixStream::connect(root.join("bob.sock"))
-                .await
-                .unwrap();
-            let token = fs::read_to_string(root.join("data/agent_token")).unwrap();
-            socket.write_all(format!("POST /api/coord/rooms/shared/work HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",token.trim(),body.len()).as_bytes()).await.unwrap();
-            stage0::until(|| {
-                Connection::open(root.join("data/coord/v0.db"))
-                    .unwrap()
-                    .query_row(
-                        "SELECT count(*) FROM coord_operations WHERE operation_id='accept-code'",
-                        [],
-                        |r| r.get::<_, i64>(0),
-                    )
-                    .unwrap()
-                    == 1
-            })
-            .await;
-            drop(socket);
+            commit_without_reply(&root, &accept, "decide_acceptance").await;
             stage0::crash(proxy).await;
             proxy = stage0::start_proxy(&root).await;
         }
@@ -407,7 +451,7 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
                 bob.call("decide_work_acceptance", &accept).await.unwrap(),
                 accepted
             );
-            let subject = subject(&replacement).to_string();
+            let report_subject = subject(&replacement).to_string();
             let human = coord_json(
                 &root,
                 &[
@@ -415,7 +459,7 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
                     "request-check",
                     "shared",
                     "--subject",
-                    &subject,
+                    &report_subject,
                     "--criterion",
                     "Inspect the versioned report",
                     "--reviewer",
@@ -487,6 +531,76 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
             )
             .await;
             assert_eq!(page["items"].as_array().unwrap().len(), 4);
+            let current = read(&bob, &replacement).await;
+            let current = bob
+                .call(
+                    "select_work_review",
+                    &selection(
+                        &current,
+                        &fixed["work"],
+                        "check",
+                        None,
+                        "add-report-specialist-review",
+                    ),
+                )
+                .await
+                .unwrap()["work"]
+                .clone();
+            assert_eq!(
+                current["acceptance_requirements"]["checks"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                2
+            );
+            assert_eq!(
+                current["acceptance_requirements"]["challenges"],
+                replacement["acceptance_requirements"]["challenges"]
+            );
+            let next_challenge = bob.call("raise_challenge", &json!({"room_name":"shared","subject":subject(&replacement),
+                "assertion":"Corrected report coverage needs review","grounds":"Inspect the current report scope",
+                "responder":principal(ALICE),"deciders":[principal(BOB)],"independent":true,
+                "operation_id":"replacement-report-challenge"})).await.unwrap()["work"].clone();
+            let reference =
+                json!({"work_id":next_challenge["work_id"],"version":next_challenge["version"]})
+                    .to_string();
+            let amended = coord_json(
+                &root,
+                &[
+                    "work",
+                    "select-review",
+                    "shared",
+                    current["work_id"].as_str().unwrap(),
+                    "--expected-version",
+                    &current["version"].to_string(),
+                    "--expected-generation",
+                    &current["claim_generation"].to_string(),
+                    "--expected-requirements-version",
+                    &current["acceptance_requirements"]["version"].to_string(),
+                    "--review-kind",
+                    "challenge",
+                    "--review",
+                    &reference,
+                    "--replace-work-id",
+                    raised["work_id"].as_str().unwrap(),
+                    "--reason",
+                    "Select the current report coverage challenge",
+                    "--operation-id",
+                    "operator-replace-challenge",
+                ],
+            )
+            .await;
+            assert_eq!(
+                amended["work"]["acceptance_requirements"]["checks"],
+                current["acceptance_requirements"]["checks"]
+            );
+            assert_eq!(
+                amended["work"]["acceptance_requirements"]["challenges"][0]["work_id"],
+                next_challenge["work_id"]
+            );
+            let status = read(&bob, &replacement).await["acceptance_status"].clone();
+            assert_eq!(status["state"], "pending");
+            assert_eq!(status["obligations"][2]["status"], "unresolved_challenge");
         }
         println!(
             "{kind}: selected requirements -> exact-subject rejection -> challenge -> retained correction -> independent disposition -> current check approval -> output acceptance; original evidence unchanged"
