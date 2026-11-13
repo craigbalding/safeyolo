@@ -62,7 +62,7 @@ zstd = { version = "=0.14.3", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Observe exit-status, exit-signal and missing status independently over SSH.
-russh = { version = "=0.65.0", default-features = false, features = ["ring"] }
+russh = { version = "=0.65.1", default-features = false, features = ["ring"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
