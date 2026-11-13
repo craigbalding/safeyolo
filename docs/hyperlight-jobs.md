@@ -67,7 +67,7 @@ the Hyperlight loader. No path silently selects a different engine.
 | Mutable state | Fresh guest memory | Fresh writable RAM filesystem and `/work` |
 | Process model | No Unix process, PID, fork or guest-root authority | Single-vCPU cooperative Unikraft; `vfork`/PIE execution is a subset, `fork` is unsupported |
 | Privilege | No Unix privilege model | Guest user IDs do not supply full Linux privilege semantics |
-| Networking | No socket or service host calls | Host-socket passthrough is disabled; no service host calls |
+| Networking | No guest sockets; optional mediated service host call | Host-socket passthrough is disabled; the same optional mediated service host call |
 | Memory | `memory_mb` selects scratch size | `memory_mb` selects scratch size |
 | Cancellation | Kill the owning helper process group, then reap the helper | Same |
 | State reuse | No snapshots or warm templates | No snapshots or warm templates |
@@ -117,10 +117,92 @@ authority and output retention. Cold invocation currently starts a fresh
 helper and VM each time; there is no implemented warm lane or universal
 performance advantage.
 
-The helper's core `ReadInput` and Unikraft embedding are the extension points
-for later mediated service calls. Those calls must use the existing job
-delegation and Service Gateway authority. This engine implementation does not
-establish live-provider provenance or workflow enforcement.
+## Mediated service access
+
+In a trusted Hyperlight job definition, keep `network=false` and add the
+following field to select a bearer-authenticated Service Gateway service.
+The selected instance must already grant that service to `gate:<gate_id>`.
+This example permits up to four calls and retains at most 1 MiB per response:
+
+```json
+"mediated_services": {
+  "services": ["github"],
+  "max_calls": 4,
+  "max_request_bytes": 49152,
+  "max_response_bytes": 1048576
+}
+```
+
+The guest supplies a named service, HTTP method and URL. The host supplies the
+scoped gateway token and sends the request through the existing delegated
+proxy listener. Destination, credential, operation, repository and dependency
+policy still apply. The bridge does not follow redirects or retry requests.
+The guest receives no gateway token, provider credential, proxy socket or host
+path. This profile provides mediated service access. It does not support
+arbitrary socket clients, guest DNS, CONNECT tunnels or Unikraft host sockets.
+
+For core guests, import the supported Hyperlight host function:
+
+```rust
+#[hyperlight_guest_bin::host_function("SYCall")]
+fn sy_call(request: alloc::string::String) -> hyperlight_guest_bin::error::Result<alloc::string::String>;
+```
+
+The argument and returned string contain JSON. In a Unikraft Python guest,
+call `hyperlight.call("sy.call", request)` with a Python dictionary. The
+registered embedding function returns the equivalent decoded JSON object.
+Both use this logical request:
+
+```json
+{"kind":"service","service":"github","method":"GET","url":"https://api.github.com/repos/OWNER/REPOSITORY/issues/123"}
+```
+
+Replace the repository and issue with a target allowed by the standing grant.
+An optional `body_base64` supplies bounded request bytes. A successful reply
+contains `ok=true` and a `value` with `id`, `status`, `bytes` and `sha256`.
+Failures contain `ok=false` and `error`. Responses stay in the host capture;
+read the complete response with requests of this form:
+
+```json
+{"kind":"read","id":"RETURNED_ID","offset":0,"length":16384}
+```
+
+Each successful read returns `data_base64` and `total_bytes` under `value`.
+Advance the byte offset until all bytes have been read. The guest must parse
+the complete evidence before evaluating its predicate. Each invocation permits
+one call in flight. The adopted call count and response limits bound retained
+evidence. Messages larger than 48 KiB and reads larger than 16 KiB fail
+explicitly. An oversized response is unavailable evidence; no truncated JSON
+is returned as a successful capture.
+
+The invocation deadline covers calls. Cancellation, an active proxy
+configuration or policy replacement, shutdown and delegation loss close the
+delegated connections and stop the owning helper. A completion from the old
+delegation cannot restore authority. Effectful calls have no automatic retry.
+Their `effect_outcome` distinguishes an unsent request, an uncertain effect
+after sending, and an observed response. An observed response alone does not
+prove that a remote effect completed.
+
+The host's `service_evidence` records exact request/response bytes, digests,
+request start, HTTP status, policy refusal, observation times, active policy
+hash and serialized effective proxy configuration digest. The outer job result
+binds the stable principal, transient invocation, input and adopted
+checker/runtime digests. ETag, Date and Last-Modified headers are retained when
+present. ETag is an opaque provider revision, not a promise of an immutable
+source. A response Date does not prove the age of the underlying data. Absent
+metadata remains absent.
+
+The host-only job command returns the full capture. For named checks, the
+existing host audit retains the capture bytes. Agent invocation responses and
+policy explanations contain capture metadata and digests. Invocation authority
+alone does not disclose the check's raw dependency data to the calling workload.
+
+For [named checks](policy-checks.md#execute-adopted-checks), the shared evaluator
+validates the typed result and binds its provenance to the host capture.
+Guest-supplied revisions or collection timestamps cannot replace those
+observations. Execution completion and effect uncertainty remain separate from
+the predicate finding. Workflow enforcement belongs to the binding that
+consumes the result; running a job alone creates no required workflow gate.
 
 See the pinned upstream [core guest ABI guide](https://github.com/hyperlight-dev/hyperlight/blob/a03088470d822b538d2525ef9a5ae9e29daea1e8/docs/how-to-build-a-hyperlight-guest-binary.md),
 [execution model](https://github.com/hyperlight-dev/hyperlight-unikraft/blob/34c0d647a9f8679c0ce53b76e174894b2c5bfa7a/docs/execution.md)

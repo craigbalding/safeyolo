@@ -140,7 +140,7 @@ async fn bundle(runtime: &PinnedArtifact) -> Result<Bundle, Error> {
         return Err("Hyperlight runtime manifest digest mismatch".into());
     }
     let bundle: Bundle = serde_json::from_slice(&bytes)?;
-    if bundle.protocol != 2 || bundle.hyperlight != "0.19.0" || bundle.unikraft != "0.21.0" {
+    if bundle.protocol != 3 || bundle.hyperlight != "0.19.0" || bundle.unikraft != "0.21.0" {
         return Err(
             "incompatible Hyperlight runtime/guest ABI version; rebuild a matching bundle".into(),
         );
@@ -362,6 +362,7 @@ pub(super) async fn run(
     spec: &JobSpec,
     source_input: Option<&Path>,
     mut cancel: Option<tokio::sync::watch::Receiver<bool>>,
+    checks: &[String],
 ) -> Result<JobResult, Error> {
     let config = config.canonicalize()?;
     let parent = config
@@ -394,8 +395,35 @@ pub(super) async fn run(
     let mut stderr = None;
     let mut runtime = None;
     let mut helper_process_status = None;
+    let generation = uuid::Uuid::new_v4().simple().to_string();
+    let captures = super::mediated::Captures::default();
+    let mut delegation = None;
+    let mut bridge_task = None;
+    let mut policy_hash = None;
+    let mut socket_directory = None;
     let work = async {
         let bundle = prepare(spec, &root).await?;
+        if let Some(limits) = &spec.mediated_services {
+            // Only two sockets use TMPDIR. Artifacts and captured inputs stay
+            // on disk under the instance; deep instance paths need not fit the
+            // platform's much shorter Unix socket address limit.
+            let sockets = tempfile::Builder::new().prefix("hl-").tempdir()?;
+            let client = super::network::Client::connect_mediated(
+                &config,
+                sockets.path(),
+                spec,
+                &generation,
+                checks,
+            )
+            .await?;
+            policy_hash = Some(client.policy_hash.clone());
+            let listener = tokio::net::UnixListener::bind(sockets.path().join("s.sock"))?;
+            let bridge =
+                super::mediated::Bridge::new(listener, &client, limits.clone(), captures.clone())?;
+            bridge_task = Some(tokio::spawn(bridge.serve()));
+            delegation = Some(client);
+            socket_directory = Some(sockets);
+        }
         let function = if let JobEngine::Hyperlight { function, .. } = &spec.engine {
             Some(function.as_str())
         } else {
@@ -405,6 +433,7 @@ pub(super) async fn run(
             "input":root.join("input"),"argv":spec.argv,"memory_mb":spec.memory_mb,
             "max_input_bytes":spec.max_input_bytes,"function":function,
             "parent_pid":std::process::id(),"deadline_monotonic_ms":deadline_monotonic_ms,
+            "service_bridge":socket_directory.as_ref().map(|directory| directory.path().join("s.sock")),
             "rootfs":if function.is_some() {None} else {Some(root.join("python.cpio"))}});
         tokio::fs::write(
             root.join("invocation.json"),
@@ -430,15 +459,29 @@ pub(super) async fn run(
             group,
         });
         let helper = child.as_mut().unwrap();
-        let status = helper.child.wait().await?;
+        let status = tokio::select! {
+            biased;
+            _ = async { match delegation.as_mut() {
+                Some(client) => client.revoked().await,
+                None => std::future::pending().await,
+            }} => return Ok(Outcome::Interrupted { signal: libc::SIGTERM }),
+            status = helper.child.wait() => status?,
+        };
         helper.group = None;
         let status = observed_status(status)?;
+        helper_process_status = Some(status);
+        if let Some(client) = delegation.as_mut()
+            && client.confirm_current().await.is_err()
+        {
+            return Ok(Outcome::Interrupted {
+                signal: libc::SIGTERM,
+            });
+        }
         let outcome = match status {
             HelperProcessStatus::Exit { code: 124 } => Outcome::Timeout,
             HelperProcessStatus::Signal { number } => Outcome::Signal { number },
             HelperProcessStatus::Exit { code } => Outcome::Exit { code },
         };
-        helper_process_status = Some(status);
         Ok::<_, Error>(outcome)
     };
     let result = tokio::select! {
@@ -448,16 +491,52 @@ pub(super) async fn run(
         _ = terminate.recv() => Ok(Outcome::Interrupted {signal:libc::SIGTERM}),
         _ = super::check_cancelled(&mut cancel) => Ok(Outcome::Interrupted {signal:libc::SIGTERM}),
     };
+    let mut cleanup_errors = Vec::new();
+    if let Some(task) = bridge_task {
+        task.abort();
+        // Drop all proxy connections before closing the delegated listener.
+        match task.await {
+            Err(error) if error.is_cancelled() => {}
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => cleanup_errors.push(error.to_string()),
+            Err(error) => cleanup_errors.push(error.to_string()),
+        }
+    }
+    if let Some(client) = delegation {
+        if let Err(error) = client.close().await {
+            cleanup_errors.push(error.to_string());
+        }
+    }
+    if let Some(directory) = socket_directory {
+        let path = directory.path().to_owned();
+        if let Err(error) = directory.close() {
+            cleanup_errors.push(format!(
+                "Hyperlight socket cleanup failed: {error}; inspect {}",
+                path.display()
+            ));
+        }
+    }
     if !matches!(result, Ok(Outcome::Exit { .. } | Outcome::Signal { .. }))
         && let Some(helper) = child.as_mut()
     {
         match stop(helper).await {
             Ok(status) => helper_process_status = Some(status),
-            Err(error) => {
-                let _ = temporary.keep();
-                return Err(super::cleanup_error(&result, error, &root));
-            }
+            Err(error) => cleanup_errors.push(error.to_string()),
         }
+    }
+    let service_evidence = captures.finish()?;
+    if !cleanup_errors.is_empty() {
+        let retained = serde_json::to_vec(&service_evidence)?;
+        let capture_write = tokio::fs::write(root.join("service-evidence.json"), retained).await;
+        if let Err(error) = capture_write {
+            cleanup_errors.push(format!("could not retain service evidence: {error}"));
+        }
+        let _ = temporary.keep();
+        return Err(super::cleanup_error(
+            &result,
+            cleanup_errors.join("; "),
+            &root,
+        ));
     }
     let outcome = result?;
     let empty = || super::OutputCapture::new(spec.retain_bytes).finish();
@@ -519,13 +598,18 @@ pub(super) async fn run(
         .into(),
         runtime_report,
         helper_process_status,
-        run_id: format!("job-{}", uuid::Uuid::new_v4().simple()),
+        run_id: format!("job-{generation}"),
         gate_id: spec.gate_id.clone(),
         gate_definition_sha256: digest(&serde_json::to_vec(spec)?),
         gate_principal: format!("gate:{}", spec.gate_id),
-        authorization_principal: None,
+        authorization_principal: policy_hash
+            .as_ref()
+            .map(|_| format!("gate:{}", spec.gate_id)),
+        service_evidence,
         rootfs: json!({"kind":spec.engine.name(),"runtime_manifest_sha256":manifest.sha256,
-            "artifact_sha256":artifact.sha256,"bundle":runtime,"console_encoding":if matches!(spec.engine,JobEngine::Hyperlight {..}) {"utf-8"} else {"utf-8-with-replacement"}}),
+            "artifact_sha256":artifact.sha256,"bundle":runtime,"policy_hash":policy_hash,
+            "service_access":if spec.mediated_services.is_some() {"mediated"} else {"disabled"},
+            "console_encoding":if matches!(spec.engine,JobEngine::Hyperlight {..}) {"utf-8"} else {"utf-8-with-replacement"}}),
         input_sha256,
         started_unix_ms,
         ended_unix_ms: now()?,

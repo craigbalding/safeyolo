@@ -156,6 +156,38 @@ failures. Job streams retain at most the specification's `retain_bytes` per
 stream; byte counts and hashes cover complete streams. A truncated or oversized
 result is unavailable evidence.
 
+Hyperlight jobs can select [mediated service access](hyperlight-jobs.md#mediated-service-access).
+The host retains the full bounded captures with the execution facts. The typed
+result uses host-observed capture identity and collection time. The adapter
+ignores guest-written source revisions and source observation timestamps.
+Missing source metadata remains explicit. A failed delegated call or absent
+capture cannot supply a favorable mediated finding.
+
+### Invoke an adopted check as an agent
+
+An operator can add `invokers = ["forge"]` to a named job or service check.
+The field defaults to an empty list. Use `"*"` to permit every identified
+agent to invoke that definition. Invocation authority does not grant its
+service dependencies; the adopted gate still needs its own standing grants.
+The agent supplies only the adopted name and normalized typed subject.
+Policy-owned `inputs`, expectations, engine, artifacts and host paths remain
+in the adopted definition.
+
+An authenticated `POST /checks/invoke` on the selected instance's Agent API
+accepts an uncompressed JSON body of at most 48 KiB, for example:
+
+```json
+{"check":"issue_author","subject":{"kind":"value","value":"123"}}
+```
+
+The check's subject type must match the supplied subject. The response contains
+the shared typed evidence and host execution facts. A completed invocation
+does not itself authorize another operation or replace independent acceptance.
+Unknown definitions, unpermitted invokers, invalid inputs, execution failure
+and authority replacement return explicit errors. Policy replacement cancels
+pending work and discards late results. This route accepts no JobSpec,
+executable path, replacement expected identity or caller-authored result.
+
 For a passive Registration Data Access Protocol (RDAP) service, use
 `mapping = "rdap_registration"`. It reads only the exact domain object's
 `registration` event as a timestamp. A parent-domain response, missing or

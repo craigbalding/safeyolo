@@ -4,6 +4,7 @@ mod hyperlight;
 mod input;
 #[cfg(target_os = "macos")]
 mod macos;
+mod mediated;
 pub(crate) mod network;
 
 use crate::{Error, host_platform, host_runs};
@@ -42,9 +43,10 @@ Hyperlight-Unikraft selects {"kind":"hyperlight-unikraft","runtime":{"path":"run
 Artifact digests are full SHA-256 values. Relative paths resolve beside the trusted spec. The invocation directory cannot replace the engine or adopted artifacts.
 Both Hyperlight engines require KVM on Linux x86_64/aarch64 or entitled HVF on Apple-silicon macOS. validate checks pinned artifacts and runtime discovery without running the checker. No engine fallback occurs.
 Hyperlight has no Unix process or guest-root semantics. Core calls the named function with argv as a JSON string and offers bounded ReadInput(relative_path); its returned string is ordinary stdout. Unikraft runs the pinned Python checker with argv, read-only /input, and fresh in-memory /work and rootfs. It supports a Linux subset, without fork or full Unix privilege semantics. Both reject network=true and guest-root. memory_mb sizes scratch memory; it is not a total helper RSS limit.
+For mediated service access, set mediated_services={services:[NAME],max_calls:N,max_request_bytes:N,max_response_bytes:N} in the adopted Hyperlight specification, with network=false. Core SYCall(JSON) and Unikraft hyperlight.call("sy.call", REQUEST) use the same named-service request. The host delegates gate:<gate_id> through the existing proxy, keeps credentials outside the guest, and retains service_evidence. Guest sockets stay disabled. Host-call messages are at most 49152 bytes; captured responses use handles and reads of at most 16384 bytes.
 Print observed execution evidence as JSON. A PASS string is ordinary output. engine identifies the selected backend; outcome_source distinguishes a guest process from a host helper. runtime_report retains VM completion or error separately. helper_process_status retains the actual OS exit or signal even after a watchdog deadline or cancellation.
 All captured stream bytes are counted and hashed; retain_bytes bounds retained output. Unikraft's console decodes UTF-8 with replacement; console_encoding identifies that representation.
-Without network, gate_principal is provenance and authorization_principal is null.
+Without network or mediated_services, gate_principal is provenance and authorization_principal is null.
 Return 0 only for observed exit 0 with complete evidence and, for Hyperlight, successful VM completion. Return 124 for timeout and 1 for other job outcomes.
 Observation failures set observation_error and retain exact available outcome/streams; outcome is null when no exact result is available. Startup or cleanup failures cannot report successful completion.
 Hyperlight deadlines cover artifact preparation and VM startup/execution. Cancellation kills the helper process group and waits for its exit before reporting completion. Input copying precedes that execution deadline.
@@ -116,6 +118,9 @@ pub struct JobSpec {
     /// Explicit host delegation of the saved gate policy through the proxy.
     #[serde(default)]
     pub network: bool,
+    /// Hyperlight host calls through the delegated proxy; never guest sockets.
+    #[serde(default)]
+    pub mediated_services: Option<mediated::ServiceLimits>,
 }
 
 impl JobSpec {
@@ -147,6 +152,14 @@ impl JobSpec {
             );
         }
         hyperlight::validate_spec(self)?;
+        if let Some(limits) = &self.mediated_services {
+            limits.validate()?;
+            if matches!(self.engine, JobEngine::Platform) || self.network {
+                return Err(
+                    "mediated_services requires a Hyperlight engine with network=false".into(),
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -188,6 +201,7 @@ pub struct JobResult {
     /// Stable gate name; network jobs also use it for policy authorization.
     pub gate_principal: String,
     pub authorization_principal: Option<String>,
+    pub service_evidence: Vec<mediated::ServiceEvidence>,
     pub rootfs: Value,
     pub input_sha256: String,
     pub started_unix_ms: u128,
@@ -522,7 +536,7 @@ async fn run_inner(
 ) -> Result<JobResult, Error> {
     spec.validate()?;
     if !matches!(spec.engine, JobEngine::Platform) {
-        return hyperlight::run(config, spec, input, cancel).await;
+        return hyperlight::run(config, spec, input, cancel, checks).await;
     }
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -706,6 +720,7 @@ async fn run_inner(
         gate_definition_sha256: digest(&serde_json::to_vec(spec)?),
         gate_principal: format!("gate:{}", spec.gate_id),
         authorization_principal: spec.network.then(|| format!("gate:{}", spec.gate_id)),
+        service_evidence: Vec::new(),
         rootfs,
         input_sha256,
         started_unix_ms,

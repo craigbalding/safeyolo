@@ -7,7 +7,9 @@ use serde_json::{Value, json};
 use std::{
     fs,
     io::{self, Read, Write},
+    os::unix::net::UnixStream,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -25,6 +27,52 @@ struct Invocation {
     function: Option<String>,
     parent_pid: u32,
     deadline_monotonic_ms: u64,
+    service_bridge: Option<PathBuf>,
+}
+
+/// The guest gets neither this private socket path nor gateway credentials.
+#[derive(Clone)]
+struct ServiceBridge {
+    path: Option<PathBuf>,
+    deadline: u64,
+}
+impl ServiceBridge {
+    fn call(&self, message: &str) -> Result<String, Error> {
+        const LIMIT: usize = 48 * 1024;
+        if message.len() > LIMIT {
+            return Err("host-call message limit exceeded".into());
+        }
+        let path = self
+            .path
+            .as_ref()
+            .ok_or("mediated service access is unavailable")?;
+        let remaining = self
+            .deadline
+            .checked_sub(monotonic_ms()?)
+            .filter(|value| *value > 0)
+            .ok_or("host-call deadline exceeded")?;
+        let mut stream = UnixStream::connect(path)?;
+        stream.set_read_timeout(Some(Duration::from_millis(remaining)))?;
+        stream.set_write_timeout(Some(Duration::from_millis(remaining)))?;
+        stream.write_all(&u32::try_from(message.len())?.to_be_bytes())?;
+        stream.write_all(message.as_bytes())?;
+        let mut size = [0; 4];
+        stream.read_exact(&mut size)?;
+        let size = u32::from_be_bytes(size) as usize;
+        if size > LIMIT {
+            return Err("host-call reply limit exceeded".into());
+        }
+        let mut bytes = vec![0; size];
+        stream.read_exact(&mut bytes)?;
+        Ok(String::from_utf8(bytes)?)
+    }
+}
+
+fn service_bridge(request: &Invocation) -> ServiceBridge {
+    ServiceBridge {
+        path: request.service_bridge.clone(),
+        deadline: request.deadline_monotonic_ms,
+    }
 }
 
 #[derive(Serialize)]
@@ -79,7 +127,15 @@ fn core(request: &Invocation) -> Result<Value, Error> {
     let directory =
         cap_std::fs::Dir::open_ambient_dir(&request.input, cap_std::ambient_authority())?;
     let limit = request.max_input_bytes;
+    let bridge = service_bridge(request);
     let mut sandbox = hyperlight_host::SandboxBuilder::from_file(&request.artifact)
+        // Core defaults to 4 KiB transport buffers. Size both directions and
+        // their pools for the shared 48 KiB messages plus ABI framing. Unikraft
+        // sizes its own pools for the corresponding supported host-call ABI.
+        .g2h_buffer_size(64 * 1024)
+        .h2g_buffer_size(64 * 1024)
+        .g2h_pool_pages(36)
+        .h2g_pool_pages(18)
         .scratch_size(
             request
                 .memory_mb
@@ -92,6 +148,14 @@ fn core(request: &Invocation) -> Result<Value, Error> {
                 hyperlight_host::HyperlightError::Error("print length overflow".into())
             })
         })
+        .host_function(
+            "SYCall",
+            move |message: String| -> hyperlight_host::Result<String> {
+                bridge
+                    .call(&message)
+                    .map_err(|error| hyperlight_host::HyperlightError::Error(error.to_string()))
+            },
+        )
         .host_function(
             "ReadInput",
             move |path: String| -> hyperlight_host::Result<Vec<u8>> {
@@ -127,6 +191,7 @@ fn core(request: &Invocation) -> Result<Value, Error> {
 }
 
 fn unikraft(request: &Invocation) -> Result<Value, Error> {
+    let bridge = service_bridge(request);
     let checker = request.artifact.parent().ok_or("checker has no parent")?;
     let file = request
         .artifact
@@ -142,6 +207,14 @@ fn unikraft(request: &Invocation) -> Result<Value, Error> {
     .scratch_mb(request.memory_mb)
     .mount(Mount::ro(&request.input, "/input"))
     .mount(Mount::ro(checker, "/checker"))
+    // Do not enable .network() or .listen_ports(): no socket passthrough.
+    .host_function("sy.call", move |args| {
+        let [message]: [Value; 1] =
+            serde_json::from_str(args).map_err(|error| error.to_string())?;
+        bridge
+            .call(&message.to_string())
+            .map_err(|error| error.to_string())
+    })
     // Forward every console write to pipes drained by the job caller.
     // The library decodes UTF-8; results identify that stream encoding.
     .output_limit(0)
@@ -159,7 +232,7 @@ fn unikraft(request: &Invocation) -> Result<Value, Error> {
 }
 
 fn identity() -> Value {
-    json!({"protocol":2,"hyperlight":"0.19.0","unikraft":"0.21.0",
+    json!({"protocol":3,"hyperlight":"0.19.0","unikraft":"0.21.0",
         "kernel_contract":hyperlight_unikraft::SNAPSHOT_KEY,
         "os":std::env::consts::OS,"architecture":std::env::consts::ARCH,
         "virtualization":if cfg!(target_os="macos") { "hvf" } else { "kvm" }})
@@ -222,9 +295,64 @@ fn main() -> Result<(), Error> {
 mod tests {
     use super::*;
     use std::{
+        os::unix::net::UnixListener,
         process::Command,
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn callback_messages_are_framed_and_oversized_replies_fail_before_allocation() {
+        for (name, reply_size, succeeds) in [("small", 2u32, true), ("large", 48 * 1024 + 1, false)]
+        {
+            let path =
+                std::env::temp_dir().join(format!("sy-call-{}-{name}.sock", std::process::id()));
+            let listener = UnixListener::bind(&path).unwrap();
+            let worker = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut size = [0; 4];
+                stream.read_exact(&mut size).unwrap();
+                let mut bytes = vec![0; u32::from_be_bytes(size) as usize];
+                stream.read_exact(&mut bytes).unwrap();
+                assert_eq!(bytes, b"{}");
+                stream.write_all(&reply_size.to_be_bytes()).unwrap();
+                if succeeds {
+                    stream.write_all(b"{}").unwrap();
+                }
+            });
+            let bridge = ServiceBridge {
+                path: Some(path.clone()),
+                deadline: monotonic_ms().unwrap() + 2000,
+            };
+            let result = bridge.call("{}");
+            assert_eq!(result.is_ok(), succeeds);
+            if succeeds {
+                assert_eq!(result.unwrap(), "{}");
+            }
+            worker.join().unwrap();
+            fs::remove_file(path).unwrap();
+        }
+        let unavailable = ServiceBridge {
+            path: None,
+            deadline: monotonic_ms().unwrap() + 2000,
+        };
+        assert!(
+            unavailable
+                .call("{}")
+                .unwrap_err()
+                .to_string()
+                .contains("unavailable")
+        );
+        assert!(
+            unavailable
+                .call(&"a".repeat(48 * 1024 + 1))
+                .unwrap_err()
+                .to_string()
+                .contains("limit exceeded")
+        );
+    }
 
     // Each child deliberately stops cooperating with the main thread. The
     // real guard must terminate the process; no hypervisor is needed here.

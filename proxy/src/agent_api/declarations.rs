@@ -128,6 +128,9 @@ where
         Ok(scope) => scope,
         Err(outcome) => return Ok(outcome),
     };
+    if route(request) == "/checks/invoke" {
+        return checks::respond(request, state, body).await;
+    }
     if route(request).starts_with("/support/") {
         return support::respond(request, state, controls.audit, body).await;
     }

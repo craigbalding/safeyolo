@@ -171,6 +171,59 @@ pub(super) fn validate_source(source: &mut EvidenceSource) -> Result<()> {
 }
 
 impl Checks {
+    /// Manual invocation is still an adopted check. Callers supply no host
+    /// paths, expected values, implementation or authoritative result.
+    pub(crate) async fn invoke_named(
+        &self,
+        name: &str,
+        caller: &str,
+        subject: Subject,
+        runtime: &Runtime,
+        state: &RuntimeState,
+    ) -> std::result::Result<Evidence, Error> {
+        let check = self.checks.get(name).ok_or("unknown adopted check")?;
+        if !check
+            .invokers
+            .iter()
+            .any(|allowed| allowed == caller || allowed == "*")
+        {
+            return Err("caller is not an adopted check invoker".into());
+        }
+        let kind = match &subject {
+            Subject::Hostname { .. } => SubjectKind::Hostname,
+            Subject::Ip { .. } => SubjectKind::Ip,
+            Subject::HttpPath { .. } => SubjectKind::HttpPath,
+            Subject::Value { .. } => SubjectKind::Value,
+        };
+        if kind != check.subject
+            || !matches!(
+                check.source,
+                EvidenceSource::Job { .. } | EvidenceSource::Service { .. }
+            )
+        {
+            return Err("unsupported adopted check subject or execution source".into());
+        }
+        let subject = subject.normalized()?;
+        let entry = Evidence {
+            check: name.into(),
+            source_id: check.source_id.clone(),
+            meaning: check.meaning.clone(),
+            scale: check.scale.clone(),
+            input_digest: Some(check.input_digest(&subject)?),
+            subject: Some(subject),
+            acquisition: "live".into(),
+            file_digest: None,
+            file_version: None,
+            result: None,
+            unavailable: None,
+            expires_at_ms: None,
+            execution: None,
+            feed_version: None,
+        };
+        self.execute(name, check, entry, runtime, state, vec![name.into()])
+            .await
+    }
+
     // The boxed boundary also prevents recursive proxy-listener futures from
     // recursively expanding their Send types.
     pub(crate) fn collect_live<'a>(
@@ -299,6 +352,8 @@ impl Checks {
             .ok_or("check deadline exceeds the supported clock range")?;
         let runtime = runtime.clone();
         let state = state.clone();
+        let current_runtime = runtime.clone();
+        let current_state = state.clone();
         let worker_check = check.clone();
         let limits = limits.clone();
         let worker_execution = execution.clone();
@@ -363,11 +418,23 @@ impl Checks {
                 if let Err(error) = audit.emit(event) { // DOC: docs/policy-checks.md
                     result = Err(format!("check execution audit unavailable: {error}").into());
                 }
+                // Dependency authority belongs to the adopted check. Retaining
+                // its evidence does not disclose raw provider data to every
+                // workload that can request the derived finding.
+                if let Ok(entry) = &mut result {
+                    redact_captured_bodies(entry);
+                }
                 // Admission may disappear after its execution was recorded.
                 let _ = send.send(result);
             });
         }
         let result = tokio::select! {
+            biased;
+            _ = crate::jobs::network::wait_policy_change(&current_state, &current_runtime) => {
+                cancellation.0.send_replace(true);
+                let _ = worker.await;
+                return Err("check policy changed while pending; late result discarded".into());
+            },
             result = &mut worker => result??,
             _ = tokio::time::sleep_until(deadline) => {
                 cancellation.0.send_replace(true);
@@ -389,6 +456,26 @@ impl Checks {
     }
 }
 struct Cancel(watch::Sender<bool>);
+
+fn redact_captured_bodies(entry: &mut Evidence) {
+    let Some(execution) = entry.execution.as_mut() else {
+        return;
+    };
+    if execution["kind"] != "job" {
+        return;
+    }
+    if let Some(captures) = execution
+        .get_mut("service_evidence")
+        .and_then(Value::as_array_mut)
+    {
+        for capture in captures {
+            if let Some(record) = capture.as_object_mut() {
+                record.remove("retained_base64");
+                record.remove("request_body_base64");
+            }
+        }
+    }
+}
 impl Drop for Cancel {
     fn drop(&mut self) {
         self.0.send_replace(true);
@@ -607,6 +694,7 @@ async fn run(
         return Err("check cancelled before execution".into());
     }
     let collected = now();
+    let mut captured_source = None;
     let limits = match &check.source {
         EvidenceSource::Job { limits, .. } | EvidenceSource::Service { limits, .. } => limits,
         _ => unreachable!(),
@@ -643,6 +731,7 @@ async fn run(
                 "runtime_report":result.runtime_report,"helper_process_status":result.helper_process_status,
                 "run_id":result.run_id,"gate_principal":result.gate_principal,
                 "authorization_principal":result.authorization_principal,"definition_digest":digest,
+                "gate_definition_sha256":result.gate_definition_sha256,"service_evidence":result.service_evidence,
                 "rootfs":result.rootfs,"input_digest":result.input_sha256,"started_at_ms":result.started_unix_ms,
                 "ended_at_ms":result.ended_unix_ms,"outcome":result.outcome,"observation_error":result.observation_error,
                 "stdout":{"bytes":result.stdout.bytes,"sha256":result.stdout.sha256},
@@ -659,6 +748,40 @@ async fn run(
             {
                 entry.unavailable = Some("job execution failed or unavailable observation".into());
                 return Ok(entry);
+            }
+            if !matches!(job.engine, crate::jobs::JobEngine::Platform) {
+                captured_source = Some(Provenance {
+                    source_id: check.source_id.clone(),
+                    source_revision: None,
+                    content_digest: Some(format!("sha256:{}", result.stdout.sha256)),
+                    source_observed_at_ms: None,
+                });
+            }
+            if job.mediated_services.is_some() {
+                if result.service_evidence.is_empty()
+                    || result
+                        .service_evidence
+                        .iter()
+                        .any(|capture| capture.error.is_some())
+                {
+                    entry.unavailable =
+                        Some("mediated job evidence missing or delegated call failed".into());
+                    return Ok(entry);
+                }
+                captured_source = Some(Provenance {
+                    source_id: check.source_id.clone(),
+                    source_revision: if result.service_evidence.len() == 1 {
+                        result.service_evidence[0].source_revision.clone()
+                    } else {
+                        None
+                    },
+                    content_digest: Some(content_digest(&serde_json::to_vec(
+                        &result.service_evidence,
+                    )?)),
+                    // Raw upstream Date/Last-Modified headers remain in the
+                    // host captures. Guest timestamps are never observations.
+                    source_observed_at_ms: None,
+                });
             }
             if result.stderr.bytes > limits.max_output_bytes as u64
                 || result.stdout.bytes > limits.max_output_bytes as u64
@@ -792,12 +915,12 @@ async fn run(
                 configuration_version: check.configuration_version.clone(),
                 collected_at_ms: now(),
                 valid_until_ms: result.valid_until_ms,
-                source: Provenance {
+                source: captured_source.unwrap_or(Provenance {
                     source_id: check.source_id.clone(),
                     source_revision: result.source_revision,
                     content_digest: Some(content_digest(&bytes)),
                     source_observed_at_ms: result.source_observed_at_ms,
-                },
+                }),
                 finding: result.finding,
             })
         }

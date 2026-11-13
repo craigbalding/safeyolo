@@ -37,6 +37,34 @@ struct Delegation {
     socket_path: PathBuf,
     #[serde(default)]
     checks: Vec<String>,
+    #[serde(default)]
+    bind_policy: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Session {
+    tokens: serde_json::Value,
+    policy_hash: String,
+    configuration_sha256: String,
+}
+
+fn same_policy(state: &RuntimeState, runtime: &crate::Runtime) -> bool {
+    state
+        .read()
+        .is_ok_and(|current| match (&current.policy, &runtime.policy) {
+            (Some(current), Some(expected)) => Arc::ptr_eq(current, expected),
+            _ => false,
+        })
+}
+
+pub(crate) async fn wait_policy_change(state: &RuntimeState, runtime: &crate::Runtime) {
+    let mut changes = tokio::time::interval(Duration::from_millis(25));
+    loop {
+        changes.tick().await;
+        if !same_policy(state, runtime) {
+            return;
+        }
+    }
 }
 
 impl Delegation {
@@ -127,10 +155,19 @@ pub(crate) async fn serve(
             .and_then(|policy| policy.gateway())
             .ok_or("gateway policy is unavailable")?
             .agent_environment_json(&authority.principal)?;
-        let listener = start_listener(state, &delegation, authority)?;
-        Ok((listener, tokens))
+        let session = Zeroizing::new(serde_json::to_vec(&Session {
+            tokens: serde_json::from_str(tokens.expose_secret())?,
+            policy_hash: runtime
+                .policy
+                .as_ref()
+                .ok_or("policy unavailable")?
+                .policy_hash(),
+            configuration_sha256: super::digest(&serde_json::to_vec(&runtime.config)?),
+        })?);
+        let listener = start_listener(state.clone(), &delegation, authority)?;
+        Ok((listener, session, delegation.bind_policy))
     })();
-    let (listener, tokens) = match prepared {
+    let (listener, session, bind_policy) = match prepared {
         Ok(prepared) => prepared,
         Err(error) => {
             return Ok(response(
@@ -144,15 +181,26 @@ pub(crate) async fn serve(
             let mut stream = TokioIo::new(upgraded);
             let sent = async {
                 stream
-                    .write_u64(tokens.expose_secret().len().try_into()?)
+                    .write_u64(session.len().try_into()?)
                     .await?;
-                stream.write_all(tokens.expose_secret().as_bytes()).await?;
+                stream.write_all(&session).await?;
                 Ok::<_, Error>(())
             };
             if matches!(tokio::time::timeout(TIMEOUT, sent).await, Ok(Ok(()))) {
-                tokio::select! {
-                    _ = stream.read_u8() => {},
-                    _ = stop.changed() => {},
+                let mut changes = tokio::time::interval(Duration::from_millis(25));
+                loop {
+                    tokio::select! {
+                        command = stream.read_u8() => {
+                            if !matches!(command, Ok(1)) || bind_policy && !state.read().is_ok_and(|current| Arc::ptr_eq(&current, &runtime)) {
+                                break;
+                            }
+                            if stream.write_u8(1).await.is_err() { break; }
+                        },
+                        _ = changes.tick(), if bind_policy => {
+                            if !state.read().is_ok_and(|current| Arc::ptr_eq(&current, &runtime)) { break; }
+                        },
+                        _ = stop.changed() => break,
+                    }
                 }
             }
             // Join accepted requests before acknowledging revocation. Reuse
@@ -211,6 +259,7 @@ pub(crate) fn local(
         run_id: uuid::Uuid::new_v4().simple().to_string(),
         socket_path: socket_path.into(),
         checks,
+        bind_policy: false,
     };
     let authority = delegation.authority()?;
     Ok((
@@ -222,6 +271,11 @@ pub(crate) fn local(
 pub(super) struct Client {
     stream: TokioIo<hyper::upgrade::Upgraded>,
     tokens: Secret,
+    socket_path: PathBuf,
+    pub(super) policy_hash: String,
+    pub(super) configuration_sha256: String,
+    revoked: bool,
+    cleanup_confirmed: bool,
 }
 
 impl Client {
@@ -240,6 +294,7 @@ impl Client {
             run_id: run_id.into(),
             socket_path: path.join("proxy.sock"),
             checks: checks.to_vec(),
+            bind_policy: false,
         };
         #[cfg(target_os = "macos")]
         {
@@ -316,15 +371,79 @@ impl Client {
             }
             let mut stream = TokioIo::new(hyper::upgrade::on(&mut response).await?);
             let size: usize = stream.read_u64().await?.try_into()?;
+            if size > 1024 * 1024 {
+                return Err("job delegation metadata limit exceeded".into());
+            }
             let mut bytes = Zeroizing::new(vec![0; size]);
             stream.read_exact(&mut bytes).await?;
+            let session: Session = serde_json::from_slice(&bytes)?;
             Ok::<_, Error>(Self {
                 stream,
-                tokens: Secret::new(String::from_utf8(bytes.to_vec())?),
+                tokens: Secret::new(serde_json::to_string(&session.tokens)?),
+                socket_path: delegation.socket_path.clone(),
+                policy_hash: session.policy_hash,
+                configuration_sha256: session.configuration_sha256,
+                revoked: false,
+                cleanup_confirmed: false,
             })
         })
         .await??;
         Ok(client)
+    }
+
+    pub(super) async fn connect_mediated(
+        config: &Path,
+        directory: &Path,
+        spec: &super::JobSpec,
+        run_id: &str,
+        checks: &[String],
+    ) -> Result<Self, Error> {
+        // Only the host helper reaches this socket. Do not grant a guest UID
+        // access or invoke the platform engine's Gofer/ACL setup.
+        Self::open(
+            config,
+            &Delegation {
+                gate_id: spec.gate_id.clone(),
+                run_id: run_id.into(),
+                socket_path: directory.join("p.sock"),
+                checks: checks.to_vec(),
+                bind_policy: true,
+            },
+        )
+        .await
+    }
+
+    pub(super) fn service_access(
+        &self,
+    ) -> Result<(PathBuf, std::collections::BTreeMap<String, Secret>), Error> {
+        let tokens: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(self.tokens.expose_secret())?;
+        Ok((
+            self.socket_path.clone(),
+            tokens
+                .into_iter()
+                .map(|(name, token)| (name, Secret::new(token)))
+                .collect(),
+        ))
+    }
+
+    pub(super) async fn revoked(&mut self) {
+        self.cleanup_confirmed = matches!(self.stream.read_u8().await, Ok(0));
+        self.revoked = true;
+    }
+
+    pub(super) async fn confirm_current(&mut self) -> Result<(), Error> {
+        if self.revoked {
+            return Err("job delegation revoked".into());
+        }
+        self.stream.write_u8(1).await?;
+        let reply = self.stream.read_u8().await?;
+        if reply != 1 {
+            self.revoked = true;
+            self.cleanup_confirmed = reply == 0;
+            return Err("job policy changed or delegation revoked".into());
+        }
+        Ok(())
     }
 
     pub fn environment(&self) -> Vec<String> {
@@ -343,6 +462,13 @@ impl Client {
     }
 
     pub async fn close(mut self) -> Result<(), Error> {
+        if self.revoked {
+            return if self.cleanup_confirmed {
+                Ok(())
+            } else {
+                Err("delegated listener cleanup acknowledgment is unavailable".into())
+            };
+        }
         tokio::time::timeout(TIMEOUT, async {
             self.stream.write_u8(0).await?;
             if self.stream.read_u8().await? != 0 {
@@ -380,12 +506,12 @@ pub(super) fn stage(share: &Path, host: &Path, installation: &Path) -> Result<()
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::credentials::{Credential, Secret};
     use tokio::net::{TcpListener, UnixStream};
 
-    fn config(root: &Path, port: u16) -> PathBuf {
+    pub(in crate::jobs) fn config(root: &Path, port: u16) -> PathBuf {
         for dir in ["data", "builtin-services", "services"] {
             fs::create_dir(root.join(dir)).unwrap();
         }
@@ -487,6 +613,7 @@ action = "warn"
                 run_id,
                 socket_path: root.path().join(format!("{index}.sock")),
                 checks: Vec::new(),
+                bind_policy: false,
             };
             let client = Client::open(&path, &delegation).await.unwrap();
             let tokens: serde_json::Value =
@@ -523,6 +650,7 @@ action = "warn"
                 run_id: format!("{:032x}", index + 10),
                 socket_path: root.path().join(format!("other{index}.sock")),
                 checks: Vec::new(),
+                bind_policy: false,
             };
             let thief = Client::open(&path, &other).await.unwrap();
             assert_eq!(thief.tokens.expose_secret(), "{}");
@@ -543,6 +671,7 @@ action = "warn"
             run_id: "a".repeat(32),
             socket_path: root.path().join("abandoned.sock"),
             checks: Vec::new(),
+            bind_policy: false,
         };
         drop(Client::open(&path, &abandoned).await.unwrap());
         tokio::time::timeout(TIMEOUT, async {
@@ -579,6 +708,7 @@ action = "warn"
             run_id: "a".repeat(32),
             socket_path: "/unused".into(),
             checks: Vec::new(),
+            bind_policy: false,
         }
         .authority()
         .unwrap();
@@ -612,6 +742,7 @@ action = "warn"
             run_id: "b".repeat(32),
             socket_path: root.path().join("candidate.sock"),
             checks: Vec::new(),
+            bind_policy: false,
         };
         fs::write(root.path().join("data/admin_token"), "test-agent-token").unwrap();
         let error = match Client::open(&path, &delegation).await {
