@@ -93,7 +93,8 @@ Conditions distinguish true, false and unavailable. Negating unavailable
 remains unavailable. In an `all`, a known false determines false; otherwise an
 unavailable input leaves the result unavailable. In an `any`, a known true
 determines true; otherwise an unavailable input leaves the result unavailable.
-Aggregation with an unavailable input remains unavailable. No-match is
+Aggregation with an unavailable input or a non-finite derived value remains
+unavailable. No-match is
 unavailable evidence, not an explicit negative finding or proof of safety.
 
 Each rule requires `on_match` and `on_unavailable`. Match actions are `allow`,
@@ -230,7 +231,8 @@ safeyolo --root /path/to/instance policy check candidate.toml
 safeyolo --root /path/to/instance policy evaluate candidate.toml request.json
 ```
 
-The JSON preview identifies `recorded_offline` evidence, rule results, source
+The JSON preview identifies `recorded_offline` evidence, the applied condition
+and fallback, check meaning/scale, rule results, source
 metadata, freshness, guard outcome and the final allow/deny/approval/unresolved
 action. It performs no direct or dependency-mediated target contact. Current
 preview has no live provider operation. Already captured scanner evidence can

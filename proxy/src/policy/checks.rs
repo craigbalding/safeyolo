@@ -483,6 +483,9 @@ async fn read_evidence_file(path: &Path) -> std::io::Result<(Vec<u8>, FileVersio
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Evidence {
     pub check: String,
+    pub source_id: String,
+    pub meaning: String,
+    pub scale: Option<ScoreScale>,
     pub subject: Option<Subject>,
     pub input_digest: Option<String>,
     pub acquisition: String,
@@ -502,6 +505,8 @@ pub enum Truth {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RuleExplanation {
     pub rule: String,
+    pub condition: Condition,
+    pub on_unavailable: Fallback,
     pub influence: Influence,
     pub priority: i64,
     pub truth: Truth,
@@ -751,6 +756,9 @@ impl Checks {
                 .transpose()?;
             let mut entry = Evidence {
                 check: name.clone(),
+                source_id: check.source_id.clone(),
+                meaning: check.meaning.clone(),
+                scale: check.scale.clone(),
                 subject: subject.clone(),
                 input_digest: input_digest.clone(),
                 acquisition: "recorded_offline".into(),
@@ -866,6 +874,8 @@ impl Checks {
                 };
                 RuleExplanation {
                     rule: rule.name.clone(),
+                    condition: rule.when.clone(),
+                    on_unavailable: rule.on_unavailable,
                     influence: rule.influence,
                     priority: rule.priority,
                     truth,
@@ -1092,7 +1102,11 @@ fn condition_truth(
                             values.iter().copied().fold(f64::NEG_INFINITY, f64::max)
                         }
                     };
-                    truth(comparison.matches(value, *threshold))
+                    if value.is_finite() {
+                        truth(comparison.matches(value, *threshold))
+                    } else {
+                        Truth::Unavailable
+                    }
                 }
             }
         }
@@ -1284,6 +1298,9 @@ mod tests {
                     name.into(),
                     Evidence {
                         check: name.into(),
+                        source_id: check.source_id.clone(),
+                        meaning: check.meaning.clone(),
+                        scale: check.scale.clone(),
                         subject: Some(subject),
                         input_digest: Some(input_digest),
                         acquisition: "recorded_offline".into(),
@@ -1810,5 +1827,74 @@ mod fixture_tests {
             );
         }
         assert_eq!(policy.budget_stats(1_000_000.).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod composition_edge_tests {
+    use super::*;
+    #[test]
+    fn non_finite_aggregate_cannot_assert_a_positive_condition() {
+        let mut checks = serde_json::Map::new();
+        for name in ["a", "b", "c"] {
+            checks.insert(name.into(),json!({"source_id":name,"meaning":"a provider score","subject":"hostname","result_type":"score","influences":["advisory"],"implementation_version":"1","configuration_version":"1","max_age_seconds":10,"source":{"kind":"recorded","path":"unused.json"},"scale":{"name":"declared finite quantity","minimum":-f64::MAX,"maximum":f64::MAX,"direction":"higher","confidence_meaning":"unavailable"}}));
+        }
+        let set=Checks::parse(json!({"checks":checks,"check_rules":[{"name":"aggregate","host":"*","stage":"connect","influence":"advisory","priority":0,"required":true,"when":{"op":"aggregate","checks":["a","b","c"],"method":"mean","comparison":"gt","threshold":f64::MAX},"on_match":"allow","on_unavailable":"unresolved"}]}).as_object().unwrap(),None).unwrap();
+        let subject = Subject::Hostname {
+            hostname: "example.test".into(),
+        };
+        let mut evidence = BTreeMap::new();
+        for (name, check) in &set.checks {
+            let input_digest = check.input_digest(&subject).unwrap();
+            evidence.insert(
+                name.clone(),
+                Evidence {
+                    check: name.clone(),
+                    source_id: check.source_id.clone(),
+                    meaning: check.meaning.clone(),
+                    scale: check.scale.clone(),
+                    subject: Some(subject.clone()),
+                    input_digest: Some(input_digest.clone()),
+                    acquisition: "recorded_offline".into(),
+                    file_digest: None,
+                    file_version: None,
+                    result: Some(CheckResult {
+                        subject: subject.clone(),
+                        input_digest,
+                        implementation_version: "1".into(),
+                        configuration_version: "1".into(),
+                        collected_at_ms: 1000,
+                        valid_until_ms: None,
+                        source: Provenance {
+                            source_id: check.source_id.clone(),
+                            source_revision: None,
+                            content_digest: None,
+                            source_observed_at_ms: None,
+                        },
+                        finding: Finding::Score {
+                            value: f64::MAX,
+                            confidence: None,
+                        },
+                    }),
+                    unavailable: None,
+                    expires_at_ms: None,
+                },
+            );
+        }
+        let request = Request {
+            agent: Some("alice"),
+            host: "example.test",
+            port: 443,
+            scheme: "https",
+            method: "GET",
+            path: Some("/"),
+            ip: None,
+            value: None,
+        };
+        assert_eq!(
+            set.evaluate(&request, Stage::Connect, evidence, 1000)
+                .action,
+            Action::Unresolved
+        );
     }
 }

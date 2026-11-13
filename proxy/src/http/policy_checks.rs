@@ -150,6 +150,23 @@ fn isolated_native_test(name: &str) -> bool {
 }
 
 #[cfg(test)]
+fn test_configuration(directory: &std::path::Path, source: &str) -> crate::Config {
+    for path in ["data", "logs", "services", "builtin-services"] {
+        std::fs::create_dir_all(directory.join(path)).unwrap();
+    }
+    for (path, value) in [
+        ("data/admin_token", "synthetic-named-check-admin-token"),
+        ("data/agent_token", "synthetic-named-check-agent-token"),
+        ("data/instance_id", "sy-dddddddddddddddddddddddddddddddd"),
+    ] {
+        std::fs::write(directory.join(path), value).unwrap();
+    }
+    let path = directory.join("config.toml");
+    std::fs::write(&path, source).unwrap();
+    crate::native_config::read(&path).unwrap()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
@@ -206,7 +223,7 @@ mod tests {
             source.push_str(&format!("parent_proxy='http://{parent}'\n"));
         }
         source.push_str("[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n");
-        crate::native_config::from_source(&directory.join("config.toml"), &source).unwrap()
+        test_configuration(directory, &source)
     }
     async fn get(directory: &Path, address: std::net::SocketAddr, path: &str) -> Vec<u8> {
         let mut stream = UnixStream::connect(directory.join("alice.sock"))
@@ -539,7 +556,10 @@ mod redirect_tests {
         std::fs::write(&file, serde_json::to_vec(&records).unwrap()).unwrap();
         let policy = json!({"hosts":{"*":{"egress":"allow"}},"checks":{"ip":definition},"check_rules":[{"name":"never","host":"*","stage":"connect","influence":"hard_exclusion","priority":0,"required":true,"when":{"op":"finding","check":"ip"},"on_match":"deny","on_unavailable":"unresolved"}],"controls":{"circuits":{"enabled":false},"network":{"homoglyph":false}}});
         std::fs::write(root.join("policy.toml"), toml::to_string(&policy).unwrap()).unwrap();
-        let config=crate::native_config::from_source(&root.join("config.toml"),"admin_port=0\nflow_store_enabled=false\ncircuit_state_file=''\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n").unwrap();
+        let config = test_configuration(
+            root,
+            "admin_port=0\nflow_store_enabled=false\ncircuit_state_file=''\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n",
+        );
         let proxy = Proxy::start(config).await.unwrap();
         let redirect = tokio::spawn(async move {
             let (mut stream, _) = first.accept().await.unwrap();
