@@ -299,7 +299,7 @@ mod tests {
                 rule("path", "request", "path", "continue"),
             ],
         );
-        let mut proxy = Proxy::start(config(root, None)).await.unwrap();
+        let proxy = Proxy::start(config(root, None)).await.unwrap();
         let denied = get(root, address, "/allowed").await;
         assert!(
             denied.starts_with(b"HTTP/1.1 403"),
@@ -404,7 +404,7 @@ mod tests {
             json!({"ip":ip}),
             vec![rule("required-endpoint", "connect", "ip", "unresolved")],
         );
-        let mut proxy = Proxy::start(config(root, Some(parent))).await.unwrap();
+        let proxy = Proxy::start(config(root, Some(parent))).await.unwrap();
         let response = get(root, "192.0.2.17:80".parse().unwrap(), "/").await;
         assert!(
             response.starts_with(b"HTTP/1.1 503"),

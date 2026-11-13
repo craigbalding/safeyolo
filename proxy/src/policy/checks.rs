@@ -777,6 +777,7 @@ impl Checks {
                                 Ok(records) => {
                                     let mut matches = records.into_iter().filter(|record| {
                                         record.subject == subject
+                                            && record.source.source_id == check.source_id
                                             && record.input_digest == input_digest
                                             && record.implementation_version
                                                 == check.implementation_version
@@ -1356,8 +1357,10 @@ mod tests {
     #[tokio::test]
     async fn hard_exclusion_dominates_host_agent_and_positive_advisory_allows() {
         let directory = tempfile::tempdir().unwrap();
-        let checks =
-            json!({"list":definition(ResultType::Finding),"good":definition(ResultType::Finding)});
+        let mut good = definition(ResultType::Finding);
+        good["source_id"] = json!("favorable-provider");
+        good["meaning"] = json!("positive is favorable advisory evidence");
+        let checks = json!({"list":definition(ResultType::Finding),"good":good});
         let rules = vec![
             rule(
                 "never",

@@ -738,6 +738,8 @@ pub(crate) fn validate_hostname(host: &str) -> Result<(), Error> {
 
 /// Constructed only after the configured network guard permits this request.
 struct AllowedRequest<'a> {
+    // Host-owned OAuth refreshes have separate adopted transport authority.
+    // Every assessed agent transport carries its current runtime state.
     state: Option<&'a RuntimeState>,
     tasks: &'a UpgradeTasks,
     destination: &'a Destination,
