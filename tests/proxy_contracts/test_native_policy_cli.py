@@ -125,6 +125,100 @@ def test_candidate_evaluation_reports_actions_without_destination_contact(tmp_pa
                 destination.accept()
 
 
+@pytest.mark.parametrize("policy_format", ["toml", "json"])
+def test_candidate_evaluation_preserves_captured_scores(tmp_path, policy_format):
+    """Read decimal scores and confidence through the native captured-file path."""
+    executable = native_inputs()[0] / "safeyolo"
+    root = tmp_path / "selected-instance"
+    root.mkdir()
+    policy = tmp_path / f"candidate.{policy_format}"
+    request_file = tmp_path / "request.json"
+    evidence_file = tmp_path / "scores.json"
+    with socket.socket() as destination:
+        destination.bind(("127.0.0.2", 0))
+        destination.listen()
+        destination.setblocking(False)
+        host, port = destination.getsockname()
+        subject = {"kind": "ip", "address": host}
+        input_digest = hashlib.sha256(json.dumps(
+            {"subject": subject, "inputs": {}}, separators=(",", ":"),
+        ).encode()).hexdigest()
+        request_file.write_text(json.dumps({
+            "agent": "alice", "host": host, "port": port, "scheme": "http",
+            "method": "GET", "path": "/report", "ip": host,
+        }))
+        checks = {name: {
+            "source_id": name, "meaning": "controlled provider score",
+            "subject": "ip", "result_type": "score", "influences": ["hard_exclusion"],
+            "implementation_version": "fixture-1", "configuration_version": "selected-1",
+            "max_age_seconds": 60, "source": {"kind": "recorded", "path": evidence_file.name},
+            "scale": {"name": "fixture-score", "minimum": 0, "maximum": 100,
+                      "direction": "higher", "confidence_meaning": "provider-defined confidence"},
+        } for name in ["a", "b"]}
+        for values, confidence, aggregate, threshold, expected, unavailable in [
+            ([51, 1], None, False, 50, "deny", None),
+            ([51.0, 1], None, False, 50, "deny", None),
+            ([51.5, 1], 0.8, False, 50, "deny", None),
+            ([0.1, 1], 0.8, False, 50, "allow", None),
+            ([49.9, 1], 0.8, False, 49.9, "deny", None),
+            ([49.89999999999999, 1], 0.8, False, 49.9, "allow", None),
+            ([40.25, 59.75], 0.8, True, 49.9, "deny", None),
+            ([40.25, 59.5], 0.8, True, 49.9, "allow", None),
+            ([0.0, 100.0], 0.8, True, 50, "deny", None),
+            ([100.1, 50], 0.8, True, 50, "unresolved", "score outside its declared scale"),
+            ([-0.1, 50], 0.8, False, 50, "unresolved", "score outside its declared scale"),
+            (["51.0", 1], 0.8, False, 50, "unresolved", "malformed evidence file"),
+            ([True, 1], 0.8, False, 50, "unresolved", "malformed evidence file"),
+            ([None, 1], 0.8, False, 50, "unresolved", "malformed evidence file"),
+            ([float("inf"), 1], 0.8, False, 50, "unresolved", "malformed evidence file"),
+            ([float("nan"), 1], 0.8, False, 50, "unresolved", "malformed evidence file"),
+            ([51, 1], "0.8", False, 50, "unresolved", "malformed evidence file"),
+            ([51, 1], float("inf"), False, 50, "unresolved", "malformed evidence file"),
+        ]:
+            condition = {"op": "score", "check": "a", "comparison": "ge", "threshold": threshold}
+            if aggregate:
+                condition = {"op": "aggregate", "checks": ["a", "b"], "method": "mean",
+                             "comparison": "ge", "threshold": threshold}
+            source = {
+                "hosts": {"*": {"egress": "allow"}},
+                "agents": {"alice": {"hosts": {host: {"egress": "allow"}}}},
+                "controls": {"network": {"homoglyph": False}}, "checks": checks,
+                "check_rules": [{"name": "score-threshold", "host": "*", "stage": "connect",
+                                 "required": True, "influence": "hard_exclusion", "priority": 0,
+                                 "when": condition, "on_match": "deny", "on_unavailable": "unresolved"}],
+            }
+            policy.write_text(tomlkit.dumps(source) if policy_format == "toml" else json.dumps(source))
+            records = [{
+                "subject": subject, "input_digest": input_digest,
+                "implementation_version": "fixture-1", "configuration_version": "selected-1",
+                "collected_at_ms": time.time_ns() // 1_000_000, "valid_until_ms": None,
+                "source": {"source_id": name, "source_revision": None,
+                           "content_digest": None, "source_observed_at_ms": None},
+                "finding": {"kind": "score", "value": value, "confidence": confidence},
+            } for name, value in zip(checks, values, strict=True)]
+            # 1e400 is valid JSON syntax but cannot represent a finite f64.
+            evidence_file.write_text(json.dumps(records).replace("Infinity", "1e400"))
+            evaluated = subprocess.run(
+                [str(executable), "--root", str(root), "policy", "evaluate", str(policy), str(request_file)],
+                capture_output=True, text=True, timeout=15,
+            )
+            assert evaluated.returncode == 0, evaluated.stderr
+            result = json.loads(evaluated.stdout)["result"]
+            assert result["action"] == expected, result
+            evidence = result["stages"][0]["evidence"]["a"]
+            if unavailable:
+                assert evidence["unavailable"] == unavailable, result
+            else:
+                assert evidence["result"]["finding"] == records[0]["finding"]
+                assert result["stages"][0]["rules"][0]["condition"] == condition
+            assert result["evidence_mode"] == "recorded_offline"
+            assert result["destination_contact"] is False
+            assert result["dependency_calls"] == []
+            assert result["live_budgets_consumed"] is False
+            with pytest.raises(BlockingIOError):
+                destination.accept()
+
+
 @pytest.mark.parametrize("case", ["connect_expiry", "request_expiry", "registration_age", "host_expiry"])
 def test_candidate_evaluation_uses_time_after_all_evidence_reads(tmp_path, case):
     """Hold the real request-stage reader across an expiry or age transition."""

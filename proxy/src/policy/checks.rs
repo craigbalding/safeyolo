@@ -156,15 +156,59 @@ pub enum ScoreDirection {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Finding {
-    Finding { positive: bool },
-    Score { value: f64, confidence: Option<f64> },
-    Timestamp { unix_ms: u64 },
-    Fact { value: String },
+    Finding {
+        positive: bool,
+    },
+    Score {
+        #[serde(deserialize_with = "deserialize_score_value")]
+        value: f64,
+        #[serde(default, deserialize_with = "deserialize_score_confidence")]
+        confidence: Option<f64>,
+    },
+    Timestamp {
+        unix_ms: u64,
+    },
+    Fact {
+        value: String,
+    },
     NoMatch,
-    Unknown { reason: String },
-    Unsupported { reason: String },
-    Failure { reason: String },
+    Unknown {
+        reason: String,
+    },
+    Unsupported {
+        reason: String,
+    },
+    Failure {
+        reason: String,
+    },
 }
+
+// Tagged enums buffer JSON numbers as maps with arbitrary_precision enabled.
+// Read through Number to preserve that representation before converting to f64.
+fn deserialize_score_value<'de, D>(deserializer: D) -> std::result::Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_json::Number::deserialize(deserializer)?
+        .as_f64()
+        .ok_or_else(|| serde::de::Error::custom("score must be a finite number"))
+}
+
+fn deserialize_score_confidence<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<serde_json::Number>::deserialize(deserializer)?
+        .map(|number| {
+            number
+                .as_f64()
+                .ok_or_else(|| serde::de::Error::custom("confidence must be a finite number"))
+        })
+        .transpose()
+}
+
 impl Finding {
     fn result_type(&self) -> Option<ResultType> {
         match self {
@@ -1593,47 +1637,62 @@ mod tests {
         );
     }
 
-    #[test]
-    fn thresholds_aggregation_boolean_precedence_and_advisory_priority() {
-        let condition = json!({"op":"all","conditions":[{"op":"aggregate","checks":["a","b"],"method":"mean","comparison":"ge","threshold":50},{"op":"not","condition":{"op":"finding","check":"flag"}}]});
-        let checks=parse(json!({"a":definition(ResultType::Score),"b":definition(ResultType::Score),"flag":definition(ResultType::Finding)}),vec![rule("r",Influence::Advisory,condition,Action::Approval)]).unwrap();
-        let records = evidence(
-            &checks,
-            vec![
-                (
-                    "a",
-                    Finding::Score {
-                        value: 40.,
-                        confidence: None,
-                    },
-                ),
-                (
-                    "b",
-                    Finding::Score {
-                        value: 60.,
-                        confidence: Some(0.7),
-                    },
-                ),
-                ("flag", Finding::Finding { positive: false }),
-            ],
-        );
-        assert_eq!(
-            checks
-                .evaluate(&request(), Stage::Connect, records.clone(), NOW)
-                .action,
-            Action::Approval
-        );
-        let mut lower = records;
-        lower.get_mut("b").unwrap().result.as_mut().unwrap().finding = Finding::Score {
-            value: 59.,
-            confidence: None,
-        };
-        assert_eq!(
-            checks
-                .evaluate(&request(), Stage::Connect, lower, NOW)
-                .action,
-            Action::Allow
-        );
+    #[tokio::test]
+    async fn thresholds_aggregation_boolean_precedence_and_advisory_priority() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("scores.json");
+        let mut definitions = json!({"a":definition(ResultType::Score),"b":definition(ResultType::Score),"flag":definition(ResultType::Finding)});
+        for (name, definition) in definitions.as_object_mut().unwrap() {
+            definition["source_id"] = json!(name);
+            definition["source"]["path"] = json!(file);
+        }
+        let condition = json!({"op":"all","conditions":[{"op":"aggregate","checks":["a","b"],"method":"mean","comparison":"ge","threshold":49.9},{"op":"not","condition":{"op":"finding","check":"flag"}}]});
+        let checks = parse(
+            definitions,
+            vec![rule("r", Influence::Advisory, condition, Action::Approval)],
+        )
+        .unwrap();
+        for (value, expected) in [(59.75, Action::Approval), (59.5, Action::Allow)] {
+            let records = evidence(
+                &checks,
+                vec![
+                    (
+                        "a",
+                        Finding::Score {
+                            value: 40.25,
+                            confidence: None,
+                        },
+                    ),
+                    (
+                        "b",
+                        Finding::Score {
+                            value,
+                            confidence: Some(0.7),
+                        },
+                    ),
+                    ("flag", Finding::Finding { positive: false }),
+                ],
+            );
+            std::fs::write(
+                &file,
+                serde_json::to_vec(
+                    &records
+                        .values()
+                        .map(|entry| entry.result.as_ref().unwrap())
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let captured = checks.collect(&request(), Stage::Connect).await.unwrap();
+            assert!(captured.values().all(|entry| entry.result.is_some()));
+            assert_eq!(
+                checks
+                    .evaluate(&request(), Stage::Connect, captured, NOW)
+                    .action,
+                expected
+            );
+        }
         let mut high = rule("high", Influence::Advisory, finding("flag"), Action::Allow);
         high["priority"] = json!(1);
         let checks = parse(
