@@ -563,6 +563,15 @@ impl Checks {
                 }
             }
         }
+        for rule in &mut checks.rules {
+            if rule.host != "*" {
+                rule.host = if let Some(suffix) = rule.host.strip_prefix("*.") {
+                    format!("*.{}", hostname(suffix)?)
+                } else {
+                    hostname(&rule.host)?
+                };
+            }
+        }
         let mut names = BTreeSet::new();
         for rule in &checks.rules {
             if rule.name.is_empty() || rule.host.is_empty() || !names.insert(rule.name.clone()) {
@@ -704,9 +713,12 @@ impl Checks {
         request: &'a Request<'_>,
         stage: Stage,
     ) -> impl Iterator<Item = &'a Rule> {
+        let host = hostname(request.host).ok();
         self.rules.iter().filter(move |rule| {
             rule.stage == stage
-                && super::host_matches(request.host, &rule.host)
+                && host
+                    .as_ref()
+                    .is_some_and(|host| rule.host == "*" || super::host_matches(host, &rule.host))
                 && rule
                     .agent
                     .as_ref()
