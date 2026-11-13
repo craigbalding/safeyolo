@@ -399,6 +399,57 @@ artifact. The external application retains domain data, immutable bytes and
 final actions, and must check the expected external revision before such an
 action. See the [full authority and retry contract](coord-reference.md#select-requirements-and-decide-output-acceptance).
 
+### Amend one required review
+
+Use the same authenticated client and selected room as the assigned review
+loop. The caller must be a current amendment authority or the operator.
+Create the new review separately, then read current work and the new review
+before selection. Replace the illustrative IDs and expectations below with
+the returned values. Each call changes one required review and invalidates
+earlier acceptance decisions.
+
+For a corrected code output, assume `CODE_WORK_ID` is work version 8, claim
+generation 1 and requirements version 2. `NEW_CODE_CHECK_ID` is a current
+version 1 check of that output. `OLD_CODE_CHECK_ID` is the selected check to
+replace. Call `select_work_review`:
+
+```json
+{"room_name":"chat","work_id":"CODE_WORK_ID","expected_version":8,"expected_generation":1,"expected_requirements_version":2,"review_kind":"check","review":{"work_id":"NEW_CODE_CHECK_ID","version":1},"replace_work_id":"OLD_CODE_CHECK_ID","reason":"Require the corrected code output check","operation_id":"select-corrected-code-check"}
+```
+
+The call returns work version 9 and requirements version 3. A separate required
+release or security challenge keeps its stored selection and disposition.
+The deciders, authorities and independence also stay unchanged.
+
+For a corrected report, assume `REPORT_WORK_ID` is work version 12, claim
+generation 1 and requirements version 3. `NEW_REPORT_CHECK_ID` is its current
+version 1 review; `OLD_REPORT_CHECK_ID` is the selected review to replace.
+Call `select_work_review`:
+
+```json
+{"room_name":"chat","work_id":"REPORT_WORK_ID","expected_version":12,"expected_generation":1,"expected_requirements_version":3,"review_kind":"check","review":{"work_id":"NEW_REPORT_CHECK_ID","version":1},"replace_work_id":"OLD_REPORT_CHECK_ID","reason":"Review the corrected report's evidential support","operation_id":"select-corrected-report-review"}
+```
+
+The call returns work version 13 and requirements version 4. An unresolved
+required coverage challenge remains unresolved and prevents approval.
+A changed unrelated review definition remains inconsistent; the amendment
+does not silently select its newer definition.
+
+To add one existing specialist challenge, use `review_kind="challenge"` and
+its current `{work_id, version}` reference, and omit `replace_work_id`.
+To replace a selected challenge, supply that selected challenge's work ID as
+`replace_work_id`. A check cannot replace a challenge. To deliberately reselect
+a changed review definition, use the same work ID in `review` and
+`replace_work_id`, with the review's current version.
+
+Use `set_work_requirements` for the initial complete policy and deliberate
+changes to authorities, deciders, independence or the complete obligation set.
+Do not manufacture an empty initial selection to use `select_work_review`.
+After an interrupted amendment, recover with its original operation ID and
+inputs, then read current work separately. The host equivalent is
+`coord work select-review`; use `coord work --help` for the explicit options.
+Factory-generated publication checks still use the retained Factory policy.
+
 An operator-directed interactive worker uses these same authenticated calls.
 Creating review work does not change its control arrangement or start a model
 turn. The host CLI supplies corresponding `coord work request-check`,

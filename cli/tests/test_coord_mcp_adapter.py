@@ -87,7 +87,7 @@ def test_discovery_and_rpc_errors(adapter):
         "create_signal", "read_signal", "list_signals",
         "publish_work_output", "list_work_outputs", "cancel_work", "attest_work", "list_work_attestations",
         "request_check", "answer_check", "raise_challenge", "respond_challenge", "resolve_challenge", "list_work_reviews",
-        "set_work_requirements", "decide_work_acceptance", "read_work_actions", "receive_work_action",
+        "set_work_requirements", "select_work_review", "decide_work_acceptance", "read_work_actions", "receive_work_action",
         "import_github_work", "read_github_work",
         "support_grants", "support_operation", "read_support_operation",
     }
@@ -206,6 +206,38 @@ def test_native_acceptance_requirements_and_decisions_share_the_work_endpoint(ad
     assert len(calls) == 2
     call("decide_work_acceptance", {"room_name": "backlog", **decision, "author": "forged"})
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("kind", ["check", "challenge"])
+@pytest.mark.parametrize("replace", [None, "work-previous-review"])
+def test_narrow_review_selection_uses_the_native_work_mutation(adapter, kind, replace):
+    call, _, calls, _, _ = adapter
+    selection = {"work_id": "work-output", "expected_version": 7, "expected_generation": 1,
+                 "expected_requirements_version": 2, "review_kind": kind,
+                 "review": {"work_id": "work-new-review", "version": 3},
+                 "reason": "Select the current review", "operation_id": "select-current-review"}
+    if replace is not None:
+        selection["replace_work_id"] = replace
+    result = call("select_work_review", {"room_name": "backlog", **selection})
+    assert result.get("isError") is not True
+    assert calls[0][0:2] == ("POST", "http://_safeyolo.proxy.internal/api/coord/rooms/backlog/work")
+    assert calls[0][2] == {"action": "select_review", **selection}
+
+
+@pytest.mark.parametrize("change", [
+    {"review_kind": "unknown"}, {"review": {"work_id": "work-review"}},
+    {"review": {"work_id": "work-review", "version": "3"}},
+    {"review": {"work_id": "work-review", "version": 3, "definition": {}}},
+    {"authorities": []}, {"independent": False}, {"replace_work_id": []},
+])
+def test_invalid_review_selections_and_policy_fields_never_send(adapter, change):
+    call, _, calls, _, _ = adapter
+    selection = {"room_name": "backlog", "work_id": "work-output", "expected_version": 7,
+                 "expected_generation": 1, "expected_requirements_version": 2, "review_kind": "check",
+                 "review": {"work_id": "work-review", "version": 3}, "reason": "Select review"}
+    result = call("select_work_review", {**selection, **change})
+    assert result["isError"] is True
+    assert calls == []
 
 
 @pytest.mark.parametrize("change", [

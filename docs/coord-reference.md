@@ -369,7 +369,8 @@ See the [working review example](coord-operations.md#run-an-assigned-review-loop
 
 ### Select requirements and decide output acceptance
 
-Use `set_work_requirements` to select acceptance context on existing work.
+Use `set_work_requirements` for initial acceptance selection on existing work
+or a deliberate replacement of the complete acceptance policy.
 Supply `room_name`, `work_id`, its current `expected_version` and
 `expected_generation`, and `expected_requirements_version` (0 initially).
 `authorities` names participants allowed to amend the context. `deciders`
@@ -412,6 +413,36 @@ own `version`, and records its transport-derived author and time in
 32768 serialized UTF-8 bytes. Earlier contexts remain in immutable work
 revisions. Removing an obligation needs the same authority and attributed
 amendment; it does not resolve or erase its original challenge.
+
+For a routine manual review amendment, use `select_work_review`. Supply
+`room_name`, `work_id`, current `expected_version`, `expected_generation` and
+`expected_requirements_version`, `review_kind` (`check` or `challenge`), a
+`review` reference `{work_id, version}`, `reason` and a chosen `operation_id`.
+Omit `replace_work_id` to add the existing review. To replace a selected review,
+set `replace_work_id` to that entry's work ID. The replacement must have the
+same review kind. Naming the same review explicitly reselects its current
+definition. Review creation remains separate and advisory until selected.
+
+This operation requires an existing selection and its current amendment
+authority or the operator. It cannot create an initial policy or change
+authorities, deciders or independence. Do not create an empty initial policy
+to use this amendment. Use `set_work_requirements` for initial selection and
+deliberate full-policy changes.
+
+Only the requested entry and amendment metadata change. Every unrelated entry
+keeps its position, stored selected version and definition. An unrelated changed
+review definition stays visibly inconsistent until deliberately reselected.
+The new review uses the same related-subject and current-version validation as
+full selection. Stale work, claim, requirements or new-review expectations,
+missing replacement targets, duplicate selections and invalid subjects fail
+without a partial change. Concurrent amendments cannot overwrite each other.
+The existing transaction, durable operation receipt and attention apply. Retry
+with the original operation ID and inputs after an interrupted request; changed
+inputs conflict. Read current work separately from the original receipt.
+Each amendment advances the requirements version and invalidates earlier
+acceptance. Retaining an obligation does not refresh an old-output answer or
+resolve a challenge. See the
+[code and report examples](coord-operations.md#amend-one-required-review).
 
 An eligible decider calls `decide_work_acceptance` with the current work version,
 claim generation, `expected_target_generation`, `expected_requirements_version`,
@@ -461,8 +492,8 @@ claim or authorize publication from the cancelled assignment. Work with no selec
 reports `not_selected`; ordinary execution still completes normally. Attestation
 counts remain attributed evidence and never bypass selected acceptance.
 
-The host commands are `coord work set-requirements` and
-`coord work decide-acceptance`; their options match these fields. Use
+The host commands are `coord work set-requirements`, `coord work select-review`
+and `coord work decide-acceptance`; their options match these fields. Use
 `coord work --help` for argument syntax. Room status includes bounded acceptance
 excerpts and explicit truncation; use `read_work` or `coord work show` for full
 requirements, decisions and reasons. Mutation receipts retain their original

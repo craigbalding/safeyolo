@@ -322,6 +322,7 @@ impl Client {
             | "respond_challenge"
             | "resolve_challenge"
             | "set_work_requirements"
+            | "select_work_review"
             | "decide_work_acceptance"
             | "attest_work" => {
                 let mut body = args
@@ -332,6 +333,7 @@ impl Client {
                 let action = match name {
                     "publish_work_output" => "publish_output",
                     "set_work_requirements" => "set_requirements",
+                    "select_work_review" => "select_review",
                     "decide_work_acceptance" => "decide_acceptance",
                     _ => name.trim_end_matches("_work"),
                 };
@@ -642,6 +644,21 @@ pub fn tools() -> Vec<Value> {
             "expected_requirements_version",
             "authorities",
             "deciders",
+            "reason",
+        ],
+    );
+    add(
+        "select_work_review",
+        "Add one existing required check/challenge or replace one explicitly selected review of the same kind. Requires existing acceptance requirements and a current selected amendment authority or operator; ownership and production alone grant no authority. Supply current work/claim/requirements versions and the new review's current {work_id,version}. review_kind is check or challenge; omit replace_work_id to add, or name the selected entry to replace or deliberately reselect. Unrelated selected revisions/definitions, authorities, deciders and independence stay unchanged. The amendment needs a reason, advances requirements version and invalidates earlier decisions. Review creation remains separate and advisory until selected. Use set_work_requirements for initial selection or deliberate full policy changes. Retry original operation_id and inputs.",
+        json!({"room_name":string,"work_id":string,"expected_version":integer,"expected_generation":integer,"expected_requirements_version":integer,"review_kind":{"type":"string","enum":["check","challenge"]},"review":{"type":"object","properties":{"work_id":string,"version":integer},"required":["work_id","version"],"additionalProperties":false},"replace_work_id":string,"reason":string,"operation_id":string}),
+        &[
+            "room_name",
+            "work_id",
+            "expected_version",
+            "expected_generation",
+            "expected_requirements_version",
+            "review_kind",
+            "review",
             "reason",
         ],
     );

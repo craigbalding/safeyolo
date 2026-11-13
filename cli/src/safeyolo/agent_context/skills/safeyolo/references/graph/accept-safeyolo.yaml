@@ -486,7 +486,13 @@ nodes:
       response and independent disposition for code/report artifacts through
       authenticated native clients and real NATS/proxy processes. It includes
       interrupted check answer recovery, old-receipt replay, revision reads,
-      named reviewer/decider authority and operator verdict correction. Use an
+      named reviewer/decider authority and operator verdict correction. Manual
+      review selection adds checks/challenges and replaces one selected check
+      while retaining the challenge's stored selection. It exercises interrupted
+      amendments, lost committed replies, exact retries and host challenge
+      replacement. Pair it with the library selection_tests for retained changed
+      definitions, authority, atomic failures, races and acceptance invalidation.
+      Use an
       owned disk-backed TMPDIR outside the checkout. This controlled journey
       does not prove a real supervised-agent wakeup or model response.
       For approved Factory policy and actual interactive participation, select
@@ -692,7 +698,7 @@ nodes:
         - path: proxy/src/coord_rooms/work/attestation_tests.rs
           sha256: fd9b1ec318fa6fe58b25c51b46f2a24284af1f2501735f184a8c3e2849fe8c40
         - path: proxy/src/coord_rooms/work.rs
-          sha256: c802625f47b0aa16119a236377ab4a1d045f564b6279b49afd4fd760baf5bfc6
+          sha256: f504fda02032927234be8a782acfe70e278312cc067f25d4d186fa14bbdb9aab
         - path: proxy/src/factory/work.rs
           sha256: 488bca7b5cf872093a2c07368996a139d743e4c1e57bc1c6857f82c9184a6ae3
         - path: proxy/src/coord_rooms/work/factory_policy.rs
@@ -726,9 +732,11 @@ nodes:
         - path: proxy/src/coord_work_upgrade_6.sql
           sha256: 26bcf01e06a093922408ec83ef8d80c6509d78eb99f66d2cdd53e02e8b010e49
         - path: proxy/src/coord_rooms/work/acceptance.rs
-          sha256: b7afa45eff8f66126bcb44148967abb8f846e54110b62a9b70aa0737ae35fd54
+          sha256: da08ec9da4fdb48fee516382eb9d1d29372af4da32d102eacc1525c431e1a6ac
         - path: proxy/src/coord_rooms/work/acceptance_tests.rs
-          sha256: 7668e64468b6aa1427dff388f1f97b94d31e7fa0e77d14b94f422a7216d5d98b
+          sha256: 50fe26b322f5f6d5c16fb004113bff5c60ff67830d9a231d38f5371f9897c8a0
+        - path: proxy/src/coord_rooms/work/selection_tests.rs
+          sha256: 9b2d142ed53df8eb2dd0dd43b53ac450ed6d53f9d4f8b6a6dc4160fcefacc563
         - path: proxy/src/coord_rooms/work/checks.rs
           sha256: 0fedc7d3446413a91a8df8f871e60bf4d6593709aaa542f58508c943e93c9312
         - path: proxy/src/coord_rooms/work/challenges.rs
@@ -740,9 +748,9 @@ nodes:
         - path: proxy/src/coord_rooms/work/review_tests.rs
           sha256: 7cb2e1ba85d06f710c375a3352ea2bcb1d58ba1df21b23cadb69b70f3bd55445
         - path: proxy/tests/native_coord/reviews.rs
-          sha256: b3495d92091fc5aca3595d41cd16a9cd8c74c1c512d77cf7afbfde71942ad4b9
+          sha256: e51b01418e554d86a02ef190565421c4e057ff8f85a0c79b4eaacbea0694b8f7
         - path: proxy/src/coord_rooms/work_cli.rs
-          sha256: a6737fb8ca0161c52111be66177f8c5d76066cec3b26da7014470958f841830d
+          sha256: 160ecacf69e58be7e88112b0f21a2b05a4ef9e16fa3d58b6e6ef061713cbe726
         - path: proxy/src/agent_api/coord/work.rs
           sha256: 7d56364d0dd03d57a70e1c9c592a59523ce444e2212cf140bb3ec05b8192ef01
         - path: proxy/src/coord_work_schema.sql
@@ -766,7 +774,7 @@ nodes:
         - path: proxy/src/coord_operator/signals.rs
           sha256: 90fa9648af1c4c243f776a179142dd267e2a00cc96df9c0b03a2638ec9ec8fee
         - path: proxy/src/coord_tools.rs
-          sha256: 4f5cf8b9366e15f2725574e4e34b9506a2e3bc96f32b27b4725e8a6e70950b61
+          sha256: d9eab5e851c86cba86e87e204dc91fb085cf98db664d618cd00afb60683dca19
         - path: proxy/src/coord_rooms/room_status.rs
           sha256: 3d97186a953758a5f2dcc8b62eb900507841fac06e884c22ada18323428082ff
         - path: proxy/src/coord_rooms/room_status/tests.rs

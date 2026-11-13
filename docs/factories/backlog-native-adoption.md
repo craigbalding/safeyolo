@@ -197,7 +197,11 @@ For a retained generic item, the complete continuation and correction loop is:
    `set_work_requirements`, using current versions. Never initially select an
    empty check list over an old partial output; acceptance would become
    actionable prematurely. On later rounds, replace only this review's old
-   required check and retain all other selected obligations and authority.
+   required check with `select_work_review`: use `review_kind=check`, the new
+   check's current `{work_id, version}` and `replace_work_id` naming the prior
+   selected check. Supply current work, claim and requirements expectations and
+   a reason. The operation retains unrelated selections and authority. Reserve
+   `set_work_requirements` for initial or deliberate full-policy selection.
 4. Lens answers the check and makes its separate acceptance decision. The
    `check_answered` notice reaches requester Relay. A completed Forge is not
    the requester, creator, authority or decider in this generic route; it gets
