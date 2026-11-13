@@ -300,6 +300,46 @@ its own open work. The operator can cancel any unfinished work with
 It does not stop an external command. Inspect that command's actual state before
 repeating or replacing an uncertain effect.
 
+## Continue completed work
+
+An authorized coordinator can select another attempt with the same retained
+participant. For example, after review of code C1, select an in-scope correction
+on its existing Work. The owner resumes the same branch, retains C2 and publishes
+it through the normal exact-output review. For an assessment, link the new
+observation to report R1; the author may strengthen, narrow or withdraw its finding
+in R2. Continuation records responsibility for that selected next step.
+
+Inside the authorized creator's coding session, first read current Work and its
+findings. The following `continue_work` arguments assume completed assigned work
+at version 5 and claim generation 1 in room `chat`. Replace `WORK_ID` and both
+evidence references with the actual retained work, unmet need and new input:
+
+```json
+{"room_name":"chat","work_id":"WORK_ID","expected_version":5,"expected_generation":1,"reason":"Address the evidence gap using the new observation","evidence_refs":["signal:EXISTING_UNMET_NEED","artifact:NEW_OBSERVATION"],"operation_id":"continue-report-r1"}
+```
+
+The result retains the Work ID, participant and prior output. Its claim generation
+advances to 2. The existing supervisor delivers a new `execute_work` action. The
+worker reads `work.continuation`, follows its references, reuses the active
+retained claim, and settles execution with `complete_work`. Publication of a new
+output remains separate. If the new input still cannot establish the result,
+retain that limitation and complete the attempt honestly. No retry follows
+automatically.
+
+For a settled check that lacked input, link the new evidence and continue that
+same check. Its reviewer receives `answer_check` for the original exact subject.
+The old answer remains historical, while the renewed effective check is pending.
+If the check is currently required, the caller must be a current amendment
+authority on its root work or the operator. An advisory check permits its
+requester or the operator. Fresh applicable acceptance is needed after the new
+answer. A different output needs a new exact-subject check.
+
+Use operator reassignment when binding unassigned work or changing its
+participant. Continuation grants no target access or permission to repeat an
+uncertain external effect. Reconcile that effect first. See the
+[continuation reference](coord-reference.md#continue-with-the-retained-participant)
+for authority, bounds, host syntax and receipt recovery.
+
 ## Run an assigned review loop
 
 Use the same operations for a code commit, retained report or tooling artifact.
@@ -548,6 +588,20 @@ uses a deterministic model event seam with real NATS and the Agent API. It prove
 that a completed model turn leaves execution pending until a canonical native
 transition, and that restart can retire the settled delivery without another
 model invocation.
+
+With the same private role home, NATS executable and disk-backed scratch
+directory, run the retained-participant journey from the Linux source checkout:
+
+```sh
+scripts/cargo_with_space.sh test --manifest-path proxy/Cargo.toml --locked --test native_coord supervision::real_model_continues_code_report_and_changed_input_check -- --ignored --nocapture
+```
+
+This command uses Cargo's test profile. The actual model continues completed
+code and report work, runs the corrected program, withdraws a finding after new
+evidence, and re-evaluates an unchanged exact-subject check after its missing
+input arrives. It settles each action through the named native operation.
+The fixture verifies the same Work IDs and retained participants. This owned
+Linux process proof does not install the candidate or activate a live Factory.
 
 ### Share work with an interactive producer
 

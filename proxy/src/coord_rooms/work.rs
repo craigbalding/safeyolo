@@ -9,6 +9,7 @@ pub(crate) mod actions;
 pub(crate) mod attestations;
 pub(crate) mod challenges;
 pub(crate) mod checks;
+pub(crate) mod continuation;
 mod factory_policy;
 pub(crate) mod github;
 pub(crate) mod outputs;
@@ -102,6 +103,13 @@ pub(crate) enum Mutation {
         expected_version: i64,
         expected_generation: i64,
         short_result: Option<String>,
+    },
+    Continue {
+        work_id: String,
+        expected_version: i64,
+        expected_generation: i64,
+        reason: String,
+        evidence_refs: Vec<String>,
     },
     Reassign {
         work_id: String,
@@ -253,6 +261,8 @@ pub(crate) struct Work {
     pub acceptance_requirements: Option<acceptance::Requirements>,
     #[serde(default)]
     pub acceptance_decisions: Vec<acceptance::AcceptanceDecision>,
+    #[serde(default)]
+    pub continuation: Option<continuation::Continuation>,
     pub state: String,
     pub claim_agent_id: Option<String>,
     pub claim_generation: i64,
@@ -423,6 +433,7 @@ fn new_work(
         challenge: None,
         acceptance_requirements: None,
         acceptance_decisions: Vec::new(),
+        continuation: None,
         state: "open".into(),
         claim_agent_id: None,
         claim_generation: 0,
@@ -459,6 +470,11 @@ pub(crate) fn mutate(
     conn.busy_timeout(std::time::Duration::from_secs(30))?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let room_id = authorize(&tx, room, actor, true)?;
+    if matches!(mutation, Mutation::Continue { .. }) && operation.is_none() {
+        return Err(invalid(
+            "continuation requires a caller-selected operation ID",
+        ));
+    }
     let generated = match &mutation {
         Mutation::ReceiveAction { action_key, .. } => action_key.clone(),
         _ => uuid::Uuid::new_v4().simple().to_string(),
@@ -601,6 +617,13 @@ pub(crate) fn mutate(
                 }
             }
             match mutation {
+                Mutation::Continue {
+                    reason,
+                    evidence_refs,
+                    ..
+                } => {
+                    continuation::select(&tx, &mut work, actor, reason, evidence_refs, changed_at)?
+                }
                 Mutation::SetRequirements {
                     expected_requirements_version,
                     authorities,
@@ -850,6 +873,9 @@ pub(crate) fn mutate(
                         .ok_or_else(|| conflict("claim generation cannot advance"))?;
                     work.claimed_at = Some(changed_at);
                     work.cancellation = None;
+                    if action == "reassign" {
+                        work.continuation = None;
+                    }
                 }
                 Mutation::Release { .. } | Mutation::Complete { .. } => {
                     if work.state != "claimed" {

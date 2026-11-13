@@ -280,6 +280,60 @@ results. Work input is bounded to 262144 UTF-8 bytes. Lists return at most 200
 items ordered by `work_id`; use `next_after` to continue. Concurrent changes
 can affect later pages because pagination does not share a snapshot.
 
+### Continue with the retained participant
+
+Use `continue_work` for a selected further attempt on completed assigned
+ordinary work or an answered check. The caller supplies `room_name`, `work_id`,
+current `expected_version` and `expected_generation`, a `reason`,
+`evidence_refs` and a chosen `operation_id`. The reason contains 1..1024 UTF-8
+bytes. Supply 1..16 nonempty references of at most 1024 bytes each. Link the
+findings or changed input and any existing unmet need. References remain opaque;
+Coord does not fetch them or grant access to their targets.
+
+Authorization uses current room send/receive permission and canonical records
+inside the commit transaction:
+
+| Work being continued | Permitted caller |
+|---|---|
+| Ordinary execution | Its authenticated creator or the operator. |
+| Check currently selected in its root work's required checks | A current root acceptance-amendment authority or the operator. |
+| Unselected advisory check | Its authenticated requester or the operator. |
+
+Membership, producing the output and requesting a now-required check confer no
+additional continuation authority. The caller cannot supply another participant.
+The retained participant must still have room access. Use existing operator
+reassignment for unassigned work, another participant or an abandoned assignment.
+An unfinished or cancelled item cannot be continued.
+
+Continuation advances `version` and `claim_generation`. An agent's retained
+claim becomes active; no second claim is needed. An operator-assigned check
+becomes open for the operator's direct answer. `work.continuation` retains its
+author, participant, reason, references, previous work version, new claim
+generation and selection time. The existing receipt retains the operation ID.
+Earlier contexts remain in immutable
+work revisions. The existing supervisor delivers `execute_work` or `answer_check`.
+Receiving or acknowledging that action does not settle it. Use `complete_work`
+for execution or `answer_check` for review, with current expectations.
+
+Ordinary continuation preserves the output and its accurate acceptance status.
+A replacement publication applies normal invalidation. Check continuation keeps
+the original exact subject and historical answer, but the effective check is
+pending. A renewed required check immediately stops satisfying its obligation
+and invalidates prior approval. Re-answering requires fresh applicable acceptance;
+the old approval does not revive. For another output, request a new exact-subject
+check. Retained reviewers can still correct their own answers without a selected
+continuation.
+
+On the owning host, the equivalent command is
+`safeyolo coord work continue ROOM WORK_ID --expected-version N --expected-generation N --reason TEXT --evidence-refs JSON_ARRAY --operation-id ID`.
+Replace the placeholders with the selected room, current work ID, expectations,
+reason and JSON string array. An exact retry recovers its original receipt;
+changed input under the same operation ID conflicts. Read current work separately.
+An active continuation cannot be selected again. Continuation conveys no new
+external execution permission: inspect a possibly completed external effect
+before repeating it. A failed or uncertain attempt can finish honestly without
+acceptance or automatic retry.
+
 ### Assigned checks and peer challenges
 
 An assigned check and a challenge response are ordinary native work records.

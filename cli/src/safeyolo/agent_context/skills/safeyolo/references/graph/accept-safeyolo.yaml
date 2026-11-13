@@ -495,6 +495,17 @@ nodes:
       Use an
       owned disk-backed TMPDIR outside the checkout. This controlled journey
       does not prove a real supervised-agent wakeup or model response.
+      For explicit retained-participant continuation, select
+      continuation::continuation_recovers_once_and_retains_delivery_across_restart
+      and supervision::native_delivery_is_not_completed_by_narration_and_restart_uses_current_work
+      with --ignored. They use the existing authenticated clients, real NATS,
+      commit/receipt interruption, proxy restart and supervisor checkpoint path.
+      For a bounded actual-model continuation journey, select
+      supervision::real_model_continues_code_report_and_changed_input_check with
+      --ignored and a private SAFEYOLO_COORD_MODEL_HOME as described in
+      docs/coord-operations.md. It continues code/report work and an unchanged
+      exact-subject check after missing input arrives. The model settles native
+      actions; the fixture does not activate a production Factory snapshot.
       For approved Factory policy and actual interactive participation, select
       factory::factory_selection_enforces_native_obligations_for_direct_callers
       and factory::interactive_coding_client_and_factory_supervisor_share_native_work
@@ -592,7 +603,7 @@ nodes:
         - path: proxy/tests/delegated_approvals/collaboration.rs
           sha256: cc249a3fcdf97f033e57cc1a82f64ac7ef97f2c83f9c59c115eca21a7861ef17
         - path: proxy/tests/native_coord.rs
-          sha256: 583175095e47d5634d3e7bccfb8df4ee8b51d535e6043b2d5e4dbf7ab84ecb29
+          sha256: 58eb2afe33d72f997a105c35f22b94314be76aadd18b72f6364a7a8c696af020
         - path: proxy/src/coord_rooms/federation/nats.rs
           sha256: 9b378b90317797b44ba3621207dea52bc78a5bd9b765293cca114b4d8e03da44
         - path: proxy/src/coord_tools/sources.rs
@@ -698,7 +709,7 @@ nodes:
         - path: proxy/src/coord_rooms/work/attestation_tests.rs
           sha256: fd9b1ec318fa6fe58b25c51b46f2a24284af1f2501735f184a8c3e2849fe8c40
         - path: proxy/src/coord_rooms/work.rs
-          sha256: f504fda02032927234be8a782acfe70e278312cc067f25d4d186fa14bbdb9aab
+          sha256: 546e35d780ac299d84f93ffda21feba7b245c62fba325a280ecc5e3af55c990f
         - path: proxy/src/factory/work.rs
           sha256: 488bca7b5cf872093a2c07368996a139d743e4c1e57bc1c6857f82c9184a6ae3
         - path: proxy/src/coord_rooms/work/factory_policy.rs
@@ -710,7 +721,7 @@ nodes:
         - path: proxy/tests/native_coord/factory_interactive.py
           sha256: f4248466672922c4ea1d2e0996c74232903d40011f0b8a902de10ec1300ba691
         - path: proxy/tests/native_coord/supervision.rs
-          sha256: 27f0e9a277b133770b4abc7d4f6c22305ffa2cdaff8bd1b3a8ec109b4487d36d
+          sha256: c5ab9187ce88810f8bc8bdc067cfbe6f0e95e63b64d66a1f8cd2c3b908dfeb82
         - path: proxy/src/coord_supervisor/process.rs
           sha256: 997276a6f189074545b7567c9bb91f3251b5fab2fbbb5f28bf73434f6012a10d
         - path: proxy/src/coord_supervisor.rs
@@ -733,8 +744,14 @@ nodes:
           sha256: 26bcf01e06a093922408ec83ef8d80c6509d78eb99f66d2cdd53e02e8b010e49
         - path: proxy/src/coord_rooms/work/acceptance.rs
           sha256: da08ec9da4fdb48fee516382eb9d1d29372af4da32d102eacc1525c431e1a6ac
+        - path: proxy/src/coord_rooms/work/continuation.rs
+          sha256: 5c7a557f947c2dda4d11250c54c50779443eb789df5c1a1259258c2990004b22
+        - path: proxy/src/coord_rooms/work/continuation_tests.rs
+          sha256: f231fff9aa521b955529cc1f235729dd288e8b676d250d31fdf94d74cf250498
+        - path: proxy/tests/native_coord/continuation.rs
+          sha256: 75017675462bd552f1cc3a199a4fb37f98df4a2f950151578529ccd29ca6b822
         - path: proxy/src/coord_rooms/work/acceptance_tests.rs
-          sha256: 50fe26b322f5f6d5c16fb004113bff5c60ff67830d9a231d38f5371f9897c8a0
+          sha256: 78081fcb942a040915a6bb8a33939e3a355b23fe8dcca13ecade9d42e6f976c7
         - path: proxy/src/coord_rooms/work/selection_tests.rs
           sha256: 9b2d142ed53df8eb2dd0dd43b53ac450ed6d53f9d4f8b6a6dc4160fcefacc563
         - path: proxy/src/coord_rooms/work/checks.rs
@@ -750,7 +767,7 @@ nodes:
         - path: proxy/tests/native_coord/reviews.rs
           sha256: e51b01418e554d86a02ef190565421c4e057ff8f85a0c79b4eaacbea0694b8f7
         - path: proxy/src/coord_rooms/work_cli.rs
-          sha256: 160ecacf69e58be7e88112b0f21a2b05a4ef9e16fa3d58b6e6ef061713cbe726
+          sha256: 63952d7770958981a0092eb677bcffc0b90d8fd840d8e068ab0b98905cea6524
         - path: proxy/src/agent_api/coord/work.rs
           sha256: 7d56364d0dd03d57a70e1c9c592a59523ce444e2212cf140bb3ec05b8192ef01
         - path: proxy/src/coord_work_schema.sql
@@ -774,7 +791,7 @@ nodes:
         - path: proxy/src/coord_operator/signals.rs
           sha256: 90fa9648af1c4c243f776a179142dd267e2a00cc96df9c0b03a2638ec9ec8fee
         - path: proxy/src/coord_tools.rs
-          sha256: d9eab5e851c86cba86e87e204dc91fb085cf98db664d618cd00afb60683dca19
+          sha256: 8b9300632fbef8ccb14a16fda1546b0ad9c676bfd4be23c13c68e8c47d59ece9
         - path: proxy/src/coord_rooms/room_status.rs
           sha256: 3d97186a953758a5f2dcc8b62eb900507841fac06e884c22ada18323428082ff
         - path: proxy/src/coord_rooms/room_status/tests.rs

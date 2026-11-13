@@ -3,6 +3,9 @@ use super::*;
 #[path = "selection_tests.rs"]
 mod selection_tests;
 
+#[path = "continuation_tests.rs"]
+mod continuation_tests;
+
 fn principal(id: &str) -> Value {
     json!({"kind":"agent","id":id})
 }

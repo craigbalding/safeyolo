@@ -21,6 +21,8 @@ mod owned_run;
 mod attestations;
 #[path = "native_coord/catch_up.rs"]
 mod catch_up;
+#[path = "native_coord/continuation.rs"]
+mod continuation;
 #[path = "native_coord/factory.rs"]
 mod factory;
 #[path = "native_coord/federation.rs"]

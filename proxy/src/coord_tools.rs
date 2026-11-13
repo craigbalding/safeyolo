@@ -314,6 +314,7 @@ impl Client {
             | "claim_work"
             | "release_work"
             | "complete_work"
+            | "continue_work"
             | "publish_work_output"
             | "cancel_work"
             | "request_check"
@@ -589,6 +590,20 @@ pub fn tools() -> Vec<Value> {
         "Create open work in an authorized room. Optional assignee names the durable agent eligible to claim and receive native execution delivery. Unassigned open work is available for an explicit claim and does not wake competing supervisors. factory selects the exact currently approved Factory snapshot and its native work policy. Creation is limited to that policy's creators or the operator. Publication binds its required exact-output checks atomically. external_ref is opaque. Content is attributed to the authenticated agent. Supply operation_id before a write to recover an ambiguous result.",
         json!({"room_name":string,"title":string,"external_ref":string,"assignee":execution_assignee,"factory":{"type":"object","properties":{"name":string,"snapshot_id":string},"required":["name","snapshot_id"],"additionalProperties":false},"operation_id":string}),
         &["room_name", "title"],
+    );
+    add(
+        "continue_work",
+        "Select a further attempt on completed ordinary work or an answered exact-subject check with its retained participant. Supply current work version/generation, a bounded reason, findings or changed-input evidence refs and a caller-selected operation ID. Ordinary work requires its creator or operator. A currently required check requires the root acceptance-amendment authority or operator; an advisory check requires its requester or operator. The participant cannot change. This advances claim_generation and delivers an actionable attempt; only complete_work or answer_check settles it. Prior output and historical answers remain; renewed required review is pending and invalidates prior approval. No access or external-effect retry permission is granted. Recover an uncertain effect before repeating it. Retry the original operation ID and inputs.",
+        json!({"room_name":string,"work_id":string,"expected_version":integer,"expected_generation":integer,"reason":string,"evidence_refs":array,"operation_id":string}),
+        &[
+            "room_name",
+            "work_id",
+            "expected_version",
+            "expected_generation",
+            "reason",
+            "evidence_refs",
+            "operation_id",
+        ],
     );
     add(
         "read_work_actions",

@@ -102,15 +102,26 @@ The coordinator is that check's requester, so its answer wakes the
 coordinator, not the completed producer. Before a generic correction or
 changed review input can reach the owner, retain the full findings/input in
 the existing linked assignment and name the exact check and output generation.
-Once that input makes work ready, have the authorized operator executor use
-operator same-item reassignment to the owner with the current version and
-claim generation. Its new generation delivers `execute_work`; the owner
-resumes the same branch, publishes and completes that execution, and the
-coordinator requests/selects a check of the new output. Do not expect a notice
-to wake the owner before reassignment. An unchanged blocked result stays
-dormant. This operator operation is also needed to bind an existing unassigned
-item; agents cannot change assignee or attach Factory policy after creation.
-Preserve the item and prior evidence.
+Once that input makes completed assigned work ready, the coordinator as its
+canonical creator calls `continue_work` with current version/claim generation,
+a reason, findings/input references and a chosen operation ID. Its new
+generation delivers `execute_work` to the retained owner. The owner reads
+`work.continuation`, resumes the same branch and active claim, publishes and
+completes that execution, and the coordinator requests/selects a check of the
+new output. A result notice alone does not select continuation. An unchanged
+blocked result stays dormant. Binding an unassigned item, changing participants
+or recovering an abandoned assignment still needs operator reassignment.
+Agents cannot change assignee or attach Factory policy after creation. Preserve
+the item and prior evidence. Inspect uncertain external effects before retrying.
+
+For a settled check with new review input, continue that same exact-subject
+check. A currently required check permits its root's current acceptance-amendment
+authority or operator; an advisory check permits its requester or operator.
+Supply the original unmet need and complete new input references. The old answer
+remains historical, the renewed check is pending, and prior approval cannot
+satisfy fresh acceptance after the new answer. Another output needs a new
+exact-subject check. Continuation grants no target access or recipient change.
+The retained reviewer settles with `answer_check`.
 
 ## Review and integration
 
@@ -126,7 +137,7 @@ replace the reviewer's current decision.
 On rejection, the owner keeps the feature, branch and PR. For Factory-selected
 work, the generated check's requester is the owner, so `check_answered`
 delivers the findings and permits a correction through its retained producing
-claim. For generic work, use the explicit reassignment and manual review loop
+claim. For generic work, use the explicit continuation and manual review loop
 above. New generated checks replace only previous generated requirements.
 Historical checks and explicit challenges remain recorded; replacement does
 not settle them. A blocked result retains its exact need and resumption input.

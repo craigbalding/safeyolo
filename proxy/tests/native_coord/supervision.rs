@@ -227,6 +227,42 @@ async fn native_delivery_is_not_completed_by_narration_and_restart_uses_current_
             .get("native_in_flight")
             .is_none_or(|v| v.as_array().unwrap().is_empty())
     );
+    let done = read(&run.alice, &work).await;
+    let continued = run.alice.call("continue_work", &json!({"room_name":"shared", "work_id":done["work_id"], "expected_version":done["version"], "expected_generation":done["claim_generation"], "reason":"Inspect a new observation on the retained result", "evidence_refs":["artifact:new-input"], "operation_id":"continue-after-settlement"})).await.unwrap()["work"].clone();
+    let mut action_key = Value::Null;
+    for attempt in 0..2 {
+        let result = run.supervise(&role_home, Some(&seam)).await;
+        assert!(
+            !result.status.success(),
+            "narration cannot settle continuation"
+        );
+        let pending: Value =
+            serde_json::from_slice(&fs::read(run.retained.join("supervisor-state.json")).unwrap())
+                .unwrap();
+        let action = &pending["native_in_flight"][0]["action"];
+        assert_eq!(action["kind"], "execute_work");
+        assert_eq!(action["claim_generation"], 2);
+        if attempt == 0 {
+            action_key = action["key"].clone();
+        }
+        assert_eq!(
+            action["key"], action_key,
+            "supervisor restart retains one attempt"
+        );
+    }
+    run.bob.call("complete_work", &json!({"room_name":"shared", "work_id":continued["work_id"], "expected_version":continued["version"], "expected_generation":2, "short_result":"New observation remains inconclusive", "operation_id":"settle-continued-attempt"})).await.unwrap();
+    let invoked = fs::read_to_string(&marker).unwrap().lines().count();
+    assert!(
+        run.supervise(&role_home, Some(&seam))
+            .await
+            .status
+            .success()
+    );
+    assert_eq!(
+        fs::read_to_string(&marker).unwrap().lines().count(),
+        invoked,
+        "settled uncertainty does not retry automatically"
+    );
     // Interleaved creation lets one page derive more than sixteen actions.
     // This explicitly non-independent policy is a transport capacity control;
     // the real model journey below keeps independent production and review.
@@ -392,6 +428,118 @@ async fn real_model_wakes_for_report_check_challenge_disposition_and_acceptance(
     println!(
         "real supervised native journey passed: work={} check={} challenge={} producer={} decider={BOB}",
         work["work_id"], check["work_id"], objection["work_id"], final_work["output"]["producer"]
+    );
+    stage0::crash(run.proxy).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires pinned NATS and a private SAFEYOLO_COORD_MODEL_HOME; actual continuation delivery and settlement"]
+async fn real_model_continues_code_report_and_changed_input_check() {
+    let role_home = PathBuf::from(
+        std::env::var_os("SAFEYOLO_COORD_MODEL_HOME")
+            .expect("set prepared private native Codex role home"),
+    );
+    let run = ReviewRun::start().await;
+    fs::write(run.retained.join("AGENTS.md"), "You are Bob in an owned native Coord continuation proof. Read each current Work and its continuation context. A continuation retains your claim: do not claim it again. For execute_work, read its evidence refs, perform the bounded correction, retain a new artifact, publish_work_output with a file:// absolute path and #sha256 digest, then complete_work using current expectations. For answer_check, inspect its unchanged exact subject and the new evidence, then answer_check. For decide_acceptance, inspect the current output and selected obligations, then decide_work_acceptance independently. Pick operation_id before each write. Do not send protocol messages or create work, checks, requirements or other lifecycle records. Do not read credentials or any other role home. Process all native_in_flight actions and stop when settled.\n").unwrap();
+    let mut executions = Vec::new();
+    for (kind, original, instruction) in [
+        (
+            "code",
+            "print(0)\n",
+            "Read the retained Python source and correct it to print the integer product of 6 and 7. Save the corrected Python program as code-v2.py beside this input. Run it to verify its output, retain and publish that new file, then complete this execution.",
+        ),
+        (
+            "report",
+            "# Finding R1\nThe service is unavailable.\n",
+            "New observation: the service probe returned HTTP 200. The earlier timeout came from the observer. Read the original report, then write report-v2.md beside this input. Explicitly withdraw the unavailable-service finding using the word withdrawn and cite HTTP 200. Retain and publish the new report, then complete this execution.",
+        ),
+    ] {
+        let artifact = run.retained.join(format!(
+            "{kind}-v1.{}",
+            if kind == "code" { "py" } else { "md" }
+        ));
+        fs::write(&artifact, original).unwrap();
+        let work = run.alice.call("create_work", &json!({"room_name":"shared", "title":format!("Continue the {kind} result using the selected input"), "assignee":{"kind":"agent","id":BOB}, "operation_id":format!("create-{kind}")})).await.unwrap()["work"].clone();
+        let work = claim(&run.bob, &work, &format!("claim-{kind}")).await;
+        let work = publish(&run.bob, &work, &artifact, &format!("publish-{kind}-v1")).await;
+        let work = run.bob.call("complete_work", &json!({"room_name":"shared", "work_id":work["work_id"], "expected_version":work["version"], "expected_generation":1, "operation_id":format!("complete-{kind}-v1")})).await.unwrap()["work"].clone();
+        let changed_input = run.retained.join(format!("{kind}-changed-input.txt"));
+        fs::write(&changed_input, instruction).unwrap();
+        run.alice.call("continue_work", &json!({"room_name":"shared", "work_id":work["work_id"], "expected_version":work["version"], "expected_generation":1, "reason":"Use the linked findings and changed input to correct the retained result", "evidence_refs":[artifact.display().to_string(), changed_input.display().to_string()], "operation_id":format!("continue-{kind}")})).await.unwrap();
+        executions.push(work);
+    }
+    // The review's exact output does not change when the missing input arrives.
+    let measured = run.retained.join("measurement.txt");
+    fs::write(&measured, "42\n").unwrap();
+    let threshold = run.retained.join("threshold.txt");
+    let root = run.alice.call("create_work", &json!({"room_name":"shared", "title":"Assess a measurement against the supplied threshold", "operation_id":"create-measurement"})).await.unwrap()["work"].clone();
+    let root = claim(&run.alice, &root, "claim-measurement").await;
+    let root = publish(&run.alice, &root, &measured, "measurement").await;
+    let check = run.alice.call("request_check", &json!({"room_name":"shared", "subject":subject(&root), "criterion":format!("Compare the integer in the exact subject with the integer threshold at {}. Approve when the measurement is at least the threshold, reject otherwise. Abstain if that threshold is unavailable.", threshold.display()), "reviewer":{"kind":"agent","id":BOB}, "independent":true, "operation_id":"request-threshold-check"})).await.unwrap()["work"].clone();
+    let check = claim(&run.bob, &check, "claim-threshold-check").await;
+    let check = run
+        .bob
+        .call(
+            "answer_check",
+            &super::reviews::answer(&check, "abstain", "threshold-unavailable"),
+        )
+        .await
+        .unwrap()["work"]
+        .clone();
+    let root = run
+        .alice
+        .call(
+            "set_work_requirements",
+            &requirements(
+                &root,
+                std::slice::from_ref(&check),
+                &[],
+                "require-threshold-check",
+            ),
+        )
+        .await
+        .unwrap()["work"]
+        .clone();
+    fs::write(&threshold, "40\n").unwrap();
+    run.alice.call("continue_work", &json!({"room_name":"shared", "work_id":check["work_id"], "expected_version":check["version"], "expected_generation":1, "reason":"The missing threshold is available; re-evaluate the same exact measurement", "evidence_refs":[format!("work:{}:version:{}", check["work_id"], check["version"]), threshold.display().to_string()], "operation_id":"continue-threshold-check"})).await.unwrap();
+    for _ in 0..3 {
+        let result = run.supervise(&role_home, None).await;
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        if read(&run.alice, &root).await["acceptance_status"]["state"] == "accepted" {
+            break;
+        }
+    }
+    for work in executions {
+        let done = read(&run.alice, &work).await;
+        assert_eq!(done["work_id"], work["work_id"]);
+        assert_eq!(done["claim_generation"], 2);
+        assert_eq!(done["claim_agent_id"], BOB);
+        assert_eq!(done["state"], "done");
+        assert_eq!(done["target_generation"], 2);
+    }
+    let output = tokio::process::Command::new("python3")
+        .arg(run.retained.join("code-v2.py"))
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "42");
+    let report = fs::read_to_string(run.retained.join("report-v2.md")).unwrap();
+    assert!(report.to_lowercase().contains("withdrawn") && report.contains("200"));
+    let answered = read(&run.alice, &check).await;
+    assert_eq!(answered["check"]["subject"], check["check"]["subject"]);
+    assert_eq!(answered["claim_generation"], 2);
+    assert_eq!(answered["check"]["answer"]["verdict"], "approve");
+    assert_eq!(
+        read(&run.alice, &root).await["acceptance_status"]["state"],
+        "accepted"
+    );
+    println!(
+        "actual model continued code/report executions and exact changed-input check; the same Work IDs and participants settled through native operations"
     );
     stage0::crash(run.proxy).await;
 }

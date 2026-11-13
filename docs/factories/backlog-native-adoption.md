@@ -48,6 +48,8 @@ recovery are implemented in [Factory work policy](../../proxy/src/factory/work.r
 [native supervisor recovery](../../proxy/src/coord_supervisor/native.rs),
 [acceptance authority](../../proxy/src/coord_rooms/work/acceptance.rs) and
 [output ownership](../../proxy/src/coord_rooms/work/outputs.rs).
+Explicit further attempts use
+[retained-participant continuation](../../proxy/src/coord_rooms/work/continuation.rs).
 Those mechanisms do not judge software correctness, merge changes or interpret
 material policy. The domain roles retain those responsibilities.
 
@@ -107,7 +109,7 @@ flowchart LR
     Lens -->|current approval| Merge[Relay: head and merge checks]
     Forge -->|blocked result and exact need| Relay
     Relay -->|specific protected operation only| Sylab
-    Sylab -->|ready generic correction: same-item reassignment| Work
+    Relay -->|ready generic correction: continue retained Forge| Work
 ```
 
 For a source revision, enter `sym.review_revised_contract` in the factory
@@ -186,9 +188,12 @@ advance the assignment generation; agents cannot set that field themselves.
 For a retained generic item, the complete continuation and correction loop is:
 
 1. Relay retains the complete ready continuation in the existing linked
-   assignment, with its input references and original findings. Sylab uses
-   operator same-item reassignment to Forge with the current version and claim
-   generation. This advances the generation and delivers `execute_work`.
+   assignment, with its input references and original findings. For completed
+   assigned work, Relay as creator uses `continue_work` with current
+   version/claim generation, reason, references and a chosen operation ID.
+   This advances the generation and delivers `execute_work` to retained Forge.
+   An unassigned item first needs operator reassignment to bind its recipient,
+   as described above.
 2. Forge reads that assignment and the native review records, reuses its branch
    and prior proof, publishes the new continuation output, and completes this
    execution. Publication/execution notices reach creator Relay.
@@ -211,21 +216,25 @@ For a retained generic item, the complete continuation and correction loop is:
    the same item. Do not repeat an unchanged blocked attempt.
 
 The old item has no Factory templates: Relay explicitly requests and selects
-an exact-output check after **every** generic correction publication. Operator
-same-item reassignment supplies the otherwise missing delivery back to Forge;
-it does not transfer engineering diagnosis to Sylab or introduce a new approval
-rule. Factory-selected work instead gives its producer the generated check's
+an exact-output check after **every** generic correction publication. Explicit
+same-participant continuation supplies delivery back to Forge; it does not
+transfer engineering diagnosis to Sylab or introduce an approval rule.
+Factory-selected work instead gives its producer the generated check's
 result notice and generates each corrected output's required checks atomically.
 Keep the old results, work ID, branch, independent authority and replay limits.
 Do not create another item merely to attach policy or silently adopt an old
 candidate or attestation as native acceptance.
 
-For a settled blocked check that receives a genuinely new input, the operator
-can similarly reassign that same check to Lens at its current version and
-claim generation. This clears its old answer, preserves history and creates a
-new check action. It avoids an unchanged lookup, replacement feature task or
-indefinite pending delivery. Relay supplies the complete new input first;
-the narrow reassignment does not transfer engineering diagnosis to Sylab.
+For a settled blocked check that receives a genuinely new input, Relay can
+select `continue_work` on that same exact-subject check. A currently required
+check needs the root's current acceptance-amendment authority or the operator;
+an advisory check needs its requester or the operator. Supply current
+version/claim generation, the unmet need and new input references, a reason and
+a chosen operation ID. The old answer remains historical, while the effective
+check becomes pending and a new action reaches retained Lens. Prior approval
+does not carry forward; re-evaluation needs fresh applicable acceptance. Another
+output needs a new exact-subject check. Continuation grants no target permission
+or authorization to repeat an uncertain external effect.
 
 If staging or verification fails before native assignments exist, inspect the
 reached state before retrying. Stop only the affected owned roles, check and

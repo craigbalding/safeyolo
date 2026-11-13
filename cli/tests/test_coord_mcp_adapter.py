@@ -83,7 +83,7 @@ def test_discovery_and_rpc_errors(adapter):
         "send", "send_task", "read_room", "wait_for_coord", "wait_for_attention",
         "read_attention", "wait_for_message",
         "list_approvals", "read_approval", "resolve_approval",
-        "create_work", "list_work", "read_work", "claim_work", "release_work", "complete_work",
+        "create_work", "list_work", "read_work", "claim_work", "release_work", "complete_work", "continue_work",
         "create_signal", "read_signal", "list_signals",
         "publish_work_output", "list_work_outputs", "cancel_work", "attest_work", "list_work_attestations",
         "request_check", "answer_check", "raise_challenge", "respond_challenge", "resolve_challenge", "list_work_reviews",
@@ -162,6 +162,24 @@ def test_native_work_delivery_uses_current_actions_and_canonical_receipt_keys(ad
     assert parse_qs(urlsplit(calls[-1][1]).query) == {"work_id": ["work-output"], "actions": ["true"], "include_received": ["true"]}
     call("receive_work_action", {"room_name": "backlog", "work_id": "work-output", "action_key": "action-exact"})
     assert calls[-1][2] == {"action": "receive_action", "work_id": "work-output", "action_key": "action-exact"}
+
+
+def test_native_continuation_keeps_explicit_context_and_rejects_a_new_recipient(adapter):
+    call, _, calls, _, _ = adapter
+    args = {"room_name": "backlog", "work_id": "work-report", "expected_version": 5,
+            "expected_generation": 1, "reason": "Inspect the new observation",
+            "evidence_refs": ["signal:unmet-need", "artifact:new-observation"],
+            "operation_id": "continue-report"}
+    call("continue_work", args)
+    assert calls[-1][0:2] == ("POST", "http://_safeyolo.proxy.internal/api/coord/rooms/backlog/work")
+    assert calls[-1][2] == {"action": "continue", **{key: value for key, value in args.items() if key != "room_name"}}
+    before = len(calls)
+    for changed in [
+        {**args, "participant": {"kind": "agent", "id": "other"}},
+        {key: value for key, value in args.items() if key != "operation_id"},
+    ]:
+        assert call("continue_work", changed)["isError"] is True
+    assert len(calls) == before
 
 
 def test_native_assigned_review_requests_and_revision_reads(adapter):
