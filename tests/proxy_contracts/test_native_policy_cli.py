@@ -60,8 +60,9 @@ def test_candidate_evaluation_reports_actions_without_destination_contact(tmp_pa
         destination.setblocking(False)
         host, port = destination.getsockname()
         subject = {"kind": "ip", "address": host}
+        # Match Check::input_digest's field order with serde_json preserve_order.
         input_digest = hashlib.sha256(json.dumps(
-            {"subject": subject, "inputs": {}}, sort_keys=True, separators=(",", ":"),
+            {"subject": subject, "inputs": {}}, separators=(",", ":"),
         ).encode()).hexdigest()
         request_file.write_text(json.dumps({
             "agent": "alice", "host": host, "port": port, "scheme": "http",
