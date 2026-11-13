@@ -150,26 +150,17 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
         fs::write(&corrected, correction).unwrap();
         let first_hash = hash(&fs::read(&first).unwrap());
         let created=alice.call("create_work",&json!({"room_name":"shared","title":kind,"external_ref":format!("opaque:run-{kind}"),"operation_id":format!("create-{kind}")})).await.unwrap()["work"].clone();
-        let created = alice
-            .call(
-                "set_work_requirements",
-                &requirements(&created, &[], &[], &format!("select-{kind}")),
-            )
-            .await
-            .unwrap()["work"]
-            .clone();
         let owned = claim(&alice, &created, &format!("claim-{kind}")).await;
         let mut output = publish(&alice, &owned, &first, &format!("publish-{kind}")).await;
         let requested = request(&alice, &output, &format!("request-{kind}")).await;
-        output = bob
+        output = alice
             .call(
-                "select_work_review",
-                &selection(
+                "set_work_requirements",
+                &requirements(
                     &output,
-                    &requested,
-                    "check",
-                    None,
-                    &format!("require-check-{kind}"),
+                    std::slice::from_ref(&requested),
+                    &[],
+                    &format!("select-initial-policy-{kind}"),
                 ),
             )
             .await
@@ -540,11 +531,36 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
             )
             .await;
             assert_eq!(page["items"].as_array().unwrap().len(), 4);
+            let current = read(&bob, &replacement).await;
+            let current = bob
+                .call(
+                    "select_work_review",
+                    &selection(
+                        &current,
+                        &fixed["work"],
+                        "check",
+                        None,
+                        "add-report-specialist-review",
+                    ),
+                )
+                .await
+                .unwrap()["work"]
+                .clone();
+            assert_eq!(
+                current["acceptance_requirements"]["checks"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                2
+            );
+            assert_eq!(
+                current["acceptance_requirements"]["challenges"],
+                replacement["acceptance_requirements"]["challenges"]
+            );
             let next_challenge = bob.call("raise_challenge", &json!({"room_name":"shared","subject":subject(&replacement),
                 "assertion":"Corrected report coverage needs review","grounds":"Inspect the current report scope",
                 "responder":principal(ALICE),"deciders":[principal(BOB)],"independent":true,
                 "operation_id":"replacement-report-challenge"})).await.unwrap()["work"].clone();
-            let current = read(&bob, &replacement).await;
             let reference =
                 json!({"work_id":next_challenge["work_id"],"version":next_challenge["version"]})
                     .to_string();
@@ -584,7 +600,7 @@ async fn code_and_report_checks_challenges_corrections_and_independent_dispositi
             );
             let status = read(&bob, &replacement).await["acceptance_status"].clone();
             assert_eq!(status["state"], "pending");
-            assert_eq!(status["obligations"][1]["status"], "unresolved_challenge");
+            assert_eq!(status["obligations"][2]["status"], "unresolved_challenge");
         }
         println!(
             "{kind}: selected requirements -> exact-subject rejection -> challenge -> retained correction -> independent disposition -> current check approval -> output acceptance; original evidence unchanged"
