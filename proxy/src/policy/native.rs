@@ -337,18 +337,17 @@ impl Policy {
             .and_then(toml_edit::Item::as_table_like_mut)
         {
             for (_, check) in checks.iter_mut() {
-                if let Some(source) = check.get_mut("source") {
-                    if source.get("kind").and_then(toml_edit::Item::as_str) == Some("recorded") {
-                        if let Some(path) = source.get("path").and_then(toml_edit::Item::as_str) {
-                            let path = Path::new(path);
-                            if path.is_relative() {
-                                let path = parent.join(path);
-                                source["path"] =
-                                    toml_edit::value(path.to_str().ok_or_else(|| {
-                                        invalid("check evidence path must be Unicode")
-                                    })?);
-                            }
-                        }
+                if let Some(source) = check.get_mut("source")
+                    && source.get("kind").and_then(toml_edit::Item::as_str) == Some("recorded")
+                    && let Some(path) = source.get("path").and_then(toml_edit::Item::as_str)
+                {
+                    let path = Path::new(path);
+                    if path.is_relative() {
+                        let path = parent.join(path);
+                        source["path"] = toml_edit::value(
+                            path.to_str()
+                                .ok_or_else(|| invalid("check evidence path must be Unicode"))?,
+                        );
                     }
                 }
             }

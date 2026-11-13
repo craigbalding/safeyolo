@@ -61,7 +61,17 @@ pub enum Subject {
 
 fn hostname(host: &str) -> Result<String> {
     let host = host.strip_suffix('.').unwrap_or(host);
-    if let Ok(ip) = host.trim_matches(['[', ']']).parse::<IpAddr>() {
+    let address = host.trim_matches(['[', ']']);
+    if let Ok(ip) = address.parse::<IpAddr>() {
+        return Ok(ip.to_string());
+    }
+    // The transport accepts IPv6 zone IDs. They select an interface, not a
+    // different IP evidence subject; scope rules and path subjects use the IP.
+    if let Some((ip, scope)) = address.split_once('%')
+        && !scope.is_empty()
+        && !scope.contains('%')
+        && let Ok(ip) = ip.parse::<std::net::Ipv6Addr>()
+    {
         return Ok(ip.to_string());
     }
     let encoded = crate::host_names::encode_idna2003(host)
@@ -562,10 +572,10 @@ impl Checks {
             } else if check.scale.is_some() {
                 return Err(invalid("only score checks have a score scale"));
             }
-            if let EvidenceSource::Recorded { path } = &mut check.source {
-                if path.is_relative() {
-                    *path = base.unwrap_or(Path::new(".")).join(&path);
-                }
+            if let EvidenceSource::Recorded { path } = &mut check.source
+                && path.is_relative()
+            {
+                *path = base.unwrap_or(Path::new(".")).join(&path);
             }
         }
         for rule in &mut checks.rules {
@@ -723,7 +733,9 @@ impl Checks {
             rule.stage == stage
                 && host
                     .as_ref()
-                    .is_some_and(|host| rule.host == "*" || super::host_matches(host, &rule.host))
+                    // If scope cannot be determined, retain the rules and
+                    // let unavailable evidence select their explicit fallback.
+                    .is_none_or(|host| rule.host == "*" || super::host_matches(host, &rule.host))
                 && rule
                     .agent
                     .as_ref()
@@ -749,7 +761,9 @@ impl Checks {
         let mut evidence = BTreeMap::new();
         for name in names {
             let check = &self.checks[&name];
-            let subject = request.subject(check.subject, stage)?;
+            // Normalization failure is unavailable evidence, not permission
+            // to skip a required rule or its configured fallback.
+            let subject = request.subject(check.subject, stage).unwrap_or(None);
             let input_digest = subject
                 .as_ref()
                 .map(|subject| check.input_digest(subject))
@@ -1319,6 +1333,80 @@ mod tests {
     }
     fn finding(name: &str) -> Value {
         json!({"op":"finding","check":name})
+    }
+
+    #[tokio::test]
+    async fn scoped_ipv6_keeps_required_checks_and_normalization_failure_uses_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut ip = definition(ResultType::Finding);
+        ip["subject"] = json!("ip");
+        let mut exclusion = rule(
+            "never",
+            Influence::HardExclusion,
+            finding("ip"),
+            Action::Deny,
+        );
+        exclusion["host"] = json!("[::1%0]");
+        let mut check = parse(json!({"ip":ip}), vec![exclusion]).unwrap();
+        let file = directory.path().join("ip.json");
+        check.checks.get_mut("ip").unwrap().source =
+            EvidenceSource::Recorded { path: file.clone() };
+        let subject = Subject::Ip {
+            address: "::1".parse().unwrap(),
+        };
+        let definition = &check.checks["ip"];
+        let record = CheckResult {
+            input_digest: definition.input_digest(&subject).unwrap(),
+            subject: subject.clone(),
+            implementation_version: definition.implementation_version.clone(),
+            configuration_version: definition.configuration_version.clone(),
+            collected_at_ms: NOW,
+            valid_until_ms: None,
+            source: Provenance {
+                source_id: definition.source_id.clone(),
+                source_revision: None,
+                content_digest: None,
+                source_observed_at_ms: None,
+            },
+            finding: Finding::Finding { positive: true },
+        };
+        std::fs::write(&file, serde_json::to_vec(&vec![record]).unwrap()).unwrap();
+        for host in ["::1", "::1%0", "0:0:0:0:0:0:0:1%250", "[::1%lo]"] {
+            let request = Request {
+                host,
+                ip: Some("::1".parse().unwrap()),
+                ..request()
+            };
+            assert!(check.applies(&request, Stage::Connect), "{host}");
+            assert_eq!(
+                request
+                    .subject(SubjectKind::Hostname, Stage::Connect)
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                request.subject(SubjectKind::Ip, Stage::Connect).unwrap(),
+                Some(subject.clone())
+            );
+            let path = request
+                .subject(SubjectKind::HttpPath, Stage::Request)
+                .unwrap()
+                .unwrap();
+            assert!(matches!(path, Subject::HttpPath { hostname, .. } if hostname == "::1"));
+            let evidence = check.collect(&request, Stage::Connect).await.unwrap();
+            let evaluation = check.evaluate(&request, Stage::Connect, evidence, NOW);
+            assert_eq!(evaluation.action, Action::Deny, "{host}");
+            assert_eq!(evaluation.rules[0].truth, Truth::True, "{host}");
+        }
+        let invalid = Request {
+            host: "bad%host",
+            ..request()
+        };
+        assert!(check.applies(&invalid, Stage::Connect));
+        let evidence = check.collect(&invalid, Stage::Connect).await.unwrap();
+        let evaluation = check.evaluate(&invalid, Stage::Connect, evidence, NOW);
+        assert_eq!(evaluation.action, Action::Unresolved);
+        assert_eq!(evaluation.rules[0].truth, Truth::Unavailable);
     }
 
     #[test]

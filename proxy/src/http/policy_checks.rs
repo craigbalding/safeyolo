@@ -235,10 +235,13 @@ mod tests {
         test_configuration(directory, &source)
     }
     async fn get(directory: &Path, address: std::net::SocketAddr, path: &str) -> Vec<u8> {
+        get_authority(directory, &address.to_string(), path).await
+    }
+    async fn get_authority(directory: &Path, authority: &str, path: &str) -> Vec<u8> {
         let mut stream = UnixStream::connect(directory.join("alice.sock"))
             .await
             .unwrap();
-        stream.write_all(format!("GET http://{address}{path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+        stream.write_all(format!("GET http://{authority}{path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
         let mut reply = Vec::new();
         timeout(LIMIT, stream.read_to_end(&mut reply))
             .await
@@ -283,6 +286,136 @@ mod tests {
             }
         });
         (address, contacts, requests, task)
+    }
+
+    #[tokio::test]
+    async fn native_scoped_ipv6_preserves_exclusions_and_request_fallback() {
+        if isolated_native_test(
+            "http::policy_checks::tests::native_scoped_ipv6_preserves_exclusions_and_request_fallback",
+        ) {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let (address, contacts, requests, origin) = origin("::1").await;
+        let ip_file = root.join("ip.json");
+        let host_file = root.join("hostname.json");
+        let ip = check(&ip_file, "ip");
+        let host = check(&host_file, "hostname");
+        let subject = Subject::Ip {
+            address: address.ip(),
+        };
+        write_records(&ip_file, &[record(&ip, subject.clone(), true)]);
+        test_policy(
+            root,
+            json!({"ip":ip,"hostname":host}),
+            vec![
+                rule("never", "connect", "ip", "unresolved"),
+                rule("direct-ip", "request", "hostname", "unresolved"),
+            ],
+        );
+        let configuration = config(root, None);
+        let mut proxy = Proxy::start(configuration.clone()).await.unwrap();
+        let authorities = [address.to_string(), format!("[::1%0]:{}", address.port())];
+        for authority in &authorities {
+            let reply = get_authority(root, authority, "/").await;
+            assert!(
+                reply.starts_with(b"HTTP/1.1 403"),
+                "{}",
+                String::from_utf8_lossy(&reply)
+            );
+            assert_eq!(contacts.load(Ordering::SeqCst), 0, "{authority}");
+        }
+        write_records(&ip_file, &[record(&ip, subject, false)]);
+        for authority in &authorities {
+            let reply = get_authority(root, authority, "/").await;
+            assert!(
+                reply.starts_with(b"HTTP/1.1 503"),
+                "{}",
+                String::from_utf8_lossy(&reply)
+            );
+            assert!(String::from_utf8_lossy(&reply).contains("direct-ip"));
+            assert_eq!(requests.load(Ordering::SeqCst), 0, "{authority}");
+        }
+        // Scoped spelling remains usable when the operator selects continue.
+        test_policy(
+            root,
+            json!({"ip":ip,"hostname":host}),
+            vec![
+                rule("never", "connect", "ip", "unresolved"),
+                rule("direct-ip", "request", "hostname", "continue"),
+            ],
+        );
+        proxy.reload(configuration.clone()).await.unwrap();
+        for authority in &authorities {
+            let reply = get_authority(root, authority, "/").await;
+            assert!(
+                reply.starts_with(b"HTTP/1.1 200"),
+                "{}",
+                String::from_utf8_lossy(&reply)
+            );
+        }
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        let path = check(&root.join("path.json"), "http_path");
+        for fallback in ["unresolved", "continue"] {
+            test_policy(
+                root,
+                json!({"ip":ip,"path":path}),
+                vec![
+                    rule("never", "connect", "ip", "unresolved"),
+                    rule("visible-path", "request", "path", fallback),
+                ],
+            );
+            proxy.reload(configuration.clone()).await.unwrap();
+            for authority in &authorities {
+                let mut client = UnixStream::connect(root.join("alice.sock")).await.unwrap();
+                client
+                    .write_all(
+                        format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n")
+                            .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                let head = timeout(LIMIT, async {
+                    let mut head = Vec::new();
+                    while !head.ends_with(b"\r\n\r\n") {
+                        head.push(client.read_u8().await.unwrap());
+                    }
+                    head
+                })
+                .await
+                .unwrap();
+                assert!(
+                    head.starts_with(b"HTTP/1.1 200"),
+                    "{}",
+                    String::from_utf8_lossy(&head)
+                );
+                client.write_all(b"opaque-fixture\r\n\r\n").await.unwrap();
+                client.shutdown().await.unwrap();
+                let mut reply = Vec::new();
+                let result = timeout(LIMIT, client.read_to_end(&mut reply))
+                    .await
+                    .unwrap();
+                if fallback == "unresolved" {
+                    assert!(
+                        result.is_ok()
+                            || result.unwrap_err().kind() == std::io::ErrorKind::ConnectionReset
+                    );
+                    assert!(reply.is_empty(), "opaque request must not reach the origin");
+                    assert_eq!(requests.load(Ordering::SeqCst), 2);
+                } else {
+                    result.unwrap();
+                    assert!(
+                        reply.starts_with(b"HTTP/1.1 200"),
+                        "{}",
+                        String::from_utf8_lossy(&reply)
+                    );
+                }
+            }
+        }
+        assert_eq!(requests.load(Ordering::SeqCst), 4);
+        proxy.shutdown().await;
+        origin.abort();
     }
 
     #[tokio::test]
