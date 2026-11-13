@@ -87,7 +87,10 @@ pub(super) fn validate_spec(spec: &JobSpec) -> Result<(), Error> {
     }
     if spec.network {
         // DOC: docs/hyperlight-jobs.md
-        return Err("Hyperlight jobs do not yet support delegated service/network capabilities; network must be false".into());
+        return Err(
+            "Hyperlight jobs require network=false; use mediated_services for service access"
+                .into(),
+        );
     }
     if spec.privilege != Privilege::Unprivileged {
         return Err("Hyperlight jobs cannot supply Unix guest-root privilege".into());
@@ -502,10 +505,10 @@ pub(super) async fn run(
             Err(error) => cleanup_errors.push(error.to_string()),
         }
     }
-    if let Some(client) = delegation {
-        if let Err(error) = client.close().await {
-            cleanup_errors.push(error.to_string());
-        }
+    if let Some(client) = delegation
+        && let Err(error) = client.close().await
+    {
+        cleanup_errors.push(error.to_string());
     }
     if let Some(directory) = socket_directory {
         let path = directory.path().to_owned();

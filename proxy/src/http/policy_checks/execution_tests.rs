@@ -99,6 +99,159 @@ fn isolated(name: &str) -> bool {
     isolated_native_test(name)
 }
 
+async fn invoke_adopted_check(
+    root: &Path,
+    method: &str,
+    input: &str,
+    authorized: bool,
+) -> (u16, serde_json::Value) {
+    let mut socket = UnixStream::connect(root.join("alice.sock")).await.unwrap();
+    let authorization = if authorized {
+        "Authorization: Bearer synthetic-named-check-agent-token\r\n"
+    } else {
+        ""
+    };
+    // Chunked requests exercise the actual body bound without Content-Length.
+    socket.write_all(format!("{method} http://_safeyolo.proxy.internal/checks/invoke HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\n{authorization}Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{input}\r\n0\r\n\r\n", input.len()).as_bytes()).await.unwrap();
+    let mut response = String::new();
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        socket.read_to_string(&mut response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let (head, body) = response.split_once("\r\n\r\n").unwrap();
+    let status = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+    (status, serde_json::from_str(body).unwrap())
+}
+
+#[tokio::test]
+async fn named_invocation_enforces_adoption_input_and_pending_authority() {
+    if isolated(
+        "http::policy_checks::execution_tests::named_invocation_enforces_adoption_input_and_pending_authority",
+    ) {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = origin.local_addr().unwrap().port();
+    let mut check = definition(port, 20_000);
+    check["invokers"] = json!(["bob"]);
+    let config = setup(root.path(), check, true, true);
+    let mut proxy = crate::Proxy::start(config).await.unwrap();
+    let request = json!({"check":"assess","subject":{"kind":"hostname","hostname":"example.test"}});
+    let mut replaced_spec = request.clone();
+    replaced_spec["spec"] = json!("/arbitrary/host/path");
+    let mut unknown = request.clone();
+    unknown["check"] = json!("unadopted");
+    for (method, input, authorized, status) in [
+        ("POST", request.to_string(), false, 401),
+        ("GET", request.to_string(), true, 405),
+        ("POST", replaced_spec.to_string(), true, 400),
+        ("POST", unknown.to_string(), true, 404),
+        ("POST", "x".repeat(48 * 1024 + 1), true, 413),
+        ("POST", request.to_string(), true, 403),
+    ] {
+        let result = invoke_adopted_check(root.path(), method, &input, authorized).await;
+        assert_eq!(result.0, status, "{}", result.1);
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(40), origin.accept())
+            .await
+            .is_err()
+    );
+    let policy_path = root.path().join("policy.toml");
+    let source = std::fs::read_to_string(&policy_path).unwrap();
+    let permitted = source.replace("\"bob\"", "\"alice\"");
+    assert_ne!(source, permitted);
+    std::fs::write(&policy_path, permitted).unwrap();
+    assert!(proxy.reload_policy_if_changed().await.unwrap());
+    let invalid_subject = json!({"check":"assess","subject":{"kind":"value","value":"unexpected"}});
+    assert_eq!(
+        invoke_adopted_check(root.path(), "POST", &invalid_subject.to_string(), true)
+            .await
+            .0,
+        422
+    );
+    let success_root = root.path().to_owned();
+    let input = request.to_string();
+    let success =
+        tokio::spawn(
+            async move { invoke_adopted_check(&success_root, "POST", &input, true).await },
+        );
+    let (mut provider, _) = tokio::time::timeout(Duration::from_secs(3), origin.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&read_head(&mut provider).await)
+            .starts_with("GET /check/example.test ")
+    );
+    reply(
+        &mut provider,
+        200,
+        br#"{"finding":{"kind":"finding","positive":false}}"#,
+    )
+    .await;
+    let (status, result) = success.await.unwrap();
+    assert_eq!(status, 200, "{result}");
+    assert_eq!(
+        result["evidence"]["result"]["subject"]["hostname"],
+        "example.test"
+    );
+    assert_eq!(result["evidence"]["result"]["finding"]["positive"], false);
+    assert_eq!(
+        result["evidence"]["execution"]["gate_principal"],
+        "gate:assess"
+    );
+    assert!(
+        result["evidence"]["execution"]["caller_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("job-")
+    );
+    let pending_root = root.path().to_owned();
+    let pending = tokio::spawn(async move {
+        invoke_adopted_check(
+            &pending_root,
+            "POST",
+            &json!({"check":"assess","subject":{"kind":"hostname","hostname":"pending.test"}})
+                .to_string(),
+            true,
+        )
+        .await
+    });
+    let (mut held, _) = tokio::time::timeout(Duration::from_secs(3), origin.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    read_head(&mut held).await;
+    let source = std::fs::read_to_string(&policy_path).unwrap();
+    std::fs::write(&policy_path, source.replace("selected-1", "selected-2")).unwrap();
+    assert!(proxy.reload_policy_if_changed().await.unwrap());
+    let (status, result) = pending.await.unwrap();
+    assert_eq!(status, 409, "{result}");
+    assert!(
+        result["error"]
+            .as_str()
+            .unwrap()
+            .contains("authority changed")
+    );
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), held.read_u8())
+            .await
+            .unwrap()
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::UnexpectedEof
+    );
+    let _ = held
+        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+        .await;
+    proxy.shutdown().await;
+}
+
 #[tokio::test]
 async fn native_live_service_preserves_typed_results_cache_freshness_and_offline_preview() {
     if isolated(
@@ -414,12 +567,21 @@ async fn native_policy_change_during_service_wait_cannot_restore_old_admission()
             read_head(&mut socket).await;
             seen.notify_one();
             finish.notified().await;
-            reply(
-                &mut socket,
-                200,
-                br#"{"finding":{"kind":"finding","positive":false}}"#,
-            )
-            .await;
+            let body = r#"{"finding":{"kind":"finding","positive":false}}"#;
+            let sent = socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await;
+            // Policy replacement cancels this connection before late bytes.
+            // Feed changes still exercise a completed result and revalidation.
+            if change != "policy" {
+                sent.unwrap();
+            }
         });
         let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut config = setup(root.path(), definition(port, 5000), true, true);
@@ -531,7 +693,9 @@ on_unavailable='unresolved'
             ),
             _ => unreachable!(),
         }
-        released.notify_one();
+        if change != "policy" {
+            released.notify_one();
+        }
         let mut response = Vec::new();
         tokio::time::timeout(Duration::from_secs(3), socket.read_to_end(&mut response))
             .await
@@ -559,6 +723,7 @@ on_unavailable='unresolved'
                 &policy,
                 proxy.runtime.read().unwrap().policy.as_ref().unwrap()
             ));
+            released.notify_one();
         }
         socket.shutdown().await.unwrap();
         server.await.unwrap();
@@ -567,11 +732,35 @@ on_unavailable='unresolved'
         let executions: Vec<serde_json::Value> = audit
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
-            .filter(|event: &serde_json::Value| event["event"] == "ops.policy_check_executed")
+            .filter(|event: &serde_json::Value| {
+                matches!(
+                    event["event"].as_str(),
+                    Some("ops.policy_check_executed" | "ops.policy_check_cancelled")
+                )
+            })
             .collect();
-        assert!(executions.iter().any(
-            |event| event["details"]["evidence"]["result"]["configuration_version"] == "selected-1"
-        ));
+        if change == "policy" {
+            let cancelled = executions
+                .iter()
+                .find(|event| event["event"] == "ops.policy_check_cancelled")
+                .expect("policy replacement must retain cancelled execution");
+            let evidence = &cancelled["details"]["evidence"];
+            assert_eq!(cancelled["details"]["execution_cancelled"], true);
+            assert!(evidence["result"].is_null());
+            assert_eq!(evidence["subject"]["hostname"], "example.test");
+            assert_eq!(evidence["execution"]["gate_principal"], "gate:assess");
+            assert!(
+                evidence["unavailable"]
+                    .as_str()
+                    .unwrap()
+                    .contains("cancelled")
+            );
+        } else {
+            assert!(executions.iter().any(
+                |event| event["details"]["evidence"]["result"]["configuration_version"]
+                    == "selected-1"
+            ));
+        }
     }
 }
 

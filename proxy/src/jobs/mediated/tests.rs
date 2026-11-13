@@ -169,7 +169,9 @@ async fn policy_revocation_closes_a_held_response_and_discards_late_evidence() {
     let source = std::fs::read_to_string(&policy).unwrap();
     std::fs::write(&policy, source.replace("[agents.\"gate:proof\".services.simple]\ncapability = \"reader\"\ntoken = \"job-secret\"", "")).unwrap();
     assert!(proxy.reload_policy_if_changed().await.unwrap());
-    tokio::time::timeout(Duration::from_secs(5), client.revoked())
+    // Listener teardown gives accepted transports a ten-second grace before
+    // cancelling and joining them. Wait for that existing cleanup contract.
+    tokio::time::timeout(Duration::from_secs(12), client.revoked())
         .await
         .unwrap();
     // The provider's delayed successful bytes cannot restore the old listener.
