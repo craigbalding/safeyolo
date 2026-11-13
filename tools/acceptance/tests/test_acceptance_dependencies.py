@@ -243,11 +243,17 @@ from opentelemetry.trace import TraceState
 logging.disable(logging.CRITICAL)
 parent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
 for whitespace in (" ", "\\t"):
+    malformed_parent = parent + "-" + whitespace * 200_000 + "\\n x"
+    context = propagate.extract({"traceparent": malformed_parent})
+    assert not trace.get_current_span(context).get_span_context().is_valid
     state = "vendor=value" + whitespace * 200_000 + "x"
     assert len(TraceState.from_header([state])) == 0
     context = propagate.extract({"traceparent": parent, "tracestate": state})
     span = trace.get_current_span(context).get_span_context()
     assert span.is_valid and len(span.trace_state) == 0
+    assert span.is_remote
+    assert span.trace_id == int(parent.split("-")[1], 16)
+    assert span.span_id == int(parent.split("-")[2], 16)
 """
         run = subprocess.run([sys.executable, "-I", "-c", probe], capture_output=True, text=True, timeout=5)
         self.assertEqual(run.returncode, 0, run.stderr)
