@@ -1,0 +1,28 @@
+# Offline deterministic fixture, not a maintained threat source.
+[hosts.'*']
+egress = 'allow'
+
+[controls.network]
+homoglyph = false
+
+[checks.threat]
+source_id = 'controlled-threat-fixture'
+meaning = 'positive is an explicit threat finding for this hostname'
+subject = 'hostname'
+result_type = 'finding'
+influences = ['hard_exclusion']
+implementation_version = 'fixture-1'
+configuration_version = 'research-1'
+max_age_seconds = 60
+source = { kind = 'recorded', path = 'evidence.json' }
+
+[[check_rules]]
+name = 'never-visit'
+host = '*'
+stage = 'connect'
+influence = 'hard_exclusion'
+priority = 0
+required = true
+when = { op = 'finding', check = 'threat' }
+on_match = 'deny'
+on_unavailable = 'unresolved'

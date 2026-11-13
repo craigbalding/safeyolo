@@ -1,0 +1,8 @@
+{
+  "agent": "research",
+  "host": "report.example.test",
+  "port": 443,
+  "scheme": "https",
+  "method": "GET",
+  "path": "/report"
+}

@@ -1,0 +1,44 @@
+[
+  {
+    "subject": {
+      "kind": "hostname",
+      "hostname": "report.example.test"
+    },
+    "input_digest": "759ae1676a6de8d87551ef0c5f72e14b5cb1df4af3dfe99b42cb9a299f40dc1c",
+    "implementation_version": "fixture-1",
+    "configuration_version": "research-1",
+    "collected_at_ms": 1000000,
+    "valid_until_ms": null,
+    "source": {
+      "source_id": "controlled-threat-fixture",
+      "source_revision": "fixture-1",
+      "content_digest": null,
+      "source_observed_at_ms": null
+    },
+    "finding": {
+      "kind": "finding",
+      "positive": false
+    }
+  },
+  {
+    "subject": {
+      "kind": "hostname",
+      "hostname": "malware.example.test"
+    },
+    "input_digest": "400faa0a8f3223153df6e579710072c1903b20c278124dad8af351b5879aed42",
+    "implementation_version": "fixture-1",
+    "configuration_version": "research-1",
+    "collected_at_ms": 1000000,
+    "valid_until_ms": null,
+    "source": {
+      "source_id": "controlled-threat-fixture",
+      "source_revision": "fixture-1",
+      "content_digest": null,
+      "source_observed_at_ms": null
+    },
+    "finding": {
+      "kind": "finding",
+      "positive": true
+    }
+  }
+]
