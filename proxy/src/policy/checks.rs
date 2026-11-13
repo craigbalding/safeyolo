@@ -13,6 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tokio::io::AsyncReadExt;
+pub(crate) mod execution;
 
 pub fn content_digest(bytes: &[u8]) -> String {
     digest(&SHA256, bytes)
@@ -252,6 +253,15 @@ pub enum EvidenceSource {
     Recorded { path: PathBuf },
     /// A producer not installed yet may be named only with explicit fallback.
     Unavailable { reason: String },
+    Job {
+        spec: PathBuf,
+        effects: execution::Effects,
+        limits: execution::Limits,
+    },
+    Service {
+        operation: execution::ServiceOperation,
+        limits: execution::Limits,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -432,6 +442,8 @@ pub struct Checks {
     pub checks: BTreeMap<String, Check>,
     #[serde(rename = "check_rules")]
     pub rules: Vec<Rule>,
+    #[serde(skip)]
+    execution: std::sync::Arc<execution::CheckExecutions>,
 }
 
 /// Candidate targets are simulation inputs and grant no runtime authority.
@@ -548,6 +560,8 @@ pub struct Evidence {
     pub result: Option<CheckResult>,
     pub unavailable: Option<String>,
     pub expires_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<Value>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -616,7 +630,9 @@ impl Checks {
             } else if check.scale.is_some() {
                 return Err(invalid("only score checks have a score scale"));
             }
-            if let EvidenceSource::Recorded { path } = &mut check.source
+            execution::validate_source(&mut check.source)?;
+            if let EvidenceSource::Recorded { path } | EvidenceSource::Job { spec: path, .. } =
+                &mut check.source
                 && path.is_relative()
             {
                 *path = base.unwrap_or(Path::new(".")).join(&path);
@@ -825,9 +841,20 @@ impl Checks {
                 result: None,
                 unavailable: None,
                 expires_at_ms: None,
+                execution: None,
             };
             if let (Some(subject), Some(input_digest)) = (subject, input_digest) {
                 match &check.source {
+                    EvidenceSource::Job { effects, .. }
+                    | EvidenceSource::Service {
+                        operation: execution::ServiceOperation { effects, .. },
+                        ..
+                    } => {
+                        entry.execution = Some(json!({"effects":effects,"invoked":false}));
+                        entry.acquisition = "offline_unavailable".into();
+                        entry.unavailable =
+                            Some("live execution is unavailable in offline preview".into());
+                    }
                     EvidenceSource::Unavailable { reason } => {
                         entry.unavailable = Some(format!("unsupported: {reason}"))
                     }
@@ -878,6 +905,20 @@ impl Checks {
     /// Atomic replacement or an in-place change cancels this observation.
     pub async fn versions_current(&self, evidence: &BTreeMap<String, Evidence>) -> bool {
         for (name, entry) in evidence {
+            if let Some(Check {
+                source: EvidenceSource::Job { spec, limits, .. },
+                ..
+            }) = self.checks.get(name)
+                && let Some(expected) = entry
+                    .execution
+                    .as_ref()
+                    .and_then(|value| value["definition_digest"].as_str())
+            {
+                match execution::read_bounded(spec, limits.max_input_bytes).await {
+                    Ok((bytes, _)) if content_digest(&bytes) == expected => {}
+                    _ => return false,
+                }
+            }
             if let Some(expected) = &entry.file_version {
                 let Some(Check {
                     source: EvidenceSource::Recorded { path },
@@ -1401,6 +1442,7 @@ mod tests {
                         result: Some(result),
                         unavailable: None,
                         expires_at_ms: None,
+                        execution: None,
                     },
                 )
             })
@@ -2157,6 +2199,7 @@ mod composition_edge_tests {
                     }),
                     unavailable: None,
                     expires_at_ms: None,
+                    execution: None,
                 },
             );
         }

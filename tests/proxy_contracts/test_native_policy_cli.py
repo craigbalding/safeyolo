@@ -290,6 +290,7 @@ def test_candidate_evaluation_uses_time_after_all_evidence_reads(tmp_path, case)
         assert initial["stages"][0]["decision_time_ms"] < boundary, initial
         held_file.unlink()
         os.mkfifo(held_file)
+        held_metadata = held_file.stat()
         with child_process(command, tmp_path, os.environ.copy()) as process:
             deadline = time.monotonic() + 5
             while True:
@@ -308,6 +309,12 @@ def test_candidate_evaluation_uses_time_after_all_evidence_reads(tmp_path, case)
                 assert time.time_ns() // 1_000_000 < boundary, "fixture missed the pre-transition read"
                 time.sleep(max(0, (boundary + 100) / 1000 - time.time()))
                 json.dump(records["request"], writer)
+                writer.flush()
+                # Native FIFO writes can change mtime. These captured bytes are
+                # fixed: keep their selected version stable before EOF, as an
+                # immutable evidence file would be. Preserve the real reader's
+                # before/after metadata guard and all post-read clock checks.
+                os.utime(held_file, ns=(held_metadata.st_atime_ns, held_metadata.st_mtime_ns))
             assert process.wait(timeout=10) == 0, (tmp_path / "process.log").read_text()
         result = json.loads((tmp_path / "process.log").read_text())["result"]
         expected = "allow" if case == "registration_age" else "deny" if case == "host_expiry" else "unresolved"

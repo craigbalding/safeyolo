@@ -15,6 +15,7 @@ const ID: &str = "req-00000000000000000000000000000000";
 fn identity(agent: &str) -> ConnectionIdentity {
     ConnectionIdentity {
         authorization_principal: None,
+        policy_checks: Vec::new(),
         ingress_binding: None,
         run: None,
         agent_id: agent.into(),

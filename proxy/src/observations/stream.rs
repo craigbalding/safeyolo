@@ -458,6 +458,7 @@ mod tests {
             ),
             &ConnectionIdentity {
                 authorization_principal: None,
+                policy_checks: Vec::new(),
                 ingress_binding: None,
                 agent_id: "alice".into(),
                 run: None,
@@ -555,6 +556,7 @@ mod tests {
         let mut consumer = bus.subscribe(ConsumerKind::Capture, Limits::default());
         let identity = ConnectionIdentity {
             authorization_principal: None,
+            policy_checks: Vec::new(),
             ingress_binding: None,
             agent_id: "alice".into(),
             run: None,

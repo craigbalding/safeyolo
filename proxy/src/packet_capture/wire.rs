@@ -591,6 +591,7 @@ mod tests {
             bus.clone(),
             &crate::ConnectionIdentity {
                 authorization_principal: None,
+                policy_checks: Vec::new(),
                 ingress_binding: None,
                 agent_id: "owned".into(),
                 connection_id: "ingress".into(),

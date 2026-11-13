@@ -26,6 +26,7 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) struct Authority {
     pub principal: String,
     pub run: crate::host_runs::AgentRun,
+    pub checks: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -34,6 +35,8 @@ struct Delegation {
     gate_id: String,
     run_id: String,
     socket_path: PathBuf,
+    #[serde(default)]
+    checks: Vec<String>,
 }
 
 impl Delegation {
@@ -47,6 +50,7 @@ impl Delegation {
         let name = format!("job-{}", self.run_id);
         Ok(Authority {
             principal: format!("gate:{}", self.gate_id),
+            checks: self.checks.clone(),
             run: crate::host_runs::AgentRun {
                 agent: name.clone(),
                 agent_id: name,
@@ -123,20 +127,7 @@ pub(crate) async fn serve(
             .and_then(|policy| policy.gateway())
             .ok_or("gateway policy is unavailable")?
             .agent_environment_json(&authority.principal)?;
-        let (listener, socket) = crate::SocketPath::bind(&delegation.socket_path)?;
-        fs::set_permissions(&delegation.socket_path, fs::Permissions::from_mode(0o600))?;
-        let listener = crate::RunningListener::start_with_job(
-            listener,
-            socket,
-            crate::AgentListener {
-                agent_id: authority.run.agent.clone(),
-                socket_path: delegation.socket_path,
-                source_id: None,
-            },
-            state,
-            Arc::default(),
-            Some(authority),
-        );
+        let listener = start_listener(state, &delegation, authority)?;
         Ok((listener, tokens))
     })();
     let (listener, tokens) = match prepared {
@@ -186,17 +177,60 @@ pub(crate) async fn serve(
         .expect("fixed job upgrade"))
 }
 
+fn start_listener(
+    state: RuntimeState,
+    delegation: &Delegation,
+    authority: Authority,
+) -> Result<crate::RunningListener, Error> {
+    let (listener, socket) = crate::SocketPath::bind(&delegation.socket_path)?;
+    fs::set_permissions(&delegation.socket_path, fs::Permissions::from_mode(0o600))?;
+    Ok(crate::RunningListener::start_with_job(
+        listener,
+        socket,
+        crate::AgentListener {
+            agent_id: authority.run.agent.clone(),
+            socket_path: delegation.socket_path.clone(),
+            source_id: None,
+        },
+        state,
+        Arc::default(),
+        Some(authority),
+    ))
+}
+
+/// Native policy collection owns this ephemeral delegation just as the host job
+/// caller owns its management connection. It creates no agent or saved grant.
+pub(crate) fn local(
+    state: RuntimeState,
+    gate_id: &str,
+    checks: Vec<String>,
+    socket_path: &Path,
+) -> Result<(crate::RunningListener, Authority), Error> {
+    let delegation = Delegation {
+        gate_id: gate_id.into(),
+        run_id: uuid::Uuid::new_v4().simple().to_string(),
+        socket_path: socket_path.into(),
+        checks,
+    };
+    let authority = delegation.authority()?;
+    Ok((
+        start_listener(state, &delegation, authority.clone())?,
+        authority,
+    ))
+}
+
 pub(super) struct Client {
     stream: TokioIo<hyper::upgrade::Upgraded>,
     tokens: Secret,
 }
 
 impl Client {
-    pub async fn connect(
+    pub(crate) async fn connect_with_checks(
         config: &Path,
         directory: &Path,
         spec: &super::JobSpec,
         run_id: &str,
+        checks: &[String],
     ) -> Result<Self, Error> {
         let path = directory.join("proxy");
         fs::create_dir(&path)?;
@@ -205,6 +239,7 @@ impl Client {
             gate_id: spec.gate_id.clone(),
             run_id: run_id.into(),
             socket_path: path.join("proxy.sock"),
+            checks: checks.to_vec(),
         };
         #[cfg(target_os = "macos")]
         {
@@ -451,6 +486,7 @@ action = "warn"
                 gate_id: "proof".into(),
                 run_id,
                 socket_path: root.path().join(format!("{index}.sock")),
+                checks: Vec::new(),
             };
             let client = Client::open(&path, &delegation).await.unwrap();
             let tokens: serde_json::Value =
@@ -486,6 +522,7 @@ action = "warn"
                 gate_id: "other".into(),
                 run_id: format!("{:032x}", index + 10),
                 socket_path: root.path().join(format!("other{index}.sock")),
+                checks: Vec::new(),
             };
             let thief = Client::open(&path, &other).await.unwrap();
             assert_eq!(thief.tokens.expose_secret(), "{}");
@@ -505,6 +542,7 @@ action = "warn"
             gate_id: "proof".into(),
             run_id: "a".repeat(32),
             socket_path: root.path().join("abandoned.sock"),
+            checks: Vec::new(),
         };
         drop(Client::open(&path, &abandoned).await.unwrap());
         tokio::time::timeout(TIMEOUT, async {
@@ -540,12 +578,14 @@ action = "warn"
             gate_id: "proof with spaces ".into(),
             run_id: "a".repeat(32),
             socket_path: "/unused".into(),
+            checks: Vec::new(),
         }
         .authority()
         .unwrap();
         let identity = crate::ConnectionIdentity {
             agent_id: authority.run.agent.clone(),
             authorization_principal: Some(authority.principal.clone()),
+            policy_checks: Vec::new(),
             run: Some(authority.run),
             connection_id: "owned".into(),
             source_id: None,
@@ -571,6 +611,7 @@ action = "warn"
             gate_id: "proof".into(),
             run_id: "b".repeat(32),
             socket_path: root.path().join("candidate.sock"),
+            checks: Vec::new(),
         };
         fs::write(root.path().join("data/admin_token"), "test-agent-token").unwrap();
         let error = match Client::open(&path, &delegation).await {

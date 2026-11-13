@@ -3735,8 +3735,13 @@ where
                 }
                 if let Some(provider) = provider_name {
                     let caller = identity.request_agent().expect("selected gateway identity");
-                    let Some(caller_id) =
-                        snapshot.and_then(|snapshot| snapshot.configured_agent_id(caller))
+                    let Some(caller_id) = identity
+                        .authorization_principal
+                        .as_ref()
+                        .map(|_| identity.agent_id.as_str())
+                        .or_else(|| {
+                            snapshot.and_then(|snapshot| snapshot.configured_agent_id(caller))
+                        })
                     else {
                         let reply = gateway_response(
                             503,

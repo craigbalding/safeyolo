@@ -42,6 +42,7 @@ fn context(store: &Arc<TraceStore>) -> Arc<RequestTrace> {
         store.clone(),
         &ConnectionIdentity {
             authorization_principal: None,
+            policy_checks: Vec::new(),
             ingress_binding: None,
             run: None,
             agent_id: "alice".into(),
@@ -274,6 +275,7 @@ fn trace_failure_and_opt_out_do_not_change_response_effects() {
             runtime.traces.clone(),
             &ConnectionIdentity {
                 authorization_principal: None,
+                policy_checks: Vec::new(),
                 ingress_binding: None,
                 run: None,
                 agent_id: "alice".into(),
@@ -363,6 +365,7 @@ fn selected_source_hooks_match_decisions_and_retained_state() {
             runtime.traces.clone(),
             &ConnectionIdentity {
                 authorization_principal: None,
+                policy_checks: Vec::new(),
                 ingress_binding: None,
                 run: None,
                 agent_id: "alice".into(),

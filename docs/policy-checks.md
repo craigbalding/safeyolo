@@ -5,10 +5,10 @@ selects each source, meaning, scope and influence in `policy.toml`. A check
 result does not grant service or credential access. Those controls still apply.
 
 The shared implementation is [checks.rs](../proxy/src/policy/checks.rs).
-Current evidence acquisition reads operator-selected, captured JSON files.
-Job/service execution and managed feed acquisition supply those results through
-their own authorized mechanisms. The named-check evaluator does not execute a
-callback, start a sandbox, download a feed or call a provider.
+Live collection reads captured JSON files or runs an adopted job or Service
+Gateway operation. The shared evaluator validates and composes the resulting
+evidence. Offline candidate evaluation reads captured files and leaves live
+operations unavailable. The workload cannot select an executable or callback.
 
 ## Define checks and rules
 
@@ -64,6 +64,146 @@ A non-required rule can name `source = { kind = "unavailable", reason = "..." }`
 with an explicit unavailable fallback. Unknown subject kinds, full URL/query
 checks and TLS/post-response stages are rejected. Such constraints are not
 silently treated as hostname or path checks.
+
+## Execute adopted checks
+
+An active native policy can use `source.kind = "job"` or `"service"`. Each
+source declares its effects and execution limits. Effects are `passive`,
+`retains_input`, `active` or `unknown`. These are the operator's adopted
+provider contract, not a guarantee of provider accuracy. Offline preview never
+executes any of these operations, including an operation declared passive.
+
+For a job source, the host selects a JSON specification accepted by the
+existing [job command](operator-guide.md#run-a-disposable-sandbox-job). Use an absolute path or a path relative to the
+policy file. This fragment replaces the `source` of a named check:
+
+```toml
+[checks.threats.source]
+kind = "job"
+spec = "hostname-check.json"
+effects = "passive"
+
+[checks.threats.source.limits]
+timeout_ms = 5000
+max_input_bytes = 8192
+max_output_bytes = 8192
+max_concurrent = 2
+max_pending = 4
+max_cached = 128
+```
+
+The specification fixes `gate_id`, executable `argv`, guest privilege, network
+selection and the existing job bounds. Its input and retained-output bounds
+must fit the adopted check bounds. The check copies one host-generated
+`request.json` into the job's read-only `/input`. It contains the normalized
+`subject`, `input_digest`, policy-owned `inputs` and implementation/configuration
+versions. There are no workload-selected mount paths. The existing job runner
+retains isolation, rootfs/input hashes, observed wait status and cleanup.
+The check retains those execution facts and the specification digest in its
+explanation. The existing audit stream records reached execution and result
+provenance before admission revalidates current policy. Discarded results remain
+inspectable and grant no decision authority. A changed specification
+invalidates pending evidence and reuse.
+
+The job's stdout must be one typed JSON result, for example:
+
+```json
+{"finding":{"kind":"finding","positive":false},"source_revision":"dataset-42"}
+```
+
+Optional fields are `source_observed_at_ms` and `valid_until_ms`. The host adds
+subject/input/version bindings, collection time and the digest of the returned
+bytes. Exit zero is only successful execution. PASS text, a malformed result,
+an incompatible finding type, an incomplete observation and a nonzero exit do
+not become a favorable finding. Negative findings remain distinct from these
+failures. Job streams retain at most the specification's `retain_bytes` per
+stream; byte counts and hashes cover complete streams. A truncated or oversized
+result is unavailable evidence.
+
+For a service source, adopt the service and capability through the existing
+Service Gateway policy for `gate:<gate_id>`. The source also fixes its endpoint,
+HTTP method, path mapping, result mapping and effects. For example, after the
+operator has adopted an `assessor` service at `assessor.example` with a `reader`
+capability covering the operation, this source calls it:
+
+```toml
+[checks.threats.source]
+kind = "service"
+[checks.threats.source.operation]
+gate_id = "hostname-assessment"
+service = "assessor"
+capability = "reader"
+endpoint = "https://assessor.example"
+method = "GET"
+path = "/assessment/{subject}"
+effects = "passive"
+mapping = "typed"
+[checks.threats.source.limits]
+timeout_ms = 2000
+max_input_bytes = 8192
+max_output_bytes = 8192
+max_concurrent = 2
+max_pending = 4
+max_cached = 128
+```
+
+The endpoint must match the adopted service host. `{subject}` expands to an
+escaped hostname, IP or value. `{input.NAME}` expands to an escaped policy-owned
+input. `{path}` copies a visible HTTP-path subject. The workload cannot replace
+the endpoint. GET and HEAD send no body; other methods send JSON containing the
+subject, input digest and policy-owned inputs. `typed` uses the same result
+format as a job.
+
+A service check uses the ordinary proxy transport, network policy, gateway
+route/credential controls and provider routing. Missing capability or operation
+grants fail explicitly. Check dependencies receive no blanket policy bypass.
+Scope assessed-workload rules to their intended agents: if dependency traffic
+requires a check already in its ancestry, that dependency fails as recursive
+or cyclic. Authorizing the assessed destination does not authorize a dependency.
+Existing authorized dependencies need no recurring approval or saved agent
+record per execution.
+
+An agent-provided service receives its authenticated caller's transient
+`job-<run-id>` in `X-SafeYolo-Agent-ID`, and the stable `gate:<gate_id>` in
+`X-SafeYolo-Agent-Name`. The proxy overwrites caller-supplied identity headers.
+The temporary listener and delegation end with the operation. No configured
+workload agent is impersonated.
+
+The deadline includes pending-slot wait and execution. `max_concurrent` bounds
+running operations; `max_pending` bounds additional waiting operations.
+Excess work returns unavailable evidence. Cancellation or deadline expiry stops
+the owned transport/job and discards late evidence. Platform cleanup finishes
+before its execution slot is released. Cancellation cannot reverse an active
+operation already submitted to a provider. No network wait or VM startup holds
+the global policy lock. Admission still checks current policy and run authority
+after collection.
+
+Completed valid evidence is reused for equivalent normalized subject, owned
+inputs, versions and source definition. The shared evaluator applies its
+freshness/type/binding validation on every reuse. The service capability and
+operation must still be authorized. `max_cached` bounds retained entries;
+zero disables reuse. A new policy has a new execution cache. There is no
+always-on checker, separate scheduler or persistent result store. Service
+checks need no fresh sandbox for each URL.
+
+### GitHub provenance example
+
+The `github_issue` service mapping accepts the authoritative external
+`https://api.github.com` issue GET operation. Adopt the GitHub service and its
+read capability for the selected gate, then use `path = "{path}"` with an
+`http_path` subject. Set `inputs.expected_author` and
+`inputs.expected_repository_owner` in the named check. These expected identities
+come from policy, rather than the assessed issue. The check's result type is
+`finding`: positive means both identities match.
+
+The adapter requires the exact API issue URL, issue ID, author, title, body and
+revision. It records the captured response's content digest and issue
+ID/`updated_at` revision. Mismatch is a negative finding; missing data, malformed
+responses and unavailable GitHub remain unavailable evidence. The captured
+fixture in the adapter tests retains actual GitHub issue content. The finding
+attests only the exact captured revision consumed by the check. It does not
+attest a later fetch, comments, linked resources or all author-written content
+as safe.
 
 ## Compose evidence
 
@@ -163,10 +303,9 @@ Evidence expires at the boundary, not one request later. Registration-age
 conditions use decision time. Explanations expire no later than their next
 threshold transition or evidence deadline.
 
-Current collection reads a fresh file snapshot for each admission. There is no
-separate result cache. The captured bytes have a host-computed file digest;
+Recorded collection reads a fresh file snapshot for each admission. The captured bytes have a host-computed file digest;
 file replacement/change and subject/input/version mismatches prevent reuse.
-Future backend caches must preserve these bindings and current policy/authority
+Live evidence reuse preserves these bindings and current policy/authority
 checks. Producers should replace complete files atomically, with entries and
 provenance from the same accepted snapshot. Malformed, missing, duplicate and
 expired records enact the selected unavailable fallback.
@@ -238,7 +377,7 @@ safeyolo --root /path/to/instance policy evaluate candidate.toml request.json
 The JSON preview identifies `recorded_offline` evidence, the applied condition
 and fallback, check meaning/scale, rule results, source
 metadata, freshness, guard outcome and the final allow/deny/approval/unresolved
-action. It performs no direct or dependency-mediated target contact. Current
+action. It performs no direct or dependency-mediated target contact. Offline
 preview has no live provider operation. Already captured scanner evidence can
 be used within its freshness; preview never starts a scan, crawl or visit.
 Credential/service controls may further restrict a live request. Preview does
