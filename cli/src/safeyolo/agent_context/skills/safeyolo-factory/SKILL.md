@@ -10,6 +10,23 @@ design and troubleshooting copilot, not a new controller, runner, queue, or
 workflow engine. The factory TOML, role contracts, approved snapshot, Coord
 state, and supervisors remain authoritative.
 
+## Select the workflow
+
+Read the selected TOML and role contracts before assigning or completing work.
+With `[work]`, supervised roles receive native participant actions and settle
+them through their named canonical mutations. Do not mirror that lifecycle in
+`TASK`, `REVIEW_READY` or terminal messages. Still-supported message assignments
+use the handoffs and responses declared by their selected contract. A generic
+message convention does not add responses to that contract. Preserve the
+original protocol of in-flight work across a later snapshot change.
+
+Keep runtime primitives, domain responsibilities, instance bindings and one
+item's assignment separate. [Factory design](references/design.md#keep-each-instruction-in-its-own-place)
+defines their maintained homes and brief variations. Coord does not prescribe
+a software workflow, a repository host, a programming language or a role set.
+
+### Native work and review
+
 For native output publication, the producing worker retains its immutable
 artifact first, then calls `publish_work_output` with current work version,
 claim generation and target generation. Retry an interrupted publication with
@@ -17,8 +34,7 @@ the exact original operation ID and inputs. Read current work separately from
 the recovered receipt. Cancellation and reassignment can reject an uncommitted
 stale publication; they do not remove the external artifact or stop an external
 effect. Producer identity comes from the authenticated route and cannot be
-supplied by a bridge. Native publication does not yet replace the supervisor's
-declared message handoffs or establish acceptance from attestation counts.
+supplied by a bridge. Publication does not establish acceptance.
 
 `request_check` and `raise_challenge` return ordinary work IDs with exact
 subjects and named participants. The assigned participant claims that work.
@@ -29,6 +45,15 @@ call `resolve_challenge`, subject to the selected independence flag and current
 work/response expectations. Read `list_work_reviews` and immutable `read_work`
 versions for current obligations and history. Checks and challenges remain
 advisory unless selected in native acceptance requirements.
+
+Use an exact-subject check for a proposition with a meaningful verdict.
+An independent check requires an attributed subject producer distinct from
+the reviewer. Publish the retained output before requesting its independent
+check; an arbitrary reference or unpublished investigation has no attributed
+output producer. An answered check revision can also be an attributed subject.
+Use ordinary Work for open-ended research or investigation, then check a
+resulting proposition separately when useful. Do not select a policy that
+requires an investigator to independently check its own report.
 
 The work creator or operator can select native acceptance context with
 `set_work_requirements`. Later amendments require a recorded authority or the

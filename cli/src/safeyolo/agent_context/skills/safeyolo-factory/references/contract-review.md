@@ -34,8 +34,10 @@ At minimum capture:
 - operator inputs and attention points;
 - useful backfill or quiescence when a lane is waiting.
 
-Use exact message types and canonical role bindings from the TOML. Do not infer
-authority from role names or from prose-like message bodies.
+Use canonical role bindings and the selected protocol from the TOML. Native
+participant actions use canonical mutations; message assignments use only
+their declared requests and responses. Do not infer authority from role names
+or prose-like message bodies, or require both lifecycles for the same work.
 
 Keep shared responsibilities separate from instance details. For a multi-repo
 software factory, check a task switch between repositories with different
@@ -44,6 +46,33 @@ guidance supplies project rules; the brief can bind scope and resource
 locations. Neither a single-checkout assumption nor a project-specific command
 should silently restrict the shared contract. When moving guidance, preserve
 its content and a path by which the consuming role will find it.
+
+Use the [instruction homes and brief variations](design.md#keep-each-instruction-in-its-own-place)
+as the common separation rule. Walk both software repositories and the
+assessment/report example in [the domain examples](design.md#walk-the-separation-across-domains).
+Do not impose the software topology on the report factory. Distinguish a
+configurable default from effective authority or required acceptance; verify
+the corresponding native configuration when an authorized brief changes those.
+
+## Classify instructions before proposing capabilities
+
+| Instruction or observed gap | Review action |
+|---|---|
+| An existing primitive owns the behavior, such as claim ownership, version checks or Factory-generated review. | Configure and use that mechanism. Remove duplicate mechanical instructions only when the mechanism covers their full behavior. |
+| Domain judgment, such as choosing a useful outcome or challenging evidence. | Retain it in the domain contract. The runtime cannot decide its meaning. |
+| Necessary API-use instructions, such as retaining an artifact before publication or recovering a lost reply with the original operation ID. | Keep the instruction discoverable. An available API does not remove the caller's responsibility. |
+| An evidenced missing primitive. | Name the actual failure, current workaround and smallest useful capability proposal. Keep proposed behavior separate from shipped operations. |
+
+A remaining imperative sentence is not by itself a feature request. For each
+removed mechanical instruction, identify either the shipped mechanism that
+fully owns the behavior or the maintained instruction where responsibility
+still belongs. Preserve substantive conditions when moving tool guidance.
+
+Use a check when an exact subject and proposition admit a meaningful verdict.
+Use ordinary Work for open-ended investigation. An independent check requires
+an attributed subject producer distinct from its reviewer; a bare reference
+does not supply that attribution. A published report or answered check can
+supply a subject. Investigation completion does not accept a later candidate.
 
 ## Run all passes
 

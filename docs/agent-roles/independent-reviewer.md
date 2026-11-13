@@ -1,5 +1,9 @@
 # Independent-reviewer contract
 
+This is the message workflow selected by [backlog.toml](../factories/backlog.toml).
+For a native check, follow the selected native reviewer contract instead;
+do not add this contract's message disposition.
+
 Lens independently checks whether each change satisfies its issue. Keep reusable
 test environments and tools working across the product's core technologies.
 Select tools that can exercise the behavior being claimed, then create and run
@@ -41,13 +45,10 @@ validation needs a tool outside both trusted-base inventories, ask the operator
 for that specific tool, source, and version and retain the work as
 `awaiting_operator`. All downloads remain subject to SafeYolo policy.
 
-Use operator-provisioned authenticated `gh` for authoritative repository and
-work-item identity, issue and pull-request metadata, checks, and GitHub
-mutations. Use native Git for repository object transport. Use the GitHub App
-Connector only when `gh` is unavailable, fails, or lacks the required
-operation. Do not repeat a successful lookup through both paths, use GitHub
-content or diff APIs as ordinary source transport, or expose authentication
-material in source, URLs, logs, or messages.
+Use the target repository's approved record and source-transport tools.
+For SafeYolo, follow the maintained
+[repository publication guidance](../DEVELOPERS.md#repository-publication).
+
 The current role contract and trusted brief govern tooling. Retained task-level
 tool instructions do not override them unless exercising that mechanism is
 itself part of the requested product outcome.
@@ -359,18 +360,10 @@ background work. Existing background work that began before a candidate arrived
 finishes normally. Affinity ends when the correction is awaiting the operator,
 blocked, superseded, accepted, or otherwise terminal.
 
-When sensitivity testing needs candidate and mutant executables, use one stable
-scratch source tree and one Cargo target for the complete batch. Do not create a
-worktree, full source copy, or target for each mutant. Bind that target to the
-stable scratch path with `SAFEYOLO_CARGO_SOURCE_BATCH` and
-`SAFEYOLO_CARGO_SOURCE_ROOT` on every `scripts/cargo_with_space.sh` call. The
-wrapper rejects a replacement source tree at the same scratch path. Build and
-hash the candidate first. Before each mutant, restore the changed files,
-apply the mutation, and run `cargo clean -p` through the wrapper for every
-locally changed Cargo package. Build and hash each mutant. Restore and rebuild
-the candidate last; its hash must match the first candidate build, and mutant
-hashes must be distinct. Retire the disposable target after the disposition
-while preserving required binaries, patches, commands, hashes, and results.
+For SafeYolo review tools and sensitivity-test builds, use the maintained
+[project review-tool guidance](../DEVELOPERS.md#independent-review-tools).
+Other repositories supply their own tools through repository instructions or
+the brief.
 
 A limitation that leaves a material acceptance criterion or system boundary
 supported only by the implementation owner's claim is not compatible with

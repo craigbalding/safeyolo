@@ -1,5 +1,9 @@
 # Backlog coordinator contract
 
+This is the message workflow selected by [backlog.toml](backlog.toml).
+Native assignments use the selected native coordinator contract instead;
+do not duplicate their lifecycle with the messages below.
+
 Relay owns productive and resilient factory flow. Keep Forge supplied with
 useful implementation work, give Lens useful independent work when no candidate
 review is ready, and coordinate recovery from ordinary failures. Surface only
@@ -50,11 +54,9 @@ its declared terminal response to Relay. Never ask Lens to originate
 `REVIEW_READY` or target that task response to Forge; only Forge starts
 independent PR acceptance with `REVIEW_READY`.
 
-Use operator-provisioned authenticated `gh` for GitHub issue, pull-request,
-check, and mutation operations, and native Git for repository object transport.
-Use the GitHub App Connector only when `gh` is unavailable, fails, or lacks the
-required operation. Do not repeat a successful lookup through both paths, and
-never expose authentication material in source, URLs, logs, or messages.
+Use the target repository's approved record and source-transport tools.
+For SafeYolo, follow the maintained
+[repository publication guidance](../DEVELOPERS.md#repository-publication).
 
 The declared leading types remain optional compatibility shorthand:
 

@@ -48,7 +48,7 @@ nodes:
   - id: ev.review_load_live_brief
     kind: evidence
     label: "Read the current live brief when one exists; keep it separate from the immutable contract set"
-    detail: "A brief may set priority and bind instance resources within delegated scope. It may not redefine authority, routes, recipient cardinality, message fields, or completion ownership fixed by the contract."
+    detail: "Apply design.md's instruction homes and brief variations. Ordinary defaults/tool bindings use existing authority. An authorized authority, acceptance or capability change also needs coherent effective policy/configuration; prose grants nothing. Reuse existing authorization."
     source: authored
 
   - id: ev.review_compare_snapshot
@@ -60,6 +60,18 @@ nodes:
   - id: ev.review_extract_model
     kind: evidence
     label: "Extract roles, owned outcomes, authority, work inputs/outputs, handoffs, evidence, waits, and recovery owners"
+    source: authored
+
+  - id: ev.review_instruction_homes
+    kind: evidence
+    label: "Check runtime, domain, instance and assignment separation and the selected native or message lifecycle"
+    detail: "Follow design.md's shared separation rule and walk its two software repositories with different languages/tools and its assessment/report example. Resolve role identities through bindings. Do not impose a universal topology or duplicate lifecycles."
+    source: authored
+
+  - id: ev.review_existing_mechanisms
+    kind: evidence
+    label: "Distinguish shipped mechanisms, domain judgment, API-use instructions and evidenced missing primitives"
+    detail: "Use contract-review.md's classification. Trace removed mechanical instructions to their shipped owner or maintained home; retain moved conditions and discoverability. Exact-subject checks need a meaningful verdict and independent checks need an attributed producer; open-ended investigation uses ordinary Work."
     source: authored
 
   - id: ev.review_render_projection
@@ -172,7 +184,8 @@ nodes:
 
   - id: ask.review_approve_and_run_snapshot
     kind: operator_ask
-    label: "After source correction, ask the operator to check, approve, and run the intended snapshot"
+    label: "For intended live adoption, use the authorized executor to check, approve and stage; ask only for missing authority"
+    detail: "Source review does not activate a factory. Preserve active work and existing authorization; verify the resulting staged/live state separately."
     source: authored
 
 edges:
@@ -193,7 +206,9 @@ edges:
 
   # Build one model, then examine it from every cross-cutting perspective.
   - {from: ev.review_load_exact_set, to: ev.review_extract_model, kind: next_check}
-  - {from: ev.review_extract_model, to: ev.review_render_projection, kind: next_check}
+  - {from: ev.review_extract_model, to: ev.review_instruction_homes, kind: next_check}
+  - {from: ev.review_instruction_homes, to: ev.review_existing_mechanisms, kind: next_check}
+  - {from: ev.review_existing_mechanisms, to: ev.review_render_projection, kind: next_check}
   - {from: ev.review_render_projection, to: ev.review_outcome_liveness, kind: next_check}
   - {from: ev.review_render_projection, to: ev.review_authority_evidence, kind: next_check}
   - {from: ev.review_render_projection, to: ev.review_handoff_recovery, kind: next_check}

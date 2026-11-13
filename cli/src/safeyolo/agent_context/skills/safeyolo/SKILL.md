@@ -44,7 +44,8 @@ do not reload Coord or GitHub references already supplied by the role contract.
 - Read [Coord work coordination](references/coord.md) before joining or using
   coord rooms, delegating or accepting peer work, waiting for attention, or
   choosing between targeted attention and retained room history. It contains
-  the current low-chatter coordinator/worker protocol.
+  native and message entry points. Follow the selected contract; the generic
+  message convention does not add a second native lifecycle or undeclared replies.
 - Read [GitHub composite checks](references/github-checks.md) before using the
   optional intake or exact-candidate helper through a configured GitHub App
   connector. It defines explicit inputs, normalized evidence, and failure

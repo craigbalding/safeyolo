@@ -1252,6 +1252,96 @@ request can then fall back to the verified embedded wheel. The controls check
 that fallback and the default-index path with published metadata. They do not
 establish integrity for custom-index exceptions.
 
+### Independent review tools
+
+These SafeYolo project bindings apply to the reviewer in either the native or
+message software workflow. The selected role contract owns the lifecycle and
+independent judgment. Repository instructions and a role-scoped brief locate
+these tools; a brief can bind an approved rule pack or environment without
+copying this guide. Another repository supplies its own tool guidance.
+
+For Rust, start with the changed behavior and the relevant Cargo test or
+direct probe. Use rustfmt or Clippy on the affected crate when it can expose a
+real problem; inspect their warnings rather than requiring a broad clean run
+for every correction. For each Rust feature or fix, run the small Semgrep rule
+pack bound by the trusted brief when its path is readable. Scan first-party
+production source. If no pack is bound, use `p/rust` on changed production
+files when available. Use `p/python` on changed production Python files when a
+pattern scan helps the review. Exclude test-only files; do not treat matches
+inside inline test modules as production findings. The repository's tested
+local rules may add a specific check.
+
+From the clean candidate checkout, give Semgrep `--baseline-commit` with the
+committed starting point for the first review. For a correction, compare with
+the last commit reviewed independently and carry forward still-valid
+decisions. If the chosen commit is not an ancestor, use its merge base with
+the candidate. Keep the same rules for the base and candidate. This reports
+new matches without asking the reviewer to re-triage every old one. Check scan
+errors, exclusions, and findings. An old match needs fresh review when the
+candidate changes its code, guard, caller, or input path, even if baseline
+mode filters it. For each new or newly relevant match, decide from the code or
+a focused probe whether it is a defect, a justified dismissal, or an
+unresolved concern. Do not add blanket `nosemgrep` comments to hide old
+matches. Report a genuine unrelated defect to the coordinator for separate
+work; it blocks this candidate only if the candidate introduces or worsens it.
+The rule pack is a review tool, not a required handoff artifact. If the pack
+is missing, give the coordinator the exact path and continue behavioral
+review. Block only if the missing scan is needed to decide a material security
+claim.
+
+CodeQL database creation and global data-flow queries are not quick per-
+feature checks. Do not build a new database or run a broad suite for each
+candidate or correction. A coherent integrated checkpoint or a specific
+security question may justify an approved Rust CodeQL run. Report the
+completed query result and its limits; a failed, skipped, or unsupported scan
+proves nothing. If a material analysis needs a tool that is not available on
+an approved route, tell the coordinator the exact gap and continue the
+behavioral review where possible.
+
+When Rust sensitivity testing needs candidate and mutant executables, use one
+stable scratch source tree and one Cargo target for the complete batch. Do not
+create a worktree, full source copy, or target for each mutant. Bind that
+target to the stable scratch path with `SAFEYOLO_CARGO_SOURCE_BATCH` and
+`SAFEYOLO_CARGO_SOURCE_ROOT` on every `scripts/cargo_with_space.sh` call. The
+wrapper rejects a replacement source tree at the same scratch path. Build and
+hash the candidate first. Before each mutant, restore the changed files, apply
+the mutation, and run `cargo clean -p` through the wrapper for every locally
+changed Cargo package. Build and hash each mutant. Restore and rebuild the
+candidate last; its hash must match the first candidate build, and mutant
+hashes must be distinct. Retire the disposable target after the disposition
+while preserving required binaries, patches, commands, hashes, and results.
+
+### Repository publication
+
+For SafeYolo GitHub records, use operator-provisioned authenticated `gh` for
+repository/work-item identity, issue and pull-request metadata, checks and
+mutations. Use native Git for source transport, including fetch, branch,
+commit and push. Use the GitHub App Connector only when `gh` is unavailable,
+fails or lacks the operation. Do not repeat a successful lookup through both
+paths or reconstruct source through GitHub content/diff APIs. Keep credentials
+out of source, URLs, logs and messages.
+
+Before publishing a native code output, push the coherent candidate and create
+or update one pull request linked to its requirement. Independently verify
+that the pull-request head equals the pushed local commit. Use this immutable
+`target_ref`, with the actual owner, repository, number and full head SHA:
+
+```text
+https://github.com/<owner>/<repository>/pull/<number>/commits/<full-head-sha>
+```
+
+The selected native contract uses `publish_work_output` and `complete_work`;
+this project binding adds no message handoff. The message contract instead
+uses its declared review and completion responses.
+
+Record independently accepted issue criteria and evidence through the selected
+reviewer. Read the current issue before editing to preserve other changes.
+When correcting a published comment, edit its explicit comment ID and read it
+back; do not use `gh issue comment --edit-last`. If recording fails, retain
+the accepted result and exact missing publication for the coordinator's
+recovery. Publication failure does not erase review, and unrecorded evidence
+must be reconciled before issue closure.
+
 ### HTTP/2 gate verification
 
 From the repository root on Linux, use Rust 1.94.0, the frozen development

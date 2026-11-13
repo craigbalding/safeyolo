@@ -3,9 +3,52 @@
 Use coord as a low-noise operational work channel. Its ordinary purpose is to
 change another agent's work state, not to narrate your own.
 
-`TASK`, `ACCEPTED`, `DONE`, `BLOCKED`, and `FAILED` are communication
-conventions for humans and models. SafeYolo does not parse them or create a
-task, claim, lease, workflow, or ownership object from them. The `target=` URL
+## Select native or message work
+
+Use the protocol selected by the assignment's bound contract. A supervised
+Factory with `[work]` delivers native participant actions. Those actions use
+canonical mutations and no duplicate `TASK`, `REVIEW_READY` or terminal
+messages. Still-supported message assignments use only their contract's
+declared requests and responses. Preserve each in-flight assignment's protocol
+when a later snapshot changes the selection.
+
+Coord supplies identities, ownership, versioned references, review, acceptance,
+delivery and recovery. It does not require GitHub, software work or a fixed role
+topology. Domain contracts own responsibilities and judgment; instance briefs
+and referenced project guidance bind concrete targets/tools; each Work and its
+linked assignment supply one outcome and exact inputs.
+
+### Native lifecycle
+
+```text
+read_work and the linked assignment → claim assigned execution
+→ retain an immutable artifact → publish_work_output → complete_work
+→ assigned reviewer claims and answers the exact-subject check
+→ selected decider records acceptance when requirements permit
+```
+
+Creation with an explicit assignee delivers execution but does not claim it.
+Publication with selected Factory policy creates required checks atomically;
+generic Work needs explicit authorized review selection. Execution completion,
+check conclusion and acceptance are separate facts. Use `answer_check`,
+`respond_challenge`, `resolve_challenge` or `decide_work_acceptance` for the
+corresponding native action; `complete_work` settles execution only. Read the
+full current Work and its acceptance status before acting. Result notices with
+`requires_action=false` are information.
+
+Use a check for a proposition about an exact subject with a meaningful verdict.
+Independent checks require an attributed producer distinct from the reviewer.
+Ordinary Work holds open-ended research; publishing its report supplies an
+attributed output for a later check. A bare URL does not attribute a producer.
+See [native work and review operations](agent-api.md) for current API inputs,
+version/generation expectations and lost-response recovery. A brief grants no
+permission by itself; effective policy and access must match authorized changes.
+
+### Message conventions
+
+`TASK`, `ACCEPTED`, `DONE`, `BLOCKED`, and `FAILED` are message conventions.
+Ordinary room messages do not create native Work, claims or ownership. A
+Factory supervisor correlates its declared message handoffs separately. The `target=` URL
 is a locator for the object that the message concerns. It is not durable work
 identity or ownership state.
 
@@ -128,14 +171,15 @@ agents. For `notify=none`, use MCP or the raw Agent API. Notification does not
 change retained-message visibility; room receive permissions control who can
 read the message.
 
-For a routine assignment, prefer `send_task(room_name, assignee, target,
-body)`. It emits exactly `TASK target=<absolute-url> assignee=<agent>` followed
+For a message assignment whose selected contract declares `TASK`, prefer
+`send_task(room_name, assignee, target, body)`. It emits exactly
+`TASK target=<absolute-url> assignee=<agent>` followed
 by one blank line and the caller's multiline body. It derives
 `notify=[assignee]` and returns the same canonical send result as `send`. It
 rejects missing or malformed names, targets, or bodies. It also rejects a body
 that tries to supply another `TASK` header. This producer helper compiles into
 the canonical send operation. Manual `send` messages remain valid, and neither
-interface creates workflow state. The helper cannot notify `forge` unless the
+interface creates native Work. The helper cannot notify `forge` unless the
 exact generated header also says `assignee=forge`.
 
 Raw Agent API routes are:
@@ -155,13 +199,17 @@ Authenticate raw calls in the same way as the other Agent API operations in
 [Agent API and workflows](agent-api.md#calling-the-api). The MCP adapter is
 convenient but optional; raw Agent API access remains valid.
 
-## Recommended workflow
+## Attention workflow
 
-When `safeyolo-coord` MCP is available, the normal lifecycle is:
+During a supervised factory turn, start from the supplied canonical checkpoint
+and process all actionable objects. Leave idle waiting to the supervisor;
+do not call `wait_for_coord` inside that turn.
+
+Outside supervised turns, when `safeyolo-coord` MCP is available, use:
 
 ```text
 join room and read the current trusted brief plus authoritative room state
-→ send or receive concise targeted work-state messages
+→ act on native assignments or concise selected message handoffs
 → wait_for_coord in the foreground
 → act on every returned canonical object
 → respond only when another work state must change
@@ -288,7 +336,12 @@ Use `read_room` when retained context or deliberate catch-up is useful. Room
 history must not be a mandatory, guessed second half of the ordinary
 attention path.
 
-## Generic coordinator / worker protocol
+## Generic message coordinator / worker protocol
+
+Use this convention only for message work without a specialized contract.
+For example, the software message contracts declare their own review loop
+without `ACCEPTED`; follow that loop alone. Native assignments use the
+canonical lifecycle above.
 
 ### `TASK`
 
@@ -392,7 +445,7 @@ wait for external input.
 
 ## Low-chatter default
 
-The ordinary successful lifecycle is:
+For the generic message convention, the ordinary successful lifecycle is:
 
 ```text
 coordinator → TASK

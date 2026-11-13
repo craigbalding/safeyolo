@@ -1,5 +1,7 @@
-# Proposed selection for the existing backlog instance. Approval and staging
-# belong to the operator; see ../backlog-native-adoption.md before applying.
+# Native software-delivery example with concrete backlog role bindings.
+# Project/tool bindings belong in the brief and repository instructions.
+# Source review does not activate this selection. The authorized operator
+# executor owns approval and staging; see ../backlog-native-adoption.md.
 schema = "safeyolo.factory/v1"
 name = "backlog"
 room = "backlog"

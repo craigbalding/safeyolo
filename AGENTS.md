@@ -125,12 +125,18 @@ work into a naming cleanup.
 
 SafeYolo keeps implementation and independent acceptance separate:
 
+- For native Factory assignments, follow the selected snapshot's role contract.
+  The maintained software contracts are in
+  [backlog-native](docs/factories/backlog-native-adoption.md). Native actions
+  use their named canonical mutations; do not add the message review loop below.
 - If assigned `You are the issue owner for #123. Work it through to a
   reviewable PR.`, read and follow the
-  [issue-owner contract](docs/agent-roles/issue-owner.md).
+  [message issue-owner contract](docs/agent-roles/issue-owner.md) when that
+  message workflow is selected.
 - If assigned `You are the independent reviewer for #123 / PR #456. Review it
   under the repository reviewer contract.`, read and follow the
-  [independent-reviewer contract](docs/agent-roles/independent-reviewer.md).
+  [message independent-reviewer contract](docs/agent-roles/independent-reviewer.md)
+  when that message workflow is selected.
 
 Do not silently combine these roles for the same change. The GitHub issue and
 its materially relevant discussion define the requested outcome and acceptance
@@ -172,11 +178,16 @@ Use the [SafeYolo acceptance tooling guidance](docs/DEVELOPERS.md#acceptance-too
 for the dependency inventories and focused Python complexity check. Factory
 contracts define the responsibilities; this repository supplies its specific
 tools, and the operator brief can bind their current resource locations.
+SafeYolo's [review-tool procedures](docs/DEVELOPERS.md#independent-review-tools)
+and [repository publication bindings](docs/DEVELOPERS.md#repository-publication)
+apply to both protocols. Native reusable responsibilities do not embed these
+project-specific procedures.
 
 ## Coordination
 
-Repository agents using coord follow the SafeYolo
-[low-chatter work-coordination protocol](cli/src/safeyolo/agent_context/skills/safeyolo/references/coord.md):
-targeted handoffs are self-contained, and execution is silent between meaningful
-work-state transitions. The role contracts above specialise that generic
-protocol for the issue-owner / independent-reviewer loop.
+Repository agents using Coord first follow their selected native or message
+contract. The SafeYolo
+[low-chatter work-coordination](cli/src/safeyolo/agent_context/skills/safeyolo/references/coord.md)
+guidance explains both entry points: native assignments use canonical mutations;
+message assignments use only their declared replies. Targeted handoffs are
+self-contained, and execution is silent between meaningful work transitions.
