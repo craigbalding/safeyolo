@@ -164,7 +164,8 @@ def generate(args) -> None:
     policy_path = Path(config.get("policy_file", "policy.toml"))
     if not policy_path.is_absolute():
         policy_path = root / policy_path
-    policy_path = policy_path.resolve(strict=True)
+    # Native readers resolve relative inputs from the configured policy path's
+    # parent, including when the policy file itself is a symlink.
     choices = choices_from(args.choices)
     previous = choices_from(args.previous) if args.previous else None
     policy = read_toml(policy_path)

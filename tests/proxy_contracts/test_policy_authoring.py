@@ -52,7 +52,15 @@ def recipe_instance(directory, source, *, services, parent_proxy, service_source
         with native_instance(directory, source=source, services=services, parent_proxy=parent_proxy,
                              service_sources=service_sources,
                              extra_config='tls_ca_file="certs/mitmproxy-ca.pem"\n') as instance:
-            yield instance
+            # The shared fixture restricts PATH to installed binaries. Feed
+            # acquisition also needs the documented host curl prerequisite,
+            # including in the proxy's automatic refresh process.
+            transport = instance.root / "bin/curl"
+            transport.symlink_to(shutil.which("curl"))
+            try:
+                yield instance
+            finally:
+                transport.unlink()
         return
     root = directory / "source-layout"
     host = native_inputs()[0]
@@ -110,14 +118,33 @@ action="block"
         AUTHOR.compose(result, choices, None)
 
 
-def test_generator_keeps_nondefault_policy_paths_and_sources_private(tmp_path):
+@pytest.mark.parametrize("linked", [False, True])
+def test_generator_keeps_nondefault_policy_paths_and_sources_private(tmp_path, linked):
     root = tmp_path / "instance"
     root.mkdir()
     selected = root / "selected"
     selected.mkdir()
     (root / "config.toml").write_text('policy_file="selected/current.toml"\n')
-    (selected / "current.toml").write_text('[hosts."*"]\negress="deny"\n[lists]\nlocal="existing.txt"\n')
+    policy = selected / "current.toml"
+    if linked:
+        backing = root / "backing"
+        backing.mkdir()
+        policy.symlink_to(backing / "current.toml")
+        (backing / "existing.txt").write_text("different.test\n")
+    policy.write_text('''[hosts."*"]
+egress="deny"
+[lists]
+local="existing.txt"
+[checks.retained_recorded.source]
+kind="recorded"
+path="recorded.json"
+[checks.retained_job.source]
+kind="job"
+spec="job.json"
+''')
     (selected / "existing.txt").write_text("kept.test\n")
+    (selected / "recorded.json").write_text("[]")
+    (selected / "job.json").write_text("{}")
     (selected / "policy-feeds.toml").write_text('[sources.retained]\nendpoint="https://retained.test/list"\n')
     sources = tmp_path / "sources.toml"
     sources.write_text('[sources.hagezi]\nendpoint="https://selected.test/list"\n')
@@ -129,6 +156,9 @@ def test_generator_keeps_nondefault_policy_paths_and_sources_private(tmp_path):
     assert result.returncode == 0, result.stderr
     candidate = tomllib.loads((tmp_path / "candidate/candidate.toml").read_text())
     assert candidate["lists"]["local"] == str(selected / "existing.txt")
+    assert Path(candidate["lists"]["local"]).read_text() == "kept.test\n"
+    assert candidate["checks"]["retained_recorded"]["source"]["path"] == str(selected / "recorded.json")
+    assert candidate["checks"]["retained_job"]["source"]["spec"] == str(selected / "job.json")
     assert candidate["hosts"]["*"]["egress"] == "deny"
     assert set(tomllib.loads((tmp_path / "candidate/sources.toml").read_text())["sources"]) == {"retained", "hagezi"}
     for output in (tmp_path / "candidate").iterdir():
