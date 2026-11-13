@@ -72,11 +72,11 @@ fn ordinary_continuation_preserves_output_acceptance_and_context_until_replaceme
         current_work(&mut conn, &work)["acceptance_status"]["state"],
         "accepted"
     );
-    let input = continuation(&work);
+    let continuation_input = continuation(&work);
     let receipt = submit(
         &mut conn,
         Actor::Agent("carol"),
-        input.clone(),
+        continuation_input.clone(),
         "continue-r1",
     )
     .unwrap();
@@ -98,7 +98,7 @@ fn ordinary_continuation_preserves_output_acceptance_and_context_until_replaceme
     assert_eq!(next["continuation"]["participant"], principal("alice"));
     assert_eq!(
         next["continuation"]["evidence_refs"],
-        input["evidence_refs"]
+        continuation_input["evidence_refs"]
     );
     assert_eq!(
         next["continuation"]["previous_work_version"],
@@ -114,14 +114,14 @@ fn ordinary_continuation_preserves_output_acceptance_and_context_until_replaceme
         submit(
             &mut conn,
             Actor::Agent("carol"),
-            input.clone(),
+            continuation_input.clone(),
             "continue-r1"
         )
         .unwrap(),
         receipt
     );
     assert_eq!(counts(&conn), before);
-    let mut changed = input.clone();
+    let mut changed = continuation_input.clone();
     changed["reason"] = json!("Different input under the same ID");
     assert_eq!(
         submit(&mut conn, Actor::Agent("carol"), changed, "continue-r1")
