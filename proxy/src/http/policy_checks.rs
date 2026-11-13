@@ -474,19 +474,16 @@ mod tests {
         );
         let active = proxy.runtime.read().unwrap().policy.clone().unwrap();
         let preview = active
-            .evaluate_candidate(
-                &checks::Request {
-                    agent: Some("alice"),
-                    host: "127.0.0.2",
-                    port: address.port(),
-                    scheme: "http",
-                    method: "GET",
-                    path: Some("/allowed"),
-                    ip: Some(address.ip()),
-                    value: None,
-                },
-                crate::policy::current_time_ms() as u64,
-            )
+            .evaluate_candidate(&checks::Request {
+                agent: Some("alice"),
+                host: "127.0.0.2",
+                port: address.port(),
+                scheme: "http",
+                method: "GET",
+                path: Some("/allowed"),
+                ip: Some(address.ip()),
+                value: None,
+            })
             .await
             .unwrap();
         assert_eq!(preview["action"], "deny");

@@ -1190,7 +1190,45 @@ impl Policy {
     }
     /// Offline preview has no destination connector, provider operation or live
     /// budget owner. It uses exactly the enforcement composition function.
-    pub async fn evaluate_candidate(&self, request: &Request<'_>, now_ms: u64) -> Result<Value> {
+    pub async fn evaluate_candidate(&self, request: &Request<'_>) -> Result<Value> {
+        self.evaluate_candidate_with_time(request, || super::current_time_ms() as u64)
+            .await
+    }
+
+    pub(crate) async fn evaluate_candidate_with_time(
+        &self,
+        request: &Request<'_>,
+        decision_time: impl FnOnce() -> u64,
+    ) -> Result<Value> {
+        let mut collected = Vec::new();
+        for stage in [Stage::Connect, Stage::Request] {
+            collected.push((stage, self.checks.collect(request, stage).await?));
+        }
+        for (_, evidence) in &mut collected {
+            if !self.checks.versions_current(evidence).await {
+                for entry in evidence.values_mut() {
+                    entry.unavailable =
+                        Some("evidence version changed during candidate evaluation".into());
+                }
+            }
+        }
+        // All awaited inputs precede one decision time, shared by ordinary
+        // network policy and both check stages. Earlier stages can expire
+        // while later evidence is pending.
+        let now_ms = decision_time();
+        let refreshed;
+        let network_policy = if let Some(native) = &self.native
+            && !super::expired_host_entries(&native.authored, now_ms as f64)?.is_empty()
+        {
+            refreshed = self.reload_native_source_at(
+                self.native_source_text().expect("native source"),
+                self.baseline_path.as_deref().expect("native policy path"),
+                now_ms as f64,
+            )?;
+            &refreshed
+        } else {
+            self
+        };
         let controls = self.native_controls();
         let options = crate::network_guard::Options {
             enabled: controls.is_none_or(|controls| controls.network.enabled),
@@ -1201,7 +1239,7 @@ impl Policy {
         };
         let base = crate::network_guard::NetworkGuard::new()
             .enforce(
-                crate::network_guard::Pdp::Preview(self),
+                crate::network_guard::Pdp::Preview(network_policy),
                 crate::network_guard::Request {
                     identity: request.agent.map_or(
                         crate::network_guard::Identity::Unavailable,
@@ -1221,17 +1259,10 @@ impl Policy {
                 now_ms as f64,
             )
             .map_err(|_| invalid("candidate network policy evaluation failed"))?;
-        let mut stages = Vec::new();
-        for stage in [Stage::Connect, Stage::Request] {
-            let mut evidence = self.checks.collect(request, stage).await?;
-            if !self.checks.versions_current(&evidence).await {
-                for entry in evidence.values_mut() {
-                    entry.unavailable =
-                        Some("evidence version changed during candidate evaluation".into());
-                }
-            }
-            stages.push(self.checks.evaluate(request, stage, evidence, now_ms));
-        }
+        let stages: Vec<_> = collected
+            .into_iter()
+            .map(|(stage, evidence)| self.checks.evaluate(request, stage, evidence, now_ms))
+            .collect();
         let checks = stages
             .iter()
             .map(|stage| stage.action)
@@ -1503,7 +1534,10 @@ mod tests {
             check["source"]["path"] = json!(file);
         }
         let policy=Policy::parse(&json!({"hosts":{"*":{"egress":"allow"}},"agents":{"alice":{"hosts":{"example.test":{"egress":"allow"}}}},"checks":checks,"check_rules":rules}).to_string(),super::super::Format::Json).unwrap();
-        let preview = policy.evaluate_candidate(&request(), NOW).await.unwrap();
+        let preview = policy
+            .evaluate_candidate_with_time(&request(), || NOW)
+            .await
+            .unwrap();
         assert_eq!(preview["action"], "deny");
         assert_eq!(preview["network_policy"]["effect"], "allow");
         assert_eq!(preview["stages"][0]["rules"][0]["rule"], "never");
@@ -1744,10 +1778,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn registration_age_uses_decision_time_and_expires_at_the_transition() {
+    #[tokio::test]
+    async fn registration_age_uses_decision_time_and_expires_at_the_transition() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("registration.json");
+        let mut definition = definition(ResultType::Timestamp);
+        definition["source"]["path"] = json!(path);
         let checks = parse(
-            json!({"created":definition(ResultType::Timestamp)}),
+            json!({"created":definition}),
             vec![rule(
                 "young",
                 Influence::Advisory,
@@ -1765,21 +1803,27 @@ mod tests {
                 },
             )],
         );
-        let before = checks.evaluate(&request(), Stage::Connect, records.clone(), NOW + 999);
-        assert_eq!(before.action, Action::Deny);
-        assert_eq!(before.valid_until_ms, Some(NOW + 1000));
-        assert_eq!(
-            checks
-                .evaluate(&request(), Stage::Connect, records.clone(), NOW + 1000)
-                .action,
-            Action::Allow
-        );
-        assert_eq!(
-            checks
-                .evaluate(&request(), Stage::Connect, records, NOW + 1001)
-                .action,
-            Action::Allow
-        );
+        std::fs::write(
+            path,
+            serde_json::to_vec(&vec![records["created"].result.as_ref().unwrap()]).unwrap(),
+        )
+        .unwrap();
+        let mut document = serde_json::to_value(checks).unwrap();
+        document["hosts"] = json!({"*":{"egress":"allow"}});
+        let policy = Policy::parse(&document.to_string(), super::super::Format::Json).unwrap();
+        for (at, action, valid_until) in [
+            (NOW + 999, "deny", NOW + 1000),
+            (NOW + 1000, "allow", NOW + 60_000),
+            (NOW + 1001, "allow", NOW + 60_000),
+        ] {
+            let preview = policy
+                .evaluate_candidate_with_time(&request(), || at)
+                .await
+                .unwrap();
+            assert_eq!(preview["action"], action, "{preview}");
+            assert_eq!(preview["stages"][0]["decision_time_ms"], at);
+            assert_eq!(preview["stages"][0]["valid_until_ms"], valid_until);
+        }
     }
 
     #[tokio::test]
@@ -1933,7 +1977,7 @@ mod fixture_tests {
         ] {
             candidate.host = host.into();
             let result = policy
-                .evaluate_candidate(&candidate.request(), at)
+                .evaluate_candidate_with_time(&candidate.request(), || at)
                 .await
                 .unwrap();
             assert_eq!(result["action"], action, "{host} at {at}: {result}");
@@ -1969,7 +2013,7 @@ mod fixture_tests {
                 value: None,
             };
             let result = policy
-                .evaluate_candidate(&candidate.request(), 1_000_000)
+                .evaluate_candidate_with_time(&candidate.request(), || 1_000_000)
                 .await
                 .unwrap();
             assert_eq!(result["action"], "allow");
@@ -1996,7 +2040,7 @@ mod fixture_tests {
         for _ in 0..5 {
             assert_eq!(
                 policy
-                    .evaluate_candidate(&candidate.request(), 1_000_000)
+                    .evaluate_candidate_with_time(&candidate.request(), || 1_000_000)
                     .await
                     .unwrap()["action"],
                 "allow"

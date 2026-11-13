@@ -506,11 +506,20 @@ impl Policy {
     }
 
     pub(crate) fn reload_native_source(&self, source: &str, path: &Path) -> Result<Self> {
+        self.reload_native_source_at(source, path, super::current_time_ms())
+    }
+
+    pub(crate) fn reload_native_source_at(
+        &self,
+        source: &str,
+        path: &Path,
+        now_ms: f64,
+    ) -> Result<Self> {
         let (mut replacement, _) = Self::native_source_with_expired_hosts(
             source,
             path,
             self.gateway().and_then(|gateway| gateway.registry()),
-            super::current_time_ms(),
+            now_ms,
             Some(self),
         )?;
         replacement.budgets = self.budgets.clone();

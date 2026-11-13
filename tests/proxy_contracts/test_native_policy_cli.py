@@ -10,6 +10,7 @@ seconds for readiness, 5 for HTTP and 4 for watcher publication.
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import http.client
 import json
@@ -22,6 +23,7 @@ import time
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -121,6 +123,117 @@ def test_candidate_evaluation_reports_actions_without_destination_contact(tmp_pa
             assert result["live_budgets_consumed"] is False
             with pytest.raises(BlockingIOError):
                 destination.accept()
+
+
+@pytest.mark.parametrize("case", ["connect_expiry", "request_expiry", "registration_age", "host_expiry"])
+def test_candidate_evaluation_uses_time_after_all_evidence_reads(tmp_path, case):
+    """Hold the real request-stage reader across an expiry or age transition."""
+    executable = native_inputs()[0] / "safeyolo"
+    root = tmp_path / "selected-instance"
+    root.mkdir()
+    policy = tmp_path / "candidate.toml"
+    request_file = tmp_path / "request.json"
+    held_file = tmp_path / "request-evidence.json"
+    with socket.socket() as destination:
+        destination.bind(("127.0.0.2", 0))
+        destination.listen()
+        destination.setblocking(False)
+        host, port = destination.getsockname()
+        subject = {"kind": "ip", "address": host}
+        input_digest = hashlib.sha256(json.dumps(
+            {"subject": subject, "inputs": {}}, separators=(",", ":"),
+        ).encode()).hexdigest()
+        request_file.write_text(json.dumps({
+            "agent": "alice", "host": host, "port": port, "scheme": "http",
+            "method": "GET", "path": "/report", "ip": host,
+        }))
+        collected_at = time.time_ns() // 1_000_000
+        boundary = collected_at + 2000
+        checks, rules, records = {}, [], {}
+        for stage in ["connect", "request"]:
+            registration = case == "registration_age" and stage == "connect"
+            path = tmp_path / f"{stage}-evidence.json"
+            checks[stage] = {
+                "source_id": stage, "meaning": "controlled timestamp or negative IP finding",
+                "subject": "ip", "result_type": "timestamp" if registration else "finding",
+                "influences": ["hard_exclusion"], "implementation_version": "fixture-1",
+                "configuration_version": "selected-1",
+                "max_age_seconds": 2 if case == f"{stage}_expiry" else 60,
+                "source": {"kind": "recorded", "path": path.name},
+            }
+            condition = {"op": "age", "check": stage, "comparison": "lt", "seconds": 30} if registration else {
+                "op": "finding", "check": stage,
+            }
+            rules.append({
+                "name": stage, "host": "*", "stage": stage, "required": True,
+                "influence": "hard_exclusion", "priority": 0, "when": condition,
+                "on_match": "deny", "on_unavailable": "unresolved",
+            })
+            records[stage] = [{
+                "subject": subject, "input_digest": input_digest,
+                "implementation_version": "fixture-1", "configuration_version": "selected-1",
+                "collected_at_ms": collected_at, "valid_until_ms": None,
+                "source": {"source_id": stage, "source_revision": None,
+                           "content_digest": None, "source_observed_at_ms": None},
+                "finding": {"kind": "timestamp", "unix_ms": boundary - 30_000} if registration else {
+                    "kind": "finding", "positive": False,
+                },
+            }]
+            path.write_text(json.dumps(records[stage]))
+        hosts = {"*": {"egress": "allow"}}
+        if case == "host_expiry":
+            hosts = {"*": {"egress": "deny"}, host: {
+                "egress": "allow", "expires": datetime.fromtimestamp(boundary / 1000, UTC).isoformat(),
+            }}
+        policy.write_text(tomlkit.dumps({
+            "hosts": hosts, "controls": {"network": {"homoglyph": False}},
+            "checks": checks, "check_rules": rules,
+        }))
+        command = [str(executable), "--root", str(root), "policy", "evaluate", str(policy), str(request_file)]
+        control = subprocess.run(command, capture_output=True, text=True, timeout=15)
+        assert control.returncode == 0, control.stderr
+        initial = json.loads(control.stdout)["result"]
+        assert initial["action"] == ("deny" if case == "registration_age" else "allow"), initial
+        assert initial["stages"][0]["decision_time_ms"] < boundary, initial
+        held_file.unlink()
+        os.mkfifo(held_file)
+        with child_process(command, tmp_path, os.environ.copy()) as process:
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    descriptor = os.open(held_file, os.O_WRONLY | os.O_NONBLOCK)
+                except OSError as error:
+                    if error.errno != errno.ENXIO:
+                        raise
+                    # ENXIO means the CLI has not opened its evidence reader yet.
+                    assert process.poll() is None, (tmp_path / "process.log").read_text()
+                    assert time.monotonic() < deadline, "CLI did not reach the held evidence read"
+                    time.sleep(0.01)
+                else:
+                    break
+            with os.fdopen(descriptor, "w") as writer:
+                assert time.time_ns() // 1_000_000 < boundary, "fixture missed the pre-transition read"
+                time.sleep(max(0, (boundary + 100) / 1000 - time.time()))
+                json.dump(records["request"], writer)
+            assert process.wait(timeout=10) == 0, (tmp_path / "process.log").read_text()
+        result = json.loads((tmp_path / "process.log").read_text())["result"]
+        expected = "allow" if case == "registration_age" else "deny" if case == "host_expiry" else "unresolved"
+        assert result["action"] == expected, result
+        times = {stage["decision_time_ms"] for stage in result["stages"]}
+        assert len(times) == 1 and times.pop() >= boundary + 100, result
+        if case.endswith("_expiry") and case != "host_expiry":
+            stage = result["stages"][0 if case == "connect_expiry" else 1]
+            assert stage["evidence"][stage["stage"]]["unavailable"] == "stale evidence", result
+        if case == "registration_age":
+            assert result["stages"][0]["rules"][0]["truth"] == "false", result
+        if case == "host_expiry":
+            assert result["network_policy"]["effect"] == "deny", result
+        assert result["evidence_mode"] == "recorded_offline"
+        assert result["destination_contact"] is False
+        assert result["dependency_calls"] == []
+        assert result["live_budgets_consumed"] is False
+        with pytest.raises(BlockingIOError):
+            destination.accept()
 
 
 class NativeInstance:

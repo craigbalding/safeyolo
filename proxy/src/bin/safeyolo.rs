@@ -453,14 +453,7 @@ async fn run() -> Result<(), Error> {
             let policy = Policy::from_native_path(Path::new(path))?;
             let candidate: safeyolo_proxy::policy::checks::Candidate =
                 serde_json::from_slice(&std::fs::read(request)?)?;
-            let result = policy
-                .evaluate_candidate(
-                    &candidate.request(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)?
-                        .as_millis() as u64,
-                )
-                .await?;
+            let result = policy.evaluate_candidate(&candidate.request()).await?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(
