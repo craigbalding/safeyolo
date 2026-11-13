@@ -22,8 +22,11 @@ source, and version for a narrow operator decision.
 ## Native checks and acceptance
 
 For `answer_check`, read the full check, exact subject and linked assignment.
-Claim the check with current version/generation; reuse your claim after
-interruption. Do not claim, release or complete the owner's producing work. A
+Claim open checks with current version/generation. For a continued check, read
+`work.continuation` and its complete findings/input references, then reuse your
+newly active retained claim. Its exact subject is unchanged; its previous answer
+is historical while review is pending. Reuse your claim after interruption.
+Do not claim, release or complete the owner's producing work. A
 generic `execute_work` assigned by the coordinator is a bounded investigation:
 retain and publish its report and complete execution. It does not accept the
 owner's later candidate. Verify its canonical creator is the configured

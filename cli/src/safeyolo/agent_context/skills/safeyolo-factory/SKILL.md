@@ -74,6 +74,25 @@ message assignments retain their declared replies. Keep interactive workers
 outside the supervised roles, with their own authenticated client and room
 access. Do not change a running Factory merely to exercise this path.
 
+For a selected next attempt with the same retained participant, use
+`continue_work` on completed assigned execution or an answered exact-subject
+check. Supply current work version/claim generation, a bounded reason,
+recoverable findings or changed-input references and a chosen operation ID.
+Ordinary work permits its creator or the operator. A currently required check
+permits the root's current acceptance-amendment authority or the operator;
+an advisory check permits its requester or the operator. No recipient change
+is accepted. The generation advances and the existing supervisor delivers an
+action. The participant reads `work.continuation`, reuses its retained active
+claim and settles with `complete_work` or `answer_check`. A renewed required
+check is pending; its historical answer and old approval cannot satisfy fresh
+acceptance. A replacement output needs a new exact-subject check. For example,
+continue the same code item for an in-scope correction, or ask the retained
+report author to narrow or withdraw a finding after new evidence. Reassignment
+remains operator-owned for unassigned work, different participants and abandoned
+assignments. Continuation grants no access or permission to repeat an uncertain
+external effect; reconcile that effect before retrying. Nothing automatically
+selects another attempt after rejection, a signal resolution or an approval.
+
 ## Route the request
 
 - For a new factory or substantial redesign, read
