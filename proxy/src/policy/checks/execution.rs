@@ -454,6 +454,7 @@ fn service_request(
             authorization.expose_secret().to_owned(),
         ),
         ("content-type".into(), "application/json".into()),
+        ("user-agent".into(), "SafeYolo-policy-check".into()),
     ];
     let decision = gateway.select(crate::services::GatewayRequest {
         identity: crate::services::TrustedIdentity::Agent(&principal),
@@ -669,6 +670,7 @@ async fn run(
                         request.authorization.expose_secret(),
                     )
                     .header("content-type", "application/json")
+                    .header("user-agent", "SafeYolo-policy-check")
                     .body(Full::new(Bytes::from(request.body)))?;
                 request_started = true;
                 let response = client.send_request(request).await?;

@@ -116,6 +116,11 @@ async fn native_live_service_preserves_typed_results_cache_freshness_and_offline
             let (mut socket, _) = origin.accept().await.unwrap();
             let head = read_head(&mut socket).await;
             assert!(String::from_utf8_lossy(&head).starts_with("GET /check/"));
+            assert!(
+                String::from_utf8_lossy(&head)
+                    .to_ascii_lowercase()
+                    .contains("user-agent: safeyolo-policy-check\r\n")
+            );
             assert!(!String::from_utf8_lossy(&head).contains("sgw_"));
             observed.fetch_add(1, Ordering::SeqCst);
             reply(
