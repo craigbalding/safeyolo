@@ -57,10 +57,70 @@ pub enum Mapping {
 struct CheckExecution {
     running: Arc<Semaphore>,
     pending: Arc<Semaphore>,
-    cache: Mutex<BTreeMap<String, Evidence>>,
 }
 #[derive(Default, Debug)]
-pub(crate) struct CheckExecutions(Mutex<BTreeMap<String, Arc<CheckExecution>>>);
+pub(crate) struct CheckExecutions {
+    slots: Mutex<BTreeMap<String, Arc<CheckExecution>>>,
+    cache: Mutex<BTreeMap<String, BTreeMap<String, Evidence>>>,
+}
+impl CheckExecutions {
+    fn cached(&self, name: &str, key: &str, check: &Check) -> Result<Option<Evidence>> {
+        let mut caches = self
+            .cache
+            .lock()
+            .map_err(|_| invalid("check cache unavailable"))?;
+        let Some(cache) = caches.get_mut(name) else {
+            return Ok(None);
+        };
+        cache.retain(|_, entry| {
+            validate_evidence(check, entry, now());
+            entry.unavailable.is_none()
+        });
+        Ok(cache.get(key).cloned())
+    }
+
+    fn remember(&self, name: &str, key: String, entry: Evidence, maximum: usize) -> Result<()> {
+        if entry.unavailable.is_some() || maximum == 0 {
+            return Ok(());
+        }
+        let mut caches = self
+            .cache
+            .lock()
+            .map_err(|_| invalid("check cache unavailable"))?;
+        let cache = caches.entry(name.into()).or_default();
+        if cache.len() >= maximum
+            && let Some(old) = cache.keys().next().cloned()
+        {
+            cache.remove(&old);
+        }
+        cache.insert(key, entry);
+        Ok(())
+    }
+
+    pub(super) fn reuse_feed(
+        &self,
+        name: &str,
+        check: &Check,
+        mut entry: Evidence,
+    ) -> Result<Evidence> {
+        let key = content_digest(
+            &serde_json::to_vec(&json!({
+                "check":check,"subject":entry.subject,"input_digest":entry.input_digest,
+                "feed_version":entry.feed_version
+            }))
+            .expect("feed binding JSON"),
+        );
+        if let Some(mut result) = self.cached(name, &key, check)? {
+            result.acquisition = "reused_managed_feed_snapshot".into();
+            return Ok(result);
+        }
+        validate_evidence(check, &mut entry, now());
+        // Membership is already an in-memory binary search. Retain only the
+        // most recent subject in the existing cache, without a second store.
+        self.remember(name, key, entry.clone(), 1)?;
+        Ok(entry)
+    }
+}
 
 pub(super) fn validate_source(source: &mut EvidenceSource) -> Result<()> {
     let limits = match source {
@@ -208,7 +268,7 @@ impl Checks {
         )?);
         let execution = self
             .execution
-            .0
+            .slots
             .lock()
             .map_err(|_| "check execution unavailable")?
             .entry(name.into())
@@ -216,24 +276,12 @@ impl Checks {
                 Arc::new(CheckExecution {
                     running: Arc::new(Semaphore::new(limits.max_concurrent)),
                     pending: Arc::new(Semaphore::new(limits.max_concurrent + limits.max_pending)),
-                    cache: Mutex::new(BTreeMap::new()),
                 })
             })
             .clone();
-        {
-            let mut cache = execution
-                .cache
-                .lock()
-                .map_err(|_| "check cache unavailable")?;
-            cache.retain(|_, entry| {
-                validate_evidence(check, entry, now());
-                entry.unavailable.is_none()
-            });
-            if let Some(result) = cache.get(&key) {
-                let mut result = result.clone();
-                result.acquisition = "reused_live_evidence".into();
-                return Ok(result);
-            }
+        if let Some(mut result) = self.execution.cached(name, &key, check)? {
+            result.acquisition = "reused_live_evidence".into();
+            return Ok(result);
         }
         let pending = execution
             .pending
@@ -333,18 +381,8 @@ impl Checks {
         };
         let mut result = result;
         validate_evidence(check, &mut result, now());
-        if result.unavailable.is_none() && limits.max_cached > 0 {
-            let mut cache = execution
-                .cache
-                .lock()
-                .map_err(|_| "check cache unavailable")?;
-            if cache.len() >= limits.max_cached
-                && let Some(old) = cache.keys().next().cloned()
-            {
-                cache.remove(&old);
-            }
-            cache.insert(key, result.clone());
-        }
+        self.execution
+            .remember(name, key, result.clone(), limits.max_cached)?;
         Ok(result)
     }
 }

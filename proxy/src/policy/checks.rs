@@ -251,6 +251,8 @@ pub struct CheckResult {
 pub enum EvidenceSource {
     /// Captured host evidence. Preview never invokes an acquisition operation.
     Recorded { path: PathBuf },
+    /// An already accepted host snapshot. Collection performs no acquisition.
+    Feed { name: String },
     /// A producer not installed yet may be named only with explicit fallback.
     Unavailable { reason: String },
     Job {
@@ -444,6 +446,8 @@ pub struct Checks {
     pub rules: Vec<Rule>,
     #[serde(skip)]
     execution: std::sync::Arc<execution::CheckExecutions>,
+    #[serde(skip)]
+    feeds: BTreeMap<String, std::sync::Arc<crate::policy_feeds::checks::CheckFeed>>,
 }
 
 /// Candidate targets are simulation inputs and grant no runtime authority.
@@ -521,7 +525,7 @@ pub struct FileVersion {
     modified_nanoseconds: i64,
 }
 impl FileVersion {
-    fn from_metadata(metadata: &std::fs::Metadata) -> Self {
+    pub(crate) fn from_metadata(metadata: &std::fs::Metadata) -> Self {
         Self {
             device: metadata.dev(),
             inode: metadata.ino(),
@@ -562,6 +566,8 @@ pub struct Evidence {
     pub expires_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feed_version: Option<crate::policy_feeds::checks::FeedVersion>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -629,6 +635,18 @@ impl Checks {
                 }
             } else if check.scale.is_some() {
                 return Err(invalid("only score checks have a score scale"));
+            }
+            if let EvidenceSource::Feed { name: source } = &check.source {
+                let root = base.ok_or_else(|| {
+                    invalid("managed feed checks require file-backed policy loading")
+                })?;
+                if !checks.feeds.contains_key(source) {
+                    let feed = crate::policy_feeds::checks::CheckFeed::capture(root, source)
+                        .map_err(|_| invalid("cannot capture managed feed source"))?;
+                    checks
+                        .feeds
+                        .insert(source.clone(), std::sync::Arc::new(feed));
+                }
             }
             execution::validate_source(&mut check.source)?;
             if let EvidenceSource::Recorded { path } | EvidenceSource::Job { spec: path, .. } =
@@ -842,7 +860,11 @@ impl Checks {
                 unavailable: None,
                 expires_at_ms: None,
                 execution: None,
+                feed_version: None,
             };
+            if let EvidenceSource::Feed { name: source } = &check.source {
+                entry.feed_version = self.feeds.get(source).map(|feed| feed.version.clone());
+            }
             if let (Some(subject), Some(input_digest)) = (subject, input_digest) {
                 match &check.source {
                     EvidenceSource::Job { effects, .. }
@@ -854,6 +876,14 @@ impl Checks {
                         entry.acquisition = "offline_unavailable".into();
                         entry.unavailable =
                             Some("live execution is unavailable in offline preview".into());
+                    }
+                    EvidenceSource::Feed { name: source } => {
+                        if let Some(feed) = self.feeds.get(source) {
+                            feed.collect(check, &subject, &mut entry);
+                            entry = self.execution.reuse_feed(&name, check, entry)?;
+                        } else {
+                            entry.unavailable = Some("managed feed source unavailable".into());
+                        }
                     }
                     EvidenceSource::Unavailable { reason } => {
                         entry.unavailable = Some(format!("unsupported: {reason}"))
@@ -901,10 +931,33 @@ impl Checks {
         Ok(evidence)
     }
 
+    pub(crate) fn feeds_current(&self) -> bool {
+        self.feeds.values().all(|feed| feed.current())
+    }
+
+    pub(crate) fn feed_status(&self) -> BTreeMap<&str, Value> {
+        self.feeds
+            .iter()
+            .map(|(name, feed)| (name.as_str(), feed.status()))
+            .collect()
+    }
+
     /// Available file versions are checked after collection, before admission.
     /// Atomic replacement or an in-place change cancels this observation.
     pub async fn versions_current(&self, evidence: &BTreeMap<String, Evidence>) -> bool {
         for (name, entry) in evidence {
+            if let Some(Check {
+                source: EvidenceSource::Feed { name: source },
+                ..
+            }) = self.checks.get(name)
+            {
+                let Some(feed) = self.feeds.get(source) else {
+                    return false;
+                };
+                if entry.feed_version.as_ref() != Some(&feed.version) || !feed.current() {
+                    return false;
+                }
+            }
             if let Some(Check {
                 source: EvidenceSource::Job { spec, limits, .. },
                 ..
@@ -1443,6 +1496,7 @@ mod tests {
                         unavailable: None,
                         expires_at_ms: None,
                         execution: None,
+                        feed_version: None,
                     },
                 )
             })
@@ -2200,6 +2254,7 @@ mod composition_edge_tests {
                     unavailable: None,
                     expires_at_ms: None,
                     execution: None,
+                    feed_version: None,
                 },
             );
         }

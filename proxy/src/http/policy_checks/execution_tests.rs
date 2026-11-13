@@ -398,109 +398,181 @@ async fn native_policy_change_during_service_wait_cannot_restore_old_admission()
     ) {
         return;
     }
-    // This exact-test child owns the process and its umask.
+    // The exact-test child owns this process; do not change the parent harness's umask.
     unsafe {
         libc::umask(0);
     }
-    let root = tempfile::tempdir().unwrap();
-    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = origin.local_addr().unwrap().port();
-    let contacted = Arc::new(Notify::new());
-    let released = Arc::new(Notify::new());
-    let (seen, finish) = (contacted.clone(), released.clone());
-    let server = tokio::spawn(async move {
-        let (mut socket, _) = origin.accept().await.unwrap();
-        read_head(&mut socket).await;
-        seen.notify_one();
-        finish.notified().await;
-        reply(
-            &mut socket,
-            200,
-            br#"{"finding":{"kind":"finding","positive":false}}"#,
-        )
-        .await;
-    });
-    let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut config = setup(root.path(), definition(port, 5000), true, true);
-    config.parent_proxy = Some(format!("http://{}", target.local_addr().unwrap()));
-    config.parent_proxy_agents = vec!["alice".into()];
-    let mut proxy = crate::Proxy::start(config.clone()).await.unwrap();
-    let mut socket = UnixStream::connect(root.path().join("alice.sock"))
-        .await
-        .unwrap();
-    let policy = proxy
-        .runtime
-        .read()
-        .unwrap()
-        .policy
-        .as_ref()
-        .unwrap()
-        .clone();
-    socket.write_all(b"GET http://example.test/report HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n").await.unwrap();
-    tokio::time::timeout(Duration::from_secs(3), contacted.notified())
-        .await
-        .expect("check never reached provider");
-    #[cfg(not(target_os = "macos"))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let directories: Vec<_> = std::fs::read_dir(root.path().join("data"))
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| {
-                path.file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .starts_with("check-")
-            })
-            .collect();
-        assert_eq!(directories.len(), 1, "expected the held service listener");
-        assert_eq!(
-            directories[0].metadata().unwrap().permissions().mode() & 0o777,
-            0o700,
-            "service listener directory must be private under umask 000"
+    for change in ["policy", "feed", "feed_configuration"] {
+        let root = tempfile::tempdir().unwrap();
+        let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = origin.local_addr().unwrap().port();
+        let contacted = Arc::new(Notify::new());
+        let released = Arc::new(Notify::new());
+        let (seen, finish) = (contacted.clone(), released.clone());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = origin.accept().await.unwrap();
+            read_head(&mut socket).await;
+            seen.notify_one();
+            finish.notified().await;
+            reply(
+                &mut socket,
+                200,
+                br#"{"finding":{"kind":"finding","positive":false}}"#,
+            )
+            .await;
+        });
+        let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut config = setup(root.path(), definition(port, 5000), true, true);
+        config.parent_proxy = Some(format!("http://{}", target.local_addr().unwrap()));
+        config.parent_proxy_agents = vec!["alice".into()];
+        crate::policy_feeds::tests::write_check_feed(root.path(), "A", "other.example", 7200);
+        let path = root.path().join("policy.toml");
+        let mut source = std::fs::read_to_string(&path).unwrap();
+        source.push_str(
+            r#"
+[checks.feed]
+source_id='threat-list'
+meaning='positive means selected list membership'
+subject='hostname'
+result_type='finding'
+influences=['hard_exclusion']
+implementation_version='feed-1'
+configuration_version='selected-1'
+max_age_seconds=60
+source={kind='feed',name='test'}
+[[check_rules]]
+name='feed-exclusion'
+host='example.test'
+agent='alice'
+stage='connect'
+influence='hard_exclusion'
+priority=0
+required=true
+when={op='finding',check='feed'}
+on_match='deny'
+on_unavailable='unresolved'
+"#,
         );
-    }
-    let source = std::fs::read_to_string(root.path().join("policy.toml")).unwrap();
-    std::fs::write(
-        root.path().join("policy.toml"),
-        source.replace("selected-1", "selected-2"),
-    )
-    .unwrap();
-    proxy.reload(config).await.unwrap();
-    released.notify_one();
-    let mut response = Vec::new();
-    tokio::time::timeout(Duration::from_secs(3), socket.read_to_end(&mut response))
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        response.starts_with(b"HTTP/1.1 503"),
-        "{}",
-        String::from_utf8_lossy(&response)
-    );
-    assert!(String::from_utf8_lossy(&response).contains("policy or authority changed"));
-    assert!(
-        tokio::time::timeout(Duration::from_millis(40), target.accept())
+        std::fs::write(&path, source).unwrap();
+        let mut proxy = crate::Proxy::start(config.clone()).await.unwrap();
+        let runtime = proxy.runtime.read().unwrap().clone();
+        let request = candidate("example.test");
+        let captured = runtime
+            .policy
+            .as_ref()
+            .unwrap()
+            .named_checks()
+            .collect(&request.request(), Stage::Connect)
             .await
-            .is_err(),
-        "old permission reached assessed target"
-    );
-    assert!(!Arc::ptr_eq(
-        &policy,
-        proxy.runtime.read().unwrap().policy.as_ref().unwrap()
-    ));
-    socket.shutdown().await.unwrap();
-    server.await.unwrap();
-    proxy.shutdown().await;
-    let audit = std::fs::read_to_string(root.path().join("logs/audit.jsonl")).unwrap();
-    let executions: Vec<serde_json::Value> = audit
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .filter(|event: &serde_json::Value| event["event"] == "ops.policy_check_executed")
-        .collect();
-    assert!(executions.iter().any(
-        |event| event["details"]["evidence"]["result"]["configuration_version"] == "selected-1"
-    ));
+            .unwrap();
+        assert_eq!(captured["feed"].acquisition, "managed_feed_snapshot");
+        let reused = runtime
+            .policy
+            .as_ref()
+            .unwrap()
+            .named_checks()
+            .collect(&request.request(), Stage::Connect)
+            .await
+            .unwrap();
+        assert_eq!(reused["feed"].acquisition, "reused_managed_feed_snapshot");
+        let mut socket = UnixStream::connect(root.path().join("alice.sock"))
+            .await
+            .unwrap();
+        let policy = proxy
+            .runtime
+            .read()
+            .unwrap()
+            .policy
+            .as_ref()
+            .unwrap()
+            .clone();
+        socket.write_all(b"GET http://example.test/report HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), contacted.notified())
+            .await
+            .expect("check never reached provider");
+        #[cfg(not(target_os = "macos"))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let directories: Vec<_> = std::fs::read_dir(root.path().join("data"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("check-")
+                })
+                .collect();
+            assert_eq!(
+                directories.len(),
+                1,
+                "expected the held service listener's directory"
+            );
+            assert_eq!(
+                directories[0].metadata().unwrap().permissions().mode() & 0o777,
+                0o700,
+                "service listener directory must be private even under umask 000"
+            );
+        }
+        match change {
+            "policy" => {
+                let source = std::fs::read_to_string(&path).unwrap();
+                std::fs::write(&path, source.replace("selected-1", "selected-2")).unwrap();
+                proxy.reload(config).await.unwrap();
+            }
+            "feed" => {
+                crate::policy_feeds::tests::write_check_feed(root.path(), "B", "example.test", 7200)
+            }
+            "feed_configuration" => crate::policy_feeds::tests::write_check_feed(
+                root.path(),
+                "A",
+                "other.example",
+                3600,
+            ),
+            _ => unreachable!(),
+        }
+        released.notify_one();
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(3), socket.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            response.starts_with(b"HTTP/1.1 503"),
+            "{}",
+            String::from_utf8_lossy(&response)
+        );
+        let explanation = String::from_utf8_lossy(&response);
+        assert!(
+            explanation.contains("policy or authority changed")
+                || explanation.contains("evidence version changed"),
+            "{change}: {explanation}"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(40), target.accept())
+                .await
+                .is_err(),
+            "old permission reached assessed target"
+        );
+        if change == "policy" {
+            assert!(!Arc::ptr_eq(
+                &policy,
+                proxy.runtime.read().unwrap().policy.as_ref().unwrap()
+            ));
+        }
+        socket.shutdown().await.unwrap();
+        server.await.unwrap();
+        proxy.shutdown().await;
+        let audit = std::fs::read_to_string(root.path().join("logs/audit.jsonl")).unwrap();
+        let executions: Vec<serde_json::Value> = audit
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .filter(|event: &serde_json::Value| event["event"] == "ops.policy_check_executed")
+            .collect();
+        assert!(executions.iter().any(
+            |event| event["details"]["evidence"]["result"]["configuration_version"] == "selected-1"
+        ));
+    }
 }
 
 fn job_configuration(linux: Option<&crate::linux_host::Settings>) -> String {

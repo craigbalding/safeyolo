@@ -437,6 +437,7 @@ struct HostList {
     path: PathBuf,
     source: zeroize::Zeroizing<String>,
     hosts: Vec<String>,
+    managed: Option<crate::policy_feeds::List>,
 }
 
 impl fmt::Debug for Policy {
@@ -1498,6 +1499,26 @@ impl Policy {
         if !now_ms.is_finite() {
             return Err(invalid("budget timestamp must be finite"));
         }
+        if let Some((name, _)) = self.list_files.iter().find(|(_, list)| {
+            list.managed
+                .as_ref()
+                .is_some_and(|feed| feed.unavailable(now_ms))
+        }) {
+            return Ok(Decision {
+                effect: Effect::Deny,
+                matched_resource: Some(format!("${name}")),
+                budget_remaining: None,
+            });
+        }
+        let canonical_host = self
+            .list_files
+            .values()
+            .filter_map(|list| list.managed.as_ref())
+            .find_map(|feed| feed.canonical_member(request.host));
+        let request = NetworkRequest {
+            host: canonical_host.as_deref().unwrap_or(request.host),
+            ..request
+        };
         let context = Context {
             agent: request.agent,
             port: request.port,
@@ -1915,8 +1936,8 @@ fn prune_document(
     Ok(expired)
 }
 
-/// Existing lists are local files. URL-looking values are filenames too: the
-/// production loader does not fetch remote lists or introduce another egress.
+/// String lists are local filenames, including URL-looking strings. Managed
+/// references read accepted host snapshots; compilation never fetches a feed.
 fn expand_lists(
     document: &mut Map<String, Value>,
     base_dir: Option<&Path>,
@@ -1953,25 +1974,48 @@ fn expand_lists(
         if timestamps.value_at(&["lists", &name]).is_some() {
             return Err(invalid("list path must be a string"));
         }
-        let path = Path::new(string(&lists[&name], "list path")?);
-        let path = if path.is_absolute() {
-            path.to_owned()
-        } else {
-            base_dir
-                .ok_or_else(|| {
-                    unsupported("relative host lists require file-backed policy loading")
-                })?
-                .join(path)
-        };
-        let source = zeroize::Zeroizing::new(std::fs::read_to_string(&path).map_err(|error| {
-            PolicyError {
-                kind: ErrorKind::Read,
-                message: format!(
-                    "failed to read list {} referenced by ${name}: {error}",
-                    path.display()
-                ),
+        let (path, source, managed) = if let Some(fields) = lists[&name].as_object() {
+            if fields.len() != 1 {
+                return Err(invalid("managed lists require only feed = 'SOURCE'"));
             }
-        })?);
+            let feed = fields
+                .get("feed")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("managed lists require feed = 'SOURCE'"))?;
+            let root = base_dir
+                .ok_or_else(|| unsupported("managed lists require file-backed policy loading"))?;
+            let managed = crate::policy_feeds::load_list(root, feed)
+                .map_err(|error| invalid(error.to_string()))?;
+            let source = zeroize::Zeroizing::new(
+                serde_json::to_string(&managed.snapshot)
+                    .map_err(|_| invalid("cannot retain managed list snapshot"))?,
+            );
+            let path = crate::policy_feeds::snapshot_path(root, feed)
+                .map_err(|error| invalid(error.to_string()))?;
+            (path, source, Some(managed))
+        } else {
+            let path = Path::new(string(&lists[&name], "list path")?);
+            let path = if path.is_absolute() {
+                path.to_owned()
+            } else {
+                base_dir
+                    .ok_or_else(|| {
+                        unsupported("relative host lists require file-backed policy loading")
+                    })?
+                    .join(path)
+            };
+            let source =
+                zeroize::Zeroizing::new(std::fs::read_to_string(&path).map_err(|error| {
+                    PolicyError {
+                        kind: ErrorKind::Read,
+                        message: format!(
+                            "failed to read list {} referenced by ${name}: {error}",
+                            path.display()
+                        ),
+                    }
+                })?);
+            (path, source, None)
+        };
         let config = if config.is_null() {
             Value::Object(Map::new())
         } else {
@@ -1981,41 +2025,32 @@ fn expand_lists(
         hosts.shift_remove(&host);
         let inherited_timestamps = timestamps.projected(&["hosts", &host]);
         timestamps.remove_under(&["hosts", &host]);
-        let mut members = Vec::new();
-        for line in source.split([
-            '\n', '\r', '\u{b}', '\u{c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}',
-            '\u{2029}',
-        ]) {
-            let mut entry = line.trim_matches(python_whitespace);
-            if entry.is_empty() || entry.starts_with('#') {
-                continue;
-            }
-            let parts: Vec<_> = entry
-                .split(python_whitespace)
-                .filter(|part| !part.is_empty())
-                .collect();
-            if parts.len() >= 2
-                && (matches!(parts[0], "0.0.0.0" | "127.0.0.1" | "255.255.255.255")
-                    || parts[0].starts_with([':', 'f']))
-            {
-                entry = parts[1];
-            }
-            if matches!(
-                entry,
-                "0.0.0.0"
-                    | "127.0.0.1"
-                    | "localhost"
-                    | "localhost.localdomain"
-                    | "local"
-                    | "broadcasthost"
-            ) || !entry.contains('.')
-            {
-                continue;
-            }
-            members.push(entry.to_owned());
-            if !hosts.contains_key(entry) {
-                timestamps.extend(inherited_timestamps.copy_under(&[], &["hosts", entry]));
-                hosts.insert(entry.to_owned(), config.clone());
+        let members = if let Some(managed) = &managed {
+            managed
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.entries.clone())
+                .unwrap_or_default()
+        } else {
+            local_list_members(&source)
+        };
+        for entry in &members {
+            let apex = managed
+                .as_ref()
+                .filter(|list| {
+                    list.snapshot.as_ref().is_some_and(|snapshot| {
+                        matches!(snapshot.scope, crate::policy_feeds::Scope::DomainSuffix)
+                    })
+                })
+                .and_then(|_| entry.strip_prefix("*."));
+            // Native network rules use glob matching. A suffix feed includes
+            // the apex explicitly as well as descendants; local file syntax
+            // keeps its existing interpretation.
+            for pattern in [Some(entry.as_str()), apex].into_iter().flatten() {
+                if !hosts.contains_key(pattern) {
+                    timestamps.extend(inherited_timestamps.copy_under(&[], &["hosts", pattern]));
+                    hosts.insert(pattern.to_owned(), config.clone());
+                }
             }
         }
         loaded.insert(
@@ -2024,10 +2059,48 @@ fn expand_lists(
                 path,
                 source,
                 hosts: members,
+                managed,
             },
         );
     }
     Ok(loaded)
+}
+
+fn local_list_members(source: &str) -> Vec<String> {
+    let mut members = Vec::new();
+    for line in source.split([
+        '\n', '\r', '\u{b}', '\u{c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}',
+        '\u{2029}',
+    ]) {
+        let mut entry = line.trim_matches(python_whitespace);
+        if entry.is_empty() || entry.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<_> = entry
+            .split(python_whitespace)
+            .filter(|part| !part.is_empty())
+            .collect();
+        if parts.len() >= 2
+            && (matches!(parts[0], "0.0.0.0" | "127.0.0.1" | "255.255.255.255")
+                || parts[0].starts_with([':', 'f']))
+        {
+            entry = parts[1];
+        }
+        if matches!(
+            entry,
+            "0.0.0.0"
+                | "127.0.0.1"
+                | "localhost"
+                | "localhost.localdomain"
+                | "local"
+                | "broadcasthost"
+        ) || !entry.contains('.')
+        {
+            continue;
+        }
+        members.push(entry.to_owned());
+    }
+    members
 }
 
 // Python str.strip/split also treat the four information separators as space;

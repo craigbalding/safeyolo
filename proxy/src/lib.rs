@@ -108,6 +108,7 @@ mod operator_events;
 mod operator_stats;
 mod peer_support;
 pub mod policy;
+pub mod policy_feeds;
 mod policy_runtime;
 mod prompt_injection;
 mod provider_stream;
@@ -1227,12 +1228,17 @@ pub(crate) fn native_policy_status(state: &RuntimeState) -> Result<Value, Error>
     let list_files = policy.native_list_file_status();
     let lists_match = list_files
         .values()
-        .all(|status| status["saved_matches_active"] == true);
+        .all(|status| status["saved_matches_active"] == true)
+        && policy.named_checks().feeds_current();
     let list_unreadable = list_files
         .values()
         .any(|status| status["status"] == "saved_unreadable");
     if !list_files.is_empty() {
         result["list_files"] = Value::Object(list_files);
+    }
+    let feed_sources = policy.named_checks().feed_status();
+    if !feed_sources.is_empty() {
+        result["feed_sources"] = json!(feed_sources);
     }
     match std::fs::read_to_string(&path) {
         Ok(saved) => {
@@ -2003,6 +2009,7 @@ pub struct Proxy {
     service_files: Option<services::CatalogMetadata>,
     service_check_at: Option<tokio::time::Instant>,
     policy_check_at: Option<tokio::time::Instant>,
+    feed_refresh: policy_feeds::Refresh,
 }
 
 impl Proxy {
@@ -2065,6 +2072,7 @@ impl Proxy {
             heap_release: None,
             service_check_at: service_files.as_ref().map(|_| tokio::time::Instant::now()),
             service_files,
+            feed_refresh: policy_feeds::Refresh::default(),
             policy_check_at: config
                 .policy_file
                 .as_ref()
@@ -2329,6 +2337,25 @@ impl Proxy {
     /// Reload a changed baseline against the accepted service registry. Keep
     /// file observation and publication separate from catalog change detection.
     pub async fn reload_policy_if_changed(&mut self) -> Result<bool, Error> {
+        let root = self.runtime.read().ok().and_then(|runtime| {
+            runtime
+                .config
+                .native_product
+                .then(|| {
+                    runtime
+                        .config
+                        .policy_file
+                        .as_deref()
+                        .and_then(Path::parent)
+                        .map(Path::to_owned)
+                })
+                .flatten()
+        });
+        if let Some(root) = root
+            && let Err(error) = self.feed_refresh.poll(root).await
+        {
+            eprintln!("Managed feed refresh: {error}");
+        }
         let result = (|| {
             let previous = self
                 .runtime
@@ -2456,6 +2483,7 @@ impl Proxy {
         self.service_check_at = service_files.as_ref().map(|_| tokio::time::Instant::now());
         self.service_files = service_files;
         if previous.config.policy_file != config.policy_file {
+            self.feed_refresh = policy_feeds::Refresh::default();
             self.policy_check_at = config
                 .policy_file
                 .as_ref()
@@ -2471,6 +2499,7 @@ impl Proxy {
     }
 
     pub async fn shutdown(mut self) {
+        self.feed_refresh = policy_feeds::Refresh::default();
         clear_readiness(&self.readiness_file, &self.default_via);
         let credential_activation = self
             .runtime

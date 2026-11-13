@@ -5,10 +5,11 @@ selects each source, meaning, scope and influence in `policy.toml`. A check
 result does not grant service or credential access. Those controls still apply.
 
 The shared implementation is [checks.rs](../proxy/src/policy/checks.rs).
-Live collection reads captured JSON files or runs an adopted job or Service
-Gateway operation. The shared evaluator validates and composes the resulting
-evidence. Offline candidate evaluation reads captured files and leaves live
-operations unavailable. The workload cannot select an executable or callback.
+Live collection reads captured JSON files, uses accepted managed-feed snapshots,
+or runs an adopted job or Service Gateway operation. The shared evaluator
+validates and composes the resulting evidence. Offline candidate evaluation
+reads captured files and feed snapshots and leaves live operations unavailable.
+The workload cannot select an executable or callback.
 
 ## Define checks and rules
 
@@ -64,6 +65,41 @@ A non-required rule can name `source = { kind = "unavailable", reason = "..." }`
 with an explicit unavailable fallback. Unknown subject kinds, full URL/query
 checks and TLS/post-response stages are rejected. Such constraints are not
 silently treated as hostname or path checks.
+
+## Use managed-feed evidence
+
+On the host that owns the instance, first configure a source through
+[policy feeds](policy-feeds.md). In the hostname check above, replace `source`
+with the adopted source name:
+
+```toml
+source = { kind = "feed", name = "hagezi" }
+```
+
+The feed name resolves in the selected policy file's directory, including
+candidate checking, preview and apply. A nondefault `policy_file` selects its
+own feed configuration and snapshots. No local-list host rule is needed.
+The check uses result type `finding`: positive means membership in the adopted
+hostname/suffix scope. Explicit negative membership means only absence from
+that list. Missing data, failed reads and unsupported subjects remain
+unavailable; negation cannot turn them into permission. `no_match` keeps its
+ordinary unavailable meaning.
+
+Each compiled policy captures entries and provenance from one accepted version.
+Evidence binds the normalized hostname, input digest, check versions, local
+snapshot version, source configuration and content digest. Provider revision
+and time remain optional actual provider facts. Source expiry uses provider
+time or retained first observation, bounded further by the check's age limits.
+Retrieval, repeated collection, HTTP 304, restart and rollback cannot renew the
+source deadline. Both positive and negative membership expire together.
+
+An outage retains usable accepted data until expiry. Missing or expired evidence
+selects the named rule's `on_unavailable`, including when the source specifies
+local-list `on_stale = "retain"`. Hard exclusions and advisory rules retain
+the shared evaluator's precedence. Named-feed collection uses the existing
+check cache for the latest subject; snapshot/configuration changes invalidate
+reuse and pending evidence before admission. A new policy owns a new cache.
+Preview reads snapshots without refreshing or contacting their members.
 
 ## Execute adopted checks
 
@@ -154,8 +190,10 @@ the endpoint. GET and HEAD send no body; other methods send JSON containing the
 subject, input digest and policy-owned inputs. `typed` uses the same result
 format as a job.
 
-A service check uses the ordinary proxy transport, network policy, gateway
-route/credential controls and provider routing. Missing capability or operation
+A service check creates its temporary listener directory with owner-only access
+before binding the delegated socket, independent of the host umask. It uses the
+ordinary proxy transport, network policy, gateway route/credential controls and
+provider routing. Missing capability or operation
 grants fail explicitly. Check dependencies receive no blanket policy bypass.
 Scope assessed-workload rules to their intended agents: if dependency traffic
 requires a check already in its ancestry, that dependency fails as recursive

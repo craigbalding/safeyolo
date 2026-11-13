@@ -272,9 +272,9 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: a934ad1faabc8097f06849945d066b4f709901a58620c4b88d5c43bf485b242d
         - path: proxy/src/lib.rs
-          sha256: ab8c189c5859f108aba8f4d44af7eb2247a2e12defa76a7e55eba112041f0836
+          sha256: ef77deabbf0d2d84b3daf54eadb4c62b6d743992aa86d7c8cdbd5423e9366406
         - path: proxy/src/bin/safeyolo.rs
-          sha256: 5c2b74a744da1e4553b520426de14ac08d7f3b0127d694eab1080d4c9dfc9cf4
+          sha256: eac0b1fd0f496dee31da4300672f57a4ce4e09ad93c7c0731a6e40310b6d84ed
         - path: scripts/run_claude_blackbox.py
           sha256: 218890e4ddaef26d7d86a67784a447d3c40640eda4abe1c16a2243880c7e803b
         - path: tests/blackbox/claude_smoke.py
@@ -353,9 +353,9 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: a934ad1faabc8097f06849945d066b4f709901a58620c4b88d5c43bf485b242d
         - path: proxy/src/lib.rs
-          sha256: ab8c189c5859f108aba8f4d44af7eb2247a2e12defa76a7e55eba112041f0836
+          sha256: ef77deabbf0d2d84b3daf54eadb4c62b6d743992aa86d7c8cdbd5423e9366406
         - path: proxy/src/bin/safeyolo.rs
-          sha256: 5c2b74a744da1e4553b520426de14ac08d7f3b0127d694eab1080d4c9dfc9cf4
+          sha256: eac0b1fd0f496dee31da4300672f57a4ce4e09ad93c7c0731a6e40310b6d84ed
         - path: proxy/src/jobs/vz-guest-init.sh
           sha256: 7fc4a7442ccf50eea20dad24b7bb5659f69875f7853f11da2bb96665fc25dc4b
         - path: proxy/src/jobs/vz-exec.sh

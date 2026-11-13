@@ -52,6 +52,7 @@ user_facing_docs = [
     "docs/peer-support.md",
     "docs/federation-setup.md",
     "docs/settings.md",
+    "docs/policy-feeds.md",
     "docs/operator-guide.md",
     "docs/operator-interaction-contract.md",
     "docs/DEVELOPERS.md",
