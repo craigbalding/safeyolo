@@ -8,6 +8,7 @@ deadlines are 15 seconds for readiness, 5 for HTTP and 4 for watcher publication
 from __future__ import annotations
 
 import base64
+import hashlib
 import http.client
 import json
 import os
@@ -43,6 +44,80 @@ def native_inputs():
     host = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", REPO / "proxy/target" / directory))
     guest = Path(os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", REPO / "guest/command/target" / directory))
     return host, guest, profile
+
+
+def test_candidate_evaluation_reports_actions_without_destination_contact(tmp_path):
+    """Use the native CLI and fresh captured evidence against an owned listener."""
+    executable = native_inputs()[0] / "safeyolo"
+    root = tmp_path / "selected-instance"
+    root.mkdir()
+    policy = tmp_path / "candidate.toml"
+    request_file = tmp_path / "request.json"
+    evidence_file = tmp_path / "evidence.json"
+    with socket.socket() as destination:
+        destination.bind(("127.0.0.2", 0))
+        destination.listen()
+        destination.setblocking(False)
+        host, port = destination.getsockname()
+        subject = {"kind": "ip", "address": host}
+        input_digest = hashlib.sha256(json.dumps(
+            {"subject": subject, "inputs": {}}, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        request_file.write_text(json.dumps({
+            "agent": "alice", "host": host, "port": port, "scheme": "http",
+            "method": "GET", "path": "/report", "ip": host,
+        }))
+        for finding, fallback, expected in [
+            ({"kind": "finding", "positive": True}, "unresolved", "deny"),
+            ({"kind": "finding", "positive": False}, "unresolved", "allow"),
+            ({"kind": "unknown", "reason": "fixture coverage unavailable"}, "unresolved", "unresolved"),
+            ({"kind": "failure", "reason": "fixture provider failed"}, "approval", "approval"),
+        ]:
+            source = {
+                "hosts": {"*": {"egress": "allow"}},
+                "controls": {"network": {"homoglyph": False}},
+                "checks": {"threat": {
+                    "source_id": "cli-fixture", "meaning": "controlled IP threat membership",
+                    "subject": "ip", "result_type": "finding", "influences": ["hard_exclusion"],
+                    "implementation_version": "fixture-1", "configuration_version": "selected-1",
+                    "max_age_seconds": 60, "source": {"kind": "recorded", "path": evidence_file.name},
+                }},
+                "check_rules": [{
+                    "name": "never-visit", "host": "*", "stage": "connect", "required": True,
+                    "influence": "hard_exclusion", "priority": 0,
+                    "when": {"op": "finding", "check": "threat"},
+                    "on_match": "deny", "on_unavailable": fallback,
+                }],
+            }
+            policy.write_text(tomlkit.dumps(source))
+            evidence_file.write_text(json.dumps([{
+                "subject": subject, "input_digest": input_digest,
+                "implementation_version": "fixture-1", "configuration_version": "selected-1",
+                "collected_at_ms": time.time_ns() // 1_000_000, "valid_until_ms": None,
+                "source": {"source_id": "cli-fixture", "source_revision": None,
+                           "content_digest": None, "source_observed_at_ms": None},
+                "finding": finding,
+            }]))
+            checked = subprocess.run(
+                [str(executable), "--root", str(root), "policy", "check", str(policy)],
+                capture_output=True, text=True, timeout=15,
+            )
+            assert checked.returncode == 0, checked.stderr
+            evaluated = subprocess.run(
+                [str(executable), "--root", str(root), "policy", "evaluate", str(policy), str(request_file)],
+                capture_output=True, text=True, timeout=15,
+            )
+            assert evaluated.returncode == 0, evaluated.stderr
+            result = json.loads(evaluated.stdout)["result"]
+            assert result["action"] == expected, result
+            assert result["stages"][0]["rules"][0]["rule"] == "never-visit"
+            assert result["stages"][0]["evidence"]["threat"]["result"]["finding"] == finding
+            assert result["evidence_mode"] == "recorded_offline"
+            assert result["destination_contact"] is False
+            assert result["dependency_calls"] == []
+            assert result["live_budgets_consumed"] is False
+            with pytest.raises(BlockingIOError):
+                destination.accept()
 
 
 class NativeInstance:

@@ -390,7 +390,9 @@ mod tests {
                     "{}",
                     String::from_utf8_lossy(&head)
                 );
-                client.write_all(b"opaque-fixture\r\n\r\n").await.unwrap();
+                // A NUL selects opaque framing; a token followed by CRLF is
+                // deliberately retained on the inspected HTTP parser path.
+                client.write_all(b"\0opaque-fixture\r\n\r\n").await.unwrap();
                 client.shutdown().await.unwrap();
                 let mut reply = Vec::new();
                 let result = timeout(LIMIT, client.read_to_end(&mut reply))

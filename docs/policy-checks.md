@@ -191,6 +191,10 @@ can have been admitted under the explicit direct-IP fallback before its TLS
 hostname becomes visible.
 
 Direct-IP requests have an IP subject and unavailable hostname evidence.
+Supported IPv6 zone IDs select an interface. Named-check host scopes and HTTP
+path subjects use the canonical address without the zone ID; IP evidence still
+binds the actual connected address. A subject-normalization failure uses the
+configured unavailable fallback instead of removing the rule.
 Opaque/passthrough traffic has no visible HTTP path. Before relaying its bytes,
 the proxy applies request rules with unavailable path evidence. Required
 hostname/IP checks cannot use later TLS observations or completed-response
