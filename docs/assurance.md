@@ -26,7 +26,7 @@ they must not be waived by generating another snapshot.
 | --- | --- |
 | Map | [PR #1366 at ce6fbf06](https://github.com/craigbalding/safeyolo/pull/1366/commits/ce6fbf06bd47921b87f02637cd4c726937f7c851), [parser repair acceptance](https://github.com/craigbalding/safeyolo/issues/1365#issuecomment-6584281948); the preceding library inventory has [PR #1295 acceptance](https://github.com/craigbalding/safeyolo/issues/856#issuecomment-6497525151) |
 | Workflow | [PR #1078 at 4b0a6a0a](https://github.com/craigbalding/safeyolo/pull/1078/commits/4b0a6a0a76af168cb7036f5c2abb2acbd7164eb2), [artifact action acceptance](https://github.com/craigbalding/safeyolo/issues/1077#issuecomment-6216983788) |
-| Tool lock | [PR #1297 at cc534d1c](https://github.com/craigbalding/safeyolo/pull/1297/commits/cc534d1cfb69a9f67ee7b7d240e56235cddcb763), [filelock repair acceptance](https://github.com/craigbalding/safeyolo/issues/1173#issuecomment-6502998170) |
+| Tool lock | [PR #1568 at b166fb27](https://github.com/craigbalding/safeyolo/pull/1568/commits/b166fb270e6457b4932c20266d5089a56954da6d), [OpenTelemetry repair acceptance](https://github.com/craigbalding/safeyolo/issues/1566#issuecomment-6863664596) |
 
 Each corrected hash identifies the exact file bytes at its accepted commit.
 This control-pin correction does not promote the product baseline. Wider
