@@ -52,6 +52,11 @@ locate a nondefault policy file; do not assume it is `ROOT/policy.toml`.
 `services authorized research` and the saved policy show its existing grants.
 Do not copy their tokens into the research guest.
 
+An HTTPS service check needs the selected proxy's TLS configuration. Initialization
+writes `tls_ca_file`; preserve it when changing runtime settings. If the selected
+instance lacks that capability, report HTTPS checks as unavailable and resolve
+the intended transport before claiming working registration enforcement.
+
 ## Generate and assess a candidate
 
 Use a private host working directory for generated files. The next commands

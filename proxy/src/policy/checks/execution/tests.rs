@@ -93,7 +93,9 @@ fn typed_results_cannot_supply_host_binding_fields_or_promote_pass_text() {
 
 #[test]
 fn rdap_registration_uses_only_exact_domain_creation_and_preserves_unknowns() {
-    let bytes = include_bytes!("../../../../../cli/src/safeyolo/agent_context/skills/policy-authoring/assets/rdap-synthetic.json");
+    let bytes = include_bytes!(
+        "../../../../../cli/src/safeyolo/agent_context/skills/policy-authoring/assets/rdap-synthetic.json"
+    );
     let subject = Subject::Hostname {
         hostname: "example.com".into(),
     };

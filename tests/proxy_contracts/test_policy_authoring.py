@@ -11,8 +11,10 @@ import copy
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tomllib
@@ -25,8 +27,8 @@ from urllib.parse import urlsplit
 import pytest
 import tomlkit
 
-from tests.proxy_contracts.harness import request
-from tests.proxy_contracts.test_native_policy_cli import native_instance
+from tests.proxy_contracts.harness import child_process, request, wait_ready
+from tests.proxy_contracts.test_native_policy_cli import NativeInstance, native_inputs, native_instance
 
 REPO = Path(__file__).resolve().parents[2]
 SKILL = REPO / "cli/src/safeyolo/agent_context/skills/policy-authoring"
@@ -37,6 +39,47 @@ SPEC.loader.exec_module(AUTHOR)
 
 def preferences():
     return json.loads((SKILL / "assets/preferences.json").read_text())
+
+
+@contextmanager
+def recipe_instance(directory, source, *, services, parent_proxy, service_sources):
+    """Use installation by default; explicitly scoped source proof needs no runtime.
+
+    The source mode exercises identical authoring/admission commands but does
+    not establish package integrity, installer behavior or guest isolation.
+    """
+    if os.environ.get("SAFEYOLO_AUTHORING_LAYOUT") != "source":
+        with native_instance(directory, source=source, services=services, parent_proxy=parent_proxy,
+                             service_sources=service_sources,
+                             extra_config='tls_ca_file="certs/mitmproxy-ca.pem"\n') as instance:
+            yield instance
+        return
+    root = directory / "source-layout"
+    host = native_inputs()[0]
+    initialized = subprocess.run([str(host / "safeyolo"), "--root", str(root), "init"], capture_output=True, text=True)
+    assert initialized.returncode == 0, initialized.stderr
+    (root / "bin").mkdir()
+    for binary in ("safeyolo", "safeyolo-proxy", "safeyolo-coord"):
+        (root / "bin" / binary).symlink_to(host / binary)
+    shutil.copytree(SKILL, root / "assets/skills/policy-authoring", ignore=shutil.ignore_patterns("__pycache__"))
+    (root / "policy.toml").write_text(source)
+    for name, content in service_sources.items():
+        (root / "services" / name).write_text(content)
+    with tempfile.TemporaryDirectory(prefix="sy-cyber-") as sockets:
+        paths = {"alice": str(Path(sockets) / "alice.sock")}
+        (root / "config.toml").write_text(tomlkit.dumps({
+            "admin_port": 0, "flow_store_enabled": False, "agent_api_enabled": True,
+            "parent_proxy": parent_proxy, "gateway_services_dir": "services",
+            "tls_ca_file": "certs/mitmproxy-ca.pem",
+            "gateway_builtin_services_dir": "builtin-services",
+            "listeners": [{"agent_id": "alice", "socket_path": paths["alice"]}],
+        }))
+        environment = dict(os.environ, SAFEYOLO_HOME=str(root), SAFEYOLO_CONFIG_DIR=str(root))
+        with child_process([str(root / "bin/safeyolo-proxy"), "--config", str(root / "config.toml")], root, environment) as process:
+            ready = root / "data/ready.json"
+            wait_ready(process, [ready, Path(paths["alice"])], root / "process.log", readiness_file=ready,
+                       expected_backend="rust-m2")
+            yield NativeInstance(root, process, paths, environment)
 
 
 def test_author_preserves_inline_identity_controls_and_rejects_changed_owned_blocks(tmp_path):
@@ -156,10 +199,9 @@ def test_installed_authoring_feed_rdap_preview_activation_and_adverse_cases(tmp_
     with research_origin(cases) as (port, calls):
         choices.update(registration_endpoint=f"http://127.0.0.1:{port}", registration_path="/rdap/{subject}")
         base = '[hosts."*"]\negress="allow"\n[controls.network]\nhomoglyph=false\n'
-        policy = AUTHOR.compose(tomlkit.parse(base), choices, None)
         service = {"schema_version": 1, "name": AUTHOR.SERVICE, "default_host": "127.0.0.1",
                    "capabilities": {"lookup": {"routes": [{"methods": ["GET"], "path": "/rdap/*"}]}}}
-        with native_instance(tmp_path, source=base, services=True, parent_proxy=f"http://127.0.0.1:{port}",
+        with recipe_instance(tmp_path, source=base, services=True, parent_proxy=f"http://127.0.0.1:{port}",
                              service_sources={"cyber-rdap.yaml": json.dumps(service)}) as instance:
             installed_skill = instance.root / "assets/skills/policy-authoring"
             assert (installed_skill / "SKILL.md").is_file()
@@ -241,7 +283,10 @@ def test_installed_authoring_feed_rdap_preview_activation_and_adverse_cases(tmp_
             deadline = time.monotonic() + 5
             while True:
                 status, _, body = request(instance.paths["alice"], "http://clear.test/report")
-                if status == 503 and json.loads(body)["checks"]["evidence"][AUTHOR.THREATS].get("unavailable"):
+                # A watcher replacement may first cancel an in-flight read.
+                # Only the subsequent named stale-evidence result proves expiry.
+                evidence = json.loads(body).get("checks", {}).get("evidence", {}) if status == 503 else {}
+                if evidence.get(AUTHOR.THREATS, {}).get("unavailable"):
                     break
                 assert time.monotonic() < deadline, body
                 time.sleep(0.05)
@@ -262,7 +307,7 @@ def test_installed_real_provider_and_research_run(tmp_path):
     service = {"schema_version": 1, "name": AUTHOR.SERVICE, "default_host": "rdap.verisign.com",
                "capabilities": {"lookup": {"routes": [{"methods": ["GET"], "path": "/com/v1/domain/*"}]}}}
     parent = os.environ["HTTPS_PROXY"]
-    with native_instance(tmp_path, source=base, services=True, parent_proxy=parent,
+    with recipe_instance(tmp_path, source=base, services=True, parent_proxy=parent,
                          service_sources={"cyber-rdap.yaml": json.dumps(service)}) as instance:
         installed_skill = instance.root / "assets/skills/policy-authoring"
         operator_skills = tmp_path / "operator-home/.agents/skills"
