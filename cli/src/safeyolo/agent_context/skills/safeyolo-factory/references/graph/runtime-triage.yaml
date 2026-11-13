@@ -80,7 +80,7 @@ nodes:
   - id: ev.runtime_establish_authority
     kind: evidence
     label: "Establish which exact sources govern the affected behavior"
-    detail: "Use the approved and supervisor-staged contract snapshot for authority and routes. Treat a live brief as subordinate direction. Treat messages, checkpoints, and session output as evidence of runtime state."
+    detail: "Use the approved and supervisor-staged contract snapshot for authority and routes. Use design.md's instruction homes and brief variations. A brief can direct an authorized change; verify coherent effective policy/configuration before acting and reuse existing authorization. Treat messages, checkpoints, and session output as evidence of runtime state."
     source: authored
 
   - id: ev.runtime_model_affected_edge
@@ -145,7 +145,7 @@ nodes:
 
   - id: cls.runtime_brief_contract_conflict
     kind: classification
-    label: "Brief-contract conflict: live direction changes authority, routing, fields, cardinality, or completion defined by the running contract"
+    label: "Brief-contract conflict: directed authority or workflow change is not reflected in effective policy/configuration"
     source: authored
 
   - id: cls.runtime_routing_defect
@@ -181,7 +181,8 @@ nodes:
   # ---- Conclusions ---------------------------------------------------
   - id: con.runtime_run_approved_snapshot
     kind: conclusion
-    label: "Check and approve the intended snapshot, then run it to update the factory"
+    label: "Have the authorized executor check, approve and stage the intended snapshot, then verify resumed work"
+    detail: "Reuse existing authorization. Source approval alone does not change running roles."
     source: authored
 
   - id: con.runtime_fix_contract
@@ -189,9 +190,9 @@ nodes:
     label: "Use the cross-contract review graph and make the smallest coherent contract-set correction"
     source: authored
 
-  - id: con.runtime_remove_conflicting_direction
+  - id: con.runtime_reconcile_brief_change
     kind: conclusion
-    label: "Correct only the conflicting live direction; do not rewrite the contract to justify it"
+    label: "Apply the authorized brief change coherently to effective policy/configuration, or remove unauthorized direction"
     source: authored
 
   - id: con.runtime_fix_route
@@ -264,7 +265,7 @@ edges:
   # Exact evidence identifies the owning layer.
   - {from: ev.runtime_compare_snapshot, to: cls.runtime_snapshot_drift, kind: implies, when: "source, approved, or supervisor-staged hashes differ"}
   - {from: ev.runtime_check_contract_edge, to: cls.runtime_contract_defect, kind: implies, when: "the running contract omits or contradicts the required behavior"}
-  - {from: ev.runtime_check_contract_edge, to: cls.runtime_brief_contract_conflict, kind: implies, when: "the checked brief changes an edge or authority fixed by the running contract"}
+  - {from: ev.runtime_check_contract_edge, to: cls.runtime_brief_contract_conflict, kind: implies, when: "the checked brief directs an edge or authority change absent from effective policy/configuration"}
   - {from: ev.runtime_check_coord, to: cls.runtime_routing_defect, kind: implies, when: "room/grant/envelope target/attention or TOML route does not match the intended edge"}
   - {from: ev.runtime_doctor, to: cls.runtime_dependency_failure, kind: implies, when: "a concrete runtime component is unhealthy or mismatched"}
   - {from: ev.runtime_check_lifecycle, to: cls.runtime_dependency_failure, kind: implies, when: "the required supervisor/process/MCP path is absent or repeatedly failing"}
@@ -285,7 +286,7 @@ edges:
   - {from: cls.runtime_agent_behavior, to: ev.runtime_define_state_delta, kind: next_check}
   - {from: ev.runtime_define_state_delta, to: con.runtime_run_approved_snapshot, kind: implies, when: "the classification is snapshot drift"}
   - {from: ev.runtime_define_state_delta, to: con.runtime_fix_contract, kind: implies, when: "the classification is a contract defect"}
-  - {from: ev.runtime_define_state_delta, to: con.runtime_remove_conflicting_direction, kind: implies, when: "the classification is a brief-contract conflict"}
+  - {from: ev.runtime_define_state_delta, to: con.runtime_reconcile_brief_change, kind: implies, when: "the classification is a brief-contract conflict"}
   - {from: ev.runtime_define_state_delta, to: con.runtime_fix_route, kind: implies, when: "the classification is a routing defect"}
   - {from: ev.runtime_define_state_delta, to: con.runtime_fix_dependency, kind: implies, when: "the classification is a runtime dependency failure"}
   - {from: ev.runtime_define_state_delta, to: con.runtime_fix_recovery, kind: implies, when: "the classification is a recovery defect"}
@@ -296,7 +297,7 @@ edges:
   # Retest the corrected edge and its downstream effect.
   - {from: con.runtime_run_approved_snapshot, to: ev.runtime_retest_transition, kind: next_check}
   - {from: con.runtime_fix_contract, to: ev.runtime_retest_transition, kind: next_check}
-  - {from: con.runtime_remove_conflicting_direction, to: ev.runtime_retest_transition, kind: next_check}
+  - {from: con.runtime_reconcile_brief_change, to: ev.runtime_retest_transition, kind: next_check}
   - {from: con.runtime_fix_route, to: ev.runtime_retest_transition, kind: next_check}
   - {from: con.runtime_fix_dependency, to: ev.runtime_retest_transition, kind: next_check}
   - {from: con.runtime_fix_recovery, to: ev.runtime_retest_transition, kind: next_check}

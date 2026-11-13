@@ -30,16 +30,16 @@ flowchart TD
     ev.runtime_record_operator_result["Record the graph path, evidence identities, classification, action, and verification"]
     cls.runtime_snapshot_drift{{"Source/approved/running mismatch: the factory uses different contract bytes"}}
     cls.runtime_contract_defect{{"Contract defect: required ownership, authority, context, response, or recovery is absent or contradictory"}}
-    cls.runtime_brief_contract_conflict{{"Brief-contract conflict: live direction changes authority, routing, fields, cardinality, or completion defined by the running contract"}}
+    cls.runtime_brief_contract_conflict{{"Brief-contract conflict: directed authority or workflow change is not reflected in effective policy/configuration"}}
     cls.runtime_routing_defect{{"Routing defect: canonical room, membership, grant, target, attention, or declared handoff is wrong"}}
     cls.runtime_dependency_failure{{"Runtime dependency failure: Coord/NATS, proxy, supervisor, process, storage, or MCP path is unhealthy"}}
     cls.runtime_recovery_defect{{"Recovery defect: failure was detected but useful work did not resume or state was lost/duplicated"}}
     cls.runtime_capability_mismatch{{"Capability mismatch: the assigned role cannot perform a responsibility with operator-approved resources"}}
     cls.runtime_agent_behavior{{"Agent-behavior defect: running contract, routes, runtime, and capabilities support the task, but the agent's choices do not"}}
     cls.runtime_evidence_incomplete{{"Current evidence cannot distinguish healthy quiescence, missed work, or process failure"}}
-    con.runtime_run_approved_snapshot(["Check and approve the intended snapshot, then run it to update the factory"])
+    con.runtime_run_approved_snapshot(["Have the authorized executor check, approve and stage the intended snapshot, then verify resumed work"])
     con.runtime_fix_contract(["Use the cross-contract review graph and make the smallest coherent contract-set correction"])
-    con.runtime_remove_conflicting_direction(["Correct only the conflicting live direction; do not rewrite the contract to justify it"])
+    con.runtime_reconcile_brief_change(["Apply the authorized brief change coherently to effective policy/configuration, or remove unauthorized direction"])
     con.runtime_fix_route(["Correct the exact room/grant/target/handoff mismatch and retest that transition"])
     con.runtime_fix_dependency(["Repair the named dependency without changing unrelated contracts or restarting healthy components"])
     con.runtime_fix_recovery(["Correct the recovery boundary that lost, duplicated, or failed to resume canonical work"])
@@ -74,7 +74,7 @@ flowchart TD
     ev.runtime_model_affected_edge -->|"next_check: a live brief directs the transition"| ev.runtime_read_brief
     ev.runtime_compare_snapshot -->|"implies: source, approved, or supervisor-staged hashes differ"| cls.runtime_snapshot_drift
     ev.runtime_check_contract_edge -->|"implies: the running contract omits or contradicts the required behavior"| cls.runtime_contract_defect
-    ev.runtime_check_contract_edge -->|"implies: the checked brief changes an edge or authority fixed by the running contract"| cls.runtime_brief_contract_conflict
+    ev.runtime_check_contract_edge -->|"implies: the checked brief directs an edge or authority change absent from effective policy/configuration"| cls.runtime_brief_contract_conflict
     ev.runtime_check_coord -->|"implies: room/grant/envelope target/attention or TOML route does not match the intended edge"| cls.runtime_routing_defect
     ev.runtime_doctor -->|"implies: a concrete runtime component is unhealthy or mismatched"| cls.runtime_dependency_failure
     ev.runtime_check_lifecycle -->|"implies: the required supervisor/process/MCP path is absent or repeatedly failing"| cls.runtime_dependency_failure
@@ -93,7 +93,7 @@ flowchart TD
     cls.runtime_agent_behavior -->|"next_check"| ev.runtime_define_state_delta
     ev.runtime_define_state_delta -->|"implies: the classification is snapshot drift"| con.runtime_run_approved_snapshot
     ev.runtime_define_state_delta -->|"implies: the classification is a contract defect"| con.runtime_fix_contract
-    ev.runtime_define_state_delta -->|"implies: the classification is a brief-contract conflict"| con.runtime_remove_conflicting_direction
+    ev.runtime_define_state_delta -->|"implies: the classification is a brief-contract conflict"| con.runtime_reconcile_brief_change
     ev.runtime_define_state_delta -->|"implies: the classification is a routing defect"| con.runtime_fix_route
     ev.runtime_define_state_delta -->|"implies: the classification is a runtime dependency failure"| con.runtime_fix_dependency
     ev.runtime_define_state_delta -->|"implies: the classification is a recovery defect"| con.runtime_fix_recovery
@@ -102,7 +102,7 @@ flowchart TD
     cls.runtime_capability_mismatch -->|"escalates_to: no approved resource can satisfy the responsibility"| ask.runtime_approve_capability
     con.runtime_run_approved_snapshot -->|"next_check"| ev.runtime_retest_transition
     con.runtime_fix_contract -->|"next_check"| ev.runtime_retest_transition
-    con.runtime_remove_conflicting_direction -->|"next_check"| ev.runtime_retest_transition
+    con.runtime_reconcile_brief_change -->|"next_check"| ev.runtime_retest_transition
     con.runtime_fix_route -->|"next_check"| ev.runtime_retest_transition
     con.runtime_fix_dependency -->|"next_check"| ev.runtime_retest_transition
     con.runtime_fix_recovery -->|"next_check"| ev.runtime_retest_transition
@@ -143,7 +143,7 @@ flowchart TD
     class cls.runtime_evidence_incomplete classification
     class con.runtime_run_approved_snapshot conclusion
     class con.runtime_fix_contract conclusion
-    class con.runtime_remove_conflicting_direction conclusion
+    class con.runtime_reconcile_brief_change conclusion
     class con.runtime_fix_route conclusion
     class con.runtime_fix_dependency conclusion
     class con.runtime_fix_recovery conclusion

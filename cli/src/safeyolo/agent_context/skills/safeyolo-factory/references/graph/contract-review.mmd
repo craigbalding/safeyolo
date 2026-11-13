@@ -15,6 +15,8 @@ flowchart TD
     ev.review_load_live_brief["Read the current live brief when one exists; keep it separate from the immutable contract set"]
     ev.review_compare_snapshot["Compare source paths and hashes with the approved snapshot, supervisor-staged snapshot, and 'factory doctor' evidence"]
     ev.review_extract_model["Extract roles, owned outcomes, authority, work inputs/outputs, handoffs, evidence, waits, and recovery owners"]
+    ev.review_instruction_homes["Check runtime, domain, instance and assignment separation and the selected native or message lifecycle"]
+    ev.review_existing_mechanisms["Distinguish shipped mechanisms, domain judgment, API-use instructions and evidenced missing primitives"]
     ev.review_render_projection["Render an instance-specific Mermaid projection plus an authority/evidence matrix"]
     ev.review_outcome_liveness["Check outcome ownership, reachability, response routes, useful waiting, and all ordinary failure paths"]
     ev.review_authority_evidence["Check mutation authority, operator-only choices, evidence independence, and circular success claims"]
@@ -35,7 +37,7 @@ flowchart TD
     con.review_repeat_complete_review(["Do not stop at the edited file; repeat the complete-set review before acceptance"])
     ask.review_provide_sources[["Ask for the exact TOML and all linked contracts, or a mount containing them"]]
     ask.review_resolve_hinge[["Ask one concrete deal-breaker question that resolves the material design hinge"]]
-    ask.review_approve_and_run_snapshot[["After source correction, ask the operator to check, approve, and run the intended snapshot"]]
+    ask.review_approve_and_run_snapshot[["For intended live adoption, use the authorized executor to check, approve and stage; ask only for missing authority"]]
 
     sym.review_new_contract_set -->|"next_check"| ev.review_load_exact_set
     sym.review_revised_contract -->|"next_check"| ev.review_load_exact_set
@@ -49,7 +51,9 @@ flowchart TD
     ev.review_compare_snapshot -->|"implies: source, approved, or supervisor-staged hashes differ"| cls.review_source_snapshot_drift
     cls.review_source_snapshot_drift -->|"escalates_to: the source change is intended for the running factory"| ask.review_approve_and_run_snapshot
     ev.review_load_exact_set -->|"next_check"| ev.review_extract_model
-    ev.review_extract_model -->|"next_check"| ev.review_render_projection
+    ev.review_extract_model -->|"next_check"| ev.review_instruction_homes
+    ev.review_instruction_homes -->|"next_check"| ev.review_existing_mechanisms
+    ev.review_existing_mechanisms -->|"next_check"| ev.review_render_projection
     ev.review_render_projection -->|"next_check"| ev.review_outcome_liveness
     ev.review_render_projection -->|"next_check"| ev.review_authority_evidence
     ev.review_render_projection -->|"next_check"| ev.review_handoff_recovery
@@ -79,6 +83,8 @@ flowchart TD
     class ev.review_load_live_brief evidence
     class ev.review_compare_snapshot evidence
     class ev.review_extract_model evidence
+    class ev.review_instruction_homes evidence
+    class ev.review_existing_mechanisms evidence
     class ev.review_render_projection evidence
     class ev.review_outcome_liveness evidence
     class ev.review_authority_evidence evidence

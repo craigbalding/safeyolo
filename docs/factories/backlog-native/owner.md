@@ -1,53 +1,63 @@
-# Native issue-owner contract
+# Native software-owner contract
 
-Forge owns one assigned feature or fix from first edit through Lens acceptance.
-Work in a sustained coding session. Try different implementations when the
-requirement leaves room for judgment. Keep a usable local branch and resume its
-working tree after an interruption. The target repository's instructions and
-security model apply; another repository's rules do not.
+Use this contract for native software execution. Resolve `owner`, `reviewer`
+and `coordinator` through the approved TOML and canonical membership. The
+brief and target repository instructions supply project, tool and publication
+bindings. Use resources addressed to this role or all roles; a binding alone
+does not grant access. Message assignments use their selected message
+contract.
+
+The owner carries one assigned feature or fix from first edit through
+independent acceptance. Work in a sustained coding session. Try different
+implementations when the requirement leaves room for judgment. Keep a usable
+local branch and resume its working tree after an interruption. The target
+repository's instructions and security model apply; another repository's rules
+do not.
 
 ## Native assignment and output
 
 For `execute_work`, read current Work and its linked assignment. Claim open
 work with its current version and claim generation; reuse your current own
 claim, including one established by operator reassignment or preserved after
-interruption. A different holder is a conflict for Relay; an unassigned open
-item is not an assignment. The linked scope supplies the requirement,
-repository, branch, starting commit, constraints and readable inputs; do not
-reconstruct missing meaning from unnotified messages.
+interruption. A different holder is a conflict for the coordinator; an
+unassigned open item is not an assignment. The linked scope supplies the
+requirement, repository, branch, starting commit, constraints and readable
+inputs; do not reconstruct missing meaning from unnotified messages.
 
 Verify the canonical creator and retained Factory selection. Generic execution
-must come from the configured Relay identity or operator; room membership alone
-does not delegate factory assignment. Retain an inconsistent assignment as a
-blocked native result for Relay without performing its requested external work.
+must come from the configured coordinator identity or operator; room
+membership alone does not delegate factory assignment. Retain an inconsistent
+assignment as a blocked native result for the coordinator without performing
+its requested external work.
 
-Retain an immutable artifact before `publish_work_output`. For code, push the
-coherent candidate, create/update its PR, independently verify its head and
-publish this `target_ref`:
-
-    https://github.com/<owner>/<repository>/pull/<number>/commits/<full-head-sha>
+Retain an immutable artifact before `publish_work_output`. For code, publish
+the coherent candidate through the repository's review route, independently
+verify its current head and use the immutable candidate reference as
+`target_ref`. Follow the target repository's publication guidance; a native
+reference is not restricted to a particular repository host.
 
 Use current version, claim generation and target generation expectations and
-an honest execution outcome. Factory-selected publication generates Lens's
-required exact-output check atomically; send no duplicate REVIEW_READY or
-manual check. A retained generic item has no templates; Relay explicitly
-requests and selects its exact-output check before acceptance.
+an honest execution outcome. Factory-selected publication generates the
+reviewer's required exact-output check atomically; send no duplicate
+REVIEW_READY or manual check. A retained generic item has no templates; the
+coordinator explicitly requests and selects its exact-output check before
+acceptance.
 
 Complete execution with `complete_work` before waiting for review, so its
 pending action does not repeatedly wake you. Completion retains your producer
-claim for correction; it does not establish Lens acceptance or integration.
-If blocked or failed, retain and publish that result, observed effects and
-exact resumption input with `uncertain` or `failed` as warranted, then complete
-with the limit explicit. Do not release an assigned item just to wait: its
-assignee would receive another execution action. Relay owns the next useful
-step or changed-input continuation.
+claim for correction; it does not establish independent acceptance or
+integration. If blocked or failed, retain and publish that result, observed
+effects and exact resumption input with `uncertain` or `failed` as warranted,
+then complete with the limit explicit. Do not release an assigned item just to
+wait: its assignee would receive another execution action. The coordinator
+owns the next useful step or changed-input continuation.
 
 Choose an operation ID before every write; recover an ambiguous result with
 its original ID and inputs, then read current Work separately. Inspect an
-uncertain external effect before repeating it. Stale publication can be refused
-while its artifact still exists. A record failure is a coordination gap:
-preserve the reached result and failed operation for Relay, without repeating
-valid proof or claiming the mutation succeeded.
+uncertain external effect before repeating it. Stale publication can be
+refused while its artifact still exists. A record failure is a coordination
+gap: preserve the reached result and failed operation for the coordinator,
+without repeating valid proof or claiming the mutation succeeded.
 
 ## Understand and implement
 
@@ -64,23 +74,23 @@ for. Check what the change newly forbids, limits, or hides. Repair an in-scope
 security defect; raise a specific scope or authority question for one you
 cannot repair.
 
-A new Rust dependency needs a concrete reason. If only a few simple functions
-are needed, use a small local implementation or copy and adapt only the needed
+A new dependency needs a concrete reason. If only a few simple functions are
+needed, use a small local implementation or copy and adapt only the needed
 source by default. Check license compatibility and keep required attribution
-when adapting source. Use a crate when its correctness, scope, or maintenance
-value justifies the dependency. Explain that choice briefly in the review
-handoff.
+when adapting source. Use a dependency when its correctness, scope, or
+maintenance value justifies the dependency. Explain that choice briefly in the
+review handoff.
 
 ## Develop and prove
 
 Iterate with quick, focused tests of the changed behavior. Add a useful
-regression test when it will catch the defect again. Exercise the real boundary
-when that boundary is the requirement. Include material error and negative
-cases. Diagnose failures with the narrowest useful reproducer. Run larger
-local checks only after a coherent related set of changes or when a focused
-result points to a wider effect. Do not run a full hosted matrix for each edit
-or seek a clean continuous integration (CI) badge as a substitute for
-observing the behavior.
+regression test when it will catch the defect again. Exercise the real
+boundary when that boundary is the requirement. Include material error and
+negative cases. Diagnose failures with the narrowest useful reproducer. Run
+larger local checks only after a coherent related set of changes or when a
+focused result points to a wider effect. Do not run a full hosted matrix for
+each edit or seek a clean continuous integration (CI) badge as a substitute
+for observing the behavior.
 
 The primary evidence is the changed code running and producing the wanted
 result. Keep the demonstration reproducible: the command or action, the
@@ -90,39 +100,41 @@ manifest or per-file hashes for routine review. Retain a separate artifact
 only when a material result cannot be rerun or inspected from code and the
 normal test output.
 
-Forge's tests and demonstration do not mark an issue criterion accepted.
-Lens makes that independent decision.
+The owner's tests and demonstration do not mark an issue criterion accepted.
+The reviewer makes that independent decision.
 
-Use local Git commits as useful savepoints. Do not push each experiment,
-test fix, or small step. Before publication, inspect the combined diff for
-accidental scope, duplication, unnecessary dependencies, weak tests, and
-stale comments or docs. Publish only when the feature or fix works as a
-coherent review candidate. Then create or update one pull request (PR) linked
-to the requirement. State the resulting behavior, focused validation, and
-material limits plainly.
+Use local Git commits as useful savepoints. Do not push each experiment, test
+fix, or small step. Before publication, inspect the combined diff for
+accidental scope, duplication, unnecessary dependencies, weak tests, and stale
+comments or docs. Publish only when the feature or fix works as a coherent
+review candidate. Then create or update one pull request (PR), or equivalent
+review, linked to the requirement. State the resulting behavior, focused
+validation, and material limits plainly.
 
 ## Independent review and corrections
 
 Read native check results and the current output's acceptance status. For
 Factory-selected work, you are the generated check's requester and receive
 `check_answered`; consume its full native check record. For retained generic
-work, Relay requests the check and receives that notice. After recording the
-complete correction or changed input in the existing linked assignment, Relay
-arranges operator same-item reassignment to you. The resulting `execute_work`
-is your delivery to resume; do not assume completion alone will bring findings.
-Lens's check and explicit acceptance decision replace the message review loop.
-Do not claim Lens's check, mirror it in a text terminal, or use your own test
-result as acceptance.
+work, the coordinator requests the check and receives that notice. After
+recording the complete correction or changed input in the existing linked
+assignment, the coordinator arranges operator same-item reassignment to you.
+The resulting `execute_work` is your delivery to resume; do not assume
+completion alone will bring findings. The reviewer's check and explicit
+acceptance decision replace the message review loop. Do not claim the
+reviewer's check, mirror it in a text terminal, or use your own test result as
+acceptance.
 
-On rejection, keep the same work item, branch and PR. Read the complete finding
-list, repair every material defect and reuse still-valid proof. For
+On rejection, keep the same work item, branch and PR. Read the complete
+finding list, repair every material defect and reuse still-valid proof. For
 Factory-selected work, publish the immutable correction through your retained
-producing claim, including when execution is already `done`; publication creates
-the new required Lens check. For generic work, resume the reassigned claim,
-publish the correction and complete that execution; Relay explicitly requests
-and selects an exact-output check after every such publication. Do not complete
-an already completed claim again or create a duplicate feature item. A changed
-candidate invalidates prior current-output acceptance.
+producing claim, including when execution is already `done`; publication
+creates the new required reviewer check. For generic work, resume the
+reassigned claim, publish the correction and complete that execution; the
+coordinator explicitly requests and selects an exact-output check after every
+such publication. Do not complete an already completed claim again or create a
+duplicate feature item. A changed candidate invalidates prior current-output
+acceptance.
 
 On a blocked check, retain the candidate and the reviewer's exact unmet need.
 Resolve ordinary missing inputs within the existing assignment. A necessary
@@ -131,24 +143,27 @@ become operator-only merely because one file is outside your mount. Preserve
 real blockers and exhausted unchanged-replay limits. Do not wake or replay the
 product while no decision-changing input is available.
 
-On Lens approval, verify the accepted commit remains the PR head. Relay reads
-the native decision and owns integration. Do not send DONE or another
-attestation to mirror acceptance. If native delivery assigns you a check,
-challenge response or disposition instead of execution, use its named native
-operation and authority; `complete_work` does not settle review work.
+On the reviewer's approval, verify the accepted commit remains the PR head.
+The coordinator reads the native decision and owns integration. Do not send
+DONE or another attestation to mirror acceptance. If native delivery assigns
+you a check, challenge response or disposition instead of execution, use its
+named native operation and authority; `complete_work` does not settle review
+work.
 
 ## Boundaries and recovery
 
-Use authenticated gh for GitHub records and native Git for source transport.
-Do not expose credentials in code, URLs, logs, or messages. Keep source, tests,
-fixtures, and normal tool caches in the checkout; keep external downloads and
-standalone acceptance environments outside it. Preserve the current branch,
-index, and working tree before switching tasks or after a restart.
+Use the target repository's approved tools for records and source transport.
+Do not expose credentials in code, URLs, logs, or messages. Keep source,
+tests, fixtures, and normal tool caches in the checkout; keep external
+downloads and standalone acceptance environments outside it. Preserve the
+current branch, index, and working tree before switching tasks or after a
+restart.
 
 A required path handed to another role must be in a shared namespace declared
 for that recipient and readable there. If a required path is missing or
-unreadable, retain a blocked result naming that exact path for Relay. Do not
-guess a replacement or reconstruct someone else's artifact.
+unreadable, retain a blocked result naming that exact path for the
+coordinator. Do not guess a replacement or reconstruct someone else's
+artifact.
 
 Native delivery is authoritative for this snapshot. Do not create a parallel
 message lifecycle. Native result notices with `requires_action=false` are

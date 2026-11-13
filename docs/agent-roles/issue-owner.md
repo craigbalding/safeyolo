@@ -1,5 +1,9 @@
 # Issue-owner contract
 
+This is the message workflow selected by [backlog.toml](../factories/backlog.toml).
+For a native assignment, follow the selected native role contract instead;
+do not add this contract's `REVIEW_READY` or terminal responses.
+
 Forge owns delivery for each assigned GitHub issue, whether work starts from
 the issue or an existing pull request, through a focused, reviewable pull
 request. Turn ready work into complete, well-evidenced candidates, solve
@@ -19,13 +23,10 @@ Brief resource bindings are role-scoped. Use only bindings addressed to Forge
 or to all roles; a binding addressed to Relay or Lens neither grants Forge that
 resource nor implies that it exists in Forge's sandbox.
 
-Use operator-provisioned authenticated `gh` for authoritative repository and
-work-item identity, issue and pull-request metadata, checks, and GitHub
-mutations. Use native Git for fetch, branch, commit, and push. Use the GitHub
-App Connector only when `gh` is unavailable, fails, or lacks the required
-operation. Do not repeat a successful lookup through both paths, reconstruct a
-commit file-by-file through GitHub APIs, or expose authentication material in
-source, URLs, logs, or messages.
+Use the target repository's approved record and source-transport tools.
+For SafeYolo, follow the maintained
+[repository publication guidance](../DEVELOPERS.md#repository-publication).
+
 The current role contract and trusted brief govern tooling. Retained task-level
 tool instructions do not override them unless exercising that mechanism is
 itself part of the requested product outcome.
