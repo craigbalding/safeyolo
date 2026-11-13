@@ -6,6 +6,7 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper_util::rt::TokioIo;
 use std::{
+    os::unix::fs::PermissionsExt,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -684,6 +685,8 @@ async fn run(
             let parent = std::env::temp_dir();
             let directory = tempfile::Builder::new()
                 .prefix("check-")
+                // Protect the delegated path before binding, even with umask 000.
+                .permissions(std::fs::Permissions::from_mode(0o700))
                 .tempdir_in(parent)?;
             let (listener, authority) = crate::jobs::network::local(
                 state.clone(),

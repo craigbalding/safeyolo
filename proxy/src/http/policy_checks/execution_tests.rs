@@ -398,6 +398,10 @@ async fn native_policy_change_during_service_wait_cannot_restore_old_admission()
     ) {
         return;
     }
+    // The exact-test child owns this process; do not change the parent harness's umask.
+    unsafe {
+        libc::umask(0);
+    }
     for change in ["policy", "feed", "feed_configuration"] {
         let root = tempfile::tempdir().unwrap();
         let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -486,6 +490,30 @@ on_unavailable='unresolved'
         tokio::time::timeout(Duration::from_secs(3), contacted.notified())
             .await
             .expect("check never reached provider");
+        #[cfg(not(target_os = "macos"))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let directories: Vec<_> = std::fs::read_dir(root.path().join("data"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("check-")
+                })
+                .collect();
+            assert_eq!(
+                directories.len(),
+                1,
+                "expected the held service listener's directory"
+            );
+            assert_eq!(
+                directories[0].metadata().unwrap().permissions().mode() & 0o777,
+                0o700,
+                "service listener directory must be private even under umask 000"
+            );
+        }
         match change {
             "policy" => {
                 let source = std::fs::read_to_string(&path).unwrap();

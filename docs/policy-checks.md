@@ -190,8 +190,10 @@ the endpoint. GET and HEAD send no body; other methods send JSON containing the
 subject, input digest and policy-owned inputs. `typed` uses the same result
 format as a job.
 
-A service check uses the ordinary proxy transport, network policy, gateway
-route/credential controls and provider routing. Missing capability or operation
+A service check creates its temporary listener directory with owner-only access
+before binding the delegated socket, independent of the host umask. It uses the
+ordinary proxy transport, network policy, gateway route/credential controls and
+provider routing. Missing capability or operation
 grants fail explicitly. Check dependencies receive no blanket policy bypass.
 Scope assessed-workload rules to their intended agents: if dependency traffic
 requires a check already in its ancestry, that dependency fails as recursive
