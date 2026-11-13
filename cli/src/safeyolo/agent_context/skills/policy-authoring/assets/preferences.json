@@ -1,0 +1,18 @@
+{
+  "agent": "research",
+  "profile": "hard",
+  "feed": "hagezi",
+  "feed_max_age_seconds": 86400,
+  "registration_endpoint": "https://rdap.verisign.com",
+  "registration_path": "/com/v1/domain/{subject}",
+  "registration_max_age_seconds": 3600,
+  "registration_timeout_ms": 5000,
+  "threshold_days": 30,
+  "new_domain_action": "deny",
+  "unknown_action": "continue",
+  "list_action": "deny",
+  "list_unavailable": "unresolved",
+  "list_priority": 10,
+  "registration_priority": 20,
+  "destinations": ["www.cisa.gov", "www.cve.org", "www.microsoft.com"]
+}

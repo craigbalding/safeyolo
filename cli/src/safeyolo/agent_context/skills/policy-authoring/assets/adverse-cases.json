@@ -1,0 +1,66 @@
+{
+  "evidence": "Deterministic synthetic fixtures. No live malicious destination is used.",
+  "cases": [
+    {
+      "name": "allow",
+      "host": "clear.test",
+      "days": 90,
+      "expected": 200
+    },
+    {
+      "name": "newly-registered",
+      "host": "young.test",
+      "days": 5,
+      "expected": 403
+    },
+    {
+      "name": "threshold-younger",
+      "host": "below.test",
+      "days": 29,
+      "expected": 403
+    },
+    {
+      "name": "threshold-boundary",
+      "host": "boundary.test",
+      "days": 30,
+      "expected": 200
+    },
+    {
+      "name": "threshold-older",
+      "host": "above.test",
+      "days": 31,
+      "expected": 200
+    },
+    {
+      "name": "unknown-registration",
+      "host": "unknown.test",
+      "event": "transfer",
+      "expected": 200
+    },
+    {
+      "name": "multi-label-suffix",
+      "host": "example.co.uk",
+      "days": 90,
+      "expected": 200
+    },
+    {
+      "name": "hosted-tenant-unknown",
+      "host": "tenant.hosted.test",
+      "record_domain": "hosted.test",
+      "days": 90,
+      "expected": 200
+    },
+    {
+      "name": "provider-timeout",
+      "host": "timeout.test",
+      "timeout": true,
+      "expected": 200
+    },
+    {
+      "name": "redirected-destination",
+      "host": "redirect.test",
+      "days": 90,
+      "expected": 302
+    }
+  ]
+}

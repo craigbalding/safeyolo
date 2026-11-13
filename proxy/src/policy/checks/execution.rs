@@ -51,6 +51,7 @@ pub enum Mapping {
     Typed,
     #[serde(rename = "github_issue")]
     GitHubIssue,
+    RdapRegistration,
 }
 
 #[derive(Debug)]
@@ -777,6 +778,7 @@ async fn run(
         Mapping::Typed => serde_json::from_slice::<ProviderResult>(&bytes)
             .map_err(|_| "malformed typed check result".into()),
         Mapping::GitHubIssue => github_issue(&bytes, path.as_deref().unwrap(), &check.inputs),
+        Mapping::RdapRegistration => rdap_registration(&bytes, entry.subject.as_ref().unwrap()),
     };
     match mapped {
         Ok(result) => {
@@ -820,6 +822,58 @@ struct ProviderResult {
     source_observed_at_ms: Option<u64>,
     #[serde(default)]
     valid_until_ms: Option<u64>,
+}
+
+/// RFC 9083 registration evidence for the exact queried domain. A registry
+/// record for a parent says nothing about the creation of a hosted tenant.
+fn rdap_registration(
+    bytes: &[u8],
+    subject: &Subject,
+) -> std::result::Result<ProviderResult, Error> {
+    let Subject::Hostname { .. } = subject else {
+        return Err("RDAP registration requires a hostname subject".into());
+    };
+    let record: Value = serde_json::from_slice(bytes)?;
+    let domain = record["ldhName"]
+        .as_str()
+        .ok_or("RDAP domain name missing")?;
+    if record["objectClassName"] != "domain"
+        || (Subject::Hostname {
+            hostname: domain.into(),
+        })
+        .normalized()?
+            != *subject
+    {
+        return Err(
+            "RDAP record does not describe the exact hostname; tenant age is unknown".into(),
+        );
+    }
+    let events = record["events"].as_array().ok_or("RDAP events missing")?;
+    let mut registrations = events
+        .iter()
+        .filter(|event| event["eventAction"] == "registration");
+    let date = registrations
+        .next()
+        .and_then(|event| event["eventDate"].as_str())
+        .ok_or("RDAP registration event missing")?;
+    if registrations.next().is_some() {
+        return Err("RDAP registration event is ambiguous".into());
+    }
+    let timestamp =
+        time::OffsetDateTime::parse(date, &time::format_description::well_known::Rfc3339)?;
+    let unix_ms = u64::try_from(timestamp.unix_timestamp_nanos().div_euclid(1_000_000))
+        .map_err(|_| "RDAP registration predates the supported Unix time range")?;
+    if unix_ms > now() {
+        return Err("RDAP registration event is in the future".into());
+    }
+    Ok(ProviderResult {
+        finding: Finding::Timestamp { unix_ms },
+        // Registration time is the finding, not the age of the provider's
+        // dataset. No revision or source observation time is invented.
+        source_revision: None,
+        source_observed_at_ms: None,
+        valid_until_ms: None,
+    })
 }
 fn github_issue(
     bytes: &[u8],
