@@ -173,55 +173,59 @@ pub(super) fn validate_source(source: &mut EvidenceSource) -> Result<()> {
 impl Checks {
     /// Manual invocation is still an adopted check. Callers supply no host
     /// paths, expected values, implementation or authoritative result.
-    pub(crate) async fn invoke_named(
-        &self,
-        name: &str,
-        caller: &str,
+    pub(crate) fn invoke_named<'a>(
+        &'a self,
+        name: &'a str,
+        caller: &'a str,
         subject: Subject,
-        runtime: &Runtime,
-        state: &RuntimeState,
-    ) -> std::result::Result<Evidence, Error> {
-        let check = self.checks.get(name).ok_or("unknown adopted check")?;
-        if !check
-            .invokers
-            .iter()
-            .any(|allowed| allowed == caller || allowed == "*")
-        {
-            return Err("caller is not an adopted check invoker".into());
-        }
-        let kind = match &subject {
-            Subject::Hostname { .. } => SubjectKind::Hostname,
-            Subject::Ip { .. } => SubjectKind::Ip,
-            Subject::HttpPath { .. } => SubjectKind::HttpPath,
-            Subject::Value { .. } => SubjectKind::Value,
-        };
-        if kind != check.subject
-            || !matches!(
-                check.source,
-                EvidenceSource::Job { .. } | EvidenceSource::Service { .. }
-            )
-        {
-            return Err("unsupported adopted check subject or execution source".into());
-        }
-        let subject = subject.normalized()?;
-        let entry = Evidence {
-            check: name.into(),
-            source_id: check.source_id.clone(),
-            meaning: check.meaning.clone(),
-            scale: check.scale.clone(),
-            input_digest: Some(check.input_digest(&subject)?),
-            subject: Some(subject),
-            acquisition: "live".into(),
-            file_digest: None,
-            file_version: None,
-            result: None,
-            unavailable: None,
-            expires_at_ms: None,
-            execution: None,
-            feed_version: None,
-        };
-        self.execute(name, check, entry, runtime, state, vec![name.into()])
-            .await
+        runtime: &'a Runtime,
+        state: &'a RuntimeState,
+    ) -> futures_util::future::BoxFuture<'a, std::result::Result<Evidence, Error>> {
+        // This entry can itself be reached by a delegated proxy listener.
+        // As with collect_live, box the boundary to keep its Send type finite.
+        Box::pin(async move {
+            let check = self.checks.get(name).ok_or("unknown adopted check")?;
+            if !check
+                .invokers
+                .iter()
+                .any(|allowed| allowed == caller || allowed == "*")
+            {
+                return Err("caller is not an adopted check invoker".into());
+            }
+            let kind = match &subject {
+                Subject::Hostname { .. } => SubjectKind::Hostname,
+                Subject::Ip { .. } => SubjectKind::Ip,
+                Subject::HttpPath { .. } => SubjectKind::HttpPath,
+                Subject::Value { .. } => SubjectKind::Value,
+            };
+            if kind != check.subject
+                || !matches!(
+                    check.source,
+                    EvidenceSource::Job { .. } | EvidenceSource::Service { .. }
+                )
+            {
+                return Err("unsupported adopted check subject or execution source".into());
+            }
+            let subject = subject.normalized()?;
+            let entry = Evidence {
+                check: name.into(),
+                source_id: check.source_id.clone(),
+                meaning: check.meaning.clone(),
+                scale: check.scale.clone(),
+                input_digest: Some(check.input_digest(&subject)?),
+                subject: Some(subject),
+                acquisition: "live".into(),
+                file_digest: None,
+                file_version: None,
+                result: None,
+                unavailable: None,
+                expires_at_ms: None,
+                execution: None,
+                feed_version: None,
+            };
+            self.execute(name, check, entry, runtime, state, vec![name.into()])
+                .await
+        })
     }
 
     // The boxed boundary also prevents recursive proxy-listener futures from
