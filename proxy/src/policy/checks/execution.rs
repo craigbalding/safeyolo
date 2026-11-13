@@ -225,7 +225,8 @@ impl Checks {
         let (limits, prepared) = match &check.source {
             EvidenceSource::Job { spec, limits, .. } => {
                 let (bytes, version) = read_bounded(spec, limits.max_input_bytes).await?;
-                let job: crate::jobs::JobSpec = serde_json::from_slice(&bytes)?;
+                let mut job: crate::jobs::JobSpec = serde_json::from_slice(&bytes)?;
+                job.resolve_artifacts(spec.parent().ok_or("check job spec has no parent")?);
                 job.validate()?;
                 if job.retain_bytes > limits.max_output_bytes
                     || job.max_input_bytes > limits.max_input_bytes as u64
@@ -638,7 +639,9 @@ async fn run(
                 &stack,
             )
             .await?;
-            let execution = json!({"kind":"job","run_id":result.run_id,"gate_principal":result.gate_principal,
+            let execution = json!({"kind":"job","engine":result.engine,"outcome_source":result.outcome_source,
+                "runtime_report":result.runtime_report,"helper_process_status":result.helper_process_status,
+                "run_id":result.run_id,"gate_principal":result.gate_principal,
                 "authorization_principal":result.authorization_principal,"definition_digest":digest,
                 "rootfs":result.rootfs,"input_digest":result.input_sha256,"started_at_ms":result.started_unix_ms,
                 "ended_at_ms":result.ended_unix_ms,"outcome":result.outcome,"observation_error":result.observation_error,

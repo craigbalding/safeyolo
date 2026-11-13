@@ -1,5 +1,6 @@
 //! Host-only disposable execution. JobSpec never contains a host mount path.
 
+mod hyperlight;
 mod input;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -28,7 +29,26 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-pub const HELP: &str = "safeyolo [--root ROOT] job run SPEC.json [--input DIRECTORY]\nRun fixed argv from a trusted host-supplied JSON spec in a disposable sandbox.\nOnly the host caller selects DIRECTORY. Inputs are copied without following symlinks and mounted read-only at /input.\n/work and /home/agent are transient. Jobs have no Agent API, Coord, harness or host-script authority.\nSpec fields: gate_id, argv, timeout_seconds, max_input_bytes, max_input_entries, retain_bytes.\nOptional: memory_mb (default 4096), privilege (unprivileged or guest-root; default unprivileged), network (default false).\nWith network=true, the host caller delegates gate:<gate_id> through the running proxy. Existing network, credential and Service Gateway policy applies to that principal. SAFEYOLO_GATEWAY_TOKENS contains its scoped service-token JSON; provider credentials stay on the host. No saved access is created by a job.\nWithout network, gate_principal is provenance and authorization_principal is null.\nPrint observed execution evidence as JSON. A PASS string from a job is ordinary output.\nThe command returns 0 only for an observed exit 0 with complete evidence, 124 for timeout, and 1 for other job outcomes.\nIf observation fails, observation_error explains the failure. Captured streams and any exact outcome remain in the JSON; outcome is null when no exact result is available. The command returns 1.\nStartup or cleanup failures return an error without a successful job result.";
+pub const HELP: &str = r#"safeyolo [--root ROOT] job run SPEC.json [--input DIRECTORY]
+safeyolo [--root ROOT] job validate SPEC.json
+Run a trusted host-supplied job definition. Only the host caller selects DIRECTORY.
+Inputs are copied without following symlinks. No job receives an Agent API, Coord, harness or host-script authority.
+Spec fields: gate_id, argv, timeout_seconds, max_input_bytes, max_input_entries, retain_bytes.
+Optional: memory_mb (default 4096), privilege (unprivileged or guest-root; default unprivileged), network (default false), engine (default {"kind":"platform"}).
+The platform engine uses gVisor on Linux and VZ on macOS. It executes fixed argv, mounts inputs read-only at /input, and discards /work and /home/agent.
+With network=true, the platform engine delegates gate:<gate_id> through the running proxy. Existing network, credential and Service Gateway policy applies. SAFEYOLO_GATEWAY_TOKENS contains scoped service-token JSON; provider credentials stay on the host. No saved access is created.
+Hyperlight selects {"kind":"hyperlight","runtime":{"path":"runtime.json","sha256":"..."},"guest":{"path":"core.elf","sha256":"..."},"function":"Check"}.
+Hyperlight-Unikraft selects {"kind":"hyperlight-unikraft","runtime":{"path":"runtime.json","sha256":"..."},"checker":{"path":"checker.py","sha256":"..."}}.
+Artifact digests are full SHA-256 values. Relative paths resolve beside the trusted spec. The invocation directory cannot replace the engine or adopted artifacts.
+Both Hyperlight engines require KVM on Linux x86_64/aarch64 or entitled HVF on Apple-silicon macOS. validate checks pinned artifacts and runtime discovery without running the checker. No engine fallback occurs.
+Hyperlight has no Unix process or guest-root semantics. Core calls the named function with argv as a JSON string and offers bounded ReadInput(relative_path); its returned string is ordinary stdout. Unikraft runs the pinned Python checker with argv, read-only /input, and fresh in-memory /work and rootfs. It supports a Linux subset, without fork or full Unix privilege semantics. Both reject network=true and guest-root. memory_mb sizes scratch memory; it is not a total helper RSS limit.
+Print observed execution evidence as JSON. A PASS string is ordinary output. engine identifies the selected backend; outcome_source distinguishes a guest process from a host helper. runtime_report retains VM completion or error separately. helper_process_status retains the actual OS exit or signal even after a watchdog deadline or cancellation.
+All captured stream bytes are counted and hashed; retain_bytes bounds retained output. Unikraft's console decodes UTF-8 with replacement; console_encoding identifies that representation.
+Without network, gate_principal is provenance and authorization_principal is null.
+Return 0 only for observed exit 0 with complete evidence and, for Hyperlight, successful VM completion. Return 124 for timeout and 1 for other job outcomes.
+Observation failures set observation_error and retain exact available outcome/streams; outcome is null when no exact result is available. Startup or cleanup failures cannot report successful completion.
+Hyperlight deadlines cover artifact preparation and VM startup/execution. Cancellation kills the helper process group and waits for its exit before reporting completion. Input copying precedes that execution deadline.
+"#;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -36,6 +56,40 @@ pub enum Privilege {
     #[default]
     Unprivileged,
     GuestRoot,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinnedArtifact {
+    pub path: std::path::PathBuf,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum JobEngine {
+    #[default]
+    Platform,
+    Hyperlight {
+        runtime: PinnedArtifact,
+        guest: PinnedArtifact,
+        function: String,
+    },
+    HyperlightUnikraft {
+        runtime: PinnedArtifact,
+        checker: PinnedArtifact,
+    },
+}
+
+impl JobEngine {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Platform if cfg!(target_os = "macos") => "vz",
+            Self::Platform => "gvisor",
+            Self::Hyperlight { .. } => "hyperlight",
+            Self::HyperlightUnikraft { .. } => "hyperlight-unikraft",
+        }
+    }
 }
 
 fn memory_mb() -> u64 {
@@ -47,6 +101,8 @@ fn memory_mb() -> u64 {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct JobSpec {
+    #[serde(default)]
+    pub engine: JobEngine,
     pub gate_id: String,
     pub argv: Vec<String>,
     pub timeout_seconds: u64,
@@ -63,6 +119,20 @@ pub struct JobSpec {
 }
 
 impl JobSpec {
+    /// Resolve only adopted artifact paths, relative to the trusted spec file.
+    pub(crate) fn resolve_artifacts(&mut self, directory: &Path) {
+        let pair = match &mut self.engine {
+            JobEngine::Platform => return,
+            JobEngine::Hyperlight { runtime, guest, .. } => (runtime, guest),
+            JobEngine::HyperlightUnikraft { runtime, checker } => (runtime, checker),
+        };
+        for artifact in [pair.0, pair.1] {
+            if artifact.path.is_relative() {
+                artifact.path = directory.join(&artifact.path);
+            }
+        }
+    }
+
     pub(crate) fn validate(&self) -> Result<(), Error> {
         if self.gate_id.is_empty()
             || self.argv.is_empty()
@@ -76,6 +146,7 @@ impl JobSpec {
                     .into(),
             );
         }
+        hyperlight::validate_spec(self)?;
         Ok(())
     }
 }
@@ -89,6 +160,14 @@ pub enum Outcome {
     Interrupted { signal: i32 },
 }
 
+/// Raw OS wait status, separate from deadline/cancellation and guest reports.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HelperProcessStatus {
+    Exit { code: i32 },
+    Signal { number: i32 },
+}
+
 #[derive(Debug, Serialize)]
 pub struct Output {
     pub bytes: u64,
@@ -98,6 +177,11 @@ pub struct Output {
 
 #[derive(Debug, Serialize)]
 pub struct JobResult {
+    pub engine: String,
+    /// Hyperlight observes the helper's OS status separately from VM reports.
+    pub outcome_source: String,
+    pub runtime_report: Option<Value>,
+    pub helper_process_status: Option<HelperProcessStatus>,
     pub run_id: String,
     pub gate_id: String,
     pub gate_definition_sha256: String,
@@ -437,6 +521,9 @@ async fn run_inner(
     checks: &[String],
 ) -> Result<JobResult, Error> {
     spec.validate()?;
+    if !matches!(spec.engine, JobEngine::Platform) {
+        return hyperlight::run(config, spec, input, cancel).await;
+    }
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let config = config.canonicalize()?;
@@ -610,6 +697,10 @@ async fn run_inner(
         )
     })?;
     Ok(JobResult {
+        engine: spec.engine.name().into(),
+        outcome_source: "guest_process".into(),
+        runtime_report: None,
+        helper_process_status: None,
         run_id: name,
         gate_id: spec.gate_id.clone(),
         gate_definition_sha256: digest(&serde_json::to_vec(spec)?),
@@ -642,6 +733,20 @@ pub async fn command(config: &Path, args: &[String]) -> Result<i32, Error> {
         println!("{HELP}");
         return Ok(0);
     }
+    if let [validate, path] = args
+        && validate == "validate"
+    {
+        let path = Path::new(path).canonicalize()?;
+        let mut spec: JobSpec = serde_json::from_slice(&fs::read(&path)?)?;
+        spec.resolve_artifacts(path.parent().ok_or("job spec has no parent")?);
+        spec.validate()?;
+        let discovery = hyperlight::discover(config, &spec).await?;
+        println!(
+            "{}",
+            json!({"engine":spec.engine.name(),"valid":true,"runtime":discovery})
+        );
+        return Ok(0);
+    }
     let (spec, input) = match args {
         [run, spec] if run == "run" => (spec, None),
         [run, spec, flag, input] if run == "run" && flag == "--input" => {
@@ -649,7 +754,9 @@ pub async fn command(config: &Path, args: &[String]) -> Result<i32, Error> {
         }
         _ => return Err(HELP.into()),
     };
-    let spec: JobSpec = serde_json::from_slice(&fs::read(spec)?)?;
+    let path = Path::new(spec).canonicalize()?;
+    let mut spec: JobSpec = serde_json::from_slice(&fs::read(&path)?)?;
+    spec.resolve_artifacts(path.parent().ok_or("job spec has no parent")?);
     let result = run(config, &spec, input).await?;
     println!("{}", serde_json::to_string(&result)?);
     Ok(command_status(result.outcome, result.observation_error))

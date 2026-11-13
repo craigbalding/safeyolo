@@ -3,22 +3,24 @@
 set -euo pipefail
 repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 source "$repository/scripts/native_package.sh"
-output= directory= artifacts= guest_artifacts= runtime_artifacts= vm_artifacts=
+output= directory= artifacts= guest_artifacts= runtime_artifacts= vm_artifacts= hyperlight_artifacts=
 profile=production
 while (($#)); do
   case "$1" in
-    --output|--directory|--artifacts|--guest-artifacts|--runtime-artifacts|--vm-artifacts|--profile)
+    --output|--directory|--artifacts|--guest-artifacts|--runtime-artifacts|--vm-artifacts|--hyperlight-artifacts|--profile)
       option=$1
       (($# >= 2)) || { package_error "$option requires a value"; exit 2; }
       case "$option" in
         --output) output=$2;; --directory) directory=$2;; --artifacts) artifacts=$2;; --guest-artifacts) guest_artifacts=$2;;
         --runtime-artifacts) runtime_artifacts=$2;; --vm-artifacts) vm_artifacts=$2;; --profile) profile=$2;;
+        --hyperlight-artifacts) hyperlight_artifacts=$2;;
       esac
       shift 2;;
     --help)
-      echo 'Usage: scripts/build_host_packages.sh --output DIRECTORY [--profile production|debug] [--artifacts HOST_BIN_DIRECTORY] [--guest-artifacts LINUX_BIN_DIRECTORY] --runtime-artifacts DIRECTORY [--vm-artifacts DIRECTORY]'
+      echo 'Usage: scripts/build_host_packages.sh --output DIRECTORY [--profile production|debug] [--artifacts HOST_BIN_DIRECTORY] [--guest-artifacts LINUX_BIN_DIRECTORY] --runtime-artifacts DIRECTORY [--vm-artifacts DIRECTORY] [--hyperlight-artifacts DIRECTORY]'
       echo 'Runtime inputs: tmux and its required private libraries. macOS VM inputs: safeyolo-vm, build metadata/dSYM and vsock-term with .version/.sha256 receipts.'
       echo '--directory assembles an unpacked bundle instead of a tar.gz. Prepared guest images remain separate inputs to installation.'
+      echo '--hyperlight-artifacts includes a bundle produced by scripts/build_hyperlight_jobs.py, with portable pinned job definitions.'
       exit 0;;
     *) package_error "unknown argument: $1"; exit 2;;
   esac
@@ -79,6 +81,18 @@ if [[ -n $output ]]; then
 fi
 [[ ! -e $directory ]] || { package_error "bundle directory already exists: $directory"; exit 1; }
 mkdir -p "$directory/bin" "$directory/libexec" "$directory/lib" "$directory/assets/guest" "$directory/assets/launchers" "$directory/assets/contrib/lib" "$directory/assets/docs"
+if [[ -n $hyperlight_artifacts ]]; then
+  for artifact in safeyolo-hyperlight runtime.json python.cpio core.elf checker.py hyperlight.json hyperlight-unikraft.json; do
+    require_file "$hyperlight_artifacts/$artifact"
+  done
+  native_executable "$hyperlight_artifacts/safeyolo-hyperlight" "$platform"
+  mkdir -p "$directory/assets/hyperlight"
+  for artifact in safeyolo-hyperlight runtime.json python.cpio core.elf checker.py hyperlight.json hyperlight-unikraft.json; do
+    cp "$hyperlight_artifacts/$artifact" "$directory/assets/hyperlight/"
+  done
+  [[ -d $hyperlight_artifacts/licenses ]] || { package_error 'Hyperlight bundle license notices are missing'; exit 1; }
+  cp -R "$hyperlight_artifacts/licenses" "$directory/assets/hyperlight/"
+fi
 for binary in safeyolo safeyolo-proxy safeyolo-coord; do cp "$artifacts/$binary" "$directory/bin/"; done
 cp "$runtime_artifacts/tmux" "$directory/libexec/"
 if [[ $platform == linux-* ]]; then
@@ -188,6 +202,9 @@ cp "$repository/scripts/native_package.sh" "$directory/native_package.sh"
 chmod 0755 "$directory/bin/"{safeyolo,safeyolo-proxy,safeyolo-coord,tmux} "$directory/libexec/tmux" "$directory/assets/guest/"{guest-*,safeyolo-guest,safeyolo-coord} "$directory/"*.sh
 minimum=
 runtime_binaries=("$directory/libexec/tmux")
+if [[ -n $hyperlight_artifacts ]]; then
+  runtime_binaries+=("$directory/assets/hyperlight/safeyolo-hyperlight")
+fi
 for library in ${libraries[@]+"${libraries[@]}"}; do runtime_binaries+=("$directory/lib/${library##*/}"); done
 if [[ $platform == darwin-arm64 ]]; then
   minimum_versions=()

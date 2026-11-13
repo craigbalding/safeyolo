@@ -1,0 +1,9 @@
+[package]
+name = "safeyolo-checker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license-file = "../../LICENSE"
+
+[dependencies]
+hyperlight-guest-bin = "=0.19.0"
