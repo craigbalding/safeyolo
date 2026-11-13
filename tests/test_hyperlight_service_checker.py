@@ -157,3 +157,23 @@ def test_host_capture_rejects_invalid_identity_or_time_binding(host_driver, host
     host_capture["service_evidence"][0][field] = value
     with pytest.raises(AssertionError):
         host_driver.captured(host_capture)
+
+
+def test_named_evidence_binds_the_raw_adopted_definition_digest(host_driver, tmp_path):
+    path = tmp_path / "adopted.json"
+    path.write_text('{ "timeout_seconds": 30, "gate_id": "hyperlight-service-check" }\n')
+    subject = {"kind": "value", "value": "1550"}
+    first = {"run_id": "job-first", "gate_principal": "gate:hyperlight-service-check"}
+    named = {"evidence": {
+        "result": {"finding": {"positive": True}, "subject": subject},
+        "execution": {"run_id": "job-named", "gate_principal": first["gate_principal"],
+                      "definition_digest": host_driver.digest(path), "service_evidence": [{}]}}}
+    host_driver.check_named_evidence(first, named, path, subject)
+
+    rewritten = tmp_path / "rewritten.json"
+    rewritten.write_text(json.dumps(json.loads(path.read_bytes()), sort_keys=True))
+    assert host_driver.digest(rewritten) != host_driver.digest(path)
+    for value in ("sha256:" + host_driver.digest(path), "0" * 64, host_driver.digest(rewritten)):
+        named["evidence"]["execution"]["definition_digest"] = value
+        with pytest.raises(AssertionError):
+            host_driver.check_named_evidence(first, named, path, subject)

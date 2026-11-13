@@ -238,6 +238,17 @@ def named_output_bound(instance, engine, path):
         path.write_bytes(original)
 
 
+def check_named_evidence(first, named, path, subject):
+    assert named["evidence"]["result"]["finding"]["positive"] is True, named
+    execution = named["evidence"]["execution"]
+    assert execution["run_id"] != first["run_id"], execution
+    # The executor hashes the exact adopted file bytes, without a prefix.
+    assert execution["definition_digest"] == digest(path), execution
+    assert named["evidence"]["result"]["subject"] == subject, named
+    assert "retained_base64" not in execution["service_evidence"][0], execution
+    assert execution["gate_principal"] == first["gate_principal"], execution
+
+
 def scope_and_limits(instance, engine, port):
     github = f"https://api.github.com/repos/{instance.args.repository}/issues/{instance.args.issue}"
     for call in [
@@ -368,13 +379,8 @@ def exercise(args):
                         assert output(first)["finding"]["positive"] is True
                         assert instance.invoke(engine, {"spec": "/arbitrary/path"})[0] == 400
                         status, named = instance.invoke(engine)
-                        assert status == 200 and named["evidence"]["result"]["finding"]["positive"] is True, named
-                        execution = named["evidence"]["execution"]
-                        assert execution["run_id"] != first["run_id"]
-                        assert execution["definition_digest"] == "sha256:" + digest(spec)
-                        assert named["evidence"]["result"]["subject"] == {"kind": "value", "value": str(args.issue)}
-                        assert "retained_base64" not in execution["service_evidence"][0]
-                        assert execution["gate_principal"] == first["gate_principal"]
+                        assert status == 200, named
+                        check_named_evidence(first, named, spec, request["subject"])
                         named_output_bound(instance, engine, spec)
                         instance.policy["checks"][engine]["inputs"]["expected_author_id"] = "0"
                         instance.apply()
