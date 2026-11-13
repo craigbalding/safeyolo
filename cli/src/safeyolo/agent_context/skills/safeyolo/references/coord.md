@@ -36,6 +36,22 @@ corresponding native action; `complete_work` settles execution only. Read the
 full current Work and its acceptance status before acting. Result notices with
 `requires_action=false` are information.
 
+For a selected further attempt on completed assigned execution or an answered
+check, use `continue_work` with current version/claim generation, a reason,
+recoverable findings/input references and a chosen operation ID. Ordinary work
+requires its creator or operator. A currently required check requires its root's
+current acceptance-amendment authority or operator; an advisory check requires
+its requester or operator. The same retained participant receives a new action,
+reads `work.continuation`, reuses its active claim and settles through
+`complete_work` or `answer_check`. Prior output remains; renewed required review
+is pending and needs fresh applicable acceptance after its new answer. Use a new
+check for another output. For example, select an in-scope correction to a code
+candidate, or ask a report author to narrow or withdraw a finding after new
+evidence. A notice, approval or signal resolution does not select continuation.
+Unassigned work, recipient changes and abandoned claims use operator
+reassignment. Continuation grants no access or permission to repeat an uncertain
+external effect; reconcile that effect first.
+
 Use a check for a proposition about an exact subject with a meaningful verdict.
 Independent checks require an attributed producer distinct from the reviewer.
 Ordinary Work holds open-ended research; publishing its report supplies an

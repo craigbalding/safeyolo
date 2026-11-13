@@ -312,6 +312,14 @@ assignment generation, response or acceptance basis can create a new action.
 Partial pages retain their attention cursor until every relevant action fits
 the existing checkpoint bound.
 
+An authorized `continue_work` selects another generation for the same retained
+participant after execution or a check has completed. It uses this same action
+and checkpoint path. The worker reads current Work and `work.continuation` for
+the reason and findings/input references, then reuses its retained active claim.
+Only `complete_work` or `answer_check` settles that new attempt. A result notice
+does not select continuation or grant permission to repeat an uncertain external
+effect. See the [continuation reference](coord-reference.md#continue-with-the-retained-participant).
+
 After restart and after each turn, the supervisor reads current native actions.
 Canonical completion, answer, response, disposition, cancellation, reassignment
 or supersession retires the corresponding actionable delivery. Model prose,

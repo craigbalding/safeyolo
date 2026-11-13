@@ -18,8 +18,9 @@ do not.
 
 For `execute_work`, read current Work and its linked assignment. Claim open
 work with its current version and claim generation; reuse your current own
-claim, including one established by operator reassignment or preserved after
-interruption. A different holder is a conflict for the coordinator; an
+claim, including one activated by continuation, established by operator
+reassignment or preserved after interruption. A different holder is a conflict
+for the coordinator; an
 unassigned open item is not an assignment. The linked scope supplies the
 requirement, repository, branch, starting commit, constraints and readable
 inputs; do not reconstruct missing meaning from unnotified messages.
@@ -118,10 +119,13 @@ Factory-selected work, you are the generated check's requester and receive
 `check_answered`; consume its full native check record. For retained generic
 work, the coordinator requests the check and receives that notice. After
 recording the complete correction or changed input in the existing linked
-assignment, the coordinator arranges operator same-item reassignment to you.
-The resulting `execute_work` is your delivery to resume; do not assume
-completion alone will bring findings. The reviewer's check and explicit
-acceptance decision replace the message review loop. Do not claim the
+assignment, the coordinator selects `continue_work` with its reason and
+findings/input references. The resulting `execute_work` is your delivery to
+resume. Read `work.continuation`, follow its references and reuse your newly
+active retained claim; do not claim again. Completion or an informational result
+alone does not select another attempt. Continuation grants no new access or
+permission to repeat an uncertain external effect. The reviewer's check and
+explicit acceptance decision replace the message review loop. Do not claim the
 reviewer's check, mirror it in a text terminal, or use your own test result as
 acceptance.
 
@@ -130,7 +134,7 @@ finding list, repair every material defect and reuse still-valid proof. For
 Factory-selected work, publish the immutable correction through your retained
 producing claim, including when execution is already `done`; publication
 creates the new required reviewer check. For generic work, resume the
-reassigned claim, publish the correction and complete that execution; the
+continued claim, publish the correction and complete that execution; the
 coordinator explicitly requests and selects an exact-output check after every
 such publication. Do not complete an already completed claim again or create a
 duplicate feature item. A changed candidate invalidates prior current-output
